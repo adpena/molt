@@ -4,18 +4,17 @@
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import gzip
 import os
 from pathlib import Path
 import shutil
 import tarfile
 import tempfile
-import zipfile
+
+from .archive import write_reproducible_zip
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MIN_ZIP_EPOCH = 315532800  # 1980-01-01, the earliest ZIP timestamp.
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -145,32 +144,6 @@ def _archive_tar(root_dir: Path, out_path: Path, epoch: int) -> None:
                         tar.addfile(info)
 
 
-def _archive_zip(root_dir: Path, out_path: Path, epoch: int) -> None:
-    timestamp = dt.datetime.fromtimestamp(max(epoch, MIN_ZIP_EPOCH), tz=dt.UTC)
-    date_time = (
-        timestamp.year,
-        timestamp.month,
-        timestamp.day,
-        timestamp.hour,
-        timestamp.minute,
-        timestamp.second,
-    )
-    with zipfile.ZipFile(
-        out_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
-    ) as archive:
-        for path in sorted(root_dir.rglob("*")):
-            if path.is_dir():
-                continue
-            arcname = path.relative_to(root_dir.parent).as_posix()
-            info = zipfile.ZipInfo(arcname, date_time=date_time)
-            info.create_system = 3
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = (_normalized_mode(path) & 0xFFFF) << 16
-            archive.writestr(
-                info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED
-            )
-
-
 def build_bundle(
     *,
     version: str,
@@ -206,7 +179,13 @@ def build_bundle(
 
         output.parent.mkdir(parents=True, exist_ok=True)
         if platform == "windows":
-            _archive_zip(root_dir, output, source_date_epoch)
+            write_reproducible_zip(
+                root_dir,
+                output,
+                source_date_epoch=source_date_epoch,
+                prefix=root_dir.name,
+                mode_resolver=lambda relative: _normalized_mode(root_dir / relative),
+            )
         else:
             _archive_tar(root_dir, output, source_date_epoch)
 

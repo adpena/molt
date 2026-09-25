@@ -12,14 +12,11 @@ import sys
 import tarfile
 import tempfile
 import time
-import zipfile
 
+from tools.command_execution import CommandExecutor
+
+from .archive import extract_zip_strict
 from .release_model import sha256_file, write_json
-
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -35,8 +32,8 @@ def _safe_destination(root: Path, member: str) -> Path:
 
 
 def _extract(archive: Path, output: Path) -> None:
-    output.mkdir(parents=True)
     if archive.name.endswith(".tar.gz"):
+        output.mkdir(parents=True)
         with tarfile.open(archive, "r:gz") as handle:
             for member in handle.getmembers():
                 _safe_destination(output, member.name)
@@ -46,10 +43,7 @@ def _extract(archive: Path, output: Path) -> None:
                     )
             handle.extractall(output, filter="data")
     elif archive.suffix == ".zip":
-        with zipfile.ZipFile(archive) as handle:
-            for member in handle.infolist():
-                _safe_destination(output, member.filename)
-            handle.extractall(output)
+        extract_zip_strict(archive, output)
     else:
         raise ValueError(f"unsupported release archive: {archive}")
 

@@ -24,6 +24,12 @@ subject binds the manifest bytes.
 field (for example a Pact acceptance receipt that records no command), the row
 carries `null` and `verify` names the requirement and field that make the phase
 false. Those nulls are the work list, not a defect of the validator.
+
+`prepare` validates those semantic clauses and emits the exact canonical unsigned
+signing subject. `seal` attaches an adjacent bundle to those existing bytes and
+requires the full local predicate before publication. Local attestation checks
+bind envelope and subject bytes; release publication must additionally verify
+the Sigstore cryptography and expected GitHub workflow/source identity.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import hashlib
 import json
 import sys
 import tomllib
@@ -41,11 +48,23 @@ from typing import Any
 
 from molt.exact_json import (
     ExactJsonError,
+    canonical_json_bytes,
     canonical_json_sha256,
     loads_exact,
     write_exact,
 )
-from molt.toolchain_identity import stable_file_sha256
+from molt.file_publication import (
+    atomic_write_bytes,
+    durable_publish_exclusive,
+    resolve_owned_path,
+    staged_file_path,
+)
+from molt.portable_paths import portable_path_component, portable_relative_path
+from molt.toolchain_identity import (
+    open_stable_regular_file,
+    stable_regular_file_identity,
+    verify_stable_regular_file_identity,
+)
 from tools import legacy_inventory
 from tools import release_exit_gate as reg
 from tools import verified_subset as vs
@@ -57,7 +76,6 @@ REQUIREMENTS_SCHEMA = "molt.phase-exit-requirements.v1"
 MANIFEST_SCHEMA = "molt.phase-exit-manifest.v1"
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
-E3_ROLE_PREFIX = "e3_"
 E3_WILDCARD_ROLE = "e3_*"
 VERIFIED_SUBSET_CELL_PREFIX = "verified-subset:"
 _MANIFEST_KEYS = frozenset(
@@ -86,6 +104,7 @@ _EVIDENCE_KEYS = frozenset(
 )
 _ATTESTATION_KEYS = frozenset({"kind", "path", "sha256", "subject_sha256"})
 ATTESTATION_KIND = "sigstore-bundle"
+_MAX_JSON_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -239,7 +258,7 @@ def expand_requirements(
                 Requirement(
                     id=f"{requirement.id}.{coordinate_id}",
                     authority=requirement.authority,
-                    evidence_role=f"{E3_ROLE_PREFIX}{coordinate_id}",
+                    evidence_role=reg.verified_subset_evidence_role(coordinate_id),
                     matrix_cells=(f"{VERIFIED_SUBSET_CELL_PREFIX}{coordinate_id}",),
                 )
             )
@@ -249,14 +268,32 @@ def expand_requirements(
 # --- evidence projection ------------------------------------------------------
 
 
+def _read_bytes(path: Path, *, label: str) -> bytes:
+    path = resolve_owned_path(path)
+    with open_stable_regular_file(path, label=label) as opened:
+        if opened.stat.st_size > _MAX_JSON_BYTES:
+            raise ValueError(f"{label} exceeds size limit: {path}")
+        raw = opened.stream.read(_MAX_JSON_BYTES + 1)
+        if len(raw) > _MAX_JSON_BYTES:
+            raise ValueError(f"{label} exceeds size limit: {path}")
+    return raw
+
+
+def _json_object(raw: bytes, *, label: str) -> Mapping[str, Any]:
+    try:
+        payload = loads_exact(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError, ExactJsonError) as exc:
+        raise ValueError(f"{label} is not valid exact JSON: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"{label} must contain an object")
+    return payload
+
+
 def _load_json(path: Path, *, label: str) -> Mapping[str, Any]:
     try:
-        payload = loads_exact(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, ExactJsonError) as exc:
-        raise ValueError(f"{label} is not valid exact JSON: {path}: {exc}") from exc
-    if not isinstance(payload, Mapping):
-        raise ValueError(f"{label} must contain an object: {path}")
-    return payload
+        return _json_object(_read_bytes(path, label=label), label=label)
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable: {path}: {exc}") from exc
 
 
 def _receipt_command(payload: Mapping[str, Any]) -> str | None:
@@ -309,8 +346,9 @@ def _receipt_cells(role: str, payload: Mapping[str, Any]) -> tuple[str, ...]:
         return ()
     if role == "e2_scoreboard":
         return ("perf:native:release-fast",)
-    if role.startswith(E3_ROLE_PREFIX):
-        return (f"{VERIFIED_SUBSET_CELL_PREFIX}{role[len(E3_ROLE_PREFIX) :]}",)
+    if role.startswith(reg.VERIFIED_SUBSET_EVIDENCE_PREFIX):
+        coordinate_id = role.removeprefix(reg.VERIFIED_SUBSET_EVIDENCE_PREFIX)
+        return (f"{VERIFIED_SUBSET_CELL_PREFIX}{coordinate_id}",)
     if role.startswith("e4_"):
         return ("repository",)
     return ()
@@ -350,16 +388,16 @@ def project_evidence(
         requirement = by_role.get(role)
         if requirement is None:
             continue
-        artifact = bundle_manifest.parent / Path(rel_path)
-        artifact_payload = _load_json(artifact, label=f"{role} evidence")
+        relative = portable_relative_path(rel_path)
+        artifact = bundle_manifest.parent / relative
+        artifact_bytes = _read_bytes(artifact, label=f"{role} evidence")
+        artifact_payload = _json_object(artifact_bytes, label=f"{role} evidence")
         rows.append(
             {
                 "requirement_id": requirement.id,
                 "authority": requirement.authority,
                 "command": _receipt_command(artifact_payload),
-                "artifact_sha256": stable_file_sha256(
-                    artifact, label=f"{role} evidence"
-                ),
+                "artifact_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
                 "matrix_cells": list(_receipt_cells(role, artifact_payload)),
                 "status": _receipt_status(role, artifact_payload),
                 "toolchain_digest": _receipt_toolchain_digest(artifact_payload),
@@ -376,55 +414,82 @@ def project_evidence(
 def attestation_subject_sha256(bundle_path: Path) -> str:
     """Return the in-toto subject digest a Sigstore bundle attests."""
     bundle = _load_json(bundle_path, label="Sigstore bundle")
+    return _attestation_subject(bundle)
+
+
+def _attestation_subject(bundle: Mapping[str, Any]) -> str:
     envelope = bundle.get("dsseEnvelope")
     if not isinstance(envelope, Mapping):
-        raise ValueError(f"Sigstore bundle has no dsseEnvelope: {bundle_path}")
+        raise ValueError("Sigstore bundle has no dsseEnvelope")
     if envelope.get("payloadType") != "application/vnd.in-toto+json":
-        raise ValueError(
-            f"Sigstore bundle payload is not an in-toto statement: {bundle_path}"
-        )
+        raise ValueError("Sigstore bundle payload is not an in-toto statement")
     signatures = envelope.get("signatures")
     if not isinstance(signatures, list) or not signatures:
-        raise ValueError(f"Sigstore bundle carries no signatures: {bundle_path}")
+        raise ValueError("Sigstore bundle carries no signatures")
     raw_payload = envelope.get("payload")
     if not isinstance(raw_payload, str):
-        raise ValueError(f"Sigstore bundle payload must be base64 text: {bundle_path}")
+        raise ValueError("Sigstore bundle payload must be base64 text")
     try:
-        statement = json.loads(base64.b64decode(raw_payload, validate=True))
-    except (ValueError, json.JSONDecodeError) as exc:
+        statement = _json_object(
+            base64.b64decode(raw_payload, validate=True), label="in-toto statement"
+        )
+    except ValueError as exc:
         raise ValueError(
             f"Sigstore bundle payload is not a JSON statement: {exc}"
         ) from exc
     subjects = statement.get("subject") if isinstance(statement, Mapping) else None
+    if statement.get("_type") != "https://in-toto.io/Statement/v1":
+        raise ValueError("phase attestation must carry an in-toto Statement/v1")
     if not isinstance(subjects, list) or len(subjects) != 1:
         raise ValueError("phase attestation must bind exactly one subject")
     digest = subjects[0].get("digest") if isinstance(subjects[0], Mapping) else None
     sha = digest.get("sha256") if isinstance(digest, Mapping) else None
-    if not isinstance(sha, str) or len(sha) != 64:
+    if (
+        not isinstance(sha, str)
+        or len(sha) != 64
+        or any(c not in "0123456789abcdef" for c in sha)
+    ):
         raise ValueError("phase attestation subject has no sha256 digest")
     return sha
 
 
-def _manifest_bytes_sha256(manifest: Mapping[str, Any]) -> str:
-    """Digest of the manifest with its attestation slot empty (what gets signed)."""
+def signing_subject_bytes(manifest: Mapping[str, Any]) -> bytes:
+    """The one canonical unsigned byte representation signed by release CI."""
     unsigned = dict(manifest)
     unsigned["signed_attestation"] = None
-    return canonical_json_sha256(unsigned)
+    return canonical_json_bytes(unsigned)
+
+
+def _manifest_bytes_sha256(manifest: Mapping[str, Any]) -> str:
+    return hashlib.sha256(signing_subject_bytes(manifest)).hexdigest()
+
+
+def _attestation_record(attestation: Path, manifest_path: Path) -> dict[str, str]:
+    resolved = resolve_owned_path(attestation)
+    if resolved.parent != resolve_owned_path(manifest_path.parent):
+        raise ValueError("phase attestation must be adjacent to its manifest")
+    name = portable_path_component(resolved.name)
+    raw = _read_bytes(resolved, label="phase attestation")
+    return {
+        "kind": ATTESTATION_KIND,
+        "path": name,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "subject_sha256": _attestation_subject(
+            _json_object(raw, label="Sigstore bundle")
+        ),
+    }
 
 
 # --- assemble -----------------------------------------------------------------
 
 
-def assemble_phase_manifest(
+def _project_phase_manifest(
     *,
     phase_id: str,
     commit: str,
     bundle_manifest: Path,
-    output: Path,
-    attestation: Path | None = None,
     root: Path = ROOT,
-    now: dt.datetime | None = None,
-) -> tuple[Path, PhaseReport]:
+) -> dict[str, Any]:
     phases = load_phases(root / "config" / "phase_exit_requirements.toml")
     if phase_id not in phases:
         raise ValueError(f"unknown phase {phase_id!r}; declared: {sorted(phases)}")
@@ -433,7 +498,7 @@ def assemble_phase_manifest(
     phase = phases[phase_id]
     matrix = generated_matrix()
     requirements = expand_requirements(phase, matrix)
-    evidence = project_evidence(bundle_manifest.resolve(strict=True), requirements)
+    evidence = project_evidence(resolve_owned_path(bundle_manifest), requirements)
     passing = {
         row["requirement_id"] for row in evidence if row["status"] == STATUS_PASS
     }
@@ -456,7 +521,7 @@ def assemble_phase_manifest(
         if obligation.closed_by not in closed_requirements
     )
     legacy = legacy_inventory.inventory(root)
-    manifest: dict[str, Any] = {
+    return {
         "schema": MANIFEST_SCHEMA,
         "phase": phase_id,
         "commit": commit,
@@ -466,14 +531,23 @@ def assemble_phase_manifest(
         "legacy_count": legacy.legacy_count,
         "signed_attestation": None,
     }
+
+
+def assemble_phase_manifest(
+    *,
+    phase_id: str,
+    commit: str,
+    bundle_manifest: Path,
+    output: Path,
+    attestation: Path | None = None,
+    root: Path = ROOT,
+    now: dt.datetime | None = None,
+) -> tuple[Path, PhaseReport]:
+    manifest = _project_phase_manifest(
+        phase_id=phase_id, commit=commit, bundle_manifest=bundle_manifest, root=root
+    )
     if attestation is not None:
-        resolved = attestation.resolve(strict=True)
-        manifest["signed_attestation"] = {
-            "kind": ATTESTATION_KIND,
-            "path": resolved.name,
-            "sha256": stable_file_sha256(resolved, label="phase attestation"),
-            "subject_sha256": attestation_subject_sha256(resolved),
-        }
+        manifest["signed_attestation"] = _attestation_record(attestation, output)
     write_exact(output, manifest)
     report = verify_phase_manifest(
         output,
@@ -502,6 +576,28 @@ def verify_phase_manifest(
         manifest = _load_json(manifest_path, label="phase-exit manifest")
     except ValueError as exc:
         return PhaseReport(None, None, False, (str(exc),))
+    content = _verify_phase_content(
+        manifest,
+        release_commit=release_commit,
+        bundle_manifest=bundle_manifest,
+        root=root,
+        now=now,
+    )
+    problems.extend(content.problems)
+    problems.extend(_verify_attestation(manifest, manifest_path))
+    return PhaseReport(content.phase, content.commit, not problems, tuple(problems))
+
+
+def _verify_phase_content(
+    manifest: Mapping[str, Any],
+    *,
+    release_commit: str,
+    bundle_manifest: Path,
+    root: Path,
+    now: dt.datetime | None,
+) -> PhaseReport:
+    """Shared semantic clauses; private and never a final signature waiver."""
+    problems: list[str] = []
     phase_id = manifest.get("phase") if isinstance(manifest.get("phase"), str) else None
     commit = manifest.get("commit") if isinstance(manifest.get("commit"), str) else None
 
@@ -597,7 +693,12 @@ def verify_phase_manifest(
             problems.append(
                 f"evidence: {requirement.id} authority {row.get('authority')!r} is not {requirement.authority!r}"
             )
-        covered = set(row.get("matrix_cells") or [])
+        cells = row.get("matrix_cells")
+        covered = (
+            set(cells)
+            if isinstance(cells, list) and all(isinstance(c, str) for c in cells)
+            else set()
+        )
         required = set(requirement.matrix_cells)
         if requirement.evidence_role == E3_WILDCARD_ROLE:
             required = set()
@@ -665,12 +766,12 @@ def verify_phase_manifest(
             "hashes: release-exit bundle does not verify: "
             + "; ".join(bundle_report.problems)
         )
-    if bundle_report.source_sha not in (None, release_commit):
+    if bundle_report.source_sha != release_commit:
         problems.append(
             "hashes: release-exit bundle source_sha is not the release commit"
         )
     try:
-        projected = project_evidence(bundle_manifest.resolve(strict=True), requirements)
+        projected = project_evidence(resolve_owned_path(bundle_manifest), requirements)
     except (OSError, ValueError) as exc:
         problems.append(f"hashes: cannot re-project bundle evidence: {exc}")
         projected = []
@@ -687,23 +788,31 @@ def verify_phase_manifest(
             problems.append(
                 f"hashes: {rid} artifact_sha256 does not match the bundle evidence bytes"
             )
+    if evidence != projected:
+        problems.append("evidence: rows do not match the current bundle projection")
+    return PhaseReport(phase_id, commit, not problems, tuple(problems))
+
+
+def _verify_attestation(manifest: Mapping[str, Any], manifest_path: Path) -> list[str]:
+    """Bind envelope bytes here; publication separately authenticates its signer."""
+    problems: list[str] = []
     attestation = manifest.get("signed_attestation")
     if not isinstance(attestation, Mapping) or set(attestation) != _ATTESTATION_KEYS:
         problems.append("signature: manifest carries no signed attestation")
     else:
-        attestation_path = manifest_path.parent / str(attestation.get("path"))
         if attestation.get("kind") != ATTESTATION_KIND:
             problems.append("signature: attestation kind must be sigstore-bundle")
         try:
-            actual_sha = stable_file_sha256(attestation_path, label="phase attestation")
-            subject = attestation_subject_sha256(attestation_path)
+            name = portable_path_component(attestation.get("path"))
+            actual = _attestation_record(manifest_path.parent / name, manifest_path)
         except (OSError, ValueError) as exc:
             problems.append(f"signature: attestation is unreadable: {exc}")
         else:
-            if actual_sha != attestation.get("sha256"):
+            if actual["sha256"] != attestation.get("sha256"):
                 problems.append(
                     "signature: attestation bytes do not match their recorded sha256"
                 )
+            subject = actual["subject_sha256"]
             if subject != attestation.get("subject_sha256"):
                 problems.append(
                     "signature: recorded subject digest does not match the bundle"
@@ -713,7 +822,92 @@ def verify_phase_manifest(
                     "signature: attestation subject does not bind these manifest bytes"
                 )
 
-    return PhaseReport(phase_id, commit, not problems, tuple(problems))
+    return problems
+
+
+def prepare_phase_signing_subject(
+    *,
+    phase_id: str,
+    commit: str,
+    bundle_manifest: Path,
+    output: Path,
+    root: Path = ROOT,
+    now: dt.datetime | None = None,
+) -> Path:
+    """Publish unsigned canonical bytes only after every semantic clause passes.
+
+    This prepares a signing input; it does not declare a green phase. Only the
+    unchanged public verify predicate can make that final claim.
+    """
+    manifest = _project_phase_manifest(
+        phase_id=phase_id, commit=commit, bundle_manifest=bundle_manifest, root=root
+    )
+    report = _verify_phase_content(
+        manifest,
+        release_commit=commit,
+        bundle_manifest=bundle_manifest,
+        root=root,
+        now=now,
+    )
+    if not report.green:
+        raise ValueError(
+            "phase signing subject is not ready: " + "; ".join(report.problems)
+        )
+    output = resolve_owned_path(output)
+    atomic_write_bytes(output, signing_subject_bytes(manifest), exclusive=True)
+    return output
+
+
+def seal_phase_manifest(
+    *,
+    subject: Path,
+    attestation: Path,
+    bundle_manifest: Path,
+    output: Path,
+    root: Path = ROOT,
+    now: dt.datetime | None = None,
+) -> tuple[Path, PhaseReport]:
+    """Attach evidence to the existing signed bytes, never reproject a substitute."""
+    raw = _read_bytes(subject, label="phase signing subject")
+    manifest = dict(_json_object(raw, label="phase signing subject"))
+    if manifest.get("signed_attestation") is not None or raw != signing_subject_bytes(
+        manifest
+    ):
+        raise ValueError("phase signing subject must be canonical unsigned bytes")
+    commit = manifest.get("commit")
+    if not is_git_object_id(commit):
+        raise ValueError("phase signing subject must name a full release commit")
+    output = resolve_owned_path(output)
+    if output in {resolve_owned_path(subject), resolve_owned_path(attestation)}:
+        raise ValueError("sealed manifest must not replace its signing inputs")
+    manifest["signed_attestation"] = _attestation_record(attestation, output)
+    stage = staged_file_path(output, purpose="phase-seal")
+    identity = None
+    try:
+        write_exact(stage, manifest, exclusive=True)
+        identity = stable_regular_file_identity(stage, label="sealed phase manifest")
+        report = verify_phase_manifest(
+            stage,
+            release_commit=commit,
+            bundle_manifest=bundle_manifest,
+            root=root,
+            now=now,
+        )
+        if not report.green:
+            raise ValueError("sealed phase is not green: " + "; ".join(report.problems))
+        verify_stable_regular_file_identity(identity, label="sealed phase manifest")
+        durable_publish_exclusive(stage, output)
+    finally:
+        if identity is not None and stage.exists():
+            try:
+                verify_stable_regular_file_identity(
+                    identity, label="sealed phase cleanup"
+                )
+            except (OSError, ValueError):
+                pass
+            else:
+                stage.unlink()
+    return output, report
 
 
 # --- CLI ----------------------------------------------------------------------
@@ -737,6 +931,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     assemble.add_argument("--release-exit-manifest", type=Path, required=True)
     assemble.add_argument("--attestation", type=Path)
     assemble.add_argument("--output", type=Path, required=True)
+    prepare = subparsers.add_parser(
+        "prepare", help="prepare verified unsigned signing bytes"
+    )
+    prepare.add_argument("--phase", required=True)
+    prepare.add_argument("--commit", required=True)
+    prepare.add_argument("--release-exit-manifest", type=Path, required=True)
+    prepare.add_argument("--output", type=Path, required=True)
+    seal = subparsers.add_parser(
+        "seal", help="attach a signature to the existing signing subject"
+    )
+    seal.add_argument("--subject", type=Path, required=True)
+    seal.add_argument("--attestation", type=Path, required=True)
+    seal.add_argument("--release-exit-manifest", type=Path, required=True)
+    seal.add_argument("--output", type=Path, required=True)
     verify = subparsers.add_parser("verify", help="evaluate the fixed phase predicate")
     verify.add_argument("manifest", type=Path)
     verify.add_argument("--release-commit", required=True)
@@ -746,6 +954,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "matrix-digest":
         print(generated_matrix_digest())
         return 0
+    if args.command == "prepare":
+        try:
+            output = prepare_phase_signing_subject(
+                phase_id=args.phase,
+                commit=args.commit,
+                bundle_manifest=args.release_exit_manifest,
+                output=args.output,
+            )
+        except (OSError, ValueError) as exc:
+            print(
+                f"[phase-exit] cannot prepare signing subject: {exc}", file=sys.stderr
+            )
+            return 1
+        print(
+            f"[phase-exit] signing subject PREPARED (unsigned, not phase green): {output}"
+        )
+        return 0
+    if args.command == "seal":
+        try:
+            _, report = seal_phase_manifest(
+                subject=args.subject,
+                attestation=args.attestation,
+                bundle_manifest=args.release_exit_manifest,
+                output=args.output,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"[phase-exit] cannot seal phase manifest: {exc}", file=sys.stderr)
+            return 1
+        _print_report(report)
+        return 0 if report.green else 1
     if args.command == "assemble":
         _, report = assemble_phase_manifest(
             phase_id=args.phase,

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import datetime as dt
 from email.parser import Parser
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -14,11 +13,45 @@ from typing import Any, Iterable
 import zipfile
 
 from molt.release_matrix import RELEASE_TARGETS
+from molt.portable_paths import portable_relative_path
+from molt.toolchain_identity import stable_regular_file_identity
+from packaging.utils import parse_wheel_filename
+from tools.git_identity import require_git_object_id
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "release_supply_chain.toml"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+MANIFEST_SCHEMA = "molt.release-manifest.v3"
+SPDX_VERSION = "2.3"
+SPDX_PREDICATE_TYPE = f"https://spdx.dev/Document/v{SPDX_VERSION}"
+RELEASE_EXIT_ARCHIVE_KIND = "release-exit-evidence"
+PHASE_EXIT_KIND = "phase-exit-evidence"
+PHASE_ATTESTATION_KIND = "phase-exit-attestation"
+FILE_FIELDS = frozenset({"kind", "filename", "sha256", "size"})
+ATTESTATION_POLICY = {
+    "provenance": "SLSA v1 signed by GitHub artifact attestations",
+    "sbom": f"SPDX {SPDX_VERSION} signed by GitHub artifact attestations",
+    "signature": "Sigstore keyless OIDC certificate",
+}
+
+
+def release_exit_archive_filename(source_sha: str) -> str:
+    require_git_object_id(source_sha, label="release source SHA")
+    return f"molt-release-exit-{source_sha}.zip"
+
+
+def stable_release(version: str) -> bool:
+    return int(normalized_version(version).split(".")[0]) >= 1
+
+
+def phase_exit_filename(source_sha: str) -> str:
+    require_git_object_id(source_sha, label="release source SHA")
+    return f"molt-phase-exit-H0-{source_sha}.json"
+
+
+def phase_exit_attestation_filename(source_sha: str) -> str:
+    return phase_exit_filename(source_sha).removesuffix(".json") + ".sigstore.json"
 
 
 @dataclass(frozen=True)
@@ -97,22 +130,158 @@ def _numeric_version_identity(value: str) -> tuple[int, int, int]:
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return stable_regular_file_identity(path, label="release file").sha256
 
 
 def file_record(path: Path, *, kind: str) -> dict[str, object]:
-    if not path.is_file():
-        raise ValueError(f"release artifact is missing: {path}")
+    identity = stable_regular_file_identity(path, label="release artifact")
     return {
         "kind": kind,
         "filename": path.name,
-        "sha256": sha256_file(path),
-        "size": path.stat().st_size,
+        "sha256": identity.sha256,
+        "size": identity.size,
     }
+
+
+def validate_file_record(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or not FILE_FIELDS <= value.keys():
+        raise ValueError("release file record is incomplete")
+    name = value["filename"]
+    if len(portable_relative_path(name).parts) != 1:
+        raise ValueError("release file name must be one portable component")
+    digest = value["sha256"]
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError("release file SHA256 is invalid")
+    if type(value["size"]) is not int or value["size"] <= 0:
+        raise ValueError("release file size must be a positive integer")
+    if not isinstance(value["kind"], str) or not value["kind"]:
+        raise ValueError("release file kind is invalid")
+    return value
+
+
+def validate_artifact_record(
+    value: object, *, version: str, published: bool = False
+) -> dict[str, Any]:
+    record = validate_file_record(value)
+    keys = FILE_FIELDS | {"name", "version", "platform", "arch", "libc"}
+    if published:
+        keys |= {"url"}
+    if set(record) != keys or record["version"] != version:
+        raise ValueError("release artifact metadata is invalid")
+    name, platform, arch = (record[key] for key in ("name", "platform", "arch"))
+    if name == "molt-wheel":
+        wheel_name, wheel_version, _, _ = parse_wheel_filename(record["filename"])
+        if (
+            wheel_name != "molt"
+            or _numeric_version_identity(str(wheel_version))
+            != _numeric_version_identity(version)
+            or (record["kind"], platform, arch, record["libc"])
+            != ("wheel", "any", "any", None)
+        ):
+            raise ValueError("release wheel metadata is invalid")
+    else:
+        target = next(
+            (t for t in release_targets() if (t.platform, t.arch) == (platform, arch)),
+            None,
+        )
+        if (
+            target is None
+            or name not in {"molt", "molt-worker"}
+            or record["kind"] != name
+            or record["filename"] != target.artifact_filename(name, version)
+            or record["libc"] != ("gnu" if platform == "linux" else None)
+        ):
+            raise ValueError("release artifact target metadata is invalid")
+    return record
+
+
+def validate_release_manifest(value: object) -> dict[str, Any]:
+    keys = {
+        "schema",
+        "version",
+        "source_sha",
+        "source_date_epoch",
+        "repo",
+        "evidence_archive",
+        "phase_exit",
+        "artifacts",
+        "attestation",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != keys
+        or value.get("schema") != MANIFEST_SCHEMA
+    ):
+        raise ValueError(f"release manifest must use exact {MANIFEST_SCHEMA} schema")
+    version = value["version"]
+    if not isinstance(version, str) or normalized_version(version) != version:
+        raise ValueError("release manifest version is invalid")
+    source_sha = require_git_object_id(
+        value["source_sha"], label="release manifest source SHA"
+    )
+    if type(value["source_date_epoch"]) is not int or value["source_date_epoch"] <= 0:
+        raise ValueError("release manifest source epoch is invalid")
+    config = load_config()["repository"]
+    repo = f"{config['owner']}/{config['name']}"
+    if value["repo"] != repo or value["attestation"] != ATTESTATION_POLICY:
+        raise ValueError("release manifest repository/attestation policy differs")
+    evidence = validate_file_record(value["evidence_archive"])
+    if (
+        set(evidence) != FILE_FIELDS
+        or evidence["kind"] != RELEASE_EXIT_ARCHIVE_KIND
+        or evidence["filename"] != release_exit_archive_filename(source_sha)
+    ):
+        raise ValueError("release manifest evidence archive is invalid")
+    phase = value["phase_exit"]
+    if stable_release(version):
+        if not isinstance(phase, dict) or set(phase) != {"manifest", "attestation"}:
+            raise ValueError("release manifest H0 phase evidence is invalid")
+        for key, kind, filename in (
+            ("manifest", PHASE_EXIT_KIND, phase_exit_filename(source_sha)),
+            (
+                "attestation",
+                PHASE_ATTESTATION_KIND,
+                phase_exit_attestation_filename(source_sha),
+            ),
+        ):
+            record = validate_file_record(phase[key])
+            if set(record) != FILE_FIELDS or (record["kind"], record["filename"]) != (
+                kind,
+                filename,
+            ):
+                raise ValueError("release manifest H0 phase evidence is invalid")
+    elif phase is not None:
+        raise ValueError("pre-stable release manifest must not claim an H0 phase exit")
+    artifacts = value["artifacts"]
+    expected = {("molt-wheel", "any", "any")} | {
+        (name, target.platform, target.arch)
+        for target in release_targets()
+        for name in ("molt", "molt-worker")
+    }
+    if not isinstance(artifacts, list) or len(artifacts) != len(expected):
+        raise ValueError("release manifest artifact matrix is incomplete")
+    names: list[str] = []
+    coordinates: set[tuple[str, str, str]] = set()
+    for raw in artifacts:
+        record = validate_artifact_record(raw, version=version, published=True)
+        names.append(record["filename"])
+        coordinates.add((record["name"], record["platform"], record["arch"]))
+        if (
+            record["url"]
+            != f"https://github.com/{repo}/releases/download/v{version}/{record['filename']}"
+        ):
+            raise ValueError("release artifact URL differs from its source")
+    if names != sorted(set(names)) or coordinates != expected:
+        raise ValueError("release manifest artifact matrix must be exact and sorted")
+    return value
+
+
+def release_subjects(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """One checksum/SBOM/publication subject projection, including semantic proof."""
+    subjects = [*manifest["artifacts"], manifest["evidence_archive"]]
+    if manifest["phase_exit"] is not None:
+        subjects.extend(manifest["phase_exit"].values())
+    return sorted(subjects, key=lambda record: record["filename"])
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -258,7 +427,7 @@ def spdx_document(
         .replace("+00:00", "Z")
     )
     return {
-        "spdxVersion": "SPDX-2.3",
+        "spdxVersion": f"SPDX-{SPDX_VERSION}",
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
         "name": f"molt-{version}-release",

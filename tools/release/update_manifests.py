@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
+
+from molt.exact_json import read_exact
+from tools.release.release_model import validate_release_manifest
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / "packaging" / "templates"
@@ -13,10 +15,9 @@ OUTPUT = ROOT / "packaging" / "out"
 
 
 def _load_manifest(path: Path) -> dict:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("schema") != "molt.release-manifest.v2":
-        raise ValueError("package-manager projections require release manifest v2")
-    return payload
+    return validate_release_manifest(
+        read_exact(path, max_bytes=4 * 1024 * 1024, label="release manifest")
+    )
 
 
 def _find(artifacts: list[dict], name: str, platform: str, arch: str) -> dict:

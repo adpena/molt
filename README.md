@@ -14,6 +14,9 @@ Python or ecosystem compatibility beyond its verified subset. See the
 [release milestone](ROADMAP.md#first-release-milestone).
 Release readiness also requires the declared workload and resource budgets in
 the [performance authority](tools/PERF_AUTHORITY.md#v10-acceptance-scope).
+Publication requires same-source semantic exit evidence; stable releases also
+require a signed H0 phase exit. See the [release contract](packaging/PACKAGING.md).
+These gates do not imply that the remaining release matrix has passed.
 
 ## Why Molt
 
