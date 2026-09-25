@@ -1094,13 +1094,11 @@ pub(crate) fn assert_no_leak_at_exit(_py: &PyToken<'_>) {
 /// Runs AFTER `runtime_teardown_for_process_exit` has reclaimed every reachable
 /// acyclic graph — including user `__main__` globals via
 /// `modules_clear_runtime_state` — so the only survivors now are the immortal
-/// heap floor plus genuine leaks. molt is reference-counted with NO cycle
-/// collector (`formal/quint/molt_gc_safety.qnt` scopes its no-leak proof to
-/// ACYCLIC graphs), so the canonical leak class is an *unreachable reference
-/// cycle*: RC pins it at refcount ≥ 1 forever and nothing reclaims it (CPython's
-/// cyclic gc would). In exact mode (`MOLT_LEAK_TOLERANCE` set) we gate
-/// `live <= floor + tolerance`, catching a cycle leak that the coarse
-/// pre-teardown ceiling launders. No-op in the default profile (which relies on
+/// heap floor plus surviving owners. Shared teardown runs cyclic collection
+/// before retiring module roots; a failed collection is reported separately.
+/// In exact mode (`MOLT_LEAK_TOLERANCE` set) we gate `live <= floor + tolerance`,
+/// catching residual cycles or other leaks that the coarse pre-teardown
+/// ceiling cannot identify. No-op in the default profile (which relies on
 /// the pre-teardown runaway ceiling); this never changes default-profile behavior.
 pub(crate) fn assert_no_true_leak_post_teardown(_py: &PyToken<'_>) {
     if !crate::leak_assertion_enabled() {

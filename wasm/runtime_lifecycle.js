@@ -3,10 +3,29 @@
   if (typeof module === 'object' && module && module.exports) module.exports = api;
   root.MoltRuntimeLifecycle = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, () => {
+  // Thrown JavaScript values need not be Errors, or even safely inspectable.
+  // Diagnostics must never replace the original failure with a getter, proxy,
+  // JSON or string-conversion failure. Keep the raw value in errors/cause.
+  const formatTraceError = (error) => {
+    try {
+      if (error instanceof Error) {
+        const stack = error.stack;
+        if (typeof stack === 'string' && stack) return stack;
+        const message = error.message;
+        if (typeof message === 'string' && message) return message;
+      }
+    } catch {}
+    try {
+      const json = JSON.stringify(error);
+      if (typeof json === 'string') return json;
+    } catch {}
+    try { return String(error); } catch {}
+    return '<unformattable thrown value>';
+  };
   // Keep the first failure as the cause; teardown must never erase it.
   const combinedError = (errors) => {
     if (errors.length === 1) return errors[0];
-    return new AggregateError(errors, errors.map(error => String(error)).join('; '),
+    return new AggregateError(errors, errors.map(formatTraceError).join('; '),
       { cause: errors[0] });
   };
 
@@ -310,5 +329,5 @@
     return { execute, initialize, dispose, assertLive, admit: resolve };
   };
   return { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream,
-    withRuntimeOwnedValues, makeRuntimeIntList, combinedError };
+    withRuntimeOwnedValues, makeRuntimeIntList, combinedError, formatTraceError };
 });

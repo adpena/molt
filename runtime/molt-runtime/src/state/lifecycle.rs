@@ -199,7 +199,27 @@ fn shutdown_started_runtime_workers(_py: &PyToken<'_>, state: &RuntimeState) {
 
 fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: RuntimeTeardownMode) {
     crate::gil_assert();
+    // Own callback execution from the first collector/pending-call callback
+    // through the callback-free release tail. A public caller may already own
+    // an ordinary lease; raw GIL or C-extension context alone is insufficient.
+    let _custody = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter_if_needed();
     trace_shutdown("start");
+    if mode == RuntimeTeardownMode::ProcessExit {
+        crate::object::ops::profile_dump_with_gil(_py);
+        // Pre-teardown peak-live canary, not the post-teardown true-leak gauge.
+        crate::object::ops::assert_no_leak_at_exit(_py);
+        // Collect before module teardown, with custody for finalizer reentry.
+        unsafe {
+            let outcome = crate::object::gc::collect_cycles(_py);
+            match outcome.status {
+                crate::object::gc::GcCollectStatus::Completed
+                | crate::object::gc::GcCollectStatus::ReentrantNoop => {}
+                failure => {
+                    eprintln!("molt gc: process-exit collection failed closed: {failure:?}")
+                }
+            }
+        }
+    }
     // Pending-call admission and its ring are process-static. An isolate owns
     // its native thread state, not the primary runtime's pending callbacks.
     if crate::state::runtime_state::owns_process_cpython_state(state) {
@@ -231,12 +251,6 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     trace_shutdown("clear_asyncgen_registry");
     clear_asyncgen_registry(state);
     trace_shutdown("drain_runtime_class_callbacks");
-    // Keep destruction custody through the callback-free tail as well: ordinary
-    // bridge-view destruction checks this capability, and must never establish
-    // a fresh public execution/thread-state boundary after quiescence.
-    let _custody =
-        (!crate::concurrency::execution::current_thread_has_c_extension_execution_context())
-            .then(crate::concurrency::execution::ShutdownDrainExecutionCustody::enter);
     // C roots can run extension deallocators. Close their readiness while all
     // runtime lookup/class authority is still present, then use the same root
     // owner drain before and throughout canonical class retirement.
@@ -960,6 +974,9 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     ];
     clear_atomic_slots(_py, &slots)
 }
+
+#[cfg(test)]
+mod shutdown_tests;
 
 #[cfg(test)]
 mod tests {
