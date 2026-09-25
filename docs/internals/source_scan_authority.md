@@ -50,6 +50,24 @@ operation-local rather than reading or publishing strict disk records. Function
 analysis caches retain defaults and kinds only; every consumer admits imports
 through the same source-request loader.
 
+Tooling dependency discovery returns one immutable receipt: ordered canonical
+paths, per-file hashes, a root-relative content digest, and captured byte count.
+Python and dynamic-import manifest identities use the exact bytes parsed by
+discovery. Frontend fingerprints, native benchmark provenance, and WASM linker
+identities consume this receipt instead of reopening those sources. Non-Python
+frontend assets remain fingerprint inputs; clean Git scopes retain their
+pathspec-based identity. Receipts retain neither source bytes nor ASTs and may
+be reused only within the explicit immutable tooling operation.
+
+Path admission belongs to discovery: missing candidates stop at the filesystem
+probe; existing candidates retain their kind and resolve symlinks before search
+root containment is checked. Downstream projections do not repeat that
+admission. Persisted request-cache keys are only lookup hints, never path
+authority, and unchanged request payloads are not republished. Each new
+operation still resolves missing members, namespaces, and package shadows live.
+Git clean-scope results and WASM tool digests cannot outlive that operation:
+process-wide caching would otherwise conceal edits from later builds.
+
 Precomputed records carry both imports and source-execution edges, with source
 content, target, mode, and capability identity. Selected native helper slices are
 scanned from their emitted generated source. Unsliced initialization scans remain

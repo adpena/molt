@@ -189,7 +189,7 @@ def test_frontend_drivers_in_scope_and_post_lowering_excluded() -> None:
     # unrelated to the post-lowering ``cli/backend_ir.py``).
     scoped = {
         path.name
-        for path in CF._frontend_semantic_tooling_source_paths(root)
+        for path in CF._frontend_semantic_tooling_sources(root).paths
         if path.parent.name == "cli"
     }
 
@@ -213,7 +213,7 @@ def test_frontend_drivers_in_scope_and_post_lowering_excluded() -> None:
         "models.py",
     }
     assert root / "src" / "molt" / "target_python.py" in (
-        CF._frontend_semantic_tooling_source_paths(root)
+        CF._frontend_semantic_tooling_sources(root).paths
     )
     missing_drivers = sorted(frontend_drivers - scoped)
     assert not missing_drivers, (
@@ -279,7 +279,7 @@ def test_reachability_follows_driver_imports_but_not_backend() -> None:
         # backend helper that nothing in scope imports
         _write(cli / "backend_orphan.py", "MARKER = 1\n")
 
-        reached = {path.name for path in CF._lowering_scope_source_files(root)}
+        reached = {path.name for path in CF._lowering_scope_source_closure(root).paths}
 
     assert "module_resolution.py" in reached  # seed
     assert "helper_a.py" in reached  # imported by seed
@@ -306,7 +306,7 @@ def test_admission_policy_files_stay_in_scope() -> None:
     from molt.cli import cache_fingerprints as cf
 
     root = Path(cf.__file__).resolve().parents[3]
-    names = {p.name for p in cf._frontend_semantic_tooling_source_paths(root)}
+    names = {p.name for p in cf._frontend_semantic_tooling_sources(root).paths}
     assert "external_native.py" in names, (
         "external_native.py fell out of the lowering fingerprint scope -> stale-lowering risk"
     )
@@ -403,7 +403,7 @@ def _scope_relpaths(root: Path) -> set[str]:
     """POSIX relpaths (from ``src/molt``) of every file in the semantic scope."""
     molt_root = (Path(root) / "src" / "molt").resolve()
     rels: set[str] = set()
-    for path in CF._frontend_semantic_tooling_source_paths(Path(root)):
+    for path in CF._frontend_semantic_tooling_sources(Path(root)).paths:
         p = Path(path).resolve()
         if p.is_dir():
             for f in p.rglob("*.py"):
@@ -519,7 +519,7 @@ def test_cli_package_init_command_layer_leak_is_cut(
     molt_root = (tmp_path / "src" / "molt").resolve()
     reached = {
         Path(p).resolve().relative_to(molt_root).as_posix()
-        for p in CF._lowering_scope_source_files(tmp_path)
+        for p in CF._lowering_scope_source_closure(tmp_path).paths
     }
     assert "cli/frontend_execution.py" in reached  # the named submodule is in scope
     assert "cli/__init__.py" not in reached  # the package aggregate is NOT dragged
@@ -551,11 +551,11 @@ def test_lowering_graph_reresolves_new_named_submodule_without_cache_clear(
     molt = _build_leak_tree(tmp_path)
     seed = molt / "cli" / "frontend_pipeline.py"
     seed.write_text("from molt.cli import newly_added\n", encoding="utf-8")
-    before = set(CF._lowering_scope_source_files(tmp_path))
+    before = set(CF._lowering_scope_source_closure(tmp_path).paths)
     assert molt / "cli" / "__init__.py" in before
     added = molt / "cli" / "newly_added.py"
     added.write_text("VALUE = 1\n", encoding="utf-8")
-    after = set(CF._lowering_scope_source_files(tmp_path))
+    after = set(CF._lowering_scope_source_closure(tmp_path).paths)
     assert added in after
     assert molt / "cli" / "__init__.py" not in after
     assert molt / "cli" / "orchestration_only.py" not in after
@@ -572,7 +572,7 @@ def test_lowering_graph_does_not_swallow_transitive_source_errors(
         encoding="utf-8",
     )
     with pytest.raises(ValueError) as exc:
-        CF._lowering_scope_source_files(tmp_path)
+        CF._lowering_scope_source_closure(tmp_path).paths
     assert str(helper) in str(exc.value)
 
 
@@ -611,7 +611,7 @@ def test_kept_analysis_and_intrinsic_edits_still_invalidate(
     molt_root = (tmp_path / "src" / "molt").resolve()
     reached = {
         Path(p).resolve().relative_to(molt_root).as_posix()
-        for p in CF._lowering_scope_source_files(tmp_path)
+        for p in CF._lowering_scope_source_closure(tmp_path).paths
     }
     assert "compiler_analysis/backend_ir.py" in reached  # analysis package seeded
 

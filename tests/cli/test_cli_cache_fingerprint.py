@@ -342,7 +342,7 @@ def _backend_source_fingerprint(root: Path, features: tuple[str, ...]) -> str:
     source_paths = CACHE_FINGERPRINTS._backend_source_paths(root, features)
     return CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
         root=root,
-        source_paths=source_paths,
+        inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths(source_paths),
         scope=f"backend-test:{','.join(features)}",
         extra_fingerprint_inputs="",
     )
@@ -578,7 +578,7 @@ def test_source_tree_content_digest_is_not_metadata_keyed(tmp_path: Path) -> Non
 
     first = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
         root=root,
-        source_paths=[tracked],
+        inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths([tracked]),
         scope="content-digest-test",
         extra_fingerprint_inputs="",
     )
@@ -588,7 +588,7 @@ def test_source_tree_content_digest_is_not_metadata_keyed(tmp_path: Path) -> Non
 
     second = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
         root=root,
-        source_paths=[tracked],
+        inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths([tracked]),
         scope="content-digest-test",
         extra_fingerprint_inputs="",
     )
@@ -619,13 +619,13 @@ def test_source_tree_cache_fingerprint_is_install_root_and_stat_independent(
 
     first_fingerprint = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
         root=first_root,
-        source_paths=[first],
+        inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths([first]),
         scope="ephemeral-install-test",
         extra_fingerprint_inputs="",
     )
     second_fingerprint = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
         root=second_root,
-        source_paths=[second],
+        inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths([second]),
         scope="ephemeral-install-test",
         extra_fingerprint_inputs="",
     )
@@ -654,13 +654,13 @@ def test_source_tree_fingerprint_transaction_reuses_content_complete_result(
     with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
         first = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
             root=root,
-            source_paths=[tracked],
+            inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths([tracked]),
             scope="transaction-test",
             extra_fingerprint_inputs="",
         )
         second = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
             root=root,
-            source_paths=[tracked],
+            inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths([tracked]),
             scope="transaction-test",
             extra_fingerprint_inputs="",
         )
@@ -680,7 +680,7 @@ def test_source_tree_fingerprint_transaction_does_not_escape_context(
     with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
         first = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
             root=root,
-            source_paths=[tracked],
+            inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths([tracked]),
             scope="transaction-escape-test",
             extra_fingerprint_inputs="",
         )
@@ -688,7 +688,7 @@ def test_source_tree_fingerprint_transaction_does_not_escape_context(
     tracked.write_text("MARKER = 2\n", encoding="utf-8")
     second = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
         root=root,
-        source_paths=[tracked],
+        inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths([tracked]),
         scope="transaction-escape-test",
         extra_fingerprint_inputs="",
     )
@@ -738,7 +738,7 @@ def test_source_tree_cache_fingerprint_uses_clean_pathspec_state(
 
     fingerprint = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
         root=root,
-        source_paths=[tracked],
+        inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths([tracked]),
         scope="clean-pathspec-test",
         extra_fingerprint_inputs="",
     )
@@ -767,15 +767,21 @@ def test_lowering_dependency_graph_reuses_analysis_but_rechecks_source_bytes(
 
     monkeypatch.setattr(graph, "analyze_local_imports", record)
     expected = {source, first}
-    assert set(CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path)) == expected
+    assert (
+        set(CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths)
+        == expected
+    )
     assert set(analyzed) == expected
     analyzed.clear()
-    assert set(CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path)) == expected
+    assert (
+        set(CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths)
+        == expected
+    )
     assert analyzed == []
     before = source.stat()
     source.write_text("import molt.cli.other\n", encoding="utf-8")
     os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
-    assert set(CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path)) == {
+    assert set(CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths) == {
         source,
         second,
     }
@@ -800,16 +806,20 @@ def test_lowering_dependency_graph_reuse_ends_with_build_transaction(
 
     monkeypatch.setattr(graph.LocalPythonModuleResolver, "capture_source", record)
     with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
-        assert CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path) == (source,)
+        assert CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths == (
+            source,
+        )
         with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
-            assert CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path) == (
-                source,
-            )
+            assert CACHE_FINGERPRINTS._lowering_scope_source_closure(
+                tmp_path
+            ).paths == (source,)
     assert captured == [source]
     helper.write_text("VALUE = 1\n", encoding="utf-8")
     captured.clear()
     with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
-        assert set(CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path)) == {
+        assert set(
+            CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths
+        ) == {
             source,
             helper,
         }
@@ -844,11 +854,11 @@ def test_installed_python_layout_drives_both_fingerprint_scopes(
 
     monkeypatch.setattr(graph, "_atomic_write_text", read_only_install)
     assert COMPILER_METADATA._compiler_python_source_root(tmp_path) == site_packages
-    assert target in CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path)
+    assert target in CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths
     assert package / "cli" in CACHE_FINGERPRINTS._frontend_tooling_source_paths(
         tmp_path
     )
-    paths = CACHE_FINGERPRINTS._frontend_semantic_tooling_source_paths(tmp_path)
+    paths = CACHE_FINGERPRINTS._frontend_semantic_tooling_sources(tmp_path).paths
     assert frontend in paths and target in paths
     assert all(path.is_relative_to(site_packages) for path in paths)
     first = CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint()
@@ -882,7 +892,7 @@ def test_selected_compiler_root_does_not_relocate_captured_package_layout(
     )
     for paths in (
         CACHE_FINGERPRINTS._frontend_tooling_source_paths(checkout),
-        CACHE_FINGERPRINTS._frontend_semantic_tooling_source_paths(checkout),
+        CACHE_FINGERPRINTS._frontend_semantic_tooling_sources(checkout).paths,
     ):
         assert all(path.is_relative_to(checkout / "src") for path in paths)
     before = (

@@ -283,15 +283,13 @@ def test_local_resolver_reuses_regular_package_prefix(
     first.write_text("VALUE = 2\n", encoding="utf-8")
     second.write_text("VALUE = 3\n", encoding="utf-8")
     checked: list[Path] = []
-    owned_path = LocalPythonModuleResolver._owned_path
+    probe_path = LocalPythonModuleResolver._probe_path
 
-    def record_owned_path(
-        self: LocalPythonModuleResolver, candidate: Path
-    ) -> Path | None:
+    def record_probe_path(self: LocalPythonModuleResolver, candidate: Path):
         checked.append(candidate)
-        return owned_path(self, candidate)
+        return probe_path(self, candidate)
 
-    monkeypatch.setattr(LocalPythonModuleResolver, "_owned_path", record_owned_path)
+    monkeypatch.setattr(LocalPythonModuleResolver, "_probe_path", record_probe_path)
     resolver = LocalPythonModuleResolver((tmp_path,))
     assert [
         source.path
@@ -322,15 +320,13 @@ def test_local_resolver_reuses_namespace_package_prefix(
     first.write_text("VALUE = 1\n", encoding="utf-8")
     second.write_text("VALUE = 2\n", encoding="utf-8")
     checked: list[Path] = []
-    owned_path = LocalPythonModuleResolver._owned_path
+    probe_path = LocalPythonModuleResolver._probe_path
 
-    def record_owned_path(
-        self: LocalPythonModuleResolver, candidate: Path
-    ) -> Path | None:
+    def record_probe_path(self: LocalPythonModuleResolver, candidate: Path):
         checked.append(candidate)
-        return owned_path(self, candidate)
+        return probe_path(self, candidate)
 
-    monkeypatch.setattr(LocalPythonModuleResolver, "_owned_path", record_owned_path)
+    monkeypatch.setattr(LocalPythonModuleResolver, "_probe_path", record_probe_path)
     resolver = LocalPythonModuleResolver(roots)
     assert resolver.source_for_module("namespace.first") == first.resolve()
     prefix_checks = tuple(checked.count(root / "namespace") for root in roots)

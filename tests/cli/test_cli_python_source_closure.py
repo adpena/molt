@@ -31,7 +31,7 @@ def test_local_python_import_closure_follows_tools_and_src_packages(
     (package / "leaf.py").write_text("from .shared import value\n", encoding="utf-8")
     (package / "shared.py").write_text("value = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (tools / "entry.py",))
+    closure = local_python_import_closure(tmp_path, (tools / "entry.py",)).paths
 
     assert {path.relative_to(tmp_path).as_posix() for path in closure} == {
         "src/demo/__init__.py",
@@ -51,7 +51,7 @@ def test_local_python_import_closure_fails_closed_on_malformed_seed(
     seed.write_text("from broken import (\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="cannot derive Python tooling import closure"):
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
 
 
 def test_tooling_import_closure_handles_deep_dynamic_import_dispatch(
@@ -70,7 +70,7 @@ def test_tooling_import_closure_handles_deep_dynamic_import_dispatch(
     seed.write_text(source, encoding="utf-8")
     payload = tmp_path / "payload.py"
     payload.write_text("VALUE = 1\n", encoding="utf-8")
-    assert local_python_import_closure(tmp_path, (seed,)) == (seed, payload)
+    assert local_python_import_closure(tmp_path, (seed,)).paths == (seed, payload)
 
 
 @pytest.mark.slow
@@ -81,10 +81,11 @@ def test_repository_wasm_linker_closure_reaches_binding_authority(
     seed = root / "tools" / "wasm_link.py"
     # Exercise the real cold consumer, not a prior successful graph projection.
     monkeypatch.setattr(graph, "_GRAPH_CACHE_RELPATH", tmp_path / "closure.json")
-    closure = local_python_import_closure(root, (seed,))
+    closure = local_python_import_closure(root, (seed,)).paths
     assert seed in closure
     assert root / "src/molt/compiler_analysis/python_binding_flow.py" in closure
     assert root / "src/molt/compiler_analysis/python_lexical_scope.py" in closure
+    assert root / "src/molt/cli/wasm_link_optimizer_policy.py" in closure
 
 
 def _relative_paths(root: Path, paths: tuple[Path, ...]) -> set[str]:
@@ -106,7 +107,7 @@ def test_importing_submodule_executes_and_traverses_parent_initializers(
     (nested / "nested_dep.py").write_text("VALUE = 2\n", encoding="utf-8")
     (nested / "leaf.py").write_text("VALUE = 3\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (tools / "entry.py",))
+    closure = local_python_import_closure(tmp_path, (tools / "entry.py",)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "src/pkg/__init__.py",
@@ -132,7 +133,7 @@ def test_nested_relative_star_and_alias_imports_resolve_to_local_sources(
         encoding="utf-8",
     )
 
-    closure = local_python_import_closure(tmp_path, (nested / "leaf.py",))
+    closure = local_python_import_closure(tmp_path, (nested / "leaf.py",)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "src/pkg/__init__.py",
@@ -149,7 +150,7 @@ def test_namespace_package_parents_do_not_require_initializer(tmp_path: Path) ->
     (tools / "entry.py").write_text("import namespace.nested.leaf\n", encoding="utf-8")
     (namespace / "leaf.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (tools / "entry.py",))
+    closure = local_python_import_closure(tmp_path, (tools / "entry.py",)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "src/namespace/nested/leaf.py",
@@ -165,7 +166,7 @@ def test_pep263_encoded_source_is_parsed_with_declared_encoding(tmp_path: Path) 
     )
     (tools / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (tools / "entry.py",))
+    closure = local_python_import_closure(tmp_path, (tools / "entry.py",)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "tools/entry.py",
@@ -185,16 +186,14 @@ def test_parent_initializer_content_is_a_link_fingerprint_input(tmp_path: Path) 
     (package / "leaf.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     closure = local_python_import_closure(tmp_path, (seed,))
-    before = hashlib.sha256(
-        b"\0".join(path.read_bytes() for path in closure)
-    ).hexdigest()
+    before = closure.content_digest
     initializer.write_text("VALUE = 9\n", encoding="utf-8")
-    after = hashlib.sha256(
-        b"\0".join(path.read_bytes() for path in closure)
-    ).hexdigest()
+    changed = local_python_import_closure(tmp_path, (seed,))
 
-    assert initializer.resolve() in closure
-    assert before != after
+    assert initializer.resolve() in closure.paths
+    assert changed.paths == closure.paths
+    assert before == closure.content_digest
+    assert before != changed.content_digest
 
 
 def test_literal_dynamic_import_forms_and_aliases_join_closure(tmp_path: Path) -> None:
@@ -214,7 +213,7 @@ def test_literal_dynamic_import_forms_and_aliases_join_closure(tmp_path: Path) -
     for name in ("first", "second", "third"):
         (package / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (tools / "entry.py",))
+    closure = local_python_import_closure(tmp_path, (tools / "entry.py",)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "src/pkg/__init__.py",
@@ -250,7 +249,7 @@ def test_assigned_and_deferred_dynamic_aliases_join_persistent_closure(
     for name in ("assigned", "module_late", "enclosing_late"):
         (package / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     paths = _relative_paths(tmp_path, closure)
     assert {
@@ -278,7 +277,7 @@ def test_nonliteral_dynamic_imports_fail_closed(tmp_path: Path, source: str) -> 
     (package / "leaf.py").write_text("VALUE = 1\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="non-literal dynamic Python import"):
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
 
 
 def test_explicit_dynamic_import_manifest_edges_join_closure(tmp_path: Path) -> None:
@@ -305,7 +304,7 @@ def test_explicit_dynamic_import_manifest_edges_join_closure(tmp_path: Path) -> 
     (package / "__init__.py").write_text("\n", encoding="utf-8")
     (package / "leaf.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "src/molt/cli/python_source_closure.toml",
@@ -334,7 +333,7 @@ def test_dynamic_import_manifest_call_count_drift_fails_closed(tmp_path: Path) -
     )
 
     with pytest.raises(ValueError, match="dynamic Python import manifest drift"):
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
 
 
 def test_persistent_graph_reparses_changed_source(tmp_path: Path) -> None:
@@ -344,10 +343,10 @@ def test_persistent_graph_reparses_changed_source(tmp_path: Path) -> None:
     seed.write_text("import first\n", encoding="utf-8")
     (tools / "first.py").write_text("VALUE = 1\n", encoding="utf-8")
     (tools / "second.py").write_text("VALUE = 2\n", encoding="utf-8")
-    local_python_import_closure(tmp_path, (seed,))
+    local_python_import_closure(tmp_path, (seed,)).paths
 
     seed.write_text("import second\n", encoding="utf-8")
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "tools/entry.py",
@@ -365,11 +364,11 @@ def test_persistent_graph_reresolves_new_submodule_without_importer_edit(
     seed = tools / "entry.py"
     seed.write_text("from pkg import feature\n", encoding="utf-8")
     (package / "__init__.py").write_text("feature = 1\n", encoding="utf-8")
-    first = local_python_import_closure(tmp_path, (seed,))
+    first = local_python_import_closure(tmp_path, (seed,)).paths
     assert "src/pkg/feature.py" not in _relative_paths(tmp_path, first)
 
     (package / "feature.py").write_text("VALUE = 2\n", encoding="utf-8")
-    second = local_python_import_closure(tmp_path, (seed,))
+    second = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert "src/pkg/feature.py" in _relative_paths(tmp_path, second)
 
@@ -385,12 +384,12 @@ def test_persistent_graph_detects_namespace_parent_becoming_regular_package(
     seed = tools / "entry.py"
     seed.write_text("import namespace.nested.leaf\n", encoding="utf-8")
     (nested / "leaf.py").write_text("VALUE = 1\n", encoding="utf-8")
-    first = local_python_import_closure(tmp_path, (seed,))
+    first = local_python_import_closure(tmp_path, (seed,)).paths
     assert "src/namespace/__init__.py" not in _relative_paths(tmp_path, first)
 
     (package / "__init__.py").write_text("from . import parent_dep\n", encoding="utf-8")
     (package / "parent_dep.py").write_text("VALUE = 2\n", encoding="utf-8")
-    second = local_python_import_closure(tmp_path, (seed,))
+    second = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert _relative_paths(tmp_path, second) >= {
         "src/namespace/__init__.py",
@@ -421,7 +420,7 @@ def test_dynamic_import_alias_shadowing_does_not_invent_edges(
     (package / "__init__.py").write_text("\n", encoding="utf-8")
     (package / "bad.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert "src/pkg/bad.py" not in _relative_paths(tmp_path, closure)
 
@@ -443,7 +442,7 @@ def test_function_local_dynamic_alias_and_keyword_arguments_join_closure(
     (package / "__init__.py").write_text("\n", encoding="utf-8")
     (package / "leaf.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert "src/pkg/leaf.py" in _relative_paths(tmp_path, closure)
 
@@ -461,7 +460,7 @@ def test_dunder_import_keyword_fromlist_joins_submodule_closure(tmp_path: Path) 
     (package / "__init__.py").write_text("\n", encoding="utf-8")
     (package / "leaf.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert "src/pkg/leaf.py" in _relative_paths(tmp_path, closure)
 
@@ -477,7 +476,7 @@ def test_dunder_import_relative_level_uses_enclosing_package(tmp_path: Path) -> 
     (package / "__init__.py").write_text("\n", encoding="utf-8")
     (package / "leaf.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert "src/pkg/leaf.py" in _relative_paths(tmp_path, closure)
 
@@ -492,7 +491,7 @@ def test_relative_dynamic_import_requires_explicit_package(tmp_path: Path) -> No
     )
 
     with pytest.raises(ValueError, match="requires a package"):
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
 
 
 def test_relative_statement_without_parent_package_fails_closed(tmp_path: Path) -> None:
@@ -502,7 +501,7 @@ def test_relative_statement_without_parent_package_fails_closed(tmp_path: Path) 
     seed.write_text("from . import leaf\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="no known parent package"):
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
 
 
 def test_same_root_package_precedes_same_named_module(tmp_path: Path) -> None:
@@ -515,7 +514,7 @@ def test_same_root_package_precedes_same_named_module(tmp_path: Path) -> None:
     (tmp_path / "src" / "dual.py").write_text("MODULE = True\n", encoding="utf-8")
     (package / "__init__.py").write_text("PACKAGE = True\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     paths = _relative_paths(tmp_path, closure)
     assert "src/dual/__init__.py" in paths
@@ -532,7 +531,7 @@ def test_explicit_search_root_order_matches_sys_path_precedence(tmp_path: Path) 
     (tools / "shared.py").write_text("OWNER = 'tools'\n", encoding="utf-8")
     (src / "shared.py").write_text("OWNER = 'src'\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     paths = _relative_paths(tmp_path, closure)
     assert "tools/shared.py" in paths
@@ -552,7 +551,7 @@ def test_earlier_module_shadows_later_package_for_child_import(tmp_path: Path) -
     )
     (later_package / "child.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert _relative_paths(tmp_path, closure) == {"tools/entry.py", "tools/pkg.py"}
 
@@ -572,7 +571,7 @@ def test_earlier_regular_package_blocks_later_namespace_portion(
     )
     (later_namespace / "later.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "tools/entry.py",
@@ -598,7 +597,7 @@ def test_later_regular_package_supersedes_earlier_namespace_portions(
     )
     (later_package / "child.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "src/pkg/__init__.py",
@@ -619,7 +618,7 @@ def test_subpackage_precedes_same_location_submodule(tmp_path: Path) -> None:
     (package / "item.py").write_text("OWNER = 'module'\n", encoding="utf-8")
     (subpackage / "__init__.py").write_text("OWNER = 'subpackage'\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
     paths = _relative_paths(tmp_path, closure)
 
     assert "src/pkg/item/__init__.py" in paths
@@ -636,7 +635,8 @@ def test_concurrent_graph_cache_publication_is_atomic(tmp_path: Path) -> None:
     with ThreadPoolExecutor(max_workers=8) as pool:
         closures = list(
             pool.map(
-                lambda _index: local_python_import_closure(tmp_path, (seed,)), range(32)
+                lambda _index: local_python_import_closure(tmp_path, (seed,)).paths,
+                range(32),
             )
         )
 
@@ -660,7 +660,7 @@ def test_non_mapping_graph_cache_is_ignored_and_replaced(tmp_path: Path) -> None
     (tools / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
     cache_path.write_text("[]\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "tools/entry.py",
@@ -699,7 +699,7 @@ def test_grouped_fromlist_graph_preserves_distinct_consumer_policies(
     # Both orders, including persistent cache hits, must retain the independent
     # owner fallback for an attribute beside a successfully resolved submodule.
     for policy in (*policies, *policies):
-        paths = set(local_python_import_closure(tmp_path, (seed,), policy=policy))
+        paths = set(local_python_import_closure(tmp_path, (seed,), policy=policy).paths)
         expected = {seed, child}
         if policy.include_parent_packages or include_attribute:
             expected.update((initializer, aggregate))
@@ -720,7 +720,7 @@ def test_transitive_dynamic_import_diagnostic_survives_cached_importer(
     seed.write_text("import helper\n", encoding="utf-8")
     helper.write_text("VALUE = 1\n", encoding="utf-8")
     if warm:
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
     helper.write_text(
         "import importlib\nimportlib.import_module(name)\n", encoding="utf-8"
     )
@@ -733,7 +733,7 @@ def test_transitive_dynamic_import_diagnostic_survives_cached_importer(
 
     monkeypatch.setattr(graph, "analyze_local_imports", record)
     with pytest.raises(ValueError, match="non-literal dynamic Python import") as exc:
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
     assert str(helper) + ":2:0" in str(exc.value)
     assert (seed in analyzed) == (not warm)
 
@@ -749,10 +749,10 @@ def test_lowering_cached_graph_cannot_hide_executable_dynamic_diagnostic(
     assert set(
         local_python_import_closure(
             tmp_path, (seed,), policy=PythonImportPolicy(True, False, False)
-        )
+        ).paths
     ) == {seed, helper}
     with pytest.raises(ValueError, match="non-literal dynamic Python import") as exc:
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
     assert str(helper) + ":2:4" in str(exc.value)
 
 
@@ -779,14 +779,14 @@ def test_source_capture_keys_and_parses_the_same_byte_generation(
     monkeypatch.setattr(
         graph.LocalPythonModuleResolver, "capture_source", capture_then_edit
     )
-    assert set(local_python_import_closure(tmp_path, (seed,))) == {seed, first}
+    assert set(local_python_import_closure(tmp_path, (seed,)).paths) == {seed, first}
     assert captures.count(seed) == 1
     cache = json.loads(
         (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
     )
     row = next(iter(cache["entries"]["tools/entry.py"].values()))
     assert row["source_sha256"] == hashlib.sha256(original).hexdigest()
-    assert set(local_python_import_closure(tmp_path, (seed,))) == {seed, later}
+    assert set(local_python_import_closure(tmp_path, (seed,)).paths) == {seed, later}
 
 
 def test_graph_replaces_contract_generations_and_prunes_deleted_sources(
@@ -806,9 +806,9 @@ def test_graph_replaces_contract_generations_and_prunes_deleted_sources(
             f"nonliteral_calls = 1\nmodules = ['{target}']\n",
             encoding="utf-8",
         )
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
     first.unlink()
-    local_python_import_closure(tmp_path, (seed,))
+    local_python_import_closure(tmp_path, (seed,)).paths
     cache = json.loads(
         (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
     )
@@ -823,7 +823,7 @@ def test_graph_replaces_contract_generations_and_prunes_deleted_sources(
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="manifest drift"):
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
 
 
 def test_graph_reparses_after_parser_or_binding_authority_change(
@@ -833,7 +833,7 @@ def test_graph_reparses_after_parser_or_binding_authority_change(
     tools.mkdir()
     seed = tools / "entry.py"
     seed.write_text("VALUE = 1\n", encoding="utf-8")
-    local_python_import_closure(tmp_path, (seed,))
+    local_python_import_closure(tmp_path, (seed,)).paths
     identity = graph.local_import_analysis_identity()
     monkeypatch.setattr(
         graph,
@@ -848,7 +848,7 @@ def test_graph_reparses_after_parser_or_binding_authority_change(
         return analyze(snapshot, *args, **kwargs)
 
     monkeypatch.setattr(graph, "analyze_local_imports", record)
-    local_python_import_closure(tmp_path, (seed,))
+    local_python_import_closure(tmp_path, (seed,)).paths
     assert analyzed == [seed]
     cache = json.loads(
         (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
@@ -874,7 +874,7 @@ def test_static_import_syntax_family_closes_over_all_named_modules(
     for name in ("alpha", "beta", "gamma", "delta"):
         (package / f"{name}.py").write_text(f"NAME = {name!r}\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
     paths = _relative_paths(tmp_path, closure)
 
     assert {
@@ -901,7 +901,7 @@ def test_all_valid_relative_levels_resolve_and_beyond_top_fails(tmp_path: Path) 
         encoding="utf-8",
     )
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
     paths = _relative_paths(tmp_path, closure)
     assert {
         "src/pkg/root_leaf.py",
@@ -911,7 +911,7 @@ def test_all_valid_relative_levels_resolve_and_beyond_top_fails(tmp_path: Path) 
 
     seed.write_text("from .... import escaped\n", encoding="utf-8")
     with pytest.raises(ValueError, match="escapes local package"):
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
 
 
 def test_namespace_package_portions_span_ordered_search_roots(tmp_path: Path) -> None:
@@ -928,7 +928,7 @@ def test_namespace_package_portions_span_ordered_search_roots(tmp_path: Path) ->
     )
     (src / "namespace" / "src_leaf.py").write_text("OWNER = 'src'\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
 
     assert _relative_paths(tmp_path, closure) == {
         "tools/entry.py",
@@ -955,7 +955,7 @@ def test_non_source_module_shapes_are_not_claimed_as_python_source(
     (package / "native.pyd").write_bytes(b"not-a-real-extension")
     (cache / "cached.py").write_text("VALUE = 2\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
     paths = _relative_paths(tmp_path, closure)
 
     assert "src/pkg/real.py" in paths
@@ -983,7 +983,7 @@ def test_conditional_try_function_class_and_cycle_imports_are_closed(
         (package / f"{name}.py").write_text("import pkg.cycle\n", encoding="utf-8")
     (package / "cycle.py").write_text("import pkg.primary\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
     paths = _relative_paths(tmp_path, closure)
 
     assert {
@@ -1012,7 +1012,7 @@ def test_seed_symlink_cannot_escape_project_authority(tmp_path: Path) -> None:
         pytest.skip(f"symlink creation unavailable: {exc}")
 
     with pytest.raises(ValueError, match="outside project root"):
-        local_python_import_closure(root, (seed,))
+        local_python_import_closure(root, (seed,)).paths
 
 
 def test_module_name_case_resolution_follows_host_filesystem(tmp_path: Path) -> None:
@@ -1024,7 +1024,7 @@ def test_module_name_case_resolution_follows_host_filesystem(tmp_path: Path) -> 
     seed.write_text("import mixedcase\n", encoding="utf-8")
     (src / "MixedCase.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    closure = local_python_import_closure(tmp_path, (seed,))
+    closure = local_python_import_closure(tmp_path, (seed,)).paths
     resolved = "src/MixedCase.py" in _relative_paths(tmp_path, closure)
 
     assert resolved is (
@@ -1039,7 +1039,7 @@ def test_dynamic_module_name_with_path_separator_fails_closed(tmp_path: Path) ->
     seed.write_text("__import__('../outside')\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="invalid local Python module name"):
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
 
 
 @pytest.mark.parametrize(
@@ -1060,7 +1060,7 @@ def test_invalid_dunder_import_levels_fail_closed(
     seed.write_text(source, encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
 
 
 @pytest.mark.parametrize("host_version", [(3, 12), (3, 13), (3, 14)])
@@ -1093,12 +1093,12 @@ def test_graph_binding_policy_and_identity_share_host_source_semantics(
         return analyze(tree, source_digest=source_digest, policy=policy)
 
     monkeypatch.setattr(resolution, "analyze_python_bindings", record)
-    assert leaf in local_python_import_closure(tmp_path, (seed,))
+    assert leaf in local_python_import_closure(tmp_path, (seed,)).paths
     assert policies
     assert all(policy.target_python == host_version for policy in policies)
     assert graph.local_import_analysis_identity()[-1]["target_python"] == host_version
     cold_count = len(policies)
-    assert leaf in local_python_import_closure(tmp_path, (seed,))
+    assert leaf in local_python_import_closure(tmp_path, (seed,)).paths
     assert len(policies) == cold_count
 
 
@@ -1112,13 +1112,13 @@ def test_canonical_tools_import_keeps_relative_package_context(tmp_path: Path) -
     helper.write_text("from . import child\n", encoding="utf-8")
     child.write_text("VALUE = 1\n", encoding="utf-8")
     expected = {seed, helper, child}
-    assert set(local_python_import_closure(tmp_path, (seed,))) == expected
-    assert set(local_python_import_closure(tmp_path, (seed,))) == expected
+    assert set(local_python_import_closure(tmp_path, (seed,)).paths) == expected
+    assert set(local_python_import_closure(tmp_path, (seed,)).paths) == expected
     # A source that is valid as tools.helper cannot lend its package context to
     # the same bytes imported as the top-level helper module, even on a warm hit.
     seed.write_text("import tools.helper\nimport helper\n", encoding="utf-8")
     with pytest.raises(ValueError, match="no known parent package"):
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
 
 
 def test_namespace_leaf_retains_regular_ancestor_initializers(tmp_path: Path) -> None:
@@ -1132,7 +1132,7 @@ def test_namespace_leaf_retains_regular_ancestor_initializers(tmp_path: Path) ->
     initializer.write_text("from . import boot\n", encoding="utf-8")
     boot = package / "boot.py"
     boot.write_text("VALUE = 1\n", encoding="utf-8")
-    assert set(local_python_import_closure(tmp_path, (seed,))) == {
+    assert set(local_python_import_closure(tmp_path, (seed,)).paths) == {
         seed,
         initializer,
         boot,
@@ -1159,7 +1159,7 @@ def test_manifest_tool_package_tree_preserves_declared_qualified_names(
         encoding="utf-8",
     )
     assert {helper, dependency, manifest} <= set(
-        local_python_import_closure(tmp_path, (seed,))
+        local_python_import_closure(tmp_path, (seed,)).paths
     )
 
 
@@ -1192,11 +1192,11 @@ def test_import_alias_contexts_share_bytes_not_analysis(
 
     monkeypatch.setattr(LocalPythonModuleResolver, "capture_source", record_capture)
     monkeypatch.setattr(graph, "analyze_local_imports", record_analysis)
-    assert child in local_python_import_closure(tmp_path, (seed,))
+    assert child in local_python_import_closure(tmp_path, (seed,)).paths
     assert set(contexts) == {"pkg.helper", "tools.pkg.helper"}
     assert captures.count(helper) == 1
     cache = json.loads((tmp_path / graph._GRAPH_CACHE_RELPATH).read_text())
     assert len(cache["entries"]["tools/pkg/helper.py"]) == 2
     contexts.clear()
-    assert child in local_python_import_closure(tmp_path, (seed,))
+    assert child in local_python_import_closure(tmp_path, (seed,)).paths
     assert contexts == []

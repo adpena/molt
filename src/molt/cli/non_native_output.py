@@ -1139,7 +1139,7 @@ def _prepare_non_native_build_result(
             )
             stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
             try:
-                link_tool_sources = local_python_import_closure(molt_root, (tool,))
+                link_tool_closure = local_python_import_closure(molt_root, (tool,))
                 deploy_asset_root = molt_root / "wasm"
                 browser_deploy_sources = (
                     (
@@ -1171,12 +1171,17 @@ def _prepare_non_native_build_result(
                         if _split_runtime and runtime_wasm is not None
                         else ()
                     ),
-                    *link_tool_sources,
                     *browser_deploy_sources,
                     *external_native_fingerprint_inputs,
                     app_export_contract_path,
                 ],
                 link_cmd=link_cmd,
+                tool_facts=(
+                    {
+                        "role": "wasm-link-source-closure",
+                        "content_digest": link_tool_closure.content_digest,
+                    },
+                ),
                 stored_fingerprint=stored_link_fingerprint,
             )
             link_skipped = not _artifact_needs_rebuild(

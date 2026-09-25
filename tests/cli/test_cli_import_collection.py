@@ -3,6 +3,7 @@ from __future__ import annotations
 from molt.cli import wasm_link_inputs
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+from molt.cli.python_source_closure import LocalPythonSourceClosure
 
 import ast
 import builtins as py_builtins
@@ -21764,7 +21765,12 @@ def _install_fake_wasm_link_runner(
     monkeypatch.setattr(
         cli_non_native_output,
         "local_python_import_closure",
-        lambda _root, _entries: (),
+        lambda _root, _entries: LocalPythonSourceClosure(
+            paths=(),
+            source_sha256={},
+            content_digest=hashlib.sha256(b"").hexdigest(),
+            source_bytes=0,
+        ),
     )
     monkeypatch.setattr(
         cli_non_native_output,
@@ -21823,6 +21829,36 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     link_calls: list[list[str]] = []
 
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    closure_digest = ["captured-tooling-generation-one"]
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "local_python_import_closure",
+        lambda _root, _entries: LocalPythonSourceClosure(
+            paths=(wasm_link,),
+            source_sha256={wasm_link: "captured-source-hash"},
+            content_digest=closure_digest[0],
+            source_bytes=len(b"# linker\n"),
+        ),
+    )
+    fingerprints: list[dict[str, Any]] = []
+    real_link_fingerprint = cli_link_pipeline._link_fingerprint
+
+    def capture_link_fingerprint(**kwargs: Any) -> dict[str, Any]:
+        assert wasm_link not in kwargs["inputs"]
+        assert kwargs["tool_facts"] == (
+            {
+                "role": "wasm-link-source-closure",
+                "content_digest": closure_digest[0],
+            },
+        )
+        result = real_link_fingerprint(**kwargs)
+        assert result is not None
+        fingerprints.append(result)
+        return result
+
+    monkeypatch.setattr(
+        cli_link_pipeline, "_link_fingerprint", capture_link_fingerprint
+    )
     monkeypatch.setattr(
         cli_non_native_output, "_validate_wasm_structural", lambda path: None
     )
@@ -21896,6 +21932,18 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert len(link_calls) == 1
     # A skipped relink runs no link, so it claims no link phase.
     assert "wasm_link" not in second_phase_starts
+
+    # Byte-generation identity belongs to metadata, so unchanged binary inputs
+    # cannot reuse a link built by different captured compiler tooling.
+    closure_digest[0] = "captured-tooling-generation-two"
+    third, third_err = cli_non_native_output._prepare_non_native_build_result(
+        **common_kwargs
+    )
+    assert third_err is None and third is not None
+    assert len(link_calls) == 2
+    assert fingerprints[0]["inputs_digest"] == fingerprints[2]["inputs_digest"]
+    assert fingerprints[0]["meta_digest"] != fingerprints[2]["meta_digest"]
+    assert fingerprints[0]["hash"] != fingerprints[2]["hash"]
 
 
 def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_linked_wasm(
