@@ -205,6 +205,16 @@ profile inherit `dev`; release-derived profiles and isolated workspaces do not.
 Do not mirror dependency lists or implement another profile resolver in tooling.
 Cargo input/cache identity includes the complete root manifest.
 
+Compiler implementation crates extracted from `molt-backend` retain its
+development policy (`opt-level = 1`, `debug = 0`), including the shared IR,
+optimization passes, codegen ABI, publication, and native/WASM/text backends.
+The named overrides live only in the root `dev` profile and are checked by
+`tests/cli/test_backend_manifest_contract.py`; do not duplicate them in
+`dev-fast` or infer them from crate-name prefixes. New independent crates and
+excluded workspaces need their own measured policy, not automatic inclusion.
+Shared compiler crates can also serve runtime and host consumers, so verify
+those consumers when changing their profile policy.
+
 Debuginfo, optimization, debug assertions, and overflow checks are separate
 settings. Dependency `debug = 0` does not disable assertions or overflow checks,
 but Cargo also projects debuginfo into build scripts' `DEBUG` environment input.

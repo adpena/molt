@@ -181,6 +181,12 @@ def test_workspace_dev_dependency_wildcard_preserves_workspace_policy() -> None:
         "molt-backend-native": {"opt-level": 1, "debug": 0},
         "molt-backend-luau": {"opt-level": 1, "debug": 0},
         "molt-backend-rust": {"opt-level": 1, "debug": 0},
+        "molt-backend-wasm": {"opt-level": 1, "debug": 0},
+        "molt-tir": {"opt-level": 1, "debug": 0},
+        "molt-passes": {"opt-level": 1, "debug": 0},
+        "molt-ir": {"opt-level": 1, "debug": 0},
+        "molt-codegen-abi": {"opt-level": 1, "debug": 0},
+        "molt-artifact-publish": {"opt-level": 1, "debug": 0},
         "molt-runtime": {"opt-level": 2, "debug": 0},
     }
     assert expected_hot_members.keys() <= workspace_names
