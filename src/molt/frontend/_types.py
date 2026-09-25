@@ -1305,7 +1305,7 @@ MOLT_DIRECT_CALLS = {
         "isgeneratorfunction",
         "signature",
     },
-    "io": {"open", "stream"},
+    "io": {"open"},
     "os": {"getenv", "unlink"},
     "pprint": {"pformat", "pprint"},
     "string": {"capwords"},

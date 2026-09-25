@@ -68,12 +68,26 @@ def test_build_slot_dir_prefers_ext_root(monkeypatch, tmp_path: Path):
 def test_build_slot_acquires_cross_platform_lock(monkeypatch, tmp_path: Path):
     from molt.cli import cargo_execution
 
-    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "tmp"))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "guest-output"))
     monkeypatch.setenv("MOLT_MAX_CONCURRENT_BUILDS", "1")
 
     with cargo_execution._build_slot() as slot:
         assert slot == 0
         assert (tmp_path / "tmp" / "molt-build-slots" / "slot-0.lock").exists()
+
+
+def test_build_slot_ignores_diff_payload_tmp_without_artifact_root(
+    monkeypatch, tmp_path: Path
+):
+    from molt.cli import cargo_execution
+
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "guest"))
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "control"))
+    assert (
+        cargo_execution._build_slot_dir() == tmp_path / "control" / "molt-build-slots"
+    )
 
 
 def test_build_lock_creates_cross_platform_lock_file(monkeypatch, tmp_path: Path):

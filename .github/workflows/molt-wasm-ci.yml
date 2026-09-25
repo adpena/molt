@@ -77,6 +77,11 @@ jobs:
           profile: wasm
           wasi: "true"
 
+      - name: Resolve build-control evidence custody
+        id: build-control
+        run: |
+          uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
+
       - name: Execute WASM, Luau, and parity partitions
         run: python3 tools/proof_plan.py --run-family wasm --receipt proof-receipts/wasm.json
 
@@ -87,8 +92,8 @@ jobs:
           name: proof-receipt-wasm
           path: |
             proof-receipts/wasm.json
-            ${{ env.CARGO_TARGET_DIR }}/.molt_state/build_failures/*.json
-            ${{ env.CARGO_TARGET_DIR }}/.molt_state/runtime_wasm_generations/*.json
+            ${{ steps.build-control.outputs.root }}/build_failures/*.json
+            ${{ steps.build-control.outputs.root }}/runtime_wasm_generations/*.json
             /tmp/molt-ext/wasm/*.json
           if-no-files-found: error
           include-hidden-files: true

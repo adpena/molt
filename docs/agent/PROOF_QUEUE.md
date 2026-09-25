@@ -157,6 +157,23 @@ lifecycle, not a rewrite of the proof result.
 
 ### Cargo output placement
 
+Differential guest placement is distinct from proof receipt custody. An
+explicit `MOLT_DIFF_GUEST_OUTPUT_ROOT` selects an existing physical directory
+for native/CPython temporary output, Cargo target and linked-WASM/LLVM/Luau
+adapter scratch. The harness captures its directory identity once, validates
+the selected volume against the existing build-capacity floor and refuses
+replacement or an escaped child environment. `MOLT_DIFF_ROOT`, guard events,
+results, failures and logs remain on the canonical artifact root. Shared
+build/daemon/run/slot locks are target-addressed under that canonical root;
+they do not follow a per-run receipt root or guest temporary directory.
+Fresh adapter leaves retire through exact owned-path custody unless
+`MOLT_DIFF_KEEP` intentionally preserves them. Cleanup failures retain the
+guest result and use the infrastructure-failure channel, never semantic
+comparison or expected-failure masking. Inherited explicit output selectors
+must agree with the selected root; remove conflicting selectors before admission.
+Without selection, existing
+cross-platform payload placement remains unchanged; no drive is auto-selected.
+
 Physical build storage and proof evidence are separate authorities. Use
 `--cargo-output-root` (submission field `cargo_output_root`) to select an existing
 absolute output directory for a Cargo proof. The selection is frozen at

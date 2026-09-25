@@ -3,12 +3,13 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
 
-import molt.dx as molt_dx
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,12 +121,33 @@ def test_bench_individual_can_opt_into_cold_daemon_isolation(
     assert cleanups == 1
 
 
+@pytest.fixture
+def daemon_control_environment(tmp_path: Path, monkeypatch) -> None:
+    for name in (
+        "MOLT_BUILD_STATE_DIR",
+        "MOLT_DIFF_GUEST_OUTPUT_ROOT",
+        "MOLT_DIFF_GUEST_OUTPUT_IDENTITY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in {
+        "MOLT_SESSION_ID": "alpha-session",
+        "CARGO_TARGET_DIR": str(tmp_path / "target"),
+        "MOLT_EXT_ROOT": str(tmp_path / "canonical"),
+    }.items():
+        monkeypatch.setenv(name, value)
+
+
 def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, daemon_control_environment
 ) -> None:
     bench = _load_bench_individual()
-    target = tmp_path / "target"
-    daemon_root = target / ".molt_state" / "backend_daemon"
+    environment = bench.harness_memory_guard.canonical_harness_env(
+        os.environ, repo_root=ROOT
+    )
+    daemon_root = bench.daemon_custody.backend_daemon_root_from_env(
+        environment, project_root=ROOT
+    )
+    assert daemon_root.is_relative_to(tmp_path / "canonical" / "tmp" / "build-control")
     daemon_root.mkdir(parents=True)
     owned_socket = tmp_path / "owned.sock"
     foreign_socket = tmp_path / "foreign.sock"
@@ -164,22 +186,23 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
     )
     killed: list[int] = []
 
-    def fake_ps(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        assert cmd == ["ps", "-axo", "pid=,etimes=,command="]
-        stdout = "\n".join(
-            [
-                f" 101 120 /repo/target/molt-backend --daemon --socket {owned_socket}",
-                f" 202 240 /repo/target/molt-backend --daemon --socket {foreign_socket}",
-                " 303 300 /repo/target/molt-backend --not-daemon",
+    def fake_processes():
+        # Session custody is platform-neutral; enumeration is the OS boundary.
+        return [
+            bench.BackendDaemonProcess(
+                pid=pid,
+                elapsed_sec=elapsed,
+                socket_path=socket,
+                command=f"/repo/target/molt-backend --daemon --socket {socket}",
+            )
+            for pid, elapsed, socket in [
+                (101, 120, owned_socket),
+                (202, 240, foreign_socket),
             ]
-        )
-        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+        ]
 
-    monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
     monkeypatch.setattr(bench, "BENCH_TMP_ROOT", tmp_path / "bench-tmp")
-    monkeypatch.setattr(bench, "_guarded_bench_process", fake_ps)
+    monkeypatch.setattr(bench, "_list_backend_daemon_processes", fake_processes)
 
     def fake_terminate(identity, *, grace: float = 0.75, health_probe=None) -> bool:
         del grace, health_probe
@@ -209,31 +232,39 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
 
 
 def test_bench_individual_isolate_daemon_requires_identity_not_socket_env(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, daemon_control_environment
 ) -> None:
     bench = _load_bench_individual()
-    target = tmp_path / "target"
-    (target / ".molt_state" / "backend_daemon").mkdir(parents=True)
+    environment = bench.harness_memory_guard.canonical_harness_env(
+        os.environ, repo_root=ROOT
+    )
+    daemon_root = bench.daemon_custody.backend_daemon_root_from_env(
+        environment, project_root=ROOT
+    )
+    assert daemon_root.is_relative_to(tmp_path / "canonical" / "tmp" / "build-control")
+    daemon_root.mkdir(parents=True)
     socket_path = tmp_path / "loose.sock"
     socket_path.write_text("", encoding="utf-8")
     killed: list[int] = []
 
-    def fake_ps(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        assert cmd == ["ps", "-axo", "pid=,etimes=,command="]
-        stdout = f" 404 120 /repo/target/molt-backend --daemon --socket {socket_path}\n"
-        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+    def fake_processes():
+        return [
+            bench.BackendDaemonProcess(
+                pid=404,
+                elapsed_sec=120,
+                socket_path=socket_path,
+                command=f"/repo/target/molt-backend --daemon --socket {socket_path}",
+            )
+        ]
 
     def fake_terminate(identity, *, grace: float = 0.75, health_probe=None) -> bool:
         del grace, health_probe
         killed.append(identity.pid)
         return True
 
-    monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
     monkeypatch.setenv("MOLT_BACKEND_DAEMON_SOCKET", str(socket_path))
     monkeypatch.setattr(bench, "BENCH_TMP_ROOT", tmp_path / "bench-tmp")
-    monkeypatch.setattr(bench, "_guarded_bench_process", fake_ps)
+    monkeypatch.setattr(bench, "_list_backend_daemon_processes", fake_processes)
     monkeypatch.setattr(
         bench.daemon_custody,
         "terminate_backend_daemon_identity",
@@ -427,7 +458,7 @@ def test_bench_individual_custom_same_basename_keeps_cpython_reference(
 
 
 def test_bench_individual_process_helpers_use_molt_bench_guard(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, daemon_control_environment
 ) -> None:
     bench = _load_bench_individual()
     binary = tmp_path / "bench_molt"
@@ -453,21 +484,6 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
         fake_guarded_completed_process,
     )
     monkeypatch.setenv("MOLT_SESSION_ID", "caller-session")
-    # Pin MOLT_EXT_ROOT to its repo-local fallback so the assertions below stay
-    # deterministic on developer hosts that have an external (non-C:) artifact
-    # drive attached; canonical_harness_env() prefers an external root whenever
-    # one is available.
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    for key in (
-        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
-        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-        "MOLT_USE_EXTERNAL_ARTIFACTS",
-        "MOLT_EXTERNAL_ARTIFACT_ROOTS",
-        "MOLT_EXTERNAL_ARTIFACT_CANDIDATES",
-        "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _root, _env: ())
 
     built_binary, build_s, build_err = bench.molt_build(
         str(script),
@@ -492,13 +508,8 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
     assert calls[0]["timeout"] == 3.0
     assert calls[0]["cmd"][:4] == [sys.executable, "-m", "molt.cli", "build"]
     assert calls[0]["cwd"] == bench.REPO_ROOT
-    assert calls[0]["env"]["MOLT_EXT_ROOT"] == str(bench.REPO_ROOT)
-    assert calls[0]["env"]["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(
-            bench.REPO_ROOT,
-            calls[0]["env"]["MOLT_SESSION_ID"],
-        )
-    )
+    assert calls[0]["env"]["MOLT_EXT_ROOT"] == str(tmp_path / "canonical")
+    assert calls[0]["env"]["CARGO_TARGET_DIR"] == str(tmp_path / "target")
     assert calls[0]["env"]["MOLT_SESSION_ID"] == "caller-session"
     assert calls[0]["env"]["PYTHONPATH"] == str(bench.REPO_ROOT / "src")
     assert calls[1]["timeout"] == 4.0

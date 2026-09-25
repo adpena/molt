@@ -48,9 +48,6 @@ def test_load_1m_reads_first_component_when_available(monkeypatch) -> None:
     assert compile_governor._load_1m() == pytest.approx(1.5)
 
 
-@pytest.mark.skipif(
-    compile_governor.fcntl is None, reason="compile governor slots require posix flock"
-)
 def test_compile_slot_allows_high_load_with_available_slot(
     tmp_path: Path,
     monkeypatch,
@@ -68,9 +65,6 @@ def test_compile_slot_allows_high_load_with_available_slot(
         assert lease.slot_index == 0
 
 
-@pytest.mark.skipif(
-    compile_governor.fcntl is None, reason="compile governor slots require posix flock"
-)
 def test_compile_slot_enforces_single_slot(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(compile_governor, "_count_active_compile_processes", lambda: 0)
     monkeypatch.setattr(compile_governor, "_load_1m", lambda: 0.0)
@@ -103,6 +97,33 @@ def test_compile_slot_can_be_disabled(tmp_path: Path) -> None:
     lease.release()
 
 
+def test_compile_slot_propagates_lock_io_failure(tmp_path, monkeypatch) -> None:
+    def denied(_path):
+        raise PermissionError("unwritable control root")
+
+    monkeypatch.setattr(compile_governor, "_try_acquire_file_lock", denied)
+    with pytest.raises(PermissionError, match="unwritable control root"):
+        compile_governor._try_acquire_slot(tmp_path, max_slots=1)
+
+
+def test_compile_slot_releases_after_exception(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        compile_governor, "_count_active_compile_processes", lambda: None
+    )
+    monkeypatch.setattr(compile_governor, "_load_1m", lambda: None)
+    env = {
+        "MOLT_COMPILE_GUARD_DIR": str(tmp_path / "guard"),
+        "MOLT_COMPILE_GUARD_MAX_SLOTS": "1",
+        "MOLT_COMPILE_GUARD_WAIT_SEC": "0",
+    }
+    with pytest.raises(ValueError, match="body failure"):
+        with compile_governor.compile_slot(env=env, label="failure"):
+            raise ValueError("body failure")
+    with compile_governor.compile_slot(env=env, label="after-failure") as lease:
+        assert lease.slot_index == 0
+    lease.release()  # Terminal release is idempotent.
+
+
 def test_guard_root_defaults_to_repo_target_state(monkeypatch) -> None:
     for key in ("MOLT_COMPILE_GUARD_DIR", "CARGO_TARGET_DIR", "MOLT_EXT_ROOT"):
         monkeypatch.delenv(key, raising=False)
@@ -128,13 +149,45 @@ def test_guard_root_prefers_explicit_and_repo_canonical_overrides(
     assert compile_governor._guard_root(env) == explicit_guard
 
     env.pop("MOLT_COMPILE_GUARD_DIR")
+    project = Path(compile_governor.__file__).resolve().parents[1]
     assert compile_governor._guard_root(env) == (
-        cargo_target_dir / ".molt_state" / "compile_guard"
+        compile_governor.build_state_root(
+            project_root=project, cargo_target=cargo_target_dir, environment=env
+        )
+        / "compile_guard"
     )
 
     env.pop("CARGO_TARGET_DIR")
     assert compile_governor._guard_root(env) == (
-        ext_root / "target" / ".molt_state" / "compile_guard"
+        compile_governor.build_state_root(
+            project_root=project, cargo_target=project / "target", environment=env
+        )
+        / "compile_guard"
+    )
+
+
+def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
+    tmp_path: Path,
+) -> None:
+    from molt.backend_daemon_custody import backend_daemon_build_state_root_from_env
+    from molt.cli.runtime_paths import _build_state_root_cached
+
+    project = Path(compile_governor.__file__).resolve().parents[1]
+    artifact = tmp_path / "canonical"
+    env = {"MOLT_EXT_ROOT": str(artifact), "MOLT_SESSION_ID": "alpha"}
+    target = project / "target" / "sessions" / "alpha"
+    expected = compile_governor.build_state_root(
+        project_root=project, cargo_target=target, environment=env
+    )
+    assert compile_governor._guard_root(env) == expected / "compile_guard"
+    assert (
+        backend_daemon_build_state_root_from_env(env, project_root=project) == expected
+    )
+    assert (
+        _build_state_root_cached(
+            str(project), None, None, str(project), "alpha", str(artifact)
+        )
+        == expected
     )
 
 
@@ -163,9 +216,6 @@ def test_compile_slot_defaults_use_resource_pressure_plan(monkeypatch) -> None:
     assert compile_governor._max_slots_from_env(env, plan=pressure_plan) == 4
 
 
-@pytest.mark.skipif(
-    compile_governor.fcntl is None, reason="compile governor slots require posix flock"
-)
 def test_compile_slot_waits_for_active_process_budget(
     tmp_path: Path,
     monkeypatch,

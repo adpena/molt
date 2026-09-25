@@ -6,13 +6,15 @@
 ## Policy
 - Compiled binaries must not execute Python stdlib implementations.
 - Every stdlib module must be backed by Rust intrinsics (Python files are allowed only as thin, intrinsic-forwarding wrappers).
-- Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
+- Modules without intrinsic implementation or proven intrinsic-owned support are forbidden in compiled builds and must raise immediately until fully lowered.
+- Pure private forwarding facades inherit support only from all resolved intrinsic implementation owners; forwarding cycles alone cannot establish support. This classification is not runtime conformance evidence.
+- Each audit scan reports all failed gates. `--json-out` preserves diagnostics on failure and marks incomplete analysis explicitly; `--update-doc` publishes this document only after all gates pass.
 
 ## Progress Summary (Generated)
-- Total audited modules: `890`
+- Total audited modules: `881`
 - `intrinsic-backed`: `41`
-- `intrinsic-partial`: `845`
-- `intrinsic-support`: `4`
+- `intrinsic-partial`: `837`
+- `intrinsic-support`: `3`
 - `policy-gate`: `0`
 - `probe-only`: `0`
 - `python-only`: `0`
@@ -220,7 +222,6 @@
 - `_uuid`
 - `_warnings`
 - `_weakref`
-- `_weakrefset`
 - `_winapi`
 - `_wmi`
 - `_zoneinfo`
@@ -821,13 +822,6 @@
 - `textwrap`
 - `threading`
 - `timeit`
-- `tinygrad`
-- `tinygrad.device`
-- `tinygrad.dtypes`
-- `tinygrad.lazy`
-- `tinygrad.nn`
-- `tinygrad.realize`
-- `tinygrad.tensor`
 - `tkinter`
 - `tkinter.__main__`
 - `tkinter._support`
@@ -952,11 +946,10 @@
 - `zoneinfo._tzpath`
 - `zoneinfo._zoneinfo`
 
-### Intrinsic-owned private support fragments
+### Intrinsic-owned private support fragments and facades
 - `_pyio_text`
+- `_weakrefset`
 - `asyncio._debug`
-- `unittest._mock_autospec`
-- `unittest._mock_patch`
 
 ### Fail-closed policy-gate modules
 
@@ -1005,7 +998,7 @@
 
 ## Full-Coverage Attestation Rule
 - Global rule: any module/submodule not explicitly attested as full CPython 3.12+ API/PEP coverage is classified as `intrinsic-partial`.
-- Private `intrinsic-support` fragments are owned implementation fragments of an intrinsic-backed module and are excluded from public full-coverage attestation units.
+- Private `intrinsic-support` modules are owned implementation fragments or proven pure forwarding facades of intrinsic implementations; they are not public full-coverage attestations.
 - Attestation source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_FULLY_COVERED_MODULES`).
 - Full-coverage intrinsic contract source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_REQUIRED_INTRINSICS_BY_MODULE`).
 - Gate rule: each attested full-coverage module must stay `intrinsic-backed`, declare its required intrinsic set, and wire every declared intrinsic in-module.

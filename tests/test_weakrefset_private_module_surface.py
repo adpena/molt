@@ -10,43 +10,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
 import types
 
 
 class WeakSet:
-    def __init__(self, items=()):
-        self._items = list(items)
-
-    def __len__(self):
-        return len(self._items)
+    pass
 
 
 _fake_weakref = types.ModuleType("weakref")
 _fake_weakref.WeakSet = WeakSet
 sys.modules["weakref"] = _fake_weakref
-
-builtins._molt_intrinsics = {{
-    "molt_weakset_len": lambda handle: 0,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
 
 
 def _load_module(name, path_text):
@@ -69,8 +44,8 @@ for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
 
 checks = {{
-    "anchor_hidden": "molt_weakset_len" not in _private.__dict__,
-    "behavior": isinstance(_private.WeakSet([1, 2]), _private.WeakSet) and len(_private.WeakSet([1, 2])) == 2,
+    "owner_identity": _private.WeakSet is _fake_weakref.WeakSet,
+    "exports": _private.__all__ == ["WeakSet"],
 }}
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
@@ -99,4 +74,4 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
 def test__weakrefset_public_surface_matches_expected_shape() -> None:
     rows, checks = _run_probe()
     assert rows == [("WeakSet", "type", "True")]
-    assert checks == {"anchor_hidden": "True", "behavior": "True"}
+    assert checks == {"owner_identity": "True", "exports": "True"}

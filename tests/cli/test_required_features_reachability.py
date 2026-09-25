@@ -9,16 +9,22 @@ when a REACHED SimpleIR ``builtin_func``/``const_str`` op references its symbol,
 where reachability is the call-graph closure the native/WASM backends dead-strip
 with (``molt-tir`` ``eliminate_dead_functions``). These tests use synthetic
 merged-IR function lists so the reachability rules are pinned directly, plus a
-source-level agreement check that the Python op-kind/root mirrors stay in lockstep
-with the Rust dead-function authority.
+generated op-kind agreement and runtime-root checks shared with Rust dead-function
+elimination.
 """
 
 from __future__ import annotations
 
 import re
 
+import pytest
+
 import molt.cli as cli
+from molt.cli import function_references as FR
 from molt.cli import required_features as RF
+from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS,
+)
 
 
 def _const_str(out: str, value: str) -> dict[str, object]:
@@ -65,9 +71,14 @@ def test_func_new_edge_keeps_defined_function_reachable() -> None:
     # reachable, so the requirement scan must honor it or it would under-count.
     functions = [
         {"name": "molt_main", "params": [], "ops": [_func_new("method")]},
-        {"name": "method", "params": [], "ops": []},
+        {
+            "name": "method",
+            "params": [],
+            "ops": [_builtin_func("regex", "molt_re_compile")],
+        },
     ]
     assert "method" in RF.reachable_function_names(functions)
+    assert RF.required_link_features(functions) == frozenset({"stdlib_regex"})
 
 
 def test_unreferenced_function_is_unreachable_and_contributes_no_requirement() -> None:
@@ -122,12 +133,13 @@ def test_protected_isolate_entrypoint_is_a_root() -> None:
     assert RF.required_link_features(functions) == frozenset({"stdlib_regex"})
 
 
-def test_poll_companion_is_reachable_from_task_creation() -> None:
+@pytest.mark.parametrize("kind", ["alloc_task", "call_async"])
+def test_task_creation_does_not_invent_poll_companion(kind: str) -> None:
     functions = [
         {
             "name": "molt_main",
             "params": [],
-            "ops": [{"kind": "alloc_task", "s_value": "worker", "out": "v0"}],
+            "ops": [{"kind": kind, "s_value": "worker", "out": "v0"}],
         },
         {"name": "worker", "params": [], "ops": []},
         {
@@ -137,8 +149,70 @@ def test_poll_companion_is_reachable_from_task_creation() -> None:
         },
     ]
     reachable = RF.reachable_function_names(functions)
-    assert "worker_poll" in reachable
-    assert "stdlib_regex" in RF.required_link_features(functions)
+    assert reachable == frozenset({"molt_main", "worker"})
+    assert RF.required_link_features(functions) == frozenset()
+
+
+@pytest.mark.parametrize("kind", ["alloc_task", "call_async"])
+def test_explicit_poll_target_retains_its_feature(kind: str) -> None:
+    functions = [
+        {
+            "name": "molt_main",
+            "ops": [{"kind": kind, "s_value": "worker_poll"}],
+        },
+        {"name": "worker", "ops": []},
+        {
+            "name": "worker_poll",
+            "ops": [_builtin_func("v1", "molt_re_finditer_collect")],
+        },
+        {"name": "worker_poll_poll", "ops": []},
+    ]
+    assert RF.reachable_function_names(functions) == frozenset(
+        {"molt_main", "worker_poll"}
+    )
+    assert RF.required_link_features(functions) == frozenset({"stdlib_regex"})
+
+
+@pytest.mark.parametrize(
+    "kind", sorted(SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS)
+)
+def test_generated_reference_kinds_retain_only_exact_defined_target(kind: str) -> None:
+    functions = [
+        {"name": "molt_main", "ops": [{"kind": kind, "s_value": "target"}]},
+        {"name": "target", "ops": []},
+        {"name": "target_poll", "ops": []},
+    ]
+    assert RF.reachable_function_names(functions) == frozenset({"molt_main", "target"})
+    assert (
+        FR.function_references(
+            {"ops": [{"kind": kind, "s_value": "undefined"}]},
+            frozenset({"target"}),
+        )
+        == frozenset()
+    )
+
+
+@pytest.mark.parametrize("kind", ["generator_create", "coro_create", "const_str"])
+def test_non_reference_kinds_do_not_retain_defined_bodies(kind: str) -> None:
+    functions = [
+        {"name": "molt_main", "ops": [{"kind": kind, "s_value": "worker"}]},
+        {"name": "worker", "ops": []},
+        {"name": "worker_poll", "ops": []},
+    ]
+    assert RF.reachable_function_names(functions) == frozenset({"molt_main"})
+
+
+@pytest.mark.parametrize("kind", ["alloc_task", "call_async"])
+def test_local_reference_validation_requires_only_explicit_target(kind: str) -> None:
+    functions = [
+        {"name": "molt_init_pkg", "ops": [{"kind": kind, "s_value": "pkg__worker"}]},
+        {"name": "pkg__worker", "ops": []},
+    ]
+    assert FR.missing_local_function_references("pkg", functions) == ()
+    functions[0]["ops"] = [{"kind": kind, "s_value": "pkg__worker_poll"}]
+    assert FR.missing_local_function_references("pkg", functions) == (
+        FR.FunctionReferenceEdge("molt_init_pkg", 0, kind, "pkg__worker_poll"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +329,8 @@ def test_refusal_fires_when_reached_feature_excluded() -> None:
     assert "'micro'" in message
     assert "--stdlib-profile full" in message
     assert "MOLT_STDLIB_PROFILE=full" in message
+    assert "statically retained" in message
+    assert "executed code paths" not in message
 
 
 def test_refusal_silent_when_feature_within_ceiling() -> None:
@@ -318,36 +394,16 @@ def _rust_source(relative: str) -> str:
     return (root / relative).read_text(encoding="utf-8")
 
 
-def test_function_reference_op_kinds_match_dead_functions_rs() -> None:
-    # The Python mirror must list exactly the op kinds the Rust dead-function pass
-    # treats as function references (the ``match op.kind.as_str()`` arms that
-    # insert into the per-function reference set). If the Rust authority gains or
-    # drops an edge kind, this fails so the mirror is updated in lockstep: a
-    # missing edge would let the requirement scan under-count and admit an
-    # undefined-symbol link.
+def test_defined_function_consumers_use_generated_authority() -> None:
     source = _rust_source("runtime/molt-tir/src/passes/dead_functions.rs")
-    # Op kinds appear ONLY as match-arm patterns: a quoted string immediately
-    # followed by ``|`` (more patterns) or ``=>`` (arm body), possibly across a
-    # line break. This precisely excludes the ``"_poll"`` suffix literal
-    # (``name.ends_with("_poll")``) and the ``"foo_poll"`` comment example, which
-    # are not arm patterns.
-    arm_kinds = set(re.findall(r'"([a-z_]+)"\s*(?:\||=>)', source))
-    assert "call" in arm_kinds and "func_new" in arm_kinds, (
-        "match-arm extraction failed to find the core reference op kinds; the "
-        "dead_functions.rs match shape changed and this gate needs review"
+    assert "simpleir_kind_references_defined_function(&op.kind)" in source
+    assert "match op.kind.as_str()" not in source
+    assert FR.SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS is (
+        SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS
     )
-    missing = arm_kinds - RF._FUNCTION_REFERENCE_OP_KINDS
-    assert not missing, (
-        "required_features._FUNCTION_REFERENCE_OP_KINDS is missing op kinds the "
-        f"Rust dead-function pass treats as references: {sorted(missing)}"
-    )
-    # And the mirror must not claim edges the Rust authority does not have (an
-    # over-broad mirror would over-refuse). Every mirrored kind appears as an arm.
-    extra = RF._FUNCTION_REFERENCE_OP_KINDS - arm_kinds
-    assert not extra, (
-        "required_features._FUNCTION_REFERENCE_OP_KINDS lists op kinds the Rust "
-        f"dead-function pass does not treat as references: {sorted(extra)}"
-    )
+    assert not hasattr(FR, "FUNCTION_REFERENCE_OP_KINDS")
+    assert not hasattr(FR, "POLL_COMPANION_OP_KINDS")
+    assert "_DEAD_FUNCTION_ELIM_REFERENCE_KINDS" not in dir(cli)
 
 
 def test_protected_entrypoints_match_runtime_roots_rs() -> None:

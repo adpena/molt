@@ -1686,6 +1686,7 @@ def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
     assert "molt_importlib_import_transaction" not in imports
     assert imports["molt_load_intrinsic_runtime"]["callable_arity"] == 2
     assert imports["molt_types_bootstrap"]["callable_arity"] == 0
+    assert imports["molt_is_bound_method"]["callable_arity"] == 1
     assert imports["molt_file_exit_method"]["callable_arity"] == 4
     assert imports["molt_logging_formatter_format_time"]["callable_arity"] == 3
     assert imports["molt_logging_stream_handler_new"]["callable_arity"] == 2

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import inspect
 import hashlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +38,97 @@ for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "tests"), str(_REPO_ROOT / "src")):
 
 import molt_diff  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
+from tools.compat import diff_output_layout  # noqa: E402
+
+
+def test_adapter_scratch_is_fresh_and_retired(tmp_path, monkeypatch):
+    monkeypatch.delenv(diff_output_layout.ROOT_ENV, raising=False)
+    monkeypatch.delenv(diff_output_layout.IDENTITY_ENV, raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    monkeypatch.delenv("MOLT_COMPAT_SCRATCH_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_KEEP", raising=False)
+    seen = []
+
+    def run(path):
+        seen.append(path)
+        assert not (path / "output_linked.wasm").exists()
+        (path / "output_linked.wasm").write_bytes(b"current")
+        return compat_backends.BackendResult("", "", 0)
+
+    assert (
+        compat_backends._with_adapter_scratch(
+            "wasm", "case.py", run, environment=os.environ
+        ).returncode
+        == 0
+    )
+    assert (
+        compat_backends._with_adapter_scratch(
+            "wasm", "case.py", run, environment=os.environ
+        ).returncode
+        == 0
+    )
+    assert seen[0] != seen[1]
+    assert all(not path.exists() for path in seen)
+
+
+def test_adapter_scratch_keep_and_cleanup_failure_are_visible(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "tmp" / "diff"))
+    monkeypatch.delenv(diff_output_layout.ROOT_ENV, raising=False)
+    monkeypatch.delenv(diff_output_layout.IDENTITY_ENV, raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    monkeypatch.delenv("MOLT_COMPAT_SCRATCH_ROOT", raising=False)
+    monkeypatch.setenv("MOLT_DIFF_KEEP", "1")
+    seen = []
+
+    def run(path):
+        seen.append(path)
+        return compat_backends.BackendResult(None, "build failed", 2, build_failed=True)
+
+    kept = compat_backends._with_adapter_scratch(
+        "wasm", "case.py", run, environment=os.environ
+    )
+    assert kept.returncode == 2 and seen[-1].exists()
+    monkeypatch.delenv("MOLT_DIFF_KEEP")
+    monkeypatch.setattr(
+        diff_output_layout,
+        "durable_remove_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("blocked")),
+    )
+    failed = compat_backends._with_adapter_scratch(
+        "wasm", "case.py", run, environment=os.environ
+    )
+    assert failed.returncode == 2 and failed.build_failed
+    assert failed.stderr == "build failed"
+    assert failed.infrastructure_failure is not None
+    assert "cleanup failed" in failed.infrastructure_failure.details[-1]
+    assert seen[-1].exists()
+    assert (tmp_path / "tmp" / "diff" / "guest_output_cleanup_failures.jsonl").exists()
+
+
+def test_adapter_test_supplied_directory_is_not_retired(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        compat_backends,
+        "_with_adapter_scratch",
+        lambda _backend, _file, run, **_kwargs: run(tmp_path),
+    )
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={},
+    )
+    monkeypatch.setattr(
+        compat_backends.WasmAdapter,
+        "_build_and_run_owned",
+        lambda *_args, **_kwargs: compat_backends.BackendResult("", "", 0),
+    )
+    assert (
+        compat_backends.WasmAdapter()
+        .build_and_run("case.py", context=context)
+        .returncode
+        == 0
+    )
+    assert tmp_path.exists()
 
 
 _COMPAT_GUARD_PHASES = (
@@ -587,7 +679,11 @@ def test_timeout_preserves_diagnostic_and_is_never_oom(
 def test_all_adapters_preserve_phase_failure(
     backend, phase, failure_kind, tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(compat_backends, "_scratch_dir", lambda *_: tmp_path)
+    monkeypatch.setattr(
+        compat_backends,
+        "_with_adapter_scratch",
+        lambda _backend, _file, run, **_kwargs: run(tmp_path),
+    )
     monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda: "python")
     context = compat_backends.BackendExecutionContext(
         target_python=TargetPythonVersion(3, 12, 0),
@@ -812,6 +908,43 @@ def test_infrastructure_failure_is_not_semantic_or_oom_evidence(
         )
         is None
     )
+
+
+@pytest.mark.parametrize("backend", ["cpython", "native", "wasm", "llvm", "luau"])
+def test_guest_cleanup_failure_cannot_be_hidden_by_xfail(
+    backend, fake_test_file, install_fake_registry, monkeypatch, tmp_path
+):
+    fake_test_file.write_text(
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n"
+    )
+    lease = SimpleNamespace(
+        path=tmp_path, retire=lambda **_kwargs: "owned guest cleanup failed"
+    )
+    failure = compat_backends.run_with_guest_outputs(
+        [lease], lambda: _outcome("42\n"), environment={}, repo_root=_REPO_ROOT
+    )
+    assert (failure.stdout, failure.stderr, failure.returncode) == ("42\n", "", 0)
+    assert failure.infrastructure_failure is not None
+    targets = ("native", "wasm", "llvm", "luau")
+    outcomes = {name: _outcome("42\n") for name in targets}
+    if backend == "cpython":
+        install_fake_registry(outcomes, cpython=failure)
+    else:
+        outcomes[backend] = failure
+        install_fake_registry(outcomes)
+    records = []
+    monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
+    assert molt_diff.diff_test(str(fake_test_file), targets=targets) == "uncalibrated"
+    assert records[0]["reason_tag"] == "infrastructure_error"
+    assert records[0]["raw_status"] == records[0]["resolved_status"] == "uncalibrated"
+    payload = (
+        records[0]["cpython_infrastructure_failure"]
+        if backend == "cpython"
+        else next(
+            row for row in records[0]["backend_rows"] if row["backend"] == backend
+        )["infrastructure_failure"]
+    )
+    assert payload == failure.infrastructure_failure.json_payload()
 
 
 def test_cpython_infrastructure_failure_cannot_be_semantic_parity(

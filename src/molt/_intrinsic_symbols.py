@@ -1269,6 +1269,7 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_inspect_getdoc": "molt_inspect_getdoc",
     "molt_inspect_getmembers": "molt_inspect_getmembers",
     "molt_inspect_isfunction": "molt_inspect_isfunction",
+    "molt_is_bound_method": "molt_is_bound_method",
     "molt_inspect_isclass": "molt_inspect_isclass",
     "molt_inspect_ismodule": "molt_inspect_ismodule",
     "molt_inspect_iscoroutine": "molt_inspect_iscoroutine",

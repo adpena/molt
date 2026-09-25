@@ -15,7 +15,9 @@ from typing import Any, Collection, Mapping, Sequence, cast
 import uuid
 
 from molt import backend_daemon_custody as _daemon_custody
+from molt.build_state_layout import build_state_root
 from molt.exact_json import canonical_json_sha256
+from molt.file_publication import is_link_like, resolve_owned_path
 from molt.toolchain_identity import executable_content_identity
 from molt.cli.backend_cache import (
     _backend_artifact_source_key,
@@ -599,9 +601,9 @@ def _sweep_orphaned_backend_daemon_locks(
     daemons are never disturbed; files whose identity does not correspond to
     a live process, is unreadable, or points at a non-daemon process are removed.
 
-    When ``include_other_sessions`` is True, also walks
-    ``target/sessions/*/.molt_state/backend_daemon`` so that stale state
-    from sibling sessions (e.g. agents that crashed) does not accumulate.
+    When ``include_other_sessions`` is True, project only known sibling
+    Cargo targets through the same build-state authority. Never scan the
+    hashed control namespace as a directory wildcard.
     """
     cleaned = 0
 
@@ -609,19 +611,46 @@ def _sweep_orphaned_backend_daemon_locks(
     own_root = _build_state_root(project_root) / "backend_daemon"
     candidate_roots.append(own_root)
 
-    if include_other_sessions:
-        sessions_root = project_root / "target" / "sessions"
-        try:
-            session_dirs = (
-                list(sessions_root.iterdir()) if sessions_root.is_dir() else []
-            )
-        except OSError:
-            session_dirs = []
-        for session_dir in session_dirs:
-            sibling = session_dir / ".molt_state" / "backend_daemon"
-            if sibling == own_root:
-                continue
-            candidate_roots.append(sibling)
+    if (
+        include_other_sessions
+        and not os.environ.get("MOLT_BUILD_STATE_DIR", "").strip()
+    ):
+        # An explicit override cannot be inferred for another session.
+        sessions_roots = [project_root / "target" / "sessions"]
+        artifact_raw = os.environ.get("MOLT_EXT_ROOT", "").strip()
+        if artifact_raw:
+            artifact = Path(artifact_raw).expanduser()
+            if artifact.is_absolute():
+                sessions_roots.append(artifact / "target" / "sessions")
+        for sessions_root in dict.fromkeys(sessions_roots):
+            try:
+                session_dirs = (
+                    list(sessions_root.iterdir())
+                    if (
+                        resolve_owned_path(sessions_root) == sessions_root
+                        and sessions_root.is_dir()
+                        and not is_link_like(sessions_root)
+                    )
+                    else []
+                )
+            except (OSError, ValueError):
+                session_dirs = []
+            for session_dir in session_dirs:
+                if not session_dir.is_dir() or is_link_like(session_dir):
+                    continue
+                try:
+                    sibling = (
+                        build_state_root(
+                            project_root=project_root,
+                            cargo_target=session_dir,
+                            environment=os.environ,
+                        )
+                        / "backend_daemon"
+                    )
+                except (OSError, ValueError):
+                    continue
+                if sibling != own_root and sibling not in candidate_roots:
+                    candidate_roots.append(sibling)
 
     for daemon_root in candidate_roots:
         try:

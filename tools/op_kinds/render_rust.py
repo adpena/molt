@@ -1512,6 +1512,29 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         " | ".join(f'"{kind}"' for kind in function_refs) if function_refs else '""'
     )
     lines.extend([")\n", "}\n"])
+    defined_function_refs = sorted(
+        data["simpleir_defined_function_reference_s_value_kinds"]
+    )
+    lines.extend(
+        [
+            "\n/// Exact s_value edges retaining defined functions at static link time.\n",
+            "/// Independent of runtime-requirement provenance; never invent sibling names.\n",
+            "pub const SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: &[&str] = &[\n",
+        ]
+    )
+    for kind in defined_function_refs:
+        lines.append(f'    "{kind}",\n')
+    lines.extend(
+        [
+            "];\n\n",
+            "/// Whether an exact s_value target retains a body in the defined-function graph.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_references_defined_function(kind: &str) -> bool {\n",
+            "    matches!(kind, ",
+            " | ".join(f'"{kind}"' for kind in defined_function_refs),
+            ")\n}\n",
+        ]
+    )
     return "".join(lines)
 
 

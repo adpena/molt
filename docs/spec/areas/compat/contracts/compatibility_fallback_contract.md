@@ -47,7 +47,7 @@ All non-native features must emit a warning (or error) with:
 ```
 [MOLT_COMPAT] tier=bridge impact=high feature=open() location=app.py:12:8
   fallback: CPython bridge
-  replace: use molt.stdlib.io.open or molt.stdlib.io.stream
+  replace: use io.open or moltlib.io.stream
 ```
 
 ---

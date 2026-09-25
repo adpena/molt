@@ -251,7 +251,7 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "Setup canonical native linker SDK" in ci_text
     assert "proof-receipts/evidence/cargo-test-truth.json" in ci_text
     assert "proof-receipts/evidence/llvm-differential-truth.json" in ci_text
-    assert "target/**/.molt_state/build_failures/*.json" in ci_text
+    assert "target/**/.molt_state/build_failures/*.json" not in ci_text
     llvm_upload = ci_text.split("- name: Upload LLVM/MLIR/linker receipt", 1)[1].split(
         "- name: Summarize guarded command hotspots", 1
     )[0]
@@ -263,6 +263,31 @@ def test_ci_push_path_is_cheap_only() -> None:
     # rust-build-unit-smoke, and the LLVM backend job.
     assert ci_text.count("Summarize guarded command hotspots") == 4
     assert ci_text.count("python3 tools/profile_hotspots.py --limit 20") == 4
+
+
+@pytest.mark.parametrize(
+    ("workflow", "job", "upload_name"),
+    [
+        (".github/workflows/ci.yml", "llvm-backend", "Upload LLVM/MLIR/linker receipt"),
+        (".github/workflows/molt-wasm-ci.yml", "wasm-build", "Upload WASM receipt"),
+    ],
+)
+def test_ci_control_evidence_uses_shared_path_command(workflow, job, upload_name):
+    steps = yaml.safe_load(_read(workflow))["jobs"][job]["steps"]
+    resolver = next(step for step in steps if step.get("id") == "build-control")
+    assert resolver["run"].strip() == (
+        'uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"'
+    )
+    upload = next(step for step in steps if step.get("name") == upload_name)
+    paths = upload["with"]["path"].splitlines()
+    assert "${{ steps.build-control.outputs.root }}/build_failures/*.json" in paths
+    assert not any(".molt_state" in path for path in paths)
+    if job == "wasm-build":
+        assert (
+            "${{ steps.build-control.outputs.root }}/runtime_wasm_generations/*.json"
+            in paths
+        )
+    assert steps.index(resolver) < steps.index(upload)
 
 
 def test_ci_heavy_jobs_are_path_classified() -> None:

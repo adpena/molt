@@ -5,6 +5,15 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from molt.stdlib_intrinsic_policy import (
+    STDLIB_PROBE_INTRINSIC,
+    intrinsic_names_from_source,
+)
+from tools.stdlib_full_coverage_manifest import (
+    STDLIB_FULLY_COVERED_MODULES,
+    STDLIB_REQUIRED_INTRINSICS_BY_MODULE,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,9 +23,52 @@ def test_low_level_weakref_module_owns_native_type_facade_without_cycle() -> Non
     high_level = (ROOT / "src/molt/stdlib/weakref.py").read_text(encoding="utf-8")
     assert "from weakref import" not in low_level
     assert 'molt_weakref_reference_type")()' in low_level
-    assert "from _weakref import ReferenceType" in high_level
+    delegated = {
+        (alias.name, alias.asname or alias.name)
+        for node in ast.parse(high_level).body
+        if isinstance(node, ast.ImportFrom)
+        and node.level == 0
+        and node.module == "_weakref"
+        for alias in node.names
+    }
+    assert delegated == {
+        (name, name)
+        for name in ("ReferenceType", "ref", "getweakrefcount", "getweakrefs")
+    }
+    assert intrinsic_names_from_source(low_level) == {
+        "molt_weakref_reference_type",
+        "molt_weakref_count",
+        "molt_weakref_refs",
+    }
+    assert any(
+        isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "ref"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "ReferenceType"
+        for node in ast.parse(low_level).body
+    )
     assert "class ReferenceType" not in high_level
     assert "class _ReferenceTypeMeta" not in high_level
+
+
+def test_weakref_full_coverage_contract_tracks_only_facade_intrinsic_loads() -> None:
+    source = (ROOT / "src/molt/stdlib/weakref.py").read_text(encoding="utf-8")
+    required = set(STDLIB_REQUIRED_INTRINSICS_BY_MODULE["weakref"])
+    assert required == intrinsic_names_from_source(source) - {STDLIB_PROBE_INTRINSIC}
+    assert required.isdisjoint(
+        {
+            "molt_weakref_count",
+            "molt_weakref_refs",
+            "molt_weakref_reference_type",
+            "molt_weakref_find_nocallback",
+            "molt_weakref_register",
+        }
+    )
+    assert "weakref" in STDLIB_FULLY_COVERED_MODULES
+    assert "_weakref" not in STDLIB_FULLY_COVERED_MODULES
 
 
 def test_high_level_weakref_preserves_keyed_ref_without_shadow_hash_state() -> None:
@@ -89,8 +141,12 @@ def test_class_shaped_attribute_authority_is_generated_not_type_listed() -> None
     )
     assert "fn class_instance_layout_attr_allowed" in attr
     assert "class_instance_layout_attr_allowed(_py, class_ptr, attr_bits)" in attr
-    assert "class_instance_layout_attr_allowed(_py, class_ptr, attr_bits)" in attributes
-    assert accessors.count("super::heap_kind_has_class_shape(type_id)") >= 1
+    # Default lookup delegates to the same raw object authority as explicit
+    # object.__getattribute__; the retired result IC must not duplicate it.
+    assert "return classed_default_attr_lookup(_py, obj_ptr, attr_bits)" in attributes
+    assert "object_attr_lookup_raw(_py, obj_ptr, attr_bits)" in attributes
+    assert "class_instance_layout_attr_allowed" not in attributes
+    assert "attr_ic_class_key" not in accessors
     assert "super::heap_kind_has_class_shape((*header).type_id)" in accessors
     assert "!crate::object::heap_kind_has_class_shape(type_id)" in attr
 

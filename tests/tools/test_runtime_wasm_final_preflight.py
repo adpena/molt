@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,73 @@ from molt.dx import CheckoutCustody
 from molt.path_custody import CustodyPathRole, PathCustodyError, canonical_host_path
 from tests.process_guard_common import run_guarded_test_process
 from tools import runtime_wasm_final_preflight as preflight
+
+
+@pytest.mark.parametrize("explicit_state", [False, True])
+def test_planned_pair_uses_production_control_root(
+    tmp_path, monkeypatch, explicit_state
+) -> None:
+    from molt.build_state_layout import build_state_root
+
+    project = tmp_path / "project"
+    target = tmp_path / "disposable" / "target"
+    custody = tmp_path / "custody"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "ambient-wrong-root"))
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "ambient-wrong-state"))
+    build_env = {
+        "MOLT_EXT_ROOT": str(custody),
+        "CARGO_TARGET_DIR": str(target),
+        "MOLT_CACHE": str(custody / "cache"),
+        "MOLT_WASM_RUNTIME_DIR": str(custody / "wasm"),
+    }
+    if explicit_state:
+        build_env["MOLT_BUILD_STATE_DIR"] = str(custody / "operator-state")
+    manifest = SimpleNamespace(digest="toolchain", write=lambda _path: None)
+    identity = SimpleNamespace(
+        family_digest="f" * 64, digest="identity", toolchain_manifest=manifest
+    )
+    monkeypatch.setattr(
+        preflight, "_resolve_cargo_profile_name", lambda _p: ("dev", None)
+    )
+    monkeypatch.setattr(
+        preflight,
+        "_compute_runtime_wasm_build_spec",
+        lambda *a, **k: SimpleNamespace(target_root=target),
+    )
+    monkeypatch.setattr(
+        preflight, "_resolve_runtime_wasm_cargo_specs", lambda _p, a, b, **k: (a, b)
+    )
+    monkeypatch.setattr(
+        preflight,
+        "_resolved_runtime_wasm_family_identities",
+        lambda *a: (identity, identity),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "_runtime_wasm_toolchain_manifest_path",
+        lambda _s: custody / "sdk.json",
+    )
+    pair = preflight._planned_pair(
+        project_root=project,
+        target_root=target,
+        cache_root=custody / "cache",
+        runtime_dir=custody / "wasm",
+        build_profile="dev",
+        stdlib_profile="full",
+        build_env=build_env,
+    )
+    state = build_state_root(
+        project_root=project,
+        cargo_target=target,
+        environment=build_env,
+    )
+    assert pair["expected_identity"] == str(
+        state / "runtime_wasm_generations" / f"{'f' * 64}.expected.json"
+    )
+    assert state.is_relative_to(custody)
+    assert os.environ["MOLT_EXT_ROOT"] == str(tmp_path / "ambient-wrong-root")
+    assert os.environ["MOLT_BUILD_STATE_DIR"] == str(tmp_path / "ambient-wrong-state")
+    assert ("MOLT_BUILD_STATE_DIR" in pair["required_env"]) is explicit_state
 
 
 def _queue_db(path: Path, *, rows: tuple[tuple[object, ...], ...]) -> None:

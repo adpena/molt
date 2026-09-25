@@ -588,16 +588,14 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_time_tzname",
     ),
     "types": ("molt_types_bootstrap",),
+    # Module-local loads only: ref/type/count/refs are delegated to _weakref;
+    # ReferenceType construction owns registration and callback-free interning.
     "weakref": (
         "molt_weakref_callback",
-        "molt_weakref_count",
         "molt_weakref_finalize_track",
         "molt_weakref_finalize_untrack",
-        "molt_weakref_find_nocallback",
         "molt_weakref_get",
         "molt_weakref_peek",
-        "molt_weakref_refs",
-        "molt_weakref_register",
         "molt_weakcontainer_clear",
         "molt_weakcontainer_contains",
         "molt_weakcontainer_dead",

@@ -8,32 +8,11 @@ schema = "molt.legacy-inventory.v1"
 # row whose probe no longer matches.
 
 [[item]]
-id = "pact-contract-ledger-doc"
-path = "docs/agent/PACT_CONTRACT_LEDGER.md"
-superseded_by = "collab/pact/README.md stable Pact acceptance contract"
-removal_release = "1.0.0"
-reason = "Dated obligation narrative; the stable contract and the proof queue own acceptance state."
-
-[[item]]
-id = "pact-status-snapshot-doc"
-path = "collab/pact/STATUS.md"
-superseded_by = "tools/proof_queue.py evidence plus collab/pact/README.md"
-removal_release = "1.0.0"
-reason = "Self-described dated snapshot of the 2026-07-10 witness frontier."
-
-[[item]]
 id = "pact-inline-parity-oracle"
 path = "collab/pact/pact_witness_kernel/check_parity.py"
 superseded_by = "collab/pact/parity/check_parity.py driven by field_solve_gates.json"
 removal_release = "1.0.0"
 reason = "Retained only as the frozen equivalence fixture for tests/tools/test_pact_parity_engine.py; the manifest-driven engine is the sole acceptance authority."
-
-[[item]]
-id = "generic-ssd-janitor"
-path = "tools/molt_ssd_janitor.py"
-superseded_by = "consumer-owned artifact retention (tools/disk_guard.py allow-set)"
-removal_release = "1.0.0"
-reason = "Generic age-based artifact sweep; retention must come from the owning consumer's custody policy."
 
 [[item]]
 id = "backend-daemon-legacy-pid-files"
@@ -45,8 +24,16 @@ reason = "Migration sweep for pre-identity-file `*.pid` daemon records; a compat
 
 [[item]]
 id = "concurrency-runtime-duplicate-module"
-path = "src/moltlib/_concurrency_runtime.py"
+path = "src/molt/concurrency.py"
 pattern = '^class Channel\(Generic\[T\]\):'
-superseded_by = "src/molt/concurrency.py (one channel/task authority; moltlib.concurrency re-exports it)"
+superseded_by = "src/moltlib/_concurrency_runtime.py (canonical moltlib.concurrency runtime exports)"
 removal_release = "1.0.0"
-reason = "Byte-for-byte duplicate of molt.concurrency kept only because compiled-module resolution of moltlib.concurrency has not been routed through the single authority; a duplicate registry is drift by construction."
+reason = "Legacy compiler-package channel/task implementation duplicates the canonical moltlib runtime. Removing it also requires migrating frontend direct-call and re-export identities, with compiled consumer proof."
+
+[[item]]
+id = "net-runtime-duplicate-module"
+path = "src/molt/net.py"
+pattern = '^class Stream:'
+superseded_by = "src/moltlib/net.py"
+removal_release = "1.0.0"
+reason = "Legacy networking classes have distinct identities and lack canonical StreamSender. Runtime-library callers no longer use this lane; removal requires retiring frontend molt.net direct-call and molt root re-export identities with compiled proof."

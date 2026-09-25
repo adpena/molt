@@ -42,6 +42,8 @@ CODEX_INTERACTIVE_MAX_PROCESS_RSS_GB = 18.0
 CODEX_INTERACTIVE_MAX_TOTAL_RSS_GB = 24.0
 CODEX_INTERACTIVE_MAX_GLOBAL_RSS_GB = 36.0
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 _SRC_ROOT = _REPO_ROOT / "src"
 if _SRC_ROOT.exists() and str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
@@ -56,6 +58,7 @@ from molt.dx import (  # noqa: E402
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
 from molt.memory_guard_paths import harness_guard_artifact_dir  # noqa: E402
 from molt.process_spawn import ProcessGroupKwargs, detached_process_group_kwargs  # noqa: E402
+from tools.compat import diff_output_layout  # noqa: E402
 
 CANONICAL_ROOT_ENV_KEYS = _CANONICAL_ROOT_ENV_KEYS
 CANONICAL_RUN_ENV_KEYS = _CANONICAL_RUN_ENV_KEYS
@@ -343,7 +346,7 @@ def canonical_harness_env(
 
     root = (repo_root or _REPO_ROOT).resolve()
     merged = dict(os.environ) if env is None else dict(env)
-    return RunContext(
+    resolved = RunContext(
         root,
         session_prefix="guard",
         prefer_external_artifacts=_harness_prefers_external_artifacts(root, merged),
@@ -352,6 +355,19 @@ def canonical_harness_env(
         create_dirs=False,
         force_default_keys=force_default_keys,
     )
+    # Admit before defaults cross a process boundary and become indistinguishable
+    # from explicit caller selections in the differential child.
+    diff_output_layout.admit(
+        resolved,
+        repo_root=root,
+        custody_root=Path(resolved["MOLT_DIFF_ROOT"]),
+        explicit_outputs={
+            key: merged[key]
+            for key in diff_output_layout.OUTPUT_KEYS
+            if merged.get(key)
+        },
+    )
+    return resolved
 
 
 def _artifact_root_from_env(env: Mapping[str, str] | None) -> Path:

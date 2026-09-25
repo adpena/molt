@@ -78,6 +78,12 @@ native triage and `tools/bench_wasm.py` for WASM triage; their JSON and Markdown
 outputs are non-canonical evidence and must not be cited as PR/release
 performance authority.
 
+WASM triage measures one admitted build attempt. A deadline, lock failure, or
+invalid manifest-bound output is a recorded failure; the harness does not retry
+with weaker optimization settings, switch build-state directories to bypass
+locks, or replace failed output before reporting it. Diagnose the retained
+failure evidence before starting another explicitly configured measurement.
+
 `tools/bench_suites.py` is also the complete local benchmark inventory: every
 `tests/benchmarks/bench_*.py` file belongs to exactly one primary runnable suite
 or to the typed `EXCLUDED_BENCHMARKS` table with a category and reason. The smoke
@@ -875,6 +881,12 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 - Prefer `molt build --build-profile dev` for build-only iteration loops, and `--profile dev` for `molt run/compare/diff/test`; reserve release profiles for release gates and perf publication.
 - `--build-profile dev` routes build mode to Cargo `dev` by default; override with `MOLT_DEV_CARGO_PROFILE` when profiling alternative dev profiles.
 - Keep cache keys deterministic by default (`PYTHONHASHSEED=0` is enforced by CLI). Override via `MOLT_HASH_SEED=<value>` only when explicitly testing hash-seed sensitivity.
+- For whole-CLI `cProfile` captures, set `PYTHONHASHSEED` in the launching
+  environment to the selected `MOLT_HASH_SEED` (normally `0`) before Python
+  starts. Otherwise the CLI's deterministic-startup restart can profile a
+  waiting parent and overwrite the child's statistics. Use process-specific
+  output paths when intentionally profiling more than one interpreter; report
+  cache state and instrumentation overhead separately from normal build time.
 - Enable Rust compile caching:
   - `MOLT_USE_SCCACHE=1` (or leave default `auto` when `sccache` is installed)
   - `sccache -s` to inspect hit rates

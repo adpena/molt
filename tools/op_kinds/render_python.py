@@ -204,6 +204,16 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
         out.append(f'    "{kind}": {may_access},\n')
     out.append("}\n\n")
 
+    out.append(
+        "# Exact s_value edges retaining defined functions at static link time.\n"
+        "# Independent of first-class runtime-requirement provenance carriers.\n"
+    )
+    out.append(
+        _render_py_frozenset(
+            "SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS",
+            data["simpleir_defined_function_reference_s_value_kinds"],
+        )
+    )
     protected_gateway_callables = sorted(
         set(data.get("simpleir_runtime_protected_gateway_callables", []))
     )
