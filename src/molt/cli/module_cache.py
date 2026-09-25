@@ -56,6 +56,7 @@ from molt.cli.module_graph_cache import (
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import (
+    PythonSourceSnapshot,
     _ModuleSourceLease,
     _payload_source_matches,
     _source_content_sha256,
@@ -739,7 +740,7 @@ def _module_lowering_execution_view(
     )
 
 
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 8
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 9
 
 
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 3
@@ -905,12 +906,12 @@ def _validate_persisted_module_analysis_payload(
     *,
     import_scan_mode: ImportScanMode,
     path_stat: os.stat_result | None,
-    validate_stat: bool,
     capability_config_digest: str,
-) -> tuple[dict[str, dict[str, Any]], dict[str, str], tuple[str, ...] | None] | None:
+    snapshot: PythonSourceSnapshot | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
     """Validate one analysis payload; the single correctness gate for both tiers.
 
-    Returns the decoded ``(func_defaults, func_kinds, imports)`` triple only when
+    Returns the decoded ``(func_defaults, func_kinds)`` pair only when
     every schema / fingerprint / scan-mode / capability / source-content check
     passes. Applied identically to a session-local payload and to one hydrated
     from the shared tier, so a shared hit can never bypass a check the
@@ -924,6 +925,7 @@ def _validate_persisted_module_analysis_payload(
         != _frontend_semantic_tooling_fingerprint()
         or payload.get("import_scan_mode") != import_scan_mode
         or payload.get("capability_config_digest", "") != capability_config_digest
+        or "imports" in payload
     ):
         return None
     raw_defaults = payload.get("func_defaults")
@@ -937,7 +939,14 @@ def _validate_persisted_module_analysis_payload(
         for name, kind in raw_kinds.items()
     ):
         return None
-    if validate_stat:
+    if snapshot is not None:
+        if (
+            snapshot.path.resolve() != path.resolve()
+            or payload.get("size") != len(snapshot.content)
+            or payload.get("source_sha256") != snapshot.sha256
+        ):
+            return None
+    else:
         if path_stat is None:
             try:
                 path_stat = path.stat()
@@ -945,15 +954,6 @@ def _validate_persisted_module_analysis_payload(
                 return None
         if not _payload_source_matches(payload, path, path_stat):
             return None
-    cached_imports: tuple[str, ...] | None = None
-    raw_imports = payload.get("imports")
-    if raw_imports is not None:
-        if not isinstance(raw_imports, list) or not all(
-            isinstance(item, str) for item in raw_imports
-        ):
-            return None
-        cached_imports = tuple(raw_imports)
-
     normalized: dict[str, dict[str, Any]] = {}
     for func_name, func_payload in raw_defaults.items():
         if not isinstance(func_name, str) or not isinstance(func_payload, dict):
@@ -965,7 +965,7 @@ def _validate_persisted_module_analysis_payload(
         if not _validate_module_func_default_payload(decoded_payload):
             return None
         normalized[func_name] = decoded_payload
-    return normalized, dict(cast(dict[str, str], raw_kinds)), cached_imports
+    return normalized, dict(cast(dict[str, str], raw_kinds))
 
 
 @_source_tree_fingerprint_transaction()
@@ -977,10 +977,10 @@ def _read_persisted_module_analysis(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     path_stat: os.stat_result | None = None,
-    validate_stat: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
-) -> tuple[dict[str, dict[str, Any]], dict[str, str], tuple[str, ...] | None] | None:
+    snapshot: PythonSourceSnapshot | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
     # Debug opt-out: force a cold re-analysis (no session-local or shared reuse).
     if _frontend_lowering_cache_disabled():
         return None
@@ -998,8 +998,8 @@ def _read_persisted_module_analysis(
         path,
         import_scan_mode=import_scan_mode,
         path_stat=path_stat,
-        validate_stat=validate_stat,
         capability_config_digest=capability_config_digest,
+        snapshot=snapshot,
     )
     if result is not None:
         return result
@@ -1023,8 +1023,8 @@ def _read_persisted_module_analysis(
         path,
         import_scan_mode=import_scan_mode,
         path_stat=path_stat,
-        validate_stat=validate_stat,
         capability_config_digest=capability_config_digest,
+        snapshot=snapshot,
     )
 
 
@@ -1038,7 +1038,7 @@ def _write_persisted_module_analysis(
     import_scan_mode: ImportScanMode,
     func_defaults: dict[str, dict[str, Any]],
     func_kinds: dict[str, str],
-    imports: Iterable[str] | None = None,
+    snapshot: PythonSourceSnapshot,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
 ) -> None:
@@ -1052,8 +1052,9 @@ def _write_persisted_module_analysis(
         capability_config_digest=capability_config_digest,
     )
     stat = path.stat()
-    source_sha256 = _source_content_sha256(path, stat)
-    if source_sha256 is None:
+    if snapshot.path.resolve() != path.resolve() or not _payload_source_matches(
+        {"size": len(snapshot.content), "source_sha256": snapshot.sha256}, path, stat
+    ):
         return
     payload: dict[str, Any] = {
         "version": _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
@@ -1063,14 +1064,12 @@ def _write_persisted_module_analysis(
         "is_package": is_package,
         "import_scan_mode": import_scan_mode,
         "target_python": target_python.tag,
-        "size": stat.st_size,
+        "size": len(snapshot.content),
         "mtime_ns": stat.st_mtime_ns,
-        "source_sha256": source_sha256,
+        "source_sha256": snapshot.sha256,
         "func_defaults": func_defaults,
         "func_kinds": func_kinds,
     }
-    if imports is not None:
-        payload["imports"] = list(imports)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_artifact_sync_payload(cache_path, payload, default=_json_ir_default)
     # Publish the completed session-local entry to the shared, content-addressed
@@ -1170,9 +1169,12 @@ def _load_module_analysis(
     dict[str, str],
     str | None,
     bool,
-    bool,
     os.stat_result | None,
 ]:
+    if source is not None:
+        # Caller-supplied text is an operation-local generation, not proof that
+        # the path still contains the bytes which produced it.
+        project_root = None
     if runtime_import_custody is not None:
         if runtime_import_custody.owns(module_name, path.resolve()):
             # Owner analysis embeds catalog-dependent edges. Persisted module
@@ -1183,6 +1185,30 @@ def _load_module_analysis(
     if path_stat is None and project_root is not None:
         with contextlib.suppress(OSError):
             path_stat = resolution_cache.path_stat(path)
+    # Function metadata can be persisted; resolved import edges cannot. Every
+    # analysis request completes its source-pure scan against the live graph.
+    loaded_scan = _load_module_import_scan(
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode=import_scan_mode,
+        resolution_cache=resolution_cache,
+        project_root=project_root,
+        source=source,
+        source_filename=logical_source_path,
+        retain_source=retain_source,
+        retain_tree=retain_tree,
+        roots=roots,
+        stdlib_root=stdlib_root,
+        stdlib_allowlist=stdlib_allowlist,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+        runtime_import_custody=runtime_import_custody,
+    )
+    imports = loaded_scan.scan.imports
+    snapshot = loaded_scan.snapshot
+    if source is None:
+        source = loaded_scan.source
     persisted_analysis = (
         _read_persisted_module_analysis(
             project_root,
@@ -1193,6 +1219,7 @@ def _load_module_analysis(
             path_stat=path_stat,
             target_python=target_python,
             capability_config_digest=capability_config_digest,
+            snapshot=snapshot,
         )
         if project_root is not None
         else None
@@ -1201,72 +1228,25 @@ def _load_module_analysis(
         persisted_analysis[0] if persisted_analysis is not None else None
     )
     persisted_kinds = persisted_analysis[1] if persisted_analysis is not None else None
-    persisted_imports_from_analysis = (
-        persisted_analysis[2] if persisted_analysis is not None else None
-    )
-    persisted_imports = persisted_imports_from_analysis
-    import_cache_hit = persisted_imports is not None
-    scan_tree: ast.AST | None = None
-    if persisted_imports is None:
-        loaded_scan = _load_module_import_scan(
-            path,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-            resolution_cache=resolution_cache,
-            project_root=project_root,
-            source=source,
-            source_filename=logical_source_path,
-            retain_source=retain_source,
-            retain_tree=retain_tree,
-            roots=roots,
-            stdlib_root=stdlib_root,
-            stdlib_allowlist=stdlib_allowlist,
-            target_python=target_python,
-            capability_config_digest=capability_config_digest,
-            runtime_import_custody=runtime_import_custody,
-        )
-        persisted_imports = loaded_scan.scan.imports
-        import_cache_hit = loaded_scan.cache_hit
-        scan_tree = loaded_scan.tree
-        if source is None:
-            source = loaded_scan.source
-    if (
-        import_cache_hit
-        and persisted_imports is not None
-        and persisted_defaults is not None
-        and persisted_kinds is not None
-    ):
+    if persisted_defaults is not None and persisted_kinds is not None:
         return (
-            None,
-            persisted_imports,
+            loaded_scan.tree if retain_tree else None,
+            imports,
             persisted_defaults,
             persisted_kinds,
-            None,
-            True,
-            False,
+            source if retain_source else None,
+            loaded_scan.cache_hit,
             path_stat,
         )
 
-    stale_analysis = (
-        _read_persisted_module_analysis(
-            project_root,
-            path,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-            validate_stat=False,
-            target_python=target_python,
-            capability_config_digest=capability_config_digest,
-        )
-        if project_root is not None
-        else None
-    )
-
     if source is None:
-        source = resolution_cache.read_module_source(path, retain=retain_source)
+        source = (
+            snapshot.text
+            if snapshot is not None
+            else resolution_cache.read_module_source(path, retain=retain_source)
+        )
 
-    tree = scan_tree
+    tree = loaded_scan.tree
     if tree is None:
         tree = resolution_cache.parse_module_ast(
             path,
@@ -1275,7 +1255,6 @@ def _load_module_analysis(
             retain=retain_tree,
             target_python=target_python,
         )
-    imports = persisted_imports
     func_defaults = persisted_defaults
     if func_defaults is None:
         func_defaults = _collect_func_defaults(tree)
@@ -1283,7 +1262,7 @@ def _load_module_analysis(
     if func_kinds is None:
         func_kinds = _collect_func_kinds(tree)
     if persisted_defaults is None or persisted_kinds is None:
-        if project_root is not None:
+        if project_root is not None and snapshot is not None:
             with contextlib.suppress(OSError):
                 _write_persisted_module_analysis(
                     project_root,
@@ -1293,20 +1272,10 @@ def _load_module_analysis(
                     import_scan_mode=import_scan_mode,
                     func_defaults=func_defaults,
                     func_kinds=func_kinds,
-                    imports=imports,
+                    snapshot=snapshot,
                     target_python=target_python,
                     capability_config_digest=capability_config_digest,
                 )
-    interface_changed = True
-    if stale_analysis is not None:
-        stale_defaults, stale_kinds, stale_imports = stale_analysis
-        if (
-            stale_imports is not None
-            and stale_imports == imports
-            and stale_defaults == func_defaults
-            and stale_kinds == func_kinds
-        ):
-            interface_changed = False
     return (
         tree if retain_tree else None,
         imports,
@@ -1314,7 +1283,6 @@ def _load_module_analysis(
         func_kinds,
         source if retain_source else None,
         False,
-        interface_changed,
         path_stat,
     )
 

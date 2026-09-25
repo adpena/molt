@@ -344,28 +344,6 @@ def _reverse_module_dependencies(
     return dependents
 
 
-def _dependent_module_closure(
-    dirty_modules: Collection[str],
-    module_deps: dict[str, set[str]],
-    module_names: Collection[str],
-    reverse_module_deps: Mapping[str, set[str]] | None = None,
-) -> set[str]:
-    dependents = (
-        reverse_module_deps
-        if reverse_module_deps is not None
-        else _reverse_module_dependencies(module_deps, module_names)
-    )
-    closure: set[str] = {name for name in dirty_modules if name in dependents}
-    queue = deque(sorted(closure))
-    while queue:
-        module_name = queue.popleft()
-        for dependent in sorted(dependents.get(module_name, ())):
-            if dependent not in closure:
-                closure.add(dependent)
-                queue.append(dependent)
-    return closure
-
-
 def _module_dependency_closure(
     module_name: str,
     module_deps: dict[str, set[str]],

@@ -1,6 +1,6 @@
 """Cross-session reuse of the shared, content-addressed frontend caches.
 
-The per-module *analysis* cache (function defaults / kinds / import scan) and
+The per-module *analysis* cache (function defaults / kinds) and
 *lowering* cache (frontend IR result) live under a per-session ``.molt_state``
 dir, so a fresh ``MOLT_SESSION_ID`` re-runs the frontend for every module from
 cold. These tests prove the shared tier fixes that -- and, critically, that it
@@ -29,6 +29,7 @@ import pytest
 
 from molt.cli import module_cache as MC
 from molt.cli import module_frontend_cache as MFC
+from molt.cli.module_source import PythonSourceSnapshot
 
 
 # --------------------------------------------------------------------------
@@ -152,7 +153,7 @@ def test_analysis_reuse_across_sessions_hydrates_shared(
             }
         },
         func_kinds={"f": "sync"},
-        imports=["os"],
+        snapshot=PythonSourceSnapshot.capture(path),
     )
     shared_slot = MC._shared_module_analysis_cache_path_for(
         path, module_name="m", is_package=False, import_scan_mode="module_init"
@@ -180,9 +181,8 @@ def test_analysis_reuse_across_sessions_hydrates_shared(
         import_scan_mode="module_init",
     )
     assert result is not None
-    defaults, kinds, imports = result
+    defaults, kinds = result
     assert kinds == {"f": "sync"}
-    assert imports == ("os",)
     assert defaults["f"]["params"] == 2
     # Hydration materialized the shared entry into the cold session dir.
     assert session_slot_b.is_file()
@@ -440,7 +440,7 @@ def test_mtime_only_change_still_reuses_analysis_from_shared(
             }
         },
         func_kinds={"f": "sync"},
-        imports=["os"],
+        snapshot=PythonSourceSnapshot.capture(path),
     )
 
     _use_session(monkeypatch, "B")
@@ -453,9 +453,8 @@ def test_mtime_only_change_still_reuses_analysis_from_shared(
         import_scan_mode="module_init",
     )
     assert result is not None
-    _, kinds, imports = result
+    _, kinds = result
     assert kinds == {"f": "sync"}
-    assert imports == ("os",)
 
 
 def test_same_size_different_content_is_not_reused(
@@ -575,7 +574,7 @@ def test_changed_tooling_fingerprint_is_not_reused_from_shared(
             }
         },
         func_kinds={"f": "sync"},
-        imports=[],
+        snapshot=PythonSourceSnapshot.capture(path),
     )
 
     # Session B with a DIFFERENT tooling fingerprint (a compiler/frontend change).

@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
     from molt.cli.module_graph import ModuleSyntaxErrorInfo
     from molt.cli.module_resolution import _ModuleResolutionCache
-    from molt.cli.module_source import _ModuleSourceCatalog
+    from molt.cli.module_source import _ModuleSourceCatalog, PythonSourceSnapshot
     from molt.cli.source_extension_link_requirements import (
         SourceExtensionLinkRequirements,
     )
@@ -171,6 +171,31 @@ class _ModuleGraphScanAuthority:
             }
             for source in sorted(self.sources, key=lambda source: source.module_name)
         ]
+
+
+@dataclass(frozen=True, slots=True)
+class _StaticSourcePath:
+    """An unevaluated path operation; filesystem effects belong to completion."""
+
+    operation: Literal[
+        "path", "join", "os_join", "posix_join", "nt_join", "resolve", "absolute"
+    ]
+    parts: tuple[str | _StaticSourcePath, ...]
+
+
+class _StaticSourceExecutionRequest(NamedTuple):
+    module_name: str | None
+    path: str | _StaticSourcePath
+
+
+class _ImportScanRequests(NamedTuple):
+    """Source-only requests, before package exports and filesystem resolution."""
+
+    imports: tuple[str, ...]
+    source_executions: tuple[_StaticSourceExecutionRequest, ...]
+    star_modules: tuple[str, ...] = ()
+    dynamic_relative_import_candidates: tuple[str, ...] = ()
+    requires_runtime_package_anchor: bool = False
 
 
 class _CompleteImportScan(NamedTuple):
@@ -638,7 +663,6 @@ class _FrontendLayerExecutionContext:
     path_stat_by_module: Mapping[str, os.stat_result | None] | None
     module_chunking: bool
     scoped_lowering_inputs: "_ScopedLoweringInputs | None"
-    dirty_lowering_modules: Collection[str]
     frontend_module_costs: Mapping[str, float]
     stdlib_like_by_module: Mapping[str, bool]
     known_classes: Mapping[str, Any]
@@ -676,7 +700,6 @@ class _SerialFrontendLoweringContext:
     generated_module_source_paths: Mapping[str, str]
     module_resolution_cache: "_ModuleResolutionCache"
     project_root: Path | None
-    dirty_lowering_modules: Collection[str]
     parse_codec: "ParseCodec"
     type_hint_policy: "TypeHintPolicy"
     fallback_policy: "FallbackPolicy"
@@ -1858,6 +1881,8 @@ class _PreparedEntryModuleGraph:
     native_artifact_plan: _ExternalPackageNativeArtifactPlan
     target_python: TargetPythonVersion
     runtime_import_scan_custody: _RuntimeImportScanCustody | None = None
+    project_root: Path | None = None
+    capability_config_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -1868,6 +1893,7 @@ class _ResolvedBuildEntry:
     entry_source: str
     entry_tree: ast.Module
     target_python: TargetPythonVersion
+    entry_snapshot: PythonSourceSnapshot | None = None
     external_module_roots: tuple[Path, ...] = ()
     image_scope: _BinaryImageScope | None = None
 
@@ -2100,7 +2126,6 @@ class _PreparedFrontendAnalysis:
     has_back_edges: bool
     module_layers: list[list[str]]
     module_dep_closures: dict[str, frozenset[str]]
-    dirty_lowering_modules: set[str]
     scc_serial_modules: frozenset[str] = frozenset()
 
 

@@ -9,6 +9,7 @@ import pytest
 import molt.cli as cli
 from molt.cli import module_graph
 from molt.cli import module_import_scanner
+from molt.cli.models import _StaticSourceExecutionRequest
 from molt.compiler_analysis import python_binding_flow
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
 from molt.target_python import TargetPythonVersion
@@ -26,8 +27,10 @@ _MODULE_IMPORT_SCANNER_NAMES = (
     "_collect_import_star_modules",
     "_collect_imports",
     "_collect_imports_for_graph",
-    "_expand_imports_with_static_package_all_star_children",
-    "_expand_imports_with_static_package_all_star_children_for_graph",
+    "_collect_import_scan_requests",
+    "_collect_static_source_execution_requests",
+    "_expand_static_package_all_star_children",
+    "_complete_import_scan",
     "_explicit_imports_reference_generated_importer",
     "_module_graph_needs_runtime_import_support",
     "_module_init_static_helper_scan_nodes",
@@ -58,8 +61,10 @@ _MODULE_IMPORT_SCANNER_DEFINITIONS = (
     "def _collect_import_star_modules(",
     "def _collect_imports(",
     "def _collect_imports_for_graph(",
-    "def _expand_imports_with_static_package_all_star_children(",
-    "def _expand_imports_with_static_package_all_star_children_for_graph(",
+    "def _collect_import_scan_requests(",
+    "def _collect_static_source_execution_requests(",
+    "def _expand_static_package_all_star_children(",
+    "def _complete_import_scan(",
     "def _explicit_imports_reference_generated_importer(",
     "def _module_graph_needs_runtime_import_support(",
     "def _module_init_static_helper_scan_nodes(",
@@ -122,9 +127,9 @@ def test_direct_synthetic_scans_retain_digest_fallback(
     monkeypatch.setattr(python_binding_flow, "python_ast_digest", record_digest)
     assert "pkg" in module_import_scanner._collect_imports(tree)
     assert module_import_scanner._collect_import_star_modules(tree) == ("pkg",)
-    assert module_import_scanner._collect_static_source_executions(
+    assert module_import_scanner._collect_static_source_execution_requests(
         tree, source_path=tmp_path / "entry.py"
-    ) == (module_import_scanner._StaticSourceExecution("loaded", loaded.resolve()),)
+    ) == (_StaticSourceExecutionRequest("loaded", "loaded.py"),)
     assert calls == 3
 
 

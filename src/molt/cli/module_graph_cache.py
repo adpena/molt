@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Collection
 import functools
 import hashlib
-import json
 import os
 from pathlib import Path
-from typing import Any, NamedTuple, cast
+from typing import Any
 
 from molt.cli.artifact_state import _build_state_subdir_cached
 from molt.cli.artifact_sync import (
@@ -17,28 +15,15 @@ from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
     _source_tree_fingerprint_transaction,
 )
-from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
-from molt.cli import module_resolution as _module_resolution
 from molt.cli import module_source as _module_source
 from molt.cli.models import (
     ImportScanMode,
-    _CompleteImportScan as _PersistedImportScan,
-    _ModuleGraphScanAuthority,
-    _ModuleSourceScanAuthority,
-    _ImportAdmissionPolicy,
+    _ImportScanRequests,
+    _StaticSourceExecutionRequest,
+    _StaticSourcePath,
 )
 from molt.cli.runtime_paths import _build_state_root
-from molt.target_python import (
-    TargetPythonVersion,
-    _DEFAULT_TARGET_PYTHON_VERSION,
-)
-
-
-class _PersistedModuleGraphState(NamedTuple):
-    graph: dict[str, Path]
-    explicit_imports: set[str]
-    dirty_modules: set[str]
-    scan_authority: _ModuleGraphScanAuthority
+from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
 
 
 @functools.lru_cache(maxsize=4096)
@@ -48,76 +33,8 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
-_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 12
-
-
-# v8 allowed imports-only producers to publish a false empty execution list.
-# There is no sound way to distinguish those rows from complete empty scans.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 10
-
-
-def _module_graph_policy_digest(
-    stdlib_allowlist: Collection[str],
-    import_admission_policy: _ImportAdmissionPolicy | None = None,
-    *,
-    allow_entry_external_imports: bool = True,
-) -> str:
-    admission_policy = import_admission_policy or _ImportAdmissionPolicy()
-    payload = json.dumps(
-        {
-            "stdlib_allowlist": sorted(stdlib_allowlist),
-            "import_admission": admission_policy.digest_payload(),
-            "allow_entry_external_imports": allow_entry_external_imports,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
-
-
-@functools.lru_cache(maxsize=1024)
-def _module_graph_cache_key(
-    entry_path: str,
-    roots: tuple[str, ...],
-    module_roots: tuple[str, ...],
-    stdlib_root: str,
-    skip_modules: tuple[str, ...],
-    stub_parents: tuple[str, ...],
-    stdlib_static_import_helper_modules: tuple[str, ...],
-    stdlib_allowlist_digest: str,
-    compiler_fingerprint: str,
-    target_python_tag: str = _DEFAULT_TARGET_PYTHON_VERSION.tag,
-    capability_config_digest: str = "",
-    *,
-    full_scan_roots: bool,
-    scan_input_digest: str = "",
-) -> str:
-    payload: dict[str, Any] = {
-        "version": _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
-        "full_scan_roots": full_scan_roots,
-        "scan_input_digest": scan_input_digest,
-        "compiler_fingerprint": compiler_fingerprint,
-        "entry_path": str(Path(entry_path).resolve()),
-        "roots": [str(Path(path).resolve()) for path in roots],
-        "module_roots": [str(Path(path).resolve()) for path in module_roots],
-        "stdlib_root": str(Path(stdlib_root).resolve()),
-        "skip_modules": list(skip_modules),
-        "stub_parents": list(stub_parents),
-        "stdlib_static_import_helper_modules": list(
-            stdlib_static_import_helper_modules
-        ),
-        "stdlib_allowlist_digest": stdlib_allowlist_digest,
-        "target_python": target_python_tag,
-    }
-    if capability_config_digest:
-        payload["capability_config_digest"] = capability_config_digest
-    return hashlib.sha256(
-        json.dumps(
-            payload,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()[:24]
+# Completed projections from older schemas are never admitted as source requests.
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 11
 
 
 def _import_scan_cache_path(
@@ -150,279 +67,43 @@ def _import_scan_cache_path(
     return root / f"{path.stem}.{cache_key}.json"
 
 
-def _module_graph_cache_path(
-    project_root: Path,
-    entry_path: Path,
-    *,
-    roots: list[Path],
-    full_scan_roots: bool,
-    module_roots: list[Path],
-    stdlib_root: Path,
-    skip_modules: set[str],
-    stub_parents: set[str],
-    stdlib_static_import_helper_modules: set[str],
-    stdlib_allowlist: set[str],
-    import_admission_policy: _ImportAdmissionPolicy | None = None,
-    allow_entry_external_imports: bool = True,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
-    scan_input_digest: str = "",
-) -> Path:
-    root = _build_state_subdir_cached(
-        os.fspath(_build_state_root(project_root)),
-        "module_graph_cache",
-    )
-    cache_key = _module_graph_cache_key(
-        os.fspath(entry_path),
-        tuple(os.fspath(path) for path in roots),
-        tuple(os.fspath(path) for path in module_roots),
-        os.fspath(stdlib_root),
-        tuple(sorted(skip_modules)),
-        tuple(sorted(stub_parents)),
-        tuple(sorted(stdlib_static_import_helper_modules)),
-        _module_graph_policy_digest(
-            stdlib_allowlist,
-            import_admission_policy,
-            allow_entry_external_imports=allow_entry_external_imports,
-        ),
-        _frontend_semantic_tooling_fingerprint(),
-        target_python.tag,
-        capability_config_digest=capability_config_digest,
-        full_scan_roots=full_scan_roots,
-        scan_input_digest=scan_input_digest,
-    )
-    return root / f"{entry_path.stem}.{cache_key}.json"
-
-
-@_source_tree_fingerprint_transaction()
-def _read_persisted_module_graph(
-    project_root: Path,
-    entry_path: Path,
-    *,
-    roots: list[Path],
-    full_scan_roots: bool,
-    module_roots: list[Path],
-    stdlib_root: Path,
-    skip_modules: set[str],
-    stub_parents: set[str],
-    stdlib_static_import_helper_modules: set[str],
-    stdlib_allowlist: set[str],
-    import_admission_policy: _ImportAdmissionPolicy | None = None,
-    allow_entry_external_imports: bool = True,
-    resolution_cache: _module_resolution._ModuleResolutionCache | None = None,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
-    scan_input_digest: str = "",
-    source_input_authority: _ModuleGraphScanAuthority | None = None,
-) -> _PersistedModuleGraphState | None:
-    cache_path = _module_graph_cache_path(
-        project_root,
-        entry_path,
-        roots=roots,
-        full_scan_roots=full_scan_roots,
-        scan_input_digest=scan_input_digest,
-        module_roots=module_roots,
-        stdlib_root=stdlib_root,
-        skip_modules=skip_modules,
-        stub_parents=stub_parents,
-        stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
-        stdlib_allowlist=stdlib_allowlist,
-        import_admission_policy=import_admission_policy,
-        allow_entry_external_imports=allow_entry_external_imports,
-        target_python=target_python,
-        capability_config_digest=capability_config_digest,
-    )
-    payload = _read_cached_json_object(cache_path)
-    if payload is None:
-        return None
-    if (
-        not isinstance(payload, dict)
-        or payload.get("version") != _MODULE_GRAPH_CACHE_SCHEMA_VERSION
-        or payload.get("full_scan_roots") is not full_scan_roots
-        or payload.get("scan_input_digest", "") != scan_input_digest
-        or payload.get("compiler_fingerprint")
-        != _frontend_semantic_tooling_fingerprint()
-        or payload.get("capability_config_digest", "") != capability_config_digest
-    ):
-        return None
-    raw_modules = payload.get("modules")
-    if not isinstance(raw_modules, list):
-        return None
-    graph: dict[str, Path] = {}
-    dirty_modules: set[str] = set()
-    scan_sources: list[_ModuleSourceScanAuthority] = []
-    for item in raw_modules:
-        if not isinstance(item, dict):
-            return None
-        module_name = item.get("module")
-        path_text = item.get("path")
-        size = item.get("size")
-        mtime_ns = item.get("mtime_ns")
-        source_sha256 = item.get("source_sha256")
-        if (
-            not isinstance(module_name, str)
-            or not isinstance(path_text, str)
-            or not isinstance(size, int)
-            or not isinstance(mtime_ns, int)
-            or not isinstance(source_sha256, str)
-        ):
-            return None
-        path = Path(path_text)
-        mode = item.get("scan_mode")
-        if mode not in {"full", "module_init", "module_init_static_helpers"}:
-            return None
-        is_package = item.get("is_package")
-        requires_runtime_package_anchor = item.get("requires_runtime_package_anchor")
-        source_input = (
-            source_input_authority.by_module.get(module_name)
-            if source_input_authority is not None
-            else None
-        )
-        if source_input is not None and source_input.source_path != path.resolve():
-            return None
-        expected_package = (
-            source_input.is_package
-            if source_input is not None
-            else path.name == "__init__.py"
-        )
-        if (
-            not isinstance(is_package, bool)
-            or is_package != expected_package
-            or not isinstance(requires_runtime_package_anchor, bool)
-            or source_input is not None
-            and source_input.requires_runtime_package_anchor
-            != requires_runtime_package_anchor
-        ):
-            return None
-        from molt.cli.module_import_scanner import _module_import_scan_mode
-
-        expected_mode = _module_import_scan_mode(
-            module_name,
-            full_scan=full_scan_roots and path.resolve() == entry_path.resolve(),
-            static_import_helper_modules=stdlib_static_import_helper_modules,
-        )
-        if mode != expected_mode or module_name in graph:
-            return None
-        scan_sources.append(
-            _ModuleSourceScanAuthority(
-                module_name,
-                path,
-                cast(ImportScanMode, mode),
-                is_package,
-                requires_runtime_package_anchor,
-            )
-        )
-        if not _module_resolution._case_exact_file(path):
-            dirty_modules.add(module_name)
-            graph[module_name] = path
-            continue
-        try:
-            stat = (
-                resolution_cache.path_stat(path)
-                if resolution_cache is not None
-                else path.stat()
-            )
-        except OSError:
-            dirty_modules.add(module_name)
-            graph[module_name] = path
-            continue
-        if (
-            stat.st_size != size
-            or stat.st_mtime_ns != mtime_ns
-            or _module_source._source_content_sha256(path, stat) != source_sha256
-        ):
-            dirty_modules.add(module_name)
-        graph[module_name] = path
-    if not any(path.resolve() == entry_path.resolve() for path in graph.values()):
-        return None
-    raw_explicit_imports = payload.get("explicit_imports", [])
-    if not isinstance(raw_explicit_imports, list) or not all(
-        isinstance(name, str) for name in raw_explicit_imports
-    ):
-        return None
-    return _PersistedModuleGraphState(
-        graph=graph,
-        explicit_imports=set(cast(list[str], raw_explicit_imports)),
-        dirty_modules=dirty_modules,
-        scan_authority=_ModuleGraphScanAuthority(tuple(scan_sources)),
-    )
-
-
-@_source_tree_fingerprint_transaction()
-def _write_persisted_module_graph(
-    project_root: Path,
-    entry_path: Path,
-    *,
-    roots: list[Path],
-    full_scan_roots: bool,
-    module_roots: list[Path],
-    stdlib_root: Path,
-    skip_modules: set[str],
-    stub_parents: set[str],
-    stdlib_static_import_helper_modules: set[str],
-    stdlib_allowlist: set[str],
-    import_admission_policy: _ImportAdmissionPolicy | None = None,
-    allow_entry_external_imports: bool = True,
-    graph: dict[str, Path],
-    scan_authority: _ModuleGraphScanAuthority,
-    explicit_imports: set[str],
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
-    scan_input_digest: str = "",
-) -> None:
-    scan_authority.validate_graph(graph)
-    modules: list[dict[str, Any]] = []
-    for module_name, path in sorted(graph.items()):
-        if not _module_resolution._case_exact_file(path):
-            return
-        stat = path.stat()
-        source_sha256 = _module_source._source_content_sha256(path, stat)
-        if source_sha256 is None:
-            return
-        modules.append(
-            {
-                "module": module_name,
-                "scan_mode": scan_authority.mode_for(module_name, path),
-                "is_package": scan_authority.by_module[module_name].is_package,
-                "requires_runtime_package_anchor": (
-                    scan_authority.by_module[
-                        module_name
-                    ].requires_runtime_package_anchor
-                ),
-                "path": str(path),
-                "size": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
-                "source_sha256": source_sha256,
-            }
-        )
-    payload = {
-        "version": _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
-        "full_scan_roots": full_scan_roots,
-        "scan_input_digest": scan_input_digest,
-        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
-        "capability_config_digest": capability_config_digest,
-        "modules": modules,
-        "explicit_imports": sorted(explicit_imports),
+def _encode_source_path(path: str | _StaticSourcePath) -> Any:
+    if isinstance(path, str):
+        return path
+    return {
+        "operation": path.operation,
+        "parts": [_encode_source_path(part) for part in path.parts],
     }
-    cache_path = _module_graph_cache_path(
-        project_root,
-        entry_path,
-        roots=roots,
-        full_scan_roots=full_scan_roots,
-        scan_input_digest=scan_input_digest,
-        module_roots=module_roots,
-        stdlib_root=stdlib_root,
-        skip_modules=skip_modules,
-        stub_parents=stub_parents,
-        stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
-        stdlib_allowlist=stdlib_allowlist,
-        import_admission_policy=import_admission_policy,
-        allow_entry_external_imports=allow_entry_external_imports,
-        target_python=target_python,
-        capability_config_digest=capability_config_digest,
+
+
+def _decode_source_path(payload: Any) -> str | _StaticSourcePath:
+    if isinstance(payload, str):
+        return payload
+    if not isinstance(payload, dict):
+        raise ValueError("invalid source path request")
+    operation = payload.get("operation")
+    parts = payload.get("parts")
+    if (
+        not isinstance(operation, str)
+        or operation
+        not in {
+            "path",
+            "join",
+            "resolve",
+            "absolute",
+            "os_join",
+            "posix_join",
+            "nt_join",
+        }
+        or not isinstance(parts, list)
+        or not parts
+        or operation not in {"join", "os_join", "posix_join", "nt_join"}
+        and len(parts) != 1
+    ):
+        raise ValueError("invalid source path operation")
+    return _StaticSourcePath(
+        operation, tuple(_decode_source_path(part) for part in parts)
     )
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_cached_json_object(cache_path, payload)
 
 
 @_source_tree_fingerprint_transaction()
@@ -434,9 +115,10 @@ def _read_persisted_import_scan_record(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     path_stat: os.stat_result | None = None,
+    snapshot: _module_source.PythonSourceSnapshot | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
-) -> _PersistedImportScan | None:
+) -> _ImportScanRequests | None:
     cache_path = _import_scan_cache_path(
         project_root,
         path,
@@ -460,45 +142,50 @@ def _read_persisted_import_scan_record(
         or payload.get("capability_config_digest", "") != capability_config_digest
     ):
         return None
-    if path_stat is None:
+    if snapshot is not None:
+        if (
+            snapshot.path != path
+            or payload.get("size") != len(snapshot.content)
+            or payload.get("source_sha256") != snapshot.sha256
+        ):
+            return None
+    else:
         try:
-            path_stat = path.stat()
+            if path_stat is None:
+                path_stat = path.stat()
         except OSError:
             return None
-    if not _module_source._payload_source_matches(payload, path, path_stat):
-        return None
-    imports = payload.get("imports")
-    if not isinstance(imports, list) or not all(
-        isinstance(item, str) for item in imports
-    ):
-        return None
+        if not _module_source._payload_source_matches(payload, path, path_stat):
+            return None
+    fields = ("imports", "star_modules", "dynamic_relative_import_candidates")
+    for field in fields:
+        values = payload.get(field)
+        if not isinstance(values, list) or not all(
+            isinstance(item, str) for item in values
+        ):
+            return None
+    requires_anchor = payload.get("requires_runtime_package_anchor")
     raw_executions = payload.get("source_executions")
-    if not isinstance(raw_executions, list):
+    if not isinstance(requires_anchor, bool) or not isinstance(raw_executions, list):
         return None
-    executions: list[tuple[str | None, Path]] = []
-    for raw_execution in raw_executions:
-        if not isinstance(raw_execution, dict):
+    executions: list[_StaticSourceExecutionRequest] = []
+    for item in raw_executions:
+        if not isinstance(item, dict):
             return None
-        execution_module = raw_execution.get("module")
-        execution_path = raw_execution.get("path")
-        if (
-            execution_module is not None and not isinstance(execution_module, str)
-        ) or not isinstance(execution_path, str):
+        name = item.get("module")
+        if name is not None and not isinstance(name, str):
             return None
-        executions.append((execution_module, Path(execution_path)))
-    dynamic_candidates = payload.get("dynamic_relative_import_candidates")
-    requires_runtime_package_anchor = payload.get("requires_runtime_package_anchor")
-    if (
-        not isinstance(dynamic_candidates, list)
-        or not all(isinstance(item, str) for item in dynamic_candidates)
-        or not isinstance(requires_runtime_package_anchor, bool)
-    ):
-        return None
-    return _PersistedImportScan(
-        tuple(imports),
+        try:
+            request_path = _decode_source_path(item.get("path"))
+        except (ValueError, RecursionError):
+            return None
+        executions.append(_StaticSourceExecutionRequest(name, request_path))
+    return _ImportScanRequests(
+        tuple(payload["imports"]),
         tuple(executions),
-        tuple(dynamic_candidates),
-        requires_runtime_package_anchor,
+        tuple(payload["star_modules"]),
+        tuple(payload["dynamic_relative_import_candidates"]),
+        requires_anchor,
     )
 
 
@@ -510,22 +197,16 @@ def _write_persisted_import_scan(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
-    scan: _PersistedImportScan,
+    scan: _ImportScanRequests,
+    snapshot: _module_source.PythonSourceSnapshot,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
 ) -> None:
-    cache_path = _import_scan_cache_path(
-        project_root,
-        path,
-        module_name=module_name,
-        is_package=is_package,
-        import_scan_mode=import_scan_mode,
-        target_python=target_python,
-        capability_config_digest=capability_config_digest,
-    )
-    stat = path.stat()
-    source_sha256 = _module_source._source_content_sha256(path, stat)
-    if source_sha256 is None:
+    if snapshot.path != path:
+        raise ValueError("source scan snapshot path mismatch")
+    identity = {"size": len(snapshot.content), "source_sha256": snapshot.sha256}
+    # A publication is for the captured generation, never a later pathname hash.
+    if not _module_source._payload_source_matches(identity, path, path.stat()):
         return
     payload = {
         "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
@@ -535,21 +216,26 @@ def _write_persisted_import_scan(
         "is_package": is_package,
         "import_scan_mode": import_scan_mode,
         "target_python": target_python.tag,
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
-        "source_sha256": source_sha256,
+        **identity,
         "imports": list(scan.imports),
+        "star_modules": list(scan.star_modules),
         "source_executions": [
-            {
-                "module": execution_module,
-                "path": os.fspath(execution_path.resolve()),
-            }
-            for execution_module, execution_path in scan.source_executions
+            {"module": request.module_name, "path": _encode_source_path(request.path)}
+            for request in scan.source_executions
         ],
         "dynamic_relative_import_candidates": list(
             scan.dynamic_relative_import_candidates
         ),
         "requires_runtime_package_anchor": scan.requires_runtime_package_anchor,
     }
+    cache_path = _import_scan_cache_path(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode=import_scan_mode,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_artifact_sync_payload(cache_path, payload)

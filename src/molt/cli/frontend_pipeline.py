@@ -44,7 +44,6 @@ from molt.cli.module_dependencies import (
     _PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST,
     _analyze_module_schedule,
     _apply_dead_module_elimination,
-    _dependent_module_closure,
     _module_dependencies_from_imports,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
@@ -227,8 +226,6 @@ def _prepare_frontend_analysis(
     module_trees: dict[str, ast.AST] = {}
     module_path_stats: dict[str, os.stat_result | None] = {}
     syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
-    analysis_cache_miss_modules: set[str] = set()
-    interface_changed_modules: set[str] = set()
     for module_name, module_path in module_graph.items():
         try:
             (
@@ -237,8 +234,7 @@ def _prepare_frontend_analysis(
                 func_defaults,
                 func_kinds,
                 source,
-                analysis_cache_hit,
-                interface_changed,
+                _analysis_cache_hit,
                 path_stat,
             ) = _load_module_analysis(
                 module_path,
@@ -266,10 +262,6 @@ def _prepare_frontend_analysis(
             module_source_leases[module_name] = _ModuleSourceLease.path_backed(
                 module_path, path_stat
             )
-            if not analysis_cache_hit:
-                analysis_cache_miss_modules.add(module_name)
-            if interface_changed:
-                interface_changed_modules.add(module_name)
         except SyntaxError as exc:
             if module_name == entry_module:
                 return None, _fail(
@@ -313,15 +305,6 @@ def _prepare_frontend_analysis(
         scc_serial_modules,
     ) = _analyze_module_schedule(module_graph, module_deps)
     module_source_catalog = _ModuleSourceCatalog(leases=module_source_leases)
-    dirty_lowering_modules = set(analysis_cache_miss_modules)
-    dirty_lowering_modules.update(
-        _dependent_module_closure(
-            interface_changed_modules,
-            module_deps,
-            module_graph,
-            reverse_module_deps=reverse_module_deps,
-        )
-    )
     return _PreparedFrontendAnalysis(
         module_graph_metadata=module_graph_metadata,
         module_deps=module_deps,
@@ -337,7 +320,6 @@ def _prepare_frontend_analysis(
         has_back_edges=has_back_edges,
         module_layers=module_layers,
         module_dep_closures=module_dep_closures,
-        dirty_lowering_modules=dirty_lowering_modules,
         scc_serial_modules=scc_serial_modules,
     ), None
 
@@ -767,6 +749,7 @@ def _prepare_frontend_stage_state(
         stdlib_root=stdlib_root,
         project_root=project_root,
         entry_tree=entry_tree,
+        entry_snapshot=resolved_build_entry.entry_snapshot,
         module_reasons=module_reasons,
         diagnostics_enabled=diagnostics_enabled,
         json_output=json_output,
@@ -1200,7 +1183,6 @@ def _prepare_frontend_pipeline(
         module_path_stats=prepared_frontend_analysis.module_path_stats,
         module_chunking=prepared_frontend_lowering_config.module_chunking,
         scoped_lowering_inputs=prepared_frontend_lowering_config.scoped_lowering_inputs,
-        dirty_lowering_modules=prepared_frontend_analysis.dirty_lowering_modules,
         frontend_module_costs=prepared_frontend_lowering_config.frontend_module_costs,
         stdlib_like_by_module=prepared_frontend_lowering_config.stdlib_like_by_module,
         known_classes=prepared_frontend_lowering_config.known_classes,

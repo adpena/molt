@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable, Collection
+from collections.abc import Callable
 import functools
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeVar
 
 from molt.cli import module_source as _module_source
 from molt.cli.models import (
@@ -23,6 +22,7 @@ from molt.target_python import (
 from molt.cli.project_roots import _is_path_within
 
 _ModuleRootAliases = tuple[tuple[str, Path], ...]
+_ResolutionContext = tuple[tuple[Path, ...], Path, frozenset[str]]
 _ImportScanCacheKey = tuple[
     Path,
     str | None,
@@ -32,18 +32,6 @@ _ImportScanCacheKey = tuple[
     str,
     _RuntimeImportScanCustody | None,
 ]
-_RawImportScan = TypeVar("_RawImportScan")
-_CachedImportScan = TypeVar("_CachedImportScan")
-
-
-def _tuple_import_scan(imports: Collection[str]) -> tuple[str, ...]:
-    return tuple(imports)
-
-
-def _graph_import_scan(
-    projection: _ImportDiscoveryProjection,
-) -> _ImportDiscoveryProjection:
-    return projection
 
 
 def _is_ascii_identifier_part(part: str) -> bool:
@@ -332,19 +320,25 @@ def _resolve_module_path_parts(
 
 @dataclass
 class _ModuleResolutionCache:
-    roots_cache: dict[str, list[Path]] = field(default_factory=dict)
-    resolve_cache: dict[tuple[str, _ModuleRootAliases], Path | None] = field(
+    roots_cache: dict[tuple[str, _ResolutionContext], list[Path]] = field(
         default_factory=dict
     )
-    namespace_dir_cache: dict[str, bool] = field(default_factory=dict)
+    resolve_cache: dict[
+        tuple[str, _ModuleRootAliases, _ResolutionContext], Path | None
+    ] = field(default_factory=dict)
+    namespace_dir_cache: dict[tuple[str, _ResolutionContext], bool] = field(
+        default_factory=dict
+    )
     resolved_path_cache: dict[Path, Path] = field(default_factory=dict)
     resolved_roots_cache: dict[tuple[Path, ...], tuple[Path, ...]] = field(
         default_factory=dict
     )
     source_cache: dict[Path, str] = field(default_factory=dict)
     source_error_cache: dict[Path, Exception] = field(default_factory=dict)
-    ast_cache: dict[tuple[Path, str, str], ast.Module] = field(default_factory=dict)
-    ast_error_cache: dict[tuple[Path, str, str], SyntaxError] = field(
+    ast_cache: dict[tuple[Path, str, str, str], ast.Module] = field(
+        default_factory=dict
+    )
+    ast_error_cache: dict[tuple[Path, str, str, str], SyntaxError] = field(
         default_factory=dict
     )
     runtime_import_protocol_cache: dict[
@@ -358,9 +352,6 @@ class _ModuleResolutionCache:
     ) = None
     module_name_context_cache: dict[Path, str] = field(default_factory=dict)
     stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
-    import_scan_cache: dict[_ImportScanCacheKey, tuple[str, ...]] = field(
-        default_factory=dict
-    )
     graph_import_scan_cache: dict[_ImportScanCacheKey, _ImportDiscoveryProjection] = (
         field(default_factory=dict)
     )
@@ -377,12 +368,13 @@ class _ModuleResolutionCache:
         stdlib_root: Path,
         stdlib_allowlist: set[str],
     ) -> list[Path]:
-        candidate_roots = self.roots_cache.get(module_name)
+        key = (module_name, (tuple(roots), stdlib_root, frozenset(stdlib_allowlist)))
+        candidate_roots = self.roots_cache.get(key)
         if candidate_roots is None:
             candidate_roots = _roots_for_module(
                 module_name, roots, stdlib_root, stdlib_allowlist
             )
-            self.roots_cache[module_name] = candidate_roots
+            self.roots_cache[key] = candidate_roots
         return candidate_roots
 
     def module_parts(self, module_name: str) -> tuple[str, ...]:
@@ -403,7 +395,11 @@ class _ModuleResolutionCache:
         if module_name.startswith("molt.stdlib."):
             cache_name = f"stdlib:{module_name}"
         module_root_aliases = _module_root_aliases_from_env()
-        cache_key = (cache_name, module_root_aliases)
+        cache_key = (
+            cache_name,
+            module_root_aliases,
+            (tuple(roots), stdlib_root, frozenset(stdlib_allowlist)),
+        )
         if cache_key not in self.resolve_cache:
             alias_path = _resolve_module_alias_path(module_name, module_root_aliases)
             if alias_path is not None:
@@ -429,13 +425,14 @@ class _ModuleResolutionCache:
         stdlib_root: Path,
         stdlib_allowlist: set[str],
     ) -> bool:
-        has_namespace_dir = self.namespace_dir_cache.get(module_name)
+        key = (module_name, (tuple(roots), stdlib_root, frozenset(stdlib_allowlist)))
+        has_namespace_dir = self.namespace_dir_cache.get(key)
         if has_namespace_dir is None:
             candidate_roots = self.roots_for_module(
                 module_name, roots, stdlib_root, stdlib_allowlist
             )
             has_namespace_dir = _has_namespace_dir(module_name, candidate_roots)
-            self.namespace_dir_cache[module_name] = has_namespace_dir
+            self.namespace_dir_cache[key] = has_namespace_dir
         return has_namespace_dir
 
     def resolved_path(self, path: Path) -> Path:
@@ -562,7 +559,7 @@ class _ModuleResolutionCache:
         target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
         retain: bool = True,
     ) -> ast.Module:
-        cache_key = (self.resolved_path(path), filename, target_python.tag)
+        cache_key = (self.resolved_path(path), filename, target_python.tag, source)
         if not retain:
             return _parse_source_for_target(
                 source,
@@ -587,21 +584,20 @@ class _ModuleResolutionCache:
         self.ast_cache[cache_key] = tree
         return tree
 
-    def _collect_import_scan(
+    def collect_graph_imports(
         self,
         path: Path,
         tree: ast.AST,
         *,
-        collector: Callable[..., _RawImportScan],
-        cache: dict[_ImportScanCacheKey, _CachedImportScan],
-        normalize: Callable[[_RawImportScan], _CachedImportScan],
+        collector: Callable[..., _ImportDiscoveryProjection],
         module_name: str | None = None,
         is_package: bool = False,
         import_scan_mode: ImportScanMode = "full",
         target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
         runtime_import_custody: _RuntimeImportScanCustody | None = None,
         ast_digest_admission: _PythonAstDigestAdmission | None = None,
-    ) -> _CachedImportScan:
+    ) -> _ImportDiscoveryProjection:
+        """Cache source graph facts, never strict import acceptance or live edges."""
         ast_digest_admission = _PythonAstDigestAdmission.for_tree(
             tree, ast_digest_admission
         )
@@ -625,7 +621,7 @@ class _ModuleResolutionCache:
             ast_digest_admission.digest,
             runtime_import_custody,
         )
-        cached = cache.get(cache_key)
+        cached = self.graph_import_scan_cache.get(cache_key)
         if cached is not None:
             return cached
         custody_kwargs = (
@@ -636,75 +632,17 @@ class _ModuleResolutionCache:
             if runtime_import_custody is not None
             else {}
         )
-        result = normalize(
-            collector(
-                tree,
-                module_name,
-                is_package,
-                import_scan_mode=import_scan_mode,
-                target_python=target_python,
-                ast_digest_admission=ast_digest_admission,
-                **custody_kwargs,
-            )
+        result = collector(
+            tree,
+            module_name,
+            is_package,
+            import_scan_mode=import_scan_mode,
+            target_python=target_python,
+            ast_digest_admission=ast_digest_admission,
+            **custody_kwargs,
         )
-        cache[cache_key] = result
+        self.graph_import_scan_cache[cache_key] = result
         return result
-
-    def collect_imports(
-        self,
-        path: Path,
-        tree: ast.AST,
-        *,
-        collector: Callable[..., Collection[str]],
-        module_name: str | None = None,
-        is_package: bool = False,
-        import_scan_mode: ImportScanMode = "full",
-        target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-        runtime_import_custody: _RuntimeImportScanCustody | None = None,
-        ast_digest_admission: _PythonAstDigestAdmission | None = None,
-    ) -> tuple[str, ...]:
-        return self._collect_import_scan(
-            path,
-            tree,
-            collector=collector,
-            cache=self.import_scan_cache,
-            normalize=_tuple_import_scan,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-            target_python=target_python,
-            runtime_import_custody=runtime_import_custody,
-            ast_digest_admission=ast_digest_admission,
-        )
-
-    def collect_graph_imports(
-        self,
-        path: Path,
-        tree: ast.AST,
-        *,
-        collector: Callable[..., _ImportDiscoveryProjection],
-        module_name: str | None = None,
-        is_package: bool = False,
-        import_scan_mode: ImportScanMode = "full",
-        target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-        runtime_import_custody: _RuntimeImportScanCustody | None = None,
-        ast_digest_admission: _PythonAstDigestAdmission | None = None,
-    ) -> _ImportDiscoveryProjection:
-        """Cache the graph projection without conflating it with strict imports."""
-
-        return self._collect_import_scan(
-            path,
-            tree,
-            collector=collector,
-            cache=self.graph_import_scan_cache,
-            normalize=_graph_import_scan,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-            target_python=target_python,
-            runtime_import_custody=runtime_import_custody,
-            ast_digest_admission=ast_digest_admission,
-        )
 
     def uses_runtime_import_protocol(
         self,

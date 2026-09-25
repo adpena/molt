@@ -13,7 +13,7 @@ cache. Neither retains ASTs or analyzer state. Projection retries retain complet
 core facts, and concurrent failure waiters receive independent exception objects.
 Import-flow projection retains all assignment-effect and metadata-mutation
 requirements; context sharing never relaxes version, platform, or provenance
-gates. Persisted graph identity still includes the complete binding policy,
+gates. Persisted compiler/tooling closure identity includes the complete binding policy,
 analysis schema, and parser version.
 
 The binding profiler measures cold analysis and same-source context batches
@@ -31,9 +31,24 @@ depth.
 
 Graph merges reject conflicting source paths or package identity and preserve the
 strongest completed mode. A source already present in the graph must still be
-rescanned when a caller promotes it. Strict persisted graph receipts restore and
-validate the same modes; their keys include root role and complete precomputed
-input identity. An imports-only tuple cannot stand in for a complete source scan.
+rescanned when a caller promotes it. Every operation reconstructs the graph using
+live candidate resolution; no persisted whole-graph receipt can hide a newly
+created module or a higher-priority shadow. An imports-only tuple cannot stand
+in for a complete source scan.
+
+The persisted scan contains only source-pure requests: unexpanded imports,
+star-package names, dynamic-relative facts, and unevaluated loader/runpy paths.
+One completion step resolves current package exports, children, loader targets,
+directory entry points, ordered roots, and stdlib policy. Path operations remain
+ordered requests, so resolving a symlink before joining a parent segment is
+replayed correctly. Resolver memos include roots and allowlist context.
+
+One byte snapshot owns decoding (including encoding cookies and BOM), source
+hash, and parse input. Publication uses that captured hash, never a later file
+generation, and rejects changed content. Supplied source or AST remains
+operation-local rather than reading or publishing strict disk records. Function
+analysis caches retain defaults and kinds only; every consumer admits imports
+through the same source-request loader.
 
 Precomputed records carry both imports and source-execution edges, with source
 content, target, mode, and capability identity. Selected native helper slices are
@@ -52,7 +67,9 @@ published.
 Runtime custody remains a separate permission boundary: only verified owner
 sources may use it, every owner scan must be full-depth, and native-only artifacts
 never acquire source custody. A changed catalog creates new custody and rescans
-owners under it. Strict persisted source records never carry runtime custody.
+owners under it. Owners never read or publish strict records; non-owner sources
+may reuse pure requests and complete them live. Strict records never carry
+runtime custody.
 
 Generated module sources use one content-addressed writer keyed only by canonical
 module name and emitted text; the text never embeds its generated filename.
@@ -60,11 +77,11 @@ Importer and namespace identities remain explicit in the graph; synthetic/native
 roots carry complete precomputed records that force their original Python names.
 Native helper-root growth may transfer an admitted generated source only from an
 exact prior slice receipt whose retained roots are a subset of the new selection.
-Dependencies resolve through enclosing admitted source authority, and persisted
-graph inputs include that authority. The shared import collector keys and forwards
+Dependencies resolve through enclosing admitted source authority. The shared
+import collector keys and forwards
 the target Python version used to certify each complete scan.
 
-Persisted graph package roles are checked against exact admitted or precomputed
-source authority when present; generated filenames never redefine that role.
+Package roles come from exact admitted or precomputed source authority when
+present; generated filenames never redefine that role.
 Native-artifact package support parsing and collection use the artifact admission
 request's selected Python target.

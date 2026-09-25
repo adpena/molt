@@ -184,6 +184,7 @@ def _wrapper_build_dependency_fingerprints(
                     stdlib_root=stdlib_root,
                     project_root=project_root,
                     entry_tree=resolved_build_entry.entry_tree,
+                    entry_snapshot=resolved_build_entry.entry_snapshot,
                     diagnostics_enabled=False,
                     module_reasons=module_reasons,
                     json_output=False,

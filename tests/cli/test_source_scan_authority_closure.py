@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import copy
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -11,7 +10,9 @@ from molt.cli import module_graph as graphs
 from molt.cli import module_graph_cache as graph_cache
 from molt.cli import module_graph_discovery as discovery
 from molt.cli import module_import_scanner as scanner
+from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.models import (
+    _ImportScanRequests,
     _BinaryImageScope,
     _CompleteImportScan,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
@@ -68,7 +69,7 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
     def forbidden(*args, **kwargs):
         raise AssertionError("warm graph receipt must not repeat source scans")
 
-    monkeypatch.setattr(discovery, "_load_module_import_scan", forbidden)
+    monkeypatch.setattr(scanner, "_collect_import_scan_requests", forbidden)
     for full in (first_full, not first_full):
         result = _discover(helper, tmp_path, full=full, project=tmp_path)
         assert result.scan_authority == expected[full].scan_authority
@@ -166,6 +167,7 @@ def test_complete_precomputed_scan_rejects_mode_path_and_content_drift(
     )
     record = discovery._bind_precomputed_module_import_scan(
         source,
+        snapshot=PythonSourceSnapshot.capture(source),
         module_name="entry",
         import_scan_mode="full",
         scan=expected_scan,
@@ -204,8 +206,9 @@ def test_persisted_import_scan_roundtrip_preserves_dynamic_discovery_fact(
         "_frontend_semantic_tooling_fingerprint",
         lambda: "dynamic-relative-imports",
     )
-    expected = _CompleteImportScan(
+    expected = _ImportScanRequests(
         ("ssl",),
+        (),
         (),
         ("pkg.child",),
         True,
@@ -218,6 +221,7 @@ def test_persisted_import_scan_roundtrip_preserves_dynamic_discovery_fact(
         is_package=False,
         import_scan_mode="full",
         scan=expected,
+        snapshot=PythonSourceSnapshot.capture(source),
     )
 
     assert (
@@ -413,14 +417,15 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
     # Source/AST retention is operation-scoped: changing an owner after discovery
     # must not combine the new custody generation with the old retained parse.
     owner.write_text("OWNER_REVISION = 2\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="runtime import custody source AST changed"):
-        graphs._finalize_runtime_import_closure(
-            **common,
-            explicit_imports={"leaf", "late"},
-            dispatch_roots=second.dispatch_roots,
-            previous_custody=second.custody,
-        )
-    # A fresh operation may admit the changed source, never the prior owner.
+    refreshed = graphs._finalize_runtime_import_closure(
+        **common,
+        explicit_imports={"leaf", "late"},
+        dispatch_roots=second.dispatch_roots,
+        previous_custody=second.custody,
+    )
+    assert refreshed.custody is not None
+    assert refreshed.custody.owner_ast_digests != second.custody.owner_ast_digests
+    # Source-keyed AST memoization also makes a fresh operation agree.
     common["module_resolution_cache"] = _ModuleResolutionCache()
     changed = graphs._finalize_runtime_import_closure(
         **common,
@@ -432,6 +437,7 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
     assert changed.custody.owners == second.custody.owners
     assert changed.custody.catalog == second.custody.catalog
     assert changed.custody.owner_ast_digests != second.custody.owner_ast_digests
+    assert changed.custody == refreshed.custody
     assert extend.call_count > extensions
 
 
@@ -762,7 +768,7 @@ def test_graph_cache_binds_admitted_source_generation(
     def forbidden(*args, **kwargs):
         raise AssertionError("generation-specific graph receipt should be warm")
 
-    monkeypatch.setattr(discovery, "_load_module_import_scan", forbidden)
+    monkeypatch.setattr(scanner, "_collect_import_scan_requests", forbidden)
     for generation in (first, second):
         assert discover(generation).graph["support"] == generation != original
 
@@ -786,39 +792,26 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
         import_scan_mode: str,
         target_python: TargetPythonVersion,
         ast_digest_admission: _PythonAstDigestAdmission,
-    ) -> list[str]:
+    ) -> _ImportDiscoveryProjection:
         assert ast_digest_admission.tree is tree
         calls.append(target_python.tag)
-        return [target_python.tag]
+        return _ImportDiscoveryProjection((target_python.tag,))
 
     for target in (
         TargetPythonVersion(3, 12, 0),
         TargetPythonVersion(3, 13, 0),
         TargetPythonVersion(3, 12, 0),
     ):
-        assert cache.collect_imports(
+        assert cache.collect_graph_imports(
             source,
             tree,
             collector=collector,
             module_name="entry",
             target_python=target,
-        ) == (target.tag,)
+        ).imports == (target.tag,)
     assert calls == ["py312", "py313"]
 
-    def graph_collector(
-        tree: ast.AST,
-        module_name: str | None,
-        is_package: bool,
-        *,
-        import_scan_mode: str,
-        target_python: TargetPythonVersion,
-        ast_digest_admission: _PythonAstDigestAdmission,
-    ) -> _ImportDiscoveryProjection:
-        assert ast_digest_admission.tree is tree
-        calls.append(target_python.tag)
-        return _ImportDiscoveryProjection((target_python.tag,))
-
-    monkeypatch.setattr(scanner, "_collect_imports_for_graph", graph_collector)
+    monkeypatch.setattr(scanner, "_collect_imports_for_graph", collector)
     target = TargetPythonVersion(3, 13, 0)
     loaded = discovery._load_module_import_scan(
         source,
@@ -861,6 +854,7 @@ def test_generated_package_graph_cache_validates_source_role_authority(
         source_inputs["precomputed_scans_by_path"] = {
             generated.resolve(): discovery._bind_precomputed_module_import_scan(
                 generated,
+                snapshot=PythonSourceSnapshot.capture(generated),
                 module_name="pkg",
                 import_scan_mode="full",
                 is_package=True,
@@ -891,22 +885,9 @@ def test_generated_package_graph_cache_validates_source_role_authority(
     def cold_scan(*args, **kwargs):
         raise AssertionError("cold source scan")
 
-    monkeypatch.setattr(discovery, "_load_module_import_scan", cold_scan)
+    monkeypatch.setattr(scanner, "_collect_import_scan_requests", cold_scan)
     warm = discover()
     assert warm.graph == first.graph
     assert warm.scan_authority == first.scan_authority
-    read_payload = graph_cache._read_cached_json_object
-
-    def mismatched_package_role(path):
-        payload = copy.deepcopy(read_payload(path))
-        if payload is not None:
-            for module in payload.get("modules", ()):
-                if module["module"] == "pkg":
-                    module["is_package"] = False
-        return payload
-
-    monkeypatch.setattr(
-        graph_cache, "_read_cached_json_object", mismatched_package_role
-    )
-    with pytest.raises(AssertionError, match="cold source scan"):
-        discover()
+    assert not hasattr(graph_cache, "_read_persisted_module_graph")
+    assert not hasattr(graph_cache, "_write_persisted_module_graph")

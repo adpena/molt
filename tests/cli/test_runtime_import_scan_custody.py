@@ -128,23 +128,28 @@ def test_intrinsic_globals_escape_requires_exact_runtime_source_custody(
             collect()
 
 
-def test_custodied_scan_does_not_populate_strict_memory_cache(tmp_path: Path) -> None:
+def test_graph_cache_keeps_custody_separate_from_strict_acceptance(
+    tmp_path: Path,
+) -> None:
     owner, custody = _custody(tmp_path)
     tree = ast.parse("__package__ = choose_package()\nfrom . import child\n")
     cache = _ModuleResolutionCache()
-    assert set(
-        cache.collect_imports(
-            owner,
-            tree,
-            collector=_collect_imports,
-            module_name="pkg.entry",
-            runtime_import_custody=custody,
-        )
-    ) == set(custody.modules)
+    custodied = cache.collect_graph_imports(
+        owner,
+        tree,
+        collector=_collect_imports_for_graph,
+        module_name="pkg.entry",
+        runtime_import_custody=custody,
+    )
+    assert set(custodied.imports) == set(custody.modules)
+    uncustodied = cache.collect_graph_imports(
+        owner, tree, collector=_collect_imports_for_graph, module_name="pkg.entry"
+    )
+    assert uncustodied == _collect_imports_for_graph(tree, "pkg.entry")
+    assert uncustodied != custodied
+    assert uncustodied.requires_runtime_package_anchor
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        cache.collect_imports(
-            owner, tree, collector=_collect_imports, module_name="pkg.entry"
-        )
+        _collect_imports(tree, "pkg.entry", source_path=owner)
 
 
 @pytest.mark.parametrize(
@@ -234,7 +239,7 @@ def test_graph_projection_does_not_hide_non_anchor_resolution_errors() -> None:
         )
 
 
-def test_graph_and_strict_scan_caches_are_distinct_and_ast_digest_keyed(
+def test_graph_scan_cache_is_ast_digest_keyed_without_certifying_strict_imports(
     tmp_path: Path,
 ) -> None:
     owner = tmp_path / "entry.py"
@@ -261,12 +266,7 @@ def test_graph_and_strict_scan_caches_are_distinct_and_ast_digest_keyed(
     assert "pkg.second" in second_projection.dynamic_relative_import_candidates
     assert first_projection != second_projection
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        cache.collect_imports(
-            owner,
-            tree,
-            collector=_collect_imports,
-            module_name="pkg.entry",
-        )
+        _collect_imports(tree, "pkg.entry", source_path=owner)
 
 
 def test_custody_seed_preserves_alias_names_for_one_shared_source(
@@ -473,19 +473,19 @@ def test_source_claim_cannot_authorize_substituted_ast_or_cache_hit(
 ) -> None:
     owner, custody = _custody(tmp_path)
     cache = _ModuleResolutionCache()
-    cache.collect_imports(
+    cache.collect_graph_imports(
         owner,
         ast.parse(owner.read_text()),
-        collector=_collect_imports,
+        collector=_collect_imports_for_graph,
         module_name="pkg.entry",
         runtime_import_custody=custody,
     )
     substituted_tree = ast.parse("__package__ = attacker()\nfrom . import secret\n")
     with pytest.raises(ValueError, match="source AST changed"):
-        cache.collect_imports(
+        cache.collect_graph_imports(
             owner,
             substituted_tree,
-            collector=_collect_imports,
+            collector=_collect_imports_for_graph,
             module_name="pkg.entry",
             runtime_import_custody=custody,
         )
@@ -647,10 +647,10 @@ def test_every_owner_scan_entry_rejects_incomplete_depth(
                 source_path=owner,
             )
         elif consumer == "cache":
-            _ModuleResolutionCache().collect_imports(
+            _ModuleResolutionCache().collect_graph_imports(
                 owner,
                 tree,
-                collector=_collect_imports,
+                collector=_collect_imports_for_graph,
                 module_name="pkg.entry",
                 import_scan_mode=mode,
                 runtime_import_custody=custody,
