@@ -1,5 +1,27 @@
 # Source scan authority
 
+Lexical binding fixpoints are shared by source identity and a typed flow policy:
+target Python version, target platform, canonical-import provenance, and deferred
+body analysis. Module name, spec name, package role, and execution kind belong to
+the subsequent import-context projection, not the fixpoint. A static scan asks
+for core facts directly; import discovery and lowering project their own context
+over the same immutable fact tuples and lookup maps.
+
+One single-flight FIFO cache implementation governs both levels. Up to 128 core
+entries each own up to eight projections; core eviction releases its projection
+cache. Neither retains ASTs or analyzer state. Projection retries retain completed
+core facts, and concurrent failure waiters receive independent exception objects.
+Import-flow projection retains all assignment-effect and metadata-mutation
+requirements; context sharing never relaxes version, platform, or provenance
+gates. Persisted graph identity still includes the complete binding policy,
+analysis schema, and parser version.
+
+The binding profiler measures cold analysis and same-source context batches
+separately. Fact telemetry describes the computation that created shared facts;
+it is not work performed again on a cache hit. The process-lifetime fixpoint
+counter measures actual starts (including failed attempts). Historical source
+roots without that counter report unavailable, not zero.
+
 A closure result carries its graph, explicit imports, and immutable source scan
 authority. Each module identity binds a resolved source path, package execution
 identity, and effective scan mode. Entry/static/spawn roots request full scans;

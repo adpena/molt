@@ -8,7 +8,7 @@ hash, and share across compiler consumers.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import IntFlag
 from types import MappingProxyType
 from collections.abc import Callable, Sequence
@@ -749,17 +749,12 @@ class PythonBindingTelemetry:
 
 
 @dataclass(frozen=True, slots=True)
-class PythonBindingIndex:
-    """Immutable query surface shared by import and frontend consumers."""
+class PythonBindingFacts:
+    """Context-independent immutable facts and their shared query mappings."""
 
     source_digest: str
     target_python: tuple[int, int]
     target_sys_platform: str | None
-    module_name: str | None
-    module_spec_name: str | None
-    module_is_package: bool
-    module_execution_kind: str
-    module_import_flow: ModuleImportFlow
     expressions: tuple[PythonExpressionFact, ...]
     statements: tuple[PythonStatementFact, ...]
     iterations: tuple[tuple[PythonNodeKey, PythonIterationFact], ...]
@@ -781,11 +776,6 @@ class PythonBindingIndex:
         source_digest: str,
         target_python: tuple[int, int],
         target_sys_platform: str | None,
-        module_name: str | None,
-        module_spec_name: str | None,
-        module_is_package: bool,
-        module_execution_kind: str,
-        module_import_flow: ModuleImportFlow,
         expressions: tuple[PythonExpressionFact, ...],
         statements: tuple[PythonStatementFact, ...],
         iterations: tuple[tuple[PythonNodeKey, PythonIterationFact], ...],
@@ -795,16 +785,11 @@ class PythonBindingIndex:
         state_count: int,
         telemetry: PythonBindingTelemetry,
         slot_names: tuple[str, ...],
-    ) -> PythonBindingIndex:
+    ) -> PythonBindingFacts:
         return cls(
             source_digest=source_digest,
             target_python=target_python,
             target_sys_platform=target_sys_platform,
-            module_name=module_name,
-            module_spec_name=module_spec_name,
-            module_is_package=module_is_package,
-            module_execution_kind=module_execution_kind,
-            module_import_flow=module_import_flow,
             expressions=expressions,
             statements=statements,
             iterations=iterations,
@@ -884,6 +869,42 @@ class PythonBindingIndex:
         return None if fact is None else fact.static_value
 
 
+@dataclass(frozen=True, slots=True)
+class PythonBindingIndex(PythonBindingFacts):
+    """One module-context projection sharing the completed lexical facts."""
+
+    module_name: str | None
+    module_spec_name: str | None
+    module_is_package: bool
+    module_execution_kind: str
+    module_import_flow: ModuleImportFlow
+
+    @classmethod
+    def from_facts(
+        cls,
+        facts: PythonBindingFacts,
+        *,
+        module_name: str | None,
+        module_spec_name: str | None,
+        module_is_package: bool,
+        module_execution_kind: str,
+        module_import_flow: ModuleImportFlow,
+    ) -> PythonBindingIndex:
+        # Do not asdict/deepcopy or reconstruct lookups here. Every context
+        # shares the exact immutable tuples, payloads and mapping owners.
+        return cls(
+            **{
+                item.name: getattr(facts, item.name)
+                for item in fields(PythonBindingFacts)
+            },
+            module_name=module_name,
+            module_spec_name=module_spec_name,
+            module_is_package=module_is_package,
+            module_execution_kind=module_execution_kind,
+            module_import_flow=module_import_flow,
+        )
+
+
 __all__ = [
     "ALL_INVALID_MEMBERS",
     "BUILTIN_SHAPE_IDENTITIES",
@@ -892,6 +913,7 @@ __all__ = [
     "MemberMask",
     "NO_IDENTITIES",
     "OTHER_IDENTITY",
+    "PythonBindingFacts",
     "PythonBindingIndex",
     "PythonBindingTelemetry",
     "PythonCallSiteFact",

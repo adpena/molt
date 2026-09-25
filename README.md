@@ -114,4 +114,5 @@ For compatibility and proof detail:
 - Contributor map: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)
 - Operations and multi-agent workflow: [docs/OPERATIONS.md](docs/OPERATIONS.md)
 - Build storage, output lifetimes, and proof custody: [docs/agent/PROOF_QUEUE.md](docs/agent/PROOF_QUEUE.md#cargo-output-placement)
+- Shared frontend analysis and cache boundaries: [source scan authority](docs/internals/source_scan_authority.md)
 - Benchmark workflows: [docs/BENCHMARKING.md](docs/BENCHMARKING.md)

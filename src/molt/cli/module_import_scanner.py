@@ -28,7 +28,9 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonParameterRef,
 )
 from molt.compiler_analysis.python_binding_flow import (
+    PythonBindingFlowPolicy,
     PythonBindingPolicy,
+    analyze_python_binding_facts,
     analyze_python_bindings,
 )
 from molt.compiler_analysis.python_imports import (
@@ -530,10 +532,10 @@ def _static_scan_nodes(
     ast_digest_admission = _PythonAstDigestAdmission.for_tree(
         tree, ast_digest_admission
     )
-    binding_index = analyze_python_bindings(
+    binding_index = analyze_python_binding_facts(
         tree,
         source_digest=ast_digest_admission.digest,
-        policy=PythonBindingPolicy(target_python=target_python.feature_version),
+        policy=PythonBindingFlowPolicy(target_python=target_python.feature_version),
     )
     nodes: list[ast.AST] = []
     included_qualnames = frozenset(included_function_qualnames)
