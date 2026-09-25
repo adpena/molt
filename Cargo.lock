@@ -3021,6 +3021,9 @@ dependencies = [
 [[package]]
 name = "molt-launcher"
 version = "0.1.0"
+dependencies = [
+ "dunce",
+]
 
 [[package]]
 name = "molt-passes"

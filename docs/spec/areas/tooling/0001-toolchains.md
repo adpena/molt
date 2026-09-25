@@ -243,6 +243,11 @@ compiler's Python dependencies with ambient project configuration. The shared
 native/WASM runtime Cargo plan always uses `--locked`, independent of guest
 determinism settings. Installed metadata identifies the bundled source commit
 and compiler toolchain, not a containing guest Git repository or toolchain.
+The native launcher resolves the bundle from its executable, including package-
+manager symlinks. Windows paths use lossless Win32-compatible canonical spelling
+where possible, so the same source root remains usable by Python, Cargo and C
+toolchains; namespace prefixes are never stripped when that would change path
+identity.
 Installed dependency-update commands cannot rewrite sealed source inputs; use
 the package manager or a new bundle to upgrade the compiler. Package SBOMs do
 not infer a built artifact's Rust toolchain from a probe on the packaging host;

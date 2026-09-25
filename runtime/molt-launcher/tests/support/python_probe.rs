@@ -34,6 +34,10 @@ fn main() {
     );
     #[cfg(windows)]
     {
+        assert!(
+            !args[5].to_string_lossy().starts_with(r"\\?\"),
+            "ordinary installed roots must be consumable by Win32 C toolchains"
+        );
         assert_eq!(
             env::var("PYTHON_MANAGER_AUTOMATIC_INSTALL").as_deref(),
             Ok("false")
