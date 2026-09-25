@@ -213,7 +213,7 @@ def test_static_bool_int_identity_reaches_writes_interning_join_and_facts(
     assert raw_bool != raw_int
     assert pool.intern(raw_bool) != pool.intern(raw_int)
     # Public fact equality uses the same exact static identity, not dataclass ==.
-    node = flow._Analyzer(flow.PythonBindingPolicy(), "static-identity")._node_key(
+    node = flow._Analyzer(flow.PythonBindingFlowPolicy(), "static-identity")._node_key(
         ast.parse("x").body[0]
     )
     fact = PythonExpressionFact(node, 0, INERT, 0, True)
@@ -432,8 +432,8 @@ def test_two_way_join_reuses_exact_payloads_without_skipping_custody() -> None:
 
 
 def test_empty_module_needs_no_module_exit_join_and_telemetry_has_one_schema() -> None:
-    analyzer = flow._Analyzer(flow.PythonBindingPolicy(), "empty")
-    index = analyzer.analyze(ast.parse(""))
+    analyzer = flow._Analyzer(flow.PythonBindingFlowPolicy(), "empty")
+    index = analyzer.analyze(ast.parse("")).facts
     assert index.telemetry is not None
     assert index.telemetry.join_calls == 0
     from tools.profile_python_binding_flow import _analysis_telemetry
@@ -462,8 +462,8 @@ def outer(flag):
             flag = stop()
     return inner
 """
-    analyzer = flow._Analyzer(flow.PythonBindingPolicy(), "exception-fold")
-    index = analyzer.analyze(ast.parse(source))
+    analyzer = flow._Analyzer(flow.PythonBindingFlowPolicy(), "exception-fold")
+    index = analyzer.analyze(ast.parse(source)).facts
     assert index.telemetry is not None
     assert index.telemetry.observation_fold_calls > 0
     assert index.telemetry.observation_fold_new_parents > 0

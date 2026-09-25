@@ -211,6 +211,23 @@ def test_iterating_a_name_bound_to_a_constant_display_stays_static() -> None:
     )
 
 
+def test_static_and_context_scans_share_one_binding_fixpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    tree = ast.parse("if True:\n    from . import child\n")
+    module_import_scanner._static_scan_nodes(tree, include_function_bodies=False)
+    core = next(iter(flow._CORE_CACHE._ready.values()))
+    assert not core.projections._ready
+    for name in ("first", "second"):
+        assert f"{name}.child" in module_import_scanner._collect_imports(
+            tree, module_name=name, is_package=True, import_scan_mode="module_init"
+        )
+    assert flow.python_binding_core_computations() == 1
+    assert len(core.projections._ready) == 2
+
+
 def test_builtin_binding_does_not_survive_unknown_callbacks() -> None:
     # The incoming NumPy-shaped source crosses descriptor/comparison/call
     # boundaries. For example os.environ.__contains__ can replace env_added
