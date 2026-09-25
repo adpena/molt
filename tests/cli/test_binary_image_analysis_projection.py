@@ -68,7 +68,6 @@ def _inputs(
         module_deps={name: set() for name in names},
         module_dep_closures={name: frozenset() for name in names},
         has_back_edges=False,
-        dirty_lowering_modules=set(),
     )
     return plan, analysis
 

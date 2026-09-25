@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import ast
+import ntpath
+import os
+import posixpath
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.models import (
     ImportScanMode,
     _ImportDiscoveryProjection,
+    _ImportScanRequests,
+    _CompleteImportScan,
+    _StaticSourceExecutionRequest,
+    _StaticSourcePath,
     _RuntimeImportScanCustody,
     _ModuleGraphScanAuthority,
     _RuntimeImportSupportPolicy,
@@ -239,20 +246,6 @@ class _StaticImportCallPayload:
     level: ast.expr | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _StaticSourceExecution:
-    """Compiler-admitted Python source executed through a loader or runpy.
-
-    Unlike an import request, the execution name and source path are independent:
-    ``spec_from_file_location`` may intentionally execute one file under an
-    arbitrary module name.  Keeping both values prevents the module graph from
-    guessing identity from the filesystem layout.
-    """
-
-    module_name: str | None
-    source_path: Path
-
-
 _STATIC_SOURCE_LOADER_TARGETS = frozenset(
     {
         "importlib.util.spec_from_file_location",
@@ -268,12 +261,20 @@ _STATIC_SOURCE_EXECUTION_MARKERS = (
     "run_path",
 )
 
+_STATIC_SOURCE_PATH_JOIN_OPERATIONS: Mapping[
+    str, Literal["os_join", "posix_join", "nt_join"]
+] = {
+    "os.path.join": "os_join",
+    "posixpath.join": "posix_join",
+    "ntpath.join": "nt_join",
+}
+
 
 def _source_may_use_static_source_execution(source: str) -> bool:
     return any(marker in source for marker in _STATIC_SOURCE_EXECUTION_MARKERS)
 
 
-def _collect_static_source_executions(
+def _collect_static_source_execution_requests(
     tree: ast.AST,
     *,
     source_path: Path,
@@ -281,7 +282,7 @@ def _collect_static_source_executions(
     module_name: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
-) -> tuple[_StaticSourceExecution, ...]:
+) -> tuple[_StaticSourceExecutionRequest, ...]:
     """Collect statically addressable loader/runpy source execution roots.
 
     This is the source-path projection of the import scanner.  It deliberately
@@ -307,7 +308,7 @@ def _collect_static_source_executions(
         "runpy": "runpy",
         "Path": "pathlib.Path",
     }
-    constants: dict[str, str | Path] = {}
+    constants: dict[str, str | _StaticSourcePath] = {}
 
     if isinstance(tree, ast.Module):
         for stmt in tree.body:
@@ -329,7 +330,7 @@ def _collect_static_source_executions(
             return None if base is None else f"{base}.{expr.attr}"
         return None
 
-    def static_value(expr: ast.expr) -> str | Path | None:
+    def static_value(expr: ast.expr) -> str | _StaticSourcePath | None:
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
             return expr.value
         if isinstance(expr, ast.Name):
@@ -345,25 +346,29 @@ def _collect_static_source_executions(
                 return left + right
             if (
                 isinstance(expr.op, ast.Div)
-                and isinstance(left, (str, Path))
-                and isinstance(right, (str, Path))
+                and isinstance(left, (str, _StaticSourcePath))
+                and isinstance(right, (str, _StaticSourcePath))
             ):
-                return Path(left) / Path(right)
+                return _StaticSourcePath("join", (left, right))
             return None
         if isinstance(expr, ast.Call):
             target = qualified_name(expr.func)
             if target == "pathlib.Path" and len(expr.args) == 1 and not expr.keywords:
                 value = static_value(expr.args[0])
-                return Path(value) if isinstance(value, (str, Path)) else None
+                return (
+                    _StaticSourcePath("path", (value,)) if value is not None else None
+                )
             if (
-                target in {"os.path.join", "posixpath.join", "ntpath.join"}
+                target is not None
+                and target in _STATIC_SOURCE_PATH_JOIN_OPERATIONS
                 and expr.args
             ):
                 parts = [static_value(arg) for arg in expr.args]
-                if all(isinstance(part, (str, Path)) for part in parts):
-                    path_parts = [Path(part) for part in parts if part is not None]
-                    head, *tail = path_parts
-                    return head.joinpath(*tail)
+                if all(part is not None for part in parts):
+                    return _StaticSourcePath(
+                        _STATIC_SOURCE_PATH_JOIN_OPERATIONS[target],
+                        tuple(part for part in parts if part is not None),
+                    )
             if (
                 isinstance(expr.func, ast.Attribute)
                 and expr.func.attr in {"resolve", "absolute"}
@@ -371,11 +376,11 @@ def _collect_static_source_executions(
                 and not expr.keywords
             ):
                 value = static_value(expr.func.value)
-                if isinstance(value, (str, Path)):
-                    path = Path(value)
-                    if not path.is_absolute():
-                        path = source_path.parent / path
-                    return path.resolve()
+                if value is not None:
+                    return _StaticSourcePath(
+                        "resolve" if expr.func.attr == "resolve" else "absolute",
+                        (value,),
+                    )
         return None
 
     # Module constants are the common authority for loader paths and remain
@@ -400,8 +405,8 @@ def _collect_static_source_executions(
             return call.args[position]
         return next((item.value for item in call.keywords if item.arg == keyword), None)
 
-    requests: list[_StaticSourceExecution] = []
-    seen: set[tuple[str | None, str]] = set()
+    requests: list[_StaticSourceExecutionRequest] = []
+    seen: set[_StaticSourceExecutionRequest] = set()
     for node in _scan_nodes_for_import_mode(
         tree,
         import_scan_mode,
@@ -431,20 +436,12 @@ def _collect_static_source_executions(
         else:
             continue
         path_value = static_value(path_expr) if path_expr is not None else None
-        if not isinstance(path_value, (str, Path)):
+        if path_value is None:
             continue
-        resolved = Path(path_value)
-        if not resolved.is_absolute():
-            resolved = source_path.parent / resolved
-        resolved = resolved.resolve()
-        if resolved.is_dir():
-            resolved = resolved / "__main__.py"
-        if resolved.suffix not in {".py", ".pyi"} or not resolved.is_file():
-            continue
-        key = request_name, str(resolved)
-        if key not in seen:
-            seen.add(key)
-            requests.append(_StaticSourceExecution(request_name, resolved))
+        request = _StaticSourceExecutionRequest(request_name, path_value)
+        if request not in seen:
+            seen.add(request)
+            requests.append(request)
     return tuple(requests)
 
 
@@ -1757,46 +1754,23 @@ def _collect_import_star_modules(
     return tuple(out)
 
 
-def _expand_imports_with_static_package_all_star_children(
+def _expand_static_package_all_star_children(
     imports: Collection[str],
-    tree: ast.AST,
+    star_modules: tuple[str, ...],
     *,
-    module_name: str | None,
-    is_package: bool,
-    import_scan_mode: ImportScanMode,
     roots: Sequence[Path],
     stdlib_root: Path,
     stdlib_allowlist: set[str],
-    resolution_cache: "_module_resolution._ModuleResolutionCache",
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    runtime_import_custody: _RuntimeImportScanCustody | None = None,
-    source_path: Path | None = None,
-    ast_digest_admission: _PythonAstDigestAdmission | None = None,
-    _dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
+    resolution_cache: _module_resolution._ModuleResolutionCache,
+    target_python: TargetPythonVersion,
 ) -> tuple[str, ...]:
-    out: list[str] = []
-    seen: set[str] = set()
+    out = list(dict.fromkeys(imports))
+    seen = set(out)
 
     def add(name: str) -> None:
         if name and name not in seen:
             seen.add(name)
             out.append(name)
-
-    for name in imports:
-        add(name)
-    star_modules = _collect_import_star_modules(
-        tree,
-        module_name,
-        is_package,
-        import_scan_mode=import_scan_mode,
-        target_python=target_python,
-        runtime_import_custody=runtime_import_custody,
-        source_path=source_path,
-        ast_digest_admission=ast_digest_admission,
-        _dynamic_relative_import_discovery=_dynamic_relative_import_discovery,
-    )
-    if not star_modules:
-        return tuple(out)
 
     roots_list = list(roots)
     for star_module in star_modules:
@@ -1840,40 +1814,125 @@ def _expand_imports_with_static_package_all_star_children(
     return tuple(out)
 
 
-def _expand_imports_with_static_package_all_star_children_for_graph(
+def _collect_import_scan_requests(
     projection: _ImportDiscoveryProjection,
     tree: ast.AST,
     *,
-    module_name: str | None,
+    source_path: Path,
+    module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
-    roots: Sequence[Path],
-    stdlib_root: Path,
-    stdlib_allowlist: set[str],
-    resolution_cache: "_module_resolution._ModuleResolutionCache",
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    runtime_import_custody: _RuntimeImportScanCustody | None = None,
-    source_path: Path | None = None,
-    ast_digest_admission: _PythonAstDigestAdmission | None = None,
-) -> _ImportDiscoveryProjection:
+    target_python: TargetPythonVersion,
+    runtime_import_custody: _RuntimeImportScanCustody | None,
+    ast_digest_admission: _PythonAstDigestAdmission,
+    source: str | None = None,
+) -> _ImportScanRequests:
     discovery = _DynamicRelativeImportDiscovery.from_projection(projection)
-    imports = _expand_imports_with_static_package_all_star_children(
-        projection.imports,
+    star_modules = _collect_import_star_modules(
         tree,
-        _dynamic_relative_import_discovery=discovery,
-        module_name=module_name,
-        is_package=is_package,
+        module_name,
+        is_package,
         import_scan_mode=import_scan_mode,
-        roots=roots,
-        stdlib_root=stdlib_root,
-        stdlib_allowlist=stdlib_allowlist,
-        resolution_cache=resolution_cache,
         target_python=target_python,
         runtime_import_custody=runtime_import_custody,
         source_path=source_path,
         ast_digest_admission=ast_digest_admission,
+        _dynamic_relative_import_discovery=discovery,
     )
-    return discovery.projection(imports)
+    executions = (
+        ()
+        if source is not None and not _source_may_use_static_source_execution(source)
+        else _collect_static_source_execution_requests(
+            tree,
+            source_path=source_path,
+            import_scan_mode=import_scan_mode,
+            module_name=module_name,
+            target_python=target_python,
+            ast_digest_admission=ast_digest_admission,
+        )
+    )
+    return _ImportScanRequests(
+        projection.imports,
+        executions,
+        star_modules,
+        tuple(discovery.candidates),
+        discovery.required,
+    )
+
+
+def _resolve_static_source_path(
+    request: str | _StaticSourcePath, source_path: Path
+) -> str | Path:
+    if isinstance(request, str):
+        return request
+    parts = tuple(
+        _resolve_static_source_path(part, source_path) for part in request.parts
+    )
+    head, *tail = parts
+    if request.operation == "join":
+        return Path(head).joinpath(*tail)
+    joiner = {
+        "os_join": os.path.join,
+        "posix_join": posixpath.join,
+        "nt_join": ntpath.join,
+    }.get(request.operation)
+    if joiner is not None:
+        return joiner(*(os.fspath(part) for part in parts))
+    head = Path(head)
+    if request.operation in {"resolve", "absolute"}:
+        if not head.is_absolute():
+            head = source_path.parent / head
+        return head.resolve() if request.operation == "resolve" else head.absolute()
+    return head
+
+
+def _complete_import_scan(
+    requests: _ImportScanRequests,
+    *,
+    source_path: Path,
+    roots: Sequence[Path] | None,
+    stdlib_root: Path | None,
+    stdlib_allowlist: set[str] | None,
+    resolution_cache: _module_resolution._ModuleResolutionCache,
+    target_python: TargetPythonVersion,
+) -> _CompleteImportScan:
+    """Resolve every filesystem-derived decision in this operation, including misses."""
+    imports = requests.imports
+    if requests.star_modules and (
+        roots is None or stdlib_root is None or stdlib_allowlist is None
+    ):
+        raise ValueError("star-import completion requires current resolution context")
+    if roots is not None and stdlib_root is not None and stdlib_allowlist is not None:
+        imports = _expand_static_package_all_star_children(
+            imports,
+            requests.star_modules,
+            roots=roots,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
+            resolution_cache=resolution_cache,
+            target_python=target_python,
+        )
+    executions: list[tuple[str | None, Path]] = []
+    seen: set[tuple[str | None, Path]] = set()
+    for request in requests.source_executions:
+        resolved = Path(_resolve_static_source_path(request.path, source_path))
+        if not resolved.is_absolute():
+            resolved = source_path.parent / resolved
+        resolved = resolved.resolve()
+        if resolved.is_dir():
+            resolved = resolved / "__main__.py"
+        if resolved.suffix not in {".py", ".pyi"} or not resolved.is_file():
+            continue
+        execution = (request.module_name, resolved)
+        if execution not in seen:
+            seen.add(execution)
+            executions.append(execution)
+    return _CompleteImportScan(
+        imports,
+        tuple(executions),
+        requests.dynamic_relative_import_candidates,
+        requests.requires_runtime_package_anchor,
+    )
 
 
 def _explicit_imports_reference_generated_importer(

@@ -363,7 +363,6 @@ def _make_execution_context(
         path_stat_by_module=None,
         module_chunking=False,
         scoped_lowering_inputs=None,
-        dirty_lowering_modules=set(),
         frontend_module_costs={name: 1.0 for name in names},
         stdlib_like_by_module={name: False for name in names},
         known_classes={},

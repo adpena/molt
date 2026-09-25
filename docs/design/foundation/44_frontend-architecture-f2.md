@@ -744,13 +744,14 @@ or the installed package parent. Both broad and semantic Python fingerprints and
 their graph seeds consume that exact root. Selecting an explicit alternate compiler
 checkout does not relocate the captured installed package: source roots stay paired
 with their actual layout rather than the mutable selected compiler root. A read-only installation may skip
-optional graph persistence, but still captures and hashes its real sources.
+optional compiler/tooling closure persistence, but still captures and hashes its real sources.
 
 Escaping `globals()` invalidates package metadata even when passed to a function
 spelled `require` or `_intrinsics.require`. No callee name grants metadata-purity
 authority. Assigned, direct, and joined calls obey the same binding-flow rule;
 subsequent unresolved relative imports require explicit runtime import-scan
-custody. The binding schema invalidates persisted graph facts when this rule changes.
+custody. The binding schema invalidates persisted source-scan requests and
+compiler/tooling closure facts when this rule changes.
 
 ## 7. Cross-references and relevant paths
 

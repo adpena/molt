@@ -108,7 +108,6 @@ def _run_batch(project_root: Path, module_graph: dict[str, Path]):
         path_stat_by_module=None,
         module_chunking=False,
         scoped_lowering_inputs=None,
-        dirty_lowering_modules=set(),
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         target_sys_platform=None,
         frontend_phase_timeout=None,
