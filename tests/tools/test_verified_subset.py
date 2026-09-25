@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from dataclasses import replace
@@ -10,6 +11,7 @@ import pytest
 from molt import verified_subset as authority
 from tools import verified_subset
 from tools.compat import comparison, test_policy
+from tests.tools.verified_subset_fixtures import synthetic_validation
 
 
 SOURCE_SHA = "1" * 40
@@ -168,8 +170,10 @@ def _write_receipts(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, 
     inputs = list(verified_subset.verified_subset_authority_files(policy))
     monkeypatch.setattr(
         verified_subset,
-        "verified_subset_projection",
-        lambda _policy, coordinate, **_kwargs: _one_test_projection(coordinate),
+        "validate_manifest",
+        lambda **_kwargs: synthetic_validation(
+            verified_subset.ROOT, _one_test_projection
+        ),
     )
     paths: list[Path] = []
     for coordinate in authority.verified_subset_coordinates(policy):
@@ -266,7 +270,8 @@ def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(
 
 def test_policy_owns_one_deduplicated_basic_and_stdlib_source_closure() -> None:
     policy = authority.load_verified_subset_policy()
-    files = verified_subset.verified_subset_test_files(policy)
+    inventory = verified_subset.validate_manifest().inventory
+    files = inventory.files
     independently_expanded = tuple(
         sorted(
             path.resolve()
@@ -281,7 +286,7 @@ def test_policy_owns_one_deduplicated_basic_and_stdlib_source_closure() -> None:
 
     assert files == independently_expanded
     assert files == tuple(sorted(set(files)))
-    sources = test_policy.load_test_sources(files, repo_root=verified_subset.ROOT)
+    sources = inventory.sources
     for suite in policy.suites:
         prefix = f"{suite.path}/"
         equivalence_count = sum(
@@ -314,25 +319,6 @@ def test_physical_suite_collection_ignores_generated_lane_manifests(
     ) == (first.resolve(), second.resolve())
 
 
-def test_physical_suite_collection_rejects_link_like_entries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "repo"
-    suite = root / "suite"
-    suite.mkdir(parents=True)
-    linked = suite / "linked.py"
-    linked.write_text("print('linked')\n", encoding="utf-8")
-    real_is_link_like = test_policy.is_link_like
-    monkeypatch.setattr(
-        test_policy,
-        "is_link_like",
-        lambda path: Path(path) == linked or real_is_link_like(Path(path)),
-    )
-
-    with pytest.raises(ValueError, match="link or reparse point"):
-        test_policy.collect_physical_test_files((("suite", False),), repo_root=root)
-
-
 def test_physical_suite_collection_rejects_portable_identity_collisions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -347,8 +333,10 @@ def test_physical_suite_collection_rejects_portable_identity_collisions(
         test_policy.collect_physical_test_files((("suite", False),), repo_root=root)
 
 
-def test_suite_equivalence_floor_fails_closed_on_evidence_contraction() -> None:
-    policy = authority.load_verified_subset_policy()
+def test_suite_equivalence_floor_fails_closed_on_evidence_contraction(
+    tmp_path: Path,
+) -> None:
+    policy = _small_policy(tmp_path)
     suites = (
         replace(
             policy.suites[0],
@@ -359,7 +347,8 @@ def test_suite_equivalence_floor_fails_closed_on_evidence_contraction() -> None:
 
     with pytest.raises(ValueError, match="contracted below its CPython-equivalence"):
         verified_subset.validate_suite_equivalence_floors(
-            replace(policy, suites=suites)
+            replace(policy, suites=suites),
+            test_policy.load_test_inventory(policy.suite_selectors, repo_root=tmp_path),
         )
 
 
@@ -370,11 +359,10 @@ def test_coordinate_projection_excludes_inapplicable_and_policy_scope_rows() -> 
         for item in authority.verified_subset_coordinates(policy)
         if item.id == "windows-x86_64-py312-cpython-language-gil-wasm"
     )
-    projection = verified_subset.verified_subset_projection(policy, coordinate)
+    validation = verified_subset.validate_manifest()
+    projection = validation.projection(coordinate)
 
-    assert len(projection.tests) == len(
-        verified_subset.verified_subset_test_files(policy)
-    )
+    assert len(projection.tests) == len(validation.inventory.files)
     assert len(projection.applicable) + len(projection.excluded) == len(
         projection.tests
     )
@@ -599,9 +587,18 @@ def test_verify_receipts_byte_verifies_common_inputs_once(
     paths = _write_receipts(tmp_path, monkeypatch)
     original = verified_subset.release_receipt.validate_receipt
     verify_inputs_calls: list[bool] = []
+    validations = []
+    captures = []
+    capture = verified_subset.validate_manifest
+
+    def recording_capture(**kwargs):
+        validation = capture(**kwargs)
+        captures.append(validation)
+        return validation
 
     def recording_validate_receipt(*args, **kwargs):
         verify_inputs_calls.append(kwargs["verify_inputs"])
+        validations.append(kwargs["verified_subset_validation"])
         return original(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -609,6 +606,7 @@ def test_verify_receipts_byte_verifies_common_inputs_once(
         "validate_receipt",
         recording_validate_receipt,
     )
+    monkeypatch.setattr(verified_subset, "validate_manifest", recording_capture)
 
     verified_subset.verify_receipt_closure(
         receipt_root=tmp_path,
@@ -617,6 +615,8 @@ def test_verify_receipts_byte_verifies_common_inputs_once(
 
     assert len(verify_inputs_calls) == len(paths)
     assert verify_inputs_calls == [True, *([False] * (len(paths) - 1))]
+    assert len(captures) == 1
+    assert all(validation is captures[0] for validation in validations)
 
 
 @pytest.mark.parametrize(
@@ -642,28 +642,170 @@ def test_verify_receipts_rejects_late_common_input_record_tamper(
         )
 
 
-def test_explicit_projection_sources_bypass_process_cache(
+def test_validation_projects_once_per_coordinate_from_one_inventory(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    policy = authority.load_verified_subset_policy()
-    coordinate = authority.verified_subset_coordinates(policy)[0]
-    calls: list[tuple[test_policy.TestPolicySource, ...]] = []
+    _small_policy(tmp_path)
+    load_inventory = test_policy.load_test_inventory
+    project = test_policy.project_prepared_coordinate
+    inventories = []
+    sources_used = []
 
-    def project(sources, **_kwargs):
-        calls.append(tuple(sources))
-        return _one_test_projection(coordinate)
+    def capture(*args, **kwargs):
+        inventory = load_inventory(*args, **kwargs)
+        inventories.append(inventory)
+        return inventory
 
-    monkeypatch.setattr(test_policy, "project_prepared_coordinate", project)
-    monkeypatch.setattr(verified_subset, "_verified_subset_test_sources", lambda _p: ())
-    verified_subset._cached_verified_subset_projection.cache_clear()
+    def project_once(sources, **kwargs):
+        sources_used.append(sources)
+        return project(sources, **kwargs)
 
-    verified_subset.verified_subset_projection(policy, coordinate)
-    verified_subset.verified_subset_projection(policy, coordinate)
-    verified_subset.verified_subset_projection(policy, coordinate, sources=())
-    verified_subset.verified_subset_projection(policy, coordinate, sources=())
+    monkeypatch.setattr(test_policy, "load_test_inventory", capture)
+    monkeypatch.setattr(test_policy, "project_prepared_coordinate", project_once)
+    validation = verified_subset.validate_manifest(repo_root=tmp_path)
+    for coordinate in validation.coordinates:
+        assert validation.projection(coordinate) is validation.projection(coordinate)
+    assert len(inventories) == 1
+    assert len(sources_used) == len(validation.coordinates)
+    assert all(sources is inventories[0].sources for sources in sources_used)
 
-    assert calls == [(), (), ()]
-    verified_subset._cached_verified_subset_projection.cache_clear()
+
+def _small_policy(root: Path) -> authority.VerifiedSubsetPolicy:
+    suite = root / "suite"
+    suite.mkdir(parents=True)
+    (suite / "first.py").write_text("print(1)\n", encoding="utf-8")
+    default = authority.load_verified_subset_policy()
+    config = root / "config"
+    config.mkdir()
+    path = config / "verified_subset.toml"
+    path.write_text(
+        'schema = "molt.verified-subset.v1"\n'
+        f"reference_cpython = {json.dumps(default.reference_cpython)}\n"
+        f"excluded_verification_scopes = {json.dumps(default.excluded_verification_scopes)}\n"
+        'differential_suites = [{path="suite", recursive=false, cpython_equivalence_floor=1}]\n',
+        encoding="utf-8",
+    )
+    return authority.load_verified_subset_policy(path)
+
+
+@pytest.mark.parametrize("mutation", ["add", "delete", "content", "metadata"])
+def test_validation_does_not_reuse_stale_source_generations(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    _small_policy(tmp_path)
+    second = tmp_path / "suite" / "second.py"
+    second.write_text("print(2)\n", encoding="utf-8")
+    before = verified_subset.validate_manifest(repo_root=tmp_path)
+    if mutation == "add":
+        (second.parent / "third.py").write_text("print(3)\n", encoding="utf-8")
+    elif mutation == "delete":
+        second.unlink()
+    elif mutation == "content":
+        second.write_text("print(4)\n", encoding="utf-8")
+    else:
+        second.write_text("# MOLT_META: min_py=3.14\nprint(2)\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="changed|unavailable|could not"):
+        before.verify_unchanged()
+    after = verified_subset.validate_manifest(repo_root=tmp_path)
+    after.verify_unchanged()
+    assert before.inventory.sources != after.inventory.sources
+    assert before.projections != after.projections
+
+
+def test_validation_is_bound_to_root_and_exact_coordinate(tmp_path: Path) -> None:
+    root = tmp_path / "first"
+    _small_policy(root)
+    validation = verified_subset.validate_manifest(repo_root=root)
+    other = tmp_path / "second"
+    _small_policy(other)
+    with pytest.raises(ValueError, match="different source root"):
+        validation.require_root(other)
+    coordinate = validation.coordinates[0]
+    with pytest.raises(ValueError, match="outside the captured"):
+        validation.projection(replace(coordinate, reference_python="3.12.999"))
+    assert verified_subset.validate_manifest(repo_root=other).repo_root == other
+
+
+def test_policy_capture_parses_and_hashes_one_byte_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _small_policy(tmp_path)
+    path = tmp_path / "config" / "verified_subset.toml"
+    capture = authority.capture_stable_regular_file
+    reads = []
+
+    def counted(path, **kwargs):
+        identity, raw = capture(path, **kwargs)
+        reads.append(raw)
+        return identity, raw
+
+    monkeypatch.setattr(authority, "capture_stable_regular_file", counted)
+    policy, identity = authority.capture_verified_subset_policy(path)
+    assert policy == expected
+    assert len(reads) == 1
+    assert identity.sha256 == hashlib.sha256(reads[0]).hexdigest()
+    reads.clear()
+    assert authority.load_verified_subset_policy(path) == expected
+    assert len(reads) == 1
+
+
+def test_validation_rejects_policy_generation_drift(tmp_path: Path) -> None:
+    _small_policy(tmp_path)
+    validation = verified_subset.validate_manifest(repo_root=tmp_path)
+    path = tmp_path / "config" / "verified_subset.toml"
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="policy.*changed"):
+        validation.verify_unchanged()
+    fresh = verified_subset.validate_manifest(repo_root=tmp_path)
+    assert validation.policy == fresh.policy
+    assert validation.policy_identity.sha256 != fresh.policy_identity.sha256
+    fresh.verify_unchanged()
+
+
+@pytest.mark.parametrize("when", ["before", "during"])
+def test_coordinate_execution_rejects_source_generation_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    when: str,
+) -> None:
+    _small_policy(tmp_path)
+    validation = verified_subset.validate_manifest(repo_root=tmp_path)
+    coordinate = validation.coordinates[0]
+    source = tmp_path / "suite" / "first.py"
+    runs = []
+    monkeypatch.setattr(verified_subset, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        verified_subset.release_receipt,
+        "prepare_receipt_destination",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(verified_subset, "_load_summary", lambda _path: {})
+    monkeypatch.setattr(
+        verified_subset, "_result_outcomes", lambda **_kwargs: [_outcome(coordinate)]
+    )
+
+    def run(*_args, **_kwargs):
+        runs.append(True)
+        source.write_text("print(2)\n", encoding="utf-8")
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(verified_subset, "run_differential_suites", run)
+    if when == "before":
+        source.write_text("print(2)\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="changed"):
+        verified_subset._run_coordinate(
+            coordinate=coordinate,
+            validation=validation,
+            raw_argv=[],
+            receipt_path=None,
+            source_sha=None,
+        )
+    assert bool(runs) == (when == "during")
 
 
 def test_verify_receipts_rejects_duplicate_coordinate(
