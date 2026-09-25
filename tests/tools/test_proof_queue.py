@@ -7515,7 +7515,7 @@ def test_proof_queue_prune_stale_run_id_canonicalizes_selected_stale_row(
 
 
 @pytest.mark.slow
-def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
+def test_proof_queue_wasm_rows_check_rust_target_before_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -7525,19 +7525,16 @@ def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
     calls: list[tuple[str, Path | None]] = []
     required_targets = ("wasm32-wasip1", "wasm32-unknown-unknown")
 
-    def fake_ensure(
-        target: str, warnings: list[str], *, root: Path | None = None
-    ) -> bool:
-        del warnings
+    def fake_readiness(target: str, *, root: Path) -> str | None:
         calls.append((target, root))
-        return True
+        return None
 
     fake_toolchain = SimpleNamespace(
         RustToolchainContractError=RuntimeError,
         rust_toolchain_contract=lambda repo_root: SimpleNamespace(
             required_wasm_targets=required_targets
         ),
-        ensure_rustup_target=fake_ensure,
+        rust_target_readiness_error=fake_readiness,
     )
     monkeypatch.setattr(policy, "_load_wasm_toolchain", lambda: fake_toolchain)
 
@@ -7566,19 +7563,16 @@ def test_proof_queue_wasm_preflight_fails_before_command(
     marker = tmp_path / "should-not-run"
     required_targets = ("wasm32-wasip1",)
 
-    def fake_ensure(
-        target: str, warnings: list[str], *, root: Path | None = None
-    ) -> bool:
+    def fake_readiness(target: str, *, root: Path) -> str | None:
         del root
-        warnings.append(f"missing {target}")
-        return False
+        return f"missing {target}"
 
     fake_toolchain = SimpleNamespace(
         RustToolchainContractError=RuntimeError,
         rust_toolchain_contract=lambda repo_root: SimpleNamespace(
             required_wasm_targets=required_targets
         ),
-        ensure_rustup_target=fake_ensure,
+        rust_target_readiness_error=fake_readiness,
     )
     monkeypatch.setattr(policy, "_load_wasm_toolchain", lambda: fake_toolchain)
 

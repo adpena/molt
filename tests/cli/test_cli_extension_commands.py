@@ -2089,9 +2089,6 @@ def test_extension_build_cross_target_uses_target_compiler_and_manifest(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
-        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
-    )
-    monkeypatch.setattr(
         cli_source_extension_toolchain,
         "resolve_llvm_wasi_tool_family",
         resolve_family,
@@ -2318,9 +2315,6 @@ def test_direct_build_audits_and_reseals_extracted_wheel(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(
-        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
-    )
     sysroot = _write_fake_wasi_sysroot(tmp_path)
     monkeypatch.setattr(cli_commands, "resolve_wasi_sysroot", lambda: sysroot)
     # This is a producer/wheel custody test, not a host compiler-discovery test.
@@ -3615,11 +3609,6 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
         "resolve_wasi_sysroot",
         lambda: pytest.fail("freestanding build must not probe WASI"),
     )
-    monkeypatch.setattr(
-        cli_commands,
-        "_ensure_rustup_target",
-        lambda _target, _warnings: True,
-    )
     _install_extension_object_symbol_facts(
         monkeypatch,
         default_init_symbol="PyInit_demoext",
@@ -3947,9 +3936,6 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
             ),
         },
     )
-    monkeypatch.setattr(
-        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
-    )
     wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
     monkeypatch.setattr(
         cli_commands,
@@ -4120,9 +4106,6 @@ def test_extension_build_wasm_source_recompiled_package_requires_export_custody(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
-    )
     wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
     monkeypatch.setattr(
         cli_commands,
@@ -4178,9 +4161,6 @@ def test_extension_build_wasm_source_recompiled_package_accepts_cli_python_expor
     _install_extension_object_symbol_facts(
         monkeypatch,
         default_init_symbol=init_symbol,
-    )
-    monkeypatch.setattr(
-        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
     )
     wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
     monkeypatch.setattr(
@@ -4251,9 +4231,6 @@ def test_extension_build_wasm_target_rejects_missing_direct_symbol(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(
-        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
-    )
     wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
     monkeypatch.setattr(
         cli_commands,
@@ -4292,9 +4269,6 @@ def test_extension_build_wasm_target_requires_wasi_sysroot(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(
-        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
-    )
     monkeypatch.setattr(
         cli_commands,
         "resolve_wasi_sysroot",
@@ -4365,9 +4339,6 @@ def test_extension_numpy_build_uses_compiled_link_closure_matrix(
     )
 
     if target is not None:
-        monkeypatch.setattr(
-            cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
-        )
         target_plan = _source_extension_target_plan(target)
         tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
             cc=_resolved_llvm_tool("cc", ("/usr/bin/zig", "cc")),

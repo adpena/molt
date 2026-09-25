@@ -27,7 +27,7 @@ if str(SRC_ROOT) not in sys.path:
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
-from molt.tool_releases import pinned_executable  # noqa: E402
+from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt._wasm_runtime_exports import wasm_runtime_export_link_args  # noqa: E402
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
@@ -85,8 +85,6 @@ _RUNTIME_ROOT = _wasm_runtime_root()
 RUNTIME_WASM = _RUNTIME_ROOT / "molt_runtime.wasm"
 RUNTIME_WASM_RELOC = _RUNTIME_ROOT / "molt_runtime_reloc.wasm"
 _LAST_BUILD_FAILURE_DETAIL: str | None = None
-_NODE_BIN_CACHE: str | None = None
-_MIN_NODE_MAJOR = 18
 _RUNTIME_SOURCE_MTIME: float | None = None
 
 
@@ -177,94 +175,6 @@ def _runtime_artifact_stale(path: Path) -> bool:
     except OSError:
         return True
     return _runtime_source_mtime() > artifact_mtime
-
-
-def _parse_node_major(version_text: str) -> int | None:
-    text = version_text.strip()
-    if text.startswith("v"):
-        text = text[1:]
-    head = text.split(".", 1)[0]
-    try:
-        return int(head)
-    except ValueError:
-        return None
-
-
-def _node_major_for_binary(path: str) -> int | None:
-    try:
-        res = harness_memory_guard.guarded_completed_process(
-            [path, "-p", "process.versions.node"],
-            prefix="MOLT_BENCH",
-            capture_output=True,
-            text=True,
-        )
-    except OSError:
-        return None
-    if res.returncode != 0:
-        return None
-    return _parse_node_major(res.stdout)
-
-
-def resolve_node_binary() -> str:
-    global _NODE_BIN_CACHE
-    if _NODE_BIN_CACHE is not None:
-        return _NODE_BIN_CACHE
-
-    requested = os.environ.get("MOLT_NODE_BIN", "").strip()
-    if requested:
-        major = _node_major_for_binary(requested)
-        if major is None:
-            raise RuntimeError(f"MOLT_NODE_BIN is not executable: {requested}")
-        if major < _MIN_NODE_MAJOR:
-            raise RuntimeError(
-                f"MOLT_NODE_BIN must be Node >= {_MIN_NODE_MAJOR} (got {major}): {requested}"
-            )
-        _NODE_BIN_CACHE = requested
-        return requested
-
-    # The pinned release under custody is the tree's Node when it is
-    # provisioned; the host's binaries are only the fallback.
-    pinned = pinned_executable("node", REPO_ROOT)
-    if pinned is not None:
-        major = _node_major_for_binary(str(pinned))
-        if major is not None and major >= _MIN_NODE_MAJOR:
-            _NODE_BIN_CACHE = str(pinned)
-            return _NODE_BIN_CACHE
-
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for candidate in (
-        shutil.which("node"),
-        "/opt/homebrew/bin/node",
-        "/usr/local/bin/node",
-    ):
-        if not candidate:
-            continue
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        candidates.append(candidate)
-
-    best_path: str | None = None
-    best_major = -1
-    for candidate in candidates:
-        major = _node_major_for_binary(candidate)
-        if major is None:
-            continue
-        if major > best_major:
-            best_path = candidate
-            best_major = major
-
-    if best_path is None:
-        raise RuntimeError(
-            "Node binary not found; install Node >= 18 or set MOLT_NODE_BIN."
-        )
-    if best_major < _MIN_NODE_MAJOR:
-        raise RuntimeError(
-            f"Detected Node {best_major} at {best_path}; Node >= {_MIN_NODE_MAJOR} required."
-        )
-    _NODE_BIN_CACHE = best_path
-    return best_path
 
 
 def _enable_line_buffering() -> None:
@@ -1229,7 +1139,13 @@ def _resolve_runner(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> list[str]:
     if runner == "node":
-        cmd = [resolve_node_binary()]
+        cmd = [
+            str(
+                resolve_node_runtime(
+                    source_root=REPO_ROOT, guard_prefix="MOLT_BENCH"
+                ).path
+            )
+        ]
         # Keep Node wasm execution deterministic and avoid post-run V8 tiering/OOM
         # incidents seen on large linked modules.
         cmd.extend(
@@ -1284,7 +1200,9 @@ def _node_has_websocket(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> bool:
     try:
-        node_bin = resolve_node_binary()
+        node_bin = str(
+            resolve_node_runtime(source_root=REPO_ROOT, guard_prefix="MOLT_BENCH").path
+        )
     except RuntimeError:
         return False
     cmd = [

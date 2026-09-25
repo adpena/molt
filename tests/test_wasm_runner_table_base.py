@@ -7,16 +7,131 @@ from pathlib import Path
 
 import pytest
 from molt._wasm_abi_generated import (
+    WASM_CALLABLE_TABLE_SECTION_NAME,
+    WASM_CALLABLE_TABLE_SECTION_VERSION,
+    WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
 )
 from tests.wasm_linked_runner import _run_wasm_test_process
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
+from tools.wasm_link_format import _write_varuint
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WASM_APP_TABLE_BASE = 256
 TEST_SHARED_WASM_TABLE_BASE = 4096
+
+
+def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(tmp_path: Path) -> None:
+    wasm_tools = shutil.which("wasm-tools")
+    if wasm_tools is None:
+        pytest.skip("wasm-tools is required for the WASI argv fixture")
+    wat_path = tmp_path / "argv_guest.wat"
+    wasm_path = tmp_path / "argv_guest.wasm"
+    wat_path.write_text(
+        """
+        (module
+          (import "wasi_snapshot_preview1" "args_sizes_get"
+            (func $sizes (param i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "args_get"
+            (func $args (param i32 i32) (result i32)))
+          (memory (export "molt_memory") 1)
+          (table (export "molt_table") 1 funcref)
+          (func $expect_byte (param $ptr i32) (param $offset i32) (param $value i32)
+            local.get $ptr
+            local.get $offset
+            i32.add
+            i32.load8_u
+            local.get $value
+            i32.ne
+            if unreachable end)
+          (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
+          (func (export "molt_runtime_execution_leave") (param i64))
+          (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+          (func (export "molt_exception_pending") (result i64) i64.const 0)
+          (func (export "molt_main")
+            i32.const 0
+            i32.const 4
+            call $sizes
+            if unreachable end
+            i32.const 0
+            i32.load
+            i32.const 3
+            i32.ne
+            if unreachable end
+            i32.const 4
+            i32.load
+            i32.const 20
+            i32.ne
+            if unreachable end
+            i32.const 16
+            i32.const 64
+            call $args
+            if unreachable end
+            i32.const 16
+            i32.load
+            i32.const 0
+            i32.const 109 ;; molt
+            call $expect_byte
+            i32.const 20
+            i32.load
+            i32.const 0
+            i32.const 45 ;; --sample
+            call $expect_byte
+            i32.const 20
+            i32.load
+            i32.const 7
+            i32.const 101
+            call $expect_byte
+            i32.const 24
+            i32.load
+            i32.const 0
+            i32.const 118 ;; value
+            call $expect_byte
+            i32.const 24
+            i32.load
+            i32.const 4
+            i32.const 101
+            call $expect_byte)
+        )
+        """,
+        encoding="utf-8",
+    )
+    parsed = _run_wasm_test_process(
+        [wasm_tools, "parse", str(wat_path), "-o", str(wasm_path)],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert parsed.returncode == 0, parsed.stderr
+    # This fixture has no callable-table entries. Publish the generated ABI's
+    # empty attestation, without invoking the Rust publishing build lane.
+    name = WASM_CALLABLE_TABLE_SECTION_NAME.encode("utf-8")
+    attestation = b"".join(
+        _write_varuint(value)
+        for value in (
+            WASM_CALLABLE_TABLE_SECTION_VERSION,
+            WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT,
+            0,
+            0,
+        )
+    )
+    payload = _write_varuint(len(name)) + name + attestation
+    wasm_path.write_bytes(
+        wasm_path.read_bytes() + b"\x00" + _write_varuint(len(payload)) + payload
+    )
+    manifest = _linked_manifest(wasm_path)
+    command = ["node", "wasm/run_wasm.js", str(manifest)]
+    env = {**os.environ, "NODE_NO_WARNINGS": "1"}
+
+    omitted = _run_wasm_test_process(command, cwd=ROOT, env=env, timeout=30)
+    passed = _run_wasm_test_process(
+        [*command, "--sample", "value"], cwd=ROOT, env=env, timeout=30
+    )
+
+    assert omitted.returncode != 0
+    assert passed.returncode == 0, passed.stderr
 
 
 def _linked_manifest(wasm_path: Path) -> Path:

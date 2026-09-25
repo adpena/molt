@@ -8,7 +8,13 @@ import subprocess
 import pytest
 
 from molt import source_root
-from molt.cli import build_inputs, compiler_metadata, env_paths, project_roots
+from molt.cli import (
+    build_inputs,
+    compiler_metadata,
+    env_paths,
+    lockfiles,
+    project_roots,
+)
 from molt.cli import toolchain_validation
 from molt.cli.sbom import _build_sbom
 from tests.cli.test_installed_compiler import installation as installation
@@ -119,6 +125,11 @@ def test_build_dependency_admission_has_one_owner(
     installation, tmp_path, monkeypatch, installed
 ):
     source = installation if installed else _source_tree(tmp_path / "checkout")
+    if not installed:
+        for name in ("pyproject.toml", "uv.lock", "Cargo.lock"):
+            (source / name).write_text("source")
+    monkeypatch.delenv("UV_NO_SYNC", raising=False)
+    monkeypatch.delenv("MOLT_SKIP_CARGO_LOCK", raising=False)
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(source))
     guest = tmp_path / "guest"
     guest.mkdir()
@@ -127,12 +138,13 @@ def test_build_dependency_admission_has_one_owner(
     monkeypatch.chdir(guest)
     calls = []
 
-    def check_locks(root, *args):
+    def check_locks(root):
         if installed:
             pytest.fail("installed build re-resolved sealed dependencies")
         calls.append(root)
 
-    monkeypatch.setattr(build_inputs, "_check_lockfiles", check_locks)
+    monkeypatch.setattr(lockfiles, "_verify_uv_lock", check_locks)
+    monkeypatch.setattr(lockfiles, "_verify_cargo_lock", check_locks)
     roots, error = build_inputs._prepare_build_roots(
         file_path=str(entry),
         json_output=True,
@@ -143,7 +155,36 @@ def test_build_dependency_admission_has_one_owner(
     )
     assert error is None and roots is not None
     assert roots.molt_root == source
-    assert calls == ([] if installed else [source])
+    assert calls == ([] if installed else [source, source])
+
+
+@pytest.mark.parametrize("deterministic", [False, True])
+def test_shared_lock_admission_rejects_damaged_sealed_inputs(
+    installation, monkeypatch, capsys, deterministic
+):
+    monkeypatch.setattr(
+        lockfiles,
+        "_run_completed_command",
+        lambda *a, **kw: pytest.fail("installed dependencies entered resolution"),
+    )
+    warnings = []
+    assert (
+        lockfiles._check_lockfiles(
+            installation, True, warnings, deterministic, True, "extension-build"
+        )
+        is None
+    )
+    assert warnings == []
+    (installation / "uv.lock").write_text("edited")
+    assert (
+        lockfiles._check_lockfiles(
+            installation, True, warnings, deterministic, True, "extension-build"
+        )
+        == 2
+    )
+    failure = json.loads(capsys.readouterr().out)
+    assert failure["command"] == "extension-build"
+    assert "installed compiler sources are invalid" in failure["errors"][0]
 
 
 @pytest.mark.parametrize(

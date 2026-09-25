@@ -77,7 +77,6 @@ from molt.cli.project_roots import (
 from molt.target_python import (
     _resolve_target_python_version,
 )
-from molt.cli.setup_readiness import _ensure_rustup_target
 from molt.cli.source_extension_compiler_inputs import compiler_sysroot_arg_value
 from molt.cli.source_extension_toolchain import (
     _materialize_source_extension_target_metadata,
@@ -734,9 +733,6 @@ def extension_build(
     if not output_root.is_absolute():
         output_root = (project_root / output_root).absolute()
     output_root.mkdir(parents=True, exist_ok=True)
-
-    if runtime_target_triple:
-        _ensure_rustup_target(runtime_target_triple, warnings)
 
     abi_include_roots = _source_extension_include_dirs_for_abi_tier(
         molt_root=molt_root,

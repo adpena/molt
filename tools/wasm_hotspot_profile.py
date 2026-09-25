@@ -53,6 +53,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     read_wasm_function_bodies,
     read_wasm_section_spans,
@@ -102,27 +103,6 @@ print(total)
 # ---------------------------------------------------------------------------
 # Node.js resolution
 # ---------------------------------------------------------------------------
-
-_NODE_BIN_CACHE: str | None = None
-
-
-def _resolve_node() -> str | None:
-    """Find a Node.js binary >= 18.  Returns None if not found."""
-    global _NODE_BIN_CACHE
-    if _NODE_BIN_CACHE is not None:
-        return _NODE_BIN_CACHE
-
-    env_node = os.environ.get("MOLT_NODE_BIN")
-    if env_node and shutil.which(env_node):
-        _NODE_BIN_CACHE = env_node
-        return env_node
-
-    node = shutil.which("node")
-    if node:
-        _NODE_BIN_CACHE = node
-        return node
-
-    return None
 
 
 def parse_function_sizes(wasm_path: Path) -> list[dict[str, Any]]:
@@ -337,9 +317,12 @@ def _try_profile_wasm_node(
     This is best-effort: if the WASM runtime is broken, it returns ok=False
     but the caller can still report static analysis.
     """
-    node = _resolve_node()
-    if node is None:
-        return False, None, "node not found in PATH"
+    try:
+        node = str(
+            resolve_node_runtime(source_root=MOLT_ROOT, guard_prefix="MOLT_BENCH").path
+        )
+    except RuntimeError as exc:
+        return False, None, str(exc)
 
     if not RUN_WASM_JS.exists():
         return False, None, f"wasm/run_wasm.js not found at {RUN_WASM_JS}"
@@ -835,22 +818,12 @@ def build_baseline_report(results: list[HotspotResult]) -> dict[str, Any]:
         pass
 
     node_ver = "unknown"
-    node = _resolve_node()
-    if node:
-        try:
-            limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
-            r = harness_memory_guard.guarded_completed_process(
-                [node, "--version"],
-                prefix="MOLT_BENCH",
-                capture_output=True,
-                text=True,
-                timeout=5,
-                limits=limits,
-            )
-            if r.returncode == 0:
-                node_ver = r.stdout.strip()
-        except Exception:
-            pass
+    try:
+        node_ver = resolve_node_runtime(
+            source_root=MOLT_ROOT, guard_prefix="MOLT_BENCH"
+        ).version
+    except RuntimeError:
+        pass
 
     report: dict[str, Any] = {
         "schema_version": 1,

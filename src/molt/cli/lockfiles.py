@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from molt.cargo_workspace import workspace_manifest_facts
+from molt.compiler_distribution import installed_compiler
 from molt.file_hashing import _sha256_file_with_size
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.command_runtime import _run_completed_command
@@ -27,6 +28,20 @@ def _check_lockfiles(
     deterministic_warn: bool,
     command: str,
 ) -> int | None:
+    # A release's sealed inputs, not the user's package-manager configuration,
+    # own installed compiler dependencies for every command. Guest projects and
+    # source checkouts still use the lock-resolution checks below.
+    try:
+        installed = installed_compiler(project_root)
+        if installed is not None:
+            installed.verify_sources()
+            return None
+    except (OSError, ValueError) as exc:
+        return _fail(
+            f"Molt installed compiler sources are invalid: {exc}",
+            json_output,
+            command=command,
+        )
     pyproject = project_root / "pyproject.toml"
     if not pyproject.exists():
         return None

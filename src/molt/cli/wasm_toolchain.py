@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import functools
 import os
 import re
-import shutil
 from pathlib import Path
+import subprocess
 import tomllib
 
 from molt.cli import wasm_link_inputs
@@ -138,97 +138,31 @@ def rustup_target_add_cmd(target_triple: str, root: Path | None = None) -> list[
     ]
 
 
-def rustup_installed_targets(root: Path | None = None) -> tuple[str, ...] | None:
-    rustup = shutil.which("rustup")
-    if rustup is None:
-        return None
-    contract = rust_toolchain_contract(root)
-    try:
-        result = _run_completed_command(
-            [
-                rustup,
-                "target",
-                "list",
-                "--installed",
-                *contract.rustup_toolchain_args,
-            ],
-            capture_output=True,
-            env=None,
-            cwd=root,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    return tuple(result.stdout.split())
+def rust_target_readiness_error(target_triple: str, *, root: Path) -> str | None:
+    """Inspect the selected compiler's standard library without installing tools.
 
-
-def _rustlib_target_dir_installed(target_triple: str, root: Path | None) -> bool:
-    """Lock-free ground truth for an installed rustup target.
-
-    `rustup target list` contends on the rustup lock and has returned empty
-    output under concurrent cargo/rustup lanes, producing false "target
-    missing" build failures for targets that are installed. The installed
-    standard library lives at
-    ``$RUSTUP_HOME/toolchains/<channel>-*/lib/rustlib/<triple>`` — a plain
-    directory probe that no lock can lie about.
+    Reuse link-input selection, including explicit RUSTC and Rustup proxy
+    resolution in the compiler source directory. A different toolchain's target
+    directory is not evidence that the selected compiler can build this target.
+    Only the printed path is cached; library availability is checked each time.
     """
-    rustup_home = os.environ.get("RUSTUP_HOME", "").strip()
-    home = Path(rustup_home).expanduser() if rustup_home else Path.home() / ".rustup"
-    toolchains = home / "toolchains"
-    if not toolchains.is_dir():
-        return False
-    contract = rust_toolchain_contract(root)
-    pattern = f"{contract.channel}-*" if contract.channel else "*"
-    for toolchain_dir in toolchains.glob(pattern):
-        if (toolchain_dir / "lib" / "rustlib" / target_triple).is_dir():
-            return True
-    return False
-
-
-def ensure_rustup_target(
-    target_triple: str, warnings: list[str], *, root: Path | None = None
-) -> bool:
-    rustup_path = shutil.which("rustup")
-    if not rustup_path:
-        warnings.append(f"rustup not found; cannot ensure target {target_triple}")
-        return False
-    # Filesystem ground truth first: the rustup CLI query contends on the
-    # rustup lock under concurrent lanes and has returned empty output for
-    # installed targets, failing witness builds with a false "target
-    # missing". The rustlib directory probe cannot be starved by a lock.
-    if _rustlib_target_dir_installed(target_triple, root):
-        return True
     try:
-        installed = rustup_installed_targets(root)
-    except RustToolchainContractError as exc:
-        warnings.append(str(exc))
-        return False
-    if installed is None:
-        warnings.append(f"Failed to query rustup targets for {target_triple}")
-        return False
-    if target_triple in installed:
-        return True
-    add_command = rustup_target_add_cmd(target_triple, root)
-    add_command[0] = rustup_path
-    try:
-        add = _run_completed_command(
-            add_command,
-            capture_output=True,
-            env=None,
-            cwd=root,
-            memory_guard_prefix="MOLT_BUILD",
+        libdir = wasm_link_inputs.rust_target_libdir(target_triple, root=root)
+        if libdir is not None and any(
+            path.is_file() and path.stat().st_size > 0
+            for pattern in ("libstd-*.rlib", "libstd.rlib")
+            for path in libdir.glob(pattern)
+        ):
+            return None
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return (
+            f"Cannot inspect Rust target {target_triple}: {exc}. "
+            "No toolchains were installed or changed."
         )
-    except OSError as exc:
-        warnings.append(f"Failed to install rustup target {target_triple}: {exc}")
-        return False
-    if add.returncode != 0:
-        detail = (add.stderr or add.stdout).strip() or "unknown error"
-        warnings.append(f"rustup target add failed for {target_triple}: {detail}")
-        return False
-    wasm_link_inputs.clear_rust_target_libdir_cache()
-    return True
+    return (
+        rust_target_missing_message(target_triple, root=root, context="Compilation")
+        + "\nNo toolchains were installed or changed."
+    )
 
 
 def rust_target_missing_message(

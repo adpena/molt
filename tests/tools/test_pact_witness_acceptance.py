@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 import tools.pact_witness_acceptance as acceptance
+from molt.node_runtime import NodeRuntime, NodeRuntimeError
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 
 
@@ -18,6 +19,36 @@ def test_pact_witness_acceptance_rejects_unpinned_provenance(
 
     with pytest.raises(SystemExit, match="provenance is unpinned"):
         acceptance._assert_build_provenance()
+
+
+def test_pact_witness_node_uses_shared_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = Path("/attested/node")
+    calls: list[dict[str, object]] = []
+
+    def resolve(**kwargs: object) -> NodeRuntime:
+        calls.append(kwargs)
+        return NodeRuntime(selected, "24.0.0", 24)
+
+    monkeypatch.setattr(acceptance, "resolve_node_runtime", resolve)
+    assert acceptance._node_bin() == str(selected)
+    assert len(calls) == 1
+    assert calls[0]["source_root"] == acceptance.ROOT
+    assert calls[0]["guard_prefix"] == "MOLT_CROSS"
+
+
+def test_pact_witness_invalid_node_fails_with_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def invalid(**kwargs: object) -> NodeRuntime:
+        raise NodeRuntimeError("MOLT_NODE_BIN is invalid")
+
+    monkeypatch.setattr(acceptance, "resolve_node_runtime", invalid)
+    with pytest.raises(
+        SystemExit, match="Pact witness WASM artifact: MOLT_NODE_BIN is invalid"
+    ):
+        acceptance._node_bin()
 
 
 def test_pact_witness_acceptance_attests_pinned_worktree(

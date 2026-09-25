@@ -20,10 +20,13 @@ def installation(tmp_path: Path) -> Path:
     source.mkdir()
     files = []
     for name in (
+        "Cargo.lock",
         "Cargo.toml",
+        "pyproject.toml",
         "runtime/molt-backend/Cargo.toml",
         "runtime/molt-runtime/Cargo.toml",
         "src/molt/cli/__init__.py",
+        "uv.lock",
     ):
         path = source / name
         path.parent.mkdir(parents=True, exist_ok=True)

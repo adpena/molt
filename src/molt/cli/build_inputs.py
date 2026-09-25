@@ -45,7 +45,6 @@ from molt.cli.cargo_profiles import (
 from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.config_resolution import _coerce_bool, _resolve_build_config
 from molt.cli.lockfiles import _check_lockfiles
-from molt.compiler_distribution import installed_compiler
 from molt.cli.models import (
     BinaryImageKind,
     BuildProfile,
@@ -764,21 +763,16 @@ def _prepare_build_roots(
     root_error = _require_molt_root(molt_root, json_output, "build")
     if root_error is not None:
         return None, root_error
-    # Installed sources were admitted above. Bootstrap owns their frozen Python
-    # closure; the shared runtime Cargo plan always uses --locked. Re-resolving
-    # these inputs with a user's ambient package-manager configuration would
-    # introduce a second dependency authority and can mutate read-only sources.
-    if installed_compiler(molt_root) is None:
-        lock_error = _check_lockfiles(
-            molt_root,
-            json_output,
-            warnings,
-            deterministic,
-            deterministic_warn,
-            "build",
-        )
-        if lock_error is not None:
-            return None, lock_error
+    lock_error = _check_lockfiles(
+        molt_root,
+        json_output,
+        warnings,
+        deterministic,
+        deterministic_warn,
+        "build",
+    )
+    if lock_error is not None:
+        return None, lock_error
     sysroot_path = _resolve_sysroot(project_root, sysroot)
     if sysroot_path is not None and not sysroot_path.exists():
         return None, _fail(

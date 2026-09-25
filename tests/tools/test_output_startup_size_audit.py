@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
+from molt.node_runtime import NodeRuntime
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 
 
@@ -194,6 +195,103 @@ def test_wasm_fresh_copy_rebases_manifest_to_measured_bytes(
         "output.fresh-1_linked.wasm",
     ]
     assert not any((tmp_path / ".fresh_start_samples").iterdir())
+
+
+def test_wasm_startup_uses_shared_node_selector_and_deterministic_flags(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audit = _load_audit()
+    artifact = tmp_path / "output_linked.wasm"
+    artifact.write_bytes(b"\0asm\x01\0\0\0")
+    write_wasm_execution_manifest(tmp_path, linked=artifact)
+    node = tmp_path / "selected-node"
+    selections: list[dict[str, object]] = []
+    commands: list[list[str]] = []
+
+    def fake_resolve(**kwargs):  # type: ignore[no-untyped-def]
+        selections.append(kwargs)
+        return NodeRuntime(path=node, version="22.1.0", major=22)
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        commands.append(list(command))
+        return SimpleNamespace(returncode=0, stdout="", stderr="", elapsed_s=0.01)
+
+    monkeypatch.setattr(audit, "resolve_node_runtime", fake_resolve)
+    monkeypatch.setattr(audit, "_run_guarded", fake_run)
+    env = {"MOLT_NODE_BIN": str(node)}
+
+    startup = audit._measure_case_startup(
+        audit.MatrixCase(target="wasm", build_profile="dev", backend="wasm"),
+        artifact,
+        samples=1,
+        env=env,
+        timeout=1.0,
+    )
+
+    assert selections == [
+        {"source_root": audit.ROOT, "environment": env, "guard_prefix": "MOLT_BENCH"}
+    ]
+    assert startup["node"] == {"path": str(node), "version": "22.1.0"}
+    assert audit._startup_ok(startup, require_runners=True) is True
+    assert commands[0] == [
+        str(node),
+        "--no-warnings",
+        "--no-wasm-tier-up",
+        "--no-wasm-dynamic-tiering",
+        "--wasm-num-compilation-tasks=1",
+        str(audit.WASM_RUNNER),
+        str(audit.wasm_runtime_manifest_path(artifact)),
+    ]
+
+
+def test_wasm_startup_skips_with_selector_diagnostic_when_node_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audit = _load_audit()
+
+    def fake_resolve(**kwargs):  # type: ignore[no-untyped-def]
+        raise audit.NodeRuntimeError("Node >= 18 is unavailable on PATH")
+
+    monkeypatch.setattr(audit, "resolve_node_runtime", fake_resolve)
+
+    startup = audit._measure_case_startup(
+        audit.MatrixCase(target="wasm", build_profile="dev", backend="wasm"),
+        tmp_path / "output_linked.wasm",
+        samples=1,
+        env={},
+        timeout=1.0,
+    )
+
+    assert startup == {
+        "runner": "node",
+        "skipped": "Node >= 18 is unavailable on PATH",
+    }
+    assert audit._startup_ok(startup, require_runners=False) is True
+    assert audit._startup_ok(startup, require_runners=True) is False
+
+
+def test_wasm_startup_fails_on_unusable_explicit_node_selection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audit = _load_audit()
+
+    def fail_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError(f"unexpected launch: {command}")
+
+    monkeypatch.setattr(audit, "_run_guarded", fail_run)
+    # The real selector rejects a missing explicit path before any probe runs.
+    startup = audit._measure_case_startup(
+        audit.MatrixCase(target="wasm", build_profile="dev", backend="wasm"),
+        tmp_path / "output_linked.wasm",
+        samples=1,
+        env={"MOLT_NODE_BIN": str(tmp_path / "missing-node")},
+        timeout=1.0,
+    )
+
+    assert "skipped" not in startup
+    assert "MOLT_NODE_BIN" in startup["error"]
+    assert audit._startup_ok(startup, require_runners=False) is False
 
 
 def test_build_molt_artifact_emits_progress_on_stderr(

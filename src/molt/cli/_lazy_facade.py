@@ -340,7 +340,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     "_encode_stdlib_module_symbols": ("backend_cache", "_encode_stdlib_module_symbols"),
     "_ensure_cli_hash_seed": ("arg_helpers", "_ensure_cli_hash_seed"),
     "_ensure_mlir_backend_binary": ("mlir_backend", "_ensure_mlir_backend_binary"),
-    "_ensure_rustup_target": ("setup_readiness", "_ensure_rustup_target"),
     "_env_requests_backend_diagnostics": (
         "backend_diagnostics",
         "_env_requests_backend_diagnostics",
