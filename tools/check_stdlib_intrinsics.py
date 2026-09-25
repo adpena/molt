@@ -18,6 +18,7 @@ SRC_ROOT = ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from molt.compiler_analysis.python_imports import UnresolvedStaticImportError  # noqa: E402
 from molt.stdlib_intrinsic_policy import (  # noqa: E402
     INTRINSIC_CALL_NAMES,
     LAZY_INTRINSIC_CALL_NAMES,
@@ -39,6 +40,7 @@ from molt.target_python import (  # noqa: E402
 )
 
 STDLIB_ROOT = ROOT / "src" / "molt" / "stdlib"
+MOLTLIB_ROOT = ROOT / "src" / "moltlib"
 MANIFEST = ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "manifest.pyi"
 AUDIT_DOC = (
     ROOT
@@ -61,13 +63,6 @@ INTRINSICS_IMPORT_RE = re.compile(
     r"^\s*from\s+molt\.stdlib\._intrinsics\s+import\s+|"
     r"^\s*import\s+_intrinsics(\s|$)|"
     r"^\s*import\s+molt\.stdlib\._intrinsics(\s|$)",
-    re.MULTILINE,
-)
-
-FORBIDDEN_MOLT_INTRINSICS_RE = re.compile(
-    r"^\s*import\s+molt\.intrinsics\b|"
-    r"^\s*from\s+molt\s+import\s+intrinsics\b|"
-    r"^\s*from\s+molt\.intrinsics\s+import\b",
     re.MULTILINE,
 )
 
@@ -206,12 +201,22 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
+def _run_manifest(path: Path, label: str) -> dict[str, object]:
+    try:
+        return runpy.run_path(str(path))
+    except (Exception, SystemExit) as exc:
+        raise RuntimeError(
+            f"{label} failed to evaluate ({_display_path(path)}): "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
 def _load_required_top_level_stdlib() -> tuple[frozenset[str], frozenset[str]]:
     if not STDLIB_UNION_BASELINE.exists():
         raise RuntimeError(
             f"stdlib module baseline missing: {_display_path(STDLIB_UNION_BASELINE)}"
         )
-    namespace = runpy.run_path(str(STDLIB_UNION_BASELINE))
+    namespace = _run_manifest(STDLIB_UNION_BASELINE, "stdlib module baseline")
     raw_union = namespace.get("STDLIB_MODULE_UNION")
     raw_packages = namespace.get("STDLIB_PACKAGE_UNION")
     if not isinstance(raw_union, tuple):
@@ -234,7 +239,7 @@ def _load_required_stdlib_submodules() -> tuple[frozenset[str], frozenset[str]]:
         raise RuntimeError(
             f"stdlib module baseline missing: {_display_path(STDLIB_UNION_BASELINE)}"
         )
-    namespace = runpy.run_path(str(STDLIB_UNION_BASELINE))
+    namespace = _run_manifest(STDLIB_UNION_BASELINE, "stdlib module baseline")
     raw_union = namespace.get("STDLIB_PY_SUBMODULE_UNION")
     raw_packages = namespace.get("STDLIB_PY_SUBPACKAGE_UNION")
     if not isinstance(raw_union, tuple):
@@ -568,7 +573,7 @@ def _load_fully_covered_stdlib_modules(path: Path) -> frozenset[str]:
         raise RuntimeError(
             f"stdlib full-coverage manifest missing: {_display_path(path)}"
         )
-    namespace = runpy.run_path(str(path))
+    namespace = _run_manifest(path, "stdlib full-coverage manifest")
     raw = namespace.get("STDLIB_FULLY_COVERED_MODULES")
     if not isinstance(raw, tuple):
         raise RuntimeError(
@@ -588,7 +593,7 @@ def _load_full_coverage_required_intrinsics(
         raise RuntimeError(
             f"stdlib full-coverage manifest missing: {_display_path(path)}"
         )
-    namespace = runpy.run_path(str(path))
+    namespace = _run_manifest(path, "stdlib full-coverage manifest")
     raw = namespace.get("STDLIB_REQUIRED_INTRINSICS_BY_MODULE", {})
     if not isinstance(raw, dict):
         raise RuntimeError(
@@ -781,10 +786,39 @@ def _closure(seeds: set[str], deps: dict[str, set[str]]) -> set[str]:
     return seen
 
 
+def _is_compiler_import(node: ast.AST) -> bool:
+    """Reject host-package imports, except normalized molt.stdlib names."""
+    if isinstance(node, ast.Import):
+        names = tuple(alias.name for alias in node.names)
+    elif isinstance(node, ast.ImportFrom) and node.level == 0:
+        names = (node.module or "",)
+    else:
+        return False
+    return any(
+        (name == "molt" or name.startswith("molt."))
+        and name != "molt.stdlib"
+        and not name.startswith("molt.stdlib.")
+        for name in names
+    )
+
+
+def _scan_runtime_import_boundary(path: Path, text: str) -> list[str]:
+    # Static compilation admits imports even under TYPE_CHECKING or in a lazy
+    # function body. Walk the whole AST, not the runtime dependency projection.
+    tree = ast.parse(text, filename=str(path))
+    return [
+        f"Line {node.lineno}: Importing the host molt compiler package in runtime "
+        "libraries is forbidden; use _intrinsics or runtime-library modules "
+        "(only molt.stdlib normalization is allowed)."
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and _is_compiler_import(node)
+    ]
+
+
 def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str, bool]:
     text = path.read_text(encoding="utf-8")
     code_text = _code_text(text)
-    errors: list[str] = []
+    errors = _scan_runtime_import_boundary(path, text)
     is_registry_file = path.name == "_intrinsics.py"
 
     if not is_registry_file and "_molt_intrinsics" in code_text:
@@ -793,11 +827,6 @@ def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str, bool]:
         )
 
     has_intrinsics_import = bool(INTRINSICS_IMPORT_RE.search(text))
-    if FORBIDDEN_MOLT_INTRINSICS_RE.search(text):
-        errors.append(
-            "Importing molt.intrinsics in stdlib is forbidden; use stdlib/_intrinsics.py."
-        )
-
     if not is_registry_file:
         if (
             any(token in code_text for token in TEXT_TOKENS)
@@ -857,7 +886,9 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
         "## Policy",
         "- Compiled binaries must not execute Python stdlib implementations.",
         "- Every stdlib module must be backed by Rust intrinsics (Python files are allowed only as thin, intrinsic-forwarding wrappers).",
-        "- Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.",
+        "- Modules without intrinsic implementation or proven intrinsic-owned support are forbidden in compiled builds and must raise immediately until fully lowered.",
+        "- Pure private forwarding facades inherit support only from all resolved intrinsic implementation owners; forwarding cycles alone cannot establish support. This classification is not runtime conformance evidence.",
+        "- Each audit scan reports all failed gates. `--json-out` preserves diagnostics on failure and marks incomplete analysis explicitly; `--update-doc` publishes this document only after all gates pass.",
         "",
         "## Progress Summary (Generated)",
         f"- Total audited modules: `{total_modules}`",
@@ -889,7 +920,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
     lines.extend(f"- `{name}`" for name in intrinsic)
     lines.extend(["", "### Intrinsic-backed modules (partial lowering pending)"])
     lines.extend(f"- `{name}`" for name in intrinsic_partial)
-    lines.extend(["", "### Intrinsic-owned private support fragments"])
+    lines.extend(["", "### Intrinsic-owned private support fragments and facades"])
     lines.extend(f"- `{name}`" for name in intrinsic_support)
     lines.extend(["", "### Fail-closed policy-gate modules"])
     lines.extend(f"- `{name}`" for name in policy_gate)
@@ -945,7 +976,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
             "",
             "## Full-Coverage Attestation Rule",
             "- Global rule: any module/submodule not explicitly attested as full CPython 3.12+ API/PEP coverage is classified as `intrinsic-partial`.",
-            "- Private `intrinsic-support` fragments are owned implementation fragments of an intrinsic-backed module and are excluded from public full-coverage attestation units.",
+            "- Private `intrinsic-support` modules are owned implementation fragments or proven pure forwarding facades of intrinsic implementations; they are not public full-coverage attestations.",
             "- Attestation source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_FULLY_COVERED_MODULES`).",
             "- Full-coverage intrinsic contract source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_REQUIRED_INTRINSICS_BY_MODULE`).",
             "- Gate rule: each attested full-coverage module must stay `intrinsic-backed`, declare its required intrinsic set, and wire every declared intrinsic in-module.",
@@ -978,6 +1009,40 @@ def _parse_module_list(raw: str) -> tuple[str, ...]:
     if not out:
         raise ValueError("module list cannot be empty")
     return tuple(dict.fromkeys(out))
+
+
+def _finish_audit(
+    *,
+    report: dict[str, object],
+    diagnostics: dict[str, list[str]],
+    json_out: Path | None,
+    analysis_complete: bool = True,
+) -> int:
+    """Render one diagnostic authority, including failed or incomplete audits."""
+    for messages in diagnostics.values():
+        for message in messages:
+            print(message)
+    report.update(
+        schema="molt.stdlib-intrinsics-audit.v1",
+        analysis_complete=analysis_complete,
+        ok=not diagnostics,
+        diagnostics=[
+            {"code": code, "messages": messages}
+            for code, messages in diagnostics.items()
+        ],
+    )
+    if json_out is not None:
+        try:
+            json_out.parent.mkdir(parents=True, exist_ok=True)
+            json_out.write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        except OSError as exc:
+            print(f"stdlib intrinsics audit report publication failed: {exc}")
+            return 1
+    if not diagnostics:
+        print("stdlib intrinsics lint: ok")
+    return int(bool(diagnostics))
 
 
 def main() -> int:
@@ -1045,43 +1110,48 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not STDLIB_ROOT.is_dir():
-        print(f"stdlib root missing: {STDLIB_ROOT}")
-        return 1
+    try:
+        return _run_audit(args)
+    except (
+        OSError,
+        UnicodeError,
+        SyntaxError,
+        RuntimeError,
+        UnresolvedStaticImportError,
+    ) as exc:
+        return _finish_audit(
+            report={},
+            diagnostics={
+                "incomplete-analysis": [f"stdlib intrinsics lint failed: {exc}"]
+            },
+            json_out=args.json_out,
+            analysis_complete=False,
+        )
 
-    try:
-        required_top_level, required_top_level_packages = (
-            _load_required_top_level_stdlib()
-        )
-    except RuntimeError as exc:
-        print(f"stdlib intrinsics lint failed: {exc}")
-        return 1
-    try:
-        required_submodules, required_subpackages = _load_required_stdlib_submodules()
-    except RuntimeError as exc:
-        print(f"stdlib intrinsics lint failed: {exc}")
-        return 1
-    try:
-        intrinsic_partial_budget = _load_intrinsic_partial_ratchet(
-            args.intrinsic_partial_ratchet_file
-        )
-    except RuntimeError as exc:
-        print(f"stdlib intrinsics lint failed: {exc}")
-        return 1
-    try:
-        fully_covered_modules = _load_fully_covered_stdlib_modules(
-            args.full_coverage_manifest
-        )
-    except RuntimeError as exc:
-        print(f"stdlib intrinsics lint failed: {exc}")
-        return 1
-    try:
-        full_coverage_required_intrinsics = _load_full_coverage_required_intrinsics(
-            args.full_coverage_manifest
-        )
-    except RuntimeError as exc:
-        print(f"stdlib intrinsics lint failed: {exc}")
-        return 1
+
+def _run_audit(args: argparse.Namespace) -> int:
+    if not STDLIB_ROOT.is_dir():
+        raise RuntimeError(f"stdlib root missing: {STDLIB_ROOT}")
+    required_top_level, required_top_level_packages = _load_required_top_level_stdlib()
+    required_submodules, required_subpackages = _load_required_stdlib_submodules()
+    intrinsic_partial_budget = _load_intrinsic_partial_ratchet(
+        args.intrinsic_partial_ratchet_file
+    )
+    fully_covered_modules = _load_fully_covered_stdlib_modules(
+        args.full_coverage_manifest
+    )
+    full_coverage_required_intrinsics = _load_full_coverage_required_intrinsics(
+        args.full_coverage_manifest
+    )
+    strict_roots: set[str] = set()
+    if args.allowlist_modules:
+        try:
+            strict_roots.update(_parse_module_list(args.allowlist_modules))
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+    if args.critical_allowlist:
+        strict_roots.update(CRITICAL_STRICT_IMPORT_ROOTS)
+    diagnostics: dict[str, list[str]] = {}
 
     manifest_intrinsics = _load_manifest_intrinsics()
     failures: list[tuple[Path, list[str]]] = []
@@ -1126,6 +1196,15 @@ def main() -> int:
                 status=status,
             )
         )
+
+    # moltlib shares the runtime/compiler boundary, not the CPython stdlib
+    # coverage universe, intrinsic status classification, or generated audit.
+    for path in sorted(MOLTLIB_ROOT.rglob("*.py")):
+        if path.name.startswith("."):
+            continue
+        errors = _scan_runtime_import_boundary(path, path.read_text(encoding="utf-8"))
+        if errors:
+            failures.append((path, errors))
 
     module_paths = {audit.module: audit.path for audit in audits}
     intrinsic_classification = classify_stdlib_module_statuses(
@@ -1234,35 +1313,29 @@ def main() -> int:
         if bad:
             dependency_violations.append((audit.module, audit.status, bad))
 
-    strict_roots: set[str] = set()
-    if args.allowlist_modules:
-        try:
-            strict_roots.update(_parse_module_list(args.allowlist_modules))
-        except ValueError as exc:
-            print(f"stdlib intrinsics lint failed: {exc}")
-            return 1
-    if args.critical_allowlist:
-        strict_roots.update(CRITICAL_STRICT_IMPORT_ROOTS)
     unknown_strict_roots = sorted(
         root for root in strict_roots if root not in modules_by_name
     )
     if unknown_strict_roots:
-        print("stdlib intrinsics lint failed: unknown strict-import modules requested")
+        messages = diagnostics.setdefault("unknown-strict-roots", [])
+        messages.append(
+            "stdlib intrinsics lint failed: unknown strict-import modules requested"
+        )
         for module in unknown_strict_roots:
-            print(f"- {module}")
-        return 1
+            messages.append(f"- {module}")
+    strict_roots.intersection_update(modules_by_name)
     strict_root_status_violations = [
         (root, modules_by_name[root].status)
         for root in sorted(strict_roots)
         if not _is_intrinsic_implemented(modules_by_name[root].status)
     ]
     if strict_root_status_violations:
-        print(
+        messages = diagnostics.setdefault("strict-root-status-violations", [])
+        messages.append(
             "stdlib intrinsics lint failed: strict-import roots must be intrinsic-implemented"
         )
         for root, status in strict_root_status_violations:
-            print(f"- {root}: {status}")
-        return 1
+            messages.append(f"- {root}: {status}")
     non_intrinsic_implemented = {
         audit.module for audit in audits if not _is_intrinsic_implemented(audit.status)
     }
@@ -1355,188 +1428,202 @@ def main() -> int:
     )
 
     if failures:
-        print("stdlib intrinsics lint failed:")
+        messages = diagnostics.setdefault("failures", [])
+        messages.append("stdlib intrinsics lint failed:")
         for path, errors in failures:
             rel = _display_path(path)
-            print(f"- {rel}")
+            messages.append(f"- {rel}")
             for msg in errors:
-                print(f"  {msg}")
-        return 1
+                messages.append(f"  {msg}")
 
     if missing_intrinsics:
-        print("stdlib intrinsics lint failed: unknown intrinsic names")
+        messages = diagnostics.setdefault("missing-intrinsics", [])
+        messages.append("stdlib intrinsics lint failed: unknown intrinsic names")
         for rel, name in sorted(set(missing_intrinsics)):
-            print(f"- {rel}: `{name}` is not present in {_display_path(MANIFEST)}")
-        return 1
+            messages.append(
+                f"- {rel}: `{name}` is not present in {_display_path(MANIFEST)}"
+            )
 
     if unknown_policy_gate_modules:
-        print(
+        messages = diagnostics.setdefault("unknown-policy-gate-modules", [])
+        messages.append(
             "stdlib intrinsics lint failed: policy-gate modules require explicit allowlist"
         )
         for module in unknown_policy_gate_modules:
-            print(f"- {module}")
-        return 1
+            messages.append(f"- {module}")
 
     if unknown_fully_covered_modules:
-        print(
+        messages = diagnostics.setdefault("unknown-fully-covered-modules", [])
+        messages.append(
             "stdlib intrinsics lint failed: full-coverage attestation references unknown modules"
         )
         for module in unknown_fully_covered_modules:
-            print(f"- {module}")
-        return 1
+            messages.append(f"- {module}")
 
     if uncovered_contract_entries:
-        print(
+        messages = diagnostics.setdefault("uncovered-contract-entries", [])
+        messages.append(
             "stdlib intrinsics lint failed: full-coverage intrinsic contract has non-attested modules"
         )
         for module in uncovered_contract_entries:
-            print(f"- {module}")
-        return 1
+            messages.append(f"- {module}")
 
     if missing_full_coverage_contract_entries:
-        print(
+        messages = diagnostics.setdefault("missing-full-coverage-contract-entries", [])
+        messages.append(
             "stdlib intrinsics lint failed: full-coverage intrinsic contract missing modules"
         )
         for module in missing_full_coverage_contract_entries:
-            print(f"- {module}")
-        return 1
+            messages.append(f"- {module}")
 
     if full_coverage_status_violations:
-        print(
+        messages = diagnostics.setdefault("full-coverage-status-violations", [])
+        messages.append(
             "stdlib intrinsics lint failed: full-coverage modules must remain intrinsic-backed"
         )
         for module, status in full_coverage_status_violations:
-            print(f"- {module}: {status}")
-        return 1
+            messages.append(f"- {module}: {status}")
 
     if full_coverage_unknown_intrinsics:
-        print(
+        messages = diagnostics.setdefault("full-coverage-unknown-intrinsics", [])
+        messages.append(
             "stdlib intrinsics lint failed: full-coverage intrinsic contract references unknown intrinsics"
         )
         for module, names in full_coverage_unknown_intrinsics:
             joined = ", ".join(f"`{name}`" for name in names)
-            print(f"- {module}: {joined}")
-        return 1
+            messages.append(f"- {module}: {joined}")
 
     if full_coverage_missing_intrinsic_wiring:
-        print(
+        messages = diagnostics.setdefault("full-coverage-missing-intrinsic-wiring", [])
+        messages.append(
             "stdlib intrinsics lint failed: full-coverage intrinsic contract violated"
         )
         for module, names in full_coverage_missing_intrinsic_wiring:
             joined = ", ".join(f"`{name}`" for name in names)
-            print(f"- {module}: missing {joined}")
-        return 1
+            messages.append(f"- {module}: missing {joined}")
 
     if top_level_collisions:
-        print(
+        messages = diagnostics.setdefault("top-level-collisions", [])
+        messages.append(
             "stdlib intrinsics lint failed: top-level module/package duplicate mapping"
         )
         for name in top_level_collisions:
-            print(
+            messages.append(
                 f"- {name}: {_display_path(top_level_files[name])} and "
                 f"{_display_path(top_level_packages[name])}"
             )
-        return 1
 
     if missing_top_level:
-        print("stdlib intrinsics lint failed: stdlib top-level coverage gate violated")
-        print("- missing top-level modules/packages:")
+        messages = diagnostics.setdefault("missing-top-level", [])
+        messages.append(
+            "stdlib intrinsics lint failed: stdlib top-level coverage gate violated"
+        )
+        messages.append("- missing top-level modules/packages:")
         for name in missing_top_level:
-            print(f"  - {name}")
-        return 1
+            messages.append(f"  - {name}")
 
     if package_kind_mismatches:
-        print("stdlib intrinsics lint failed: stdlib package kind gate violated")
-        print("- required packages implemented as single-file modules:")
+        messages = diagnostics.setdefault("package-kind-mismatches", [])
+        messages.append(
+            "stdlib intrinsics lint failed: stdlib package kind gate violated"
+        )
+        messages.append("- required packages implemented as single-file modules:")
         for name in package_kind_mismatches:
-            print(f"  - {name}: {_display_path(top_level_files[name])}")
-        return 1
+            messages.append(f"  - {name}: {_display_path(top_level_files[name])}")
 
     if submodule_collisions:
-        print("stdlib intrinsics lint failed: submodule/package duplicate mapping")
+        messages = diagnostics.setdefault("submodule-collisions", [])
+        messages.append(
+            "stdlib intrinsics lint failed: submodule/package duplicate mapping"
+        )
         for name in submodule_collisions:
-            print(
+            messages.append(
                 f"- {name}: {_display_path(module_files[name])} and "
                 f"{_display_path(module_packages[name])}"
             )
-        return 1
 
     if missing_submodules:
-        print("stdlib intrinsics lint failed: stdlib submodule coverage gate violated")
-        print("- missing submodules/packages:")
+        messages = diagnostics.setdefault("missing-submodules", [])
+        messages.append(
+            "stdlib intrinsics lint failed: stdlib submodule coverage gate violated"
+        )
+        messages.append("- missing submodules/packages:")
         for name in missing_submodules:
-            print(f"  - {name}")
-        return 1
+            messages.append(f"  - {name}")
 
     if subpackage_kind_mismatches:
-        print("stdlib intrinsics lint failed: stdlib subpackage kind gate violated")
-        print("- required subpackages implemented as single-file modules:")
+        messages = diagnostics.setdefault("subpackage-kind-mismatches", [])
+        messages.append(
+            "stdlib intrinsics lint failed: stdlib subpackage kind gate violated"
+        )
+        messages.append("- required subpackages implemented as single-file modules:")
         for name in subpackage_kind_mismatches:
-            print(f"  - {name}: {_display_path(module_files[name])}")
-        return 1
+            messages.append(f"  - {name}: {_display_path(module_files[name])}")
 
     if bootstrap_roots_present and bootstrap_roots_missing:
-        print("stdlib intrinsics lint failed: bootstrap strict roots are incomplete")
+        messages = diagnostics.setdefault("incomplete-bootstrap-roots", [])
+        messages.append(
+            "stdlib intrinsics lint failed: bootstrap strict roots are incomplete"
+        )
         for module in bootstrap_roots_missing:
-            print(f"- {module}")
-        return 1
+            messages.append(f"- {module}")
 
     if bootstrap_closure_violations:
-        print(
+        messages = diagnostics.setdefault("bootstrap-closure-violations", [])
+        messages.append(
             "stdlib intrinsics lint failed: bootstrap strict closure must be intrinsic-implemented"
         )
         for module, status in bootstrap_closure_violations:
-            print(f"- {module}: {status}")
-        return 1
+            messages.append(f"- {module}: {status}")
 
     if bootstrap_failures:
-        print(
+        messages = diagnostics.setdefault("bootstrap-failures", [])
+        messages.append(
             "stdlib intrinsics lint failed: bootstrap modules must be intrinsic-implemented"
         )
         for module in sorted(set(bootstrap_failures)):
-            print(f"- {module}")
-        return 1
+            messages.append(f"- {module}")
 
     if dependency_violations:
-        print(
+        messages = diagnostics.setdefault("dependency-violations", [])
+        messages.append(
             "stdlib intrinsics lint failed: non-python-only modules cannot depend "
             "on python-only stdlib modules"
         )
         for module, status, bad in dependency_violations:
             joined = ", ".join(f"`{name}`" for name in bad)
-            print(f"- {module} ({status}) depends on {joined}")
-        return 1
+            messages.append(f"- {module} ({status}) depends on {joined}")
 
     if strict_import_violations:
-        print(
+        messages = diagnostics.setdefault("strict-import-violations", [])
+        messages.append(
             "stdlib intrinsics lint failed: strict-import allowlist violated "
             "(intrinsic-implemented roots imported non-intrinsic-implemented stdlib modules)"
         )
         for root, bad in strict_import_violations:
             joined = ", ".join(f"`{name}`" for name in bad)
-            print(f"- {root} imports {joined}")
-        return 1
+            messages.append(f"- {root} imports {joined}")
 
     if strict_fallback_violations:
-        print(
+        messages = diagnostics.setdefault("strict-fallback-violations", [])
+        messages.append(
             "stdlib intrinsics lint failed: strict-import roots used forbidden fallback patterns"
         )
         for root, errors in strict_fallback_violations:
-            print(f"- {root}")
+            messages.append(f"- {root}")
             for msg in errors:
-                print(f"  {msg}")
-        return 1
+                messages.append(f"  {msg}")
 
     if intrinsic_backed_fallback_violations:
-        print(
+        messages = diagnostics.setdefault("intrinsic-backed-fallback-violations", [])
+        messages.append(
             "stdlib intrinsics lint failed: intrinsic-backed modules used forbidden "
             "fallback patterns"
         )
         for module, errors in intrinsic_backed_fallback_violations:
-            print(f"- {module}")
+            messages.append(f"- {module}")
             for msg in errors:
-                print(f"  {msg}")
-        return 1
+                messages.append(f"  {msg}")
 
     global_fallback_gate = (
         not args.fallback_intrinsic_backed_only
@@ -1544,149 +1631,183 @@ def main() -> int:
         and not args.allowlist_modules
     )
     if global_fallback_gate and all_fallback_violations:
-        print("stdlib intrinsics lint failed: all-stdlib fallback gate violated")
+        messages = diagnostics.setdefault("all-fallback-violations", [])
+        messages.append(
+            "stdlib intrinsics lint failed: all-stdlib fallback gate violated"
+        )
         for module, errors in all_fallback_violations:
-            print(f"- {module}")
+            messages.append(f"- {module}")
             for msg in errors:
-                print(f"  {msg}")
-        return 1
+                messages.append(f"  {msg}")
 
     if intrinsic_runtime_fallback_violations:
-        print("stdlib intrinsics lint failed: intrinsic runtime fallback gate violated")
+        messages = diagnostics.setdefault("intrinsic-runtime-fallback-violations", [])
+        messages.append(
+            "stdlib intrinsics lint failed: intrinsic runtime fallback gate violated"
+        )
         for module, errors in intrinsic_runtime_fallback_violations:
-            print(f"- {module}")
+            messages.append(f"- {module}")
             for msg in errors:
-                print(f"  {msg}")
-        return 1
+                messages.append(f"  {msg}")
 
     if len(intrinsic_partial_modules) > intrinsic_partial_budget:
-        print("stdlib intrinsics lint failed: intrinsic-partial ratchet gate violated")
-        print(
+        messages = diagnostics.setdefault("intrinsic-partial-budget", [])
+        messages.append(
+            "stdlib intrinsics lint failed: intrinsic-partial ratchet gate violated"
+        )
+        messages.append(
             f"- intrinsic-partial count: {len(intrinsic_partial_modules)} "
             f"(budget: {intrinsic_partial_budget})"
         )
-        print("- lower intrinsic-partial count or tighten ratchet intentionally.")
-        return 1
-
-    if probe_only_modules or python_only_modules_sorted:
-        print("stdlib intrinsics lint failed: zero non-intrinsic gate violated")
-        if probe_only_modules:
-            print("- probe-only modules:")
-            for module in probe_only_modules:
-                print(f"  - {module}")
-        if python_only_modules_sorted:
-            print("- python-only modules:")
-            for module in python_only_modules_sorted:
-                print(f"  - {module}")
-        return 1
-
-    generated_doc = _build_audit_doc(audits)
-    if args.update_doc:
-        AUDIT_DOC.write_text(generated_doc, encoding="utf-8")
-    else:
-        if not AUDIT_DOC.exists():
-            print(f"stdlib intrinsic audit doc missing: {_display_path(AUDIT_DOC)}")
-            return 1
-        existing = AUDIT_DOC.read_text(encoding="utf-8")
-        if existing != generated_doc:
-            print(
-                "stdlib intrinsic audit doc is out of date. "
-                "Run: python3 tools/check_stdlib_intrinsics.py --update-doc"
-            )
-            return 1
-
-    if args.json_out is not None:
-        status_counts = {
-            STATUS_INTRINSIC: 0,
-            STATUS_INTRINSIC_PARTIAL: 0,
-            STATUS_INTRINSIC_SUPPORT: 0,
-            STATUS_POLICY_GATE: 0,
-            STATUS_PROBE_ONLY: 0,
-            STATUS_PYTHON_ONLY: 0,
-        }
-        for audit in audits:
-            status_counts[audit.status] += 1
-        report = {
-            "status_counts": status_counts,
-            "modules": [
-                {
-                    "module": audit.module,
-                    "path": _display_path(audit.path),
-                    "status": audit.status,
-                    "intrinsics": list(audit.intrinsic_names),
-                }
-                for audit in sorted(audits, key=lambda a: a.module)
-            ],
-            "strict_import_violations": [
-                {"module": root, "imports": list(bad)}
-                for root, bad in strict_import_violations
-            ],
-            "unresolved_intrinsic_imports": unresolved_intrinsic_imports,
-            "strict_fallback_violations": [
-                {"module": root, "errors": list(errors)}
-                for root, errors in strict_fallback_violations
-            ],
-            "intrinsic_backed_fallback_violations": [
-                {"module": module, "errors": list(errors)}
-                for module, errors in intrinsic_backed_fallback_violations
-            ],
-            "all_fallback_violations": [
-                {"module": module, "errors": list(errors)}
-                for module, errors in all_fallback_violations
-            ],
-            "intrinsic_runtime_fallback_violations": [
-                {"module": module, "errors": list(errors)}
-                for module, errors in intrinsic_runtime_fallback_violations
-            ],
-            "intrinsic_pass_fallback_modules": list(
-                INTRINSIC_PASS_FALLBACK_STRICT_MODULES
-            ),
-            "allowed_policy_gate_modules": sorted(ALLOWED_POLICY_GATE_MODULES),
-            "unknown_policy_gate_modules": list(unknown_policy_gate_modules),
-            "dependency_violations": [
-                {"module": module, "status": status, "imports": list(bad)}
-                for module, status, bad in dependency_violations
-            ],
-            "bootstrap_roots_present": list(bootstrap_roots_present),
-            "bootstrap_roots_missing": list(bootstrap_roots_missing),
-            "bootstrap_closure_violations": [
-                {"module": module, "status": status}
-                for module, status in bootstrap_closure_violations
-            ],
-            "required_top_level_modules": sorted(required_top_level),
-            "required_top_level_packages": sorted(required_top_level_packages),
-            "missing_top_level_modules": list(missing_top_level),
-            "top_level_package_kind_mismatches": list(package_kind_mismatches),
-            "top_level_collisions": list(top_level_collisions),
-            "required_submodules": sorted(required_submodules),
-            "required_subpackages": sorted(required_subpackages),
-            "missing_submodules": list(missing_submodules),
-            "subpackage_kind_mismatches": list(subpackage_kind_mismatches),
-            "submodule_collisions": list(submodule_collisions),
-            "probe_only_modules": list(probe_only_modules),
-            "intrinsic_partial_modules": list(intrinsic_partial_modules),
-            "intrinsic_support_modules": [
-                audit.module
-                for audit in sorted(audits, key=lambda item: item.module)
-                if audit.status == STATUS_INTRINSIC_SUPPORT
-            ],
-            "intrinsic_partial_budget": intrinsic_partial_budget,
-            "fully_covered_modules": sorted(fully_covered_modules),
-            "full_coverage_required_intrinsics": {
-                module: list(intrinsics)
-                for module, intrinsics in sorted(
-                    full_coverage_required_intrinsics.items()
-                )
-            },
-            "python_only_modules": list(python_only_modules_sorted),
-        }
-        args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        args.json_out.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        messages.append(
+            "- lower intrinsic-partial count or tighten ratchet intentionally."
         )
 
-    print("stdlib intrinsics lint: ok")
-    return 0
+    if probe_only_modules or python_only_modules_sorted:
+        messages = diagnostics.setdefault("non-intrinsic-modules", [])
+        messages.append(
+            "stdlib intrinsics lint failed: zero non-intrinsic gate violated"
+        )
+        if probe_only_modules:
+            messages.append("- probe-only modules:")
+            for module in probe_only_modules:
+                messages.append(f"  - {module}")
+        if python_only_modules_sorted:
+            messages.append("- python-only modules:")
+            for module in python_only_modules_sorted:
+                messages.append(f"  - {module}")
+
+    generated_doc = _build_audit_doc(audits)
+    try:
+        if args.update_doc:
+            if not diagnostics:
+                AUDIT_DOC.write_text(generated_doc, encoding="utf-8")
+        elif not AUDIT_DOC.exists():
+            diagnostics["audit-document-missing"] = [
+                f"stdlib intrinsic audit doc missing: {_display_path(AUDIT_DOC)}"
+            ]
+        elif AUDIT_DOC.read_text(encoding="utf-8") != generated_doc:
+            diagnostics["audit-document-stale"] = [
+                "stdlib intrinsic audit doc is out of date. "
+                "Run: python3 tools/check_stdlib_intrinsics.py --update-doc"
+            ]
+    except OSError as exc:
+        diagnostics["audit-document-publication"] = [
+            f"stdlib intrinsic audit document publication failed: {exc}"
+        ]
+
+    status_counts = {
+        STATUS_INTRINSIC: 0,
+        STATUS_INTRINSIC_PARTIAL: 0,
+        STATUS_INTRINSIC_SUPPORT: 0,
+        STATUS_POLICY_GATE: 0,
+        STATUS_PROBE_ONLY: 0,
+        STATUS_PYTHON_ONLY: 0,
+    }
+    for audit in audits:
+        status_counts[audit.status] += 1
+    report = {
+        "file_failures": [
+            {"path": _display_path(path), "errors": errors} for path, errors in failures
+        ],
+        "missing_intrinsics": [
+            {"path": path, "intrinsic": name}
+            for path, name in sorted(set(missing_intrinsics))
+        ],
+        "bootstrap_failures": sorted(set(bootstrap_failures)),
+        "unknown_strict_roots": unknown_strict_roots,
+        "strict_root_status_violations": [
+            {"module": module, "status": status}
+            for module, status in strict_root_status_violations
+        ],
+        "unknown_fully_covered_modules": list(unknown_fully_covered_modules),
+        "uncovered_contract_entries": list(uncovered_contract_entries),
+        "missing_full_coverage_contract_entries": list(
+            missing_full_coverage_contract_entries
+        ),
+        "full_coverage_status_violations": [
+            {"module": module, "status": status}
+            for module, status in full_coverage_status_violations
+        ],
+        "full_coverage_unknown_intrinsics": [
+            {"module": module, "intrinsics": list(names)}
+            for module, names in full_coverage_unknown_intrinsics
+        ],
+        "full_coverage_missing_intrinsic_wiring": [
+            {"module": module, "intrinsics": list(names)}
+            for module, names in full_coverage_missing_intrinsic_wiring
+        ],
+        "status_counts": status_counts,
+        "modules": [
+            {
+                "module": audit.module,
+                "path": _display_path(audit.path),
+                "status": audit.status,
+                "intrinsics": list(audit.intrinsic_names),
+            }
+            for audit in sorted(audits, key=lambda a: a.module)
+        ],
+        "strict_import_violations": [
+            {"module": root, "imports": list(bad)}
+            for root, bad in strict_import_violations
+        ],
+        "unresolved_intrinsic_imports": unresolved_intrinsic_imports,
+        "private_facades": intrinsic_classification.private_facades_payload(),
+        "strict_fallback_violations": [
+            {"module": root, "errors": list(errors)}
+            for root, errors in strict_fallback_violations
+        ],
+        "intrinsic_backed_fallback_violations": [
+            {"module": module, "errors": list(errors)}
+            for module, errors in intrinsic_backed_fallback_violations
+        ],
+        "all_fallback_violations": [
+            {"module": module, "errors": list(errors)}
+            for module, errors in all_fallback_violations
+        ],
+        "intrinsic_runtime_fallback_violations": [
+            {"module": module, "errors": list(errors)}
+            for module, errors in intrinsic_runtime_fallback_violations
+        ],
+        "intrinsic_pass_fallback_modules": list(INTRINSIC_PASS_FALLBACK_STRICT_MODULES),
+        "allowed_policy_gate_modules": sorted(ALLOWED_POLICY_GATE_MODULES),
+        "unknown_policy_gate_modules": list(unknown_policy_gate_modules),
+        "dependency_violations": [
+            {"module": module, "status": status, "imports": list(bad)}
+            for module, status, bad in dependency_violations
+        ],
+        "bootstrap_roots_present": list(bootstrap_roots_present),
+        "bootstrap_roots_missing": list(bootstrap_roots_missing),
+        "bootstrap_closure_violations": [
+            {"module": module, "status": status}
+            for module, status in bootstrap_closure_violations
+        ],
+        "required_top_level_modules": sorted(required_top_level),
+        "required_top_level_packages": sorted(required_top_level_packages),
+        "missing_top_level_modules": list(missing_top_level),
+        "top_level_package_kind_mismatches": list(package_kind_mismatches),
+        "top_level_collisions": list(top_level_collisions),
+        "required_submodules": sorted(required_submodules),
+        "required_subpackages": sorted(required_subpackages),
+        "missing_submodules": list(missing_submodules),
+        "subpackage_kind_mismatches": list(subpackage_kind_mismatches),
+        "submodule_collisions": list(submodule_collisions),
+        "probe_only_modules": list(probe_only_modules),
+        "intrinsic_partial_modules": list(intrinsic_partial_modules),
+        "intrinsic_support_modules": [
+            audit.module
+            for audit in sorted(audits, key=lambda item: item.module)
+            if audit.status == STATUS_INTRINSIC_SUPPORT
+        ],
+        "intrinsic_partial_budget": intrinsic_partial_budget,
+        "fully_covered_modules": sorted(fully_covered_modules),
+        "full_coverage_required_intrinsics": {
+            module: list(intrinsics)
+            for module, intrinsics in sorted(full_coverage_required_intrinsics.items())
+        },
+        "python_only_modules": list(python_only_modules_sorted),
+    }
+    return _finish_audit(report=report, diagnostics=diagnostics, json_out=args.json_out)
 
 
 if __name__ == "__main__":

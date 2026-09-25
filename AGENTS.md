@@ -122,7 +122,7 @@ tests, measurements, and explicit user direction over stale prose.
 - Match model speed and reasoning effort to the task: strongest available
   reasoning for load-bearing architecture and correctness; faster workers for
   well-bounded scans and mechanical work.
-- Respect the operator's active cap (currently two additional Codex workers).
+- Respect the operator's active concurrency limits for Codex and external workers.
   Use Astra for the most complex, mission-critical or long-running reasoning;
   calibrate other workers' models and effort to their scopes. Claude Fable/Opus
   may provide independent design or review when available, under the same search,

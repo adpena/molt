@@ -215,6 +215,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python.unit.python-custody` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
 | `python.unit.binding-authority` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
+| `python.unit.runtime-library-boundary` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |
 | `native.integration.python-custody` | `native_integration` | `linux-x86_64-py312-native-dev` | `explicit` | 300 s | `python-tests` | 0 |
 | `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `native.integration.capability-manifest` | `native_integration` | `linux-x86_64-py312-native-dev` | `warm` | 300 s | `compiler-build-resource` | 0 |

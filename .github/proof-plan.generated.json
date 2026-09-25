@@ -185,7 +185,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a08b928a163a7eb615fd35051fa7edd09ac54f3648412207da9103815b87495a",
+  "authority_sha256": "f0274fb5f12f01c24595cbe1193e735711d00bc1e9aeaca95353c79c13370804",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3052,7 +3052,14 @@
         "tests/test_manifest_env.py",
         "tests/test_monty_conformance_runner.py",
         "tests/tools/test_proof_queue_execution_receipt_details.py",
-        "tests/tools/test_proof_queue_cargo_cache_custody.py"
+        "tests/tools/test_proof_queue_cargo_cache_custody.py",
+        "tests/test_build_state_layout.py",
+        "tests/test_bench_individual_tool.py",
+        "tests/test_compile_governor.py",
+        "tests/test_bench_wasm_runtime_build_flags.py",
+        "tests/test_harness_memory_guard.py",
+        "tests/test_molt_diff_expected_failures.py",
+        "tests/test_compat_multibackend_oracle.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3214,6 +3221,49 @@
         "main"
       ],
       "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-m",
+        "not slow",
+        "tests/test_moltlib_io.py",
+        "tests/test_moltlib_io_runtime.py",
+        "tests/test_moltlib_runtime_exports.py",
+        "tests/test_io_private_module_surface.py",
+        "tests/test_check_stdlib_intrinsics.py",
+        "tests/test_stdlib_inspect_coroutine_marking.py",
+        "tests/cli/test_cli_core_io_closure.py",
+        "tests/cli/test_required_features_reachability.py",
+        "tests/test_stdlib_intrinsic_import_evidence.py",
+        "tests/cli/test_cli_intrinsic_enforcement.py",
+        "tests/test_weakrefset_private_module_surface.py",
+        "tests/test_weakref_native_authority.py",
+        "tests/test_unittest_mock_protocol.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.runtime-library-boundary",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
       "toolchains": [
         "python",
         "uv"
@@ -4074,7 +4124,7 @@
         "headroom_seconds": 300,
         "projected_makespan_seconds": 900,
         "resource_capacity_floor_seconds": {
-          "python-tests": 810
+          "python-tests": 870
         }
       },
       "repository_policy": {

@@ -420,8 +420,57 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
     assert!(!retained.contains("molt_init_json"));
 }
 #[test]
-fn task_references_retain_exact_symbols_without_guessed_companions() {
-    for kind in ["alloc_task", "call_async"] {
+fn generated_function_references_retain_exact_symbols_without_guessed_companions() {
+    use molt_ir::tir::op_kinds_generated::SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS;
+
+    for &kind in SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS {
+        let function = |name: &str, ops: Vec<OpIR>| FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: name.to_string(),
+            params: Vec::new(),
+            ops,
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            execution_context: Default::default(),
+        };
+        for target in ["opaque_body", "opaque_body_poll", "undefined"] {
+            let mut ir = SimpleIR {
+                functions: vec![
+                    function(
+                        "entry",
+                        vec![OpIR {
+                            kind: kind.to_string(),
+                            s_value: Some(target.to_string()),
+                            ..OpIR::default()
+                        }],
+                    ),
+                    function("opaque_body", vec![make_op("ret_void")]),
+                    function("opaque_body_poll", vec![make_op("ret_void")]),
+                    function("opaque_body_poll_poll", vec![make_op("ret_void")]),
+                ],
+                profile: None,
+            };
+            eliminate_dead_functions(&mut ir);
+            let retained: Vec<&str> = ir
+                .functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect();
+            let expected = if target == "undefined" {
+                vec!["entry"]
+            } else {
+                vec!["entry", target]
+            };
+            assert_eq!(retained, expected, "{kind} -> {target}");
+        }
+    }
+}
+
+#[test]
+fn non_reference_operations_do_not_retain_defined_functions() {
+    for kind in ["generator_create", "coro_create", "const_str"] {
         let function = |name: &str, ops: Vec<OpIR>| FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: name.to_string(),
@@ -449,11 +498,7 @@ fn task_references_retain_exact_symbols_without_guessed_companions() {
             profile: None,
         };
         eliminate_dead_functions(&mut ir);
-        let retained: Vec<&str> = ir
-            .functions
-            .iter()
-            .map(|function| function.name.as_str())
-            .collect();
-        assert_eq!(retained, ["entry", "opaque_body"], "{kind}");
+        assert_eq!(ir.functions.len(), 1, "{kind}");
+        assert_eq!(ir.functions[0].name, "entry", "{kind}");
     }
 }

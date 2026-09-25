@@ -14405,6 +14405,8 @@ def test_build_state_root_is_cached(
 ) -> None:
     cli._build_state_root_cached.cache_clear()
     cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
     monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
     monkeypatch.chdir(tmp_path)
 
@@ -14423,6 +14425,8 @@ def test_build_state_root_uses_canonical_session_target_when_unset(
 ) -> None:
     cli._build_state_root_cached.cache_clear()
     cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
 
@@ -14438,6 +14442,8 @@ def test_build_state_root_cache_tracks_session_id(
 ) -> None:
     cli._build_state_root_cached.cache_clear()
     cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
 
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
@@ -14449,6 +14455,24 @@ def test_build_state_root_cache_tracks_session_id(
     assert alpha == tmp_path / "target" / "sessions" / "alpha-session" / ".molt_state"
     assert beta == tmp_path / "target" / "sessions" / "beta-session" / ".molt_state"
     assert alpha != beta
+
+
+def test_backend_daemon_empty_cargo_target_uses_shared_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.backend_daemon_custody import backend_daemon_build_state_root_from_env
+    from molt.build_state_layout import build_state_root
+
+    project = tmp_path / "repo"
+    artifact = tmp_path / "canonical"
+    monkeypatch.chdir(tmp_path)
+    env = {"CARGO_TARGET_DIR": "", "MOLT_EXT_ROOT": str(artifact)}
+    expected = build_state_root(
+        project_root=project, cargo_target=project / "target", environment=env
+    )
+    assert (
+        backend_daemon_build_state_root_from_env(env, project_root=project) == expected
+    )
 
 
 def test_build_state_root_uses_override_relative_to_project_root(
@@ -14716,6 +14740,8 @@ def test_build_lock_is_shared_for_explicit_target_root(
 ) -> None:
     cli._build_state_root_cached.cache_clear()
     cli._build_lock_dir_cached.cache_clear()
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
     target_root = tmp_path / "shared-target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
 
@@ -14754,6 +14780,8 @@ def test_build_lock_directory_is_session_isolated_when_target_root_is_default(
     cli._build_state_root_cached.cache_clear()
     cli._cargo_target_root_cached.cache_clear()
     cli._build_lock_dir_cached.cache_clear()
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
 
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
@@ -29138,6 +29166,8 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_and_unverified_identit
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
     project_root = tmp_path / "proj"
     project_root.mkdir()
     own_root = project_root / "target" / ".molt_state" / "backend_daemon"
@@ -29234,6 +29264,43 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_and_unverified_identit
     assert not malformed.exists()
     assert not legacy_pid_file.exists()
     assert live_identity_file.exists()
+
+
+def test_sweep_projects_only_known_canonical_sibling_control_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.build_state_layout import build_state_root
+
+    project = tmp_path / "repo"
+    sibling_target = project / "target" / "sessions" / "agent-x"
+    sibling_target.mkdir(parents=True)
+    artifact = tmp_path / "canonical"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
+    monkeypatch.setattr(
+        BACKEND_EXECUTION,
+        "_build_state_root",
+        lambda _root: artifact / "tmp" / "build-control" / "own",
+    )
+    sibling = (
+        build_state_root(
+            project_root=project,
+            cargo_target=sibling_target,
+            environment=os.environ,
+        )
+        / "backend_daemon"
+    )
+    sibling.mkdir(parents=True)
+    stale = sibling / "stale.pid"
+    stale.write_text("0\n", encoding="utf-8")
+    unknown = artifact / "tmp" / "build-control" / "unknown" / "backend_daemon"
+    unknown.mkdir(parents=True)
+    foreign = unknown / "foreign.pid"
+    foreign.write_text("0\n", encoding="utf-8")
+
+    assert cli._sweep_orphaned_backend_daemon_locks(project) == 1
+    assert not stale.exists()
+    assert foreign.exists()
 
 
 def test_rotate_backend_daemon_log_if_large_rotates_above_threshold(

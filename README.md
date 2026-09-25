@@ -31,6 +31,9 @@ the [performance authority](tools/PERF_AUTHORITY.md#v10-acceptance-scope).
   Current target-version policies are `3.12`, `3.13`, and `3.14`; accepting a
   version policy does not certify every feature on that version.
 - Compiled artifacts must work without a host Python installation.
+- CPython module names retain their standard-library role. Molt-specific
+  helpers live under `moltlib`, including `moltlib.io.stream` for bounded file
+  iteration; they are not extensions to CPython's `io` namespace.
 - Support is specific to Python version, OS, architecture, backend, runtime
   profile, and capabilities. Windows, macOS, Linux, and WASM are in scope;
   unverified cells are not implied by a pass on another configuration.

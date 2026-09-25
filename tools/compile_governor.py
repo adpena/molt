@@ -9,16 +9,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, TextIO
 
+from molt.build_state_layout import build_state_root
+from molt.dx import cargo_target_dir_for_artifact_root
+from molt.file_locks import (
+    _FileLockHandle,
+    _release_file_lock,
+    _try_acquire_file_lock,
+)
+
 try:
     from tools import resource_pressure
 except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
     import resource_pressure  # type: ignore
-
-try:  # pragma: no cover - platform-specific import.
-    import fcntl
-except Exception:  # pragma: no cover - non-posix fallback.
-    fcntl = None  # type: ignore[assignment]
-
 
 DEFAULT_MAX_COMPILE_SLOTS = resource_pressure.DEFAULT_MAX_COMPILE_SLOTS
 DEFAULT_WAIT_SECONDS = 180.0
@@ -41,7 +43,7 @@ class CompileSlotLease:
     active_builds: int | None
     load_1m: float | None
     resource_reason: str | None = None
-    _lock_handle: TextIO | None = None
+    _lock_handle: _FileLockHandle | None = None
     _released: bool = False
 
     def release(self) -> None:
@@ -52,11 +54,7 @@ class CompileSlotLease:
         self._lock_handle = None
         if handle is None:
             return
-        if fcntl is not None:
-            with contextlib.suppress(OSError):
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        with contextlib.suppress(OSError):
-            handle.close()
+        _release_file_lock(handle)
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:
@@ -101,14 +99,20 @@ def _guard_root(env: Mapping[str, str]) -> Path:
     explicit = env.get("MOLT_COMPILE_GUARD_DIR")
     if explicit:
         return Path(explicit).expanduser()
-    target_root = env.get("CARGO_TARGET_DIR")
-    if target_root:
-        return Path(target_root).expanduser() / ".molt_state" / "compile_guard"
-    ext_root = env.get("MOLT_EXT_ROOT")
-    if ext_root:
-        return Path(ext_root).expanduser() / "target" / ".molt_state" / "compile_guard"
+    project_root = Path(__file__).resolve().parents[1]
+    target = env.get("CARGO_TARGET_DIR")
+    target_root = (
+        Path(target).expanduser().absolute()
+        if target
+        else cargo_target_dir_for_artifact_root(
+            project_root, env.get("MOLT_SESSION_ID")
+        )
+    )
     return (
-        Path(__file__).resolve().parents[1] / "target" / ".molt_state" / "compile_guard"
+        build_state_root(
+            project_root=project_root, cargo_target=target_root, environment=env
+        )
+        / "compile_guard"
     )
 
 
@@ -218,25 +222,12 @@ def _max_active_procs_from_env(
 
 def _try_acquire_slot(
     lock_root: Path, *, max_slots: int
-) -> tuple[int, Path, TextIO] | None:
-    if os.name != "posix" or fcntl is None:
-        return None
-    lock_root.mkdir(parents=True, exist_ok=True)
+) -> tuple[int, Path, _FileLockHandle] | None:
     for slot_index in range(max_slots):
         lock_path = lock_root / f"slot_{slot_index}.lock"
-        handle = open(lock_path, "a+", encoding="utf-8")
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            handle.close()
+        handle = _try_acquire_file_lock(lock_path)
+        if handle is None:
             continue
-        except OSError:
-            handle.close()
-            continue
-        handle.seek(0)
-        handle.truncate(0)
-        handle.write(f"pid={os.getpid()} acquired_at={time.time():.6f}\n")
-        handle.flush()
         return slot_index, lock_path, handle
     return None
 
@@ -292,13 +283,12 @@ def acquire_compile_slot(
         last_active = active_builds
         last_load = load_1m
 
-        slots_supported = os.name == "posix" and fcntl is not None
         reasons: list[str] = []
         if active_builds is not None and active_builds >= max_active_procs:
             reasons.append(f"active_builds={active_builds} >= limit={max_active_procs}")
 
-        acquired: tuple[int, Path, TextIO] | None = None
-        if slots_supported and not reasons:
+        acquired: tuple[int, Path, _FileLockHandle] | None = None
+        if not reasons:
             acquired = _try_acquire_slot(lock_root, max_slots=max_slots)
             if acquired is not None:
                 slot_index, lock_path, handle = acquired
@@ -316,15 +306,11 @@ def acquire_compile_slot(
             load_1m is not None
             and max_load > 0.0
             and load_1m >= max_load
-            and (
-                not slots_supported
-                or active_builds is None
-                or active_builds >= max_slots
-            )
+            and (active_builds is None or active_builds >= max_slots)
         )
         if load_gated:
             reasons.append(f"load1={load_1m:.2f} >= limit={max_load:.2f}")
-        if slots_supported and acquired is None:
+        if acquired is None and not reasons:
             reasons.append(f"all compile slots busy (max_slots={max_slots})")
 
         last_reason = ", ".join(reasons)

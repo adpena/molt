@@ -127,6 +127,7 @@ def _canonical_build_state_root(project_root: Path) -> Path:
         None,
         os.fspath(Path.cwd()),
         None,
+        os.environ.get("MOLT_EXT_ROOT"),
     )
 
 

@@ -291,6 +291,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_super_from_frame",
             crate::molt_super_from_frame as *const (),
         )),
+        "molt_is_bound_method" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_is_bound_method",
+            crate::molt_is_bound_method as *const (),
+        )),
         "molt_function_init_metadata_packed" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_function_init_metadata_packed",
             crate::molt_function_init_metadata_packed as *const (),

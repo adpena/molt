@@ -7625,6 +7625,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_is_bound_method",
+        symbol: "molt_is_bound_method",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_inspect_isclass",
         symbol: "molt_inspect_isclass",
         arity: 1,

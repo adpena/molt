@@ -16,9 +16,9 @@ Their correctness identity is already fully captured:
   native exports / type-facts / optimization profile / pgo -- *and* the real
   source content sha256 on read (:func:`_read_persisted_module_lowering`).
 
-The per-session build-state root (``target/sessions/<MOLT_SESSION_ID>/.molt_state``)
-is a *correctness isolation* boundary for concurrent agents, not a caching home.
-A fresh session / worktree therefore starts with a cold ``.molt_state`` and
+The target-addressed build-state root (from ``molt.build_state_layout``) is a
+*correctness isolation* boundary for concurrent agents, not a caching home.
+A fresh session / worktree can therefore start with cold local state and
 re-lowers *every* user module from scratch even though a byte-identical entry
 was already produced by another session for the same source + tooling identity
 -- the app-side analog of the cold runtime-wasm recompile the R73.1 shared cache

@@ -753,17 +753,16 @@ def _run_cargo_with_sccache_retry(
 
 
 def _build_slot_dir() -> Path:
+    ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if ext_root:
+        return Path(ext_root).expanduser() / "tmp" / "molt-build-slots"
     tmp_root = (
-        os.environ.get("MOLT_DIFF_TMPDIR", "").strip()
-        or os.environ.get("TMPDIR", "").strip()
+        os.environ.get("TMPDIR", "").strip()
         or os.environ.get("TMP", "").strip()
         or os.environ.get("TEMP", "").strip()
     )
     if tmp_root:
         return Path(tmp_root).expanduser() / "molt-build-slots"
-    ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if ext_root:
-        return Path(ext_root).expanduser() / "tmp" / "molt-build-slots"
     root = _find_molt_root(Path.cwd())
     if root is None:
         root = Path.cwd()

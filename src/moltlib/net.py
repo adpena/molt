@@ -6,7 +6,8 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from molt import intrinsics as _intrinsics
+from _intrinsics import load_intrinsic as _load_intrinsic
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 Payload = object
 _IO_EVENT_READ = 1
@@ -14,20 +15,20 @@ _IO_EVENT_WRITE = 1 << 1
 _PENDING_SENTINEL: Any | None = None
 
 
-molt_pending = _intrinsics.require("molt_pending", globals())
-molt_async_sleep = _intrinsics.require("molt_async_sleep", globals())
-molt_stream_new = _intrinsics.require("molt_stream_new", globals())
-molt_stream_send_obj = _intrinsics.require("molt_stream_send_obj", globals())
-molt_stream_recv = _intrinsics.require("molt_stream_recv", globals())
-molt_stream_close = _intrinsics.require("molt_stream_close", globals())
-molt_stream_drop = _intrinsics.require("molt_stream_drop", globals())
-molt_ws_pair_obj = _intrinsics.require("molt_ws_pair_obj", globals())
-molt_ws_connect_obj = _intrinsics.require("molt_ws_connect_obj", globals())
-molt_ws_send_obj = _intrinsics.require("molt_ws_send_obj", globals())
-molt_ws_recv = _intrinsics.require("molt_ws_recv", globals())
-molt_ws_close = _intrinsics.require("molt_ws_close", globals())
-molt_ws_drop = _intrinsics.require("molt_ws_drop", globals())
-_MOLT_WS_WAIT_NEW = _intrinsics.load("molt_ws_wait_new", globals())
+molt_pending = _require_intrinsic("molt_pending", globals())
+molt_async_sleep = _require_intrinsic("molt_async_sleep", globals())
+molt_stream_new = _require_intrinsic("molt_stream_new", globals())
+molt_stream_send_obj = _require_intrinsic("molt_stream_send_obj", globals())
+molt_stream_recv = _require_intrinsic("molt_stream_recv", globals())
+molt_stream_close = _require_intrinsic("molt_stream_close", globals())
+molt_stream_drop = _require_intrinsic("molt_stream_drop", globals())
+molt_ws_pair_obj = _require_intrinsic("molt_ws_pair_obj", globals())
+molt_ws_connect_obj = _require_intrinsic("molt_ws_connect_obj", globals())
+molt_ws_send_obj = _require_intrinsic("molt_ws_send_obj", globals())
+molt_ws_recv = _require_intrinsic("molt_ws_recv", globals())
+molt_ws_close = _require_intrinsic("molt_ws_close", globals())
+molt_ws_drop = _require_intrinsic("molt_ws_drop", globals())
+_MOLT_WS_WAIT_NEW = _load_intrinsic("molt_ws_wait_new", globals())
 
 
 def _pending_sentinel() -> Any:

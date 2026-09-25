@@ -14,6 +14,7 @@ def test_moltlib_dir_includes_runtime_modules() -> None:
     entries = dir(moltlib)
     assert "asgi" in entries
     assert "concurrency" in entries
+    assert "io" in entries
     assert "molt_db" in entries
     assert "net" in entries
 
@@ -35,11 +36,11 @@ def test_moltlib_concurrency_reexports_runtime_channel_surface() -> None:
     if not _intrinsics.runtime_active():
         pytest.skip("Molt runtime intrinsics not active")
 
-    compat_concurrency = importlib.import_module("molt.concurrency")
+    runtime_concurrency = importlib.import_module("moltlib._concurrency_runtime")
 
     assert concurrency.channel is not None
-    assert compat_concurrency.Channel is concurrency.Channel
-    assert compat_concurrency.channel is concurrency.channel
+    assert runtime_concurrency.Channel is concurrency.Channel
+    assert runtime_concurrency.channel is concurrency.channel
     chan = concurrency.channel(1)
     chan.send(17)
     assert chan.recv() == 17
@@ -67,12 +68,10 @@ def test_moltlib_net_surface_exposes_runtime_types() -> None:
     if not _intrinsics.runtime_active():
         pytest.skip("Molt runtime intrinsics not active")
     molt_net = importlib.import_module("moltlib.net")
-    compat_net = importlib.import_module("molt.net")
     assert hasattr(molt_net, "Request")
     assert hasattr(molt_net, "Response")
     assert hasattr(molt_net, "Stream")
     assert hasattr(molt_net, "StreamSender")
     assert hasattr(molt_net, "WebSocket")
     assert molt_net.StreamSender is molt_net.StreamSenderBase
-    assert compat_net.stream is molt_net.stream
-    assert compat_net.StreamSender is molt_net.StreamSender
+    assert isinstance(molt_net.stream([]), molt_net.Stream)

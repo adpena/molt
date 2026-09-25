@@ -1923,7 +1923,7 @@ resource_class = "python-tests"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -1960,6 +1960,18 @@ timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv","run","--python","3.12","python","-m","pytest","-q","-m","not slow","tests/cli/test_backend_manifest_contract.py","tests/test_cargo_workspace.py","tests/test_cli_build_profile_policy.py","tests/cli/test_runtime_build_identity.py","tests/cli/test_runtime_family_authority.py","tests/cli/test_runtime_artifact_selection.py","tests/cli/test_cli_backend_binary_materialization.py","tests/cli/test_cli_artifact_format_validation.py","tests/cli/test_cli_shared_stdlib_cache.py","tests/test_ustar.py","tests/test_native_artifact_header.py","tests/cli/test_cli_native_binary_authority.py","tests/cli/test_native_artifact_contract.py","tests/cli/test_native_symbol_authority.py","tests/cli/test_native_symbol_build_errors.py","tests/cli/test_backend_artifact_contract.py","tests/cli/test_artifact_sync.py","tests/cli/test_native_link_custody.py","tests/cli/test_native_link_manifest.py","tests/cli/test_cargo_execution_failure_authority.py","tests/cli/test_runtime_wasm_generation.py","tests/cli/test_runtime_wasm_single_compile.py","tests/cli/test_cli_runtime_wasm_shared_cache.py","tests/cli/test_cli_wasm_artifact_validation.py","tests/cli/test_cli_toolchain_artifact_hydration.py","tests/test_wasm_link_runtime_generation.py","tests/test_wasm_longdouble_durable_provisioning.py","tests/tools/test_nightly_runtime_bundle.py","tests/tools/test_nightly_prepare.py","tests/tools/test_native_link_benchmark.py","tests/cli/test_runtime_c_resource_custody.py","tests/cli/test_runtime_native_failure_custody.py","tests/cli/test_static_archive_identity.py","tests/cli/test_runtime_wasm_build_timings.py","tests/test_wasm_link_validation.py","tests/test_wasm_section_spans.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "python.unit.runtime-library-boundary"
+family = "python_unit"
+cell = "linux-x86_64-py312-unit"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 120
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_moltlib_io.py", "tests/test_moltlib_io_runtime.py", "tests/test_moltlib_runtime_exports.py", "tests/test_io_private_module_surface.py", "tests/test_check_stdlib_intrinsics.py", "tests/test_stdlib_inspect_coroutine_marking.py", "tests/cli/test_cli_core_io_closure.py", "tests/cli/test_required_features_reachability.py", "tests/test_stdlib_intrinsic_import_evidence.py", "tests/cli/test_cli_intrinsic_enforcement.py", "tests/test_weakrefset_private_module_surface.py", "tests/test_weakref_native_authority.py", "tests/test_unittest_mock_protocol.py"]
 toolchains = ["python", "uv"]
 
 [[command]]

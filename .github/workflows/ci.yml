@@ -340,6 +340,13 @@ jobs:
         uses: ./.github/actions/setup-llvm
 
 
+      - name: Resolve build-control evidence custody
+        id: build-control
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
+
       - name: Execute selected LLVM, MLIR, and linker partitions
         run: python3 tools/proof_plan.py --run-family llvm --receipt proof-receipts/llvm.json
 
@@ -351,7 +358,7 @@ jobs:
           path: |
             proof-receipts/llvm.json
             proof-receipts/evidence/llvm-differential-truth.json
-            target/**/.molt_state/build_failures/*.json
+            ${{ steps.build-control.outputs.root }}/build_failures/*.json
           include-hidden-files: true
           if-no-files-found: error
 

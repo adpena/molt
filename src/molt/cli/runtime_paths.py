@@ -5,6 +5,8 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
+from molt.build_state_layout import build_state_root
+
 from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
     RUNTIME_STDLIB_PROFILE_TIERS,
@@ -120,21 +122,19 @@ def _build_state_root_cached(
     cargo_target_override: str | None,
     cwd_str: str,
     session_id: str | None = None,
+    artifact_root: str | None = None,
 ) -> Path:
     project_root = Path(project_root_str)
+    target = _cargo_target_root_cached(
+        project_root_str, cargo_target_override, cwd_str, session_id
+    )
+    environment = {}
     if build_state_override:
-        path = Path(build_state_override).expanduser()
-        if not path.is_absolute():
-            path = (project_root / path).absolute()
-        return path
-    return (
-        _cargo_target_root_cached(
-            project_root_str,
-            cargo_target_override,
-            cwd_str,
-            session_id,
-        )
-        / ".molt_state"
+        environment["MOLT_BUILD_STATE_DIR"] = build_state_override
+    if artifact_root:
+        environment["MOLT_EXT_ROOT"] = artifact_root
+    return build_state_root(
+        project_root=project_root, cargo_target=target, environment=environment
     )
 
 
@@ -145,6 +145,7 @@ def _build_state_root(project_root: Path) -> Path:
         os.environ.get("CARGO_TARGET_DIR"),
         os.fspath(Path.cwd()),
         _molt_session_id(),
+        os.environ.get("MOLT_EXT_ROOT"),
     )
 
 

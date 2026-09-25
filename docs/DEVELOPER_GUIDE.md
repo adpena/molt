@@ -240,7 +240,7 @@ lockfiles committed with the manifest change.
 - **dyld incident handling**: diff retries force `MOLT_BACKEND_DAEMON=0`; set `MOLT_DIFF_QUARANTINE_ON_DYLD=1` only if you explicitly want cold target/state quarantine.
 - **no-cache safety lane**: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`; default is cache-enabled on all platforms, and dyld guard/retry can force no-cache for the active incident-scoped run.
 - **Shared diff Cargo target**: set `MOLT_DIFF_CARGO_TARGET_DIR` to reuse one shared Cargo artifact root across diff workers; `tools/throughput_env.sh --apply` sets this to `CARGO_TARGET_DIR` by default.
-- **Diff run lock**: the harness now uses `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock` to serialize overlapping full diff runs across agents. Tune waiting via `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
+- **Diff run lock**: the harness uses `diff_run.lock` under the [resolved build-state root](OPERATIONS.md#build-throughput-multi-agent) to serialize overlapping full diff runs across agents sharing a Cargo target. Tune waiting via `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 
 ## Local Validation Entry Points
 
@@ -403,9 +403,10 @@ Key controls:
 - Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents when you want maximum
   reuse; use the DX resolver's external root for maintainer/agent proof lanes
   when available, especially on Windows checkouts on `C:`. Lock/fingerprint
-  state is under `<CARGO_TARGET_DIR>/.molt_state/` (or
-  `MOLT_BUILD_STATE_DIR`), so explicit shared roots also share Cargo rebuild
-  locks. Daemon sockets default to `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp
+  state uses the [shared build-state projection](OPERATIONS.md#build-throughput-multi-agent),
+  independent of disposable output and per-run receipt placement. Explicit shared
+  targets share Cargo rebuild locks. Daemon sockets default to
+  `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp
   path).
 - Agent task scaffolds record the exact sourced environment in
   `logs/agents/<task-slug>/env.sh`; source that file before build/test/bench

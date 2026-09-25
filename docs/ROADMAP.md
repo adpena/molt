@@ -69,7 +69,7 @@ For historical milestone framing, use `docs/spec/areas/process/0006-roadmap.md`.
 Implemented foundation:
 - Dev workflow profile routing now defaults `--profile dev` to Cargo `dev-fast`.
 - Native backend codegen uses a persistent daemon by default to amortize Cranelift startup.
-- Runtime/backend rebuilds and daemon lifecycle are lock-coordinated under shared build state (`<CARGO_TARGET_DIR>/.molt_state/`).
+- Runtime/backend rebuilds and daemon lifecycle are lock-coordinated under the [shared build-state authority](OPERATIONS.md#build-throughput-multi-agent), independent of disposable output placement.
 - Throughput tooling/playbook exists (`tools/throughput_env.sh`, `tools/throughput_matrix.py`, `tools/molt_cache_prune.py`) with enforced external-volume defaults and explicit emergency override paths.
 - Respected `PYTHONPATH` duplicates of repo-owned roots stay internal, preserving stdlib transitive closure and avoiding slow link/runtime discovery failures when developers run with `PYTHONPATH=src`.
 - Backend IR preparation rejects direct calls to module-owned symbols outside the materialized module graph before codegen, with function/op repro coordinates, while lazy `MODULE_IMPORT` stays a runtime boundary.

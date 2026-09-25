@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from molt.dx import cargo_target_dir_for_artifact_root, session_artifact_component
+from molt.build_state_layout import build_state_root
 
 IDENTITY_SCHEMA = "molt.backend_daemon.identity.v1"
 
@@ -136,24 +137,15 @@ def backend_daemon_build_state_root_from_env(
     *,
     project_root: Path,
 ) -> Path:
-    explicit = env.get("MOLT_BUILD_STATE_DIR")
-    if explicit:
-        path = Path(explicit).expanduser()
-        return path if path.is_absolute() else (project_root / path).resolve()
-    target = Path(
-        env.get(
-            "CARGO_TARGET_DIR",
-            str(
-                cargo_target_dir_for_artifact_root(
-                    project_root,
-                    env.get("MOLT_SESSION_ID"),
-                )
-            ),
-        )
-    ).expanduser()
+    raw_target = env.get("CARGO_TARGET_DIR") or str(
+        cargo_target_dir_for_artifact_root(project_root, env.get("MOLT_SESSION_ID"))
+    )
+    target = Path(raw_target).expanduser()
     if not target.is_absolute():
-        target = (project_root / target).resolve()
-    return target / ".molt_state"
+        target = (Path.cwd() / target).absolute()
+    return build_state_root(
+        project_root=project_root, cargo_target=target, environment=env
+    )
 
 
 def backend_daemon_root_from_env(

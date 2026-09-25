@@ -18,7 +18,10 @@ from typing import Any
 
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.cargo_profiles import _resolve_cargo_profile_name
-from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
+from molt.cli.runtime_paths import (
+    _build_state_root,
+    _runtime_wasm_artifact_path_from_env,
+)
 from molt.cli.runtime_wasm_build_spec import (
     _compute_runtime_wasm_build_spec,
     _resolved_runtime_wasm_family_identities,
@@ -542,16 +545,14 @@ def _disk_facts(
 
 @contextlib.contextmanager
 def _exact_build_environment(values: Mapping[str, str]) -> Iterator[None]:
-    previous = {key: os.environ.get(key) for key in values}
+    previous = dict(os.environ)
+    os.environ.clear()
     os.environ.update(values)
     try:
         yield
     finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        os.environ.clear()
+        os.environ.update(previous)
 
 
 def _planned_pair(
@@ -562,13 +563,26 @@ def _planned_pair(
     runtime_dir: Path,
     build_profile: str,
     stdlib_profile: str,
+    build_env: Mapping[str, str],
 ) -> dict[str, object]:
+    if not build_env.get("MOLT_EXT_ROOT", "").strip():
+        raise ValueError("planned runtime build has no canonical artifact root")
+    for name, expected in (
+        ("CARGO_TARGET_DIR", target_root),
+        ("MOLT_CACHE", cache_root),
+        ("MOLT_WASM_RUNTIME_DIR", runtime_dir),
+    ):
+        if build_env.get(name) != os.fspath(expected):
+            raise ValueError(f"planned runtime {name} differs from admitted build")
     required_env = {
         "CARGO_TARGET_DIR": os.fspath(target_root),
         "MOLT_CACHE": os.fspath(cache_root),
         "MOLT_WASM_RUNTIME_DIR": os.fspath(runtime_dir),
+        "MOLT_EXT_ROOT": build_env["MOLT_EXT_ROOT"],
     }
-    with _exact_build_environment(required_env):
+    if state_override := build_env.get("MOLT_BUILD_STATE_DIR"):
+        required_env["MOLT_BUILD_STATE_DIR"] = state_override
+    with _exact_build_environment(build_env):
         cargo_profile, error = _resolve_cargo_profile_name(build_profile)  # type: ignore[arg-type]
         if error is not None:
             raise ValueError(error)
@@ -609,6 +623,7 @@ def _planned_pair(
         toolchain_manifest = shared_identity.toolchain_manifest
         manifest_path = _runtime_wasm_toolchain_manifest_path(shared_spec)
         toolchain_manifest.write(manifest_path)
+        state_root = _build_state_root(project_root)
     if shared_identity.family_digest != reloc_identity.family_digest:
         raise ValueError("planned runtime identities do not form one pair")
     return {
@@ -621,8 +636,8 @@ def _planned_pair(
         "reloc": {"path": os.fspath(reloc), "digest": reloc_identity.digest},
         "generation": os.fspath(runtime_wasm_generation_path(shared)),
         "expected_identity": os.fspath(
-            target_root
-            / ".molt_state/runtime_wasm_generations"
+            state_root
+            / "runtime_wasm_generations"
             / f"{shared_identity.family_digest}.expected.json"
         ),
     }
@@ -682,6 +697,7 @@ def build_preflight(
             runtime_dir=roots.runtime,
             build_profile=build_profile,
             stdlib_profile=stdlib_profile,
+            build_env=context.build_env,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         plan = None

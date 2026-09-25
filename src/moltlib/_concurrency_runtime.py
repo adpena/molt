@@ -2,57 +2,36 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 
-from molt import intrinsics as _intrinsics
-
-if TYPE_CHECKING:
-    from molt._intrinsics import (
-        molt_async_sleep,
-        molt_cancel_token_cancel,
-        molt_cancel_token_clone,
-        molt_cancel_token_drop,
-        molt_cancel_token_get_current,
-        molt_cancel_token_is_cancelled,
-        molt_cancel_token_new,
-        molt_cancel_token_set_current,
-        molt_chan_drop,
-        molt_chan_new,
-        molt_chan_recv,
-        molt_chan_recv_blocking,
-        molt_chan_send,
-        molt_chan_send_blocking,
-        molt_chan_try_recv,
-        molt_chan_try_send,
-        molt_spawn,
-    )
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 T = TypeVar("T")
 _PENDING_SENTINEL: Any | None = None
 
 
-molt_pending = _intrinsics.require("molt_pending", globals())
-molt_async_sleep = _intrinsics.require("molt_async_sleep", globals())
-molt_chan_new = _intrinsics.require("molt_chan_new", globals())
-molt_chan_drop = _intrinsics.require("molt_chan_drop", globals())
-molt_chan_recv = _intrinsics.require("molt_chan_recv", globals())
-molt_chan_send = _intrinsics.require("molt_chan_send", globals())
-molt_chan_send_blocking = _intrinsics.require("molt_chan_send_blocking", globals())
-molt_chan_recv_blocking = _intrinsics.require("molt_chan_recv_blocking", globals())
-molt_chan_try_recv = _intrinsics.require("molt_chan_try_recv", globals())
-molt_chan_try_send = _intrinsics.require("molt_chan_try_send", globals())
-molt_spawn = _intrinsics.require("molt_spawn", globals())
-molt_cancel_token_new = _intrinsics.require("molt_cancel_token_new", globals())
-molt_cancel_token_clone = _intrinsics.require("molt_cancel_token_clone", globals())
-molt_cancel_token_drop = _intrinsics.require("molt_cancel_token_drop", globals())
-molt_cancel_token_cancel = _intrinsics.require("molt_cancel_token_cancel", globals())
-molt_cancel_token_is_cancelled = _intrinsics.require(
+molt_pending = _require_intrinsic("molt_pending", globals())
+molt_async_sleep = _require_intrinsic("molt_async_sleep", globals())
+molt_chan_new = _require_intrinsic("molt_chan_new", globals())
+molt_chan_drop = _require_intrinsic("molt_chan_drop", globals())
+molt_chan_recv = _require_intrinsic("molt_chan_recv", globals())
+molt_chan_send = _require_intrinsic("molt_chan_send", globals())
+molt_chan_send_blocking = _require_intrinsic("molt_chan_send_blocking", globals())
+molt_chan_recv_blocking = _require_intrinsic("molt_chan_recv_blocking", globals())
+molt_chan_try_recv = _require_intrinsic("molt_chan_try_recv", globals())
+molt_chan_try_send = _require_intrinsic("molt_chan_try_send", globals())
+molt_spawn = _require_intrinsic("molt_spawn", globals())
+molt_cancel_token_new = _require_intrinsic("molt_cancel_token_new", globals())
+molt_cancel_token_clone = _require_intrinsic("molt_cancel_token_clone", globals())
+molt_cancel_token_drop = _require_intrinsic("molt_cancel_token_drop", globals())
+molt_cancel_token_cancel = _require_intrinsic("molt_cancel_token_cancel", globals())
+molt_cancel_token_is_cancelled = _require_intrinsic(
     "molt_cancel_token_is_cancelled", globals()
 )
-molt_cancel_token_set_current = _intrinsics.require(
+molt_cancel_token_set_current = _require_intrinsic(
     "molt_cancel_token_set_current", globals()
 )
-molt_cancel_token_get_current = _intrinsics.require(
+molt_cancel_token_get_current = _require_intrinsic(
     "molt_cancel_token_get_current", globals()
 )
 _INTRINSIC_CALL_CACHE: dict[str, Any] = {}
@@ -86,7 +65,7 @@ def _invoke_intrinsic_arity(intrinsic: Any, args: tuple[Any, ...]) -> Any:
 def _call_intrinsic(name: str, *args: Any) -> Any:
     intrinsic = _INTRINSIC_CALL_CACHE.get(name)
     if intrinsic is None:
-        intrinsic = _intrinsics.require(name, globals())
+        intrinsic = _require_intrinsic(name, globals())
         _INTRINSIC_CALL_CACHE[name] = intrinsic
     return _invoke_intrinsic_arity(intrinsic, args)
 

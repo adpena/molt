@@ -1,12 +1,13 @@
 use super::runtime_roots::is_protected_runtime_entrypoint;
 use crate::SimpleIR;
+use molt_ir::tir::op_kinds_generated::simpleir_kind_references_defined_function;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Dead-function elimination: remove functions that are never referenced from
 /// any reachable function.  The entry function (first in the list, typically
 /// `<module>`) is always retained; any function reachable from it through
-/// `call_internal`, `func_new`, `func_new_closure`, `func_new_builtin`,
-/// or `code_new` references is kept.
+/// generated defined-function `s_value` reference kinds is kept. The same
+/// authority drives Python static link-feature reachability.
 ///
 /// This pass runs after inlining — if a callee was fully inlined into all
 /// call sites, it becomes unreachable and will be eliminated here.
@@ -39,50 +40,11 @@ pub fn eliminate_dead_functions_with_roots(ir: &mut SimpleIR, extra_roots: &BTre
     for func in &ir.functions {
         let mut refs: BTreeSet<String> = BTreeSet::new();
         for op in &func.ops {
-            match op.kind.as_str() {
-                "call" | "call_internal" | "func_new" | "func_new_closure" | "func_new_builtin"
-                | "code_new" | "call_guarded" => {
-                    if let Some(name) = op.s_value.as_ref()
-                        && defined.contains(name.as_str())
-                    {
-                        refs.insert(name.clone());
-                    }
-                }
-                "call_indirect" => {
-                    if let Some(name) = op.s_value.as_ref()
-                        && defined.contains(name.as_str())
-                    {
-                        refs.insert(name.clone());
-                    }
-                }
-                // Task creation retains the exact table-addressable target.
-                // No backend derives a companion symbol from this name.
-                "alloc_task" | "call_async" => {
-                    if let Some(name) = op.s_value.as_ref()
-                        && defined.contains(name.as_str())
-                    {
-                        refs.insert(name.clone());
-                    }
-                }
-                // Ops that take a function pointer address via s_value.
-                "asyncgen_locals_register" | "gen_locals_register" => {
-                    if let Some(name) = op.s_value.as_ref()
-                        && defined.contains(name.as_str())
-                    {
-                        refs.insert(name.clone());
-                    }
-                }
-                // Other op kinds that legitimately reference functions by name.
-                "task_new" | "generator_send" | "spawn" | "call_func" | "call_method"
-                | "import_from" | "import_name" | "class_def" | "decorator" | "super_call"
-                | "yield_from" | "await" => {
-                    if let Some(name) = op.s_value.as_ref()
-                        && defined.contains(name.as_str())
-                    {
-                        refs.insert(name.clone());
-                    }
-                }
-                _ => {}
+            if simpleir_kind_references_defined_function(&op.kind)
+                && let Some(name) = op.s_value.as_ref()
+                && defined.contains(name.as_str())
+            {
+                refs.insert(name.clone());
             }
         }
         references.insert(func.name.clone(), refs);

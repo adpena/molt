@@ -3277,6 +3277,7 @@ WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_require_intrinsic_runtime", "require_intrinsic_runtime", 2, "i64"),
     ("molt_load_intrinsic_runtime", "load_intrinsic_runtime", 2, "i64"),
     ("molt_runtime_active_runtime", "runtime_active_runtime", 0, "i64"),
+    ("molt_is_bound_method", "is_bound_method", 1, "i64"),
     ("molt_capabilities_has", "capabilities_has", 1, "i64"),
     ("molt_capabilities_require", "capabilities_require", 1, "i64"),
     ("molt_capabilities_trusted", "capabilities_trusted", 0, "i64"),
@@ -9112,6 +9113,7 @@ WASM_IMPORT_NAME_BY_LOOKUP: dict[str, str] = {
         "molt_load_intrinsic_runtime": "load_intrinsic_runtime",
         "molt_set_app_callable_resolver": "set_app_callable_resolver",
         "molt_runtime_active_runtime": "runtime_active_runtime",
+        "molt_is_bound_method": "is_bound_method",
         "molt_capabilities_has": "capabilities_has",
         "molt_capabilities_require": "capabilities_require",
         "molt_capabilities_trusted": "capabilities_trusted",
@@ -18996,6 +18998,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS: dict[str, str] = {
 }
 
 WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES: dict[str, tuple[str, str]] = {
+    "MoltManaged_Type": ("env", "global"),
     "PyArg_ParseTuple": ("env", "function"),
     "PyArg_ParseTupleAndKeywords": ("env", "function"),
     "PyArg_UnpackTuple": ("env", "function"),

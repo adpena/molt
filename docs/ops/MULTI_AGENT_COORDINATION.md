@@ -144,7 +144,8 @@ uv run --python 3.12 python tools/agent_coordination.py proof-plan
   primary cross-platform command path remains `molt dx run -- <command>`.
 - `coordination.json` is a discovery index, not a lock. The real serialization
   authority for differential work remains the harness lock under
-  `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock`.
+  the canonical `MOLT_EXT_ROOT/tmp/build-control/<target-address>/diff_run.lock`
+  when an artifact root is selected (otherwise the target-local state root).
 
 ### Source ownership and handoff
 
@@ -261,7 +262,8 @@ started, and drains already-running results before closing the run.
 - Keep one supervising broad diff/regrtest/conformance run per shared
   `CARGO_TARGET_DIR`.
 - Let `tests/molt_diff.py` own its run lock at
-  `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock`; do not bypass it with raw
+  the target-addressed canonical build-state root's `diff_run.lock`
+  (or target-local state without `MOLT_EXT_ROOT`); do not bypass it with raw
   loops.
 - If a broad run is active, other agents should prefer:
   - implementation work that does not need the broad lane;

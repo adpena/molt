@@ -676,6 +676,37 @@ def test_canonical_harness_env_honors_dx_external_artifact_policy(
     )
 
 
+def test_canonical_harness_env_admits_guest_output_before_child_defaults(
+    tmp_path, monkeypatch
+):
+    from tools.compat import diff_output_layout
+
+    repo = tmp_path / "repo"
+    canonical = tmp_path / "canonical"
+    output = tmp_path / "output"
+    for root in (repo, canonical, output):
+        root.mkdir()
+    monkeypatch.setattr(
+        diff_output_layout.disk_capacity,
+        "require_build_capacity",
+        lambda *_a, **_k: None,
+    )
+    raw = {"MOLT_EXT_ROOT": str(canonical), diff_output_layout.ROOT_ENV: str(output)}
+    admitted = harness_memory_guard.canonical_harness_env(raw, repo_root=repo)
+    assert admitted["MOLT_DIFF_TMPDIR"] == str(output / "guest-tmp")
+    assert admitted["CARGO_TARGET_DIR"] == str(output / "cargo-target")
+    assert diff_output_layout.IDENTITY_ENV in admitted
+    assert admitted["MOLT_DIFF_ROOT"] == str(canonical / "tmp" / "diff")
+    assert admitted["TMPDIR"] == str(canonical / "tmp")
+    assert (
+        harness_memory_guard.canonical_harness_env(admitted, repo_root=repo) == admitted
+    )
+    with pytest.raises(ValueError, match="conflicts"):
+        harness_memory_guard.canonical_harness_env(
+            {**raw, "MOLT_DIFF_TMPDIR": str(repo / "wrong")}, repo_root=repo
+        )
+
+
 def test_canonical_harness_env_preserves_caller_session(tmp_path: Path) -> None:
     env = harness_memory_guard.canonical_harness_env(
         {"MOLT_SESSION_ID": "caller-session"},

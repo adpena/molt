@@ -451,6 +451,16 @@ simpleir_target_runtime_profiles = [
 # Runtime-call requirements live on the semantic role rows above, alongside
 # their opcode requirements. Call carriers consume the same generated masks.
 simpleir_function_reference_s_value_kinds = ["func_new", "func_new_closure"]
+# Static defined-function retention, not runtime-requirement provenance above.
+# An exact s_value matching a defined body retains that body. No operation
+# invents a companion symbol; task/poll targets must be explicitly named.
+simpleir_defined_function_reference_s_value_kinds = [
+    "call", "call_internal", "func_new", "func_new_closure", "func_new_builtin",
+    "code_new", "call_guarded", "call_indirect", "alloc_task", "call_async",
+    "asyncgen_locals_register", "gen_locals_register", "task_new",
+    "generator_send", "spawn", "call_func", "call_method", "import_from",
+    "import_name", "class_def", "decorator", "super_call", "yield_from", "await",
+]
 simpleir_runtime_qualified_callable = [
     { qualified = "builtins.__import__", symbol = "molt_importlib_import_transaction" },
     { qualified = "importlib.import_module", symbol = "molt_importlib_import_module" },
