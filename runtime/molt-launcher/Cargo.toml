@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+dunce = "=1.0.5"
+
 [[bin]]
 name = "molt"
 path = "src/main.rs"

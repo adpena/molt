@@ -21,7 +21,7 @@ fn native_entrypoint_resolves_bundle_and_preserves_argv_and_exit() {
     let executable = bin.join(if cfg!(windows) { "molt.exe" } else { "molt" });
     fs::copy(env!("CARGO_BIN_EXE_molt"), &executable).expect("launcher");
     let python = env!("CARGO_BIN_EXE_molt-launcher-python-probe");
-    let canonical_root = bundle.canonicalize().expect("canonical bundle root");
+    let canonical_root = dunce::canonicalize(&bundle).expect("canonical bundle root");
     let private_python = bundle.join("libexec").join(if cfg!(windows) {
         "python.exe"
     } else {

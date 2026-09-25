@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-from tools.memory_guard_core import process_custody
+from tools.memory_guard_core import process_custody, process_model
 
 import tools.memory_guard as memory_guard
 from molt.memory_guard_paths import (
@@ -1068,6 +1068,71 @@ def test_codex_app_and_cli_are_host_control_plane_on_all_platform_shapes() -> No
     ]
 
     assert all(memory_guard.is_host_control_plane_process(sample) for sample in samples)
+
+
+def test_host_command_cache_reuses_text_but_not_process_or_lineage_verdicts() -> None:
+    process_model._cached_host_control_plane_command.cache_clear()
+    worker = memory_guard.ProcessSample(100, 1, 20, "/usr/bin/worker", pgid=100)
+    assert not memory_guard.is_host_control_plane_process(worker)
+    assert not memory_guard.is_host_control_plane_process(
+        dataclasses.replace(worker, pid=200, started_at_ns=2)
+    )
+    assert process_model._cached_host_control_plane_command.cache_info().hits == 1
+
+    host = dataclasses.replace(worker, command="codex app-server", started_at_ns=3)
+    child = memory_guard.ProcessSample(101, 100, 20, "/usr/bin/worker", pgid=101)
+    assert memory_guard.is_host_control_plane_process(host)
+    assert memory_guard.protected_process_group_ids({100: host, 101: child}) == {
+        100,
+        101,
+    }
+    # Reparenting changes protection even when every lexical cache entry hits.
+    reparented = dataclasses.replace(child, ppid=1)
+    assert memory_guard.protected_process_group_ids({100: host, 101: reparented}) == {
+        100
+    }
+    # Reusing a PID for a non-host process must not retain host protection.
+    replacement = dataclasses.replace(worker, started_at_ns=4)
+    assert (
+        memory_guard.protected_process_group_ids({100: replacement, 101: child})
+        == set()
+    )
+
+
+@pytest.mark.parametrize(
+    ("authority", "replacement", "command"),
+    [
+        (
+            "HOST_CONTROL_PLANE_TOKENS",
+            ("supervisor-marker",),
+            "worker supervisor-marker",
+        ),
+        (
+            "HOST_CONTROL_PLANE_EXECUTABLE_NAMES",
+            frozenset({"worker"}),
+            "/usr/bin/worker",
+        ),
+        ("HOST_CONTROL_PLANE_LAUNCHER_NAMES", frozenset({"worker"}), "worker codex.js"),
+        (
+            "HOST_CONTROL_PLANE_ARG_EXECUTABLE_NAMES",
+            frozenset({"worker.js"}),
+            "node worker.js",
+        ),
+    ],
+)
+def test_host_command_cache_includes_current_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    authority: str,
+    replacement: tuple[str, ...] | frozenset[str],
+    command: str,
+) -> None:
+    sample = memory_guard.ProcessSample(100, 1, 20, command)
+    original = getattr(process_model, authority)
+    assert not memory_guard.is_host_control_plane_process(sample)
+    monkeypatch.setattr(process_model, authority, replacement)
+    assert memory_guard.is_host_control_plane_process(sample)
+    monkeypatch.setattr(process_model, authority, original)
+    assert not memory_guard.is_host_control_plane_process(sample)
 
 
 def test_watched_pids_excludes_node_launched_claude_code_group() -> None:

@@ -4,6 +4,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 import os
 from pathlib import Path
 import re
@@ -908,25 +909,45 @@ def command_arg_executable_names(command: str) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _host_control_plane_launcher_command(command: str) -> bool:
+@lru_cache(maxsize=2048)
+def _cached_host_control_plane_command(
+    command: str,
+    tokens: tuple[str, ...],
+    executable_names: frozenset[str],
+    launcher_names: frozenset[str],
+    argument_executable_names: frozenset[str],
+) -> bool:
+    """Cache lexical work only, with every policy input in the value key.
+
+    A process's current command is read on every call. PID, creation identity,
+    ancestry, and ownership never enter this cache; those remain live facts.
+    """
+    folded_command = command.casefold()
+    normalized_command = folded_command.replace("\\", "/")
+    if (
+        any(
+            token.casefold() in folded_command
+            or token.casefold().replace("\\", "/") in normalized_command
+            for token in tokens
+        )
+        or command_executable_name(command) in executable_names
+    ):
+        return True
     names = command_arg_executable_names(command)
-    if len(names) < 2 or names[0] not in HOST_CONTROL_PLANE_LAUNCHER_NAMES:
-        return False
-    return any(name in HOST_CONTROL_PLANE_ARG_EXECUTABLE_NAMES for name in names[1:])
+    return (
+        len(names) >= 2
+        and names[0] in launcher_names
+        and any(name in argument_executable_names for name in names[1:])
+    )
 
 
 def is_host_control_plane_process(sample: ProcessSample) -> bool:
-    command = sample.command.casefold()
-    normalized_command = command.replace("\\", "/")
-    return (
-        any(
-            token.casefold() in command
-            or token.casefold().replace("\\", "/") in normalized_command
-            for token in HOST_CONTROL_PLANE_TOKENS
-        )
-        or command_executable_name(sample.command)
-        in HOST_CONTROL_PLANE_EXECUTABLE_NAMES
-        or _host_control_plane_launcher_command(sample.command)
+    return _cached_host_control_plane_command(
+        sample.command,
+        HOST_CONTROL_PLANE_TOKENS,
+        HOST_CONTROL_PLANE_EXECUTABLE_NAMES,
+        HOST_CONTROL_PLANE_LAUNCHER_NAMES,
+        HOST_CONTROL_PLANE_ARG_EXECUTABLE_NAMES,
     )
 
 
@@ -1099,7 +1120,7 @@ def protected_process_group_ids(
         if is_host_control_plane_process(sample)
     }
     for sample in samples.values():
-        if sample.pid in ancestor_ids or is_host_control_plane_process(sample):
+        if sample.pid in ancestor_ids or sample.pid in host_control_plane_pids:
             protected.add(sample_pgid_or_pid(sample))
             continue
         sample_ancestors = ancestor_pids(samples, sample.pid)
