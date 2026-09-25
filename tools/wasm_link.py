@@ -58,7 +58,10 @@ from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmGeneration,
     read_runtime_wasm_generation,
 )
-from molt.cli.python_source_closure import local_python_import_closure  # noqa: E402
+from molt.cli.python_source_closure import (  # noqa: E402
+    local_python_import_closure,
+    local_python_import_graph_transaction,
+)
 from molt.cli.wasm_link_cache import (  # noqa: E402
     WasmLinkCacheEntry,
     _default_wasm_link_cache,
@@ -717,27 +720,10 @@ def _split_app_optimize_cache_key(
     return hasher.hexdigest()
 
 
-@functools.lru_cache(maxsize=1)
 def _wasm_link_transform_authority_digest() -> str:
-    return _transform_authority_digest(_wasm_link_transform_authority_paths())
-
-
-def _wasm_link_transform_authority_paths() -> tuple[Path, ...]:
-    return local_python_import_closure(TOOLS_ROOT.parent, (Path(__file__),))
-
-
-def _transform_authority_digest(paths: Sequence[Path]) -> str:
-    hasher = hashlib.sha256()
-    for path in paths:
-        try:
-            authority_name = path.resolve().relative_to(TOOLS_ROOT.parent).as_posix()
-        except ValueError:
-            authority_name = path.resolve().as_posix()
-        hasher.update(authority_name.encode("utf-8"))
-        hasher.update(b"\0")
-        hasher.update(path.read_bytes())
-        hasher.update(b"\0")
-    return hasher.hexdigest()
+    return local_python_import_closure(
+        TOOLS_ROOT.parent, (Path(__file__),)
+    ).content_digest
 
 
 def _wasm_facts_cache_authority_digest(
@@ -2308,6 +2294,7 @@ def _run_wasm_ld(
         return 1
 
 
+@local_python_import_graph_transaction()
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Attempt to link Molt output/runtime into a single WASM module.",

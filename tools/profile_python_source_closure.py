@@ -62,8 +62,8 @@ def main() -> int:
     cache_path = ROOT / ".molt_cache" / "python_source_closure_graph.json"
     payload = {
         "cache_bytes": cache_path.stat().st_size,
-        "closure_count": len(warm),
-        "closure_source_bytes": sum(path.stat().st_size for path in warm),
+        "closure_count": len(warm.paths),
+        "closure_source_bytes": warm.source_bytes,
         "concurrent_32_wall_ms": concurrent_ns / 1_000_000,
         "concurrent_workers": 8,
         "iterations": args.iterations,

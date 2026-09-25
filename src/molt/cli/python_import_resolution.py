@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import stat
 import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -125,6 +126,12 @@ class _ResolvedLocalModule:
     parent_initializers: tuple[LocalPythonModuleSource, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _LocalPathProbe:
+    path: Path
+    mode: int
+
+
 @dataclass(frozen=True)
 class LocalPythonModuleResolver:
     search_roots: tuple[Path, ...]
@@ -148,18 +155,18 @@ class LocalPythonModuleResolver:
             raise ValueError(f"cannot read local Python source {path}: {exc}") from exc
 
     def module_identity(self, path: Path) -> tuple[str, str]:
-        resolved = path.resolve()
+        """Name a source already canonicalized at the discovery boundary."""
         for root in self.search_roots:
             try:
-                resolved.relative_to(root)
+                path.relative_to(root)
             except ValueError:
                 continue
-            module = relative_python_module_name(resolved, root)
+            module = relative_python_module_name(path, root)
             package = (
-                module if resolved.name == "__init__.py" else module.rpartition(".")[0]
+                module if path.name == "__init__.py" else module.rpartition(".")[0]
             )
             return module, package
-        raise ValueError(f"Python source is outside local search roots: {resolved}")
+        raise ValueError(f"Python source is outside local search roots: {path}")
 
     def source_for_module(self, module: str) -> Path | None:
         resolution = self._resolve_module(module)
@@ -169,15 +176,16 @@ class LocalPythonModuleResolver:
             else None
         )
 
-    def _owned_path(self, path: Path) -> Path | None:
-        """Resolve a candidate only when it remains inside a search root."""
+    def _probe_path(self, path: Path) -> _LocalPathProbe | None:
+        """Admit existing candidates once, retaining kind and canonical ownership."""
 
         try:
+            mode = path.stat().st_mode
             resolved = path.resolve()
         except OSError:
             return None
         if any(resolved.is_relative_to(root) for root in self.search_roots):
-            return resolved
+            return _LocalPathProbe(resolved, mode)
         return None
 
     def _resolve_module(self, module: str) -> _ResolvedLocalModule | None:
@@ -224,19 +232,19 @@ class LocalPythonModuleResolver:
                 regular_is_package = False
 
                 for location in locations:
-                    package_location = self._owned_path(location / part)
-                    if package_location is not None and package_location.is_dir():
-                        initializer = self._owned_path(package_location / "__init__.py")
-                        if initializer is not None and initializer.is_file():
-                            regular_source = initializer
-                            regular_package_location = package_location
+                    package = self._probe_path(location / part)
+                    if package is not None and stat.S_ISDIR(package.mode):
+                        initializer = self._probe_path(package.path / "__init__.py")
+                        if initializer is not None and stat.S_ISREG(initializer.mode):
+                            regular_source = initializer.path
+                            regular_package_location = package.path
                             regular_is_package = True
                             break
-                        namespace_locations.append(package_location)
+                        namespace_locations.append(package.path)
 
-                    source = self._owned_path(location / f"{part}.py")
-                    if source is not None and source.is_file():
-                        regular_source = source
+                    source = self._probe_path(location / f"{part}.py")
+                    if source is not None and stat.S_ISREG(source.mode):
+                        regular_source = source.path
                         regular_package_location = None
                         regular_is_package = False
                         break
@@ -602,6 +610,7 @@ def local_import_targets(
 ) -> set[str]:
     """Expose canonical candidate names without discarding graph grouping."""
 
+    path = path.resolve()
     analysis = analyze_local_imports(
         resolver.capture_source(path),
         LocalPythonModuleSource(resolver.module_identity(path)[0], path),

@@ -121,18 +121,15 @@ def _clean_pathspecs_for_root(
     root: Path,
     path_keys: tuple[str, ...],
 ) -> tuple[str, ...] | None:
-    try:
-        root_resolved = root.resolve()
-    except OSError:
-        root_resolved = root
+    """Project canonical fingerprint inputs without repeating filesystem admission."""
     pathspecs: list[str] = []
     for path_key in sorted(set(path_keys)):
         path = Path(path_key)
-        if not path.is_absolute():
-            path = root_resolved / path
+        if not path.is_absolute() or ".." in path.parts:
+            return None
         try:
-            rel = path.resolve(strict=False).relative_to(root_resolved)
-        except (OSError, ValueError):
+            rel = path.relative_to(root)
+        except ValueError:
             return None
         rel_text = rel.as_posix()
         pathspecs.append(rel_text or ".")
@@ -195,29 +192,16 @@ def _git_clean_pathspec_state(
     }
 
 
-@functools.lru_cache(maxsize=128)
-def _compiler_clean_pathspec_source_state_cached(
-    root_str: str,
-    pathspecs: tuple[str, ...],
-) -> dict[str, str | int] | None:
-    return _git_clean_pathspec_state(Path(root_str), pathspecs)
-
-
 def _compiler_clean_pathspec_source_state(
     root: Path,
     path_keys: tuple[str, ...],
 ) -> dict[str, str | int] | None:
-    try:
-        resolved = root.resolve()
-    except OSError:
-        resolved = root
-    pathspecs = _clean_pathspecs_for_root(resolved, path_keys)
+    pathspecs = _clean_pathspecs_for_root(root, path_keys)
     if pathspecs is None:
         return None
-    return _compiler_clean_pathspec_source_state_cached(
-        os.fspath(resolved),
-        pathspecs,
-    )
+    # The caller's source-fingerprint transaction owns reuse. A process-wide
+    # clean result would hide subsequent edits in a long-lived compiler.
+    return _git_clean_pathspec_state(root, pathspecs)
 
 
 def _compiler_metadata() -> tuple[str | None, str | None]:

@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from molt.cli.models import _DiscoveredModuleGraph
-from typing import Any, NoReturn, TypedDict
+from typing import Any, Mapping, NoReturn, TypedDict
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 import pytest
@@ -55,19 +55,23 @@ def compiler_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 def _count_semantic_work(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     counts = {"paths": 0, "bytes": 0}
-    paths = fingerprints._frontend_semantic_tooling_source_paths
+    sources = fingerprints._frontend_semantic_tooling_sources
     content = fingerprints._source_tree_content_signature
 
-    def source_paths(root: Path) -> list[Path]:
+    def source_inputs(root: Path) -> fingerprints._SourceFingerprintInputs:
         counts["paths"] += 1
-        return paths(root)
+        return sources(root)
 
-    def content_signature(root: Path, path_keys: tuple[str, ...]) -> tuple[str, ...]:
+    def content_signature(
+        root: Path,
+        path_keys: tuple[str, ...],
+        source_sha256: Mapping[Path, str],
+    ) -> tuple[str, ...]:
         counts["bytes"] += 1
-        return content(root, path_keys)
+        return content(root, path_keys, source_sha256)
 
     monkeypatch.setattr(
-        fingerprints, "_frontend_semantic_tooling_source_paths", source_paths
+        fingerprints, "_frontend_semantic_tooling_sources", source_inputs
     )
     monkeypatch.setattr(
         fingerprints, "_source_tree_content_signature", content_signature
@@ -462,9 +466,7 @@ def test_runtime_custody_never_enters_persisted_snapshot_scan_lane(
         "_write_persisted_import_scan",
     ):
         monkeypatch.setattr(scans, name, forbidden)
-    monkeypatch.setattr(
-        fingerprints, "_frontend_semantic_tooling_source_paths", forbidden
-    )
+    monkeypatch.setattr(fingerprints, "_frontend_semantic_tooling_sources", forbidden)
     discovery_result = discovery._discover_module_graph_from_paths(
         (owner,),
         [tmp_path, stdlib],

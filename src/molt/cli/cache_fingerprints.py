@@ -5,11 +5,12 @@ import hashlib
 import json
 import os
 import pathlib
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import NamedTuple, Sequence
 
 from molt.cli.compiler_metadata import (
@@ -27,6 +28,7 @@ from molt.cli.python_import_resolution import (
     PythonImportPolicy,
 )
 from molt.cli.python_source_closure import (
+    LocalPythonSourceClosure,
     local_python_import_closure,
     local_python_import_graph_transaction,
 )
@@ -206,12 +208,12 @@ def _lowering_scope_seed_paths(project_root: Path) -> tuple[Path, ...]:
     if cli_root.exists():
         for source in cli_root.glob("*.py"):
             if source.name.startswith(_LOWERING_SCOPE_SEED_CLI_PREFIXES):
-                paths.append(source.resolve())
+                paths.append(source)
     paths.extend(molt_root / relpath for relpath in _FRONTEND_AUX_SOURCE_RELPATHS)
     return tuple(dict.fromkeys(path for path in paths if path.exists()))
 
 
-def _lowering_scope_source_files(project_root: Path) -> tuple[Path, ...]:
+def _lowering_scope_source_closure(project_root: Path) -> LocalPythonSourceClosure:
     """Lowering's policy projection of the shared byte-keyed dependency graph.
 
     Whole frontend/analysis packages, frontend/module drivers and shared semantic
@@ -227,11 +229,28 @@ def _lowering_scope_source_files(project_root: Path) -> tuple[Path, ...]:
     )
 
 
-def _frontend_semantic_tooling_source_paths(project_root: Path) -> list[Path]:
+@dataclass(frozen=True, slots=True)
+class _SourceFingerprintInputs:
+    """Operation-owned canonical paths, with hashes already captured by discovery."""
+
+    paths: tuple[Path, ...]
+    source_sha256: Mapping[Path, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "source_sha256", MappingProxyType(dict(self.source_sha256))
+        )
+
+    @classmethod
+    def from_paths(cls, paths: Iterable[Path]) -> _SourceFingerprintInputs:
+        return cls(tuple(sorted({path.resolve() for path in paths})))
+
+
+def _frontend_semantic_tooling_sources(project_root: Path) -> _SourceFingerprintInputs:
     """Source paths the persisted per-module *frontend* caches must key on.
 
     Derived structurally by import reachability (see
-    ``_lowering_scope_source_files``): the whole ``frontend/`` tree plus
+    ``_lowering_scope_source_closure``): the whole ``frontend/`` tree plus
     every ``molt``-owned file reachable from the frontend/module drivers by
     module-level import, plus the shared aux semantic files. No hand-maintained
     denylist: adding a backend/link/cargo file never enters this scope (it is not
@@ -247,22 +266,20 @@ def _frontend_semantic_tooling_source_paths(project_root: Path) -> list[Path]:
     """
     molt_root = _compiler_python_source_root(project_root) / "molt"
     frontend_root = (molt_root / "frontend").resolve()
-    paths: list[Path] = [molt_root / "frontend"]
-    for source in _lowering_scope_source_files(project_root):
+    closure = _lowering_scope_source_closure(project_root)
+    paths: list[Path] = [frontend_root]
+    for source in closure.paths:
         if frontend_root == source or frontend_root in source.parents:
             continue
         paths.append(source)
     # Force-include the shared aux semantic files even if a future refactor drops
     # them from the import closure -- they are load-bearing frontend inputs.
-    paths.extend(molt_root / relpath for relpath in _FRONTEND_AUX_SOURCE_RELPATHS)
-    return paths
-
-
-def _source_fingerprint_path_keys(paths: Sequence[Path]) -> tuple[str, ...]:
-    return tuple(
-        str(path.resolve())
-        for path in sorted(set(paths), key=lambda candidate: str(candidate))
-    )
+    for relpath in _FRONTEND_AUX_SOURCE_RELPATHS:
+        source = molt_root / relpath
+        # Existing aux sources have already been admitted and captured by the
+        # closure. Only absent or aliased lexical paths still need resolving.
+        paths.append(source if source in closure.source_sha256 else source.resolve())
+    return _SourceFingerprintInputs(tuple(sorted(set(paths))), closure.source_sha256)
 
 
 # Per-process cache of source-tree content digests. The key includes a
@@ -342,6 +359,7 @@ def _file_content_signature(path: Path) -> str:
 def _source_tree_content_signature(
     root: Path,
     path_keys: tuple[str, ...],
+    source_sha256: Mapping[Path, str],
 ) -> tuple[str, ...]:
     signature: list[str] = []
     for path_key in path_keys:
@@ -351,7 +369,15 @@ def _source_tree_content_signature(
                 rel_text = str(item.relative_to(root))
             except ValueError:
                 rel_text = str(item)
-            signature.append(f"{rel_text}={_file_content_signature(item)}")
+            digest = source_sha256.get(item)
+            if digest is None:
+                # A directory may also contain non-Python inputs or symlink
+                # aliases. Reuse captured identity for the latter; retain all
+                # other frontend assets as ordinary byte-keyed inputs.
+                digest = source_sha256.get(item.resolve()) if source_sha256 else None
+            if digest is None:
+                digest = _file_content_signature(item)
+            signature.append(f"{rel_text}={digest}")
     return tuple(signature)
 
 
@@ -425,14 +451,15 @@ def _source_tree_clean_pathspec_signature(
 def _source_tree_cache_fingerprint(
     *,
     root: Path,
-    source_paths: Sequence[Path],
+    inputs: _SourceFingerprintInputs,
     scope: str,
     extra_fingerprint_inputs: str,
 ) -> str:
-    path_keys = _source_fingerprint_path_keys(source_paths)
+    path_keys = tuple(str(path) for path in inputs.paths)
+    root = root.resolve()
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     transaction_key = (
-        str(root.resolve()),
+        str(root),
         scope,
         extra_fingerprint_inputs,
         *path_keys,
@@ -443,7 +470,9 @@ def _source_tree_cache_fingerprint(
             return cached
     clean_signature = _source_tree_clean_pathspec_signature(root, path_keys)
     if clean_signature is None:
-        content_signature = _source_tree_content_signature(root, path_keys)
+        content_signature = _source_tree_content_signature(
+            root, path_keys, inputs.source_sha256
+        )
     else:
         content_signature = clean_signature
     content_digest = _source_tree_content_digest(
@@ -500,7 +529,7 @@ def _cache_fingerprint(
     )
     return _source_tree_cache_fingerprint(
         root=root,
-        source_paths=source_paths,
+        inputs=_SourceFingerprintInputs.from_paths(source_paths),
         scope="compiler-runtime-backend",
         extra_fingerprint_inputs=(
             f"rustc:{rustc_info}\n"
@@ -515,7 +544,9 @@ def _cache_tooling_fingerprint() -> str:
     root = _compiler_root()
     return _source_tree_cache_fingerprint(
         root=root,
-        source_paths=_frontend_tooling_source_paths(root),
+        inputs=_SourceFingerprintInputs.from_paths(
+            _frontend_tooling_source_paths(root)
+        ),
         scope="frontend-tooling",
         extra_fingerprint_inputs="",
     )
@@ -525,7 +556,7 @@ def _frontend_semantic_tooling_fingerprint() -> str:
     """Tooling fingerprint for the per-module frontend caches.
 
     Identical in construction to ``_cache_tooling_fingerprint`` but over the
-    lowering-relevant scope only (see ``_frontend_semantic_tooling_source_paths``),
+    lowering-relevant scope only (see ``_frontend_semantic_tooling_sources``),
     so an unrelated backend/link/daemon/cargo/toolchain edit does not cold-start a
     module's persisted analysis / lowering / import-graph entry. The distinct
     ``scope`` tag keeps this digest namespace-separated from the broad
@@ -544,15 +575,13 @@ def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:
         snapshot = transaction.frontend_semantic_sources.get(root)
         if snapshot is not None:
             return snapshot
-    source_paths = tuple(
-        path.resolve() for path in _frontend_semantic_tooling_source_paths(root)
-    )
+    inputs = _frontend_semantic_tooling_sources(root)
     snapshot = _FrontendSemanticSourceSnapshot(
         root=root,
-        source_paths=source_paths,
+        source_paths=inputs.paths,
         fingerprint=_source_tree_cache_fingerprint(
             root=root,
-            source_paths=source_paths,
+            inputs=inputs,
             scope="frontend-semantic-tooling",
             extra_fingerprint_inputs="",
         ),
