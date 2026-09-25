@@ -14,6 +14,7 @@ import json
 import os
 import platform as platform_module
 import re
+import stat
 import sys
 import token
 import tokenize
@@ -21,8 +22,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from molt.file_publication import is_link_like
+from molt.file_hashing import content_change_time_ns
+from molt.file_publication import (
+    is_link_like,
+    metadata_is_link_like,
+    resolve_owned_path,
+)
 from molt.portable_paths import portable_path_identity, portable_relative_path
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    capture_stable_regular_file,
+    verify_stable_regular_file_identity,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -172,15 +183,22 @@ class TestMetadata:
         return None
 
 
-def _metadata_comments(file_path: Path) -> tuple[tuple[int, str], ...]:
-    """Return actual Python comment tokens that declare ``MOLT_META``."""
-
+def _read_source(file_path: Path) -> tuple[bytes, StableRegularFileIdentity]:
+    """Read one stable generation, shared by metadata and content identity."""
     try:
-        raw = file_path.read_bytes()
-    except OSError as exc:
+        identity, raw = capture_stable_regular_file(
+            file_path, label="differential metadata source"
+        )
+    except (OSError, ValueError) as exc:
         raise ValueError(
             f"cannot read differential metadata source {file_path}: {exc}"
         ) from exc
+    return raw, identity
+
+
+def _metadata_comments(file_path: Path, raw: bytes) -> tuple[tuple[int, str], ...]:
+    """Return actual Python comment tokens that declare ``MOLT_META``."""
+
     try:
         encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
         text = raw.decode(encoding)
@@ -264,7 +282,12 @@ def parse_metadata(file_path: str | Path) -> TestMetadata:
     """Parse and validate one exact, typed ``MOLT_META`` declaration."""
 
     path = Path(file_path)
-    comments = _metadata_comments(path)
+    raw, _identity = _read_source(path)
+    return _parse_metadata_bytes(path, raw)
+
+
+def _parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
+    comments = _metadata_comments(path, source_bytes)
     if not comments:
         return TestMetadata()
     if len(comments) != 1:
@@ -483,11 +506,121 @@ def collect_test_files(
     return tuple(files[name] for name in sorted(files))
 
 
-def collect_physical_test_files(
+@dataclass(frozen=True, slots=True)
+class _DirectoryGeneration:
+    path: Path
+    object_identity: tuple[int, int, int]
+    membership_generation: tuple[int, int] | None
+
+    def verify(self) -> None:
+        current = _directory_generation(
+            self.path, membership=self.membership_generation is not None
+        )
+        if current != self:
+            raise ValueError(f"differential inventory directory changed: {self.path}")
+
+
+def _directory_generation(path: Path, *, membership: bool) -> _DirectoryGeneration:
+    """Bind direct directory topology, and membership only where enumerated.
+
+    Directory allocation size and access time are not membership identities.
+    Ancestors outside selected suites retain object custody without invalidating
+    a transaction merely because an unrelated sibling was created.
+    """
+    try:
+        before = path.lstat()
+        if not stat.S_ISDIR(before.st_mode) or metadata_is_link_like(before):
+            raise ValueError(
+                f"differential inventory directory is linked or invalid: {path}"
+            )
+        change_time = content_change_time_ns(path, before) if membership else None
+        after = path.lstat()
+    except OSError as exc:
+        raise ValueError(
+            f"differential inventory directory is unavailable: {path}"
+        ) from exc
+    object_identity = (before.st_dev, before.st_ino, before.st_mode)
+    if object_identity != (after.st_dev, after.st_ino, after.st_mode) or (
+        membership
+        and (before.st_mtime_ns, before.st_ctime_ns)
+        != (after.st_mtime_ns, after.st_ctime_ns)
+    ):
+        raise ValueError(f"differential inventory directory changed: {path}")
+    if membership and change_time is None:
+        raise ValueError(
+            f"differential inventory directory change time is unavailable: {path}"
+        )
+    return _DirectoryGeneration(
+        path,
+        object_identity,
+        (before.st_mtime_ns, change_time) if change_time is not None else None,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _PhysicalTestSelection:
+    repo_root: Path
+    files: tuple[Path, ...]
+    relative_paths: tuple[str, ...]
+    suite_members: tuple[tuple[str, ...], ...]
+    directories: tuple[_DirectoryGeneration, ...]
+
+    def verify(self) -> None:
+        for directory in self.directories:
+            directory.verify()
+
+
+class _DirectoryAdmission:
+    """Shared ancestry admission for physical suites and explicit source lists."""
+
+    def __init__(self) -> None:
+        self.generations: dict[Path, _DirectoryGeneration] = {}
+
+    def admit(self, path: Path, *, membership: bool) -> None:
+        prior = self.generations.get(path)
+        if prior is not None:
+            prior.verify()
+            if prior.membership_generation is not None or not membership:
+                return
+        self.generations[path] = _directory_generation(path, membership=membership)
+
+    def ancestry(self, path: Path) -> None:
+        for parent in reversed(path.parents):
+            if parent not in self.generations:
+                self.admit(parent, membership=False)
+
+
+def _admit_source_path(
+    path: Path,
+    root: Path,
+    files: dict[str, Path],
+    portable_identities: dict[str, str],
+) -> str:
+    """Own one portable source identity after no-follow path admission."""
+    if not path.is_relative_to(root) or path.suffix != ".py":
+        raise ValueError(f"differential test is not a repository Python file: {path}")
+    identity = portable_relative_path(path.relative_to(root).as_posix()).as_posix()
+    portable_identity = portable_path_identity(identity)
+    prior = portable_identities.get(portable_identity)
+    if prior is not None:
+        if prior == identity:
+            raise ValueError(
+                f"differential test is selected by multiple suites or inputs: {identity}"
+            )
+        raise ValueError(
+            "differential tests collide on portable filesystems: "
+            f"{prior!r}, {identity!r}"
+        )
+    portable_identities[portable_identity] = identity
+    files[identity] = path
+    return identity
+
+
+def _collect_physical_test_selection(
     suites: Sequence[tuple[str | Path, bool]],
     *,
     repo_root: Path = ROOT,
-) -> tuple[Path, ...]:
+) -> _PhysicalTestSelection:
     """Collect exact physical ``.py`` descendants for typed suite policies.
 
     Generated lane manifests are scheduling projections, not release-selection
@@ -496,46 +629,21 @@ def collect_physical_test_files(
     across all suites.
     """
 
-    root = repo_root.resolve(strict=True)
+    root = resolve_owned_path(repo_root)
     files: dict[str, Path] = {}
     portable_identities: dict[str, str] = {}
+    members: list[list[str]] = [[] for _suite in suites]
+    directories = _DirectoryAdmission()
 
-    def add(candidate: Path, *, suite_root: Path) -> None:
-        if is_link_like(candidate):
-            raise ValueError(f"differential test must not be a link: {candidate}")
-        absolute = candidate.absolute()
-        resolved = candidate.resolve(strict=True)
-        if absolute != resolved:
-            raise ValueError(f"differential test must not traverse a link: {candidate}")
-        if not resolved.is_relative_to(suite_root):
-            raise ValueError(f"differential test escapes its suite: {candidate}")
-        if not resolved.is_relative_to(root):
-            raise ValueError(f"differential test escapes the repository: {candidate}")
-        if not resolved.is_file() or resolved.suffix != ".py":
-            raise ValueError(f"differential test is not a Python file: {candidate}")
-        identity = portable_relative_path(
-            resolved.relative_to(root).as_posix()
-        ).as_posix()
-        portable_identity = portable_path_identity(identity)
-        prior = portable_identities.get(portable_identity)
-        if prior is not None:
-            if prior == identity:
-                raise ValueError(
-                    f"differential test is selected by multiple suites: {identity}"
-                )
-            raise ValueError(
-                "differential tests collide on portable filesystems: "
-                f"{prior!r}, {identity!r}"
-            )
-        portable_identities[portable_identity] = identity
-        files[identity] = resolved
-
-    for raw_suite, recursive in suites:
+    directories.ancestry(root)
+    directories.admit(root, membership=False)
+    for suite_index, (raw_suite, recursive) in enumerate(suites):
         if not isinstance(recursive, bool):
             raise ValueError("differential suite recursive policy must be boolean")
         candidate = Path(raw_suite)
         if not candidate.is_absolute():
             candidate = root / candidate
+        directories.ancestry(candidate)
         if is_link_like(candidate):
             raise ValueError(f"differential suite must not be a link: {raw_suite}")
         absolute = candidate.absolute()
@@ -544,7 +652,7 @@ def collect_physical_test_files(
             raise ValueError(
                 f"differential suite must not traverse a link: {raw_suite}"
             )
-        if not suite_root.is_relative_to(root) or not suite_root.is_dir():
+        if not suite_root.is_relative_to(root):
             raise ValueError(
                 f"differential suite is not a repository directory: {raw_suite}"
             )
@@ -552,30 +660,51 @@ def collect_physical_test_files(
         pending = [suite_root]
         while pending:
             directory = pending.pop()
-            if is_link_like(directory):
-                raise ValueError(
-                    f"differential suite contains a linked directory: {directory}"
-                )
+            directories.admit(directory, membership=True)
             with os.scandir(directory) as entries:
                 ordered = sorted(entries, key=lambda entry: entry.name)
             for entry in ordered:
                 path = Path(entry.path)
-                if is_link_like(path):
+                metadata = entry.stat(follow_symlinks=False)
+                if metadata_is_link_like(metadata):
                     raise ValueError(
                         f"differential suite contains a link or reparse point: {path}"
                     )
-                if entry.is_dir(follow_symlinks=False):
+                if stat.S_ISDIR(metadata.st_mode):
                     if recursive:
                         pending.append(path)
+                    else:
+                        directories.admit(path, membership=False)
                     continue
-                if not entry.is_file(follow_symlinks=False):
+                if not stat.S_ISREG(metadata.st_mode):
                     raise ValueError(
                         f"differential suite contains a special entry: {path}"
                     )
                 if path.suffix == ".py":
-                    add(path, suite_root=suite_root)
+                    identity = _admit_source_path(
+                        path, root, files, portable_identities
+                    )
+                    members[suite_index].append(identity)
 
-    return tuple(files[name] for name in sorted(files))
+    names = tuple(sorted(files))
+    selection = _PhysicalTestSelection(
+        root,
+        tuple(files[name] for name in names),
+        names,
+        tuple(tuple(sorted(paths)) for paths in members),
+        tuple(directories.generations.values()),
+    )
+    selection.verify()
+    return selection
+
+
+def collect_physical_test_files(
+    suites: Sequence[tuple[str | Path, bool]],
+    *,
+    repo_root: Path = ROOT,
+) -> tuple[Path, ...]:
+    """Return the physical closure admitted by the shared inventory traversal."""
+    return _collect_physical_test_selection(suites, repo_root=repo_root).files
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,31 +714,107 @@ class TestPolicySource:
     metadata: TestMetadata
 
 
+@dataclass(frozen=True, slots=True)
+class TestSourceInventory:
+    """One explicit capture lifetime, not a cache or an execution snapshot."""
+
+    repo_root: Path
+    suites: tuple[tuple[str | Path, bool], ...]
+    files: tuple[Path, ...]
+    sources: tuple[TestPolicySource, ...]
+    suite_members: tuple[tuple[str, ...], ...]
+    _directories: tuple[_DirectoryGeneration, ...]
+    _file_identities: tuple[StableRegularFileIdentity, ...]
+
+    def verify_unchanged(self) -> None:
+        # Fence ancestry before opening leaves and again afterward. Do not
+        # retain handles or re-read source bytes to verify a captured generation.
+        for directory in self._directories:
+            directory.verify()
+        for identity in self._file_identities:
+            verify_stable_regular_file_identity(
+                identity, label="differential inventory source"
+            )
+        for directory in self._directories:
+            directory.verify()
+
+
+def _load_source(
+    path: Path, relative: str
+) -> tuple[TestPolicySource, StableRegularFileIdentity]:
+    raw, identity = _read_source(path)
+    metadata = _parse_metadata_bytes(path, raw)
+    if (
+        metadata.verification_scope != CPYTHON_EQUIVALENCE_SCOPE
+        and not metadata.expect_molt_fail
+    ):
+        raise ValueError(
+            "verified-subset scope exclusion must remain an explicit "
+            f"expected divergence: {relative}"
+        )
+    return TestPolicySource(relative, identity.sha256, metadata), identity
+
+
+def load_test_inventory(
+    suites: Sequence[tuple[str | Path, bool]], *, repo_root: Path = ROOT
+) -> TestSourceInventory:
+    """Capture each physical source once for all suite and coordinate consumers."""
+    selected_suites = tuple(suites)
+    selection = _collect_physical_test_selection(selected_suites, repo_root=repo_root)
+    return _capture_test_inventory(selection, selected_suites)
+
+
+def _capture_test_inventory(
+    selection: _PhysicalTestSelection,
+    suites: tuple[tuple[str | Path, bool], ...],
+) -> TestSourceInventory:
+    """One byte-capture and generation-fence authority for admitted source paths."""
+    sources: list[TestPolicySource] = []
+    identities: list[StableRegularFileIdentity] = []
+    for path, relative in zip(selection.files, selection.relative_paths, strict=True):
+        source, identity = _load_source(path, relative)
+        sources.append(source)
+        identities.append(identity)
+    inventory = TestSourceInventory(
+        selection.repo_root,
+        suites,
+        selection.files,
+        tuple(sources),
+        selection.suite_members,
+        selection.directories,
+        tuple(identities),
+    )
+    inventory.verify_unchanged()
+    return inventory
+
+
 def load_test_sources(
     files: Sequence[Path], *, repo_root: Path = ROOT
 ) -> tuple[TestPolicySource, ...]:
-    sources: list[TestPolicySource] = []
-    for path in files:
-        metadata = parse_metadata(path)
-        if (
-            metadata.verification_scope != CPYTHON_EQUIVALENCE_SCOPE
-            and not metadata.expect_molt_fail
-        ):
-            raise ValueError(
-                f"verified-subset scope exclusion must remain an explicit "
-                f"expected divergence: {normalize_repo_relative(path, repo_root=repo_root)}"
-            )
-        sources.append(
-            TestPolicySource(
-                path=normalize_repo_relative(path, repo_root=repo_root),
-                source_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                metadata=metadata,
-            )
-        )
-    sources.sort(key=lambda item: item.path)
-    if len(sources) != len({item.path for item in sources}):
-        raise ValueError("test-policy sources contain duplicate identities")
-    return tuple(sources)
+    """Capture an explicit selection through the shared admission and fences."""
+    root = resolve_owned_path(repo_root)
+    directories = _DirectoryAdmission()
+    directories.ancestry(root)
+    directories.admit(root, membership=False)
+    selected: dict[str, Path] = {}
+    portable_identities: dict[str, str] = {}
+    for raw_path in files:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = root / path
+        directories.ancestry(path)
+        path = resolve_owned_path(path)
+        _admit_source_path(path, root, selected, portable_identities)
+    names = tuple(sorted(selected))
+    selection = _PhysicalTestSelection(
+        root,
+        tuple(selected[name] for name in names),
+        names,
+        (),
+        tuple(directories.generations.values()),
+    )
+    selection.verify()
+    return _capture_test_inventory(selection, ()).sources
 
 
 @dataclass(frozen=True, slots=True)
@@ -765,9 +970,7 @@ def verification_scope_paths(
 
     if scope not in VERIFICATION_SCOPES:
         raise ValueError(f"unknown verified-subset scope: {scope}")
-    sources = load_test_sources(
-        collect_physical_test_files(suites, repo_root=repo_root), repo_root=repo_root
-    )
+    sources = load_test_inventory(suites, repo_root=repo_root).sources
     return frozenset(
         source.path for source in sources if source.metadata.verification_scope == scope
     )

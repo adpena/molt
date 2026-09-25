@@ -51,6 +51,24 @@ suite row carries a nondecreasing CPython-equivalence source floor, so policy
 scope exclusions cannot pad conformance evidence and one suite cannot pad
 another.
 
+Each validation transaction captures one explicit source inventory: one physical
+traversal and one stable byte read per test. Metadata and the source digest come
+from those same bytes. Suite floors and all coordinate projections consume that
+inventory; receipt batches and release assembly share it instead of rescanning or
+using process-global source caches. A new transaction always captures fresh
+source state and binds it to its repository root.
+The policy is likewise parsed from one stable byte capture. Its captured digest
+must equal the receipt's policy input record, and release evidence roles derive
+from that same policy generation rather than a second default-root parse.
+
+Inventory checks fence selected directory membership, ancestor identity, and
+file generations. Execution checks the inventory before dispatch and after the
+harness returns; receipt and bundle publication recheck before admission. A
+detected source change fails closed. These are metadata-generation fences, not
+an immutable execution snapshot or a guarantee against hostile filesystem
+mutation. Unrelated writes outside selected suites do not change their source
+inventory.
+
 Tests whose observable behavior intentionally follows Molt capability or dynamic
 execution policy instead of CPython equivalence carry the typed
 `verified_subset_scope=capability_policy` or
@@ -96,10 +114,12 @@ CPython executable/version, GIL and pointer-width state, Rust host/toolchain,
 backend runner, GitHub Actions run identity, runner OS/architecture/label, and
 source revision.
 
-`tools/release_criterion_receipt.py` independently reconstructs the coordinate
+`tools/release_criterion_receipt.py` validates against the captured coordinate
 projection and rejects missing, duplicate, excluded, malformed, stale, or
 self-inconsistent outcomes. `tools/release_exit_gate.py` requires the exact
 receipt closure; one receipt or one locally green host is not E3.
+Standalone receipt checks capture their own inventory; batch consumers own the
+shared inventory's final unchanged check.
 
 Receipt object keys derive from their typed records. Release assembly consumes
 the same scalar and object validators; it must not mirror those predicates.

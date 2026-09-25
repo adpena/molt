@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.verified_subset import load_verified_subset_policy
+
 import importlib.util
 import os
 import queue
@@ -11,7 +13,6 @@ from types import ModuleType
 
 import pytest
 
-from tools import verified_subset
 from tools.compat import test_policy
 
 
@@ -358,7 +359,7 @@ def test_source_scope_marks_exec_eval_cases(tmp_path: Path) -> None:
 
 
 def test_repo_source_scopes_cover_all_exec_eval_cases() -> None:
-    policy = verified_subset.load_manifest()
+    policy = load_verified_subset_policy()
     declared = test_policy.verification_scope_paths(
         policy.suite_selectors,
         scope="dynamic_execution_policy",
@@ -374,7 +375,7 @@ def test_repo_source_scopes_cover_all_exec_eval_cases() -> None:
 
 
 def test_repo_scopes_have_no_policy_deferred_runpy_dynamic_cases() -> None:
-    policy = verified_subset.load_manifest()
+    policy = load_verified_subset_policy()
     declared = test_policy.verification_scope_paths(
         policy.suite_selectors,
         scope="dynamic_execution_policy",

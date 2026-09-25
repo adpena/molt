@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.tools.verified_subset_fixtures import synthetic_validation
+
 import copy
 import datetime as dt
 import json
@@ -277,13 +279,18 @@ def _verified_receipt(
     tool = verified_subset.ROOT / receipt.KIND_TO_TOOL[receipt.KIND_VERIFIED_SUBSET]
     monkeypatch.setattr(
         verified_subset,
-        "verified_subset_projection",
-        lambda _policy, _coordinate, **_kwargs: projection,
+        "validate_manifest",
+        lambda **kwargs: synthetic_validation(
+            kwargs["repo_root"], lambda _cell: projection
+        ),
     )
     monkeypatch.setattr(
         verified_subset,
         "verified_subset_authority_files",
-        lambda _policy: (tool,),
+        lambda _policy, **_kwargs: (
+            verified_subset.ROOT / "config" / "verified_subset.toml",
+            tool,
+        ),
     )
     outcome = _verified_outcome(
         coordinate,
@@ -315,7 +322,7 @@ def _verified_receipt(
             results=[outcome],
             execution=_verified_execution(coordinate),
         ),
-        input_paths=[tool],
+        input_paths=[verified_subset.ROOT / "config" / "verified_subset.toml", tool],
         repo_root=verified_subset.ROOT,
         generated_at=GENERATED_AT,
     )
@@ -330,6 +337,88 @@ def _validate_verified(payload: object) -> tuple[str, ...]:
         repo_root=verified_subset.ROOT,
         now=VALIDATION_NOW,
     )
+
+
+def test_verified_receipt_rejects_validation_from_another_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload, _coordinate = _verified_receipt(monkeypatch)
+    validation = synthetic_validation(tmp_path, _verified_projection)
+    problems = receipt.validate_receipt(
+        payload,
+        expected_kind=receipt.KIND_VERIFIED_SUBSET,
+        expected_source_sha=SOURCE_SHA,
+        repo_root=verified_subset.ROOT,
+        now=VALIDATION_NOW,
+        verified_subset_validation=validation,
+    )
+    assert any("different source root" in problem for problem in problems)
+
+
+def test_verified_receipt_policy_hash_is_bound_even_when_common_bytes_are_not_rehashed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload, _coordinate = _verified_receipt(monkeypatch)
+    record = next(
+        item
+        for item in payload["inputs"]
+        if item["path"] == "config/verified_subset.toml"
+    )
+    record["sha256"] = "0" * 64
+    validation = verified_subset.validate_manifest(repo_root=verified_subset.ROOT)
+    problems = receipt.validate_receipt(
+        payload,
+        expected_kind=receipt.KIND_VERIFIED_SUBSET,
+        expected_source_sha=SOURCE_SHA,
+        repo_root=verified_subset.ROOT,
+        now=VALIDATION_NOW,
+        verify_inputs=False,
+        verified_subset_validation=validation,
+    )
+    assert any("policy input differs from captured" in problem for problem in problems)
+
+
+def test_verified_receipt_standalone_capture_checks_for_source_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload, _coordinate = _verified_receipt(monkeypatch)
+
+    def changed(_self):
+        raise ValueError("injected mutation")
+
+    monkeypatch.setattr(
+        verified_subset.VerifiedSubsetValidation, "verify_unchanged", changed
+    )
+    assert any(
+        "injected mutation" in problem for problem in _validate_verified(payload)
+    )
+
+
+def test_verified_receipt_publication_rechecks_shared_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload, _coordinate = _verified_receipt(monkeypatch)
+    validation = verified_subset.validate_manifest(repo_root=verified_subset.ROOT)
+    destination = receipt.ReceiptDestination(
+        verified_subset.ROOT,
+        tmp_path / "receipt.json",
+        SOURCE_SHA,
+    )
+    monkeypatch.setattr(receipt, "assert_clean_source", lambda **_kwargs: None)
+
+    def changed(_self):
+        raise ValueError("injected publication mutation")
+
+    monkeypatch.setattr(
+        verified_subset.VerifiedSubsetValidation, "verify_unchanged", changed
+    )
+    with pytest.raises(ValueError, match="injected publication mutation"):
+        receipt.write_receipt(
+            payload, destination, verified_subset_validation=validation
+        )
+    assert not destination.output_path.exists()
 
 
 @pytest.mark.parametrize("kind", sorted(receipt.KINDS - {receipt.KIND_VERIFIED_SUBSET}))

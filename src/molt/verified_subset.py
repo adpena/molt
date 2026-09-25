@@ -13,6 +13,10 @@ from molt.file_publication import is_link_like
 from molt.portable_paths import portable_relative_path
 from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS
 from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    capture_stable_regular_file,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = ROOT / "config" / "verified_subset.toml"
@@ -156,8 +160,15 @@ def _exact_suite_list(value: object) -> tuple[VerifiedSubsetSuite, ...]:
 
 
 def load_verified_subset_policy(path: Path = POLICY_PATH) -> VerifiedSubsetPolicy:
-    with path.open("rb") as stream:
-        document = tomllib.load(stream)
+    return capture_verified_subset_policy(path)[0]
+
+
+def capture_verified_subset_policy(
+    path: Path = POLICY_PATH,
+) -> tuple[VerifiedSubsetPolicy, StableRegularFileIdentity]:
+    """Parse and identify one policy generation from the same stable bytes."""
+    identity, raw = capture_stable_regular_file(path, label="verified-subset policy")
+    document = tomllib.loads(raw.decode("utf-8"))
     if set(document) != _POLICY_KEYS or document.get("schema") != SCHEMA:
         raise ValueError("verified-subset policy schema or keys are not exact")
     if tuple(SUPPORTED_CPYTHON_VERSIONS) != SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS:
@@ -209,7 +220,7 @@ def load_verified_subset_policy(path: Path = POLICY_PATH) -> VerifiedSubsetPolic
             "verified-subset exclusions must be exactly the capability-policy and "
             "dynamic-execution-policy scopes"
         )
-    return VerifiedSubsetPolicy(
+    policy = VerifiedSubsetPolicy(
         python_versions=SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
         reference_cpython=tuple(
             reference_by_minor[minor]
@@ -222,6 +233,7 @@ def load_verified_subset_policy(path: Path = POLICY_PATH) -> VerifiedSubsetPolic
         backends=_SUPPORTED_BACKENDS,
         suites=suites,
     )
+    return policy, identity
 
 
 def _release_target_records() -> tuple[Mapping[str, Any], ...]:

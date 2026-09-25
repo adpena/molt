@@ -6,10 +6,98 @@ import hashlib
 import os
 from pathlib import Path
 import subprocess
+from contextlib import contextmanager
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 from molt import toolchain_identity as identity
+
+
+def test_capture_bytes_and_identity_share_one_stable_read(tmp_path, monkeypatch):
+    path = tmp_path / "source.py"
+    data = b"# coding: utf-8\nprint('captured')\n"
+    path.write_bytes(data)
+    opened_paths = []
+    read_sizes = []
+    original_open = identity.open_stable_regular_file
+
+    class CountedStream:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return self.stream.read(size)
+
+    @contextmanager
+    def counted_open(path, **kwargs):
+        opened_paths.append(path)
+        with original_open(path, **kwargs) as opened:
+            yield replace(opened, stream=CountedStream(opened.stream))
+
+    monkeypatch.setattr(identity, "open_stable_regular_file", counted_open)
+    captured, raw = identity.capture_stable_regular_file(path, label="fixture")
+    assert raw == data
+    assert captured.path == path
+    assert captured.size == len(data)
+    assert captured.sha256 == hashlib.sha256(data).hexdigest()
+    assert opened_paths == [path]
+    assert read_sizes == [-1]
+    identity.verify_stable_regular_file_identity(captured, label="fixture")
+    assert read_sizes == [-1]
+
+
+def test_capture_rejects_short_source_read(tmp_path, monkeypatch):
+    path = tmp_path / "source.py"
+    path.write_bytes(b"print('captured')\n")
+    original_open = identity.open_stable_regular_file
+
+    @contextmanager
+    def incorrect_length(path, **kwargs):
+        with original_open(path, **kwargs) as opened:
+            yield replace(opened, stat=SimpleNamespace(st_size=opened.stat.st_size + 1))
+
+    monkeypatch.setattr(identity, "open_stable_regular_file", incorrect_length)
+    with pytest.raises(identity.StableRegularFileChangedError, match="size changed"):
+        identity.capture_stable_regular_file(path, label="fixture")
+
+
+@pytest.mark.parametrize("restore_content", [False, True])
+def test_capture_rejects_write_and_restored_timestamp_during_read(
+    tmp_path, monkeypatch, restore_content
+):
+    path = tmp_path / "source.py"
+    data = b"print('original')\n"
+    path.write_bytes(data)
+    before = path.stat()
+    original_hash = hashlib.sha256
+
+    def mutate_after_read(raw):
+        result = original_hash(raw)
+        path.write_bytes(b"print('modified')\n")
+        if restore_content:
+            path.write_bytes(data)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return result
+
+    monkeypatch.setattr(identity.hashlib, "sha256", mutate_after_read)
+    with pytest.raises(identity.StableRegularFileChangedError, match="changed"):
+        identity.capture_stable_regular_file(path, label="fixture")
+
+
+def test_capture_identity_matches_streaming_and_snapshot_authorities(tmp_path):
+    source = tmp_path / "source.py"
+    source.write_bytes(b"print('same generation')\n")
+    captured, raw = identity.capture_stable_regular_file(source, label="fixture")
+    assert captured == identity.stable_regular_file_identity(source, label="fixture")
+    snapshot = identity.snapshot_stable_regular_file(
+        source, tmp_path / "snapshot.py", label="fixture"
+    )
+    assert snapshot.source == captured
+    assert snapshot.snapshot.sha256 == captured.sha256
+    assert raw == (tmp_path / "snapshot.py").read_bytes()
 
 
 @pytest.mark.parametrize("consumer", ["command", "executable", "find"])
@@ -182,19 +270,22 @@ def test_content_consumers_reject_write_restore_during_hash(
     data = b"MZ" + b"0" * 64
     path.write_bytes(data)
     before = path.stat()
-    original = hashlib.file_digest
+    original = identity._sha256_stream
+    calls = []
 
-    def mutate(stream, algorithm):
-        result = original(stream, algorithm)
+    def mutate(stream):
+        calls.append(stream)
+        result = original(stream)
         path.write_bytes(b"MZ" + b"1" * 64)
         path.write_bytes(data)
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
         return result
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(hashlib, "file_digest", mutate)
+        scoped.setattr(identity, "_sha256_stream", mutate)
         with pytest.raises(ValueError, match="changed"):
             consumer(path, label="fixture")
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("mutate", [False, True])

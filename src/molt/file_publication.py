@@ -45,7 +45,8 @@ def _warn_after_commit(message: str) -> None:
         pass
 
 
-def _metadata_is_link_like(metadata: os.stat_result) -> bool:
+def metadata_is_link_like(metadata: os.stat_result) -> bool:
+    """Classify already-read no-follow metadata without another filesystem query."""
     return stat.S_ISLNK(metadata.st_mode) or bool(
         getattr(metadata, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
     )
@@ -58,7 +59,7 @@ def is_link_like(path: Path) -> bool:
         metadata = path.lstat()
     except (FileNotFoundError, NotADirectoryError):
         return False
-    return _metadata_is_link_like(metadata)
+    return metadata_is_link_like(metadata)
 
 
 def resolve_owned_path(path: Path) -> Path:
@@ -267,7 +268,7 @@ def _real_directory(path: Path, *, label: str) -> os.stat_result:
         metadata = path.lstat()
     except OSError as exc:
         raise ValueError(f"{label} is unavailable: {path}: {exc}") from exc
-    if not stat.S_ISDIR(metadata.st_mode) or _metadata_is_link_like(metadata):
+    if not stat.S_ISDIR(metadata.st_mode) or metadata_is_link_like(metadata):
         raise ValueError(f"{label} is not a real directory: {path}")
     return metadata
 
@@ -309,7 +310,7 @@ def _flush_staged_directory_tree(root: Path) -> None:
                     # directory. Never follow a staged symlink to flush bytes
                     # outside the tree.
                     continue
-                if _metadata_is_link_like(metadata):
+                if metadata_is_link_like(metadata):
                     raise ValueError(
                         f"staged publication tree contains a reparse point: {child}"
                     )
@@ -376,7 +377,7 @@ def durable_publish_directory_exclusive(staged: Path, destination: Path) -> None
             f"{destination}: {exc}"
         ) from exc
     else:
-        if _metadata_is_link_like(destination_metadata):
+        if metadata_is_link_like(destination_metadata):
             raise ValueError(
                 f"directory publication destination is indirect: {destination}"
             )
@@ -430,7 +431,7 @@ def _retirement_prefix(scope: str) -> str:
 
 
 def _retirement_identity(metadata: os.stat_result) -> tuple[str, int, int]:
-    if _metadata_is_link_like(metadata):
+    if metadata_is_link_like(metadata):
         raise ValueError("retirement refuses indirect leaves")
     kind = "d" if stat.S_ISDIR(metadata.st_mode) else "f"
     if kind == "f" and not stat.S_ISREG(metadata.st_mode):
@@ -559,7 +560,7 @@ def durable_remove_path(path: Path, *, retirement_scope: str | None = None) -> N
 
 def _flush_staged_file(staged: Path) -> int:
     metadata = staged.lstat()
-    if not stat.S_ISREG(metadata.st_mode) or _metadata_is_link_like(metadata):
+    if not stat.S_ISREG(metadata.st_mode) or metadata_is_link_like(metadata):
         raise ValueError(f"staged publication source is not a real file: {staged}")
     staged_was_readonly = not metadata.st_mode & stat.S_IWRITE
     if staged_was_readonly:
