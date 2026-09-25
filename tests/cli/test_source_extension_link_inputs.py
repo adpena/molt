@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import subprocess
 
 import pytest
@@ -120,6 +119,12 @@ def test_rust_target_libdir_cache_owns_environment_and_compiler_generation(
     first, second = tmp_path / "first", tmp_path / "second"
     first.mkdir()
     second.mkdir()
+    source = tmp_path / "compiler-source"
+    source.mkdir()
+    guest = tmp_path / "guest"
+    guest.mkdir()
+    monkeypatch.chdir(guest)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(source))
     calls = []
     monkeypatch.setattr(wasm_link_inputs, "find_executable", lambda *a, **kw: rustc)
     monkeypatch.setattr(
@@ -128,7 +133,7 @@ def test_rust_target_libdir_cache_owns_environment_and_compiler_generation(
 
     def query(argv, **kwargs):
         calls.append(kwargs["env"])
-        assert kwargs["cwd"] == Path.cwd().resolve()
+        assert kwargs["cwd"] == source
         return subprocess.CompletedProcess(
             argv, 0, kwargs["env"]["SELECTED_LIBDIR"] + "\n", ""
         )

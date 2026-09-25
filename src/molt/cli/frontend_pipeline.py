@@ -350,7 +350,6 @@ def _prepare_frontend_lowering_config(
     namespace_module_names: Collection[str],
     module_source_catalog: _ModuleSourceCatalog,
     is_wasm: bool,
-    target_triple: str | None,
     frontend_parallel_details: dict[str, Any],
     frontend_phase_timeout: float | None,
     source_recompiled_external_packages: Collection[str],
@@ -480,14 +479,6 @@ def _prepare_frontend_lowering_config(
             except ValueError:
                 warnings.append("Invalid MOLT_MODULE_CHUNK_OPS; using default of 3000.")
     module_chunking = module_chunk_max_ops > 0
-    if target_triple:
-        # setup_readiness is part of the post-lowering toolchain-provisioning layer;
-        # import it lazily so this frontend driver stays off the backend import path
-        # (keeps the lowering cache fingerprint scope backend-free).
-        from molt.cli.setup_readiness import _ensure_rustup_target
-
-        _ensure_rustup_target(target_triple, warnings)
-
     frontend_parallel_config = _frontend_parallel._resolve_frontend_parallel_config(
         module_count=len(module_graph),
     )
@@ -822,6 +813,17 @@ def _prepare_frontend_stage_state(
     if prepared_build_outputs_error is not None:
         return None, _fail(prepared_build_outputs_error, json_output, command="build")
     assert prepared_build_outputs is not None
+    output_layout = prepared_build_outputs.output_layout
+    target_triple = output_layout.target_triple
+    # Object-only cross compilation does not build or link the Rust runtime.
+    if target_triple and output_layout.emit_mode == "bin":
+        from molt.cli.wasm_toolchain import rust_target_readiness_error
+
+        readiness_error = rust_target_readiness_error(
+            target_triple, root=prepared_build_roots.molt_root
+        )
+        if readiness_error is not None:
+            return None, _fail(readiness_error, json_output, command="build")
     import_plan = prepared_build_outputs.import_plan
     native_callable_conflicts = (
         import_plan.native_artifact_plan.native_callable_contract_conflicts()
@@ -925,7 +927,6 @@ def _prepare_frontend_stage_state(
             namespace_module_names=set(import_plan.namespace_module_names),
             module_source_catalog=prepared_frontend_analysis.module_source_catalog,
             is_wasm=prepared_build_outputs.output_layout.is_wasm,
-            target_triple=prepared_build_outputs.output_layout.target_triple,
             frontend_parallel_details=frontend_parallel_details,
             frontend_phase_timeout=frontend_phase_timeout,
             source_recompiled_external_packages=(

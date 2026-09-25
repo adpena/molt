@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli import process_execution, quality_commands, script_commands
+from molt.node_runtime import NodeRuntime
 from molt.llvm_toolchain import LlvmBackendPin
 from tests.cli.process_guard import run_cli_test_process
 
@@ -827,6 +828,8 @@ def test_cli_cross_run_uses_cross_memory_guard(
     entry.write_text("print('ok')\n")
     artifact = project / "out.wasm"
     artifact.write_text("")
+    manifest = project / "manifest.json"
+    manifest.write_text("{}")
 
     class BuildEntry:
         source_path = entry
@@ -841,7 +844,7 @@ def test_cli_cross_run_uses_cross_memory_guard(
                 output=artifact,
                 consumer_output=artifact,
                 bundle_root=None,
-                artifacts={},
+                artifacts={"linked_wasm": artifact, "manifest": manifest},
             ),
             0.01,
             None,
@@ -878,9 +881,9 @@ def test_cli_cross_run_uses_cross_memory_guard(
         raising=True,
     )
     monkeypatch.setattr(
-        script_commands.shutil,
-        "which",
-        lambda name: "/usr/bin/wasmtime" if name == "wasmtime" else None,
+        script_commands,
+        "resolve_node_runtime",
+        lambda **kwargs: NodeRuntime(Path("/usr/bin/node"), "24.0.0", 24),
         raising=True,
     )
 
@@ -893,6 +896,12 @@ def test_cli_cross_run_uses_cross_memory_guard(
     )
 
     assert rc == 0
+    assert build_calls[0]["build_args"] == [
+        "--target",
+        "wasm",
+        "--linked",
+        "--require-linked",
+    ]
     assert build_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
     assert run_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
     assert run_calls[0]["capture_output"] is False

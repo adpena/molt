@@ -49,7 +49,6 @@ def _ensure_run_toolchain_preflight(
     repo_root: Path,
     resource_family: str,
 ) -> list[str] | None:
-    warnings: list[str] = []
     wasm_toolchain_module = None
     try:
         if resource_family in state.WASM_RESOURCE_FAMILIES:
@@ -73,12 +72,11 @@ def _ensure_run_toolchain_preflight(
     if wasm_toolchain_module is None:
         return None
     for target in required_targets:
-        if not wasm_toolchain_module.ensure_rustup_target(
-            target, warnings, root=repo_root
-        ):
-            if not warnings:
-                warnings.append(f"failed to ensure Rust target {target}")
-            return warnings
+        error = wasm_toolchain_module.rust_target_readiness_error(
+            target, root=repo_root
+        )
+        if error is not None:
+            return [error]
     return None
 
 

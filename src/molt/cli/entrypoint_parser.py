@@ -1082,7 +1082,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  molt run app.py                       Build and run natively\n"
             "  molt run app.py --release              Optimized build and run\n"
-            "  molt run app.py --target wasm          Build and run with wasmtime\n"
+            "  molt run app.py --target wasm          Build linked WASM and run with Node\n"
             "  molt run app.py --target luau          Build and run with lune\n"
             "  molt run app.py --target mlir          Build and JIT via MLIR\n"
             "  molt run app.py -- --arg1 val          Pass args to your script\n"
@@ -1097,7 +1097,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--target",
         default=None,
         help=(
-            "Build target: native (default), wasm (build + run with wasmtime), "
+            "Build target: native (default), wasm (linked build + Node host), "
             "luau (build + run with lune), mlir (build + JIT via MLIR), "
             "or a target triple."
         ),

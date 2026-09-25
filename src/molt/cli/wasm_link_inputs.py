@@ -1,7 +1,7 @@
 """Shared WASM compiler headers, provider archives and link-input policy.
 
 Admission and final link construction consume the same resolved inputs.
-Tool installation and linker executable validation remain in wasm_toolchain.
+Read-only toolchain readiness and linker validation remain in wasm_toolchain.
 """
 
 from __future__ import annotations
@@ -176,9 +176,10 @@ def rust_target_libdir(
     target_triple: str,
     *,
     environment: Mapping[str, str] | None = None,
+    root: Path | None = None,
 ) -> Path | None:
     selected = dict(os.environ if environment is None else environment)
-    cwd = Path.cwd().resolve()
+    cwd = (compiler_source_root() if root is None else root).resolve()
     rustc = find_executable(
         executable_environment_value(selected, "RUSTC", "rustc"),
         cwd=cwd,

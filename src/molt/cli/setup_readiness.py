@@ -312,12 +312,6 @@ def _rustup_setup_advice(system: str) -> list[str]:
     return ["curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"]
 
 
-def _ensure_rustup_target(
-    target_triple: str, warnings: list[str], *, root: Path | None = None
-) -> bool:
-    return wasm_toolchain.ensure_rustup_target(target_triple, warnings, root=root)
-
-
 def _cargo_setup_advice(system: str) -> list[str]:
     return _rustup_setup_advice(system) + ["source $HOME/.cargo/env (Unix)"]
 
@@ -877,39 +871,22 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         else None,
     )
 
-    wasm_target_ok = False
-    if rustup_path:
-        target_query_failed = False
-        try:
-            targets_tuple = wasm_toolchain.rustup_installed_targets(root)
-        except wasm_toolchain.RustToolchainContractError as exc:
-            record("rustup-targets", False, str(exc))
-            targets_tuple = None
-            target_query_failed = True
-        if targets_tuple is None and not target_query_failed:
-            record("rustup-targets", False, "failed to query installed targets")
-        elif targets_tuple is not None:
-            targets = set(targets_tuple)
-            required_wasm_targets = rust_contract.required_wasm_targets
-            missing_targets = [
-                target for target in required_wasm_targets if target not in targets
-            ]
-            wasm_target_ok = not missing_targets
-            target_detail = ", ".join(required_wasm_targets) + (
-                f" for Rust {pinned_rust}" if pinned_rust else ""
-            )
-            record(
-                "wasm-target",
-                wasm_target_ok,
-                target_detail,
-                level="warning",
-                advice=[
-                    shlex.join(wasm_toolchain.rustup_target_add_cmd(target, root))
-                    for target in missing_targets
-                ]
-                if not wasm_target_ok
-                else None,
-            )
+    target_errors = [
+        error
+        for target in rust_contract.required_wasm_targets
+        if (error := wasm_toolchain.rust_target_readiness_error(target, root=root))
+        is not None
+    ]
+    wasm_target_ok = not target_errors
+    record(
+        "wasm-target",
+        wasm_target_ok,
+        "; ".join(target_errors)
+        if target_errors
+        else ", ".join(rust_contract.required_wasm_targets),
+        level="warning",
+        advice=target_errors or None,
+    )
 
     environment = _canonical_env_defaults(root)
     backends = {

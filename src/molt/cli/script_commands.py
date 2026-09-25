@@ -12,6 +12,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 from molt.cli import build_inputs as _build_inputs
+from molt.browser_asset_closure import (
+    NODE_RUNNER_ENTRY_ASSETS,
+    wasm_loader_asset_closure,
+)
 from molt.cli.arg_helpers import (
     _build_args_has_cache_flag,
     _build_args_has_capabilities_flag,
@@ -65,6 +69,7 @@ from molt.cli.project_roots import (
 from molt.target_python import (
     _parse_target_python_version,
 )
+from molt.node_runtime import resolve_node_runtime
 from molt.python_interpreter import (
     PythonInterpreterError,
     format_python_command,
@@ -74,12 +79,50 @@ from molt.cli.wrapper_build import (
     _build_args_has_python_version_flag,
     _run_wrapper_build,
 )
-
 from molt.cli.process_execution import (
     _format_duration,
     _run_command,
     _run_command_timed,
 )
+
+
+def _wasm_run_build_args(build_args: list[str]) -> list[str]:
+    """Require the linked, manifest-bearing artifact consumed by the Node host."""
+
+    if any(
+        arg in {"--no-linked", "--no-require-linked", "--split-runtime"}
+        for arg in build_args
+    ):
+        raise ValueError(
+            "molt run --target wasm requires a linked WASM artifact; "
+            "--no-linked, --no-require-linked, and --split-runtime are incompatible"
+        )
+    for index, arg in enumerate(build_args):
+        if arg == "--target" and index + 1 < len(build_args):
+            selected_target = build_args[index + 1]
+        elif arg.startswith("--target="):
+            selected_target = arg.split("=", 1)[1]
+        else:
+            continue
+        if selected_target != "wasm":
+            raise ValueError(
+                "molt run --target wasm cannot use a different build target: "
+                f"{selected_target}"
+            )
+    result = list(build_args)
+    if "--linked" not in result:
+        result.append("--linked")
+    if "--require-linked" not in result:
+        result.append("--require-linked")
+    return result
+
+
+def _wasm_node_runner(molt_root: Path) -> Path:
+    wasm_root = molt_root / "wasm"
+    assets = wasm_loader_asset_closure(wasm_root, NODE_RUNNER_ENTRY_ASSETS)
+    if "run_wasm.js" not in assets:
+        raise ValueError("compiler source Node runner closure has no run_wasm.js")
+    return wasm_root / "run_wasm.js"
 
 
 def _apply_run_capability_policy(
@@ -179,6 +222,11 @@ def _run_script_cross(
         else _find_project_root(Path.cwd())
     )
     build_args = list(build_args or [])
+    if target == "wasm":
+        try:
+            build_args = _wasm_run_build_args(build_args)
+        except ValueError as exc:
+            return _fail(str(exc), json_output, command="run")
     resolved_build_entry, resolved_build_entry_error = (
         _build_inputs._resolve_wrapper_build_entry(
             file_path=file_path,
@@ -216,6 +264,23 @@ def _run_script_cross(
 
     # --type-gate flag
     env.update(_build_inputs._parse_type_gate_flag(type_gate))
+
+    wasm_host_command: list[str] | None = None
+    if target == "wasm":
+        try:
+            node = resolve_node_runtime(
+                source_root=molt_root,
+                environment=env,
+                guard_prefix=_CROSS_MEMORY_GUARD_PREFIX,
+            )
+            runner = _wasm_node_runner(molt_root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return _fail(
+                f"WASM Node host is unavailable: {exc}",
+                json_output,
+                command="run",
+            )
+        wasm_host_command = [str(node.path), str(runner)]
 
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
@@ -255,24 +320,28 @@ def _run_script_cross(
     assert build_contract is not None
 
     if target == "wasm":
-        run_artifact = build_contract.consumer_output
-        if not run_artifact.exists():
+        linked_wasm = build_contract.artifacts.get("linked_wasm")
+        manifest = build_contract.artifacts.get("manifest")
+        if (
+            linked_wasm is None
+            or manifest is None
+            or not linked_wasm.is_file()
+            or not manifest.is_file()
+            or build_contract.consumer_output.resolve() != linked_wasm.resolve()
+        ):
             return _fail(
-                f"WASM artifact not found: {run_artifact}\n"
-                "Hint: the build may have succeeded but placed output elsewhere. "
-                "Try `molt build --target wasm --verbose` to see the output path.",
+                "WASM run requires a linked artifact and manifest from the "
+                "same build; try `molt build --target wasm --linked "
+                "--require-linked --verbose`.",
                 json_output,
                 command="run",
             )
-        wasmtime = shutil.which("wasmtime")
-        if wasmtime is None:
-            return _fail(
-                "wasmtime not found on PATH. Install it: https://wasmtime.dev\n"
-                "Hint: curl https://wasmtime.dev/install.sh -sSf | bash",
-                json_output,
-                command="run",
-            )
-        run_cmd = [wasmtime, "run", str(run_artifact), "--", *script_args]
+        assert wasm_host_command is not None
+        run_cmd = [
+            *wasm_host_command,
+            str(manifest),
+            *script_args,
+        ]
     elif target == "luau":
         luau_artifact = build_contract.artifacts.get(
             "luau", build_contract.consumer_output

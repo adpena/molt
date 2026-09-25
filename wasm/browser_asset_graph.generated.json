@@ -253,7 +253,7 @@
           "target": "loader_bridge.js"
         },
         {
-          "column": 130,
+          "column": 148,
           "kind": "require",
           "line": 10,
           "request": "./runtime_lifecycle.js",
@@ -365,7 +365,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "bec7a84d5b38a4de3933df4ef1e8eb5b31a62df60d218d0b962fb50064d1a62e",
+      "sha256": "1f40b746466a65acfff21aded01f4e3a91c148053310b8a38c24f01f1757c6b3",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {
@@ -374,7 +374,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "021d08714710499b199160ebad317366bee44a938baec03956807b9f3b3a5aaa",
+      "sha256": "dc6d49188089412352fcbd5efd012dcb963fd59151d0bd31899a7856416cfd66",
       "source_type": "script"
     },
     "target_feature_constants.generated.js": {

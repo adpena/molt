@@ -161,6 +161,13 @@ WASM targets:
 - `rustup target add wasm32-wasip1 wasm32-unknown-unknown`
 - `cargo install wasm-tools --locked`
 - `cargo install wasm-pack --locked`
+- Build, run, doctor and queue preflight never install Rust targets. Readiness
+  and link inputs use the selected compiler in Molt's source directory, not a
+  guest project's Rust pin or another toolchain's target directory. Missing
+  standard libraries stop compilation with an explicit setup command; run that
+  command yourself to authorize the installation. C/C++ source extensions
+  require only the inputs declared by their target plan, not an unrelated Rust
+  standard library.
 - Ensure a WASI sysroot is available for `wasm32-wasip1` builds. Set `WASI_SYSROOT` or
   `WASI_SDK_PATH` if auto-detection is unavailable on your system.
 
@@ -238,7 +245,8 @@ Python import-graph analysis uses the same mutable `MOLT_CACHE`/platform-cache
 authority as other compiler caches, with separate project namespaces. It never
 stores graph hints in compiler source directories. Cached requests remain
 validated against source bytes, import policy and analysis implementation.
-After sealed source admission, installed compilation does not re-resolve the
+All commands share sealed-source dependency admission. Installed compilation,
+extension builds and dependency consumers do not re-resolve the
 compiler's Python dependencies with ambient project configuration. The shared
 native/WASM runtime Cargo plan always uses `--locked`, independent of guest
 determinism settings. Installed metadata identifies the bundled source commit

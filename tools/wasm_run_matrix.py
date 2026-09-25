@@ -78,6 +78,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import harness_memory_guard  # noqa: E402
+from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.browser_asset_closure import (  # noqa: E402
     BROWSER_HOST_ENTRY_ASSETS,
     canonical_wasm_loader_asset_bytes,
@@ -256,14 +257,6 @@ class RunResult:
     elapsed_s: float | None = None
 
 
-def _node_bin() -> str | None:
-    requested = os.environ.get("MOLT_NODE_BIN", "").strip()
-    if requested:
-        if shutil.which(requested) or Path(requested).exists():
-            return requested
-    return shutil.which("node")
-
-
 def _normalise(out: str) -> str:
     return out.replace("\r\n", "\n").rstrip("\n")
 
@@ -274,9 +267,12 @@ def _run_node(
     *,
     limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> RunResult:
-    node = _node_bin()
-    if node is None:
-        return RunResult("node", case.name, "skipped", detail="node binary not found")
+    try:
+        node = str(
+            resolve_node_runtime(source_root=REPO_ROOT, guard_prefix="MOLT_BENCH").path
+        )
+    except RuntimeError as exc:
+        return RunResult("node", case.name, "skipped", detail=str(exc))
     if not RUN_WASM_JS.exists():
         return RunResult(
             "node",
@@ -575,7 +571,12 @@ def _detect_browser_driver(
     "playwright-node", "playwright-python". Returns None when none are
     available.
     """
-    node = _node_bin()
+    try:
+        node = str(
+            resolve_node_runtime(source_root=REPO_ROOT, guard_prefix="MOLT_BENCH").path
+        )
+    except RuntimeError:
+        node = None
     if node is not None:
         for pkg, kind in (
             ("puppeteer", "puppeteer-node"),
@@ -828,13 +829,18 @@ def _run_browser(
         server = _start_static_server(site)
         try:
             url = f"http://127.0.0.1:{server.port}/{case.name}.html"
-            node = _node_bin()
-            if node is None:
+            try:
+                node = str(
+                    resolve_node_runtime(
+                        source_root=REPO_ROOT, guard_prefix="MOLT_BENCH"
+                    ).path
+                )
+            except RuntimeError as exc:
                 return RunResult(
                     "browser",
                     case.name,
                     "skipped",
-                    detail="node binary not found",
+                    detail=str(exc),
                 )
             if kind == "puppeteer-node":
                 cmd = [node, str(driver_js), "puppeteer", url, "30000"]
@@ -951,8 +957,10 @@ def _runtime_present(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> tuple[bool, str]:
     if runtime == "node":
-        if _node_bin() is None:
-            return False, "node binary not on PATH (or missing MOLT_NODE_BIN)"
+        try:
+            resolve_node_runtime(source_root=REPO_ROOT, guard_prefix="MOLT_BENCH")
+        except RuntimeError as exc:
+            return False, str(exc)
         return True, ""
     if runtime == "molt-wasm-host":
         if _resolve_molt_wasm_host() is None:

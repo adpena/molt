@@ -13,11 +13,9 @@ import pytest
 from molt.cli.llvm_wasi_tools import llvm_linker_candidates
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary
 from molt.dx import development_artifact_env, generated_session_id
+from molt.node_runtime import NodeRuntimeError, resolve_node_runtime
 from molt.wasm_artifact import wasm_runtime_manifest_path
 from tests import process_guard_common
-
-_MIN_NODE_MAJOR = 18
-_NODE_BIN_CACHE: str | None = None
 
 
 def _wasm_test_lane() -> str:
@@ -107,70 +105,16 @@ def _run_wasm_test_process(
     )
 
 
-def _parse_node_major(version_text: str) -> int | None:
-    text = version_text.strip()
-    if text.startswith("v"):
-        text = text[1:]
-    head = text.split(".", 1)[0]
+def require_node_binary() -> str:
+    """Return the shared Node selection, skipping only when Node is optional."""
+    root = Path(__file__).resolve().parents[1]
     try:
-        return int(head)
-    except ValueError:
-        return None
-
-
-def _node_major_for_binary(path: str) -> int | None:
-    try:
-        res = _run_wasm_test_process(
-            [path, "-p", "process.versions.node"],
-            cwd=Path.cwd(),
-            env=os.environ,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if res.returncode != 0:
-        return None
-    return _parse_node_major(res.stdout)
-
-
-def _select_node_binary() -> str | None:
-    global _NODE_BIN_CACHE
-    if _NODE_BIN_CACHE is not None:
-        return _NODE_BIN_CACHE
-
-    requested = os.environ.get("MOLT_NODE_BIN", "").strip()
-    if requested:
-        major = _node_major_for_binary(requested)
-        if major is None or major < _MIN_NODE_MAJOR:
-            return None
-        _NODE_BIN_CACHE = requested
-        return requested
-
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for candidate in (
-        shutil.which("node"),
-        "/opt/homebrew/bin/node",
-        "/usr/local/bin/node",
-    ):
-        if not candidate or candidate in seen:
-            continue
-        seen.add(candidate)
-        candidates.append(candidate)
-
-    best_path: str | None = None
-    best_major = -1
-    for candidate in candidates:
-        major = _node_major_for_binary(candidate)
-        if major is None:
-            continue
-        if major > best_major:
-            best_major = major
-            best_path = candidate
-    if best_path is None or best_major < _MIN_NODE_MAJOR:
-        return None
-    _NODE_BIN_CACHE = best_path
-    return best_path
+        node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
+    except NodeRuntimeError as exc:
+        if os.environ.get("MOLT_NODE_BIN", "").strip():
+            pytest.fail(f"explicit MOLT_NODE_BIN is unusable: {exc}")
+        pytest.skip(f"Node is required for explicit JS-runner coverage: {exc}")
+    return str(node.path)
 
 
 def _wasm_test_host_target_dir() -> Path | None:
