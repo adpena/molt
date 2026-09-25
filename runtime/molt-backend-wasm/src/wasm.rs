@@ -21,7 +21,7 @@ mod op_loop;
 mod state_dispatch;
 mod task_runtime;
 #[cfg(test)]
-pub(in crate::wasm) mod test_execution;
+pub(crate) mod test_execution;
 mod tir_pipeline;
 mod trampoline_analysis;
 pub use backend::{WasmBackend, WasmCompileDiagnostics, WasmCompileOutput, WasmNumericLaneStats};

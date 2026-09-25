@@ -342,7 +342,7 @@ pub struct PyTypeObject {
     pub tp_subclasses: *mut c_void,
     pub tp_weaklist: *mut PyObject,
     pub tp_del: Option<unsafe extern "C" fn(*mut PyObject)>,
-    pub tp_version_tag: c_ulong,
+    pub tp_version_tag: c_uint,
     pub tp_finalize: Option<unsafe extern "C" fn(*mut PyObject)>,
     pub tp_vectorcall: *mut c_void,
     pub tp_watched: u8,

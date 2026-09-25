@@ -165,11 +165,19 @@ jobs:
       - name: Setup exact candidate toolchains
         uses: ./.github/actions/setup-project
         with:
+          node-version: "24.16.0"
           rust-toolchain: "1.96.1"
+          rust-targets: wasm32-wasip1
           cache-cargo: "true"
           cache-namespace: release-${{ matrix.id }}
           sync: "true"
           sync-frozen: "true"
+
+      - name: Setup canonical WebAssembly SDK
+        uses: ./.github/actions/setup-llvm
+        with:
+          profile: wasm
+          wasi: "true"
 
       - name: Verify candidate toolchain identity
         shell: bash
@@ -177,6 +185,9 @@ jobs:
           rustc --version --verbose | grep -F 'release: 1.96.1'
           cargo --version | grep -F 'cargo 1.96.1'
           clang --version
+          "$MOLT_WASM_LD" --version
+          "$MOLT_LLVM_NM" --version
+          test -f "$MOLT_WASI_SYSROOT/lib/wasm32-wasip1/libc.a"
 
       - name: Download the one canonical wheel
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
@@ -232,7 +243,7 @@ jobs:
             --secondary-launcher "dist/compiler-secondary/release/$launcher" \
             --output dist/candidate
 
-      - name: Verify installed canonical Python and guest-profile closure
+      - name: Verify installed Python x target x profile smoke closure
         shell: bash
         run: >-
           uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE --

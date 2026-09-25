@@ -2321,7 +2321,7 @@ unsafe fn assign_type_version_tag(tp: *mut PyTypeObject, seen: &mut HashSet<usiz
         return false;
     };
     unsafe {
-        (*tp).tp_version_tag = tag as c_ulong;
+        (*tp).tp_version_tag = tag;
         (*tp).tp_flags |= crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG;
     }
     true

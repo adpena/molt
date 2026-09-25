@@ -8,7 +8,7 @@
  *
  * This header provides the linked declaration surface. Object and numeric
  * scalar layout is shared with include/molt/Python.h through the single
- * include/molt/_numeric_scalar_abi.h authority; the headers differ only in
+ * include/molt/shared/_numeric_scalar_abi.h authority; the headers differ only in
  * how non-scalar operations are transported.
  *
  * If you are unsure which to use, use the top-level one:
@@ -19,7 +19,9 @@
  *   libmolt_cpython_abi.so     (Linux)
  *   molt_cpython_abi.dll       (Windows)
  *
- * ABI note: struct layouts match CPython 3.12 x86-64 / aarch64.
+ * Add include/molt/shared as a second include root (source or installed).
+ * ABI note: CPython 3.12 traditional layouts are checked against the Rust
+ * authority for the target C data model; this is not a newer-version ABI claim.
  */
 #pragma once
 #ifndef Py_PYTHON_H
@@ -43,6 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <_c_data_model.h>
 
 #ifndef PyAPI_FUNC
 #define PyAPI_FUNC(RTYPE) extern RTYPE
@@ -120,9 +123,9 @@ typedef struct {
 /* Immortal ob_refcnt — the SINGLE authority, mirroring CPython's
  * _Py_IMMORTAL_REFCNT (Include/object.h in 3.12/3.13). Width-gated so the value
  * matches molt's Rust `abi_types::IMMORTAL_REFCNT` byte-for-byte on both wasm32
- * (ILP32) and 64-bit; __SIZEOF_POINTER__ is a numeric compiler builtin usable in
- * #if (unlike molt's sizeof-based SIZEOF_VOID_P). 3.12/3.13: UINT_MAX / UINT_MAX>>2. */
-#if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ > 4
+ * (ILP32) and 64-bit through the shared target C data model.
+ * 3.12/3.13: UINT_MAX / UINT_MAX>>2. */
+#if SIZEOF_VOID_P > 4
 #  define _Py_IMMORTAL_REFCNT ((Py_ssize_t)0xFFFFFFFF)   /* UINT_MAX (64-bit) */
 #else
 #  define _Py_IMMORTAL_REFCNT ((Py_ssize_t)0x3FFFFFFF)   /* UINT_MAX >> 2 (32-bit) */
@@ -134,7 +137,7 @@ typedef struct {
 /* _Py_IsImmortal / Py_IsImmortal — the sole immortal predicate for C consumers,
  * mirroring CPython. 64-bit: low-word bit 31 set (== (int32)ob_refcnt < 0);
  * 32-bit: equals the immortal sentinel. Matches abi_types::is_immortal_refcnt. */
-#if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ > 4
+#if SIZEOF_VOID_P > 4
 #  define _Py_IsImmortal(op) \
        ((int)((((PyObject *)(op))->ob_refcnt & (Py_ssize_t)0x80000000) != 0))
 #else
@@ -150,13 +153,10 @@ typedef struct {
 #define Py_ASNATIVEBYTES_UNSIGNED_BUFFER 4
 #define Py_ASNATIVEBYTES_REJECT_NEGATIVE 8
 #define Py_ASNATIVEBYTES_ALLOW_INDEX 16
-#ifndef SIZEOF_VOID_P
-#define SIZEOF_VOID_P sizeof(void *)
-#endif
 
 /* ── Forward declarations ─────────────────────────────────────────────────── */
 
-#include "../../../include/molt/_numeric_scalar_abi.h"
+#include <_numeric_scalar_abi.h>
 
 typedef struct PyCodeObject PyCodeObject;
 typedef struct _frame PyFrameObject;
@@ -684,7 +684,7 @@ typedef struct _ts {
     int _molt_reserved;
 } PyThreadState;
 
-#include "../../../include/molt/_gil_state_abi.h"
+#include <_gil_state_abi.h>
 
 #define PyException_HEAD PyObject_HEAD PyObject *dict; \
     PyObject *args; PyObject *notes; PyObject *traceback; \

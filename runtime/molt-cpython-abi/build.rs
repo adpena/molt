@@ -71,6 +71,9 @@ fn emit_freestanding_errno_authority(build: &mut cc::Build, out_dir: &Path) {
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let shim = manifest.join("shims/pyarg_variadic.c");
+    let layout_assert = manifest.join("shims/abi_layout_assert.c");
+    let abi_include = manifest.join("include");
+    let shared_abi_include = manifest.join("../../include/molt/shared");
     let shim_exports = manifest.join("shims/pyarg_variadic.exports");
     let variadic_export_symbols = variadic_exports::load_variadic_exports(&shim_exports);
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -90,6 +93,11 @@ fn main() {
     }
     build
         .file(&shim)
+        // Both translation units use the same target compiler/sysroot. The
+        // generated repr(C) projection checks native AND wasm32 layouts.
+        .file(&layout_assert)
+        .include(&abi_include)
+        .include(&shared_abi_include)
         .opt_level(3)
         // Auto-vectorisation hints for clang/gcc.
         .flag_if_supported("-fvectorize")
@@ -183,42 +191,9 @@ fn main() {
         println!("cargo:rustc-link-lib=static:+whole-archive=molt_pyarg_shims");
     }
 
-    // Single-authority layout enforcement. Compile a tiny translation unit that
-    // pulls in <Python.h> (and, transitively, the generated
-    // include/_molt_abi_layout.generated.h parity block). Its _Static_assert
-    // checks pin every traditional-representation struct's sizeof/offsetof to the
-    // Rust `#[repr(C)]` authority in src/abi_types.rs, so a drift between the C
-    // header and the Rust structs the dylib operates on fails THIS crate's build
-    // rather than corrupting memory at runtime.
-    //
-    // The generated assertions encode LP64/LLP64 native sizes (8-byte pointers /
-    // Py_ssize_t). wasm32 is ILP32 (4-byte pointers), and the standalone-link ABI
-    // tier that this header serves is a native-only surface, so we scope the
-    // layout assertion TU to non-wasm targets.
-    if target_arch != "wasm32" {
-        let layout_assert = manifest.join("shims/abi_layout_assert.c");
-        let abi_include = manifest.join("include");
-        cc::Build::new()
-            .file(&layout_assert)
-            .include(&abi_include)
-            .opt_level(0)
-            .compile("molt_abi_layout_assert");
-        println!("cargo:rerun-if-changed={}", layout_assert.display());
-        println!(
-            "cargo:rerun-if-changed={}",
-            abi_include.join("_molt_abi_layout.generated.h").display()
-        );
-        println!(
-            "cargo:rerun-if-changed={}",
-            abi_include.join("Python.h").display()
-        );
-        println!(
-            "cargo:rerun-if-changed={}",
-            manifest
-                .join("../../include/molt/_gil_state_abi.h")
-                .display()
-        );
-    }
+    println!("cargo:rerun-if-changed={}", layout_assert.display());
+    println!("cargo:rerun-if-changed={}", abi_include.display());
+    println!("cargo:rerun-if-changed={}", shared_abi_include.display());
 
     // Force the static shim's symbols into the cdylib output so that
     // PyArg_ParseTuple / PyArg_ParseTupleAndKeywords are exported even

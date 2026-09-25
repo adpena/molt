@@ -4,6 +4,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+/// Honor the explicit SDK linker without promoting its compiler directory to PATH.
+pub(crate) fn wasm_ld_path() -> PathBuf {
+    std::env::var_os("MOLT_WASM_LD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("wasm-ld"))
+}
+
 pub(in crate::wasm) struct WasmTestTempGuard(PathBuf);
 
 impl Drop for WasmTestTempGuard {

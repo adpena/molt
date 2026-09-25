@@ -304,7 +304,8 @@ def test_named_native_intent_reaches_host_compiler_selection(
     }
     seen = []
 
-    def family(*, explicit_commands, sibling_directories, environment):
+    def family(*, target_family, explicit_commands, sibling_directories, environment):
+        assert target_family == "native"
         assert environment == selected
         seen.append(explicit_commands)
 

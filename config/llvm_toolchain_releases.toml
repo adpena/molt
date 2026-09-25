@@ -1,4 +1,4 @@
-schema_version = 3
+schema_version = 4
 default_release = "22.1.8"
 canonical_build_type = "Release"
 
@@ -11,14 +11,52 @@ url = "https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/c5ec
 sha256 = "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae"
 provenance_url = "https://github.com/opencollab/llvm-jenkins.debian.net/commit/c5ecff7c7208c8b5225e1f6e6ae6f2539e1d31ea"
 
-[wasi_sysroot]
-version = "33.0+m"
+# One wasi-sdk release owns every WebAssembly tool Molt links or inspects with
+# (wasm-ld, llvm-nm) and the WASI sysroot, on every shipped release host. Its
+# LLVM producer line is independent of the native/MLIR backend release above.
+# Each host asset's byte size and SHA-256 were read from the provenance release
+# record; tools/provision_wasi_sdk.py accepts an archive only on an exact match.
+[wasi_sdk]
+archive_version = "33.0"
+sdk_version = "33.0+m"
 llvm_version = "22.1.0"
-url = "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sysroot-33.0%2Bm.tar.gz"
-size = 124253494
-sha256 = "063bc1b56582b9923e08ac9b89e58789618d851763f01530b3ff20b9e5df0ca3"
 provenance_url = "https://api.github.com/repos/WebAssembly/wasi-sdk/releases/tags/wasi-sdk-33"
-archive_root = "wasi-sysroot-33.0+m"
+
+[wasi_sdk.targets.linux-x86_64]
+url = "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz"
+size = 193563606
+sha256 = "0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce"
+archive_root = "wasi-sdk-33.0-x86_64-linux"
+
+[wasi_sdk.targets.linux-aarch64]
+url = "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-arm64-linux.tar.gz"
+size = 193332886
+sha256 = "4f98ee738c7abb45c81a94d1461fc53cc569d1cd01498951c8184d841a027844"
+archive_root = "wasi-sdk-33.0-arm64-linux"
+
+[wasi_sdk.targets.macos-x86_64]
+url = "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-macos.tar.gz"
+size = 183982696
+sha256 = "18f3f201ba9734e6a4455b0b6410690395a55e9ffa9f6f5066f66083a94b93b3"
+archive_root = "wasi-sdk-33.0-x86_64-macos"
+
+[wasi_sdk.targets.macos-aarch64]
+url = "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-arm64-macos.tar.gz"
+size = 181708059
+sha256 = "85c997a2665ead91673b5bb88b7d0df3fc8900df3bfa244f720d478187bbdc78"
+archive_root = "wasi-sdk-33.0-arm64-macos"
+
+[wasi_sdk.targets.windows-x86_64]
+url = "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-windows.tar.gz"
+size = 655445038
+sha256 = "df14ca2a2127c2d6b6be07e6f5549b3af9c1b3c0112430c200a4749970c59f06"
+archive_root = "wasi-sdk-33.0-x86_64-windows"
+
+[wasi_sdk.targets.windows-aarch64]
+url = "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-arm64-windows.tar.gz"
+size = 656888750
+sha256 = "2f457a62da1ce1a55e2ba77c450401b3551f27f04f0a87112b74c5aa8dd9504f"
+archive_root = "wasi-sdk-33.0-arm64-windows"
 
 [releases."22.1.8"]
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/llvm-project-22.1.8.src.tar.xz"

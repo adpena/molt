@@ -81,7 +81,8 @@ def test_tool_family_resolves_every_tool_from_explicit_compiler_siblings(
     )
 
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
-        explicit_commands={"cc": (str(paths["cc"]), "--sysroot", "sdk")}
+        target_family="wasm",
+        explicit_commands={"cc": (str(paths["cc"]), "--sysroot", "sdk")},
     )
 
     assert family.missing_roles() == ()
@@ -115,7 +116,7 @@ def test_wasm_ld_symlink_keeps_role_entrypoint_in_explicit_prefix(
     )
 
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
-        explicit_commands={"cc": (str(paths["cc"]),)}
+        target_family="wasm", explicit_commands={"cc": (str(paths["cc"]),)}
     )
 
     assert family.wasm_ld is not None
@@ -137,6 +138,7 @@ def test_wasm_ld_role_rejects_explicit_generic_driver_and_uses_named_sibling(
     )
 
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
+        target_family="wasm",
         explicit_commands={"wasm_ld": (str(driver),)},
         sibling_directories=(directory,),
     )
@@ -166,8 +168,8 @@ def test_wasm_ld_path_alias_remains_role_specific_across_cache_hits(
         lambda name, **_kwargs: str(alias) if name == "wasm-ld" else None,
     )
 
-    first = llvm_wasi_tools.llvm_tool_candidates("wasm_ld")
-    second = llvm_wasi_tools.llvm_tool_candidates("wasm_ld")
+    first = llvm_wasi_tools.llvm_tool_candidates("wasm_ld", target_family="wasm")
+    second = llvm_wasi_tools.llvm_tool_candidates("wasm_ld", target_family="wasm")
 
     assert first == second == (alias.absolute(),)
     assert first[0] != driver.absolute()
@@ -218,6 +220,7 @@ def test_every_linker_role_preserves_its_alias_and_rejects_generic_driver(
 
     candidates = llvm_wasi_tools.llvm_linker_candidates(
         role,
+        target_family="wasm" if role == "wasm-ld" else "native",
         explicit_commands=((str(driver),),),
         sibling_directories=(directory,),
     )
@@ -254,6 +257,7 @@ def test_linker_roles_never_accept_a_sibling_role(
     assert (
         llvm_wasi_tools.llvm_linker_candidates(
             requested,
+            target_family="wasm" if requested == "wasm-ld" else "native",
             explicit_commands=((str(wrong_path),),),
         )
         == ()
@@ -275,7 +279,7 @@ def test_tool_family_resolves_managed_target_root_before_path(
     )
 
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
-        target_root=tmp_path / "target"
+        target_family="wasm", target_root=tmp_path / "target"
     )
 
     assert family.missing_roles() == ()
@@ -283,6 +287,264 @@ def test_tool_family_resolves_managed_target_root_before_path(
     assert family.cc.path == managed["cc"].resolve()
     assert family.nm is not None
     assert family.nm.path == managed["nm"].resolve()
+
+
+@pytest.mark.parametrize("first", ["native", "wasm"])
+def test_managed_sdk_discovery_is_target_scoped_in_both_cache_orders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str
+) -> None:
+    target = tmp_path / "target"
+    native = _write_tool_family(target / "toolchains" / "llvm-22" / "bin")
+    sdk = _write_tool_family(target / "toolchains" / "wasi-sdk" / "bin")
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    environment = {"PATH": "", "NoDefaultCurrentDirectoryInExePath": "1"}
+    for family in (first, "wasm" if first == "native" else "native", first):
+        candidates = llvm_wasi_tools.llvm_tool_candidates(
+            "cc", target_family=family, target_root=target, environment=environment
+        )
+        assert candidates[0] == (native if family == "native" else sdk)["cc"]
+        assert (sdk["cc"] in candidates) is (family == "wasm")
+
+
+@pytest.mark.parametrize("origin", ["path", "sibling"])
+@pytest.mark.parametrize("native_present", [False, True])
+def test_native_discovery_rejects_automatic_sdk_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, origin: str, native_present: bool
+) -> None:
+    sdk = _write_tool_family(tmp_path / "wasi-sdk-33" / "bin")
+    native = _write_tool_family(tmp_path / "native" / "bin")
+    for path in (*sdk.values(), *native.values()):
+        path.chmod(0o755)
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    directories = [sdk["cc"].parent]
+    if native_present:
+        directories.append(native["cc"].parent)
+    environment = {
+        "PATH": os.pathsep.join(map(str, directories)) if origin == "path" else "",
+        "PATHEXT": ".EXE",
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+    before = dict(environment)
+    siblings = tuple(directories) if origin == "sibling" else ()
+    assert llvm_wasi_tools.llvm_tool_candidates(
+        "cc", sibling_directories=siblings, environment=environment
+    ) == ((native["cc"],) if native_present else ())
+    assert (
+        llvm_wasi_tools.llvm_tool_candidates(
+            "cc",
+            target_family="wasm",
+            sibling_directories=siblings,
+            environment=environment,
+        )[0]
+        == sdk["cc"]
+    )
+    assert environment == before
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ["WASI_SDK_PATH", "WASI_SDK_PREFIX", "MOLT_WASI_SYSROOT", "WASI_SYSROOT"],
+)
+def test_relocated_sdk_selection_needs_no_path_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selector: str
+) -> None:
+    root = tmp_path / "external-prefix" / "sdk"
+    sdk = _write_tool_family(root / "bin")
+    sysroot = root / "share" / "wasi-sysroot"
+    sysroot.mkdir(parents=True)
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    environment = {
+        "PATH": str(root / "bin"),
+        selector: str(sysroot if "SYSROOT" in selector else root),
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+    assert llvm_wasi_tools.llvm_tool_candidates("cc", environment=environment) == ()
+    environment["PATH"] = ""
+    assert llvm_wasi_tools.llvm_tool_candidates(
+        "cc", target_family="wasm", environment=environment
+    ) == (sdk["cc"],)
+    assert environment["PATH"] == ""
+
+
+def test_sdk_file_alias_does_not_hide_later_native_path_compiler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk = _write_tool_family(tmp_path / "wasi-sdk" / "bin")
+    native = _write_tool_family(tmp_path / "native" / "bin")
+    alias_directory = tmp_path / "aliases"
+    alias_directory.mkdir()
+    alias = alias_directory / sdk["cc"].name
+    try:
+        alias.symlink_to(sdk["cc"])
+    except OSError:
+        pytest.skip("file symlink privilege unavailable")
+    for path in (*sdk.values(), *native.values()):
+        path.chmod(0o755)
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    environment = {
+        "PATH": os.pathsep.join(map(str, (alias_directory, native["cc"].parent))),
+        "PATHEXT": ".EXE",
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+    assert llvm_wasi_tools.llvm_tool_candidates("cc", environment=environment) == (
+        native["cc"],
+    )
+    assert llvm_wasi_tools.llvm_tool_candidates(
+        "cc", target_family="wasm", environment=environment
+    ) == (alias,)
+    assert (
+        llvm_wasi_tools.llvm_tool_candidates(
+            "cc", explicit_commands=((str(alias),),), environment=environment
+        )[0]
+        == alias
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PATH and implicit cwd semantics")
+def test_native_sdk_path_filter_reuses_windows_executable_search_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk = _write_tool_family(tmp_path / "wasi-sdk" / "bin")
+    native = _write_tool_family(tmp_path / "native" / "bin")
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.chdir(sdk["cc"].parent)
+    path = f'"{sdk["cc"].parent}";"{native["cc"].parent}"'
+    environment = {"Path": path, "PATH": path, "PathExt": ".EXE"}
+    assert llvm_wasi_tools.llvm_tool_candidates("cc", environment=environment) == (
+        native["cc"],
+    )
+    assert environment == {"Path": path, "PATH": path, "PathExt": ".EXE"}
+
+
+def test_explicit_sdk_compiler_does_not_authorize_automatic_native_siblings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk = _write_tool_family(tmp_path / "wasi-sdk" / "bin")
+    native = _write_tool_family(tmp_path / "native" / "bin")
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_tool_version", lambda _path, **_kw: "fixture"
+    )
+    family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
+        target_family="native",
+        explicit_commands={"cc": (str(sdk["cc"]), "-DEXPLICIT=1")},
+        sibling_directories=(sdk["cc"].parent, native["cc"].parent),
+        environment={"PATH": "", "NoDefaultCurrentDirectoryInExePath": "1"},
+    )
+    assert family.cc.command == (str(sdk["cc"]), "-DEXPLICIT=1")
+    assert family.cxx.path == native["cxx"]
+    assert family.nm.path == native["nm"]
+
+
+@pytest.mark.parametrize("configured_cc", [None, "", "explicit-sdk"])
+def test_native_source_extension_default_and_explicit_compiler_share_target_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured_cc: str | None
+) -> None:
+    target = tmp_path / "target"
+    sdk = _write_tool_family(target / "toolchains" / "wasi-sdk" / "bin")
+    native = _write_tool_family(target / "toolchains" / "llvm-22" / "bin")
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_tool_version", lambda _path, **_kw: "fixture"
+    )
+    environment = {
+        "MOLT_TARGET_ROOT": str(target),
+        "PATH": str(sdk["cc"].parent),
+        "PATHEXT": ".EXE",
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+    if configured_cc is not None:
+        environment["CC"] = '"' + str(sdk["cc"]) + '"' if configured_cc else ""
+    plan = source_extension_target.resolve_source_extension_target_plan(
+        "native", host_platform="linux", host_arch="x86_64"
+    )
+    resolved = source_extension_toolchain._resolve_source_extension_native_toolchain(
+        plan, environment=environment
+    )
+    expected = sdk if configured_cc else native
+    for role, executable in (
+        ("c", expected["cc"]),
+        ("cpp", native["cxx"]),
+        ("nm", native["nm"]),
+    ):
+        assert Path(resolved.commands[role][0]) == executable
+        assert resolved.commands[role][1:] == ()
+
+
+@pytest.mark.parametrize("requested", ["wasm", "wasm-freestanding"])
+@pytest.mark.parametrize(
+    "selection", ["automatic", "explicit", "directory-alias", "file-alias"]
+)
+def test_sdk_source_compilers_disable_hidden_config_before_probe_and_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requested: str, selection: str
+) -> None:
+    root = tmp_path / "external-prefix" / "sdk"
+    sdk = _write_tool_family(root / "bin")
+    sysroot = root / "share" / "wasi-sysroot"
+    sysroot.mkdir(parents=True)
+    (root / "bin" / "clang.cfg").write_text(
+        "--sysroot=<CFGDIR>/../share/wasi-sysroot\n", encoding="utf-8"
+    )
+    compiler = sdk["cc"]
+    if selection == "directory-alias":
+        alias = tmp_path / "selected-bin"
+        try:
+            alias.symlink_to(root / "bin", target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlink privilege unavailable")
+        compiler = alias / compiler.name
+    elif selection == "file-alias":
+        alias = tmp_path / compiler.name
+        try:
+            alias.symlink_to(compiler)
+        except OSError:
+            pytest.skip("file symlink privilege unavailable")
+        compiler = alias
+    environment = {
+        "WASI_SDK_PATH": str(root),
+        "PATH": "",
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+    if selection != "automatic":
+        environment["MOLT_WASM_CC"] = '"' + str(compiler) + '"'
+        if requested == "wasm":
+            environment["MOLT_WASM_CC"] += ' --sysroot "' + str(sysroot) + '"'
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_tool_version", lambda _path, **_kw: "fixture"
+    )
+    monkeypatch.setattr(
+        source_extension_toolchain, "_resolve_wasi_sysroot", lambda **_kw: sysroot
+    )
+    monkeypatch.setattr(
+        source_extension_toolchain, "normalize_wasi_sysroot", lambda path: Path(path)
+    )
+    probes = []
+
+    def run(command, **kwargs):
+        assert kwargs["env"] == environment
+        probes.append(tuple(command))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(source_extension_toolchain.subprocess, "run", run)
+    plan = source_extension_target.resolve_source_extension_target_plan(
+        requested, host_platform="linux", host_arch="x86_64"
+    )
+    resolved = source_extension_toolchain._resolve_source_extension_wasm_toolchain(
+        plan, environment=environment
+    )
+    assert resolved.ok, resolved.detail
+    commands = source_extension_toolchain._source_extension_c_commands(
+        toolchain=resolved, target_plan=plan, environment=environment
+    )
+    assert len(probes) == 1
+    assert Path(probes[0][0]) == compiler
+    for command in (probes[0], commands["c"], commands["cpp"]):
+        assert command.count("--no-default-config") == 1
+        assert command.count(plan.target_triple) == 1
+        assert ("--sysroot" in command) is (requested == "wasm")
+        if requested == "wasm":
+            assert command[command.index("--sysroot") + 1] == str(sysroot)
 
 
 def test_worktree_resolver_reuses_common_checkout_managed_toolchain(
@@ -309,6 +571,113 @@ def test_worktree_resolver_reuses_common_checkout_managed_toolchain(
     )
 
     assert llvm_wasi_tools.llvm_tool_candidates("cc")[0] == managed["cc"].resolve()
+
+
+def test_sdk_provenance_reuses_resolution_and_layout_across_roles_and_warm_hits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk = _write_tool_family(tmp_path / "wasi-sdk" / "bin")
+    native = _write_tool_family(tmp_path / "native" / "bin")
+    for path in (*sdk.values(), *native.values()):
+        path.chmod(0o755)
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    environment = {
+        "WASI_SDK_PATH": str(sdk["cc"].parent.parent),
+        "PATH": os.pathsep.join(map(str, (sdk["cc"].parent, native["cc"].parent))),
+        "PATHEXT": ".EXE",
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+    resolutions = []
+    layout_probes = []
+    resolve = Path.resolve
+    is_dir = Path.is_dir
+
+    def observed_resolve(path, *args, **kwargs):
+        resolutions.append(path)
+        return resolve(path, *args, **kwargs)
+
+    def observed_is_dir(path):
+        layout_probes.append(path)
+        return is_dir(path)
+
+    monkeypatch.setattr(Path, "resolve", observed_resolve)
+    monkeypatch.setattr(Path, "is_dir", observed_is_dir)
+    assert llvm_wasi_tools.llvm_tool_candidates("cc", environment=environment) == (
+        native["cc"],
+    )
+    assert resolutions and layout_probes
+    resolutions.clear()
+    layout_probes.clear()
+    assert llvm_wasi_tools.llvm_tool_candidates("cxx", environment=environment) == (
+        native["cxx"],
+    )
+    assert resolutions == [native["cxx"]]
+    assert layout_probes == []
+    resolutions.clear()
+    for role in ("cc", "cxx", "cc"):
+        assert llvm_wasi_tools.llvm_tool_candidates(role, environment=environment) == (
+            native[role],
+        )
+    assert resolutions == []
+    assert layout_probes == []
+
+
+@pytest.mark.parametrize("alias_kind", ["directory", "file"])
+@pytest.mark.parametrize("mutation", ["sdk-layout", "retarget"])
+def test_sdk_provenance_cache_tracks_alias_and_target_layout_mutations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alias_kind: str, mutation: str
+) -> None:
+    original = _write_tool_family(tmp_path / "relocated" / "bin")
+    sdk = _write_tool_family(tmp_path / "wasi-sdk" / "bin")
+    fallback = _write_tool_family(tmp_path / "native" / "bin")
+    for path in (*original.values(), *sdk.values(), *fallback.values()):
+        path.chmod(0o755)
+    if alias_kind == "directory":
+        alias = tmp_path / "alias-bin"
+        original_target = original["cc"].parent
+        sdk_target = sdk["cc"].parent
+        search_directory = alias
+        compiler = alias / original["cc"].name
+    else:
+        search_directory = tmp_path / "alias-bin"
+        search_directory.mkdir()
+        alias = search_directory / original["cc"].name
+        original_target = original["cc"]
+        sdk_target = sdk["cc"]
+        compiler = alias
+    try:
+        alias.symlink_to(original_target, target_is_directory=alias_kind == "directory")
+    except OSError:
+        pytest.skip("symlink privilege unavailable")
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    environment = {
+        "PATH": os.pathsep.join(map(str, (search_directory, fallback["cc"].parent))),
+        "PATHEXT": ".EXE",
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+
+    def candidates(family):
+        return llvm_wasi_tools.llvm_tool_candidates(
+            "cc", target_family=family, environment=environment
+        )
+
+    assert candidates("native") == (compiler,)
+    assert candidates("wasm") == (compiler,)
+    if mutation == "sdk-layout":
+        sysroot = original["cc"].parent.parent / "share" / "wasi-sysroot"
+        sysroot.mkdir(parents=True)
+    else:
+        alias.unlink()
+        alias.symlink_to(sdk_target, target_is_directory=alias_kind == "directory")
+    assert candidates("native") == (fallback["cc"],)
+    assert candidates("wasm") == (compiler,)
+    if mutation == "sdk-layout":
+        sysroot.rmdir()
+    else:
+        alias.unlink()
+        alias.symlink_to(original_target, target_is_directory=alias_kind == "directory")
+    assert candidates("native") == (compiler,)
+    assert candidates("wasm") == (compiler,)
 
 
 def test_candidate_resolution_memoizes_filesystem_candidate_probes(
@@ -473,7 +842,7 @@ def test_captured_search_environment_controls_execution_and_cache(
         llvm_wasi_tools.llvm_tool_candidate_cache_info()["hits"] == before["hits"] + 1
     )
     assert llvm_wasi_tools.llvm_linker_candidates(
-        "wasm-ld", environment=environment
+        "wasm-ld", target_family="wasm", environment=environment
     ) == (captured_paths["wasm_ld"].absolute(),)
 
 
@@ -551,6 +920,7 @@ def test_llvm_family_materializes_selected_user_command(tmp_path, monkeypatch):
         llvm_wasi_tools, "_tool_version", lambda _path, *, environment: "fixture"
     )
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
+        target_family="native",
         explicit_commands={"cc": (f"~/bin/{paths['cc'].name}", "-DSELECTED=1")},
         environment=environment,
     )
@@ -711,10 +1081,12 @@ def test_explicit_wasm_compiler_preserves_validated_sysroot_custody(
 
     def family(
         *,
+        target_family: llvm_wasi_tools.LlvmTargetFamily,
         explicit_commands: dict[llvm_wasi_tools.LlvmToolRole, tuple[str, ...]],
         environment: object,
     ) -> llvm_wasi_tools.LlvmWasiToolFamily:
         del environment
+        assert target_family == "wasm"
         return llvm_wasi_tools.LlvmWasiToolFamily(
             cc=tool("cc", explicit_commands["cc"]),
             cxx=tool("cxx", ("/tools/clang++",)),

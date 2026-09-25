@@ -18,6 +18,11 @@
 - Every companion executable must report the exact patch release owned by
   `config/llvm_toolchain_releases.toml`; matching only the major/minor is not
   sufficient for an accepted SDK.
+- WebAssembly tools come from the host wasi-sdk asset owned by the same
+  manifest. One provisioned SDK owns `wasm-ld`, `llvm-nm`, `VERSION`, and
+  `share/wasi-sysroot` at the SDK's LLVM producer release, which is pinned
+  independently of the backend release above. A separately discovered linker
+  or package-manager sysroot is not an equivalent release toolchain.
 - Rust (for runtime components + WASM + package implementations)
 - Python 3.12+ for tooling and tests (Molt targets 3.12+ semantics only; do not support <=3.11).
 - Cargo-hosted DX helpers: `wasm-tools`, `wasm-pack`, and `cargo-edit`
@@ -26,25 +31,53 @@
 ## macOS
 - Install Xcode CLT: `xcode-select --install`
 - Homebrew recommended: `brew install llvm mlir cmake ninja pkg-config`
-- WASM sysroot (for `wasm32-wasip1` builds): `brew install wasi-libc`
+- Provision the manifest-owned wasi-sdk for `wasm32-wasip1` builds (see WASM
+  targets below); do not combine a Homebrew `wasi-libc` sysroot with an
+  independently installed linker.
 
 ## Linux (Ubuntu/Debian)
 - `sudo apt-get install -y cmake ninja-build pkg-config llvm clang lld mlir`
+- WASM tools come from the same manifest-owned wasi-sdk provisioner as on
+  macOS and Windows, not from distribution packages.
 
 Hosted CI does not maintain a parallel package script. The local
 `.github/actions/setup-llvm` action has two projections of the same
-`molt.llvm_toolchain` authority: `profile=full` verifies the complete
-LLVM/MLIR/LLD/Polly SDK, while `profile=wasm,wasi=true` installs only the
-manifest release's WebAssembly linker and the pinned WASI sysroot needed by
-Rust workspace truth. `config/llvm_toolchain_releases.toml` owns the wasi-sdk
-release, LLVM compatibility line, URL, byte size, SHA-256, provenance URL, and
-archive root. The action checks the archive size and digest before extraction,
-then verifies headers, libc, VERSION, and the exact `wasm-ld` and `llvm-nm`
-identities before projecting `MOLT_WASM_LD`, `MOLT_LLVM_NM`,
-`MOLT_WASI_SYSROOT`, and `WASI_SYSROOT` to every consumer in the job. WASM
-archive inspection consumes only that verified `llvm-nm`; its exact
-version/content receipt is part of persistent symbol-cache identity, with no
-Rust-toolchain or ambient native `nm` fallback.
+`molt.llvm_toolchain` authority. `profile=full` installs (Linux only, through
+the commit-pinned Debian installer) and verifies the complete
+LLVM/MLIR/LLD/Polly SDK. `wasi=true` provisions the exact host wasi-sdk through
+`tools/provision_wasi_sdk.py` on every release host: Linux, macOS, and Windows
+on x86-64 and arm64. `profile=wasm` is that SDK alone and requires `wasi=true`.
+`config/llvm_toolchain_releases.toml` owns wasi-sdk 33.0, its LLVM 22.1.0
+producer identity, the provenance release, and each host asset's URL, byte
+size, SHA-256, and archive root; every asset URL must belong to the provenance
+release, and the asset set must equal the shipped release matrix.
+
+The provisioner selects only the current host coordinate and reuses a cached
+archive only when its size and digest match. Before bounded extraction it
+rejects non-portable paths, portable-name collisions, root escapes, links
+outside the archive root, and special nodes. It then publishes one
+identity-addressed installation,
+`<toolchain root>/toolchains/<archive root>-<asset record digest>`, atomically
+and only after the C/C++ compilers, archive tools, linker, `llvm-nm`, VERSION,
+headers, and libc are present.
+The receipt binds the exact host asset record to a digest over every SDK path,
+file byte, and link target. An existing installation is reused only while that
+digest still matches; it is never repaired or replaced in place. CI caches only
+the digest-keyed archive.
+
+`--verify-wasm` recomputes the tree identity, proves the exact SDK `wasm-ld`
+and `llvm-nm` releases, and projects `MOLT_WASM_LD`, `MOLT_LLVM_NM`,
+`MOLT_WASI_SYSROOT`, `WASI_SYSROOT`, and `WASI_SDK_PATH` to every consumer in
+the job. Target-qualified Cargo C/C++ compiler and archive selectors use that
+same SDK in place, preserving adjacent resources and libraries. Target C/C++
+flags disable implicit `clang.cfg` configuration; the admitted target and sysroot
+remain authoritative. Native PATH, compiler selectors, and flags are unchanged.
+WASM archive inspection consumes
+only the verified SDK `llvm-nm`, from `MOLT_LLVM_NM` or else the
+custody-provisioned SDK; its exact version/content receipt is part of
+persistent symbol-cache identity, with no Rust-toolchain or ambient native `nm`
+fallback. Build and readiness paths discover a provisioned SDK but never
+install one.
 
 `MOLT_LLVM_NM` selects one executable, not a shell command. A selected path or
 PATH-resolved name must pass lexical and resolved-content custody before probing;
@@ -57,6 +90,8 @@ Rust via rustup:
 ## Windows
 - Install Visual Studio Build Tools (MSVC) or full Visual Studio.
 - Install LLVM/Clang: `winget install LLVM.LLVM`
+- Provision the manifest-owned Windows wasi-sdk asset for WASM builds; its
+  verified SDK root holds `wasm-ld.exe`, `llvm-nm.exe`, and the sysroot.
 - The LLVM backend specifically needs `llvm-config.exe`; some Windows LLVM
   installers include `clang`/`wasm-ld` but omit `llvm-config`. Those installs
   are useful for native/WASM linking but are not a complete Rust LLVM backend
@@ -136,9 +171,9 @@ runtime libraries it needs, with platform/architecture gating at package build
 time. Binary-only end users must not need Cargo, CMake, Ninja, TableGen, or an
 LLVM SDK. A source checkout builds the standalone backend once on first MLIR
 use through the same manifest-pinned toolchain authority.
-The WASI sysroot and `wasm-ld` follow the same boundary: developers and source
-builders need them when producing WASM artifacts; end users running shipped
-native or WASM binaries do not.
+The manifest-owned wasi-sdk follows the same boundary: developers and source
+builders need its verified tools and sysroot when producing WASM artifacts;
+end users running shipped native or WASM binaries do not.
 
 ## MLIR diagnostics
 
@@ -168,8 +203,15 @@ WASM targets:
   command yourself to authorize the installation. C/C++ source extensions
   require only the inputs declared by their target plan, not an unrelated Rust
   standard library.
-- Ensure a WASI sysroot is available for `wasm32-wasip1` builds. Set `WASI_SYSROOT` or
-  `WASI_SDK_PATH` if auto-detection is unavailable on your system.
+- Provision the host wasi-sdk explicitly with
+  `uv run --python 3.12 python tools/provision_wasi_sdk.py`. It installs under
+  this checkout's toolchain custody root (or `--toolchain-root`) and prints the
+  install prefix. `uv run --python 3.12 python -m molt.llvm_toolchain
+  --verify-wasm --wasi-sdk <install> --format json` verifies it and reports the
+  `wasi_sysroot`, `wasm_ld`, and `llvm_nm` paths to export as
+  `MOLT_WASI_SYSROOT`, `MOLT_WASM_LD`, and `MOLT_LLVM_NM` (or set
+  `WASI_SDK_PATH=<install>/sdk`). WASM symbol inspection finds the
+  custody-provisioned SDK without an export.
 
 ## Cargo workspace truth custody
 

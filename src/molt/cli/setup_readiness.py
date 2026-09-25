@@ -587,7 +587,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             ),
         )
 
-    wasm_ld_candidates = llvm_linker_candidates("wasm-ld")
+    wasm_ld_candidates = llvm_linker_candidates("wasm-ld", target_family="wasm")
     wasm_ld_path = str(wasm_ld_candidates[0]) if wasm_ld_candidates else None
     record(
         "wasm-ld",

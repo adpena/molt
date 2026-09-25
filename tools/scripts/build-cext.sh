@@ -24,6 +24,7 @@ OUTPUT_DIR="${2:-$(pwd)}"
 CARGO_TARGET="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 PROFILE="${BUILD_PROFILE:-release}"
 ABI_INCLUDE="$REPO_ROOT/runtime/molt-cpython-abi/include"
+SHARED_ABI_INCLUDE="$REPO_ROOT/include/molt/shared"
 LIB_DIR="$CARGO_TARGET/$PROFILE"
 
 if [[ -z "$SOURCE" ]]; then
@@ -102,6 +103,7 @@ echo "  Output:  $OUTPUT"
 "$CC" $CFLAGS $SIMD_FLAGS \
     -shared \
     -I"$ABI_INCLUDE" \
+    -I"$SHARED_ABI_INCLUDE" \
     "$SOURCE" \
     -L"$LIB_DIR" \
     -lmolt_cpython_abi \

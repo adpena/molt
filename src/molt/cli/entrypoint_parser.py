@@ -1075,7 +1075,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="Build and run a Python program",
         description=(
             "Compile a Python file with Molt and execute it.\n"
-            "Supports native, WASM (via wasmtime), and Luau (via lune) targets."
+            "Supports native, linked WASM (via Node), and Luau (via lune) targets."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(

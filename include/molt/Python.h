@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include <molt/molt.h>
+#include "shared/_c_data_model.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -130,8 +131,8 @@ typedef struct {
     double real;
     double imag;
 } Py_complex;
-#include "_numeric_scalar_abi.h"
-#include "_gil_state_abi.h"
+#include "shared/_numeric_scalar_abi.h"
+#include "shared/_gil_state_abi.h"
 
 /* Source transport treats type objects as opaque identities. Numeric scalar
  * type identities are the canonical linked ABI symbols declared below. */
@@ -639,7 +640,7 @@ static int Py_OptimizeFlag = 0;
 #endif
 #endif
 
-#if UINTPTR_MAX > UINT32_MAX
+#if SIZEOF_VOID_P > 4
 #define _Py_IMMORTAL_REFCNT ((Py_ssize_t)UINT32_MAX)
 #else
 #define _Py_IMMORTAL_REFCNT ((Py_ssize_t)(UINT32_MAX >> 2))
@@ -13260,26 +13261,6 @@ static inline PyObject *PyObject_SelfIter(PyObject *obj) {
 }
 
 /* ---- Missing utility macros for C extension compatibility ---- */
-
-#ifndef SIZEOF_VOID_P
-#define SIZEOF_VOID_P sizeof(void *)
-#endif
-
-#ifndef SIZEOF_INT
-#define SIZEOF_INT sizeof(int)
-#endif
-
-#ifndef SIZEOF_LONG
-#define SIZEOF_LONG sizeof(long)
-#endif
-
-#ifndef SIZEOF_LONG_LONG
-#define SIZEOF_LONG_LONG sizeof(long long)
-#endif
-
-#ifndef SIZEOF_SIZE_T
-#define SIZEOF_SIZE_T sizeof(size_t)
-#endif
 
 #ifndef PyObject_INIT
 #define PyObject_INIT(op, typeobj) PyObject_Init((PyObject *)(op), (typeobj))

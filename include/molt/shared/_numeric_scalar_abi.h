@@ -1,4 +1,5 @@
-/* Canonical CPython-layout numeric scalar headers for every Molt C surface. */
+/* Canonical CPython-layout numeric scalar headers for every Molt C surface.
+ * Install this shared directory with either Python.h tier. */
 #ifndef MOLT_NUMERIC_SCALAR_ABI_H
 #define MOLT_NUMERIC_SCALAR_ABI_H
 

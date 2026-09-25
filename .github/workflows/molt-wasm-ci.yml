@@ -74,7 +74,7 @@ jobs:
       - name: Setup canonical native and WASM linker SDK
         uses: ./.github/actions/setup-llvm
         with:
-          profile: wasm
+          profile: full
           wasi: "true"
 
       - name: Resolve build-control evidence custody
