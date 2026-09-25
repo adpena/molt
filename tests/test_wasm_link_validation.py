@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from molt import wasm_artifact
 from molt.cli.app_export_contract import app_export_call_abi, build_app_export_contract
+from molt.cli.python_source_closure import LocalPythonSourceClosure
 from molt.frontend import SimpleTIRGenerator
 from molt.toolchain_identity import stable_regular_file_identity
 from molt.wasm_artifact import parse_wasm_exports, parse_wasm_imports
@@ -3530,12 +3531,18 @@ def test_wasm_link_cache_root_is_canonical_molt_cache(
 def test_transform_authority_digest_invalidates_both_cache_keys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    authority_files = tuple(tmp_path / name for name in ("link", "post", "binaryen"))
-    for index, path in enumerate(authority_files):
-        path.write_text(f"authority-{index}", encoding="utf-8")
-    first_digest = wasm_link._transform_authority_digest(authority_files)
-    authority_files[-1].write_text("changed-binaryen-authority", encoding="utf-8")
-    assert wasm_link._transform_authority_digest(authority_files) != first_digest
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    entry = tools / "entry.py"
+    dependency = tools / "dependency.py"
+    entry.write_text("import dependency\n", encoding="utf-8")
+    dependency.write_text("VERSION = 1\n", encoding="utf-8")
+    first = wasm_link.local_python_import_closure(tmp_path, (entry,))
+    assert dependency in first.paths
+    dependency.write_text("VERSION = 2\n", encoding="utf-8")
+    second = wasm_link.local_python_import_closure(tmp_path, (entry,))
+    assert first.paths == second.paths
+    assert first.content_digest != second.content_digest
 
     def keys(authority: str) -> tuple[str, str]:
         monkeypatch.setattr(
@@ -3556,7 +3563,7 @@ def test_transform_authority_digest_invalidates_both_cache_keys(
         )
         return split, tree
 
-    assert keys("authority-a") != keys("authority-b")
+    assert keys(first.content_digest) != keys(second.content_digest)
 
 
 def test_wasm_link_cache_authority_uses_entry_module_import_closure(
@@ -3565,23 +3572,67 @@ def test_wasm_link_cache_authority_uses_entry_module_import_closure(
     repo_root = wasm_link.TOOLS_ROOT.parent
     entry = Path(wasm_link.__file__).resolve()
     optimizer_policy = Path(wasm_link._optimizer_policy.__file__).resolve()
-    real_paths = {
-        path.resolve() for path in wasm_link._wasm_link_transform_authority_paths()
-    }
-    assert optimizer_policy in real_paths
-
-    expected = (entry, optimizer_policy)
+    # Real repository reachability belongs to the slow closure integration test.
+    expected = LocalPythonSourceClosure(
+        paths=(entry, optimizer_policy),
+        source_sha256={},
+        content_digest="captured-tooling-digest",
+        source_bytes=0,
+    )
     calls: list[tuple[Path, tuple[Path, ...]]] = []
 
-    def closure(root: Path, seeds: tuple[Path, ...]) -> tuple[Path, ...]:
+    def closure(root: Path, seeds: tuple[Path, ...]):
         calls.append((root, seeds))
         return expected
 
-    monkeypatch.setattr(wasm_link, "local_python_import_closure", closure)
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError(
+            "linker must use captured closure identity without rereads"
+        )
 
-    assert wasm_link._wasm_link_transform_authority_paths() == expected
+    monkeypatch.setattr(wasm_link, "local_python_import_closure", closure)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", forbidden)
+        digest = wasm_link._wasm_link_transform_authority_digest()
+    assert digest == expected.content_digest
     assert calls == [(repo_root, (entry,))]
     assert optimizer_policy.name == "wasm_link_optimizer_policy.py"
+
+
+def test_transform_authority_digest_reuses_only_the_current_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    entry = tools / "entry.py"
+    dependency = tools / "dependency.py"
+    entry.write_text("import dependency\n", encoding="utf-8")
+    dependency.write_text("VERSION = 1\n", encoding="utf-8")
+    real_closure = wasm_link.local_python_import_closure
+    receipts = []
+
+    def closure(root: Path, seeds: tuple[Path, ...]):
+        assert root == wasm_link.TOOLS_ROOT.parent
+        assert seeds == (Path(wasm_link.__file__),)
+        receipt = real_closure(tmp_path, (entry,))
+        receipts.append(receipt)
+        return receipt
+
+    monkeypatch.setattr(wasm_link, "local_python_import_closure", closure)
+    with wasm_link.local_python_import_graph_transaction():
+        first = wasm_link._wasm_link_transform_authority_digest()
+        dependency.write_text("VERSION = 2\n", encoding="utf-8")
+        assert wasm_link._wasm_link_transform_authority_digest() == first
+        assert len(receipts) == 2
+        assert receipts[0] is receipts[1]
+
+    with wasm_link.local_python_import_graph_transaction():
+        second = wasm_link._wasm_link_transform_authority_digest()
+        assert second != first
+        assert wasm_link._wasm_link_transform_authority_digest() == second
+        assert len(receipts) == 4
+        assert receipts[2] is receipts[3]
+        assert receipts[2] is not receipts[0]
 
 
 def test_wasm_facts_and_scanner_identity_invalidate_both_cache_keys(

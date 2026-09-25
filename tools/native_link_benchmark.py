@@ -124,7 +124,7 @@ def measurement_authority_fingerprint() -> str:
 
 def implementation_source_facts() -> dict[str, object]:
     """Project the import closure of actual measured production entrypoints."""
-    sources = local_python_import_closure(
+    closure = local_python_import_closure(
         ROOT,
         tuple(
             Path(inspect.getfile(function))
@@ -139,9 +139,9 @@ def implementation_source_facts() -> dict[str, object]:
     files = [
         {
             "name": path.relative_to(ROOT).as_posix(),
-            "sha256": _sha256_file(path),
+            "sha256": closure.source_sha256[path],
         }
-        for path in sources
+        for path in closure.paths
     ]
     return {"files": files, "fingerprint": _stable_hash(files)}
 

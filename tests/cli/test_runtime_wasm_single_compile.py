@@ -26,6 +26,7 @@ from typing import cast
 
 import pytest
 from molt.capability_manifest import CapabilityManifest
+from molt.cli.python_source_closure import LocalPythonSourceClosure
 
 from molt.cli import artifact_state as runtime_artifact_state
 from molt.cli.backend_cache_setup import _build_cache_variant
@@ -1511,7 +1512,16 @@ def _prepare_host_precompile_routing(
 
     monkeypatch.setattr(nno, "_collect_wasm_module_import_names", imports)
     monkeypatch.setattr(nno, "_validate_wasm_structural", lambda _path: None)
-    monkeypatch.setattr(nno, "local_python_import_closure", lambda *_args: ())
+    monkeypatch.setattr(
+        nno,
+        "local_python_import_closure",
+        lambda *_args: LocalPythonSourceClosure(
+            paths=(),
+            source_sha256={},
+            content_digest=hashlib.sha256(b"").hexdigest(),
+            source_bytes=0,
+        ),
+    )
     monkeypatch.setattr(nno, "_read_runtime_fingerprint", lambda _path: fingerprint)
     monkeypatch.setattr(
         nno._link_pipeline,

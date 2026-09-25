@@ -5,11 +5,12 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict
-from pathlib import Path
+from dataclasses import asdict, dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import MappingProxyType
 import tomllib
 from typing import Literal, cast
 
@@ -38,9 +39,28 @@ _DYNAMIC_IMPORT_MANIFEST = Path("src/molt/cli/python_source_closure.toml")
 _GRAPH_CACHE_SCHEMA_VERSION = 5
 _GRAPH_CACHE_RELPATH = Path(".molt_cache/python_source_closure_graph.json")
 _GraphQuery = tuple[Path, tuple[Path, ...], tuple[Path, ...], PythonImportPolicy]
-_GRAPH_TRANSACTION: ContextVar[dict[_GraphQuery, tuple[Path, ...]] | None] = ContextVar(
-    "_GRAPH_TRANSACTION", default=None
+_GRAPH_TRANSACTION: ContextVar[dict[_GraphQuery, LocalPythonSourceClosure] | None] = (
+    ContextVar("_GRAPH_TRANSACTION", default=None)
 )
+
+
+@dataclass(frozen=True, slots=True)
+class LocalPythonSourceClosure:
+    """Canonical inputs and identities of the exact bytes used for discovery.
+
+    A receipt retains neither source bytes nor ASTs. Consumers reuse its hashes,
+    not a second read of paths that may already name a different generation.
+    """
+
+    paths: tuple[Path, ...]
+    source_sha256: Mapping[Path, str]
+    content_digest: str
+    source_bytes: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "source_sha256", MappingProxyType(dict(self.source_sha256))
+        )
 
 
 @contextmanager
@@ -56,35 +76,46 @@ def local_python_import_graph_transaction() -> Iterator[None]:
         _GRAPH_TRANSACTION.reset(previous_context)
 
 
-def _read_graph_cache(project_root: Path) -> dict[str, dict[str, object]]:
+def _read_graph_cache(
+    project_root: Path,
+) -> tuple[dict[str, dict[str, object]], bool]:
     cache_path = project_root / _GRAPH_CACHE_RELPATH
     try:
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
+        return {}, True
     if not isinstance(payload, dict):
-        return {}
+        return {}, True
     if payload.get("schema_version") != _GRAPH_CACHE_SCHEMA_VERSION:
-        return {}
+        return {}, True
     entries = payload.get("entries")
     if not isinstance(entries, dict):
-        return {}
+        return {}, True
     retained: dict[str, dict[str, object]] = {}
     for key, value in entries.items():
         if not isinstance(key, str) or not isinstance(value, dict):
             continue
+        # Persisted keys never grant source authority: only fresh canonical
+        # discovery can look one up. Validate spelling without resolving every
+        # sibling policy's paths, then prune vanished sources with one stat.
+        relative = PurePosixPath(key)
+        if (
+            not key
+            or relative.is_absolute()
+            or PureWindowsPath(key).drive
+            or "\\" in key
+            or ".." in relative.parts
+            or relative.as_posix() != key
+        ):
+            continue
         try:
-            source = project_root / key
-            if (
-                Path(key).is_absolute()
-                or source.resolve().relative_to(project_root).as_posix() != key
-                or not source.is_file()
-            ):
+            if not (project_root / key).is_file():
                 continue
-        except (OSError, ValueError):
+        except OSError:
+            # Cache hints are disposable; discovery owns errors for reached sources.
             continue
         retained[key] = value
-    return retained
+    return retained, retained != entries
 
 
 def _write_graph_cache(
@@ -107,7 +138,7 @@ def _write_graph_cache(
 
 def _relative_cache_key(project_root: Path, source: Path) -> str:
     try:
-        return source.resolve().relative_to(project_root).as_posix()
+        return source.relative_to(project_root).as_posix()
     except ValueError as exc:
         raise ValueError(
             f"Python tooling source is outside project root: {source}"
@@ -138,7 +169,10 @@ def _dynamic_contract_digest(expected: int | None, targets: tuple[str, ...]) -> 
 
 def _analysis_payload(analysis: LocalPythonImportAnalysis) -> dict[str, object]:
     return {
-        "requests": [asdict(request) for request in analysis.requests],
+        "requests": [
+            {**asdict(request), "candidates": list(request.candidates)}
+            for request in analysis.requests
+        ],
         "unresolved_dynamic_imports": [
             asdict(diagnostic) for diagnostic in analysis.unresolved_dynamic_imports
         ],
@@ -274,13 +308,16 @@ def _read_dynamic_import_manifest(
     project_root: Path,
     resolver: LocalPythonModuleResolver,
     capture: Callable[[Path], PythonSourceSnapshot],
-) -> tuple[Path | None, dict[Path, tuple[int, tuple[str, ...]]]]:
+) -> tuple[tuple[Path, bytes] | None, dict[Path, tuple[int, tuple[str, ...]]]]:
     manifest = project_root / _DYNAMIC_IMPORT_MANIFEST
     if not manifest.is_file():
         return None, {}
+    manifest = manifest.resolve()
+    _relative_cache_key(project_root, manifest)
     try:
-        payload = tomllib.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        content = manifest.read_bytes()
+        payload = tomllib.loads(content.decode("utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(
             f"cannot read Python tooling import manifest {manifest}: {exc}"
         ) from exc
@@ -332,7 +369,7 @@ def _read_dynamic_import_manifest(
         if derive_molt_cli_lazy_targets:
             targets.update(_molt_cli_lazy_targets(capture(source)))
         overrides[source] = (expected, tuple(sorted(targets)))
-    return manifest.resolve(), overrides
+    return (manifest, content), overrides
 
 
 def local_python_import_closure(
@@ -341,7 +378,7 @@ def local_python_import_closure(
     *,
     policy: PythonImportPolicy = _EXECUTABLE_TOOL_IMPORT_POLICY,
     search_roots: tuple[Path, ...] | None = None,
-) -> tuple[Path, ...]:
+) -> LocalPythonSourceClosure:
     """Return the policy projection of one source-byte-keyed dependency graph.
 
     Seeds may name files or whole Python source directories. Executable tools
@@ -384,7 +421,7 @@ def local_python_import_closure(
         if not policy.module_level_only
         else (None, {})
     )
-    cached_entries = _read_graph_cache(root)
+    cached_entries, cache_pruned = _read_graph_cache(root)
     analysis_digest = hashlib.sha256(
         json.dumps(local_import_analysis_identity(), sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -395,7 +432,8 @@ def local_python_import_closure(
     pending: list[LocalPythonModuleSource] = []
     for seed in seed_paths:
         for path in seed.rglob("*.py") if seed.is_dir() else (seed,):
-            path = path.resolve()
+            if path != seed:
+                path = path.resolve()
             pending.append(
                 LocalPythonModuleSource(resolver.module_identity(path)[0], path)
             )
@@ -463,10 +501,28 @@ def local_python_import_closure(
         for dependency in dependencies:
             if dependency not in visited:
                 pending.append(dependency)
+    if cache_pruned or next_entries != cached_entries:
+        _write_graph_cache(root, next_entries)
+    content_by_path = {path: snapshots[path].content for path in reached}
     if manifest is not None:
-        reached.add(manifest)
-    _write_graph_cache(root, next_entries)
-    result = tuple(sorted(reached, key=lambda path: path.as_posix()))
+        content_by_path[manifest[0]] = manifest[1]
+    paths = tuple(sorted(content_by_path, key=lambda path: path.as_posix()))
+    digest = hashlib.sha256()
+    hashes: dict[Path, str] = {}
+    source_bytes = 0
+    for path in paths:
+        content = content_by_path[path]
+        digest.update(_relative_cache_key(root, path).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content)
+        digest.update(b"\0")
+        hashes[path] = (
+            snapshots[path].sha256
+            if path in snapshots
+            else hashlib.sha256(content).hexdigest()
+        )
+        source_bytes += len(content)
+    result = LocalPythonSourceClosure(paths, hashes, digest.hexdigest(), source_bytes)
     if transaction is not None:
         transaction[query] = result
     return result

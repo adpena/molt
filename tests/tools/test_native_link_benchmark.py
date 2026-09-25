@@ -12,6 +12,7 @@ import pytest
 
 from molt.cli import llvm_wasi_tools
 from molt.cli import native_link_tool_identity
+from molt.cli.python_source_closure import local_python_import_closure
 from molt.cli.native_link_plan import (
     NativeLinkCapabilities,
     NativeLinkerKind,
@@ -329,6 +330,7 @@ def test_measurement_authority_is_content_addressed(monkeypatch) -> None:
     assert benchmark.measurement_authority_fingerprint() != first
 
 
+@pytest.mark.slow
 def test_implementation_identity_includes_canonical_tool_candidate_resolver() -> None:
     facts = benchmark.implementation_source_facts()
     names = {str(item["name"]) for item in facts["files"]}
@@ -347,16 +349,33 @@ def test_implementation_identity_follows_generated_dependency_closure(
     tmp_path: Path, monkeypatch
 ) -> None:
     dependency = tmp_path / "dependency.py"
-    dependency.write_text("VERSION = 1\n", encoding="utf-8")
+    dependency.write_bytes(b"VERSION = 1\n")
     monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+
+    def captured_closure(root: Path, _seeds):
+        closure = local_python_import_closure(root, (dependency,))
+        dependency.write_text("AFTER_CAPTURE = True\n", encoding="utf-8")
+        return closure
+
     monkeypatch.setattr(
-        benchmark, "local_python_import_closure", lambda root, seeds: (dependency,)
+        benchmark,
+        "local_python_import_closure",
+        captured_closure,
     )
+
+    def forbidden(_path: Path) -> str:
+        raise AssertionError(
+            "implementation identity must reuse captured source hashes"
+        )
+
+    monkeypatch.setattr(benchmark, "_sha256_file", forbidden)
     first = benchmark.implementation_source_facts()
-    dependency.write_text("VERSION = 2\n", encoding="utf-8")
+    dependency.write_bytes(b"VERSION = 2\n")
     second = benchmark.implementation_source_facts()
     assert first["fingerprint"] != second["fingerprint"]
     assert second["files"][0]["name"] == "dependency.py"
+    assert first["files"][0]["sha256"] == hashlib.sha256(b"VERSION = 1\n").hexdigest()
+    assert second["files"][0]["sha256"] == hashlib.sha256(b"VERSION = 2\n").hexdigest()
 
 
 def test_comparison_is_attestable_only_for_stable_five_run_warm_samples() -> None:
