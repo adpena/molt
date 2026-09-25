@@ -30,6 +30,9 @@ this page explains them and never restates their content.
   consumer may parse: release supply chain, candidate, and manifest documents,
   the release-exit bundle, the Pact acceptance receipt, and the phase-exit,
   legacy-inventory, and public-contract documents themselves.
+  The gate reads identifiers from their executable producers and compares them
+  with the reviewed declaration. A snapshot update cannot bless a stale or
+  undeclared schema; producer, declaration and generated surface must agree.
 
 ## Tiers
 
@@ -41,6 +44,19 @@ this page explains them and never restates their content.
 
 ## Versioning and release gating
 
+- Every advertised command and nested action requires end-to-end evidence on
+  its applicable OS/architecture/CPython cells, with native/WASM coverage where
+  relevant. Parser snapshots, mocks, unit tests and successful `--help` calls
+  cannot substitute for executing the real consumer. Success, invalid inputs,
+  unsupported gates, failure/exit status, cancellation and authorization paths
+  are part of the command contract. Destructive or publishing commands use
+  isolated test destinations, never real user installations or public registries.
+  Ordinary invocations may inspect readiness but may not implicitly install
+  tooling, edit PATH or remove competing installations; setup must explain its
+  changes and require explicit authorization. These are release acceptance
+  obligations: the current surface gate and native smoke consumer do not yet
+  establish this complete command matrix. Use the existing release/phase
+  authorities for closure, not a parallel checklist.
 - Releases follow semver. `molt --version` and the wheel version are the
   `pyproject.toml` project version resolved through `molt._version`.
 - A `v1.x.y` tag is a stable release. Source admission checks the E1-E4 bundle;

@@ -1593,8 +1593,11 @@ def test_cli_debug_eval_command_uses_guarded_timeout(
     ]
 
 
-def test_install_wrappers_delegate_into_setup() -> None:
+def test_install_wrappers_require_explicit_dependency_setup() -> None:
     shell_text = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
     powershell_text = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
-    assert '"$molt_bin" setup --strict' in shell_text
-    assert "& $moltcommand setup --strict" in powershell_text.lower()
+    assert '"$molt_bin" setup --strict' not in shell_text
+    assert "& $moltcommand setup --strict" not in powershell_text.lower()
+    for text in (shell_text, powershell_text):
+        assert "setup --install-cli-dependencies" in text
+        assert "No CLI dependencies or toolchains were installed" in text

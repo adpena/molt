@@ -7,7 +7,8 @@ passed release acceptance. For a source-checkout install, use
 
 ## Layout
 
-- `install.sh` / `install.ps1`: end-user installers (download + PATH setup).
+- `install.sh` / `install.ps1`: end-user bundle installers; PATH changes are opt-in,
+  and CLI dependency setup requires a separate explicit command.
 - `INSTALL.md`: bundled in release artifacts as offline install notes.
 - `templates/`: boilerplate for Homebrew, Scoop, and Winget.
 - `../config/release_supply_chain.toml`: repository and pinned-download authority.

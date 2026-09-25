@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from molt.cli.compiler_metadata import _compiler_metadata, _rustc_version
+from molt.cli.compiler_metadata import _compiler_metadata
 from molt.cli.deps import _classify_tier, _dep_allowlists, _load_toml, _normalize_name
 from molt.file_hashing import _normalize_sha256
 
@@ -147,9 +147,6 @@ def _build_cyclonedx_sbom(
 ) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
     compiler_version, compiler_rev = _compiler_metadata()
-    rustc_version = _rustc_version()
-    if rustc_version:
-        rustc_version = rustc_version.splitlines()[0].strip() or rustc_version
     name = manifest.get("name", "molt_pkg")
     version = manifest.get("version", "0.0.0")
     target = manifest.get("target", "unknown")
@@ -186,8 +183,9 @@ def _build_cyclonedx_sbom(
         )
     if compiler_rev:
         meta_properties.append({"name": "molt.compiler.git_rev", "value": compiler_rev})
-    if rustc_version:
-        meta_properties.append({"name": "molt.rustc.version", "value": rustc_version})
+    # Packaging may occur on another machine, long after compilation. A local
+    # rustc probe is not artifact provenance; build toolchains belong to the
+    # source-bound build/release receipts, not ambient packaging observations.
     components, dependency_refs, dep_warnings = _sbom_dependencies(project_root)
     warnings.extend(dep_warnings)
     sbom: dict[str, Any] = {

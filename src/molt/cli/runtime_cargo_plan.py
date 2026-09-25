@@ -1365,9 +1365,14 @@ def _pin_cargo_command(
         for token in ("--config", raw)
     )
     separator = command.index("--") if "--" in command else len(command)
+    # The compiler's runtime dependency graph is immutable for every guest
+    # profile and determinism setting. Own this once for native and WASM,
+    # including manifest refreshes, before the rustc passthrough boundary.
+    locked = () if "--locked" in command[1:separator] else ("--locked",)
     return (
         os.fspath(tools["cargo"]),
         *command[1:separator],
+        *locked,
         *pinned,
         *command[separator:],
     )

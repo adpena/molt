@@ -1486,10 +1486,18 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
 
     setup_parser = subparsers.add_parser(
         "setup",
-        help="Prepare the host toolchain and canonical Molt environment",
+        help="Inspect toolchain readiness and plan explicit setup",
         description=(
-            "Report and remediate the toolchains, environment variables, and\n"
+            "Report the toolchains, environment variables, and\n"
             "backend readiness required for Molt development and release work."
+        ),
+    )
+    setup_parser.add_argument(
+        "--install-cli-dependencies",
+        action="store_true",
+        help=(
+            "Packaged launcher only: explicitly install the locked CLI dependencies "
+            "in its private environment; use alone after setup. No PATH or toolchain changes."
         ),
     )
     setup_parser.add_argument(

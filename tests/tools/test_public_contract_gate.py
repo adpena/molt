@@ -13,6 +13,18 @@ from tools import public_contract_gate as pcg
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(scope="module")
+def matrix_digest() -> str:
+    return pcg.pem.generated_matrix_digest()
+
+
+@pytest.fixture(autouse=True)
+def immutable_matrix_projection(monkeypatch: pytest.MonkeyPatch, matrix_digest: str):
+    # These cases change CLI/schema declarations, never the subset matrix. Reuse
+    # its real immutable projection instead of rebuilding it for every assertion.
+    monkeypatch.setattr(pcg.pem, "generated_matrix_digest", lambda: matrix_digest)
+
+
 def test_every_cli_command_carries_a_declared_tier() -> None:
     declaration = pcg.load_declaration()
     commands = pcg.cli_surface()
@@ -84,6 +96,42 @@ def test_undeclared_and_phantom_commands_are_problems() -> None:
     assert pcg.declaration_problems(declaration, commands) == [
         "declared command 'build' does not exist in the CLI"
     ]
+
+
+def test_producer_schema_drift_cannot_be_blessed_by_snapshot_update(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from molt import compiler_distribution
+
+    declaration = pcg.load_declaration()
+    previous = compiler_distribution.MANIFEST_SCHEMA
+    changed = "molt.release-compiler-source.unreviewed"
+    monkeypatch.setattr(compiler_distribution, "MANIFEST_SCHEMA", changed)
+    surface = pcg.live_surface(declaration)
+    assert changed in surface["public_schemas"]
+    assert previous not in surface["public_schemas"]
+    assert pcg.declaration_problems(declaration, surface["commands"]) == [
+        f"public schema {changed!r} has no reviewed declaration",
+        f"declared public schema {previous!r} has no matching producer",
+    ]
+    snapshot = tmp_path / "surface.json"
+    snapshot.write_bytes(b"unchanged snapshot")
+    monkeypatch.setattr(pcg, "SURFACE_PATH", snapshot)
+    assert pcg.main(["--update"]) == 1
+    assert snapshot.read_bytes() == b"unchanged snapshot"
+    assert "no reviewed declaration" in capsys.readouterr().out
+
+
+def test_duplicate_schema_declarations_are_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "public_contract.toml"
+    path.write_text(
+        pcg.DECLARATION_PATH.read_text(encoding="utf-8").replace(
+            "public_schemas = [", 'public_schemas = ["molt.public-contract.v1",'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="public_schemas must be unique"):
+        pcg.load_declaration(path)
 
 
 def test_declaration_rejects_untiered_or_malformed_rows(tmp_path: Path) -> None:

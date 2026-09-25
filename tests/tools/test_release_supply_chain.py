@@ -312,7 +312,6 @@ def _prepare_release_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_bundle_archives_are_byte_reproducible(
     tmp_path: Path, platform: str, release_source
 ) -> None:
-    wheel = _wheel(tmp_path / "molt-0.0.001-py3-none-any.whl")
     worker = tmp_path / ("molt-worker.exe" if platform == "windows" else "molt-worker")
     worker.write_bytes(b"worker-binary")
     suffix = "zip" if platform == "windows" else "tar.gz"
@@ -322,16 +321,21 @@ def test_bundle_archives_are_byte_reproducible(
         build_bundle.build_bundle(
             version="0.0.001",
             platform=platform,
-            wheel=wheel,
             worker=worker,
             kind="molt",
             output=output,
             source_date_epoch=1_700_000_000,
             arch="x86_64",
             compiler=worker,
+            launcher=worker,
             snapshot=release_source,
         )
     assert first.read_bytes() == second.read_bytes()
+    extracted = tmp_path / "extracted"
+    verify_consumer._extract(first, extracted)
+    bundle = extracted / "molt-0.0.001"
+    assert not (bundle / "lib/molt/bootstrap.py").exists()
+    assert not (bundle / "share/molt/wheels").exists()
 
 
 def test_consumer_extraction_rejects_archive_escape(tmp_path: Path) -> None:
@@ -416,6 +420,8 @@ def _assemble_transport_inputs(tmp_path: Path):
             secondary_worker=secondary,
             primary_compiler=primary,
             secondary_compiler=secondary,
+            primary_launcher=primary,
+            secondary_launcher=secondary,
             output=output,
         )
         release_model.write_json(
@@ -459,7 +465,7 @@ def _consumer_transport_receipt(candidate):
     windows = candidate["target"]["platform"] == "windows"
     root = "C:/consumer" if windows else "/consumer"
     bin_dir = f"{root}/bundle/molt-{candidate['version']}/bin"
-    launcher = [f"{bin_dir}/molt.cmd" if windows else f"{bin_dir}/molt"]
+    launcher = [f"{bin_dir}/molt.exe" if windows else f"{bin_dir}/molt"]
     policy_bytes = (ROOT / "config/verified_subset.toml").read_bytes()
     references = tomllib.loads(policy_bytes.decode("utf-8"))["reference_cpython"]
     python_proofs = []
@@ -494,24 +500,11 @@ def _consumer_transport_receipt(candidate):
                 f"{coordinate_root}/venv",
             ],
         )
+        command("cli_setup", [*launcher, "setup", "--install-cli-dependencies"])
         command("cli_help", [*launcher, "--help"])
-        if windows:
-            command(
-                "cli_help_powershell",
-                [
-                    "powershell.exe",
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    f"{bin_dir}/molt.ps1",
-                    "--help",
-                ],
-            )
         worker = "molt-worker.exe" if windows else "molt-worker"
-        command("worker_help", [f"{bin_dir}/{worker}", "--help"])
+        worker_bin = f"{root}/worker/molt-worker-{candidate['version']}/bin"
+        command("worker_help", [f"{worker_bin}/{worker}", "--help"])
         for profile in ("dev", "release"):
             output = f"{coordinate_root}/project/release_consumer_{profile}" + (
                 ".exe" if windows else ""
@@ -567,7 +560,7 @@ def _consumer_transport_receipt(candidate):
         )
     count = len(references) * 2
     return {
-        "schema": "molt.release-consumer-proof.v3",
+        "schema": release_authority.CONSUMER_SCHEMA,
         "candidate": "candidate.json",
         "candidate_sha256": canonical_json_sha256(candidate),
         "target": candidate["target"],
@@ -579,6 +572,7 @@ def _consumer_transport_receipt(candidate):
         "errors": 0,
         "uninstall_verified": True,
         "compiler": candidate["compiler"],
+        "launcher": candidate["launcher"],
         "guest_profiles": ["dev", "release"],
         "python_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
         "python_proofs": python_proofs,
@@ -734,9 +728,12 @@ def test_installers_verify_exact_release_digest_and_replace_atomically() -> None
     assert 'if [ "$checksum_count" -ne 1 ]' in shell
     assert "sha256sum" in shell and "shasum -a 256" in shell
     assert 'archive_root="molt-${VERSION}"' in shell
-    assert 'stage="${MOLT_HOME}.new.$$"' in shell
-    assert 'backup="${MOLT_HOME}.old.$$"' in shell
-    assert 'rm -rf -- "$MOLT_HOME"' not in shell
+    assert 'stage="${MOLT_PREFIX}.new.$$"' in shell
+    assert 'backup="${MOLT_PREFIX}.old.$$"' in shell
+    assert 'rm -rf -- "$MOLT_PREFIX"' not in shell
+    assert "MOLT_HOME" not in shell
+    assert "UPDATE_PATH=0" in shell and "--add-path)" in shell
+    assert "if ($AddPath)" in powershell
 
     assert "RuntimeInformation]::OSArchitecture" in powershell
     assert '"Arm64" { "arm64" }' in powershell
@@ -745,7 +742,7 @@ def test_installers_verify_exact_release_digest_and_replace_atomically() -> None
     assert "Get-FileHash -LiteralPath $zipPath -Algorithm SHA256" in powershell
     assert '$staged = "$Prefix.new-$PID"' in powershell
     assert '$backup = "$Prefix.old-$PID"' in powershell
-    assert 'Join-Path $binPath "molt.cmd"' in powershell
+    assert 'Join-Path $binPath "molt.exe"' in powershell
 
 
 def test_windows_package_projections_cover_x64_and_arm64() -> None:
@@ -763,6 +760,49 @@ def test_windows_package_projections_cover_x64_and_arm64() -> None:
         template = (ROOT / relative).read_text(encoding="utf-8")
         assert template.count("Architecture: x64") == 1
         assert template.count("Architecture: arm64") == 1
+
+
+def test_package_manager_installs_keep_release_source_immutable() -> None:
+    homebrew = (ROOT / "packaging/templates/homebrew/molt.rb").read_text(
+        encoding="utf-8"
+    )
+    scoop = json.loads(
+        (ROOT / "packaging/templates/scoop/molt.json").read_text(encoding="utf-8")
+    )
+    assert 'prefix.install "source"' in homebrew
+    assert 'source.install Dir["source/*"]' not in homebrew  # drops .cargo
+    assert 'depends_on "uv"' in homebrew
+    assert "skip_clean :all" in homebrew
+    assert (
+        'libexec.install_symlink Formula["python@3.12"].opt_bin/"python3.12" => "python"'
+        in homebrew
+    )
+    assert scoop["extract_dir"] == "molt-{{VERSION}}"
+    assert scoop["autoupdate"]["extract_dir"] == "molt-$version"
+    assert scoop["bin"] == [r"bin\molt.exe"]
+    assert "persist" not in scoop
+    worker = json.loads(
+        (ROOT / "packaging/templates/scoop/molt-worker.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert worker["extract_dir"] == "molt-worker-{{VERSION}}"
+    assert worker["autoupdate"]["extract_dir"] == "molt-worker-$version"
+    assert "persist" not in worker
+    molt_winget = (ROOT / "packaging/templates/winget/molt.installer.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "molt-worker" not in molt_winget
+    for kind, executable in (("molt", "molt.exe"), ("molt-worker", "molt-worker.exe")):
+        template = (
+            ROOT / f"packaging/templates/winget/{kind}.installer.yaml"
+        ).read_text(encoding="utf-8")
+        assert (
+            template.count(
+                f"RelativeFilePath: {kind}-{{{{VERSION}}}}\\bin\\{executable}"
+            )
+            == 2
+        )
 
 
 def test_release_workflow_uses_exact_input_cardinality_without_shell_listing() -> None:

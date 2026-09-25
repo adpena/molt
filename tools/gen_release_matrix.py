@@ -27,6 +27,7 @@ from molt.target_python import (  # noqa: E402
 
 
 SOURCE = ROOT / "config" / "release_targets.toml"
+SCHEMA = "molt.release-targets.v1"
 OUTPUT = ROOT / "src" / "molt" / "release_matrix.py"
 TARGET_KEYS = frozenset({"id", "runner", "platform", "arch", "rust_target", "archive"})
 PLATFORM_ARCHITECTURES = {
@@ -78,7 +79,7 @@ def load_release_target_authority(path: Path = SOURCE) -> dict[str, object]:
         document = tomllib.load(stream)
     if set(document) != {"schema", "target"}:
         raise ValueError("release target authority keys are not exact")
-    if document["schema"] != "molt.release-targets.v1":
+    if document["schema"] != SCHEMA:
         raise ValueError("release target authority schema is unsupported")
     raw_targets = document["target"]
     if not isinstance(raw_targets, list):

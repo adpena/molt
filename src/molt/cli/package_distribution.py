@@ -273,13 +273,16 @@ def package(
     if sbom:
         project_root = _find_project_root(manifest_file.resolve())
         sbom_path = _resolve_sidecar_path(output_path, sbom_output, ".sbom.json")
-        sbom_data, sbom_warnings = _build_sbom(
-            manifest=manifest,
-            artifact_path=artifact_path,
-            checksum=checksum,
-            project_root=project_root,
-            format_name=sbom_format,
-        )
+        try:
+            sbom_data, sbom_warnings = _build_sbom(
+                manifest=manifest,
+                artifact_path=artifact_path,
+                checksum=checksum,
+                project_root=project_root,
+                format_name=sbom_format,
+            )
+        except (OSError, ValueError) as exc:
+            return _fail(f"Cannot create SBOM: {exc}", json_output, command="package")
         warnings.extend(sbom_warnings)
         sbom_bytes = (
             json.dumps(sbom_data, sort_keys=True, indent=2).encode("utf-8") + b"\n"

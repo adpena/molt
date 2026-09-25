@@ -4,17 +4,17 @@ set -euo pipefail
 REPO_OWNER="adpena"
 REPO_NAME="molt"
 
-MOLT_HOME_DEFAULT="$HOME/.molt"
-MOLT_HOME="${MOLT_HOME:-$MOLT_HOME_DEFAULT}"
+MOLT_PREFIX_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}/molt"
+MOLT_PREFIX="${MOLT_PREFIX:-$MOLT_PREFIX_DEFAULT}"
 VERSION=""
-UPDATE_PATH=1
+UPDATE_PATH=0
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh [--version X.Y.ZZZ] [--prefix PATH] [--no-path]
+Usage: install.sh [--version X.Y.ZZZ] [--prefix PATH] [--add-path]
 
 Environment:
-  MOLT_HOME   Install root (default: ~/.molt)
+  MOLT_PREFIX   Install root (default: $XDG_DATA_HOME/molt or ~/.local/share/molt)
 USAGE
 }
 
@@ -24,12 +24,12 @@ while [ $# -gt 0 ]; do
       VERSION="$2"
       shift 2
       ;;
-    --prefix|--home)
-      MOLT_HOME="$2"
+    --prefix)
+      MOLT_PREFIX="$2"
       shift 2
       ;;
-    --no-path)
-      UPDATE_PATH=0
+    --add-path)
+      UPDATE_PATH=1
       shift 1
       ;;
     -h|--help)
@@ -93,8 +93,8 @@ asset="molt-${VERSION}-${platform}-${arch}.tar.gz"
 release_root="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/v${VERSION}"
 
 workdir=$(mktemp -d)
-stage="${MOLT_HOME}.new.$$"
-backup="${MOLT_HOME}.old.$$"
+stage="${MOLT_PREFIX}.new.$$"
+backup="${MOLT_PREFIX}.old.$$"
 cleanup() {
   rm -rf -- "$workdir" "$stage"
 }
@@ -150,23 +150,23 @@ if [ ! -d "$extracted_dir" ]; then
   exit 1
 fi
 
-prefix_parent=$(dirname "$MOLT_HOME")
+prefix_parent=$(dirname "$MOLT_PREFIX")
 mkdir -p "$prefix_parent"
 rm -rf -- "$stage" "$backup"
 mkdir "$stage"
 cp -R "$extracted_dir"/. "$stage"/
-if [ -e "$MOLT_HOME" ]; then
-  mv -- "$MOLT_HOME" "$backup"
+if [ -e "$MOLT_PREFIX" ]; then
+  mv -- "$MOLT_PREFIX" "$backup"
 fi
-if ! mv -- "$stage" "$MOLT_HOME"; then
+if ! mv -- "$stage" "$MOLT_PREFIX"; then
   if [ -e "$backup" ]; then
-    mv -- "$backup" "$MOLT_HOME"
+    mv -- "$backup" "$MOLT_PREFIX"
   fi
   exit 1
 fi
 rm -rf -- "$backup"
 
-bin_path="$MOLT_HOME/bin"
+bin_path="$MOLT_PREFIX/bin"
 if [ "$UPDATE_PATH" -eq 1 ]; then
   if ! echo ":$PATH:" | grep -q ":$bin_path:"; then
     shell_name=$(basename "${SHELL:-}" )
@@ -200,5 +200,7 @@ if [ ! -x "$molt_bin" ]; then
   exit 1
 fi
 
-echo "Molt installed to $MOLT_HOME"
-"$molt_bin" setup --strict
+echo "Molt installed to $MOLT_PREFIX"
+echo "No CLI dependencies or toolchains were installed. To authorize private CLI dependency setup:"
+printf '  %q setup --install-cli-dependencies\n' "$molt_bin"
+printf 'Then run: %q doctor --strict\n' "$molt_bin"

@@ -26,6 +26,7 @@ from molt.file_publication import (
     durable_publish_directory_exclusive,
     durable_publish_exclusive,
     is_link_like,
+    metadata_is_link_like,
     resolve_owned_path,
 )
 from molt.portable_paths import portable_path_identity, portable_relative_path
@@ -105,7 +106,7 @@ def _directory_identity(path: Path) -> tuple[int, int]:
     if resolve_owned_path(path) != path.absolute():
         raise ValueError(f"archive directory is indirect: {path}")
     metadata = path.lstat()
-    if not stat.S_ISDIR(metadata.st_mode) or is_link_like(path):
+    if not stat.S_ISDIR(metadata.st_mode) or metadata_is_link_like(metadata):
         raise ValueError(f"archive path is not a real directory: {path}")
     return metadata.st_dev, metadata.st_ino
 
@@ -147,9 +148,9 @@ def _inventory_regular_files(
                 # Directories also consume inventory memory, even when empty.
                 if len(identities) > policy.max_members:
                     raise ValueError("archive input exceeds member-count policy")
-                if is_link_like(path):
-                    raise ValueError(f"archive input contains a symbolic link: {path}")
                 metadata = path.lstat()
+                if metadata_is_link_like(metadata):
+                    raise ValueError(f"archive input contains a symbolic link: {path}")
                 if stat.S_ISDIR(metadata.st_mode):
                     pending.append(path)
                     continue
@@ -470,11 +471,14 @@ def extract_zip_strict(
                 ):
                     _check_directory(stage, stage_identity)
                     directory = relative if kind == "directory" else relative.parent
-                    current = stage
-                    for part in directory.parts:
-                        current /= part
-                        current.mkdir(exist_ok=True)
-                        _directory_identity(current)
+                    destination_directory = stage / directory
+                    # Resolve the whole lexical chain before mkdir can follow an
+                    # existing indirect parent, then validate it again before
+                    # writing. Resolving every prefix separately makes deep
+                    # source bundles quadratic in path depth.
+                    resolve_owned_path(destination_directory)
+                    destination_directory.mkdir(parents=True, exist_ok=True)
+                    _directory_identity(destination_directory)
                     expected_directories.add(directory)
                     expected_directories.update(directory.parents)
                     if kind == "directory":
@@ -491,7 +495,7 @@ def extract_zip_strict(
                         )
                         written = os.fstat(sink.fileno())
                     metadata = destination.lstat()
-                    if is_link_like(destination) or (
+                    if metadata_is_link_like(metadata) or (
                         metadata.st_dev,
                         metadata.st_ino,
                     ) != (written.st_dev, written.st_ino):

@@ -212,9 +212,11 @@ jobs:
             --root dist/wheel --pattern '*.whl')"
           worker="molt-worker"
           compiler="molt-backend"
+          launcher="molt"
           if [ "${{ matrix.platform }}" = "windows" ]; then
             worker="molt-worker.exe"
             compiler="molt-backend.exe"
+            launcher="molt.exe"
           fi
           uv run --no-sync python -m tools.release.release_authority candidate \
             --target "${{ matrix.id }}" \
@@ -226,6 +228,8 @@ jobs:
             --secondary-worker "dist/worker-secondary/release-output/$worker" \
             --primary-compiler "dist/compiler-primary/release/$compiler" \
             --secondary-compiler "dist/compiler-secondary/release/$compiler" \
+            --primary-launcher "dist/compiler-primary/release/$launcher" \
+            --secondary-launcher "dist/compiler-secondary/release/$launcher" \
             --output dist/candidate
 
       - name: Verify installed canonical Python and guest-profile closure

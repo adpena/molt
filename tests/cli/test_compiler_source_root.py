@@ -3,11 +3,15 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from molt import source_root
-from molt.cli import compiler_metadata, env_paths, project_roots
+from molt.cli import build_inputs, compiler_metadata, env_paths, project_roots
+from molt.cli import toolchain_validation
+from molt.cli.sbom import _build_sbom
+from tests.cli.test_installed_compiler import installation as installation
 
 
 def _source_tree(root: Path) -> Path:
@@ -44,6 +48,126 @@ def test_project_and_source_authorities_are_independent(tmp_path, monkeypatch):
     assert project_roots._find_molt_root(project) == source
     assert compiler_metadata._compiler_root() == source
     assert project_roots._require_molt_root(source, True, "build") is None
+
+
+def test_installed_metadata_never_borrows_a_containing_git_checkout(
+    installation, monkeypatch
+):
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(installation))
+    monkeypatch.setattr(
+        compiler_metadata,
+        "_run_completed_command",
+        lambda *a, **kw: pytest.fail("installed metadata queried ambient Git"),
+    )
+    assert compiler_metadata._compiler_metadata() == (None, "a" * 40)
+    assert compiler_metadata._git_clean_head(installation) is None
+    assert (
+        compiler_metadata._git_clean_pathspec_state(installation, ("Cargo.toml",))
+        is None
+    )
+
+
+def test_installed_sbom_uses_source_identity_without_ambient_toolchain_probe(
+    installation, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(installation))
+    monkeypatch.setattr(
+        compiler_metadata,
+        "_run_completed_command",
+        lambda *a, **kw: pytest.fail("packaging borrowed ambient Git or rustc"),
+    )
+    sbom, _ = _build_sbom(
+        manifest={"name": "guest", "version": "1.0.0", "target": "native"},
+        artifact_path=tmp_path / "guest",
+        checksum="b" * 64,
+        project_root=tmp_path,
+    )
+    properties = {row["name"]: row["value"] for row in sbom["metadata"]["properties"]}
+    assert properties["molt.compiler.git_rev"] == "a" * 40
+    assert "molt.rustc.version" not in properties
+
+
+def test_rustc_metadata_observes_compiler_not_guest_toolchain(tmp_path, monkeypatch):
+    compiler = tmp_path / "compiler"
+    guest = tmp_path / "guest"
+    for root, channel in ((compiler, "compiler-version"), (guest, "guest-version")):
+        root.mkdir()
+        (root / "rust-toolchain.toml").write_text(channel)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(compiler))
+    monkeypatch.chdir(guest)
+    monkeypatch.setattr(compiler_metadata, "_read_cached_rustc_version", lambda _: None)
+    monkeypatch.setattr(
+        compiler_metadata, "_write_cached_rustc_version", lambda *a: None
+    )
+
+    def probe(argv, *, cwd, **kwargs):
+        selected = Path(cwd) if cwd is not None else Path.cwd()
+        return subprocess.CompletedProcess(
+            argv, 0, (selected / "rust-toolchain.toml").read_text(), ""
+        )
+
+    monkeypatch.setattr(compiler_metadata, "_run_completed_command", probe)
+    compiler_metadata._rustc_version.cache_clear()
+    try:
+        assert compiler_metadata._rustc_version() == "compiler-version"
+    finally:
+        compiler_metadata._rustc_version.cache_clear()
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_build_dependency_admission_has_one_owner(
+    installation, tmp_path, monkeypatch, installed
+):
+    source = installation if installed else _source_tree(tmp_path / "checkout")
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(source))
+    guest = tmp_path / "guest"
+    guest.mkdir()
+    entry = guest / "app.py"
+    entry.write_text("print('guest')\n")
+    monkeypatch.chdir(guest)
+    calls = []
+
+    def check_locks(root, *args):
+        if installed:
+            pytest.fail("installed build re-resolved sealed dependencies")
+        calls.append(root)
+
+    monkeypatch.setattr(build_inputs, "_check_lockfiles", check_locks)
+    roots, error = build_inputs._prepare_build_roots(
+        file_path=str(entry),
+        json_output=True,
+        warnings=[],
+        deterministic=True,
+        deterministic_warn=False,
+        sysroot=None,
+    )
+    assert error is None and roots is not None
+    assert roots.molt_root == source
+    assert calls == ([] if installed else [source])
+
+
+@pytest.mark.parametrize(
+    "include_locks,include_manifests", [(True, False), (False, True)]
+)
+def test_installed_update_cannot_mutate_sealed_dependencies(
+    installation, monkeypatch, capsys, include_locks, include_manifests
+):
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(installation))
+    monkeypatch.setattr(
+        toolchain_validation,
+        "_planned_update_steps",
+        lambda *a, **kw: pytest.fail("installed update planned source mutations"),
+    )
+    assert (
+        toolchain_validation.update_repo(
+            json_output=True,
+            include_toolchains=False,
+            include_locks=include_locks,
+            include_manifests=include_manifests,
+        )
+        != 0
+    )
+    assert "sources are immutable" in capsys.readouterr().out
 
 
 def test_invalid_explicit_source_never_falls_back(tmp_path, monkeypatch, capsys):
