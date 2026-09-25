@@ -53,7 +53,11 @@ mod console {
 fn bundle_root() -> io::Result<PathBuf> {
     // Winget and Homebrew expose a symlink outside the immutable bundle. The
     // executable's canonical path, not argv[0] or the shell cwd, owns layout.
-    let executable = env::current_exe()?.canonicalize()?;
+    // Canonical identity must retain a Win32-compatible spelling when possible:
+    // exporting std's verbatim prefix into Python/Cargo breaks MSVC C inputs.
+    // Reuse the same lossless path authority as the proof supervisor; do not
+    // strip prefixes from paths whose Windows semantics require them.
+    let executable = dunce::canonicalize(env::current_exe()?)?;
     executable
         .parent()
         .and_then(|bin| bin.parent())
