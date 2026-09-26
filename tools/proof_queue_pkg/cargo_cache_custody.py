@@ -27,6 +27,7 @@ from tools.proof_queue_pkg import (
     cargo_output_layout,
     command_identity,
     custody_cas,
+    execution_custody,
     execution_receipt_details,
     supervisor_custody,
     toolchain_capture,
@@ -159,7 +160,7 @@ def _complete_custody(result: Mapping[str, object], *, cas_root: Path) -> bool:
         and live.get("event_count") == 0
         and live.get("error_count") == 0
         and isinstance(child_receipt, Mapping)
-        and child_receipt.get("broker_complete") is True
+        and execution_custody.child_receipt_is_admitted(child_receipt)
         and isinstance(receipt, Mapping)
         and receipt.get("state") == "COMPLETE"
         and receipt.get("complete") is True

@@ -323,8 +323,13 @@ def assert_execution_context_rejects_substitutions(
         "toolchain_capture": v3["capture"],
         "live_input_custody": synthetic_live_custody(tmp_path),
         "child_process_custody": {
-            "policy": {"descendants": "forbidden"},
-            "receipt": {"broker_complete": True},
+            "policy": {"descendants": "forbidden", "derived_roots": []},
+            "receipt": {
+                "broker_complete": True,
+                "events": [],
+                "errors": [],
+                "violations": [],
+            },
         },
         "process_supervisor": v3["supervisor"],
         "exact_command_sha256": hashlib.sha256(

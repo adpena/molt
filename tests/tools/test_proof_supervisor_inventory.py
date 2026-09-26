@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import os
 from pathlib import Path
 import shutil
@@ -201,6 +202,111 @@ def test_process_image_inventory_captures_distinct_runtime_and_projects_once(
         if row["role"].startswith("fixture-")
     }
     assert child_images == supervisor_images
+
+
+@pytest.mark.skipif(
+    sys.platform not in {"win32", "linux"},
+    reason="lossless process supervision is available on Windows and Linux",
+)
+def test_python_generated_child_matches_native_execution_identity(tmp_path: Path):
+    supervisor = _test_proof_supervisor_binary()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    receipt_path = tmp_path / "native-receipt.json"
+    environment = dict(os.environ)
+    environment.pop("CARGO_TARGET_DIR", None)
+    environment[supervisor_custody.PROOF_SCRATCH_ROOT_ENV] = str(scratch)
+    required = supervisor_custody.required_execution_environment(
+        binary=supervisor,
+        mode="declared-tree",
+        cwd=tmp_path,
+        env=environment,
+    )
+    environment = supervisor_custody.bind_required_environment(environment, required)
+    roots = supervisor_custody._derived_root_provenance(
+        descendants="declared-toolchains",
+        env=environment,
+        source_root=source,
+        result_path=receipt_path,
+    )
+    envelope = {"process_closure": {"descendants": "declared-toolchains"}}
+    child_policy = execution_custody.child_policy(envelope, {}, derived_roots=roots)
+    generated = scratch / supervisor.name
+    # Materialize the candidate after admission, then launch through the actual
+    # Python hook. The OS supervisor must observe the same path and bytes.
+    payload = (
+        "import shutil,subprocess; "
+        f"shutil.copy2({str(supervisor)!r},{str(generated)!r}); "
+        f"subprocess.run([{str(generated)!r},'fixture-child','exit','0'],check=True)"
+    )
+    bootstrap = Path(execution_custody.__file__).with_name(
+        "python_custody_bootstrap.py"
+    )
+    command = [
+        str(Path(sys._base_executable).resolve()),
+        str(bootstrap),
+        "command",
+        "0",
+        payload,
+    ]
+    server = execution_custody.ChildCustodyEventServer("python", child_policy)
+    environment.update(server.environment())
+    environment[execution_custody.CHILD_POLICY_ENV] = json.dumps(child_policy)
+    policy_path = tmp_path / "native-policy.json"
+    native_policy = supervisor_custody._supervisor_policy(
+        envelope=envelope,
+        execution_command=command,
+        execution_env=environment,
+        cwd=tmp_path,
+        nonce="a" * 64,
+        toolchains={},
+        environment_executables={},
+        platform_process_images=process_image_capture.platform_auxiliary_images(
+            "declared-toolchains"
+        ),
+    )
+    assert native_policy["derived_roots"] == child_policy["derived_roots"]
+    supervisor_custody._atomic_json(policy_path, native_policy)
+    with server:
+        completed = run_custody_subject_process(
+            [
+                str(supervisor),
+                "run",
+                "--policy",
+                str(policy_path),
+                "--receipt",
+                str(receipt_path),
+            ],
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    assert completed.returncode == 0, completed.stderr
+    native = supervisor_custody._validated_supervisor_receipt(
+        binary=supervisor,
+        policy_path=policy_path,
+        receipt_path=receipt_path,
+        cwd=tmp_path,
+        env=environment,
+    )
+    assert native["complete"] is True
+    assert native["root_exit_code"] == 0
+    assert native["violations"] == []
+    child = server.receipt()
+    assert execution_custody.child_receipt_is_admitted(child)
+    decisions = [
+        event for event in child["events"] if event.get("event") == "child-process"
+    ]
+    assert len(decisions) == 1
+    assert decisions[0]["derived_role"] == supervisor_custody.SCRATCH_OUTPUT_ROLE
+    assert decisions[0]["resolved"] == str(generated.resolve())
+    event_log = receipt_path.with_name(native["event_log"]["file"])
+    execution_custody.require_derived_child_image_bindings(child, event_log)
 
 
 def test_process_image_authority_rejects_mutation_and_conflicting_identity(

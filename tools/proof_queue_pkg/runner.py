@@ -534,7 +534,7 @@ def _validated_execution_context(
         or not _is_receipt_object(child_policy)
         or child_policy.get("descendants") != closure.get("descendants")
         or not _is_receipt_object(child_receipt)
-        or child_receipt.get("broker_complete") is not True
+        or not execution_custody.child_receipt_is_admitted(child_receipt)
     ):
         raise ValueError("guarded receipt has no complete child-process custody")
     platform_custody = context.get("platform_process_custody")
@@ -769,6 +769,7 @@ def _validated_execution_context(
         or policy_payload.get("root_role") != expected_root_role
         or fixed_images != expected_fixed_images
         or policy_derived_roots != expected_derived_roots
+        or child_policy.get("derived_roots", []) != policy_derived_roots
         or not _is_receipt_object(derived_root_custody)
         or not isinstance(derived_root_prelaunch, list)
         or derived_root_custody.get("policy_roots") != policy_derived_roots
@@ -876,6 +877,9 @@ def _validated_execution_context(
         raise ValueError(
             "native process supervisor receipt failed independent verification"
         )
+    execution_custody.require_derived_child_image_bindings(
+        child_receipt, Path(str(durable_event["path"]))
+    )
     try:
         verification_payload = loads_exact(verified_supervisor.stdout)
     except (ExactJsonError, json.JSONDecodeError) as exc:

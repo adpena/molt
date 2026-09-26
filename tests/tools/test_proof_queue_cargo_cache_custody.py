@@ -443,7 +443,14 @@ def _completed(lease: cache.CargoCacheLease, *, returncode: int = 0) -> dict:
             },
         },
         live_input_custody={"stable": True, "event_count": 0, "error_count": 0},
-        child_process_custody={"receipt": {"broker_complete": True}},
+        child_process_custody={
+            "receipt": {
+                "broker_complete": True,
+                "events": [],
+                "errors": [],
+                "violations": [],
+            }
+        },
         execution_custody_session={"state": "DRAINED"},
         derived_root_custody={"prelaunch": [lease.provenance]},
     )
@@ -831,6 +838,7 @@ def test_candidate_bytes_never_override_missing_input_closure(tmp_path, mutation
         "supervisor",
         "detail",
         "child",
+        "denied-child",
     ],
 )
 def test_incomplete_or_unstable_execution_cannot_seal(tmp_path, failure):
@@ -852,6 +860,16 @@ def test_incomplete_or_unstable_execution_cannot_seal(tmp_path, failure):
             context.pop("execution_details")
         elif failure == "child":
             context["child_process_custody"]["receipt"]["broker_complete"] = False
+        elif failure == "denied-child":
+            expanded = execution_receipt_details.expand_context(
+                context, cas_root=first.cas_root
+            )
+            child = expanded["child_process_custody"]["receipt"]
+            child["events"] = [{"event": "child-process", "admitted": False}]
+            child["violations"] = list(child["events"])
+            result["receipt_context"] = execution_receipt_details.compact_context(
+                expanded, cas_root=first.cas_root
+            )
         else:
             context["process_supervisor"]["receipt"]["complete"] = False
         publication = first.publish(result)

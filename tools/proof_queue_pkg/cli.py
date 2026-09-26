@@ -493,8 +493,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     pact_accept_p = sub.add_parser(
         "pact-witness-acceptance",
-        help="run the queue-owned Pact Kernel A browser/WASM acceptance aperture",
+        help="run one queue-owned Pact Kernel A native/WASM acceptance target",
     )
+    pact_accept_p.add_argument("--target", required=True, choices=("native", "wasm"))
     _add_named_lane_args(
         pact_accept_p,
         note_help="append submission context to the acceptance run",

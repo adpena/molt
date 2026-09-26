@@ -469,7 +469,7 @@ claimed and alive, work Codex lanes B/C/D instead.
    tools/pact_seal_witness_roots.py --root tmp/pact_numpy_multiarray_sealed_for_witness`
    (this tool is on origin/main, ABSENT from the shared-checkout working tree — use
    the origin/main / clean-worktree copy); verify the manifest gains the field;
-   (iii) prove past-seal via `pact-witness-acceptance --detach` from a clean
+   (iii) prove past-seal via `pact-witness-acceptance --target wasm --detach` from a clean
    `origin/main` worktree. SAME ARC: add a re-seal GATE (test: sealed manifest
    carries `runtime_python_import_modules` AND all object_closure sources resolve,
    fail-closed) and RELATIVIZE the seal's object_closure `source` paths to
@@ -998,7 +998,7 @@ fallback, no fake symbols, upstream source only through package custody.
   and `call_bind`, preserving CPython LOAD_GLOBAL semantics. Evidence:
   `tests/test_frontend_ir_alias_ops.py` passed 33/33 and pins both paths.
 - R0.4 Acceptance lane: `uv run --active --project . --python 3.12 python
-  tools/proof_queue.py pact-witness-acceptance --detach --timeout 7200`.
+  tools/proof_queue.py pact-witness-acceptance --target wasm --detach --timeout 7200`.
   Evidence: run ID, `candidate_outputs.npz` produced by Molt WASM,
   `check_parity.py` PASS. Depends: R0.1–R0.3.
 - R0.5 Witness performance: time the kernel vs CPython (same inputs);

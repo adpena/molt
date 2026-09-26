@@ -17,6 +17,9 @@ the [performance authority](tools/PERF_AUTHORITY.md#v10-acceptance-scope).
 Publication requires same-source semantic exit evidence; stable releases also
 require a signed H0 phase exit. See the [release contract](packaging/PACKAGING.md).
 These gates do not imply that the remaining release matrix has passed.
+The [Pact acceptance lanes](docs/agent/PROOF_QUEUE.md#named-pact-witness-lanes)
+bind native/WASM execution and oracle parity to portable, source-pinned receipts;
+package seals or successful builds alone do not establish acceptance.
 The [verified-subset contract](docs/spec/areas/compat/contracts/verified_subset_contract.md)
 defines test selection, source-change checks, and the exact cross-target pass law.
 
