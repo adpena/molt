@@ -8,12 +8,10 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import build_pipeline
-from molt.cli import link_pipeline
+from molt.cli import link_fingerprints, link_pipeline
 
 _LINK_PIPELINE_NAMES = (
     "_darwin_link_validation_failure",
-    "_link_fingerprint",
-    "_link_fingerprint_path",
     "_prepare_native_link",
     "_prepare_native_object_artifact",
     "_run_native_link_command",
@@ -22,6 +20,9 @@ _LINK_PIPELINE_NAMES = (
 
 
 def test_cli_link_pipeline_authority_is_single_home() -> None:
+    for name in ("_link_fingerprint", "_link_fingerprint_path"):
+        assert hasattr(link_fingerprints, name)
+        assert not hasattr(link_pipeline, name)
     assert not hasattr(link_pipeline, "_run_native_partial_link_command")
     for name in _LINK_PIPELINE_NAMES:
         assert hasattr(link_pipeline, name), name
@@ -63,7 +64,6 @@ def test_every_configured_stdlib_uses_locked_snapshot_admission(
 
     monkeypatch.setattr(link_pipeline, "_stage_shared_stdlib_object_for_link", stage)
     prepared, failure = link_pipeline._prepare_native_link(
-        backend_bin=tmp_path / "molt-backend",
         output_artifact=artifacts / "app.a",
         resolved_capability_policy=None,
         artifacts_root=artifacts,

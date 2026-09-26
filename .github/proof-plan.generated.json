@@ -188,7 +188,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "49a01018518751e7030d25cf03b9b7720d481971410be1aa3e5c8820cd4e112e",
+  "authority_sha256": "4476d1c3979770ea71f798ec0e0ca18c78c6a0ab1f4f64c1179729ee1dd6465b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3220,6 +3220,7 @@
         "tests/cli/test_runtime_c_resource_custody.py",
         "tests/cli/test_runtime_native_failure_custody.py",
         "tests/cli/test_static_archive_identity.py",
+        "tests/cli/test_link_fingerprints.py",
         "tests/cli/test_runtime_wasm_build_timings.py",
         "tests/test_wasm_link_validation.py",
         "tests/test_wasm_section_spans.py"
@@ -4980,6 +4981,9 @@
           "src/molt/cli/extension_wheel.py",
           "src/molt/cli/external_native.py",
           "src/molt/cli/link_pipeline.py",
+          "src/molt/cli/link_fingerprints.py",
+          "src/molt/link_outputs.py",
+          "tests/cli/test_link_fingerprints.py",
           "src/molt/cli/module_graph.py",
           "src/molt/cli/native_link_command.py",
           "src/molt/cli/native_link_plan.py",

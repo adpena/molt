@@ -30,7 +30,8 @@ from molt.browser_asset_closure import (
     canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
 )
-from molt.cli import link_pipeline as _link_pipeline
+from molt.cli import link_fingerprints
+from molt.link_outputs import wasm_link_output_paths
 from molt.cli.atomic_io import (
     _atomic_copy_file,
     _atomic_write_bytes,
@@ -42,7 +43,6 @@ from molt.cli.browser_target_features import (
     TARGET_FEATURE_MANIFEST_ASSET_NAME,
     browser_target_feature_metadata,
 )
-from molt.cli.build_results import _write_link_fingerprint_if_needed
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.external_native import (
     _external_native_link_requirements,
@@ -61,10 +61,6 @@ from molt.cli.output import (
     subprocess_output_text,
 )
 from molt.cli.python_source_closure import local_python_import_closure
-from molt.cli.runtime_fingerprints import (
-    _artifact_needs_rebuild,
-    _read_runtime_fingerprint,
-)
 from molt.cli.runtime_wasm_validation import (
     _is_reusable_wasm_artifact,
     _validate_wasm_structural,
@@ -1032,6 +1028,28 @@ def _prepare_non_native_build_result(
                 )
             if resolved_linked_output is None:
                 resolved_linked_output = output_wasm.with_name("output_linked.wasm")
+            try:
+                link_outputs = wasm_link_output_paths(
+                    resolved_linked_output,
+                    split_output_dir=output_wasm.parent if _split_runtime else None,
+                    inputs=(
+                        output_wasm,
+                        runtime_reloc_wasm,
+                        *((runtime_wasm,) if runtime_wasm is not None else ()),
+                        *external_native_fingerprint_inputs,
+                        *(
+                            path
+                            for artifact in staged_external_native_artifacts
+                            for path in (
+                                artifact.source_path,
+                                artifact.source_manifest_path,
+                            )
+                        ),
+                        app_export_contract_path,
+                    ),
+                )
+            except (OSError, ValueError) as exc:
+                return None, _fail(str(exc), json_output, command="build")
             if resolved_linked_output.parent != Path("."):
                 resolved_linked_output.parent.mkdir(parents=True, exist_ok=True)
             if not is_wasm_freestanding:
@@ -1110,13 +1128,15 @@ def _prepare_non_native_build_result(
             if profile == "dev":
                 link_cmd.append("--preserve-debug-sections")
             link_project_root = project_root or molt_root
-            link_fingerprint_path = _link_pipeline._link_fingerprint_path(
+            link_fingerprint_path = link_fingerprints._link_fingerprint_path(
                 link_project_root,
                 resolved_linked_output,
                 profile,
                 "wasm32-wasip1",
             )
-            stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
+            stored_link_fingerprint = link_fingerprints._read_link_fingerprint(
+                link_fingerprint_path
+            )
             try:
                 link_tool_closure = local_python_import_closure(molt_root, (tool,))
                 deploy_asset_root = molt_root / "wasm"
@@ -1140,7 +1160,7 @@ def _prepare_non_native_build_result(
                     json_output,
                     command="build",
                 )
-            link_fingerprint = _link_pipeline._link_fingerprint(
+            link_fingerprint = link_fingerprints._link_fingerprint(
                 project_root=link_project_root,
                 inputs=[
                     output_wasm,
@@ -1161,24 +1181,25 @@ def _prepare_non_native_build_result(
                         "content_digest": link_tool_closure.content_digest,
                     },
                 ),
-                stored_fingerprint=stored_link_fingerprint,
+                stored_fingerprint=(
+                    stored_link_fingerprint["fingerprint"]
+                    if stored_link_fingerprint
+                    else None
+                ),
             )
-            link_skipped = not _artifact_needs_rebuild(
-                resolved_linked_output,
-                link_fingerprint,
-                stored_link_fingerprint,
+            link_skipped = link_fingerprints._link_outputs_match(
+                outputs=link_outputs,
+                fingerprint=link_fingerprint,
+                stored_fingerprint=stored_link_fingerprint,
             )
             if link_skipped and wasm_link_requirements.inputs:
                 link_skipped = _is_reusable_static_native_link_artifact(
                     resolved_linked_output
                 )
             if link_skipped and _split_runtime:
-                split_dir = output_wasm.parent
-                app_wasm = split_dir / "app.wasm"
-                rt_wasm = split_dir / "molt_runtime.wasm"
                 link_skipped = _is_reusable_split_runtime_artifacts(
-                    app_wasm,
-                    rt_wasm,
+                    link_outputs["app"],
+                    link_outputs["runtime"],
                     static_native_inputs=bool(wasm_link_requirements.inputs),
                     wasm_table_base=wasm_table_base,
                 )
@@ -1254,11 +1275,13 @@ def _prepare_non_native_build_result(
                             link_timings_path.unlink()
                 if phase_starts is not None and "wasm_publish" not in phase_starts:
                     phase_starts["wasm_publish"] = time.perf_counter()
-                link_fingerprint_warning = _write_link_fingerprint_if_needed(
-                    link_skipped=False,
-                    link_fingerprint=link_fingerprint,
-                    link_fingerprint_path=link_fingerprint_path,
-                    json_output=json_output,
+                link_fingerprint_warning = (
+                    link_fingerprints._write_link_fingerprint_if_needed(
+                        link_skipped=False,
+                        link_fingerprint=link_fingerprint,
+                        link_fingerprint_path=link_fingerprint_path,
+                        outputs=link_outputs,
+                    )
                 )
                 if link_fingerprint_warning is not None:
                     if warnings is not None:

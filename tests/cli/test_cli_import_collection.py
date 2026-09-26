@@ -60,6 +60,7 @@ from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_parallel as cli_frontend_parallel
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
+from molt.cli import link_fingerprints as cli_link_fingerprints
 from molt.cli import module_cache as cli_module_cache
 from molt.cli import module_dependencies as cli_module_dependencies
 from molt.cli import module_graph_cache as cli_module_graph_cache
@@ -11493,14 +11494,14 @@ def test_link_fingerprint_reuses_inputs_digest_when_unchanged(tmp_path: Path) ->
     obj.write_bytes(b"\x7fELFobject")
     runtime.write_bytes(b"archive")
 
-    fingerprint = cli_link_pipeline._link_fingerprint(
+    fingerprint = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path,
         inputs=[stub, obj, runtime],
         link_cmd=["clang", str(stub), str(obj), str(runtime), "-o", "app"],
     )
     assert fingerprint is not None
 
-    reused = cli_link_pipeline._link_fingerprint(
+    reused = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path,
         inputs=[stub, obj, runtime],
         link_cmd=["clang", str(stub), str(obj), str(runtime), "-o", "app"],
@@ -11517,12 +11518,12 @@ def test_link_fingerprint_changes_when_link_command_changes(tmp_path: Path) -> N
     obj.write_bytes(b"\x7fELFobject")
     runtime.write_bytes(b"archive")
 
-    first = cli_link_pipeline._link_fingerprint(
+    first = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path,
         inputs=[stub, obj, runtime],
         link_cmd=["clang", str(stub), str(obj), str(runtime), "-o", "app"],
     )
-    second = cli_link_pipeline._link_fingerprint(
+    second = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path,
         inputs=[stub, obj, runtime],
         link_cmd=[
@@ -11546,7 +11547,7 @@ def test_link_fingerprint_changes_when_role_specific_linker_identity_changes(
     obj = tmp_path / "output.o"
     obj.write_bytes(b"object")
     command = ["clang", str(obj), "-fuse-ld=lld", "-o", "app"]
-    first = cli_link_pipeline._link_fingerprint(
+    first = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path,
         inputs=[obj],
         link_cmd=command,
@@ -11560,7 +11561,7 @@ def test_link_fingerprint_changes_when_role_specific_linker_identity_changes(
             },
         ),
     )
-    second = cli_link_pipeline._link_fingerprint(
+    second = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path,
         inputs=[obj],
         link_cmd=command,
@@ -11595,13 +11596,13 @@ def test_split_link_fingerprint_tracks_deploy_runtime_content(tmp_path: Path) ->
         str(deploy_runtime),
     ]
 
-    first = cli_link_pipeline._link_fingerprint(
+    first = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path,
         inputs=[app, reloc_runtime, deploy_runtime],
         link_cmd=command,
     )
     deploy_runtime.write_bytes(b"deploy-v2")
-    second = cli_link_pipeline._link_fingerprint(
+    second = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path,
         inputs=[app, reloc_runtime, deploy_runtime],
         link_cmd=command,
@@ -11617,21 +11618,31 @@ def test_write_link_fingerprint_reports_json_warning_on_metadata_loss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def raise_metadata_write(path: Path, payload: Mapping[str, object]) -> None:
-        del path, payload
+    output = tmp_path / "app"
+    output.write_bytes(b"linked output")
+
+    def raise_metadata_write(
+        path: Path, payload: Mapping[str, object], *, indent: int
+    ) -> None:
+        del path, payload, indent
         raise OSError("state volume read-only")
 
     monkeypatch.setattr(
-        cli_build_results,
-        "_write_runtime_fingerprint",
+        cli_link_fingerprints,
+        "_atomic_write_json",
         raise_metadata_write,
     )
 
-    warning = cli_build_results._write_link_fingerprint_if_needed(
+    warning = cli_link_fingerprints._write_link_fingerprint_if_needed(
         link_skipped=False,
-        link_fingerprint={"hash": "fingerprint"},
+        link_fingerprint={
+            "hash": "a" * 64,
+            "rustc": None,
+            "inputs_digest": None,
+            "meta_digest": None,
+        },
         link_fingerprint_path=tmp_path / "state" / "link.json",
-        json_output=True,
+        outputs={"binary": output},
     )
 
     assert warning is not None
@@ -11693,13 +11704,10 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         captured_inputs[:] = inputs
         return {"hash": "fingerprint", "rustc": None, "inputs_digest": None}
 
-    monkeypatch.setattr(cli_link_pipeline, "_link_fingerprint", fake_link_fingerprint)
     monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
+        cli_link_fingerprints, "_link_fingerprint", fake_link_fingerprint
     )
-
     prepared, error = cli_link_pipeline._prepare_native_link(
-        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -11752,10 +11760,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     artifacts_root.mkdir()
 
     monkeypatch.setattr(
-        cli_link_pipeline, "_read_runtime_fingerprint", lambda path: None
-    )
-    monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
+        cli_link_fingerprints, "_read_link_fingerprint", lambda path: None
     )
     monkeypatch.setattr(
         cli_link_pipeline,
@@ -11764,7 +11769,6 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     )
 
     first, first_error = cli_link_pipeline._prepare_native_link(
-        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -11799,7 +11803,6 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
 
     second, second_error = cli_link_pipeline._prepare_native_link(
-        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -11845,10 +11848,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     captured_link_cmd: list[str] = []
 
     monkeypatch.setattr(
-        cli_link_pipeline, "_read_runtime_fingerprint", lambda path: None
-    )
-    monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
+        cli_link_fingerprints, "_read_link_fingerprint", lambda path: None
     )
 
     def fake_run_native_link_command(
@@ -11866,7 +11866,6 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
-        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -12001,19 +12000,17 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
         captured_link_cmd[:] = link_cmd
         return subprocess.CompletedProcess(link_cmd, 0, "", "")
 
-    monkeypatch.setattr(cli_link_pipeline, "_link_fingerprint", fake_link_fingerprint)
     monkeypatch.setattr(
-        cli_link_pipeline, "_read_runtime_fingerprint", lambda path: None
+        cli_link_fingerprints, "_link_fingerprint", fake_link_fingerprint
     )
     monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
+        cli_link_fingerprints, "_read_link_fingerprint", lambda path: None
     )
     monkeypatch.setattr(
         cli_link_pipeline, "_run_native_link_command", fake_run_native_link_command
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
-        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -12130,7 +12127,6 @@ def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
     artifacts_root.mkdir()
 
     prepared, error = cli_link_pipeline._prepare_native_link(
-        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -21761,10 +21757,6 @@ def test_runtime_artifact_fingerprint_match_fails_closed_without_stored_fingerpr
     artifact.write_bytes(b"\0asm\x01\0\0\0")
     fingerprint_path = tmp_path / "missing.fingerprint"
 
-    monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args: False
-    )
-
     assert (
         cli._runtime_artifact_fingerprint_matches(
             artifact,
@@ -21831,6 +21823,7 @@ def _install_fake_wasm_link_runner(
     monkeypatch: pytest.MonkeyPatch,
     *,
     link_calls: list[list[str]] | None = None,
+    linked_bytes: bytes = b"\0asm\x01\0\0\0",
 ) -> None:
     def fake_run(
         cmd: list[str],
@@ -21845,12 +21838,15 @@ def _install_fake_wasm_link_runner(
         output_path = Path(command[command.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         valid_wasm = b"\0asm\x01\0\0\0"
-        output_path.write_bytes(valid_wasm)
+        output_path.write_bytes(linked_bytes)
         if "--split-runtime" in command:
             split_dir = Path(command[command.index("--split-output-dir") + 1])
             split_dir.mkdir(parents=True, exist_ok=True)
             (split_dir / "app.wasm").write_bytes(valid_wasm)
             (split_dir / "molt_runtime.wasm").write_bytes(valid_wasm)
+            (split_dir / "wasm_size_attestation.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(cli_non_native_output, "_run_completed_command", fake_run)
@@ -21920,7 +21916,10 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     wasm_link.write_text("# linker\n", encoding="utf-8")
     link_calls: list[list[str]] = []
 
-    _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    linked_bytes = b"\0asm\x01\0\0\0\x00\x03\x01xA"
+    _install_fake_wasm_link_runner(
+        monkeypatch, link_calls=link_calls, linked_bytes=linked_bytes
+    )
     closure_digest = ["captured-tooling-generation-one"]
     monkeypatch.setattr(
         cli_non_native_output,
@@ -21933,7 +21932,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         ),
     )
     fingerprints: list[dict[str, Any]] = []
-    real_link_fingerprint = cli_link_pipeline._link_fingerprint
+    real_link_fingerprint = cli_link_fingerprints._link_fingerprint
 
     def capture_link_fingerprint(**kwargs: Any) -> dict[str, Any]:
         assert wasm_link not in kwargs["inputs"]
@@ -21949,7 +21948,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         return result
 
     monkeypatch.setattr(
-        cli_link_pipeline, "_link_fingerprint", capture_link_fingerprint
+        cli_link_fingerprints, "_link_fingerprint", capture_link_fingerprint
     )
     monkeypatch.setattr(
         cli_non_native_output, "_validate_wasm_structural", lambda path: None
@@ -22025,6 +22024,41 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     # A skipped relink runs no link, so it claims no link phase.
     assert "wasm_link" not in second_phase_starts
 
+    fingerprint_path = cli_link_fingerprints._link_fingerprint_path(
+        tmp_path, linked_wasm, "dev", "wasm32-wasip1"
+    )
+    receipt = cli_link_fingerprints._read_link_fingerprint(fingerprint_path)
+    assert receipt is not None
+    assert set(receipt["outputs"]) == {"linked"}
+    assert receipt["outputs"]["linked"]["path"] == str(linked_wasm.resolve())
+
+    # An input timestamp is a metadata hint, not a reason to discard identical bytes.
+    source_stat = output_wasm.stat()
+    os.utime(
+        output_wasm,
+        ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns + 1_000_000_000),
+    )
+    touched, touched_err = cli_non_native_output._prepare_non_native_build_result(
+        **common_kwargs
+    )
+    assert touched_err is None and touched is not None
+    assert len(link_calls) == 1
+
+    # A same-size, same-mtime replacement of a published output must relink.
+    linked_stat = linked_wasm.stat()
+    assert linked_wasm.read_bytes() == linked_bytes
+    linked_wasm.write_bytes(linked_bytes[:-1] + b"B")
+    os.utime(
+        linked_wasm,
+        ns=(linked_stat.st_atime_ns, linked_stat.st_mtime_ns),
+    )
+    tampered, tampered_err = cli_non_native_output._prepare_non_native_build_result(
+        **common_kwargs
+    )
+    assert tampered_err is None and tampered is not None
+    assert len(link_calls) == 2
+    assert linked_wasm.read_bytes() == linked_bytes
+
     # Byte-generation identity belongs to metadata, so unchanged binary inputs
     # cannot reuse a link built by different captured compiler tooling.
     closure_digest[0] = "captured-tooling-generation-two"
@@ -22032,10 +22066,12 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         **common_kwargs
     )
     assert third_err is None and third is not None
-    assert len(link_calls) == 2
-    assert fingerprints[0]["inputs_digest"] == fingerprints[2]["inputs_digest"]
-    assert fingerprints[0]["meta_digest"] != fingerprints[2]["meta_digest"]
-    assert fingerprints[0]["hash"] != fingerprints[2]["hash"]
+    assert len(link_calls) == 3
+    # The native-link plan is atomically rewritten on every invocation, so its
+    # change-time metadata differs even when the semantic input bytes do not.
+    assert fingerprints[0]["hash"] == fingerprints[-2]["hash"]
+    assert fingerprints[-2]["meta_digest"] != fingerprints[-1]["meta_digest"]
+    assert fingerprints[-2]["hash"] != fingerprints[-1]["hash"]
 
 
 def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_linked_wasm(
@@ -22229,14 +22265,14 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     link_fingerprint_inputs: list[Path] = []
 
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
-    real_link_fingerprint = cli_link_pipeline._link_fingerprint
+    real_link_fingerprint = cli_link_fingerprints._link_fingerprint
 
     def capture_link_fingerprint(**kwargs: Any) -> dict[str, Any]:
         link_fingerprint_inputs.extend(cast(list[Path], kwargs["inputs"]))
         return real_link_fingerprint(**kwargs)
 
     monkeypatch.setattr(
-        cli_link_pipeline,
+        cli_link_fingerprints,
         "_link_fingerprint",
         capture_link_fingerprint,
     )
@@ -22280,7 +22316,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     )
     resolved_policy = CapabilityManifest(allow=["fs.bundle.read"]).resolve(tier="safe")
 
-    prepared, err = cli_non_native_output._prepare_non_native_build_result(
+    common_kwargs = dict(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -22302,6 +22338,9 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         wasm_facts_scanner=tmp_path / "molt-backend",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=native_artifact_plan,
+    )
+    prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        **common_kwargs
     )
 
     assert err is None
@@ -22404,6 +22443,54 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert native_callables["module"] == "molt_native"
     assert native_callables["symbols"] == {}
 
+    receipt_path = cli_link_fingerprints._link_fingerprint_path(
+        tmp_path, linked_wasm, "dev", "wasm32-wasip1"
+    )
+    receipt = cli_link_fingerprints._read_link_fingerprint(receipt_path)
+    assert receipt is not None
+    outputs = {
+        "linked": linked_wasm,
+        "app": output_wasm.parent / "app.wasm",
+        "runtime": output_wasm.parent / "molt_runtime.wasm",
+        "size_attestation": output_wasm.parent / "wasm_size_attestation.json",
+    }
+    assert set(receipt["outputs"]) == set(outputs)
+
+    # Native and split-layout validators are separate gates; this sequence
+    # exercises the real final-link receipt decision for every output role.
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_is_reusable_static_native_link_artifact",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_is_reusable_split_runtime_artifacts",
+        lambda *_args, **_kwargs: True,
+    )
+
+    def repeat_build() -> None:
+        result, failure = cli_non_native_output._prepare_non_native_build_result(
+            **common_kwargs
+        )
+        assert failure is None and result is not None
+
+    repeat_build()
+    assert len(link_calls) == 1
+    for index, path in enumerate(outputs.values()):
+        path.unlink()
+        repeat_build()
+        assert len(link_calls) == 2 + 2 * index
+
+        original = path.read_bytes()
+        stat = path.stat()
+        path.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        repeat_build()
+        assert len(link_calls) == 3 + 2 * index
+    repeat_build()
+    assert len(link_calls) == 9
+
 
 def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     tmp_path: Path,
@@ -22463,9 +22550,6 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     link_calls: list[list[str]] = []
 
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
-    monkeypatch.setattr(
-        cli_non_native_output, "_artifact_needs_rebuild", lambda *_args: False
-    )
     monkeypatch.setattr(
         cli_non_native_output, "_is_reusable_wasm_artifact", lambda _path: True
     )
@@ -27310,10 +27394,10 @@ def test_backend_codegen_env_digest_tracks_codegen_knobs(
     # codegen. A linker change must not invalidate reusable compiler output.
     assert native_linker_a == baseline_native
     assert native_linker_b == native_linker_a
-    link_a = cli_link_pipeline._link_fingerprint(
+    link_a = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path, inputs=[], link_cmd=[str(linker_a)]
     )
-    link_b = cli_link_pipeline._link_fingerprint(
+    link_b = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path, inputs=[], link_cmd=[str(linker_b)]
     )
     assert link_a is not None and link_b is not None
@@ -31021,7 +31105,7 @@ def test_link_fingerprint_changes_when_stdlib_artifact_content_changes(
 
     link_cmd = ["cc", "-o", "out", "user.o", "stdlib.o"]
 
-    fp1 = cli_link_pipeline._link_fingerprint(
+    fp1 = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path,
         inputs=[user_obj, stdlib_obj],
         link_cmd=link_cmd,
@@ -31030,7 +31114,7 @@ def test_link_fingerprint_changes_when_stdlib_artifact_content_changes(
     # Mutate the stdlib artifact
     stdlib_obj.write_bytes(b"\x00ELF-stdlib-v2")
 
-    fp2 = cli_link_pipeline._link_fingerprint(
+    fp2 = cli_link_fingerprints._link_fingerprint(
         project_root=tmp_path,
         inputs=[user_obj, stdlib_obj],
         link_cmd=link_cmd,
