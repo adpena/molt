@@ -16,7 +16,7 @@ from typing import TypedDict, cast
 from packaging.markers import default_environment
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
-from packaging.version import InvalidVersion, Version
+from molt.cli.source_build_requirements import realized_build_requirement
 
 from molt.cli.atomic_io import _atomic_write_json, _remove_file_or_tree
 from molt.file_locks import _acquire_file_lock, _release_file_lock
@@ -810,6 +810,16 @@ def source_build_environment_problems(payload: object) -> list[str]:
         else []
     )
     realized_versions: dict[str, str] = {}
+    activated_extras = (
+        {
+            str(row["name"]): row["extras"]
+            for row in cast(
+                list[Mapping[str, object]], validated_lock.get("packages", [])
+            )
+        }
+        if validated_lock is not None
+        else {}
+    )
     for row in realized_distributions:
         if not isinstance(row, Mapping):
             continue
@@ -845,23 +855,24 @@ def source_build_environment_problems(payload: object) -> list[str]:
         if index >= len(active) or raw != active[index][0]:
             continue
         requirement = active[index][1]
-        if canonicalize_name(distribution) != canonicalize_name(requirement.name):
-            problems.append(
-                f"extension-set manifest resolved distribution does not satisfy {raw!r}"
-            )
-            continue
         try:
-            version = Version(raw_version)
-        except InvalidVersion:
+            resolution = realized_build_requirement(
+                raw,
+                requirement,
+                {"name": distribution, "version": raw_version},
+                activated_extras=cast(
+                    Sequence[str],
+                    activated_extras.get(canonicalize_name(distribution), ()),
+                ),
+            )
+        except ValueError:
             problems.append(
                 f"extension-set manifest resolved version is invalid for {raw!r}"
             )
             continue
-        if requirement.specifier and not requirement.specifier.contains(
-            version, prereleases=True
-        ):
+        if resolution is None:
             problems.append(
-                f"extension-set manifest resolved version does not satisfy {raw!r}"
+                f"extension-set manifest resolved version or extras does not satisfy {raw!r}"
             )
         if realized_versions.get(canonicalize_name(distribution)) != raw_version:
             problems.append(

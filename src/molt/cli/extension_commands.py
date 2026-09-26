@@ -100,6 +100,7 @@ from molt.cli.source_extension_link_requirements import (
     source_extension_link_requirements,
 )
 from molt.cli.source_extension_python_provider import SourceExtensionPythonProvider
+from molt.cli.source_build_inventory import SourceBuildInventory
 from molt.cli.source_extension_object_closure import (
     finalize_source_extension_object_closure,
     source_extension_wasm_import_receipts,
@@ -311,6 +312,7 @@ def extension_build(
     source_plan_exclude_linked_static_libraries: list[str] | None = None,
     source_plan_ninja_command: Sequence[str] | None = None,
     source_plan_python_provider: SourceExtensionPythonProvider | None = None,
+    source_build_inventory: SourceBuildInventory | None = None,
     abi_tier: str | None = None,
     tool_commands: Mapping[str, Sequence[str]] | None = None,
     json_output: bool = False,
@@ -915,6 +917,7 @@ def extension_build(
                     pyproject=pyproject,
                     ninja_command=tuple(source_plan_ninja_command or ()),
                     abi_tier=normalized_abi_tier,
+                    inventory=source_build_inventory,
                 )
             )
             if regen_error is not None:

@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli import source_extension_cython as cython_authority
+from molt.cli import source_extension_cython_tool as cython_tool
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,9 +37,6 @@ def _find_ni_label_pyx() -> Path | None:
         candidate = base / relative
         if candidate.is_file():
             return candidate.resolve()
-    # Fall back to a broad search rooted at the repo checkout.
-    for match in ROOT.rglob("_ni_label.pyx"):
-        return match.resolve()
     return None
 
 
@@ -52,8 +50,7 @@ def _find_numpy_source_root() -> Path | None:
     return None
 
 
-def _cython_available() -> bool:
-    return cython_authority._installed_cython_version(sys.executable) is not None
+_CYTHON_VERSION, _CYTHON_ADMISSION_ERROR = cython_tool.require_cython(pyproject={})
 
 
 PYX_PATH = _find_ni_label_pyx()
@@ -67,37 +64,13 @@ requires_ni_label = pytest.mark.skipif(
     ),
 )
 requires_cython = pytest.mark.skipif(
-    not _cython_available(),
-    reason="Cython is not importable by the test interpreter",
+    _CYTHON_VERSION is None,
+    reason=_CYTHON_ADMISSION_ERROR or "Cython is not available",
 )
 requires_clang = pytest.mark.skipif(
     shutil.which("clang") is None,
     reason="clang is required for the regenerated-C preprocess proof",
 )
-
-
-def test_parse_cython_build_requirement_reads_version_floor() -> None:
-    requirement = cython_authority.parse_cython_build_requirement(
-        ["numpy>=1.25", "Cython>=3.0.6,<3.2", "meson-python"]
-    )
-    assert requirement is not None
-    assert requirement.minimum_major() == 3
-    assert cython_authority._pip_specifier(requirement) == "Cython>=3.0.6,<3.2"
-
-
-def test_parse_cython_build_requirement_bare_pins_major() -> None:
-    requirement = cython_authority.parse_cython_build_requirement(["Cython"])
-    assert requirement is not None
-    # A bare requirement pins the 3.x floor scipy needs, never an unbounded pin.
-    assert cython_authority._pip_specifier(requirement) == "Cython>=3.0"
-
-
-def test_cython_build_requirement_from_pyproject() -> None:
-    requirement = cython_authority.cython_build_requirement_from_pyproject(
-        {"build-system": {"requires": ["Cython==3.1.8", "numpy"]}}
-    )
-    assert requirement is not None
-    assert requirement.raw == "Cython==3.1.8"
 
 
 def test_regenerated_c_compile_profile_is_exact_and_manifested(
@@ -142,17 +115,17 @@ def test_regenerated_cython_safe_cpython_profile_is_fail_closed(
         "    return values[0], mapping[text], len(text), number + 1\n",
         encoding="utf-8",
     )
-    version = cython_authority._installed_cython_version(sys.executable)
+    version = _CYTHON_VERSION
     assert version is not None
-    regeneration, error = cython_authority.regenerate_cython_c_standalone(
-        pyx_path=pyx_path,
-        original_c=tmp_path / "limited_probe.c",
-        language=cython_authority.SourceExtensionLanguage.C,
-        out_dir=tmp_path / "generated",
-        include_dirs=(),
-        cython_version=version,
-        python_exe=sys.executable,
-    )
+    with cython_tool.cython_execution(pyproject={}, working_directory=tmp_path) as tool:
+        regeneration, error = cython_authority.regenerate_cython_c_standalone(
+            pyx_path=pyx_path,
+            original_c=tmp_path / "limited_probe.c",
+            language=cython_authority.SourceExtensionLanguage.C,
+            out_dir=tmp_path / "generated",
+            include_dirs=(),
+            tool=tool,
+        )
     assert error is None, error
     assert regeneration is not None
     compile_args = cython_authority.CYTHON_CPYTHON_ABI_COMPILE_ARGS
@@ -475,6 +448,7 @@ def test_regeneration_replays_real_ninja_cython_directives(
         if "commands" in argv:
             query_calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, ninja_command + "\n", "")
+        assert _kwargs["cwd"] == (build_root / "standalone").resolve()
         generation_calls.append(argv)
         output = Path(argv[argv.index("-o") + 1])
         output.write_text("/* generated */\n", encoding="utf-8")
@@ -495,8 +469,7 @@ def test_regeneration_replays_real_ninja_cython_directives(
         language=language,
         out_dir=build_root / "standalone",
         include_dirs=(),
-        cython_version="test",
-        python_exe=sys.executable,
+        tool=cython_tool.CythonTool("test", sys.executable, tmp_path / "absent-cache"),
         package_roots=(source_root, build_root),
         ninja_command=(sys.executable, "-m", "ninja"),
     )
@@ -504,6 +477,7 @@ def test_regeneration_replays_real_ninja_cython_directives(
     assert error is None, error
     assert regeneration is not None
     assert generation_calls == [list(regeneration.cython_argv)]
+    assert regeneration.working_directory == (build_root / "standalone").resolve()
     assert ("--cplus" in regeneration.cython_argv) == (
         language is cython_authority.SourceExtensionLanguage.CPP
     )
@@ -513,8 +487,14 @@ def test_regeneration_replays_real_ninja_cython_directives(
     )
     assert query_calls[0][:3] == [sys.executable, "-m", "ninja"]
     argv = regeneration.cython_argv
-    assert argv[:3] == (sys.executable, "-m", "cython")
+    assert argv[:3] == (sys.executable, "-B", "-I")
     assert argv[3:7] == (
+        "-X",
+        f"pycache_prefix={tmp_path / 'absent-cache'}",
+        "-m",
+        "cython",
+    )
+    assert argv[7:11] == (
         "-M",
         "-3",
         "--fast-fail",
@@ -531,6 +511,23 @@ def test_regeneration_replays_real_ninja_cython_directives(
             "sha256": regeneration.dependencies[0].sha256,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        ("-w", "elsewhere"),
+        ("-welsewhere",),
+        ("--working", "elsewhere"),
+        ("--working=elsewhere",),
+    ],
+)
+def test_cython_generator_rejects_working_directory_override(tmp_path, override):
+    pyx = tmp_path / "probe.pyx"
+    args, error = cython_authority._standalone_cython_generator_args(
+        ("cython", *override, str(pyx)), build_root=tmp_path, pyx_path=pyx
+    )
+    assert args is None and error is not None and "owned generation directory" in error
 
 
 def test_ninja_command_strips_separate_shared_and_replaced_paths(
@@ -622,18 +619,18 @@ def test_molt_regenerates_ni_label_standalone_without_cyutility(
 ) -> None:
     assert PYX_PATH is not None
     assert NUMPY_SOURCE_ROOT is not None
-    version = cython_authority._installed_cython_version(sys.executable)
+    version = _CYTHON_VERSION
     assert version is not None
-    regeneration, error = cython_authority.regenerate_cython_c_standalone(
-        pyx_path=PYX_PATH,
-        original_c=Path("_ni_label.c"),
-        language=cython_authority.SourceExtensionLanguage.C,
-        out_dir=tmp_path / "standalone",
-        include_dirs=[PYX_PATH.parent],
-        cython_version=version,
-        python_exe=sys.executable,
-        package_roots=[NUMPY_SOURCE_ROOT],
-    )
+    with cython_tool.cython_execution(pyproject={}, working_directory=tmp_path) as tool:
+        regeneration, error = cython_authority.regenerate_cython_c_standalone(
+            pyx_path=PYX_PATH,
+            original_c=Path("_ni_label.c"),
+            language=cython_authority.SourceExtensionLanguage.C,
+            out_dir=tmp_path / "standalone",
+            include_dirs=[PYX_PATH.parent],
+            tool=tool,
+            package_roots=[NUMPY_SOURCE_ROOT],
+        )
     assert error is None, error
     assert regeneration is not None
     generated = regeneration.regenerated_c.read_text(encoding="utf-8", errors="replace")

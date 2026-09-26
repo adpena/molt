@@ -424,6 +424,69 @@ def verify_tree_file(
     entries: Mapping[str, Mapping[str, object]],
     nodes: Mapping[str, Mapping[str, object]],
 ) -> VerifiedTreeFile:
+    """Revalidate one selected file through the shared batch authority."""
+    return verify_tree_files(root, (relative,), entries=entries, nodes=nodes)[0]
+
+
+def verify_tree_files(
+    root: Path,
+    relatives: Sequence[str],
+    *,
+    entries: Mapping[str, Mapping[str, object]],
+    nodes: Mapping[str, Mapping[str, object]],
+) -> tuple[VerifiedTreeFile, ...]:
+    """Verify a file cohort with one alias index and directory snapshot.
+
+    The cache lasts only for this read: directory membership and file identities
+    are fenced across the whole batch, never reused across live operations.
+    """
+    peers: dict[str, dict[str, Mapping[str, object]]] = {}
+    for name, row in entries.items():
+        if isinstance(row.get("node"), str):
+            peers.setdefault(str(row["node"]), {})[name] = row
+    directory_names: dict[Path, dict[str, str]] = {}
+    snapshots: dict[Path, tuple[int, ...]] = {}
+    verified: dict[str, VerifiedTreeFile] = {}
+    for relative in relatives:
+        node = str(entries.get(relative, {}).get("node"))
+        if node not in verified:
+            verified[node] = _verify_tree_file(
+                root,
+                relative,
+                entries=entries,
+                nodes=nodes,
+                peers=peers.get(node, {}),
+                directory_names=directory_names,
+                snapshots=snapshots,
+            )
+    for path, before in snapshots.items():
+        if _path_stat_identity(path.lstat()) != before:
+            raise PythonEnvironmentIdentityError(
+                f"tree topology changed during consumer check: {path}"
+            )
+    for file in verified.values():
+        verify_stable_regular_file_identity(file.content, label="tree consumer file")
+    return tuple(
+        VerifiedTreeFile(
+            path=resolve_native_tree_path(
+                root, relative, directory_names=directory_names
+            ),
+            content=verified[str(entries[relative]["node"])].content,
+        )
+        for relative in relatives
+    )
+
+
+def _verify_tree_file(
+    root: Path,
+    relative: str,
+    *,
+    entries: Mapping[str, Mapping[str, object]],
+    nodes: Mapping[str, Mapping[str, object]],
+    peers: Mapping[str, Mapping[str, object]],
+    directory_names: dict[Path, dict[str, str]],
+    snapshots: dict[Path, tuple[int, ...]],
+) -> VerifiedTreeFile:
     """Revalidate a selected tree file's content, access and alias topology.
 
     This is a bounded consumer check, not a replacement for capture-wide
@@ -436,10 +499,7 @@ def verify_tree_file(
             f"file is absent from tree custody: {relative}"
         )
     node_id = str(entry["node"])
-    peers = {name: row for name, row in entries.items() if row.get("node") == node_id}
-    snapshots: dict[Path, tuple[int, ...]] = {}
     primary: Path | None = None
-    directory_names: dict[Path, dict[str, str]] = {}
 
     def host_path(name: str) -> Path:
         return resolve_native_tree_path(
@@ -450,6 +510,8 @@ def verify_tree_file(
         )
 
     def check_directory(path: Path) -> None:
+        if path in snapshots:
+            return
         metadata = path.lstat()
         if not stat.S_ISDIR(metadata.st_mode) or _metadata_is_junction(metadata):
             raise PythonEnvironmentIdentityError(
@@ -518,11 +580,6 @@ def verify_tree_file(
         raise PythonEnvironmentIdentityError(
             f"tree file content differs from receipt: {relative}"
         )
-    for path, before in snapshots.items():
-        if _path_stat_identity(path.lstat()) != before:
-            raise PythonEnvironmentIdentityError(
-                f"tree topology changed during consumer check: {path}"
-            )
     return VerifiedTreeFile(path=host_path(relative), content=identity)
 
 

@@ -821,6 +821,97 @@ def test_selected_tree_file_resolves_normalized_receipt_to_host_spelling(tmp_pat
     assert result.content.sha256 == hashlib.sha256(b"unicode").hexdigest()
 
 
+@pytest.mark.parametrize("mutate", [False, True])
+def test_selected_tree_batch_fences_earlier_files_and_shares_enumeration(
+    tmp_path, monkeypatch, mutate
+):
+    folder = tmp_path / "tools"
+    folder.mkdir()
+    first, second = folder / "first", folder / "second"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    tree, pool = _tree(tmp_path, files.PythonFileCaptureContext())
+    scanned = []
+    scandir = files.os.scandir
+    identity = files.stable_regular_file_identity
+
+    def scan(path):
+        scanned.append(Path(path))
+        return scandir(path)
+
+    def capture(path, **kw):
+        if mutate and path == second:
+            first.write_bytes(b"other")
+        return identity(path, **kw)
+
+    monkeypatch.setattr(files.os, "scandir", scan)
+    monkeypatch.setattr(files, "stable_regular_file_identity", capture)
+
+    def verify():
+        return files.verify_tree_files(
+            tmp_path,
+            ("tools/first", "tools/second", "tools/first"),
+            entries={row["path"]: row for row in tree["entries"]},
+            nodes={row["id"]: row for row in pool.nodes},
+        )
+
+    if mutate:
+        with pytest.raises(ValueError, match="changed"):
+            verify()
+    else:
+        result = verify()
+        assert [item.path for item in result] == [first, second, first]
+        assert [item.content.sha256 for item in result] == [
+            hashlib.sha256(value).hexdigest()
+            for value in (b"first", b"second", b"first")
+        ]
+        assert scanned.count(folder) == 1 and scanned.count(tmp_path) == 1
+
+
+@pytest.mark.parametrize("kind", ["tree-reference", "runtime-role-reference"])
+def test_selected_tree_interpreter_rejects_equal_content_retarget(tmp_path, kind):
+    from molt.cli.source_build_inventory import SourceBuildInventory
+
+    root = tmp_path / "environment"
+    root.mkdir()
+    base = tmp_path / "base-python"
+    other = tmp_path / "other-python"
+    base.write_bytes(b"python")
+    other.write_bytes(b"python")
+    selected = root / "python"
+    # This test targets the live selected-entry consumer. Receipt parsing has
+    # separate complete environment fixtures; here use the real file-node scan.
+    inventory = SourceBuildInventory.__new__(SourceBuildInventory)
+    inventory.root = root
+    inventory.python_executable = selected
+    inventory._python_kind = kind
+    inventory._python_content = {
+        "size": 6,
+        "sha256": hashlib.sha256(b"python").hexdigest(),
+    }
+    if kind == "tree-reference":
+        selected.write_bytes(b"python")
+        tree, pool = _tree(root, files.PythonFileCaptureContext())
+        inventory._entries = {row["path"]: row for row in tree["entries"]}
+        inventory._nodes = {row["id"]: row for row in pool.nodes}
+    else:
+        try:
+            selected.symlink_to(base)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+    assert (
+        inventory.python_identity(base_executable=base).sha256
+        == hashlib.sha256(b"python").hexdigest()
+    )
+    selected.unlink()
+    try:
+        selected.symlink_to(other)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    with pytest.raises(ValueError, match="differs"):
+        inventory.python_identity(base_executable=base)
+
+
 @pytest.mark.parametrize("name,alias", _PORTABLE_PATH_ALIASES)
 def test_selected_tree_consumer_rejects_portable_aliases_on_every_host(
     tmp_path, monkeypatch, name, alias

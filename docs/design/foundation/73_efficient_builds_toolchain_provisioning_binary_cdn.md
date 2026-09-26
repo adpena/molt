@@ -107,10 +107,12 @@ maintainer, and source-rebuild dependencies. Shipped end-user binaries consume
 verified artifacts and do not require those tools; they enter this path only on
 an explicit local source rebuild or registry miss that policy permits to build.
 
-**Gate (self-protect):** a test that `molt build` on a program importing scipy
-(distance_transform_edt/gaussian_filter/label) auto-provisions Cython + the wasm
-sysroot and produces the required extension artifacts with NO manual env vars,
-or fails closed naming the exact missing tool + how to provision it.
+**Gate (self-protect):** `molt build` on a program importing scipy
+(distance_transform_edt/gaussian_filter/label) consumes the explicitly prepared
+source-build environment and cross-toolchain, or fails closed naming the exact
+missing requirement and its setup command. Compilation never implicitly installs
+or upgrades Cython. Requirement and generation contracts are owned by the
+[extension pipeline](../../spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md).
 
 ## R73.3 — Precompiled Molt-binary registry / CDN for complex libraries
 
