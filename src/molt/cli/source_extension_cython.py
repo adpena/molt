@@ -26,6 +26,7 @@ when it cannot be provisioned.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shlex
@@ -34,11 +35,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from molt.cli.source_extension_language import SourceExtensionLanguage
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from molt.cli.dependency_files import parse_make_depfile
 from molt.file_hashing import _sha256_file
 from molt import process_guard
+
+if TYPE_CHECKING:
+    from molt.cli.source_extensions import _SourceExtensionBuildPlan
 
 # Cython emits the ``.pyx`` -> C generated file with the same stem. A Cython
 # source group in a meson build pairs the ``.pyx`` (a non-compiled input) with
@@ -821,6 +825,7 @@ def _query_ninja_generator_commands(
                 str(build_root),
                 "-t",
                 "commands",
+                "-s",
                 relative_output.as_posix(),
             ],
             capture_output=True,
@@ -844,7 +849,11 @@ def generated_c_pyx_from_ninja(
     build_root: Path,
     ninja_command: Sequence[str] = (),
 ) -> tuple[Path | None, str | None]:
-    """Resolve the unique real ``.pyx`` input for a Ninja-generated C unit."""
+    """Resolve the owning Cython input, or None for a different generator.
+
+    Only the output's own command is queried, never transitive generators.
+    An identified Cython command with missing/ambiguous inputs fails closed.
+    """
     root = build_root.resolve()
     ninja_path = root / "build.ninja"
     if not ninja_path.is_file():
@@ -864,11 +873,13 @@ def generated_c_pyx_from_ninja(
             f"{query_error}"
         )
     assert stdout is not None
+    if not stdout.strip():
+        return None, f"Ninja graph for {generated_c} has no owning generator command"
     commands: list[tuple[Path, ...]] = []
     for command in stdout.splitlines():
         tokens = _split_generator_command(command)
         if tokens is None:
-            continue
+            return None, f"Ninja generator command is malformed for {generated_c}"
         argument_start = _cython_command_argument_start(tokens)
         if argument_start is None:
             continue
@@ -879,8 +890,9 @@ def generated_c_pyx_from_ninja(
             candidate = _resolve_generator_path(token, build_root=root)
             if candidate.is_file() and candidate not in inputs:
                 inputs.append(candidate)
-        if inputs:
-            commands.append(tuple(inputs))
+        commands.append(tuple(inputs))
+    if not commands:
+        return None, None
     if len(commands) != 1:
         return None, (
             f"Ninja graph for {generated_c} exposes {len(commands)} Cython "
@@ -977,6 +989,115 @@ def _cython_generator_args_from_ninja(
     return directives, None
 
 
+@dataclass(frozen=True)
+class _CythonGenerationInput:
+    original_c: Path
+    pyx_path: Path
+    language: SourceExtensionLanguage
+    include_dirs: tuple[Path, ...]
+
+
+def source_plan_cython_regenerations(
+    *,
+    plan: _SourceExtensionBuildPlan,
+    pyproject: Mapping[str, Any],
+    ninja_command: Sequence[str],
+    abi_tier: str,
+) -> tuple[tuple[CythonRegeneration | None, ...] | None, str | None]:
+    """Project immutable generation results onto every compiled unit.
+
+    The original producer output owns its Ninja directives. Language and ordered
+    include inputs may differ between its compiled variants; those requests must
+    not merge search paths or overwrite a shared generated file. Equal requests
+    within this build share a single generation (version/interpreter/package roots
+    are fixed here), while distinct requests own distinct output directories.
+    """
+    pyx_candidates = tuple(
+        path
+        for path in (*plan.non_compiled_inputs, *plan.sources, *plan.generated_sources)
+        if path.suffix.lower() == ".pyx"
+    )
+    requests: list[_CythonGenerationInput | None] = []
+    source_inputs: dict[Path, Path | None] = {}
+    has_ninja = (plan.build_root / "build.ninja").is_file()
+    for unit in plan.compile_units:
+        original = unit.source_path.resolve()
+        if original not in source_inputs:
+            matches = generated_c_pyx_matches(
+                generated_c=original, pyx_candidates=pyx_candidates
+            )
+            pyx_path = matches[0] if len(matches) == 1 else None
+            if (unit.generated and has_ninja) or len(matches) > 1:
+                pyx_path, error = generated_c_pyx_from_ninja(
+                    generated_c=original,
+                    build_root=plan.build_root,
+                    ninja_command=ninja_command,
+                )
+                if error is not None:
+                    return None, error
+                if pyx_path is None and len(matches) > 1 and not has_ninja:
+                    return (
+                        None,
+                        f"Ambiguous Cython input for producer output {original}",
+                    )
+            source_inputs[original] = pyx_path
+        pyx_path = source_inputs[original]
+        requests.append(
+            _CythonGenerationInput(
+                original_c=original,
+                pyx_path=pyx_path,
+                language=unit.language,
+                include_dirs=tuple(path.resolve() for path in unit.include_dirs),
+            )
+            if pyx_path is not None and pyx_path.is_file()
+            else None
+        )
+    if not any(requests):
+        return (None,) * len(requests), None
+    if abi_tier != "cpython-abi":
+        return None, "Standalone Cython extensions require --abi-tier cpython-abi"
+    interpreter = sys.executable
+    version, error = provision_cython(
+        python_exe=interpreter,
+        requirement=cython_build_requirement_from_pyproject(pyproject),
+    )
+    if error is not None:
+        return None, error
+    assert version is not None
+    generation_root = (
+        plan.build_root
+        / "molt_cython_standalone"
+        / hashlib.sha256(plan.target_id.encode("utf-8")).hexdigest()
+    )
+    generated: dict[_CythonGenerationInput, CythonRegeneration] = {}
+    results: list[CythonRegeneration | None] = []
+    for request in requests:
+        if request is None:
+            results.append(None)
+            continue
+        regeneration = generated.get(request)
+        if regeneration is None:
+            regeneration, error = regenerate_cython_c_standalone(
+                pyx_path=request.pyx_path,
+                original_c=request.original_c,
+                language=request.language,
+                # Stable plan order, independent of the producer's absolute root.
+                # Input custody later content-addresses the generated bytes.
+                out_dir=generation_root / str(len(generated)),
+                include_dirs=request.include_dirs,
+                cython_version=version,
+                python_exe=interpreter,
+                package_roots=(plan.source_root, plan.build_root),
+                ninja_command=ninja_command,
+            )
+            if error is not None:
+                return None, error
+            assert regeneration is not None
+            generated[request] = regeneration
+        results.append(regeneration)
+    return tuple(results), None
+
+
 def regenerate_cython_c_standalone(
     *,
     pyx_path: Path,
@@ -991,7 +1112,8 @@ def regenerate_cython_c_standalone(
 ) -> tuple[CythonRegeneration | None, str | None]:
     """Run ``cython -3`` STANDALONE for ``pyx_path`` into ``out_dir``.
 
-    Standalone (no ``--shared``) makes Cython embed its utility code in the
+    ``out_dir`` is caller-owned for this generation request. Standalone (no
+    ``--shared``) makes Cython embed its utility code in the
     emitted C, so the module carries no ``scipy._cyutility`` /
     ``__Pyx_modinit_shared_function_import`` shared-utility import.
     """

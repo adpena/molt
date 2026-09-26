@@ -5,7 +5,7 @@ import json
 import os
 import re
 import shlex
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -21,7 +21,8 @@ from molt.cli.compiler_target import (
     compiler_target_triple,
     validate_compiler_target,
     source_extension_compiler_dialect,
-    compiler_frontend_arguments,
+    compiler_argument_spans,
+    COMPILER_OWNED_OPTIONS,
 )
 from molt.cli.source_extension_target import (
     SourceExtensionLinkDialect,
@@ -47,14 +48,9 @@ from molt.cli.source_extension_manifest_codec import (
 from molt.cli.source_extension_runtime_imports import (
     source_extension_runtime_python_imports,
 )
-from molt.cli.extension_scan_surface import _extract_c_api_tokens
-from molt.cli.extension_scan_surface import _extract_file_local_c_api_symbols
-from molt.cli.extension_scan_surface import _extract_preprocessor_definitions
 from molt.cli.extension_scan_surface import _extract_project_generated_c_api_prefixes
-from molt.cli.extension_scan_surface import _extract_project_defined_c_api_symbols
 from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.extension_scan_surface import _matches_project_generated_c_api_prefix
-from molt.cli.extension_scan_surface import _parse_preprocessor_argument_definition
 from molt.cli.extension_scan_surface import _strip_c_like_comments_and_literals
 from molt.cli.external_link_providers import (
     wasm_external_link_provider_symbol_classes,
@@ -96,13 +92,6 @@ _SOURCE_EXTENSION_SOURCE_SUFFIXES = {
     ".m",
     ".mm",
 }
-_SOURCE_EXTENSION_HEADER_SUFFIXES = {
-    ".h",
-    ".hh",
-    ".hpp",
-    ".hxx",
-    ".inc",
-}
 _SOURCE_EXTENSION_TARGET_OUTPUT_SUFFIXES = (
     ".molt.wasm",
     ".pyd",
@@ -141,6 +130,12 @@ class _SourceExtensionArtifactSymbolInspection:
 
 
 @dataclass(frozen=True)
+class _SourceExtensionCompileUnitIdentity:
+    owner_target_id: str
+    producer_object_path: Path
+
+
+@dataclass(frozen=True)
 class _SourceExtensionObjectFact:
     source_path: Path
     language: SourceExtensionLanguage
@@ -154,6 +149,7 @@ class _SourceExtensionObjectFact:
     symbol_authority: str
     symbol_command: tuple[str, ...]
     dependencies: tuple[_SourceExtensionDependencyFact, ...] = ()
+    producer_unit: _SourceExtensionCompileUnitIdentity | None = None
 
     def manifest_payload(
         self,
@@ -181,6 +177,11 @@ class _SourceExtensionObjectFact:
         }
         if self.symbol_command:
             payload["symbol_command"] = list(self.symbol_command)
+        if self.producer_unit is not None:
+            payload["producer_unit"] = {
+                "target_id": self.producer_unit.owner_target_id,
+                "object": self.producer_unit.producer_object_path.as_posix(),
+            }
         return payload
 
 
@@ -198,33 +199,33 @@ class _SourceExtensionObjectClosure:
         undefined_symbols: Sequence[str] | None = None,
         wasm_imports: Sequence[Mapping[str, str]] | None = None,
         runtime_symbols: Sequence[str] | None = None,
-        required_c_api_by_source: Mapping[Path, Sequence[str]] | None = None,
-        required_capsules_by_source: Mapping[Path, Sequence[str]] | None = None,
-        project_generated_c_api_by_source: Mapping[Path, Sequence[str]] | None = None,
+        required_c_api_by_object: Mapping[Path, Sequence[str]] | None = None,
+        required_capsules_by_object: Mapping[Path, Sequence[str]] | None = None,
+        project_generated_c_api_by_object: Mapping[Path, Sequence[str]] | None = None,
         project_generated_c_api_prefixes: Sequence[str] = (),
     ) -> dict[str, Any]:
-        c_api_by_source = required_c_api_by_source or {}
-        capsules_by_source = required_capsules_by_source or {}
-        generated_by_source = project_generated_c_api_by_source or {}
+        c_api_by_object = required_c_api_by_object or {}
+        capsules_by_object = required_capsules_by_object or {}
+        generated_by_object = project_generated_c_api_by_object or {}
         required_capsules = sorted(
             {
                 capsule
                 for fact in self.objects
-                for capsule in capsules_by_source.get(fact.source_path.resolve(), ())
+                for capsule in capsules_by_object.get(fact.object_path.resolve(), ())
             }
         )
         required_c_api_symbols = sorted(
             {
                 symbol
                 for fact in self.objects
-                for symbol in c_api_by_source.get(fact.source_path.resolve(), ())
+                for symbol in c_api_by_object.get(fact.object_path.resolve(), ())
             }
         )
         project_generated_c_api_symbols = sorted(
             {
                 symbol
                 for fact in self.objects
-                for symbol in generated_by_source.get(fact.source_path.resolve(), ())
+                for symbol in generated_by_object.get(fact.object_path.resolve(), ())
             }
         )
         return {
@@ -260,13 +261,13 @@ class _SourceExtensionObjectClosure:
             "objects": [
                 fact.manifest_payload(
                     required_c_api_symbols=tuple(
-                        c_api_by_source.get(fact.source_path.resolve(), ())
+                        c_api_by_object.get(fact.object_path.resolve(), ())
                     ),
                     required_capsules=tuple(
-                        capsules_by_source.get(fact.source_path.resolve(), ())
+                        capsules_by_object.get(fact.object_path.resolve(), ())
                     ),
                     project_generated_c_api_symbols=tuple(
-                        generated_by_source.get(fact.source_path.resolve(), ())
+                        generated_by_object.get(fact.object_path.resolve(), ())
                     ),
                 )
                 for fact in self.objects
@@ -276,59 +277,28 @@ class _SourceExtensionObjectClosure:
 
 @dataclass(frozen=True)
 class _SourceExtensionCAPIRequirements:
-    required_by_source: dict[Path, tuple[str, ...]]
-    required_capsules_by_source: dict[Path, tuple[str, ...]]
-    project_generated_c_api_by_source: dict[Path, tuple[str, ...]]
+    required_by_object: dict[Path, tuple[str, ...]]
+    required_capsules_by_object: dict[Path, tuple[str, ...]]
+    project_generated_c_api_by_object: dict[Path, tuple[str, ...]]
     project_generated_c_api_prefixes: tuple[str, ...]
     project_defined_symbols: tuple[str, ...]
     missing_symbols: tuple[str, ...]
     fail_fast_symbols: tuple[str, ...]
 
-    def restrict_to_link_closure(
-        self,
-        runtime_symbols: Iterable[str],
-    ) -> _SourceExtensionCAPIRequirements:
-        """Project textual requirements onto the compiled unresolved closure.
-
-        C/C++ sources intentionally retain alternative CPython-version and
-        Cython-feature branches.  The compiler's undefined-symbol closure is
-        the canonical statement of which external functions survived the exact
-        target preprocessor and optimizer.  Keeping the broader text scan in a
-        published seal creates a second, false reachability authority.
-        """
-
-        reachable = frozenset(runtime_symbols)
-        return _SourceExtensionCAPIRequirements(
-            required_by_source={
-                path: tuple(symbol for symbol in symbols if symbol in reachable)
-                for path, symbols in self.required_by_source.items()
-            },
-            required_capsules_by_source=self.required_capsules_by_source,
-            project_generated_c_api_by_source=(self.project_generated_c_api_by_source),
-            project_generated_c_api_prefixes=self.project_generated_c_api_prefixes,
-            project_defined_symbols=self.project_defined_symbols,
-            missing_symbols=tuple(
-                symbol for symbol in self.missing_symbols if symbol in reachable
-            ),
-            fail_fast_symbols=tuple(
-                symbol for symbol in self.fail_fast_symbols if symbol in reachable
-            ),
-        )
-
     def manifest_payload(self) -> dict[str, Any]:
         project_generated_symbols = sorted(
             {
                 symbol
-                for symbols in self.project_generated_c_api_by_source.values()
+                for symbols in self.project_generated_c_api_by_object.values()
                 for symbol in symbols
             }
         )
         return {
             "required_symbol_count": sum(
-                len(symbols) for symbols in self.required_by_source.values()
+                len(symbols) for symbols in self.required_by_object.values()
             ),
             "required_capsule_count": sum(
-                len(capsules) for capsules in self.required_capsules_by_source.values()
+                len(capsules) for capsules in self.required_capsules_by_object.values()
             ),
             "project_defined_symbol_count": len(self.project_defined_symbols),
             "project_generated_symbol_count": len(project_generated_symbols),
@@ -346,6 +316,8 @@ class _SourceExtensionCAPIRequirements:
 @dataclass(frozen=True)
 class _SourceExtensionCompileUnit:
     source_path: Path
+    owner_target_id: str
+    producer_object_path: Path
     generated: bool
     language: SourceExtensionLanguage
     compiler: tuple[str, ...]
@@ -353,9 +325,13 @@ class _SourceExtensionCompileUnit:
     compile_args: tuple[str, ...]
     force_include: bool = False
 
-    def manifest_payload(self) -> dict[str, Any]:
+    def manifest_payload(self, *, build_root: Path) -> dict[str, Any]:
         return {
             "source": str(self.source_path),
+            "owner_target_id": self.owner_target_id,
+            "producer_object_path": self.producer_object_path.resolve()
+            .relative_to(build_root.resolve())
+            .as_posix(),
             "force_include": self.force_include,
             "generated": self.generated,
             "language": self.language,
@@ -414,7 +390,10 @@ class _SourceExtensionBuildPlan:
                 str(path) for path in self.skipped_generated_sources
             ],
             "non_compiled_inputs": [str(path) for path in self.non_compiled_inputs],
-            "compile_units": [unit.manifest_payload() for unit in self.compile_units],
+            "compile_units": [
+                unit.manifest_payload(build_root=self.build_root)
+                for unit in self.compile_units
+            ],
             "include_dirs": [str(path) for path in self.include_dirs],
             "compile_args": list(self.compile_args),
             "link_args": list(self.link_args),
@@ -578,7 +557,10 @@ def _source_extension_build_plan_digest(plan: _SourceExtensionBuildPlan) -> str:
             str(path) for path in plan.skipped_generated_sources
         ],
         "non_compiled_inputs": [str(path) for path in plan.non_compiled_inputs],
-        "compile_units": [unit.manifest_payload() for unit in plan.compile_units],
+        "compile_units": [
+            unit.manifest_payload(build_root=plan.build_root)
+            for unit in plan.compile_units
+        ],
         "include_dirs": [str(path) for path in plan.include_dirs],
         "compile_args": list(plan.compile_args),
         "link_args": list(plan.link_args),
@@ -682,48 +664,6 @@ def _split_windows_command_line(command: str) -> list[str] | None:
     return argv
 
 
-_COMPILE_OUTPUT_OPTIONS = (
-    "-o",
-    "-MF",
-    "-MT",
-    "-MQ",
-    "-MJ",
-    "/Fo",
-    "/Fd",
-    "/Fa",
-    "/Fe",
-    "/Fi",
-    "/FR",
-    "/sourceDependencies",
-    "/scanDependencies",
-)
-
-
-def _compile_output_width(args: Sequence[str], index: int) -> int:
-    argument = args[index].removeprefix("/clang:")
-    if (
-        argument in _COMPILE_OUTPUT_OPTIONS
-        or argument == "/sourceDependencies:directives"
-    ):
-        if index + 1 == len(args):
-            raise ValueError(
-                f"source-extension compiler output {argument} has no operand"
-            )
-        return 2
-    if any(argument.startswith(option) for option in _COMPILE_OUTPUT_OPTIONS):
-        return 1
-    if argument in {
-        "-MD",
-        "-MMD",
-        "-MP",
-        "/showIncludes",
-        "/nologo",
-        "/FS",
-    } or re.fullmatch(r"/(?:MP[0-9]*|FA[cs]*)", argument):
-        return 1
-    return 0
-
-
 def _reject_unowned_precompiled_input(token: str) -> None:
     if token.startswith(
         (
@@ -755,49 +695,45 @@ def _compile_command_semantic_args(
     semantic_args: list[str] = []
     source_seen = False
     per_file_language: str | None = None
-    idx = 0
-    while idx < len(args):
-        arg = args[idx].removeprefix("/clang:")
-        _reject_unowned_precompiled_input(arg)
-        output_width = _compile_output_width(args, idx)
-        if output_width:
-            idx += output_width
+    for span in compiler_argument_spans(args):
+        arg = span.option
+        if span.context in {"opaque", "cc1"}:
+            semantic_args.extend(span.raw)
             continue
-        if arg == "-x" or (arg.startswith("-x") and len(arg) > 2):
-            width = 2 if arg == "-x" else 1
-            if not source_seen:
-                semantic_args.extend(
-                    compiler_frontend_arguments(args[idx : idx + width])
-                )
-            idx += width
-            continue
-        if arg.startswith(("/Tc", "/Tp")):
-            raw_source = (
-                arg[3:]
-                if len(arg) > 3
-                else (args[idx + 1] if idx + 1 < len(args) else "")
-            )
-            if (
-                raw_source
-                and _resolve_compile_command_path(raw_source, directory=directory)
-                == source_path
-            ):
-                per_file_language = "c" if arg.startswith("/Tc") else "c++"
-                source_seen = True
-            idx += 1 if len(arg) > 3 else 2
-            continue
-        if arg in {"-c", "/c"}:
-            idx += 1
-            continue
-        try:
-            if _resolve_compile_command_path(arg, directory=directory) == source_path:
-                source_seen = True
-                idx += 1
+        if span.context == "driver":
+            _reject_unowned_precompiled_input(arg)
+            if span.is_output or arg in {"-c", "/c", "--"}:
                 continue
-        except OSError:
-            pass
-        semantic_args.append(args[idx])
-        idx += 1
+            if arg.startswith("-x"):
+                if not source_seen:
+                    semantic_args.extend(span.raw)
+                continue
+            if arg.startswith(("/Tc", "/Tp")):
+                raw_source = arg[3:] if len(arg) > 3 else span.arguments[1]
+                if (
+                    _resolve_compile_command_path(raw_source, directory=directory)
+                    == source_path
+                ):
+                    per_file_language = "c" if arg.startswith("/Tc") else "c++"
+                    source_seen = True
+                continue
+        # Only standalone positional operands can identify the source. A macro,
+        # include path or opaque argument that equals it is still an operand.
+        if len(span.raw) == 1:
+            try:
+                if (
+                    _resolve_compile_command_path(arg, directory=directory)
+                    == source_path
+                ):
+                    source_seen = True
+                    continue
+            except OSError:
+                pass
+        if span.context == "positional":
+            raise ValueError(
+                f"source-extension compile command has extra positional input {arg!r}"
+            )
+        semantic_args.extend(span.raw)
     if per_file_language is not None:
         # /Tc and /Tp override global /TC and /TP regardless of order.
         semantic_args.extend(("-x", per_file_language))
@@ -812,22 +748,28 @@ def _compile_command_output_path(
     if not arguments:
         return None
     _compiler, args = _compile_command_compiler_and_args(arguments)
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        if arg in {"-o", "/Fo"} and idx + 1 < len(args):
-            return _resolve_compile_command_path(args[idx + 1], directory=directory)
-        if arg.startswith("-o") and len(arg) > 2:
-            return _resolve_compile_command_path(arg[2:], directory=directory)
-        if arg.startswith("/Fo") and len(arg) > 3:
-            return _resolve_compile_command_path(arg[3:], directory=directory)
-        idx += 1
-    return None
+    output_path: Path | None = None
+    for span in compiler_argument_spans(args):
+        option = span.output_option
+        if option in {"-o", "/Fo"}:
+            value = (
+                span.arguments[1]
+                if span.option == option
+                else span.option[len(option) :]
+            )
+            output_path = _resolve_compile_command_path(value, directory=directory)
+    return output_path
 
 
 def _path_is_within(path: Path, parent: Path) -> bool:
+    """Compare paths already resolved at Meson/compile-database ingestion.
+
+    Resolving again in every owner/member comparison performs filesystem I/O
+    proportional to graph edges times targets. Physical custody is established
+    at ingestion; containment itself is a lexical operation on that snapshot.
+    """
     try:
-        path.resolve().relative_to(parent.resolve())
+        path.relative_to(parent)
     except ValueError:
         return False
     return True
@@ -840,60 +782,56 @@ def _compile_command_args_and_include_dirs(
 ) -> tuple[tuple[str, ...], tuple[Path, ...]]:
     compile_args: list[str] = []
     include_dirs: list[Path] = []
-    items = list(compiler_frontend_arguments(arguments))
-    idx = 0
-    while idx < len(items):
-        item = items[idx]
-        if item == "-I" and idx + 1 < len(items):
-            include_dirs.append(
-                _resolve_compile_command_path(items[idx + 1], directory=directory)
-            )
-            idx += 2
+    for span in compiler_argument_spans(arguments):
+        item = span.option
+        if span.context != "driver":
+            compile_args.extend(span.raw)
             continue
-        if item.startswith("-I") and len(item) > 2:
+        if item in {"-I", "/I"}:
             include_dirs.append(
-                _resolve_compile_command_path(item[2:], directory=directory)
+                _resolve_compile_command_path(span.arguments[1], directory=directory)
             )
-            idx += 1
-            continue
-        if item == "/I" and idx + 1 < len(items):
-            include_dirs.append(
-                _resolve_compile_command_path(items[idx + 1], directory=directory)
-            )
-            idx += 2
-            continue
-        if item.startswith("/I") and len(item) > 2:
+        elif item.startswith(("-I", "/I")) and len(item) > 2:
             include_dirs.append(
                 _resolve_compile_command_path(item[2:], directory=directory)
             )
-            idx += 1
-            continue
-        if item in {
+        elif item in {
             "-isystem",
             "-iquote",
             "-include",
             "-imacros",
             "-idirafter",
             "/FI",
-        } and idx + 1 < len(items):
-            compile_args.append(item)
-            compile_args.append(
-                str(_resolve_compile_command_path(items[idx + 1], directory=directory))
+        }:
+            compile_args.extend(
+                (
+                    span.raw[0],
+                    str(
+                        _resolve_compile_command_path(
+                            span.arguments[1], directory=directory
+                        )
+                    ),
+                )
             )
-            idx += 2
-            continue
-        if item.startswith("/FI") and len(item) > 3:
+        elif item.startswith("/FI") and len(item) > 3:
             compile_args.extend(
                 (
                     "/FI",
                     str(_resolve_compile_command_path(item[3:], directory=directory)),
                 )
             )
-            idx += 1
-            continue
-        compile_args.append(item)
-        idx += 1
+        else:
+            compile_args.extend(span.raw)
     return tuple(compile_args), _dedupe_paths(include_dirs)
+
+
+@dataclass(frozen=True)
+class _CompileCommandUnit:
+    source_path: Path
+    object_path: Path
+    compiler: tuple[str, ...]
+    compile_args: tuple[str, ...]
+    include_dirs: tuple[Path, ...]
 
 
 def _load_compile_command_units(
@@ -902,7 +840,7 @@ def _load_compile_command_units(
     required_sources: set[Path] | None = None,
     target_output_roots: Sequence[Path] = (),
 ) -> tuple[
-    dict[Path, tuple[tuple[str, ...], tuple[str, ...], tuple[Path, ...]]] | None,
+    dict[Path, _CompileCommandUnit] | None,
     list[str],
 ]:
     if not compile_commands_path.exists() or not compile_commands_path.is_file():
@@ -926,13 +864,8 @@ def _load_compile_command_units(
         if required_sources is not None
         else None
     )
-    preferred_output_roots = _dedupe_paths(
-        [root.resolve() for root in target_output_roots]
-    )
-    candidates_by_source: dict[
-        Path,
-        list[tuple[tuple[tuple[str, ...], tuple[str, ...], tuple[Path, ...]], bool]],
-    ] = {}
+    owned_output_roots = _dedupe_paths([root.resolve() for root in target_output_roots])
+    commands_by_output: dict[Path, _CompileCommandUnit] = {}
     errors: list[str] = []
     for entry in payload:
         if not isinstance(entry, Mapping):
@@ -949,24 +882,44 @@ def _load_compile_command_units(
                 errors.append("compile_commands.json entry is missing non-empty 'file'")
             continue
         source_path = _resolve_compile_command_path(raw_file, directory=directory)
-        if (
-            required_source_paths is not None
-            and source_path not in required_source_paths
-        ):
-            continue
         arguments = _compile_command_arguments(entry)
         if arguments is None:
             errors.append(f"compile command for {source_path} lacks arguments/command")
             continue
         compiler, _compiler_args = _compile_command_compiler_and_args(arguments)
-        output_path = _compile_command_output_path(arguments, directory=directory)
-        target_owned = (
-            output_path is not None
-            and bool(preferred_output_roots)
-            and any(
-                _path_is_within(output_path, root) for root in preferred_output_roots
+        try:
+            command_output_path = _compile_command_output_path(
+                arguments, directory=directory
             )
+        except ValueError as exc:
+            errors.append(f"compile command for {source_path}: {exc}")
+            continue
+        raw_output = entry.get("output")
+        declared_output_path = (
+            _resolve_compile_command_path(raw_output, directory=directory)
+            if isinstance(raw_output, str) and raw_output.strip()
+            else None
         )
+        if (
+            command_output_path is not None
+            and declared_output_path is not None
+            and command_output_path != declared_output_path
+        ):
+            errors.append(
+                "compile_commands.json output disagrees with the compiler command "
+                f"for {source_path}: {declared_output_path} != {command_output_path}"
+            )
+            continue
+        output_path = declared_output_path or command_output_path
+        if output_path is None:
+            errors.append(
+                f"compile_commands.json entry has no object output for {source_path}"
+            )
+            continue
+        if owned_output_roots and not any(
+            _path_is_within(output_path, root) for root in owned_output_roots
+        ):
+            continue
         try:
             semantic_args = _compile_command_semantic_args(
                 arguments,
@@ -980,32 +933,29 @@ def _load_compile_command_units(
         except ValueError as exc:
             errors.append(f"compile command for {source_path}: {exc}")
             continue
-        unit = (compiler, compile_args, include_dirs)
-        candidates_by_source.setdefault(source_path, []).append((unit, target_owned))
-
-    commands_by_source: dict[
-        Path, tuple[tuple[str, ...], tuple[str, ...], tuple[Path, ...]]
-    ] = {}
-    for source_path, candidates in candidates_by_source.items():
-        target_owned_units = [unit for unit, target_owned in candidates if target_owned]
-        selected_units = target_owned_units or [
-            unit for unit, _target_owned in candidates
-        ]
-        unique_units: list[
-            tuple[tuple[str, ...], tuple[str, ...], tuple[Path, ...]]
-        ] = []
-        for unit in selected_units:
-            if unit not in unique_units:
-                unique_units.append(unit)
-        if len(unique_units) > 1:
+        unit = _CompileCommandUnit(
+            source_path=source_path,
+            object_path=output_path,
+            compiler=compiler,
+            compile_args=compile_args,
+            include_dirs=include_dirs,
+        )
+        existing = commands_by_output.get(output_path)
+        if existing is not None and existing != unit:
             errors.append(
-                f"compile_commands.json has conflicting entries for {source_path}"
+                "compile_commands.json has conflicting commands for object "
+                f"{output_path}: {existing.source_path} and {source_path}"
             )
             continue
-        commands_by_source[source_path] = unique_units[0]
+        commands_by_output[output_path] = unit
     if errors:
         return None, errors
-    return commands_by_source, []
+    return {
+        path: commands_by_output[path]
+        for path in sorted(commands_by_output)
+        if required_source_paths is None
+        or commands_by_output[path].source_path in required_source_paths
+    }, []
 
 
 def _ninja_logical_lines(path: Path) -> tuple[str, ...]:
@@ -1530,7 +1480,6 @@ def _load_meson_intro_targets_source_extension_plan(
         return None, [str(exc)]
     linked_static_targets = projection.targets
     link_args = projection.link_args
-    forced_sources: set[Path] = set()
     for linked_target in linked_static_targets:
         if str(linked_target["id"]) not in projection.forced_target_ids:
             continue
@@ -1549,13 +1498,14 @@ def _load_meson_intro_targets_source_extension_plan(
                         prefer_build_root=prefer_build,
                     )
                     if _is_compilable_source_path(source_path):
-                        forced_sources.add(source_path.resolve())
                         if not source_path.is_file():
                             errors.append(
                                 "Meson forced static-library member source is missing: "
                                 + str(source_path)
                             )
-    combined_source_groups: list[Mapping[str, Any]] = list(target_sources)
+    owned_source_groups: list[tuple[str, Mapping[str, Any]]] = [
+        (target_id, group) for group in target_sources if isinstance(group, Mapping)
+    ]
     skipped_generated_sources: list[Path] = []
     for linked_target in linked_static_targets:
         linked_sources = linked_target.get("target_sources")
@@ -1577,28 +1527,28 @@ def _load_meson_intro_targets_source_extension_plan(
                 source_root=resolved_source_root,
                 build_root=resolved_build_root,
             )
-            combined_source_groups.append(filtered_group)
+            owned_source_groups.append((str(linked_target["id"]), filtered_group))
             skipped_generated_sources.extend(skipped)
 
-    target_output_roots = _meson_target_object_roots(
-        target.get("filename"),
-        build_root=resolved_build_root,
-    )
-    for linked_target in linked_static_targets:
-        target_output_roots = _dedupe_paths(
-            (
-                *target_output_roots,
-                *_meson_target_object_roots(
-                    linked_target.get("filename"),
-                    build_root=resolved_build_root,
-                ),
-            )
+    object_roots_by_owner = {
+        str(owner["id"]): _meson_target_object_roots(
+            owner.get("filename"), build_root=resolved_build_root
         )
+        for owner in (target, *linked_static_targets)
+    }
+    for owner_id, roots in object_roots_by_owner.items():
+        if not roots or any(
+            not _path_is_within(root, resolved_build_root) for root in roots
+        ):
+            errors.append(f"Meson target {owner_id!r} has no build-owned object roots")
+    if errors:
+        return None, errors
+    target_output_roots = _dedupe_paths(
+        [root for roots in object_roots_by_owner.values() for root in roots]
+    )
 
     target_compile_command_sources: list[Path] = []
-    for source_group in combined_source_groups:
-        if not isinstance(source_group, Mapping):
-            continue
+    for _owner_id, source_group in owned_source_groups:
         for raw_source in source_group.get("sources") or ():
             source_path = _resolve_meson_plan_artifact_path(
                 raw_source,
@@ -1624,126 +1574,113 @@ def _load_meson_intro_targets_source_extension_plan(
     )
     errors.extend(compile_command_errors)
     if compile_command_units is None:
-        compile_command_units = {}
+        return None, errors
+
+    commands_by_owner_source: dict[tuple[str, Path], list[_CompileCommandUnit]] = {}
+    for command_unit in compile_command_units.values():
+        owners = [
+            owner_id
+            for owner_id, roots in object_roots_by_owner.items()
+            if any(_path_is_within(command_unit.object_path, root) for root in roots)
+        ]
+        if len(owners) != 1:
+            errors.append(
+                "Meson compile output must have exactly one target owner: "
+                f"{command_unit.object_path} ({owners!r})"
+            )
+            continue
+        commands_by_owner_source.setdefault(
+            (owners[0], command_unit.source_path), []
+        ).append(command_unit)
 
     sources: list[Path] = []
     generated_sources: list[Path] = []
     non_compiled_inputs: list[Path] = []
     compile_units: list[_SourceExtensionCompileUnit] = []
-    compile_units_by_source: dict[Path, _SourceExtensionCompileUnit] = {}
+    compile_units_by_object: dict[Path, _SourceExtensionCompileUnit] = {}
     include_dirs: list[Path] = []
     compile_args: list[str] = []
 
     def append_compile_unit(
         *,
         source_path: Path,
+        owner_id: str,
         generated: bool,
         language: str | None,
-        unit_compiler: tuple[str, ...],
-        unit_includes: tuple[Path, ...],
-        unit_args: tuple[str, ...],
+        command_unit: _CompileCommandUnit,
     ) -> None:
         resolved_source_path = source_path.resolve()
         try:
             resolved_language, unit_args = resolve_source_extension_compile_language(
                 source_path=resolved_source_path,
                 language=language,
-                compile_args=unit_args,
+                compile_args=command_unit.compile_args,
             )
         except ValueError as exc:
             errors.append(f"invalid compile language for {resolved_source_path}: {exc}")
             return
         unit = _SourceExtensionCompileUnit(
             source_path=resolved_source_path,
+            owner_target_id=owner_id,
+            producer_object_path=command_unit.object_path,
             generated=generated,
             language=resolved_language,
-            compiler=unit_compiler,
-            include_dirs=unit_includes,
+            compiler=command_unit.compiler,
+            include_dirs=command_unit.include_dirs,
             compile_args=unit_args,
-            force_include=resolved_source_path in forced_sources,
+            force_include=owner_id in projection.forced_target_ids,
         )
-        existing = compile_units_by_source.get(resolved_source_path)
+        existing = compile_units_by_object.get(command_unit.object_path)
         if existing is not None:
             if existing != unit:
                 errors.append(
-                    "Meson target lists compiled source with conflicting metadata: "
-                    f"{resolved_source_path}"
+                    "Meson object output has conflicting compile-unit metadata: "
+                    f"{command_unit.object_path}"
                 )
             return
-        compile_units_by_source[resolved_source_path] = unit
+        compile_units_by_object[command_unit.object_path] = unit
         compile_units.append(unit)
         compile_args.extend(unit_args)
-        include_dirs.extend(unit_includes)
+        include_dirs.extend(command_unit.include_dirs)
 
-    for source_group in combined_source_groups:
-        if not isinstance(source_group, Mapping):
-            continue
+    for owner_id, source_group in owned_source_groups:
         language_value = source_group.get("language")
         language = (
             language_value.strip()
             if isinstance(language_value, str) and language_value.strip()
             else None
         )
-        for raw_source in source_group.get("sources") or ():
-            source_path = _resolve_meson_plan_artifact_path(
-                raw_source,
-                source_root=resolved_source_root,
-                build_root=resolved_build_root,
-                prefer_build_root=False,
-            )
-            if _is_compilable_source_path(source_path):
-                command_unit = compile_command_units.get(source_path.resolve())
-                if command_unit is None:
-                    errors.append(
-                        "compile_commands.json has no entry for Meson target "
-                        f"source: {source_path.resolve()}"
-                    )
-                    unit_compiler: tuple[str, ...] = ()
-                    unit_args: tuple[str, ...] = ()
-                    unit_includes: tuple[Path, ...] = ()
-                else:
-                    unit_compiler, unit_args, unit_includes = command_unit
-                sources.append(source_path)
-                append_compile_unit(
-                    source_path=source_path,
-                    generated=False,
-                    language=language,
-                    unit_compiler=unit_compiler,
-                    unit_includes=unit_includes,
-                    unit_args=unit_args,
+        for field, generated, destination in (
+            ("sources", False, sources),
+            ("generated_sources", True, generated_sources),
+        ):
+            for raw_source in source_group.get(field) or ():
+                source_path = _resolve_meson_plan_artifact_path(
+                    raw_source,
+                    source_root=resolved_source_root,
+                    build_root=resolved_build_root,
+                    prefer_build_root=generated,
                 )
-            else:
-                non_compiled_inputs.append(source_path)
-        for raw_source in source_group.get("generated_sources") or ():
-            source_path = _resolve_meson_plan_artifact_path(
-                raw_source,
-                source_root=resolved_source_root,
-                build_root=resolved_build_root,
-                prefer_build_root=True,
-            )
-            if _is_compilable_source_path(source_path):
-                command_unit = compile_command_units.get(source_path.resolve())
-                if command_unit is None:
-                    errors.append(
-                        "compile_commands.json has no entry for Meson target "
-                        f"generated source: {source_path.resolve()}"
-                    )
-                    unit_compiler = ()
-                    unit_args = ()
-                    unit_includes = ()
-                else:
-                    unit_compiler, unit_args, unit_includes = command_unit
-                generated_sources.append(source_path)
-                append_compile_unit(
-                    source_path=source_path,
-                    generated=True,
-                    language=language,
-                    unit_compiler=unit_compiler,
-                    unit_includes=unit_includes,
-                    unit_args=unit_args,
+                if not _is_compilable_source_path(source_path):
+                    non_compiled_inputs.append(source_path)
+                    continue
+                destination.append(source_path)
+                command_units = commands_by_owner_source.get(
+                    (owner_id, source_path.resolve()), ()
                 )
-            else:
-                non_compiled_inputs.append(source_path)
+                if not command_units:
+                    errors.append(
+                        "compile_commands.json has no owned entry for Meson target "
+                        f"{owner_id!r} source: {source_path.resolve()}"
+                    )
+                for command_unit in command_units:
+                    append_compile_unit(
+                        source_path=source_path,
+                        owner_id=owner_id,
+                        generated=generated,
+                        language=language,
+                        command_unit=command_unit,
+                    )
 
     deduped_sources = _dedupe_paths(sources)
     deduped_generated_sources = _dedupe_paths(generated_sources)
@@ -2006,27 +1943,11 @@ def _source_extension_replay_compile_args(
     compiler_target: str,
     compiler_command: Sequence[str] = (),
 ) -> list[str]:
-    """Replay semantic unit flags without duplicating target authority.
-
-    The canonical C/C++ command family owns the target and sysroot. Upstream
-    compile databases remain authoritative for per-unit language/optimization
-    flags, but may not silently override that attested command after it is
-    materialized.
-    """
+    """Replay semantic spans without duplicating target or operand authority."""
     validate_compiler_target(unit_compile_args, compiler_target)
     dialect = source_extension_compiler_dialect(compiler_command or ("clang",))
     out: list[str] = []
-    args = compiler_frontend_arguments(unit_compile_args)
-    pair_options = {
-        "-target",
-        "--target",
-        "-triple",
-        "--sysroot",
-        "-isysroot",
-        "/winsysroot",
-        "-arch",
-    }
-    joined_options = tuple(option + "=" for option in pair_options) + (
+    joined_options = tuple(option + "=" for option in COMPILER_OWNED_OPTIONS) + (
         "/winsysroot:",
         "--driver-mode=",
         "-ffile-prefix-map=",
@@ -2034,57 +1955,24 @@ def _source_extension_replay_compile_args(
         "-fmacro-prefix-map=",
         "/pathmap:",
     )
-    index = 0
-    while index < len(args):
-        token = args[index]
-        cc1 = token == "-Xclang"
-        if cc1:
-            index += 1
-            if index == len(args):
-                raise ValueError("source-extension -Xclang has no frontend operand")
-            token = args[index]
-        _reject_unowned_precompiled_input(token)
-        if token in pair_options:
-            index += 1
-            if cc1 and index < len(args) and args[index] == "-Xclang":
-                index += 1
-            if index == len(args) or args[index].startswith("-"):
-                raise ValueError(f"source-extension compiler {token} has no operand")
-            index += 1
-            continue
-        if token.startswith(joined_options) or token in {"-m32", "-m64", "-mx32"}:
-            index += 1
-            continue
-        if cc1:
-            out.extend((dialect.forward("-Xclang"), dialect.forward(token)))
-        else:
-            width = _compile_output_width(args, index)
-            if width:
-                index += width
+    for span in compiler_argument_spans(unit_compile_args):
+        token = span.option
+        if span.context in {"driver", "cc1"}:
+            _reject_unowned_precompiled_input(token)
+            if (
+                token in COMPILER_OWNED_OPTIONS
+                or token.startswith(joined_options)
+                or token in {"-m32", "-m64", "-mx32"}
+                or span.is_output
+            ):
                 continue
-            out.append(dialect.forward(token) if token.startswith("-") else token)
-            if token in {
-                "-D",
-                "-U",
-                "-I",
-                "-isystem",
-                "-iquote",
-                "-include",
-                "-imacros",
-                "-idirafter",
-                "/FI",
-            }:
-                index += 1
-                if index == len(args):
-                    raise ValueError(
-                        f"source-extension compiler {token} has no operand"
-                    )
-                out.append(
-                    dialect.forward(args[index])
-                    if token.startswith("-")
-                    else args[index]
-                )
-        index += 1
+        # The complete span crosses the driver transport boundary as one unit.
+        # In particular an LLVM/assembler/preprocessor operand is never parsed
+        # again as an output, language, target, macro or include selector.
+        forward = token.startswith("-") and span.context != "positional"
+        out.extend(
+            dialect.forward(value) if forward else value for value in span.arguments
+        )
     return out
 
 
@@ -2097,6 +1985,7 @@ def _source_extension_object_fact(
     dependency_paths: Sequence[Path] = (),
     nm_command: Sequence[str] | None = None,
     target_triple: str | None = None,
+    producer_unit: _SourceExtensionCompileUnitIdentity | None = None,
 ) -> tuple[_SourceExtensionObjectFact | None, str | None]:
     from molt.cli.native_symbol_inspection import (
         NativeSymbolInspectionError,
@@ -2121,33 +2010,27 @@ def _source_extension_object_fact(
     symbol_authority = symbol_inspection.symbol_authority
     object_root = object_path.parent.resolve()
     canonical_compile_command_parts: list[str] = []
-    transient_value_flags = {"-o", "-MF"}
-    for index, token in enumerate(compile_command):
-        previous = compile_command[index - 1] if index else None
-        canonical = token
-        if token in {str(object_path), object_path.as_posix()} or (
-            previous in transient_value_flags
-            and Path(token).expanduser().parent.resolve() == object_root
-        ):
-            canonical = f"@object-root/{Path(token).name}"
-        elif token.startswith(("/Fo", "/clang:-MF", "-MF", "-o")):
-            canonical = token.replace(str(object_root), "@object-root").replace(
-                object_root.as_posix(), "@object-root"
+    for span in compiler_argument_spans(compile_command):
+        transient = span.context == "driver" and (
+            span.output_option in {"-o", "-MF", "/Fo"}
+            or span.option.startswith(
+                (
+                    "-ffile-prefix-map=",
+                    "-fdebug-prefix-map=",
+                    "-fmacro-prefix-map=",
+                    "/pathmap:",
+                )
             )
-        elif token.removeprefix("/clang:").startswith(
-            (
-                "-ffile-prefix-map=",
-                "-fdebug-prefix-map=",
-                "-fmacro-prefix-map=",
-                "/pathmap:",
-            )
-        ):
-            canonical = token.replace(str(object_root), "@object-root").replace(
-                object_root.as_posix(), "@object-root"
-            )
-        if "@object-root" in canonical:
-            canonical = canonical.replace("\\", "/")
-        canonical_compile_command_parts.append(canonical)
+        )
+        for token in span.raw:
+            canonical = token
+            if transient:
+                canonical = token.replace(str(object_root), "@object-root").replace(
+                    object_root.as_posix(), "@object-root"
+                )
+                if "@object-root" in canonical:
+                    canonical = canonical.replace("\\", "/")
+            canonical_compile_command_parts.append(canonical)
     canonical_compile_command = tuple(canonical_compile_command_parts)
     dependencies: list[_SourceExtensionDependencyFact] = []
     for dependency in sorted({path.resolve() for path in dependency_paths}):
@@ -2193,6 +2076,7 @@ def _source_extension_object_fact(
                 else ()
             ),
             dependencies=tuple(dependencies),
+            producer_unit=producer_unit,
         ),
         None,
     )
@@ -2742,166 +2626,28 @@ def source_extension_manifest_required_capsule_imports(
     }, []
 
 
-def _source_extension_definition_header_paths(
-    header_roots: Sequence[Path],
-) -> tuple[Path, ...]:
-    seen: set[Path] = set()
-    headers: list[Path] = []
-    for header_root in header_roots:
-        root = header_root.resolve()
-        if not root.exists():
-            continue
-        if root.is_file():
-            candidates = (root,)
-        else:
-            candidates = tuple(
-                path
-                for path in root.rglob("*")
-                if path.is_file()
-                and path.suffix.lower() in _SOURCE_EXTENSION_HEADER_SUFFIXES
-            )
-        for candidate in candidates:
-            resolved = candidate.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            headers.append(resolved)
-    return tuple(headers)
-
-
-def _source_extension_definition_header_texts(
-    header_roots: Sequence[Path],
-) -> tuple[dict[Path, str] | None, str | None]:
-    texts: dict[Path, str] = {}
-    for header_path in _source_extension_definition_header_paths(header_roots):
-        try:
-            texts[header_path] = header_path.read_text(
-                encoding="utf-8",
-                errors="replace",
-            )
-        except (OSError, UnicodeError) as exc:
-            return None, f"failed to read extension header {header_path}: {exc}"
-    return texts, None
-
-
-def _source_extension_project_defined_c_api_symbols(
-    *,
-    source_text_by_path: Mapping[Path, str],
-    definition_header_text_by_path: Mapping[Path, str],
-) -> tuple[set[str] | None, str | None]:
-    project_defined_symbols: set[str] = set()
-    for source_text in source_text_by_path.values():
-        project_defined_symbols.update(
-            _extract_project_defined_c_api_symbols(source_text)
-        )
-    for header_text in definition_header_text_by_path.values():
-        project_defined_symbols.update(
-            _extract_project_defined_c_api_symbols(
-                header_text,
-                include_static_inline=True,
-                include_declarations=True,
-            )
-        )
-    return project_defined_symbols, None
-
-
-def _source_extension_project_generated_c_api_prefixes(
-    *,
-    source_text_by_path: Mapping[Path, str],
-    definition_header_text_by_path: Mapping[Path, str],
-) -> tuple[str, ...]:
-    prefixes: set[str] = set()
-    for source_text in source_text_by_path.values():
-        prefixes.update(_extract_project_generated_c_api_prefixes(source_text))
-    for header_text in definition_header_text_by_path.values():
-        prefixes.update(_extract_project_generated_c_api_prefixes(header_text))
-    return tuple(sorted(prefixes))
-
-
-def _source_extension_compile_arg_preprocessor_symbols(
-    compile_args: Sequence[str],
-) -> tuple[dict[str, int | None], set[str]]:
-    defined: dict[str, int | None] = {}
-    undefined: set[str] = set()
-    items = [str(item) for item in compile_args]
-    idx = 0
-    while idx < len(items):
-        item = items[idx]
-        raw_define: str | None = None
-        raw_undef: str | None = None
-        if item in {"-D", "/D"} and idx + 1 < len(items):
-            raw_define = items[idx + 1]
-            idx += 2
-        elif item in {"-U", "/U"} and idx + 1 < len(items):
-            raw_undef = items[idx + 1]
-            idx += 2
-        elif item.startswith("-D") and len(item) > 2:
-            raw_define = item[2:]
-            idx += 1
-        elif item.startswith("/D") and len(item) > 2:
-            raw_define = item[2:]
-            idx += 1
-        elif item.startswith("-U") and len(item) > 2:
-            raw_undef = item[2:]
-            idx += 1
-        elif item.startswith("/U") and len(item) > 2:
-            raw_undef = item[2:]
-            idx += 1
-        elif item.startswith("-Wp,"):
-            for part in item.split(",")[1:]:
-                if part.startswith("-D") and len(part) > 2:
-                    definition = _parse_preprocessor_argument_definition(part[2:])
-                    if definition is not None:
-                        symbol, value = definition
-                        defined[symbol] = value
-                        undefined.discard(symbol)
-                elif part.startswith("-U") and len(part) > 2:
-                    symbol = part[2:].split("=", 1)[0]
-                    if _C_IDENTIFIER_RE.fullmatch(symbol):
-                        undefined.add(symbol)
-                        defined.pop(symbol, None)
-            idx += 1
-        else:
-            idx += 1
-
-        if raw_define is not None:
-            definition = _parse_preprocessor_argument_definition(raw_define)
-            if definition is not None:
-                symbol, value = definition
-                defined[symbol] = value
-                undefined.discard(symbol)
-        if raw_undef is not None:
-            symbol = raw_undef.split("=", 1)[0]
-            if _C_IDENTIFIER_RE.fullmatch(symbol):
-                undefined.add(symbol)
-                defined.pop(symbol, None)
-    return defined, undefined
-
-
-def _source_extension_global_preprocessor_symbols(
-    *,
-    definition_header_text_by_path: Mapping[Path, str],
-    explicit_symbols: Sequence[str],
-) -> dict[str, int | None]:
-    definitions: dict[str, int | None] = {
-        str(symbol): 1
-        for symbol in explicit_symbols
-        if _C_IDENTIFIER_RE.fullmatch(str(symbol))
-    }
-    for header_text in definition_header_text_by_path.values():
-        definitions.update(_extract_preprocessor_definitions(header_text))
-    return definitions
-
-
-def _source_extension_required_c_api_by_source(
+def _source_extension_required_c_api_by_object(
     *,
     molt_root: Path,
-    source_paths: Sequence[Path],
+    object_facts: Sequence[_SourceExtensionObjectFact],
     python_header: Path | None = None,
-    definition_header_roots: Sequence[Path] = (),
-    compile_args_by_source: Mapping[Path, Sequence[str]] | None = None,
-    preprocessor_defined_symbols: Sequence[str] = (),
 ) -> tuple[_SourceExtensionCAPIRequirements | None, str | None]:
+    """Classify the retained compiled closure, never a textual approximation.
+
+    Source and compiler-attested dependencies provide only context-independent
+    capsule and generated-prefix metadata. Their bytes may be shared; compiled
+    undefined symbols and dependency membership always belong to an object.
+    """
+    objects_by_path: dict[Path, _SourceExtensionObjectFact] = {}
+    for fact in object_facts:
+        object_path = fact.object_path.resolve()
+        if object_path in objects_by_path:
+            return (
+                None,
+                f"source extension C/API scan has duplicate object: {object_path}",
+            )
+        objects_by_path[object_path] = fact
+
     scan_surface, header_path, header_error = _load_c_api_scan_surface(
         molt_root,
         header_path=python_header,
@@ -2913,120 +2659,88 @@ def _source_extension_required_c_api_by_source(
         )
     assert scan_surface is not None
 
-    source_text_by_path: dict[Path, str] = {}
-    for source_path in source_paths:
-        resolved = source_path.resolve()
-        try:
-            source_text = resolved.read_text(encoding="utf-8", errors="replace")
-        except (OSError, UnicodeError) as exc:
-            return (
-                None,
-                f"failed to read extension source {resolved}: {exc}",
-            )
-        source_text_by_path[resolved] = source_text
-    definition_header_text_by_path, header_text_error = (
-        _source_extension_definition_header_texts(definition_header_roots)
-    )
-    if header_text_error is not None:
-        return None, header_text_error
-    assert definition_header_text_by_path is not None
-    global_preprocessor_symbols = _source_extension_global_preprocessor_symbols(
-        definition_header_text_by_path=definition_header_text_by_path,
-        explicit_symbols=preprocessor_defined_symbols,
-    )
-    compile_args_by_resolved_source = {
-        path.resolve(): tuple(args)
-        for path, args in (compile_args_by_source or {}).items()
+    project_defined_symbols = {
+        symbol for fact in object_facts for symbol in fact.defined_symbols
     }
-    active_preprocessor_symbols_by_source: dict[Path, dict[str, int | None]] = {}
-    file_local_symbols_by_path: dict[Path, set[str]] = {}
-    for source_path, source_text in source_text_by_path.items():
-        active_symbols = dict(global_preprocessor_symbols)
-        defined_by_args, undefined_by_args = (
-            _source_extension_compile_arg_preprocessor_symbols(
-                compile_args_by_resolved_source.get(source_path, ())
-            )
-        )
-        active_symbols.update(defined_by_args)
-        for symbol in undefined_by_args:
-            active_symbols.pop(symbol, None)
-        active_preprocessor_symbols = active_symbols
-        active_preprocessor_symbols_by_source[source_path] = active_preprocessor_symbols
-        file_local_symbols_by_path[source_path] = _extract_file_local_c_api_symbols(
-            source_text,
-            active_preprocessor_symbols=active_preprocessor_symbols,
-        )
-    project_defined_symbols, defined_error = (
-        _source_extension_project_defined_c_api_symbols(
-            source_text_by_path=source_text_by_path,
-            definition_header_text_by_path=definition_header_text_by_path,
-        )
-    )
-    if defined_error is not None:
-        return None, defined_error
-    assert project_defined_symbols is not None
-    project_generated_c_api_prefixes = (
-        _source_extension_project_generated_c_api_prefixes(
-            source_text_by_path=source_text_by_path,
-            definition_header_text_by_path=definition_header_text_by_path,
-        )
-    )
-    generated_prefixes = frozenset(project_generated_c_api_prefixes)
-
-    required_by_source: dict[Path, tuple[str, ...]] = {}
-    required_capsules_by_source: dict[Path, tuple[str, ...]] = {}
-    project_generated_c_api_by_source: dict[Path, tuple[str, ...]] = {}
+    # Metadata extraction is independent of compiler flags, so bytes and their
+    # extracted metadata are cached once. Checksums still bind every reference.
+    input_cache: dict[Path, tuple[str, tuple[str, ...], frozenset[str]]] = {}
+    required_by_object: dict[Path, tuple[str, ...]] = {}
+    required_capsules_by_object: dict[Path, tuple[str, ...]] = {}
+    project_generated_c_api_by_object: dict[Path, tuple[str, ...]] = {}
+    project_generated_prefixes: set[str] = set()
     missing: set[str] = set()
     fail_fast: set[str] = set()
-    for source_path, source_text in source_text_by_path.items():
-        required_capsules_by_source[source_path] = (
-            _extract_source_extension_required_capsules(source_text)
+    for object_path, fact in objects_by_path.items():
+        capsules: set[str] = set()
+        generated_prefixes: set[str] = set()
+        inputs = (
+            (fact.source_path, fact.source_sha256),
+            *((dependency.path, dependency.sha256) for dependency in fact.dependencies),
         )
-        required = tuple(
-            sorted(
-                {
-                    symbol
-                    for symbol in (
-                        _extract_c_api_tokens(
-                            source_text,
-                            active_preprocessor_symbols=(
-                                active_preprocessor_symbols_by_source[source_path]
-                            ),
-                        )
-                        - file_local_symbols_by_path[source_path]
+        for path, expected_digest in inputs:
+            resolved = path.resolve()
+            cached = input_cache.get(resolved)
+            if cached is None:
+                try:
+                    content = resolved.read_bytes()
+                except OSError as exc:
+                    return (
+                        None,
+                        f"failed to read extension object input {resolved}: {exc}",
                     )
-                    if is_c_api_external_requirement(symbol)
-                }
-            )
+                content_digest = hashlib.sha256(content).hexdigest()
+                text = content.decode("utf-8", errors="replace")
+                cached = (
+                    content_digest,
+                    _extract_source_extension_required_capsules(text),
+                    frozenset(_extract_project_generated_c_api_prefixes(text)),
+                )
+                input_cache[resolved] = cached
+            content_digest, input_capsules, input_prefixes = cached
+            if content_digest != expected_digest:
+                return None, (
+                    "extension object input checksum differs from compiled custody: "
+                    f"{resolved} for {object_path}"
+                )
+            capsules.update(input_capsules)
+            generated_prefixes.update(input_prefixes)
+        required_capsules_by_object[object_path] = tuple(sorted(capsules))
+        project_generated_prefixes.update(generated_prefixes)
+        required = sorted(
+            symbol
+            for symbol in set(fact.undefined_symbols) - project_defined_symbols
+            if is_c_api_external_requirement(symbol)
         )
         filtered_required: list[str] = []
         project_generated_required: list[str] = []
         for symbol in required:
-            if symbol in project_defined_symbols:
-                continue
             status = scan_surface.status_for(symbol)
             if status == "missing" and _matches_project_generated_c_api_prefix(
-                symbol,
-                generated_prefixes,
+                symbol, generated_prefixes
             ):
                 project_generated_required.append(symbol)
                 continue
+            if status == "source_compile_only":
+                # Header tokens are compile-time vocabulary, not evidence of a
+                # provider for an actual unresolved compiled symbol.
+                status = "missing"
             filtered_required.append(symbol)
             if status == "missing":
                 missing.add(symbol)
             elif status == "fail_fast":
                 fail_fast.add(symbol)
-        required_by_source[source_path] = tuple(filtered_required)
-        project_generated_c_api_by_source[source_path] = tuple(
-            sorted(project_generated_required)
+        required_by_object[object_path] = tuple(filtered_required)
+        project_generated_c_api_by_object[object_path] = tuple(
+            project_generated_required
         )
 
     return (
         _SourceExtensionCAPIRequirements(
-            required_by_source=required_by_source,
-            required_capsules_by_source=required_capsules_by_source,
-            project_generated_c_api_by_source=project_generated_c_api_by_source,
-            project_generated_c_api_prefixes=project_generated_c_api_prefixes,
+            required_by_object=required_by_object,
+            required_capsules_by_object=required_capsules_by_object,
+            project_generated_c_api_by_object=project_generated_c_api_by_object,
+            project_generated_c_api_prefixes=tuple(sorted(project_generated_prefixes)),
             project_defined_symbols=tuple(sorted(project_defined_symbols)),
             missing_symbols=tuple(sorted(missing)),
             fail_fast_symbols=tuple(sorted(fail_fast)),

@@ -463,6 +463,10 @@ def test_wheel_manifest_core_is_invariant_to_all_operational_roots(
                     {
                         "source": str(source / "module.c"),
                         "object": "module.o",
+                        "producer_unit": {
+                            "target_id": "module",
+                            "object": "module.so.p/module.o",
+                        },
                         "language": "c",
                         "source_sha256": "b" * 64,
                         "object_sha256": "c" * 64,

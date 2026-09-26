@@ -67,6 +67,31 @@ def _require_canonical_sha256(value: object, *, field: str) -> str:
     return value
 
 
+def _producer_unit_identity(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping) or set(value) != {"target_id", "object"}:
+        raise SourceExtensionObjectClosureError(
+            "extension object producer_unit requires exactly target_id and object"
+        )
+    target_id, output = value.get("target_id"), value.get("object")
+    if (
+        not isinstance(target_id, str)
+        or not target_id.strip()
+        or target_id != target_id.strip()
+        or any(ord(char) < 32 for char in target_id)
+        or not isinstance(output, str)
+        or not output
+        or "\\" in output
+        or ":" in output
+        or any(ord(char) < 32 for char in output)
+        or any(part in {"", ".", ".."} for part in output.split("/"))
+    ):
+        raise SourceExtensionObjectClosureError(
+            "extension object producer_unit requires a target ID and canonical "
+            "build-root-relative object path"
+        )
+    return {"target_id": target_id, "object": output}
+
+
 def source_extension_wasm_import_receipts(
     wasm_imports: Sequence[WasmImport],
 ) -> tuple[dict[str, str], ...]:
@@ -348,6 +373,7 @@ def source_extension_object_closure_identity_payload(
     digest_objects: list[dict[str, Any]] = []
     symbol_authorities: set[str] = set()
     object_names: set[str] = set()
+    producer_outputs: set[str] = set()
     source_digests: dict[str, str] = {}
     root_owners: list[str] = []
     object_defined_union: set[str] = set()
@@ -475,6 +501,18 @@ def source_extension_object_closure_identity_payload(
             "compile_command": compile_command,
             "symbol_authority": symbol_authority,
         }
+        if "producer_unit" in item:
+            producer_unit = _producer_unit_identity(item["producer_unit"])
+            if producer_unit["object"] in producer_outputs:
+                raise SourceExtensionObjectClosureError(
+                    "extension object_closure has duplicate producer object custody"
+                )
+            producer_outputs.add(producer_unit["object"])
+            digest_object["producer_unit"] = producer_unit
+        elif manifest is not None and isinstance(manifest.get("source_plan"), Mapping):
+            raise SourceExtensionObjectClosureError(
+                "source-plan object is missing producer_unit custody"
+            )
         if symbol_command:
             digest_object["symbol_command"] = symbol_command
         try:

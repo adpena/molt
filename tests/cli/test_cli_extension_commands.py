@@ -134,21 +134,22 @@ def _stub_metadata_build_machine(monkeypatch: pytest.MonkeyPatch):
     return host
 
 
-def _write_fake_compiler_depfile(cmd: list[str]) -> None:
+def _write_fake_compiler_depfile(cmd: list[str], *dependencies: Path) -> None:
+    extra_inputs = "".join(f" {path}" for path in dependencies)
     forwarded_depfile = next(
         (arg.removeprefix("/clang:-MF") for arg in cmd if arg.startswith("/clang:-MF")),
         None,
     )
     if forwarded_depfile is not None:
         Path(forwarded_depfile).write_text(
-            f"object.obj: {cmd[cmd.index('/c') + 1]}\n", encoding="utf-8"
+            f"object.obj: {cmd[cmd.index('/c') + 1]}{extra_inputs}\n", encoding="utf-8"
         )
         return
     if "-MF" not in cmd:
         return
     dependency_file = Path(cmd[cmd.index("-MF") + 1])
     dependency_file.write_text(
-        f"object.o: {cmd[cmd.index('-c') + 1]}\n",
+        f"object.o: {cmd[cmd.index('-c') + 1]}{extra_inputs}\n",
         encoding="utf-8",
     )
 
@@ -820,7 +821,7 @@ def _write_meson_source_plan_project(
                 "-c",
                 "pkg/demoext.c",
                 "-o",
-                "build/demoext.c.o",
+                "build/pkg/demoext.so.p/demoext.c.o",
             ],
         },
         {
@@ -833,7 +834,7 @@ def _write_meson_source_plan_project(
                 "-c",
                 "generated/helper_generated.c",
                 "-o",
-                "generated/helper_generated.c.o",
+                "pkg/demoext.so.p/helper_generated.c.o",
             ],
         },
     ]
@@ -850,7 +851,7 @@ def _write_meson_source_plan_project(
                     "-c",
                     "pkg/unique.cpp",
                     "-o",
-                    "build/unique.cpp.o",
+                    "build/pkg/libunique_hash.a.p/unique.cpp.o",
                 ],
             }
         )
@@ -2218,6 +2219,7 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
         del kwargs
         commands.append(cmd)
         _materialize_fake_extension_command(cmd)
+        _write_fake_compiler_depfile(cmd, project_root / "pkg/include/demoext.h")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -2296,9 +2298,9 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     assert manifest["build"]["source_c_api_scan"][
         "project_generated_c_api_prefixes"
     ] == ["npy_generated_"]
-    assert manifest["build"]["source_c_api_scan"][
-        "project_generated_c_api_symbols"
-    ] == ["npy_generated_int8"]
+    assert (
+        manifest["build"]["source_c_api_scan"]["project_generated_c_api_symbols"] == []
+    )
     assert manifest["object_closure"]["root_symbol"] == "PyInit_demoext"
     assert (
         manifest["object_closure"]["init_symbol_owner"] == "0_demoext" + object_suffix
@@ -2319,7 +2321,8 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
         for obj in manifest["object_closure"]["objects"]
         for symbol in obj["project_generated_c_api_symbols"]
     }
-    assert "npy_generated_int8" in project_generated_c_api_symbols
+    # This textual reference did not survive compilation; it is not a requirement.
+    assert "npy_generated_int8" not in project_generated_c_api_symbols
     assert "npy_generated_int8" not in required_c_api_symbols
     assert "NPY_HEADER_ONLY_MACRO" not in required_c_api_symbols
     assert "NPY_DISABLED_Alias" not in required_c_api_symbols
@@ -2343,37 +2346,6 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
         artifact_manifest["source_plan"]["digest"] == manifest["source_plan"]["digest"]
     )
     assert artifact_manifest["python_exports"] == ["pkg.demoext"]
-
-
-def test_source_extension_preprocessor_uses_macro_values_and_python_version() -> None:
-    compile_definitions, undefined = (
-        cli_source_extensions._source_extension_compile_arg_preprocessor_symbols(
-            ("-DCYTHON_USE_UNICODE_WRITER=0", "-DFEATURE_LEVEL=3", "-UOLD_API")
-        )
-    )
-    header_definitions = cli_source_extensions._extract_preprocessor_definitions(
-        "#define PY_MAJOR_VERSION 3\n"
-        "#define PY_MINOR_VERSION 12\n"
-        "#define PY_MICRO_VERSION 13\n"
-    )
-    definitions = {**header_definitions, **compile_definitions}
-    required = cli_source_extensions._extract_c_api_tokens(
-        "#if CYTHON_USE_UNICODE_WRITER\n"
-        "(void)_PyLong_FormatAdvancedWriter;\n"
-        "#endif\n"
-        "#if PY_VERSION_HEX >= 0x030d0000\n"
-        "(void)PyUnicode_CopyCharacters;\n"
-        "#endif\n"
-        "#if FEATURE_LEVEL >= 3\n"
-        "(void)PyTuple_New;\n"
-        "#endif\n",
-        active_preprocessor_symbols=definitions,
-    )
-
-    assert compile_definitions["CYTHON_USE_UNICODE_WRITER"] == 0
-    assert header_definitions["PY_VERSION_HEX"] == 0x030C0DF0
-    assert undefined == {"OLD_API"}
-    assert required == {"PyTuple_New"}
 
 
 def test_direct_build_audits_and_reseals_extracted_wheel(
@@ -2561,7 +2533,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
                         "pkg/_cyext.c",
                         "-DPLAN_UNIT=1",
                         "-o",
-                        "build/_cyext.o",
+                        "build/pkg/_cyext.so.p/_cyext.o",
                     ],
                 }
             ],
@@ -2607,7 +2579,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         *,
         pyx_path: Path,
         original_c: Path,
-        language: cli_commands.SourceExtensionLanguage,
+        language: cli_commands._source_extension_cython.SourceExtensionLanguage,
         out_dir: Path,
         include_dirs: object,
         cython_version: str,
@@ -2616,7 +2588,9 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         ninja_command: object = (),
     ) -> tuple[cli_commands._source_extension_cython.CythonRegeneration, None]:
         del include_dirs, cython_version, python_exe, ninja_command
-        assert language is cli_commands.SourceExtensionLanguage.C
+        assert (
+            language is cli_commands._source_extension_cython.SourceExtensionLanguage.C
+        )
         observed_package_roots.append(
             tuple(Path(path).resolve() for path in package_roots)
         )
@@ -3744,6 +3718,7 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
         output = Path(cmd[cmd.index("-o") + 1])
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(wasm_bytes)
+        _write_fake_compiler_depfile(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -4023,10 +3998,21 @@ def test_wasm_cxx_runtime_archives_resolve_matching_no_exception_variant(
     )
 
 
+@pytest.mark.parametrize(
+    ("abi_tier", "c_api_import", "supported"),
+    [
+        ("source-compat", "PyLong_FromLong", True),
+        ("cpython-abi", "PyOS_strtol", True),
+        ("source-compat", "PyOS_strtol", False),
+    ],
+)
 def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
     tmp_path: Path,
     monkeypatch,
     capsys,
+    abi_tier: str,
+    c_api_import: str,
+    supported: bool,
 ) -> None:
     project_root = tmp_path / "extproj"
     project_root.mkdir()
@@ -4050,7 +4036,7 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
     wasm_function_imports = (
         "molt_alloc",
         "molt_cpython_abi_date_from_date",
-        "PyOS_strtol",
+        c_api_import,
         "malloc",
     )
     raw_data_relocations = ("PyExc_RuntimeError", "Py_None")
@@ -4073,6 +4059,7 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         out_path = Path(cmd[out_index + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(wasm_bytes)
+        _write_fake_compiler_depfile(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -4099,12 +4086,19 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         project=str(project_root),
         out_dir=str(out_dir),
         target="wasm",
+        abi_tier=abi_tier,
         deterministic=False,
         json_output=True,
         verbose=False,
     )
-    assert rc == 0
     payload = json.loads(capsys.readouterr().out)
+    if not supported:
+        assert rc == 2
+        assert f"missing: {c_api_import}" in " ".join(payload["errors"])
+        assert not (out_dir / "extension_manifest.json").exists()
+        assert not (out_dir / "demoext.molt.wasm").exists()
+        return
+    assert rc == 0
     assert payload["data"]["target_triple"] == "wasm32-wasip1"
     assert payload["data"]["runtime_linkage"] == "static_link"
     assert payload["data"]["artifact_kind"] == "wasm_relocatable_object"
@@ -4162,7 +4156,7 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         for item in object_closure["objects"]
         for symbol in item["required_c_api_symbols"]
     }
-    assert "PyOS_strtol" in required_c_api_symbols
+    assert c_api_import in required_c_api_symbols
     assert "PyInit_demoext" not in required_c_api_symbols
     assert "PyMODINIT_FUNC" not in required_c_api_symbols
     assert "PyTypeObject" not in required_c_api_symbols
@@ -4305,6 +4299,7 @@ def test_extension_build_wasm_source_recompiled_package_accepts_cli_python_expor
         out_path = Path(cmd[out_index + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(wasm_bytes)
+        _write_fake_compiler_depfile(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -5255,10 +5250,15 @@ def test_extension_seal_retains_all_inputs_for_reseal_after_source_deletion(
                     "undefined_symbols": [],
                     "required_c_api_symbols": [],
                     "required_capsules": [],
+                    "producer_unit": {
+                        "target_id": "_multiarray_umath",
+                        "object": "_multiarray_umath.so.p/0.o",
+                    },
                 },
                 {
                     "source": str(generated_source_path),
                     "object": "1_loops.o",
+                    "producer_unit": {"target_id": "loops", "object": "loops.a.p/1.o"},
                     "language": "c",
                     "source_sha256": generated_source_sha256,
                     "object_sha256": extension_sha256,

@@ -8,6 +8,7 @@ from copy import deepcopy
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
+from molt.cli.compiler_target import compiler_argument_spans
 from molt.cli.source_extension_link_requirements import (
     parse_source_extension_link_requirements,
 )
@@ -170,16 +171,20 @@ def _compile_command_template(
 ) -> tuple[list[str], list[dict[str, Any]]]:
     template = list(values)
     operands: list[dict[str, Any]] = []
-    operand_flags = {"-c", "-o", "-MF", "-MT"}
-    for index, value in enumerate(template[:-1]):
-        if value in operand_flags:
-            operand_index = index + 1
-            operands.append({"index": operand_index, "value": template[operand_index]})
-            template[operand_index] = "%{operand}"
-    for index, value in enumerate(template):
-        if value.startswith("/Fo") and len(value) > 3:
-            operands.append({"index": index, "value": value})
-            template[index] = "%{operand}"
+    for span in compiler_argument_spans(values):
+        if span.context != "driver":
+            continue
+        output = span.output_option
+        if span.option in {"-c", "/c"} or (output is not None and len(span.raw) == 2):
+            operand_index = span.index + 1
+            if operand_index >= len(template):
+                raise ValueError("compile command has a missing source/output operand")
+        elif output is not None:
+            operand_index = span.index
+        else:
+            continue
+        operands.append({"index": operand_index, "value": template[operand_index]})
+        template[operand_index] = "%{operand}"
     operand_indexes = [item["index"] for item in operands]
     if len(operand_indexes) != len(set(operand_indexes)):
         raise ValueError("compile command has overlapping operand encodings")
