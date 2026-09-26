@@ -1413,6 +1413,7 @@ def _shared_stdlib_contract_identity(
 ) -> str:
     payload = {
         "symbol_schema": _SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION,
+        "symbol_protocol": _native_symbols._NATIVE_SYMBOL_FACTS_PROTOCOL,
         "symbol_target": _native_symbols._symbol_normalization_target(target_triple),
         "key": stdlib_object_cache_key,
         "manifest": stdlib_object_manifest,

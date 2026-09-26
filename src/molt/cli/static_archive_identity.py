@@ -53,6 +53,15 @@ class StaticArchiveMember:
     size: int
 
 
+@dataclass(frozen=True, slots=True)
+class StaticArchiveMemberIdentity:
+    """Ordered content identity; duplicate member names are not aliases."""
+
+    ordinal: int
+    member: StaticArchiveMember
+    sha256: str
+
+
 StaticArchiveMemberVisitor = Callable[[StaticArchiveMember, BinaryIO], None]
 
 
@@ -315,6 +324,23 @@ def visit_static_archive_members(
         raise StaticArchiveIdentityError(
             f"cannot inspect static archive {path}: {exc}"
         ) from exc
+
+
+def static_archive_member_identities(
+    path: Path,
+) -> tuple[StaticArchiveMemberIdentity, ...]:
+    identities: list[StaticArchiveMemberIdentity] = []
+
+    def identify(member: StaticArchiveMember, stream: BinaryIO) -> None:
+        stream.seek(member.content_offset)
+        identities.append(
+            StaticArchiveMemberIdentity(
+                len(identities), member, _hash_exact(stream, member.size)
+            )
+        )
+
+    visit_static_archive_members(path, visit_member=identify)
+    return tuple(identities)
 
 
 def artifact_content_identity(path: Path) -> dict[str, object]:

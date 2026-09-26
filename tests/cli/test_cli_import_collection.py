@@ -4962,6 +4962,11 @@ def test_native_archive_fixture_preserves_digest_and_cache_custody(
     assert first.artifact_digest == hashlib.sha256(first_bytes).hexdigest()
     assert first.defined == frozenset({"PyInit__native", "state"})
     assert first.defined_functions == frozenset({"PyInit__native"})
+    assert first.members is not None
+    assert len(first.members) == 1
+    assert first.members[0].identity.ordinal == 0
+    assert first.members[0].identity.member.name == "object.o"
+    assert first.members[0].symbols.defined == first.defined
     assert (
         native_symbol_inspection._native_archive_global_symbol_facts(artifact_path)
         == first
@@ -5017,7 +5022,7 @@ def test_native_archive_fixture_rejects_unregistered_bytes(
     native_archives: NativeArchiveFixtureCatalog,
 ) -> None:
     artifact_path = tmp_path / "unknown.a"
-    artifact_path.write_bytes(b"malformed-unregistered-archive")
+    artifact_path.write_bytes(static_archive_bytes(b"unregistered"))
     with pytest.raises(
         native_symbol_inspection.NativeSymbolInspectionError,
         match="unregistered synthetic native artifact bytes",

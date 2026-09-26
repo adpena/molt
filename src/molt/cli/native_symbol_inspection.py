@@ -16,12 +16,16 @@ import subprocess
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Sequence, cast
+from typing import Sequence
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
 from molt.cli.llvm_wasi_tools import llvm_tool_candidates
+from molt.cli.static_archive_identity import (
+    StaticArchiveMemberIdentity,
+    static_archive_member_identities,
+)
 from molt.file_hashing import content_change_time_ns
 from molt.source_root import compiler_source_root
 from molt.toolchain_identity import (
@@ -38,7 +42,7 @@ from molt.llvm_toolchain import (
 
 
 _NativeObjectSymbolSets = tuple[set[str], set[str]]
-_NATIVE_SYMBOL_FACTS_PROTOCOL = "molt.native-symbol-facts.v1"
+_NATIVE_SYMBOL_FACTS_PROTOCOL = "molt.native-symbol-facts.v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,9 +53,138 @@ class _NativeGlobalSymbolFacts:
     # Weak undefined references are neither providers nor required link inputs.
     weak_undefined: frozenset[str] = frozenset()
     artifact_digest: str | None = None
+    members: tuple[_NativeArchiveMemberSymbolFacts, ...] | None = None
+    weak_defined: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        # For archives these are projections, never separately authored facts.
+        if self.members is not None:
+            for name in _SYMBOL_SET_FIELDS:
+                object.__setattr__(
+                    self,
+                    name,
+                    frozenset().union(
+                        *(getattr(member.symbols, name) for member in self.members)
+                    ),
+                )
 
     def symbol_sets(self) -> _NativeObjectSymbolSets:
         return set(self.defined), set(self.undefined)
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeArchiveMemberSymbolFacts:
+    identity: StaticArchiveMemberIdentity
+    symbols: _NativeGlobalSymbolFacts
+
+
+_SYMBOL_SET_FIELDS = (
+    "defined",
+    "undefined",
+    "defined_functions",
+    "weak_undefined",
+    "weak_defined",
+)
+
+
+def _symbol_table_payload(facts: _NativeGlobalSymbolFacts) -> dict[str, object]:
+    return {name: sorted(getattr(facts, name)) for name in _SYMBOL_SET_FIELDS}
+
+
+def _symbol_facts_payload(facts: _NativeGlobalSymbolFacts) -> dict[str, object]:
+    if facts.members is None:
+        return {"object": _symbol_table_payload(facts)}
+    return {
+        "members": [
+            {
+                "ordinal": item.identity.ordinal,
+                "name": item.identity.member.name,
+                "offset": item.identity.member.content_offset,
+                "size": item.identity.member.size,
+                "sha256": item.identity.sha256,
+                "symbols": _symbol_table_payload(item.symbols),
+            }
+            for item in facts.members
+        ]
+    }
+
+
+def _decode_symbol_table(value: object) -> _NativeGlobalSymbolFacts | None:
+    if not isinstance(value, dict) or set(value) != set(_SYMBOL_SET_FIELDS):
+        return None
+    tables: list[frozenset[str]] = []
+    for name in _SYMBOL_SET_FIELDS:
+        symbols = value[name]
+        if not isinstance(symbols, list) or not all(
+            isinstance(symbol, str) and symbol and not any(c.isspace() for c in symbol)
+            for symbol in symbols
+        ):
+            return None
+        if symbols != sorted(set(symbols)):
+            return None
+        tables.append(frozenset(symbols))
+    facts = _NativeGlobalSymbolFacts(
+        tables[0], tables[1], tables[2], tables[3], weak_defined=tables[4]
+    )
+    return (
+        facts
+        if (facts.defined_functions | facts.weak_defined) <= facts.defined
+        else None
+    )
+
+
+def _decode_symbol_facts(
+    value: object,
+    *,
+    artifact_digest: str,
+    members: tuple[StaticArchiveMemberIdentity, ...] | None,
+) -> _NativeGlobalSymbolFacts | None:
+    if not isinstance(value, dict):
+        return None
+    if members is None:
+        if set(value) != {"object"}:
+            return None
+        facts = _decode_symbol_table(value["object"])
+        return (
+            None if facts is None else replace(facts, artifact_digest=artifact_digest)
+        )
+    if set(value) != {"members"} or not isinstance(value["members"], list):
+        return None
+    rows = value["members"]
+    if len(rows) != len(members):
+        return None
+    bound: list[_NativeArchiveMemberSymbolFacts] = []
+    for row, identity in zip(rows, members):
+        if not isinstance(row, dict) or set(row) != {
+            "ordinal",
+            "name",
+            "offset",
+            "size",
+            "sha256",
+            "symbols",
+        }:
+            return None
+        if any(type(row[key]) is not int for key in ("ordinal", "offset", "size")):
+            return None
+        if (row["ordinal"], row["name"], row["offset"], row["size"], row["sha256"]) != (
+            identity.ordinal,
+            identity.member.name,
+            identity.member.content_offset,
+            identity.member.size,
+            identity.sha256,
+        ):
+            return None
+        symbols = _decode_symbol_table(row["symbols"])
+        if symbols is None:
+            return None
+        bound.append(_NativeArchiveMemberSymbolFacts(identity, symbols))
+    return _NativeGlobalSymbolFacts(
+        frozenset(),
+        frozenset(),
+        frozenset(),
+        artifact_digest=artifact_digest,
+        members=tuple(bound),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,9 +463,9 @@ _NATIVE_OBJECT_SYMBOL_SETS_CACHE: dict[
     _NativeGlobalSymbolFacts,
 ] = {}
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT = 256
-_NATIVE_OBJECT_SYMBOL_FACTS_SCHEMA_VERSION = 5
+_NATIVE_OBJECT_SYMBOL_FACTS_SCHEMA_VERSION = 6
 _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT = 32
-_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION = 4
+_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION = 5
 _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE: dict[
     _NativeArchiveSymbolCacheKey,
     _NativeGlobalSymbolFacts,
@@ -380,7 +513,9 @@ def _native_nm_command(nm_command: Sequence[str], path: Path) -> list[str]:
 
 
 def _nm_line_reports_no_symbols(
-    line: str, result: subprocess.CompletedProcess[str]
+    line: str,
+    result: subprocess.CompletedProcess[str],
+    archive_member_names: frozenset[str] | None = None,
 ) -> bool:
     argv = result.args
     if isinstance(argv, str) or not argv:
@@ -388,7 +523,7 @@ def _nm_line_reports_no_symbols(
     artifact = str(argv[-1])
     tool = str(argv[0])
     if line == "no symbols":
-        return True
+        return not archive_member_names
     for name in {tool, Path(tool).name}:
         if line.startswith(f"{name}: "):
             line = line[len(name) + 2 :]
@@ -398,7 +533,7 @@ def _nm_line_reports_no_symbols(
     owner = line[: -len(": no symbols")]
     for prefix in {artifact, Path(artifact).name}:
         if owner == prefix:
-            return True
+            return not archive_member_names
         if not owner.startswith(prefix):
             continue
         suffix = owner[len(prefix) :]
@@ -413,7 +548,7 @@ def _nm_line_reports_no_symbols(
         # Diagnostic separators (': ') and missing members are not archive
         # ownership. Do not promote a nested error to a benign empty-member row.
         if member and member == member.strip() and ": " not in member:
-            return True
+            return archive_member_names is None or member in archive_member_names
     return False
 
 
@@ -458,6 +593,7 @@ def _read_native_global_symbol_facts(
     target_triple: str | None = None,
     _reader: _NativeSymbolReader | None = None,
     requirement: NativeSymbolRequirement = NativeSymbolRequirement(),
+    archive_members: tuple[StaticArchiveMemberIdentity, ...] | None = None,
 ) -> _NativeGlobalSymbolFacts:
     reader = _reader or _native_symbol_reader(
         nm_command=nm_command,
@@ -519,47 +655,63 @@ def _read_native_global_symbol_facts(
             )
             continue
         assert result is not None
-        if result.returncode in {0, 1} and _nm_result_reports_no_symbols(result):
-            facts = _NativeGlobalSymbolFacts(frozenset(), frozenset(), frozenset())
-            if reader.requirement.accepts(facts):
-                return facts
-            failures.append(
-                f"{command!r}: no symbols satisfy consumer requirement "
-                f"{reader.requirement.cache_identity()}"
+        try:
+            facts = _parse_native_nm_result(
+                result,
+                path=path,
+                archive_members=archive_members,
+                target_triple=target_triple,
             )
+        except ValueError as error:
+            if primary is None:
+                primary = error
+            failures.append(f"{command!r}: {error}")
             continue
-        stderr_lines = [
-            line.strip() for line in result.stderr.splitlines() if line.strip()
-        ]
-        if result.returncode == 0 and all(
-            _nm_line_reports_no_symbols(line, result) for line in stderr_lines
-        ):
-            try:
-                facts = _parse_native_nm_global_symbol_facts(
-                    "\n".join(
-                        line
-                        for line in result.stdout.splitlines()
-                        if not _nm_line_reports_no_symbols(line.strip(), result)
-                    ),
-                    target_triple=target_triple,
-                )
-            except ValueError as error:
-                if primary is None:
-                    primary = error
-                failures.append(f"{command!r}: {error}")
-                continue
-            if reader.requirement.accepts(facts):
-                return facts
-            failures.append(
-                f"{command!r}: no function definitions satisfy consumer requirement "
-                f"{reader.requirement.cache_identity()}"
-            )
-            continue
+        if reader.requirement.accepts(facts):
+            return facts
         failures.append(
-            f"{command!r}: exit {result.returncode}; "
-            f"stdout={result.stdout[:2048]!r}; stderr={result.stderr[:2048]!r}"
+            f"{command!r}: no function definitions satisfy consumer requirement "
+            f"{reader.requirement.cache_identity()}"
         )
     raise NativeSymbolInspectionError(path, failures) from primary
+
+
+def _parse_native_nm_result(
+    result: subprocess.CompletedProcess[str],
+    *,
+    path: Path,
+    archive_members: tuple[StaticArchiveMemberIdentity, ...] | None,
+    target_triple: str | None,
+) -> _NativeGlobalSymbolFacts:
+    if (
+        archive_members is None
+        and result.returncode in {0, 1}
+        and _nm_result_reports_no_symbols(result)
+    ):
+        return _NativeGlobalSymbolFacts(frozenset(), frozenset(), frozenset())
+    names = (
+        None
+        if archive_members is None
+        else frozenset(item.member.name for item in archive_members)
+    )
+    if result.returncode != 0 or any(
+        line.strip() and not _nm_line_reports_no_symbols(line.strip(), result, names)
+        for line in result.stderr.splitlines()
+    ):
+        raise ValueError(
+            f"exit {result.returncode}; stdout={result.stdout[:2048]!r}; "
+            f"stderr={result.stderr[:2048]!r}"
+        )
+    output = "\n".join(
+        line
+        for line in result.stdout.splitlines()
+        if not _nm_line_reports_no_symbols(line.strip(), result, names)
+    )
+    if archive_members is None:
+        return _parse_native_nm_global_symbol_facts(output, target_triple=target_triple)
+    return _parse_native_archive_symbol_facts(
+        output, path=path, members=archive_members, target_triple=target_triple
+    )
 
 
 def _native_object_symbol_facts_sidecar_path(path: Path) -> Path:
@@ -605,10 +757,7 @@ def _native_object_symbol_facts_payload(
         "symbol_target": _symbol_normalization_target(target_triple),
         "object_digest": object_digest,
         "reader_identity": list(reader_identity),
-        "defined": sorted(facts.defined),
-        "undefined": sorted(facts.undefined),
-        "defined_functions": sorted(facts.defined_functions),
-        "weak_undefined": sorted(facts.weak_undefined),
+        "facts": _symbol_facts_payload(facts),
     }
 
 
@@ -618,6 +767,7 @@ def _read_native_object_symbol_facts(
     object_digest: str,
     target_triple: str | None,
     reader_identity: tuple[str, ...],
+    members: tuple[StaticArchiveMemberIdentity, ...] | None = None,
 ) -> _NativeGlobalSymbolFacts | None:
     try:
         payload = json.loads(
@@ -637,32 +787,11 @@ def _read_native_object_symbol_facts(
         return None
     if payload.get("reader_identity") != list(reader_identity):
         return None
-    defined = payload.get("defined")
-    undefined = payload.get("undefined")
-    defined_functions = payload.get("defined_functions")
-    weak_undefined = payload.get("weak_undefined")
-    if not (
-        isinstance(defined, list)
-        and isinstance(undefined, list)
-        and isinstance(defined_functions, list)
-        and isinstance(weak_undefined, list)
-    ):
-        return None
-    if not all(
-        isinstance(symbol, str)
-        for symbol in (*defined, *undefined, *defined_functions, *weak_undefined)
-    ):
-        return None
-    facts = _NativeGlobalSymbolFacts(
-        defined=frozenset(cast(list[str], defined)),
-        undefined=frozenset(cast(list[str], undefined)),
-        defined_functions=frozenset(cast(list[str], defined_functions)),
-        weak_undefined=frozenset(cast(list[str], weak_undefined)),
+    return _decode_symbol_facts(
+        payload.get("facts"),
         artifact_digest=object_digest,
+        members=members,
     )
-    if not facts.defined_functions <= facts.defined:
-        return None
-    return facts
 
 
 def _write_native_object_symbol_facts(
@@ -716,12 +845,14 @@ def _native_object_global_symbol_facts(
             _require_unchanged_symbol_reader(path, reader)
             _require_unchanged_symbol_artifact(path, identity)
             return cached
+    members = _symbol_artifact_members(path)
     if object_digest:
         symbol_facts = _read_native_object_symbol_facts(
             path,
             object_digest=object_digest,
             target_triple=target_triple,
             reader_identity=reader.cache_identity,
+            members=members,
         )
         if symbol_facts is not None and requirement.accepts(symbol_facts):
             _require_unchanged_symbol_reader(path, reader)
@@ -735,6 +866,7 @@ def _native_object_global_symbol_facts(
         nm_command=None,
         target_triple=target_triple,
         _reader=reader,
+        archive_members=members,
     )
     _require_unchanged_symbol_artifact(path, identity)
     facts = replace(facts, artifact_digest=object_digest)
@@ -779,28 +911,20 @@ def _parse_native_nm_global_symbol_facts(
     *,
     target_triple: str | None = None,
 ) -> _NativeGlobalSymbolFacts:
-    """Parse global ``nm`` facts for one object or static archive.
-
-    LLVM ``nm`` emits archive-member header lines between ordinary symbol rows.
-    Keeping the parser shared makes archive-backed linker custody use the same
-    symbol semantics as source-extension object closure without creating symbol
-    sidecars inside managed Rust/WASI toolchains.
-    """
+    """Parse one object's symbol table; archive boundaries must never be dropped."""
 
     defined: set[str] = set()
     undefined: set[str] = set()
     defined_functions: set[str] = set()
     weak_undefined: set[str] = set()
+    weak_defined: set[str] = set()
     macho_decoration = _target_uses_macho_symbol_decoration(target_triple)
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         if line.endswith(":"):
-            # nm's archive member/architecture label, not a symbol row.
-            if line.lower() in {"error:", "warning:", "fatal error:"}:
-                raise ValueError(f"nm diagnostic is not a symbol row: {line!r}")
-            continue
+            raise ValueError(f"unexpected nm header without member custody: {line!r}")
         indirect_target: str | None = None
         indirect = re.fullmatch(r"(.*) \(indirect for ([^\s]+)\)", line)
         if indirect:
@@ -831,6 +955,8 @@ def _parse_native_nm_global_symbol_facts(
             weak_undefined.add(symbol)
         else:
             defined.add(symbol)
+            if kind in {"V", "W"}:
+                weak_defined.add(symbol)
             if kind in {"T", "t", "W", "i"}:
                 defined_functions.add(symbol)
     return _NativeGlobalSymbolFacts(
@@ -838,6 +964,78 @@ def _parse_native_nm_global_symbol_facts(
         undefined=frozenset(undefined),
         defined_functions=frozenset(defined_functions),
         weak_undefined=frozenset(weak_undefined),
+        weak_defined=frozenset(weak_defined),
+    )
+
+
+def _symbol_artifact_members(
+    path: Path,
+    *,
+    require_archive: bool = False,
+) -> tuple[StaticArchiveMemberIdentity, ...] | None:
+    try:
+        with path.open("rb") as stream:
+            magic = stream.read(8)
+        if not require_archive and magic not in {b"!<arch>\n", b"!<thin>\n"}:
+            return None
+        return static_archive_member_identities(path)
+    except (OSError, ValueError) as error:
+        raise NativeSymbolInspectionError(path, [str(error)]) from error
+
+
+def _parse_native_archive_symbol_facts(
+    output: str,
+    *,
+    path: Path,
+    members: tuple[StaticArchiveMemberIdentity, ...],
+    target_triple: str | None,
+) -> _NativeGlobalSymbolFacts:
+    """Bind each nm table to the same ordinal in the stable archive envelope.
+
+    nm visits archives in stored member order (sorting only within tables).
+    Names validate that traversal, but never identify a member by themselves.
+    Missing, reordered, extra or unbound tables fail closed, including empties.
+    """
+    tables: list[list[str]] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.endswith(":"):
+            ordinal = len(tables)
+            if ordinal >= len(members):
+                raise ValueError("nm emitted an extra archive member table")
+            member = members[ordinal].member
+            labels = {member.name}
+            for owner in {str(path), path.name}:
+                labels.update((f"{owner}({member.name})", f"{owner}:{member.name}"))
+            if stripped[:-1] not in labels:
+                raise ValueError(
+                    f"nm archive member {ordinal} differs from framing: "
+                    f"expected {member.name!r}, found {stripped!r}"
+                )
+            tables.append([])
+        elif not tables:
+            raise ValueError("nm symbol row has no archive member custody")
+        else:
+            tables[-1].append(line)
+    if len(tables) != len(members):
+        raise ValueError(
+            f"nm archive member count differs: {len(tables)} != {len(members)}"
+        )
+    return _NativeGlobalSymbolFacts(
+        frozenset(),
+        frozenset(),
+        frozenset(),
+        members=tuple(
+            _NativeArchiveMemberSymbolFacts(
+                identity,
+                _parse_native_nm_global_symbol_facts(
+                    "\n".join(lines), target_triple=target_triple
+                ),
+            )
+            for identity, lines in zip(members, tables)
+        ),
     )
 
 
@@ -903,9 +1101,12 @@ def _native_archive_global_symbol_facts(
         _require_unchanged_symbol_artifact(path, identity)
         return cached
     persistent_cache_path = _native_archive_symbol_cache_path(cache_key)
+    members = _symbol_artifact_members(resolved, require_archive=True)
+    assert members is not None
     persistent_facts = _read_native_archive_symbol_cache(
         persistent_cache_path,
         cache_key=cache_key,
+        members=members,
     )
     if persistent_facts is not None and requirement.accepts(persistent_facts):
         _require_unchanged_symbol_reader(path, reader)
@@ -918,6 +1119,7 @@ def _native_archive_global_symbol_facts(
         nm_command=None,
         target_triple=target_triple,
         _reader=reader,
+        archive_members=members,
     )
     _require_unchanged_symbol_artifact(path, identity)
     facts = replace(facts, artifact_digest=identity.sha256)
@@ -989,6 +1191,7 @@ def _read_native_archive_symbol_cache(
     path: Path,
     *,
     cache_key: _NativeArchiveSymbolCacheKey,
+    members: tuple[StaticArchiveMemberIdentity, ...],
 ) -> _NativeGlobalSymbolFacts | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1000,34 +1203,11 @@ def _read_native_archive_symbol_cache(
         return None
     if payload.get("identity") != _native_archive_symbol_cache_identity(cache_key):
         return None
-    defined = payload.get("defined")
-    undefined = payload.get("undefined")
-    defined_functions = payload.get("defined_functions")
-    weak_undefined = payload.get("weak_undefined")
-    if not (
-        isinstance(defined, list)
-        and isinstance(undefined, list)
-        and isinstance(defined_functions, list)
-        and isinstance(weak_undefined, list)
-    ):
-        return None
-    if not all(
-        isinstance(symbol, str)
-        for symbol in (*defined, *undefined, *defined_functions, *weak_undefined)
-    ):
-        return None
-    facts = _NativeGlobalSymbolFacts(
-        defined=frozenset(symbol for symbol in defined if isinstance(symbol, str)),
-        undefined=frozenset(symbol for symbol in undefined if isinstance(symbol, str)),
-        defined_functions=frozenset(
-            symbol for symbol in defined_functions if isinstance(symbol, str)
-        ),
-        weak_undefined=frozenset(cast(list[str], weak_undefined)),
+    return _decode_symbol_facts(
+        payload.get("facts"),
         artifact_digest=cache_key[9],
+        members=members,
     )
-    if not facts.defined_functions <= facts.defined:
-        return None
-    return facts
 
 
 def _write_native_archive_symbol_cache(
@@ -1041,10 +1221,7 @@ def _write_native_archive_symbol_cache(
         {
             "schema": _NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION,
             "identity": _native_archive_symbol_cache_identity(cache_key),
-            "defined": sorted(facts.defined),
-            "undefined": sorted(facts.undefined),
-            "defined_functions": sorted(facts.defined_functions),
-            "weak_undefined": sorted(facts.weak_undefined),
+            "facts": _symbol_facts_payload(facts),
         },
         indent=None,
         sort_keys=True,

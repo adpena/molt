@@ -2605,26 +2605,57 @@ def test_native_archive_chunk_closure_resolves_all_included_members(
     def chunk_symbols(indices: set[int]) -> set[str]:
         return {f"demo__molt_module_chunk_{index}" for index in indices}
 
-    def symbols(
-        path: Path, *, target_triple: str | None = None, identity=None
-    ) -> tuple[set[str], set[str]]:
-        assert target_triple is None
-        if path == application:
-            return (
-                chunk_symbols(application_providers),
-                chunk_symbols(references) | {"molt_runtime_external"},
-            )
-        assert path == stdlib
+    application_defined = chunk_symbols(application_providers)
+    application_undefined = chunk_symbols(references) | {"molt_runtime_external"}
+    application.write_bytes(
+        static_archive_bytes(
+            native_relocatable_object(symbols=tuple(sorted(application_defined)))
+        )
+        + static_archive_bytes(native_relocatable_object())[8:]
+    )
+    member_tables = {
+        application: ((application_defined, set()), (set(), application_undefined))
+    }
+    if stdlib is not None:
         assert stdlib_providers is not None
-        return chunk_symbols(stdlib_providers), set()
+        stdlib_defined = chunk_symbols(stdlib_providers)
+        stdlib.write_bytes(
+            static_archive_bytes(
+                native_relocatable_object(symbols=tuple(sorted(stdlib_defined)))
+            )
+        )
+        member_tables[stdlib] = ((stdlib_defined, set()),)
+
+    def fake_run_completed_command(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        rows: list[str] = []
+        for defined, undefined in member_tables[Path(cmd[-1])]:
+            rows.append("object.o:")
+            rows.extend(f"00000000 T {name}" for name in sorted(defined))
+            rows.extend(f"         U {name}" for name in sorted(undefined))
+        return subprocess.CompletedProcess(cmd, 0, "\n".join(rows) + "\n", "")
 
     monkeypatch.setattr(
-        native_symbol_inspection, "_native_object_global_symbol_sets", symbols
+        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection, "_run_completed_command", fake_run_completed_command
     )
     assert (
         BACKEND_CACHE._native_object_has_unresolved_module_chunks(application, stdlib)
         is unresolved
     )
+    facts = native_symbol_inspection._native_object_global_symbol_facts(application)
+    assert facts.members is not None
+    assert [member.identity.ordinal for member in facts.members] == [0, 1]
+    assert [member.identity.member.name for member in facts.members] == [
+        "object.o",
+        "object.o",
+    ]
+    assert facts.members[0].symbols.defined == application_defined
+    assert facts.members[1].symbols.undefined == application_undefined
 
 
 def test_native_object_symbol_sets_reuse_persistent_symbol_facts(

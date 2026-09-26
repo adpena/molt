@@ -188,7 +188,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "f71d64977b2b599edf3c1df87fcb39f92f7c73961ea56684efc6acc7a2d480cc",
+  "authority_sha256": "f778c1f2a6435241bc76253390e6a1014950ce86ee3bfba459f830893b61c90b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -263,6 +263,7 @@
         "tools/venv_exec.py",
         "tools/wasm_*.py",
         "tests/test_wasm_*.py",
+        "tests/cli/test_native_symbol_authority.py",
         "tests/wasm_harness.py",
         "tests/wasm_linked_runner.py",
         "wasm/**",
@@ -362,6 +363,7 @@
         "tests/test_bench_harness.py",
         "tests/test_manifest_pipeline_e2e.py",
         "tests/cli/test_native_link_*.py",
+        "tests/cli/test_native_symbol_authority.py",
         "tests/tools/test_proof_queue_native_receipts.py",
         "tests/proof_queue_custody_test_support.py",
         "tests/python_environment_test_support.py",
@@ -2848,6 +2850,7 @@
         "-m",
         "pytest",
         "tests/test_wasm_control_flow.py",
+        "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive",
         "-q"
       ],
       "cache_domain": "pytest",
@@ -2874,6 +2877,9 @@
         "uv",
         "rustc",
         "cargo",
+        "clang",
+        "llvm-ar",
+        "llvm-nm",
         "ld.lld",
         "wasm-ld",
         "wasm-tools"
@@ -3290,7 +3296,8 @@
         "-q",
         "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe",
         "tests/test_runtime_build_python.py",
-        "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority"
+        "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority",
+        "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-native-dev",
@@ -3306,7 +3313,10 @@
       "toolchains": [
         "python",
         "uv",
-        "rustc"
+        "rustc",
+        "clang",
+        "llvm-ar",
+        "llvm-nm"
       ]
     },
     {
