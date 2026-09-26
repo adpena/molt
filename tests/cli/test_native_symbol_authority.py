@@ -11,6 +11,11 @@ import subprocess
 import sys
 
 from molt.cli import native_symbol_inspection
+from molt.cli.static_archive_identity import (
+    StaticArchiveMember,
+    StaticArchiveMemberIdentity,
+    static_archive_member_identities,
+)
 import pytest
 
 from molt.cli import backend_cache as cache
@@ -23,7 +28,10 @@ from tests.native_artifact_fixtures import native_relocatable_object
 
 
 @pytest.fixture(autouse=True)
-def isolated_symbol_cache(monkeypatch: pytest.MonkeyPatch):
+def isolated_symbol_cache(monkeypatch: pytest.MonkeyPatch, request):
+    if request.node.get_closest_marker("slow") is not None:
+        yield
+        return
     identity = cache.stable_regular_file_identity(
         Path(sys.executable), label="test symbol reader"
     )
@@ -107,7 +115,6 @@ def test_incomplete_or_malformed_tool_evidence_is_never_symbol_success(
         (1, "", "archive.a: no symbols\n"),
         (1, "", "llvm-nm: archive.a: no symbols\n"),
         (1, "", "llvm-nm: archive.a:empty.o: no symbols\n"),
-        (0, "member.o:\n", "archive.a(member.o): no symbols\n"),
     ],
 )
 def test_legitimate_empty_artifact_has_successful_empty_facts(
@@ -142,17 +149,26 @@ def test_successful_archive_can_contain_empty_members(
 ):
     path = Path(archive)
     diagnostic = f"llvm-nm: {path}{member}: no symbols\n"
-    _tool(
-        monkeypatch,
-        stdout="member.o:\n00000000 T provider\n"
-        + (diagnostic if channel == "stdout" else ""),
-        stderr=diagnostic if channel == "stderr" else "",
-    )
     reader = native_symbol_inspection._native_symbol_reader(
         nm_command=("llvm-nm",), target_triple=None
     )
+    empty_name = member[1:-1] if member.startswith("(") else member[1:]
+    members = (
+        StaticArchiveMemberIdentity(
+            0, StaticArchiveMember("member.o", 68, 1), "a" * 64
+        ),
+        StaticArchiveMemberIdentity(
+            1, StaticArchiveMember(empty_name, 130, 1), "b" * 64
+        ),
+    )
+    _tool(
+        monkeypatch,
+        stdout=f"member.o:\n00000000 T provider\n{empty_name}:\n"
+        + (diagnostic if channel == "stdout" else ""),
+        stderr=diagnostic if channel == "stderr" else "",
+    )
     assert native_symbol_inspection._read_native_global_symbol_facts(
-        path, timeout=1, target_triple=target, _reader=reader
+        path, timeout=1, target_triple=target, _reader=reader, archive_members=members
     ).defined == {"provider"}
 
 
@@ -167,15 +183,15 @@ def test_object_and_archive_caches_share_parsing_protocol_identity(
     tmp_path, monkeypatch, reader
 ):
     artifact = tmp_path / "archive.a"
-    artifact.write_bytes(b"symbol-protocol-input")
+    artifact.write_bytes(static_archive_bytes(b"symbol-protocol-input"))
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    _tool(monkeypatch, stdout="0000 T before\n")
+    _tool(monkeypatch, stdout="object.o:\n0000 T before\n")
     assert reader(artifact).defined == {"before"}
     native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
     native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
-    _tool(monkeypatch, stdout="0000 T after\n")
+    _tool(monkeypatch, stdout="object.o:\n0000 T after\n")
     # Persistent facts remain reusable under the exact existing protocol.
     assert reader(artifact).defined == {"before"}
     monkeypatch.setattr(
@@ -239,7 +255,7 @@ def test_failed_candidate_does_not_hide_later_valid_candidate(monkeypatch):
 
 def test_weak_undefined_and_indirect_facts_have_explicit_semantics():
     facts = native_symbol_inspection._parse_native_nm_global_symbol_facts(
-        "member.o:\n U required\n w optional_function\n v optional_object\n"
+        " U required\n w optional_function\n v optional_object\n"
         "0000 w weak_address\n0001 V weak_defined_object\n0002 W weak_defined_function\n"
         "0003 i resolver\n0004 u unique_global\n0005 I alias (indirect for provider)\n",
         target_triple="x86_64-unknown-linux-gnu",
@@ -258,6 +274,7 @@ def test_weak_undefined_and_indirect_facts_have_explicit_semantics():
         "alias",
     }
     assert facts.defined_functions == {"weak_defined_function", "resolver"}
+    assert facts.weak_defined == {"weak_defined_function", "weak_defined_object"}
 
 
 def test_symbol_normalization_uses_requested_target_not_host():
@@ -313,7 +330,7 @@ def test_failed_symbol_read_cannot_mint_or_reuse_success_token(tmp_path, monkeyp
             )
         assert not cache._stdlib_object_symbol_contract_sidecar_path(artifact).exists()
     assert not native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE
-    _tool(monkeypatch, stdout="0000 T molt_init_sys\n")
+    _tool(monkeypatch, stdout="object.o:\n0000 T molt_init_sys\n")
     assert cache._shared_stdlib_cache_matches_key(
         artifact,
         "key",
@@ -419,7 +436,7 @@ def test_all_native_admission_siblings_reject_unavailable_symbol_evidence(
             check()
 
 
-def test_old_or_cross_target_success_tokens_do_not_authorize(tmp_path):
+def test_old_or_cross_target_success_tokens_do_not_authorize(tmp_path, monkeypatch):
     artifact = tmp_path / "archive.a"
     args = dict(
         stdlib_object_cache_key="key",
@@ -438,6 +455,10 @@ def test_old_or_cross_target_success_tokens_do_not_authorize(tmp_path):
     assert not cache._shared_stdlib_symbol_contract_matches(
         artifact, **{**args, "target_triple": "aarch64-unknown-linux-gnu"}
     )
+    monkeypatch.setattr(
+        native_symbol_inspection, "_NATIVE_SYMBOL_FACTS_PROTOCOL", "test.next-protocol"
+    )
+    assert not cache._shared_stdlib_symbol_contract_matches(artifact, **args)
 
 
 def test_old_symbol_facts_are_misses_and_new_weak_facts_roundtrip(tmp_path):
@@ -498,7 +519,7 @@ def test_symbol_read_replacement_cannot_publish_facts_for_previous_bytes(
     tmp_path, monkeypatch, reader
 ):
     artifact = tmp_path / "archive.a"
-    artifact.write_bytes(b"generation-A")
+    artifact.write_bytes(static_archive_bytes(b"generation-A"))
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
@@ -528,7 +549,7 @@ def test_provider_cache_identity_includes_content_not_only_windows_metadata(
     tmp_path, monkeypatch
 ):
     artifact = tmp_path / "archive.a"
-    artifact.write_bytes(b"A")
+    artifact.write_bytes(static_archive_bytes(b"A"))
     timestamp = artifact.stat().st_mtime_ns
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
@@ -538,9 +559,20 @@ def test_provider_cache_identity_includes_content_not_only_windows_metadata(
     )
 
     def inspect(path, **kwargs):
-        name = path.read_text()
-        return native_symbol_inspection._NativeGlobalSymbolFacts(
+        name = path.read_bytes()[68:69].decode("ascii")
+        symbols = native_symbol_inspection._NativeGlobalSymbolFacts(
             frozenset({name}), frozenset(), frozenset({name})
+        )
+        return native_symbol_inspection._NativeGlobalSymbolFacts(
+            frozenset(),
+            frozenset(),
+            frozenset(),
+            members=(
+                native_symbol_inspection._NativeArchiveMemberSymbolFacts(
+                    kwargs["archive_members"][0],
+                    symbols,
+                ),
+            ),
         )
 
     monkeypatch.setattr(
@@ -549,7 +581,7 @@ def test_provider_cache_identity_includes_content_not_only_windows_metadata(
     assert native_symbol_inspection._native_archive_global_symbol_facts(
         artifact
     ).defined == {"A"}
-    artifact.write_bytes(b"B")
+    artifact.write_bytes(static_archive_bytes(b"B"))
     os.utime(artifact, ns=(timestamp, timestamp))
     assert native_symbol_inspection._native_archive_global_symbol_facts(
         artifact
@@ -591,7 +623,7 @@ def test_validation_and_token_mint_share_one_generation_lock(tmp_path, monkeypat
 def test_same_size_restored_mtime_cannot_reuse_validated_token(tmp_path, monkeypatch):
     artifact = tmp_path / "archive.a"
     _shared_metadata(artifact)
-    _tool(monkeypatch, stdout="0000 T molt_init_sys\n")
+    _tool(monkeypatch, stdout="object.o:\n0000 T molt_init_sys\n")
     token = cache._shared_stdlib_cache_validation_token(
         artifact,
         "key",
@@ -622,7 +654,10 @@ def test_empty_leaf_is_not_an_application_cache_hit(tmp_path, monkeypatch, kind)
     if kind is BackendArtifactKind.NATIVE_ARCHIVE:
         payload = static_archive_bytes(payload)
     artifact.write_bytes(payload)
-    _tool(monkeypatch)
+    _tool(
+        monkeypatch,
+        stdout="object.o:\n" if kind is BackendArtifactKind.NATIVE_ARCHIVE else "",
+    )
     assert (
         native_symbol_inspection._native_object_global_symbol_facts(artifact).defined
         == frozenset()
@@ -639,9 +674,9 @@ def test_symbol_fact_generation_is_rechecked_on_every_return(
     tmp_path, monkeypatch, reader_name, tier
 ):
     artifact = tmp_path / "input.a"
-    artifact.write_bytes(b"original")
+    artifact.write_bytes(static_archive_bytes(b"original"))
     stamp = artifact.stat()
-    _tool(monkeypatch, stdout="0000 T original_symbol\n")
+    _tool(monkeypatch, stdout="object.o:\n0000 T original_symbol\n")
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
@@ -855,7 +890,7 @@ def test_typed_callable_requirement_continues_reader_ladder_and_partitions_cache
     tmp_path, monkeypatch, first_stdout
 ):
     archive = tmp_path / "runtime.a"
-    archive.write_bytes(b"archive")
+    archive.write_bytes(static_archive_bytes(b"archive"))
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
@@ -871,7 +906,8 @@ def test_typed_callable_requirement_continues_reader_ladder_and_partitions_cache
         return subprocess.CompletedProcess(
             command,
             0,
-            first_stdout if command[0] == "first-nm" else "0000 T molt_ready\n",
+            "object.o:\n"
+            + (first_stdout if command[0] == "first-nm" else "0000 T molt_ready\n"),
             "",
         )
 
@@ -922,3 +958,248 @@ def test_typed_callable_requirement_reports_every_incompatible_reader(monkeypatc
     assert all("consumer requirement" in item for item in caught.value.attempts)
     assert "first-nm" in caught.value.attempts[0]
     assert "second-nm" in caught.value.attempts[1]
+
+
+def _two_member_archive(path):
+    # Equal names, different payloads: identity must include ordinal and bytes.
+    path.write_bytes(
+        static_archive_bytes(b"first") + static_archive_bytes(b"second")[8:]
+    )
+    return static_archive_member_identities(path)
+
+
+@pytest.mark.parametrize("cache_kind", ["object", "archive"])
+def test_member_custody_and_aggregate_projections_survive_both_cache_forms(
+    tmp_path, monkeypatch, cache_kind
+):
+    path = tmp_path / "duplicate.a"
+    members = _two_member_archive(path)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    _tool(
+        monkeypatch,
+        stdout=(
+            "object.o:\n0000 T root\n U callback\n w optional\n"
+            "object.o:\n0000 W callback\n U external\n"
+        ),
+    )
+    read = getattr(
+        native_symbol_inspection, f"_native_{cache_kind}_global_symbol_facts"
+    )
+    facts = read(path)
+    assert facts.members is not None
+    assert tuple(item.identity for item in facts.members) == members
+    assert members[0].sha256 == hashlib.sha256(b"first").hexdigest()
+    assert members[1].sha256 == hashlib.sha256(b"second").hexdigest()
+    assert facts.members[0].symbols.undefined == {"callback"}
+    assert facts.members[1].symbols.undefined == {"external"}
+    assert facts.defined == {"root", "callback"}
+    # Aggregate evidence is not lazy extraction or whole-archive link closure.
+    assert facts.undefined == {"callback", "external"}
+    assert facts.weak_undefined == {"optional"}
+    assert facts.weak_defined == {"callback"}
+    getattr(
+        native_symbol_inspection, f"_NATIVE_{cache_kind.upper()}_SYMBOL_SETS_CACHE"
+    ).clear()
+
+    def no_second_tool(*args, **kwargs):
+        pytest.fail("content-bound cache should retain ordered facts without nm")
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "_run_completed_command", no_second_tool
+    )
+    assert read(path) == facts
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "0000 T orphan\n",
+        "object.o:\n0000 T first\n",
+        "object.o:\nobject.o:\nobject.o:\n",
+        "foreign.o:\nobject.o:\n",
+        "object.o:\nwarning:\n",
+    ],
+)
+def test_member_facts_reject_missing_extra_or_unbound_tables(
+    tmp_path, monkeypatch, output
+):
+    path = tmp_path / "archive.a"
+    _two_member_archive(path)
+    _tool(monkeypatch, stdout=output)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    with pytest.raises(
+        native_symbol_inspection.NativeSymbolInspectionError, match="member"
+    ):
+        native_symbol_inspection._native_archive_global_symbol_facts(path)
+    assert not native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
+    assert not (tmp_path / "cache").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation", ["reorder", "hash", "offset", "bool", "drop", "projection", "weak"]
+)
+def test_member_cache_codec_cannot_replace_current_content_custody(tmp_path, mutation):
+    path = tmp_path / "archive.a"
+    members = _two_member_archive(path)
+    facts = native_symbol_inspection._parse_native_archive_symbol_facts(
+        "object.o:\n0000 T root\nobject.o:\n0000 W leaf\n",
+        path=path,
+        members=members,
+        target_triple="x86_64-unknown-linux-gnu",
+    )
+    payload = native_symbol_inspection._symbol_facts_payload(facts)
+    rows = payload["members"]
+    if mutation == "reorder":
+        rows.reverse()
+    elif mutation == "hash":
+        rows[0]["sha256"] = rows[1]["sha256"]
+    elif mutation == "offset":
+        rows[0]["offset"] += 1
+    elif mutation == "bool":
+        rows[0]["ordinal"] = False
+    elif mutation == "drop":
+        rows.pop()
+    elif mutation == "projection":
+        payload["defined"] = ["invented"]
+    else:
+        rows[0]["symbols"]["weak_defined"] = ["invented"]
+    assert (
+        native_symbol_inspection._decode_symbol_facts(
+            payload, artifact_digest="digest", members=members
+        )
+        is None
+    )
+
+
+def test_empty_archive_is_distinct_from_object_and_missing_member_output(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "empty.a"
+    path.write_bytes(b"!<arch>\n")
+    _tool(monkeypatch)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    facts = native_symbol_inspection._native_archive_global_symbol_facts(path)
+    assert facts.members == ()
+    assert facts.defined == facts.undefined == frozenset()
+
+
+def test_archive_empty_diagnostic_must_name_a_framed_member(tmp_path, monkeypatch):
+    path = tmp_path / "archive.a"
+    _two_member_archive(path)
+    _tool(
+        monkeypatch,
+        stdout="object.o:\nobject.o:\n",
+        stderr=f"{path}(foreign.o): no symbols\n",
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    with pytest.raises(
+        native_symbol_inspection.NativeSymbolInspectionError, match="foreign.o"
+    ):
+        native_symbol_inspection._native_archive_global_symbol_facts(path)
+
+
+def test_object_parser_does_not_silently_discard_archive_or_architecture_headers():
+    with pytest.raises(ValueError, match="member custody"):
+        native_symbol_inspection._parse_native_nm_global_symbol_facts(
+            "member.o:\n0000 T root\n"
+        )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "target",
+    [
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+    ],
+)
+def test_member_symbols_real_native_archive(tmp_path, monkeypatch, target):
+    _assert_real_archive_member_symbols(tmp_path, monkeypatch, target)
+
+
+@pytest.mark.slow
+def test_member_symbols_real_wasm_archive(tmp_path, monkeypatch):
+    _assert_real_archive_member_symbols(tmp_path, monkeypatch, "wasm32-wasip1")
+
+
+def _assert_real_archive_member_symbols(tmp_path, monkeypatch, target):
+    from molt.cli.llvm_wasi_tools import llvm_tool_candidates
+
+    tools = {kind: llvm_tool_candidates(kind) for kind in ("cc", "ar", "nm")}
+    if any(not paths for paths in tools.values()):
+        pytest.skip("selected LLVM clang/ar/nm toolchain is unavailable")
+    cc, ar, nm = (str(tools[kind][0]) for kind in ("cc", "ar", "nm"))
+    if target.startswith("wasm"):
+        # Native LLVM and the WASI SDK have independent pinned releases. Never
+        # substitute a native reader for the SDK selected by the WASM job.
+        from molt.llvm_toolchain import verify_wasm_llvm_nm
+        from molt.source_root import compiler_source_root
+
+        nm = str(verify_wasm_llvm_nm(compiler_source_root()).path)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    sources = (
+        "extern int callback(void); int root(void) { return callback(); }\n",
+        "extern int external(void); int callback(void) { return external(); }\n",
+        "/* An object with no global symbols still has member identity. */\n",
+    )
+    objects = []
+    for index, source in enumerate(sources):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        source_path = directory / "input.c"
+        source_path.write_text(source, encoding="utf-8")
+        # Deliberate duplicate archive names in three different directories.
+        output = directory / "object.o"
+        result = subprocess.run(
+            [cc, f"--target={target}", "-c", str(source_path), "-o", str(output)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        objects.append(output)
+    archive = tmp_path / "members.a"
+    result = subprocess.run(
+        [ar, "qcD", str(archive), *map(str, objects)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    facts = native_symbol_inspection._native_archive_global_symbol_facts(
+        archive, nm_command=(nm,), target_triple=target
+    )
+    assert facts.members is not None
+    assert [member.identity.ordinal for member in facts.members] == [0, 1, 2]
+    assert [member.identity.member.name for member in facts.members] == ["object.o"] * 3
+    assert [member.identity.sha256 for member in facts.members] == [
+        hashlib.sha256(path.read_bytes()).hexdigest() for path in objects
+    ]
+    assert facts.members[0].symbols.defined_functions == {"root"}
+    assert facts.members[0].symbols.undefined == {"callback"}
+    assert facts.members[1].symbols.defined_functions == {"callback"}
+    assert facts.members[1].symbols.undefined == {"external"}
+    assert (
+        facts.members[2].symbols.defined
+        == facts.members[2].symbols.undefined
+        == frozenset()
+    )
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    # The disk projection must preserve the same member content and weak facts.
+    assert (
+        native_symbol_inspection._native_archive_global_symbol_facts(
+            archive, nm_command=(nm,), target_triple=target
+        )
+        == facts
+    )

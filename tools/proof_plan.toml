@@ -682,7 +682,7 @@ dependencies = []
 [[ci_family]]
 name = "wasm"
 description = "WASM backend, shared runtime, linked artifact, Luau sibling, and control-flow proof."
-inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/wasm_harness.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py"]
+inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/cli/test_native_symbol_authority.py", "tests/wasm_harness.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py"]
 executor = "github-job"
 workflow = ".github/workflows/molt-wasm-ci.yml"
 job = "wasm-build"
@@ -730,7 +730,7 @@ dependencies = []
 [[ci_family]]
 name = "native_integration"
 description = "Native compiler/linker and supervisor receipt integration isolated from pure Python proof."
-inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_native_link_*.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**"]
+inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_native_link_*.py", "tests/cli/test_native_symbol_authority.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "native-integration"
@@ -1866,8 +1866,8 @@ timeout_budget = "integration"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_wasm_control_flow.py", "-q"]
-toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_wasm_control_flow.py", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "-q"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
 id = "wasm.integration.split-runtime"
@@ -1990,8 +1990,8 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority"]
-toolchains = ["python", "uv", "rustc"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive"]
+toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm"]
 
 [[command]]
 id = "native.integration.bench-cli"
