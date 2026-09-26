@@ -476,7 +476,6 @@ def _render_rs_mod() -> str:
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
             "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch,\n",
-            "    RuntimeCallableResult,\n",
             "    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,\n",
             "};\n",
             "pub(crate) use static_types::{\n",
@@ -1701,16 +1700,10 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
             "    }\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum RuntimeCallableResult {\n",
-            "    I64,\n",
-            "    Void,\n",
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct RuntimeCallableImportSpec {\n",
             "    pub(crate) runtime_name: &'static str,\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) arity: usize,\n",
-            "    pub(crate) result: RuntimeCallableResult,\n",
             "}\n\n",
             "pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[\n",
         ]
@@ -1722,17 +1715,12 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
         # semantics. Trampoline dispatch retains its separate transport ABI.
         spec = boxed_specs.get(entry["runtime_name"])
         arity = spec["arity"] if spec is not None else entry["callable_arity"]
-        result_kind = (
-            spec["result"] if spec is not None else entry.get("callable_result")
-        )
-        result = "Void" if result_kind == "void" else "I64"
         lines.extend(
             [
                 "    RuntimeCallableImportSpec {\n",
                 f'        runtime_name: "{entry["runtime_name"]}",\n',
                 f"        import: {_rust_runtime_import(import_variants, entry['name'])},\n",
                 f"        arity: {arity},\n",
-                f"        result: RuntimeCallableResult::{result},\n",
                 "    },\n",
             ]
         )
@@ -1905,7 +1893,6 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
             "runtime_name": entry["runtime_name"],
             "import_name": entry["import_name"],
             "callable_arity": entry["callable_arity"],
-            "callable_result": import_entry.get("callable_result"),
             "callable_dispatch": entry.get("callable_dispatch", "direct"),
             "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
             "runtime_feature": import_entry.get("runtime_feature"),
@@ -1930,7 +1917,6 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
                 "runtime_name": runtime_name,
                 "import_name": import_name,
                 "callable_arity": entry["callable_arity"],
-                "callable_result": entry.get("callable_result"),
                 "callable_dispatch": entry.get("callable_dispatch", "direct"),
                 "runtime_feature": entry.get("runtime_feature"),
                 "symbol_path": f"crate::{runtime_name}",
@@ -2166,19 +2152,6 @@ def render_runtime_callables_rs(data: dict) -> str:
     lines.extend(
         [
             "];\n\n",
-            "#[rustfmt::skip]\n",
-            "const VOID_RESERVED_RUNTIME_CALLABLE_INDICES: &[u64] = &[\n",
-        ]
-    )
-    for entry in reserved_callables:
-        if entry.get("callable_result") == "void":
-            runtime_feature = entry.get("runtime_feature")
-            if isinstance(runtime_feature, str):
-                lines.append(f'    #[cfg(feature = "{runtime_feature}")]\n')
-            lines.append(f"    {entry['index']},\n")
-    lines.extend(
-        [
-            "];\n\n",
             "#[inline]\n",
             "pub(crate) fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
             "    runtime_reserved_callable_key_from_symbol_name(symbol_name)\n",
@@ -2222,15 +2195,6 @@ def render_runtime_callables_rs(data: dict) -> str:
             "pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
             "    runtime_reserved_callable_target_ptr(fn_ptr)\n",
             "        .or_else(|| runtime_poll_callable_target_ptr(fn_ptr))\n",
-            "}\n\n",
-            '#[cfg(target_arch = "wasm32")]\n',
-            "#[inline]\n",
-            "pub(crate) fn runtime_callable_returns_void_from_target_ptr(\n",
-            "    fn_ptr: u64,\n",
-            ") -> bool {\n",
-            "    fn_ptr\n",
-            "        .checked_sub(RUNTIME_CALLABLE_KEY_BASE)\n",
-            "        .is_some_and(|idx| VOID_RESERVED_RUNTIME_CALLABLE_INDICES.contains(&idx))\n",
             "}\n\n",
             "#[inline]\n",
             "#[rustfmt::skip]\n",

@@ -1,4 +1,3 @@
-mod pending;
 mod transition;
 mod yield_ops;
 

@@ -637,11 +637,9 @@ def _static_type_index_by_signature(
 
 
 def _runtime_callable_signature(
-    arity: int, result: str
+    arity: int,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    params = ("i64",) * arity
-    results = () if result == "void" else ("i64",)
-    return params, results
+    return ("i64",) * arity, ("i64",)
 
 
 def _format_runtime_callable_signature(
@@ -1092,8 +1090,10 @@ def _normalize_rust_wasm_scalar(typ: str, aliases: dict[str, str]) -> str:
     return typ
 
 
-@lru_cache(maxsize=1)
-def _rust_export_signatures() -> dict[str, set[tuple[tuple[str, ...], str]]]:
+@lru_cache(maxsize=2)
+def _rust_export_signatures(
+    *, include_native: bool = False
+) -> dict[str, set[tuple[tuple[str, ...], str]]]:
     aliases = _rust_type_aliases()
     fn_re = re.compile(
         r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
@@ -1106,7 +1106,7 @@ def _rust_export_signatures() -> dict[str, set[tuple[tuple[str, ...], str]]]:
         if text is None:
             continue
         for match in fn_re.finditer(text):
-            if not _rust_fn_cfg_allows_wasm(text, match.start()):
+            if not include_native and not _rust_fn_cfg_allows_wasm(text, match.start()):
                 continue
             params_text = match.group(2).strip()
             params: list[str] = []
@@ -1176,28 +1176,12 @@ def _runtime_host_export_signatures(
     return rows
 
 
-def _rust_intrinsic_callable_result(
-    rust_exports: dict[str, set[tuple[tuple[str, ...], str]]],
-    runtime_name: str,
-    arity: int,
-) -> str:
-    signatures = rust_exports.get(runtime_name, set())
-    expected_params = ("i64",) * arity
-    compatible = {
-        result
-        for params, result in signatures
-        if params == expected_params and result in {"i64", "void"}
-    }
-    return next(iter(compatible)) if len(compatible) == 1 else "i64"
-
-
 def _intrinsic_runtime_callable_imports(
     static_types: list[dict],
     imports: list[dict],
     non_runtime_callable_intrinsics: set[str],
     reserved_runtime_callables: set[str],
 ) -> list[dict]:
-    rust_exports = _rust_export_signatures()
     type_indices = _static_type_index_by_signature(static_types)
     explicit_imports_by_name = {
         entry["name"]: entry for entry in imports if isinstance(entry.get("name"), str)
@@ -1232,8 +1216,7 @@ def _intrinsic_runtime_callable_imports(
                     "runtime_name"
                 )
             continue
-        result = _rust_intrinsic_callable_result(rust_exports, runtime_name, arity)
-        params, results = _runtime_callable_signature(arity, result)
+        params, results = _runtime_callable_signature(arity)
         type_idx = type_indices.get((params, results))
         if type_idx is None:
             missing_static_types.append(
@@ -1267,7 +1250,7 @@ def _intrinsic_runtime_callable_imports(
                     "non-callable ABI"
                 )
             existing_results = tuple(existing_signature["results"])
-            if existing_results not in ((), ("i64",)):
+            if existing_results != results:
                 raise WasmAbiManifestError(
                     f"intrinsic {runtime_name!r} collides with explicit import "
                     f"{import_name!r} using results "
@@ -1277,8 +1260,6 @@ def _intrinsic_runtime_callable_imports(
                 )
             existing_entry["runtime_name"] = runtime_name
             existing_entry["callable_arity"] = arity
-            if not existing_results:
-                existing_entry["callable_result"] = "void"
             explicit_runtime_names.add(runtime_name)
             continue
         entry = {
@@ -1287,8 +1268,6 @@ def _intrinsic_runtime_callable_imports(
             "runtime_name": runtime_name,
             "callable_arity": arity,
         }
-        if result == "void":
-            entry["callable_result"] = "void"
         synthesized.append(entry)
         explicit_runtime_names.add(runtime_name)
     if missing_static_types:
@@ -1297,6 +1276,14 @@ def _intrinsic_runtime_callable_imports(
             + "; ".join(missing_static_types)
         )
     return synthesized
+
+
+def _validate_python_callable_result(entry: dict, context: str) -> None:
+    result = entry.get("callable_result", "i64")
+    if result != "i64":
+        raise WasmAbiManifestError(
+            f"{context} callable_result must be i64 (boxed object), not {result!r}"
+        )
 
 
 def _validate_reserved_runtime_callables(data: dict) -> list[dict]:
@@ -1348,6 +1335,9 @@ def _validate_reserved_runtime_callables(data: dict) -> list[dict]:
             raise WasmAbiManifestError(
                 f"reserved runtime callable {runtime_name!r} has invalid callable_arity"
             )
+        _validate_python_callable_result(
+            entry, f"reserved runtime callable {runtime_name!r}"
+        )
         if callable_dispatch not in CALLABLE_DISPATCH_MODES:
             raise WasmAbiManifestError(
                 f"reserved runtime callable {runtime_name!r} has invalid "
@@ -1414,13 +1404,13 @@ def _materialize_reserved_runtime_callable_imports(
     explicit_imports_by_name = {
         entry["name"]: entry for entry in imports if isinstance(entry.get("name"), str)
     }
-    rust_exports = _rust_export_signatures()
+    rust_exports = _rust_export_signatures(include_native=True)
     missing_static_types: list[str] = []
     for entry in reserved_callables:
         runtime_name = entry["runtime_name"]
         import_name = entry["import_name"]
         arity = entry["callable_arity"]
-        params, results = _runtime_callable_signature(arity, "i64")
+        params, results = _runtime_callable_signature(arity)
         type_idx = type_indices.get((params, results))
         if type_idx is None:
             missing_static_types.append(
@@ -1501,7 +1491,7 @@ def _materialize_reserved_runtime_callable_imports(
 
 def _validate_intrinsic_runtime_callable_export_abi(imports: list[dict]) -> None:
     intrinsic_names = _intrinsic_manifest_names()
-    rust_exports = _rust_export_signatures()
+    rust_exports = _rust_export_signatures(include_native=True)
     mismatches: list[str] = []
     missing: list[str] = []
     for entry in imports:
@@ -1513,7 +1503,9 @@ def _validate_intrinsic_runtime_callable_export_abi(imports: list[dict]) -> None
             missing.append(runtime_name)
             continue
         expected_params = ("i64",) * entry["callable_arity"]
-        expected_result = entry.get("callable_result", "i64")
+        # Every Python-callable provider returns a boxed object, including None.
+        # Never infer a different callable ABI from an erroneous Rust export.
+        expected_result = "i64"
         expected = (expected_params, expected_result)
         if signatures != {expected}:
             rendered = ", ".join(
@@ -1932,10 +1924,7 @@ def validate_loaded_manifest(
                 raise WasmAbiManifestError(
                     f"import {name!r} has invalid callable_arity"
                 )
-            if callable_result not in {"i64", "void"}:
-                raise WasmAbiManifestError(
-                    f"import {name!r} has invalid callable_result {callable_result!r}"
-                )
+            _validate_python_callable_result(entry, f"import {name!r}")
         elif callable_result != "i64":
             raise WasmAbiManifestError(
                 f"import {name!r} cannot set callable_result without callable_arity"
@@ -2777,6 +2766,8 @@ def generator_runtime_export_signature_rows() -> tuple[
     """Return the normalized runtime extern ABI surface used by the generator."""
     return tuple(
         (name, params, result)
-        for name, signatures in sorted(_rust_export_signatures().items())
+        for name, signatures in sorted(
+            _rust_export_signatures(include_native=True).items()
+        )
         for params, result in sorted(signatures)
     )

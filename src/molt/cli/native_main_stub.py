@@ -191,17 +191,6 @@ static int molt_env_enabled(const char* name) {
     return value != NULL && value[0] != '\\0' && strcmp(value, "0") != 0;
 #endif
 }
-extern unsigned long long molt_alloc(long size);
-extern long molt_block_on(void* task);
-extern void molt_spawn(void* task);
-extern void* molt_chan_new(unsigned long long capacity);
-extern long molt_chan_send(void* chan, long val);
-extern long molt_chan_recv(void* chan);
-extern long molt_chan_try_send(void* chan, long val);
-extern long molt_chan_try_recv(void* chan);
-extern long molt_chan_send_blocking(void* chan, long val);
-extern long molt_chan_recv_blocking(void* chan);
-extern void molt_print_obj(unsigned long long val);
 /* Per-app callable resolver: the backend emits molt_app_resolve_callable into
  * the user object for the native app-callable manifest, and WASM emits the
  * analogous callable table resolver for intrinsics plus reachable builtin

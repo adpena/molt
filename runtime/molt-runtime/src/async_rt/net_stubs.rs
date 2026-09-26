@@ -63,7 +63,9 @@ pub extern "C" fn molt_socket_close(_: u64) -> u64 {
     net_error!()
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_drop(_: u64) {}
+pub extern "C" fn molt_socket_drop(_: u64) -> u64 {
+    MoltObject::none().bits()
+}
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_clone(_: u64) -> u64 {
     net_error!()
@@ -310,7 +312,9 @@ pub extern "C" fn molt_socket_reader_new(_: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_reader_drop(_: u64) {}
+pub extern "C" fn molt_socket_reader_drop(_: u64) -> u64 {
+    MoltObject::none().bits()
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_reader_at_eof(_: u64) -> u64 {

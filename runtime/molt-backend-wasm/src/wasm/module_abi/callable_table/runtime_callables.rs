@@ -3,12 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{Function, Instruction};
 
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::{
-    RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,
-};
+use crate::wasm_abi::{RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS};
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
-use crate::wasm_values::box_none;
 
 #[derive(Clone)]
 pub(super) struct WasmCompactBuiltinRuntimeCallable {
@@ -17,16 +14,8 @@ pub(super) struct WasmCompactBuiltinRuntimeCallable {
     pub(super) arity: usize,
 }
 
-struct WasmRuntimeCallableWrapperSpec {
-    runtime_name: String,
-    import: WasmRuntimeImport,
-    arity: usize,
-    result: RuntimeCallableResult,
-}
-
 pub(super) struct WasmRuntimeCallableTablePlan {
     compact_builtin_runtime_callables: Vec<WasmCompactBuiltinRuntimeCallable>,
-    wrapper_specs: Vec<WasmRuntimeCallableWrapperSpec>,
 }
 
 impl WasmRuntimeCallableTablePlan {
@@ -65,21 +54,8 @@ impl WasmRuntimeCallableTablePlan {
             }
         }
 
-        let wrapper_specs: Vec<WasmRuntimeCallableWrapperSpec> = RUNTIME_CALLABLE_IMPORTS
-            .iter()
-            .filter(|spec| !reserved_runtime_callable_names.contains(spec.runtime_name))
-            .filter(|spec| builtin_trampoline_specs.contains_key(spec.runtime_name))
-            .map(|spec| WasmRuntimeCallableWrapperSpec {
-                runtime_name: spec.runtime_name.to_string(),
-                import: spec.import,
-                arity: spec.arity,
-                result: spec.result,
-            })
-            .collect();
-
         Self {
             compact_builtin_runtime_callables,
-            wrapper_specs,
         }
     }
 
@@ -104,7 +80,7 @@ impl WasmBackend {
         reloc_enabled: bool,
     ) -> BTreeMap<String, u32> {
         let mut wrapper_indices = BTreeMap::new();
-        for spec in &plan.wrapper_specs {
+        for spec in &plan.compact_builtin_runtime_callables {
             let type_idx = *user_type_map.get(&spec.arity).unwrap_or_else(|| {
                 panic!("missing builtin wrapper signature for arity {}", spec.arity)
             });
@@ -117,9 +93,6 @@ impl WasmBackend {
                 func.instruction(&Instruction::LocalGet(idx as u32));
             }
             emit_call(&mut func, reloc_enabled, import_idx);
-            if spec.result == RuntimeCallableResult::Void {
-                func.instruction(&Instruction::I64Const(box_none()));
-            }
             func.instruction(&Instruction::End);
             self.codes.function(&func);
             wrapper_indices.insert(spec.runtime_name.clone(), func_index);

@@ -128,7 +128,7 @@ def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
         ("molt_set_update", 2, "i64"),
         ("molt_string_split_field_len_from_bounds", 4, "i64"),
         ("molt_print_newline", 0, "void"),
-        ("molt_spawn", 1, "void"),
+        ("molt_spawn", 1, "i64"),
     ):
         assert symbols[symbol] == {
             "runtime_name": symbol,
@@ -281,7 +281,7 @@ def test_runtime_boxed_abi_rejects_inconsistent_op_loop_shapes(args: list[str]) 
 
 def test_runtime_boxed_abi_keeps_real_void_distinct_from_boxed_none() -> None:
     data = _boxed_abi_fixture()
-    data["import"][0].update(type=2, callable_arity=1, callable_result="void")
+    data["import"][0].update(type=2, boxed_call=True)
     assert manifest.runtime_boxed_call_specs(data)[0]["result"] == "void"
     data["lir_runtime_call"] = [{"import_name": "example", "boxed_operand_count": 1}]
     with pytest.raises(manifest.WasmAbiManifestError, match="boxed LIR shape"):
@@ -1160,8 +1160,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["types_bootstrap"]["callable_arity"] == 0
     assert imports["types_bootstrap"].get("shared_runtime_callable") is None
 
-    assert imports["socket_drop"]["callable_result"] == "void"
-    assert imports["stream_close"]["callable_result"] == "void"
+    assert imports["socket_drop"].get("callable_result", "i64") == "i64"
+    assert imports["stream_close"].get("callable_result", "i64") == "i64"
     assert imports["future_features"]["runtime_name"] == "molt_future_features"
     assert imports["site_help0"]["callable_arity"] == 0
     assert imports["site_help1"]["callable_arity"] == 1
@@ -1217,7 +1217,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "runtime_name": "molt_importlib_import_transaction",
         "import_name": "importlib_import_transaction",
         "callable_arity": 5,
-        "callable_result": None,
         "callable_dispatch": "trampoline",
         "trampoline_abi": "unpack_args",
         "runtime_feature": None,
@@ -1228,7 +1227,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "runtime_name": "molt_importlib_module_spec_init",
         "import_name": "importlib_module_spec_init",
         "callable_arity": 5,
-        "callable_result": None,
         "callable_dispatch": "direct",
         "trampoline_abi": "unpack_args",
         "runtime_feature": None,
@@ -1378,30 +1376,30 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         '        "molt_socket_drop" => Some(WasmRuntimeImport::SocketDrop),'
     ) in rendered_rs
     assert "runtime_callable_import_name" not in rendered_rs
-    assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME" in rendered_py
-    assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT" in rendered_py
-    assert "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
-    assert "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME" in rendered_py
-    assert "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT" in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_ARITY_BY_IMPORT" in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME" not in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT" not in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME" not in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT" not in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
     assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" not in rendered_py
-    assert "def wasm_runtime_callable_spec(name: str)" in rendered_py
+    assert "def wasm_runtime_callable_spec(name: str)" not in rendered_py
     assert "def wasm_runtime_callable_import_name" not in rendered_py
     assert "def wasm_runtime_callable_arity" in rendered_py
-    assert "def wasm_runtime_callable_result" in rendered_py
+    assert "def wasm_runtime_callable_result" not in rendered_py
     assert "molt_sqlite3_" not in rendered_rs
     assert "molt_sqlite3_" not in rendered_py
-    assert "RuntimeCallableResult::Void" in rendered_rs
     assert "ReservedRuntimeCallableSpec" in rendered_rs
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
     assert "ReservedRuntimeCallableDispatch" in rendered_rs
     assert "ReservedRuntimeCallableTrampolineAbi" in rendered_rs
-    assert "RuntimeCallableResult" in rendered_rs
+    assert "RuntimeCallableResult" not in rendered_rs
     assert "RESERVED_RUNTIME_CALLABLE_SPECS" in rendered_rs
     assert "RESERVED_RUNTIME_CALLABLE_COUNT" in rendered_rs
     assert "runtime_callable_key_from_symbol_name" in rendered_runtime_rs
     assert "runtime_callable_target_ptr" in rendered_runtime_rs
-    assert "runtime_callable_returns_void_from_target_ptr" in rendered_runtime_rs
+    assert "runtime_callable_returns_void_from_target_ptr" not in rendered_runtime_rs
     assert "pub(crate) fn python_builtin_function_info" in rendered_runtime_rs
     rendered_builtin_rs = gen.render_python_builtin_callables_rs(data)
     assert "pub fn python_builtin_callable(name: &str)" in rendered_builtin_rs
@@ -1470,12 +1468,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         for entry in data["import"]
         if entry.get("callable_result") == "void"
     }
-    assert "molt_asyncio_future_drop" in void_runtime_names
-    shared_runtime_names = {entry["runtime_name"] for entry in shared_callables}
-    assert void_runtime_names.isdisjoint(shared_runtime_names)
-    assert "VOID_RESERVED_RUNTIME_CALLABLE_INDICES" in rendered_runtime_rs
-    for runtime_name in sorted(void_runtime_names):
-        assert f"crate::{runtime_name} as *const" not in rendered_runtime_rs
+    assert not void_runtime_names
+    assert "VOID_RESERVED_RUNTIME_CALLABLE_INDICES" not in rendered_runtime_rs
     for entry in gen._shared_runtime_callables(data):
         runtime_name = entry["runtime_name"]
         symbol_path = entry["symbol_path"]
@@ -1519,9 +1513,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "wasm_poll_callables.inc" not in function_abi
     assert '"molt_type_call" => Some' not in function_abi
     assert "molt_async_sleep_poll as *const" not in function_abi
-    assert "runtime_callable_returns_void" in function_abi
+    assert "runtime_callable_returns_void" not in function_abi
     assert "VOID_INTRINSICS" not in call_function
-    assert "runtime_callable_returns_void(fn_ptr)" in call_function
+    assert "runtime_callable_returns_void(fn_ptr)" not in call_function
 
 
 def test_python_builtin_module_metadata_matches_cpython() -> None:
@@ -1798,6 +1792,85 @@ def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
     assert imports["molt_logging_formatter_format_time"]["callable_arity"] == 3
     assert imports["molt_logging_stream_handler_new"]["callable_arity"] == 2
     assert imports["molt_logging_basic_config"]["callable_arity"] == 4
+
+
+@pytest.mark.parametrize("symbol", ["molt_socket_drop", "molt_asyncio_future_drop"])
+@pytest.mark.parametrize("mixed_target_signatures", [False, True])
+def test_python_callable_provider_rejects_void_on_any_target(
+    monkeypatch: pytest.MonkeyPatch, symbol: str, mixed_target_signatures: bool
+) -> None:
+    # Both explicit and synthesized imports must fail closed. A correct native
+    # definition must not conceal a void cfg-gated WASM definition (or vice versa).
+    exports = dict(manifest._rust_export_signatures(include_native=True))
+    exports[symbol] = {(("i64",), "void")}
+    if mixed_target_signatures:
+        exports[symbol].add((("i64",), "i64"))
+    monkeypatch.setattr(manifest, "_rust_export_signatures", lambda **kwargs: exports)
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match=rf"callable ABI mismatches:.*{symbol}"
+    ):
+        manifest.validate_loaded_manifest(_raw_manifest())
+
+
+@pytest.mark.parametrize("section", ["import", "reserved_runtime_callable"])
+def test_python_callable_manifest_cannot_opt_into_void(section: str) -> None:
+    data = _raw_manifest()
+    entry = next(row for row in data[section] if "callable_arity" in row)
+    entry["callable_result"] = "void"
+    with pytest.raises(manifest.WasmAbiManifestError, match="must be i64"):
+        manifest.validate_loaded_manifest(data)
+
+
+def test_reserved_python_callable_rejects_native_only_void(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan = manifest._rust_export_signatures
+
+    def signatures(*, include_native: bool = False):
+        exports = dict(scan(include_native=include_native))
+        if include_native:
+            original = exports["molt_type_new"]
+            exports["molt_type_new"] = original | {
+                (params, "void") for params, _ in original
+            }
+        return exports
+
+    monkeypatch.setattr(manifest, "_rust_export_signatures", signatures)
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="reserved runtime callable 'molt_type_new'"
+    ):
+        manifest.validate_loaded_manifest(_raw_manifest())
+
+
+def test_python_callable_abi_and_cache_include_native_only_providers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = tmp_path / "providers.rs"
+    provider.write_text(
+        '#[cfg(not(target_arch = "wasm32"))]\n'
+        "#[unsafe(no_mangle)]\n"
+        'pub extern "C" fn molt_process_drop(handle: u64) {}\n'
+        '#[cfg(target_arch = "wasm32")]\n'
+        "#[unsafe(no_mangle)]\n"
+        'pub extern "C" fn molt_process_drop(handle: u64) -> u64 { 0 }\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(manifest, "_runtime_rust_files", lambda: [provider])
+    monkeypatch.setattr(manifest, "_rust_type_aliases", lambda: {})
+    manifest._rust_export_signatures.cache_clear()
+    try:
+        assert manifest._rust_export_signatures()["molt_process_drop"] == {
+            (("i64",), "i64")
+        }
+        assert ("molt_process_drop", ("i64",), "void") in (
+            manifest.generator_runtime_export_signature_rows()
+        )
+        with pytest.raises(manifest.WasmAbiManifestError, match="ABI mismatches"):
+            manifest._validate_intrinsic_runtime_callable_export_abi(
+                [{"runtime_name": "molt_process_drop", "callable_arity": 1}]
+            )
+    finally:
+        manifest._rust_export_signatures.cache_clear()
 
 
 def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
@@ -2233,21 +2306,32 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     rendered_ns = _exec_rendered_py(rendered_py)
     assert rendered_ns["wasm_import_name"]("molt_socket_drop") == "socket_drop"
     assert rendered_ns["wasm_runtime_import_name"]("molt_socket_drop") == "socket_drop"
-    assert rendered_ns["wasm_import_result_kind"]("molt_socket_drop") == "nil"
+    assert rendered_ns["wasm_import_result_kind"]("molt_socket_drop") == "i64"
     assert "def wasm_import_name" in rendered_py
     assert "def wasm_import_signature" in rendered_py
     assert "def wasm_import_result_kind" in rendered_py
-    assert "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME" in rendered_py
-    assert "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT" in rendered_py
-    assert "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_ARITY_BY_IMPORT" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
     assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" not in rendered_py
-    assert rendered_ns["wasm_runtime_callable_spec"](
-        "molt_importlib_import_transaction"
-    ) == ("importlib_import_transaction", 5, "i64")
-    assert rendered_ns["wasm_runtime_callable_spec"](
-        "importlib_import_transaction"
-    ) == ("molt_importlib_import_transaction", 5, "i64")
+    arity = rendered_ns["wasm_runtime_callable_arity"]
+    assert arity("molt_importlib_import_transaction") == 5
+    assert arity("importlib_import_transaction") == 5
+    assert arity("molt_socket_drop") == arity("socket_drop") == 1
+    assert arity("molt_print_newline") is None
+    assert arity("unknown_callable") is None
+    for entry in data["import"]:
+        if "callable_arity" in entry:
+            assert (
+                arity(entry["name"])
+                == arity(entry["runtime_name"])
+                == entry["callable_arity"]
+            )
+    for entry in data["reserved_runtime_callable"]:
+        assert (
+            arity(entry["import_name"])
+            == arity(entry["runtime_name"])
+            == entry["callable_arity"]
+        )
 
 
 def test_wasm_abi_deletes_pre_emission_import_dependency_table() -> None:

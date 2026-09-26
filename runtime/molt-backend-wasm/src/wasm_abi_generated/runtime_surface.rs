@@ -960,12 +960,12 @@ pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] =
     RuntimeHostExportSignature {
         name: "molt_stream_close",
         params: &[ValType::I64],
-        results: &[],
+        results: &[ValType::I64],
     },
     RuntimeHostExportSignature {
         name: "molt_stream_drop",
         params: &[ValType::I64],
-        results: &[],
+        results: &[ValType::I64],
     },
     RuntimeHostExportSignature {
         name: "molt_string_as_ptr",

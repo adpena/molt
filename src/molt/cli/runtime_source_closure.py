@@ -70,9 +70,6 @@ def _runtime_source_paths_cached(
                 project_root / "runtime/build_support",
                 # Compiled by molt-runtime's sitebuiltins implementation.
                 project_root / "LICENSE",
-                # `molt-runtime/build.rs` probes this closure unconditionally;
-                # absence is identity-bearing and must remain in the path set.
-                project_root / "third_party/cpython/Modules/_decimal/libmpdec",
             ),
         )
     )
