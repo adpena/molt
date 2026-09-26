@@ -284,7 +284,6 @@ def _optimize_split_app_module(
             )
             if attestation is not None:
                 attestation.update(cached.payload or {})
-                attestation["cache_hit"] = True
             context["_cache_metric_add"](
                 operation_counts,
                 f"{metric_prefix}_wall_ms",
@@ -313,7 +312,7 @@ def _optimize_split_app_module(
         if stripped is not None:
             optimized = stripped
         result = optimized
-        active_attestation = attestation if attestation is not None else {}
+        optimizer_attestation: dict[str, object] = {}
         if optimize:
             assert wasm_opt_identity is not None
             optimizer_policy = context["wasm_link_policy"](
@@ -329,6 +328,7 @@ def _optimize_split_app_module(
                 context["_cache_metric_add"](
                     operation_counts, "split_app_wasm_opt_runs", 1
                 )
+                optimizer_telemetry: dict[str, object] = {}
                 optimizer_ok = context["_run_wasm_opt_via_optimize"](
                     app_path,
                     level=optimizer_policy.level,
@@ -337,45 +337,47 @@ def _optimize_split_app_module(
                     apply_level=optimizer_policy.apply_level,
                     extra_passes=optimizer_policy.extra_passes,
                     preserve_debug=preserve_debug,
-                    attestation=active_attestation,
+                    attestation=optimizer_attestation,
+                    execution_telemetry=optimizer_telemetry,
                 )
-                context["_record_wasm_opt_attestation_cache_metrics"](
-                    operation_counts, metric_prefix, active_attestation
+                context["_record_wasm_opt_execution_metrics"](
+                    operation_counts, metric_prefix, optimizer_telemetry
                 )
                 if optimizer_ok:
                     result = app_path.read_bytes()
                 else:
                     failure = str(
-                        active_attestation.get("error", "unknown optimizer failure")
+                        optimizer_attestation.get("error", "unknown optimizer failure")
                     )
                     raise RuntimeError(
                         f"required split-app wasm optimization failed: {failure}"
                     )
                 if (
-                    active_attestation.get("wasm_opt_path") != wasm_opt_identity[0]
-                    or active_attestation.get("wasm_opt_sha256") != wasm_opt_identity[1]
+                    optimizer_attestation.get("wasm_opt_path") != wasm_opt_identity[0]
+                    or optimizer_attestation.get("wasm_opt_sha256")
+                    != wasm_opt_identity[1]
                 ):
                     raise RuntimeError(
                         "required split-app wasm optimization crossed executable identity"
                     )
-        cache_payload = dict(active_attestation)
-        cache_payload["cache_hit"] = False
         if optimize:
             assert wasm_opt_identity is not None
-            cache_payload.update(
+            optimizer_attestation.update(
                 {
                     "wasm_opt_path": wasm_opt_identity[0],
                     "wasm_opt_sha256": wasm_opt_identity[1],
                     "wasm_opt_version": wasm_opt_identity[2],
                 }
             )
+        if attestation is not None:
+            attestation.update(optimizer_attestation)
         context["_publish_wasm_link_cache_result"](
             cache_entry,
             result,
             metrics=operation_counts,
             metric_prefix=metric_prefix,
             label="Split app optimize",
-            payload=cache_payload,
+            payload=optimizer_attestation,
         )
         context["_cache_metric_add"](
             operation_counts,
@@ -396,8 +398,9 @@ def _run_wasm_opt_via_optimize(
     extra_passes: Sequence[str] | None = None,
     preserve_debug: bool = False,
     attestation: dict[str, object] | None = None,
+    execution_telemetry: dict[str, object] | None = None,
 ) -> bool:
-    """Run the canonical atomic optimizer and record its attestation."""
+    """Run the atomic optimizer, separating artifact facts from run telemetry."""
 
     policy = context["wasm_link_policy"](level, preserve_debug=preserve_debug)
     resolved_converge = policy.converge if converge is None else converge
@@ -424,6 +427,19 @@ def _run_wasm_opt_via_optimize(
         apply_level=resolved_apply_level,
         preserve_debug=preserve_debug,
     )
+    if execution_telemetry is not None:
+        execution_telemetry.update(
+            {
+                "ok": result["ok"],
+                "status": result.get("status", "success" if result["ok"] else "failed"),
+                "wasm_opt_cache_hit": result.get("cache_hit", False),
+                "wasm_opt_wall_ms": round(
+                    float(result.get("elapsed_s", 0.0)) * 1000.0, 6
+                ),
+                "wasm_opt_peak_rss_kb": result.get("peak_rss_kb"),
+                "wasm_opt_peak_total_rss_kb": result.get("peak_total_rss_kb"),
+            }
+        )
 
     if not result["ok"]:
         err = result.get("error", "unknown error")
@@ -436,11 +452,6 @@ def _run_wasm_opt_via_optimize(
                     "pipeline": result.get("pipeline", []),
                     "wasm_opt_path": result.get("wasm_opt_path"),
                     "wasm_opt_sha256": result.get("wasm_opt_sha256"),
-                    "wasm_opt_wall_ms": round(
-                        float(result.get("elapsed_s", 0.0)) * 1000.0, 6
-                    ),
-                    "wasm_opt_peak_rss_kb": result.get("peak_rss_kb"),
-                    "wasm_opt_peak_total_rss_kb": result.get("peak_total_rss_kb"),
                 }
             )
         print(f"wasm-opt failed: {err}", file=sys.stderr)
@@ -450,18 +461,13 @@ def _run_wasm_opt_via_optimize(
         attestation.update(
             {
                 "ok": True,
-                "status": result.get("status", "success"),
+                "status": "success",
                 "binaryen_version": result.get("binaryen_version", ""),
                 "wasm_opt_path": result.get("wasm_opt_path"),
                 "wasm_opt_sha256": result.get("wasm_opt_sha256"),
                 "pipeline": result.get("pipeline", []),
                 "before": result.get("before", {}),
                 "after": result.get("after", {}),
-                "wasm_opt_wall_ms": round(
-                    float(result.get("elapsed_s", 0.0)) * 1000.0, 6
-                ),
-                "wasm_opt_peak_rss_kb": result.get("peak_rss_kb"),
-                "wasm_opt_peak_total_rss_kb": result.get("peak_total_rss_kb"),
             }
         )
 

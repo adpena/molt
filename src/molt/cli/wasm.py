@@ -47,9 +47,11 @@ def _effective_split_worker_table_base(
     *,
     wasm_table_base: int | None,
     app_callable_table_slots: Iterable[int],
-) -> int | None:
+) -> int:
     if wasm_table_base is None:
-        return None
+        raise ValueError(
+            "split-runtime publication requires the bound backend table base"
+        )
     callable_slots = sorted(set(app_callable_table_slots))
     below_base = [slot for slot in callable_slots if slot < wasm_table_base]
     if below_base:

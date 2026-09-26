@@ -91,6 +91,7 @@ class WasmExportContext(WasmBinaryContext, WasmSplitContractContext):
 
 class WasmOptimizeResult(TypedDict, total=False):
     ok: bool
+    cache_hit: bool
     error: str
     status: str
     pipeline: list[str]
@@ -131,7 +132,7 @@ class WasmOptimizerContext(WasmBinaryContext):
     _strip_unused_module_function_imports: Callable[..., bytes | None]
     wasm_link_policy: WasmLinkPolicyFactory
     _run_wasm_opt_via_optimize: Callable[..., bool]
-    _record_wasm_opt_attestation_cache_metrics: Callable[
+    _record_wasm_opt_execution_metrics: Callable[
         [dict[str, int | float] | None, str, Mapping[str, object]], None
     ]
     optimize_wasm: Callable[..., WasmOptimizeResult]

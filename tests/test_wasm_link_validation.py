@@ -3069,8 +3069,31 @@ def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
     }
 
 
-def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
+@pytest.fixture
+def small_split_optimizer_transform_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Use real transitive source identity without scanning the product graph."""
+    root = tmp_path / "transform-authority"
+    tools = root / "tools"
+    tools.mkdir(parents=True)
+    entry = tools / "entry.py"
+    dependency = tools / "dependency.py"
+    entry.write_text("import dependency\n", encoding="utf-8")
+    dependency.write_text("VERSION = 1\n", encoding="utf-8")
+    closure = wasm_link.local_python_import_closure(root, (entry,))
+    assert dependency in closure.paths
+    monkeypatch.setattr(
+        wasm_link,
+        "_wasm_link_transform_authority_digest",
+        lambda: closure.content_digest,
+    )
+
+
+def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    small_split_optimizer_transform_authority: None,
 ) -> None:
     app = _build_split_runtime_app_module([])
     optimize_calls = 0
@@ -3141,10 +3164,141 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
     assert warm_counts["split_app_optimize_cache_hits"] == 1
     assert warm_counts["split_app_optimize_cache_bytes_read"] == len(warm)
     assert warm_attestation["pipeline"] == ["test-pass"]
-    assert warm_attestation["cache_hit"] is True
+    assert warm_attestation == cold_attestation
+    assert "cache_hit" not in warm_attestation
     assert next((cache_root / "wasm_link").rglob("artifact.wasm")).read_bytes() == cold
     assert not (tmp_path / "session-a" / ".molt_state" / "wasm_link_cache").exists()
     assert not (tmp_path / "session-b" / ".molt_state" / "wasm_link_cache").exists()
+
+
+def test_split_app_size_attestation_excludes_optimizer_execution_telemetry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    small_split_optimizer_transform_authority: None,
+) -> None:
+    app = _build_split_runtime_app_module([])
+    monkeypatch.setattr(wasm_link, "find_wasm_opt", lambda: "wasm-opt")
+    monkeypatch.setattr(
+        wasm_link,
+        "_wasm_opt_executable_identity",
+        lambda path: (path, "a" * 64, "test"),
+    )
+    monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_: data)
+    monkeypatch.setattr(
+        wasm_link,
+        "_strip_unused_module_function_imports",
+        lambda *_args, **_kwargs: None,
+    )
+    optimizer_calls = 0
+
+    def fake_optimize(path: Path, **_kwargs: object) -> dict[str, object]:
+        nonlocal optimizer_calls
+        optimizer_calls += 1
+        # The second invocation simulates reuse inside the optimizer after the
+        # split-app cache is deliberately moved to a different root.
+        return {
+            "ok": True,
+            "status": "success" if optimizer_calls == 1 else "cache-hit",
+            "output_bytes": path.stat().st_size,
+            "pipeline": ["--strip-debug"],
+            "before": {"file_bytes": path.stat().st_size},
+            "after": {"file_bytes": path.stat().st_size},
+            "wasm_opt_path": "wasm-opt",
+            "wasm_opt_sha256": "a" * 64,
+            "binaryen_version": "test",
+            "elapsed_s": 1.25 if optimizer_calls == 1 else 0.0,
+            "peak_rss_kb": 800 if optimizer_calls == 1 else None,
+            "peak_total_rss_kb": 1200 if optimizer_calls == 1 else None,
+            "cache_hit": optimizer_calls > 1,
+        }
+
+    monkeypatch.setattr(wasm_link, "optimize_wasm", fake_optimize)
+
+    def run(
+        cache_name: str,
+    ) -> tuple[bytes, dict[str, object], dict[str, int | float]]:
+        monkeypatch.setenv("MOLT_CACHE", str(tmp_path / cache_name))
+        attestation: dict[str, object] = {}
+        counts: dict[str, int | float] = {}
+        output = wasm_link._optimize_split_app_module(
+            app,
+            reference_data=None,
+            optimize=True,
+            optimize_level="Oz",
+            contract_keep_set={"molt_main"},
+            attestation=attestation,
+            operation_counts=counts,
+            facts_provider=_facts_provider,
+        )
+        return output, attestation, counts
+
+    cold, cold_attestation, cold_counts = run("cache-a")
+    warm, warm_attestation, warm_counts = run("cache-a")
+    nested_reuse, nested_attestation, nested_counts = run("cache-b")
+
+    assert cold == warm == nested_reuse
+    assert optimizer_calls == 2
+    assert (
+        json.dumps(cold_attestation, sort_keys=True)
+        == json.dumps(warm_attestation, sort_keys=True)
+        == json.dumps(nested_attestation, sort_keys=True)
+    )
+    assert (
+        not {
+            "cache_hit",
+            "wasm_opt_wall_ms",
+            "wasm_opt_peak_rss_kb",
+            "wasm_opt_peak_total_rss_kb",
+        }
+        & cold_attestation.keys()
+    )
+    assert cold_counts["split_app_optimize_cache_optimizer_wall_ms"] == 1250.0
+    assert cold_counts["split_app_optimize_cache_optimizer_peak_rss_kb"] == 800.0
+    assert cold_counts["split_app_optimize_cache_optimizer_peak_total_rss_kb"] == 1200.0
+    assert warm_counts["split_app_optimize_cache_hits"] == 1
+    assert "split_app_optimize_cache_optimizer_wall_ms" not in warm_counts
+    assert nested_counts["split_app_optimize_cache_misses"] == 1
+    assert nested_counts["split_app_optimize_cache_optimizer_cache_hits"] == 1
+    assert nested_counts["split_app_optimize_cache_optimizer_wall_ms"] == 0.0
+
+
+def test_split_app_size_attestation_without_wasm_opt_is_cache_independent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    small_split_optimizer_transform_authority: None,
+) -> None:
+    app = _build_split_runtime_app_module([])
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_: data)
+    monkeypatch.setattr(
+        wasm_link,
+        "_strip_unused_module_function_imports",
+        lambda *_args, **_kwargs: None,
+    )
+    attestations: list[dict[str, object]] = []
+    counts: list[dict[str, int | float]] = []
+    for run in range(2):
+        # This fact belongs to an earlier link stage, not the optimizer cache.
+        attestation: dict[str, object] = {"upstream_fact": run}
+        operation_counts: dict[str, int | float] = {}
+        assert (
+            wasm_link._optimize_split_app_module(
+                app,
+                reference_data=None,
+                optimize=False,
+                optimize_level="Oz",
+                contract_keep_set={"molt_main"},
+                attestation=attestation,
+                operation_counts=operation_counts,
+                facts_provider=_facts_provider,
+            )
+            == app
+        )
+        attestations.append(attestation)
+        counts.append(operation_counts)
+    assert attestations == [{"upstream_fact": 0}, {"upstream_fact": 1}]
+    assert counts[0]["split_app_optimize_cache_misses"] == 1
+    assert counts[1]["split_app_optimize_cache_hits"] == 1
 
 
 def test_debug_policy_partitions_split_app_and_runtime_cache_keys() -> None:
@@ -3172,6 +3326,7 @@ def test_debug_policy_partitions_split_app_and_runtime_cache_keys() -> None:
 def test_split_app_optimizer_failure_is_fail_closed_and_not_cached(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    small_split_optimizer_transform_authority: None,
 ) -> None:
     app = _build_split_runtime_app_module([])
     cache_root = tmp_path / "cache"
@@ -3191,10 +3346,18 @@ def test_split_app_optimizer_failure_is_fail_closed_and_not_cached(
 
     def fail(*_args, **kwargs):  # type: ignore[no-untyped-def]
         kwargs["attestation"].update(error="wasm-opt timed out after 300s")
+        kwargs["execution_telemetry"].update(
+            ok=False,
+            status="timeout",
+            wasm_opt_wall_ms=300000.0,
+            wasm_opt_peak_rss_kb=512,
+            wasm_opt_peak_total_rss_kb=1024,
+        )
         return False
 
     monkeypatch.setattr(wasm_link, "_run_wasm_opt_via_optimize", fail)
 
+    counts: dict[str, int | float] = {}
     with pytest.raises(RuntimeError, match="required split-app wasm optimization"):
         wasm_link._optimize_split_app_module(
             app,
@@ -3202,14 +3365,20 @@ def test_split_app_optimizer_failure_is_fail_closed_and_not_cached(
             optimize=True,
             optimize_level="Oz",
             contract_keep_set={"molt_main"},
+            operation_counts=counts,
             facts_provider=_facts_provider,
         )
 
     assert not list((cache_root / "wasm_link").rglob("artifact.wasm"))
+    assert counts["split_app_optimize_cache_timeouts"] == 1
+    assert counts["split_app_optimize_cache_optimizer_wall_ms"] == 300000.0
+    assert counts["split_app_optimize_cache_optimizer_peak_rss_kb"] == 512.0
 
 
 def test_split_app_optimization_cache_rejects_corrupt_artifact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    small_split_optimizer_transform_authority: None,
 ) -> None:
     app = _build_split_runtime_app_module([])
     calls = 0
@@ -3268,7 +3437,9 @@ def test_split_app_optimization_cache_rejects_corrupt_artifact(
 
 
 def test_split_app_optimization_cache_serializes_concurrent_producers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    small_split_optimizer_transform_authority: None,
 ) -> None:
     app = _build_split_runtime_app_module([])
     calls = 0
@@ -5081,12 +5252,34 @@ def test_run_wasm_opt_via_optimize_enforces_current_export_contract(
             "pipeline": extra_passes,
             "before": {"file_bytes": input_path.stat().st_size},
             "after": {"file_bytes": output_path.stat().st_size},
+            "elapsed_s": 1.25,
+            "peak_rss_kb": 512,
+            "peak_total_rss_kb": 1024,
             "error": "",
         }
 
     monkeypatch.setattr(wasm_link, "optimize_wasm", fake_optimize)
 
-    assert wasm_link._run_wasm_opt_via_optimize(linked, level="Oz")
+    attestation: dict[str, object] = {}
+    execution_telemetry: dict[str, object] = {}
+    assert wasm_link._run_wasm_opt_via_optimize(
+        linked,
+        level="Oz",
+        attestation=attestation,
+        execution_telemetry=execution_telemetry,
+    )
+    assert attestation["status"] == "success"
+    assert (
+        not {
+            "wasm_opt_wall_ms",
+            "wasm_opt_peak_rss_kb",
+            "wasm_opt_peak_total_rss_kb",
+        }
+        & attestation.keys()
+    )
+    assert execution_telemetry["wasm_opt_wall_ms"] == 1250.0
+    assert execution_telemetry["wasm_opt_peak_rss_kb"] == 512
+    assert execution_telemetry["wasm_opt_peak_total_rss_kb"] == 1024
     assert seen["required_exports"] == {"molt_main", "molt_host_init"}
     assert seen["apply_level"] is True
     assert seen["preserve_debug"] is False
