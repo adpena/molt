@@ -46,7 +46,7 @@ Usage
     python tools/witness_iter.py --measure-relink
 
     # reserved final confirmation: typed command argv after --
-    python tools/witness_iter.py --wasm-confirm -- python tools/pact_witness_acceptance.py
+    python tools/witness_iter.py --wasm-confirm -- python tools/proof_queue.py pact-witness-acceptance --target wasm
 
 Exit code: 0 = PASS (reached the known-good frontier), non-zero = RED (regression
 or engine error). `--json` emits the machine-readable result on stdout.

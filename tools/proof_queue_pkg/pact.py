@@ -28,23 +28,15 @@ from molt.cli.source_extension_target import (
     resolve_source_extension_target_plan,
 )
 from molt.target_python import _parse_target_python_version
-from molt.cli.source_extension_set_validation import (
-    validate_source_extension_set_seal,
-)
-from molt.cli.source_package_seal import (
-    SourcePackageSealVerificationError,
-)
 from molt.dx import DxConfigError, _reject_onedrive, checkout_custody
 from tools import proof_plan
+from tools.pact_witness_acceptance import ACCEPTANCE_ENV
 from molt.scientific_stack_versions import (
     CONFIG_ENV as SCIENTIFIC_STACK_CONFIG_ENV,
 )
 from molt.scientific_stack_versions import (
     PACT_WITNESS_DEPENDENCY_GROUP,
-    ScientificStackVersion,
-    resolve_scientific_stack,
-    scientific_witness_seal_root,
-    scientific_witness_variant,
+    validate_scientific_extension_seals,
 )
 from tools.proof_queue_pkg import command_admission, policy, runner, state
 
@@ -65,63 +57,10 @@ class NamedProofSpec(TypedDict):
     timeout: float
 
 
-def _scientific_extension_set_seal_validation(
-    root: Path,
-    extension_set: SourceExtensionSet,
-    stack: ScientificStackVersion | None = None,
-) -> tuple[list[str], Path | None]:
-    selected = resolve_scientific_stack() if stack is None else stack
-    try:
-        validated = validate_source_extension_set_seal(
-            root,
-            extension_set,
-            variant=scientific_witness_variant(stack=selected),
-            registry=selected.source_extension_registry,
-        )
-    except (SourcePackageSealVerificationError, ValueError) as exc:
-        return [str(exc)], None
-    return [], validated.payload_root
-
-
-def _scientific_extension_set_seal_problems(
-    root: Path,
-    extension_set: SourceExtensionSet,
-    stack: ScientificStackVersion | None = None,
-) -> list[str]:
-    return _scientific_extension_set_seal_validation(root, extension_set, stack)[0]
-
-
-def _pact_witness_extension_roots(repo_root: Path = state.ROOT) -> list[Path]:
+def _pact_witness_env_overrides(
+    target: str, repo_root: Path = state.ROOT
+) -> dict[str, str]:
     del repo_root
-    stack = resolve_scientific_stack()
-    variant = scientific_witness_variant(stack=stack)
-    roots: list[Path] = []
-    for package, display_name in (("numpy", "NumPy"), ("scipy", "SciPy")):
-        extension_set = stack.extension_set(package, "pact-witness")
-        durable_root = scientific_witness_seal_root(
-            package,
-            variant=variant,
-            stack=stack,
-        )
-        problems, verified_payload_root = (
-            _scientific_extension_set_seal_validation(
-                durable_root, extension_set, stack
-            )
-            if durable_root.exists()
-            else (["canonical root does not exist"], None)
-        )
-        if problems:
-            raise ValueError(
-                f"canonical {display_name} witness seal is absent or incomplete; "
-                f"expected {durable_root} with exactly the configured extension set: "
-                + "; ".join(problems)
-            )
-        assert verified_payload_root is not None
-        roots.append(verified_payload_root)
-    return roots
-
-
-def _pact_witness_env_overrides(repo_root: Path = state.ROOT) -> dict[str, str]:
     # Force UTF-8 across the ENTIRE witness process tree (the parent tool + every
     # spawned build/gate subprocess). On Windows the default cp1252 stdio codec
     # raises UnicodeEncodeError on any non-cp1252 char in a relayed subprocess
@@ -133,19 +72,20 @@ def _pact_witness_env_overrides(repo_root: Path = state.ROOT) -> dict[str, str]:
     env: dict[str, str] = {
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
-        "MOLT_MODULE_ROOTS": "",
-        "MOLT_EXTERNAL_STATIC_PACKAGES": "",
+        **ACCEPTANCE_ENV,
+        "MOLT_EXTERNAL_STATIC_PACKAGES": "numpy scipy",
     }
-    roots = _pact_witness_extension_roots(repo_root)
-    if roots:
-        env["MOLT_MODULE_ROOTS"] = os.pathsep.join(str(root) for root in roots)
-        env["MOLT_EXTERNAL_STATIC_PACKAGES"] = "numpy scipy"
+    seals = validate_scientific_extension_seals(target)
+    env["MOLT_MODULE_ROOTS"] = os.pathsep.join(
+        str(root) for root in seals.payload_roots
+    )
     return env
 
 
 _PACT_WITNESS_ACCEPTANCE_LOGICAL_ID = "pact-witness-acceptance"
 
 _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV = (
+    *ACCEPTANCE_ENV,
     "MOLT_MODULE_ROOTS",
     "MOLT_EXTERNAL_STATIC_PACKAGES",
     "MOLT_WITNESS_EXPECTED_REPO_ROOT",
@@ -466,8 +406,10 @@ def _cmd_named_lane(args: argparse.Namespace) -> int:
 
 
 def _pact_witness_acceptance_spec(
-    timeout: float | None = None, repo_root: Path = state.ROOT
+    target: str, timeout: float | None = None, repo_root: Path = state.ROOT
 ) -> NamedProofSpec:
+    lane_id = f"pact.witness.acceptance.{target}"
+    lane = proof_plan.ProofPlan.load().named_lane(lane_id)
     canonical_inputs = _pact_canonical_input_environment(repo_root)
     with _temporary_environment(canonical_inputs):
         git_snapshot = state._git_snapshot(repo_root)
@@ -476,7 +418,7 @@ def _pact_witness_acceptance_spec(
             raise SystemExit(
                 "pact-witness-acceptance requires a git worktree with a resolvable HEAD"
             )
-        env_overrides = _pact_witness_env_overrides(repo_root)
+        env_overrides = _pact_witness_env_overrides(target, repo_root)
     env_overrides.update(canonical_inputs)
     env_overrides.update(
         {
@@ -485,37 +427,43 @@ def _pact_witness_acceptance_spec(
         }
     )
     return {
-        "logical_id": _PACT_WITNESS_ACCEPTANCE_LOGICAL_ID,
-        "reason": (
-            "Run the Pact Kernel A browser/WASM witness acceptance aperture "
-            "through queue custody."
-        ),
-        "command": named_lane_argv("pact.witness.acceptance"),
-        "prepared_named_lane": "pact.witness.acceptance",
-        "resource_family": "wasm-browser",
-        "contention_key": "wasm:pact-witness",
+        "logical_id": f"{_PACT_WITNESS_ACCEPTANCE_LOGICAL_ID}-{target}",
+        "reason": str(lane.data["description"]),
+        "command": list(lane.argv),
+        "prepared_named_lane": lane_id,
+        "resource_family": str(lane.data["resource_family"]),
+        "contention_key": str(lane.data["contention_key"]),
         "scopes": [
             "collab/pact/pact_witness_kernel/make_fixture.py",
             "collab/pact/pact_witness_kernel/field_solve.py",
-            "collab/pact/pact_witness_kernel/check_parity.py",
-            "wasm/run_wasm.js",
+            "collab/pact/parity/check_parity.py",
+            "collab/pact/pact_witness_kernel/field_solve_gates.json",
             "tools/pact_witness_acceptance.py",
+            "tools/pact_witness_receipt.py",
+            "src/molt/scientific_stack_versions.py",
             "config/scientific_stack_versions.toml",
+            "config/source_extension_package_sets.toml",
             "pyproject.toml",
             "uv.lock",
-            *wasm_loader_asset_scope_paths(),
+            *(
+                ["wasm/run_wasm.js", *wasm_loader_asset_scope_paths()]
+                if target == "wasm"
+                else []
+            ),
         ],
         "env_overrides": env_overrides,
         "locked_env": _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
         "notes": [
-            "Named Pact acceptance requires the version-keyed durable NumPy "
-            "and canonical scientific extension seals, builds field_solve.py, "
+            "Named Pact acceptance requires target-qualified canonical NumPy "
+            "and SciPy extension seals, builds field_solve.py, "
             "regenerates the fixture/reference oracle in the run directory, "
-            "runs the WASM artifact to produce candidate_outputs.npz, and "
-            "executes check_parity.py; --env remains available for diagnostics "
+            "runs the artifact to produce candidate_outputs.npz, executes the shared "
+            "parity engine and publishes its validated portable receipt; --env remains available for diagnostics "
             "but cannot override the named lane's input and identity custody."
         ],
-        "timeout": timeout if timeout is not None else 1800.0,
+        "timeout": timeout
+        if timeout is not None
+        else float(lane.data["timeout_seconds"]),
     }
 
 
@@ -835,8 +783,11 @@ def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
         ),
         args.env,
     )
+    lane_id = getattr(args, "lane_id", None)
+    target = lane_id.rsplit(".", 1)[-1] if lane_id is not None else args.target
     return _run_named_spec(
-        args, _pact_witness_acceptance_spec(args.timeout, state._repo_root(args))
+        args,
+        _pact_witness_acceptance_spec(target, args.timeout, state._repo_root(args)),
     )
 
 
@@ -874,7 +825,8 @@ def _cmd_pact_witness_oracle(args: argparse.Namespace) -> int:
 
 
 _DEDICATED_NAMED_LANE_HANDLERS = {
-    "pact.witness.acceptance": _cmd_pact_witness_acceptance,
+    "pact.witness.acceptance.native": _cmd_pact_witness_acceptance,
+    "pact.witness.acceptance.wasm": _cmd_pact_witness_acceptance,
     "pact.witness.oracle": _cmd_pact_witness_oracle,
 }
 

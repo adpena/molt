@@ -341,6 +341,13 @@ and component containment do not infer case or Unicode equivalence; the
 filesystem supplies canonical spelling. Evidence recording, sorting, and replay
 use those recorded identities without consulting the current filesystem.
 
+Python/Node child brokers consume the supervisor's admitted run-owned derived
+roots, not a second output-path allowlist. Generated executables are bound by
+canonical path, role, and SHA-256 to the independently verified native execution
+events. Both terminal eligibility and queue publication enforce this binding.
+An attempted denied child makes the proof ineligible even if the payload catches
+the denial and exits successfully; hook handshakes are not launch decisions.
+
 The native supervisor is itself a debugger. Its kernel tests must own that
 debugger boundary, not run inside another recursive debugger: nested debuggers
 can hide descendant events from the outer supervisor while job accounting still
@@ -917,7 +924,7 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
 Named lanes support the same mode:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --detach
+uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --target wasm --detach
 ```
 
 Detached submission creates a queued row, starts a queue-owned runner for that
@@ -1114,22 +1121,35 @@ Use the named lane for Pact Kernel A acceptance. Do not queue ad hoc `molt
 build` commands for this contract:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance
+uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --target native
 ```
 
 For the normal heavyweight lane, prefer:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --detach
+uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --target wasm --detach
 ```
 
-`pact-witness-acceptance` renders to `tools/pact_witness_acceptance.py`. That
-script owns the full acceptance sequence: build `field_solve.py`, run the WASM
-artifact from an isolated fixture directory, write
-`tmp/pact_witness_acceptance_queue/runs/<attempt>/run/candidate_outputs.npz`,
-then run `check_parity.py` against the checked Pact reference. The runner writes
-`tmp/pact_witness_acceptance_queue/latest_attempt.txt` for quick navigation and
-never deletes previous attempt directories, because Windows may keep linked
+`pact-witness-acceptance` requires `--target native|wasm`; it has no default.
+The registered `pact.witness.acceptance.native` and
+`pact.witness.acceptance.wasm` commands share one producer and contention key.
+Both build `field_solve.py` using shipping profiles, run the artifact from an
+isolated fixture directory, then compare `run/candidate_outputs.npz` against the
+locked CPython oracle using the shared parity engine and snapshotted gates.
+The native executable comes from the compiler's JSON `consumer_output`; WASM
+executes its manifest through the attested Node runtime.
+
+Each attempt lives at `<proof-scratch>/pact_witness_acceptance/runs/<attempt>/`.
+Only a clean, queue-pinned source revision, unchanged validated package seals,
+successful execution and passing parity may publish `acceptance-receipt.json`.
+The portable v2 receipt binds that attempt's `build/` and `run/` files, including
+the complete WASM manifest closure, without duplicating the built artifacts.
+It is validated before atomic publication. Preserve the whole attempt when
+relocating evidence; a log's PASS text alone is not release evidence.
+Diagnostic iteration and runtime-profile overrides are refused by acceptance.
+
+The runner writes `latest_attempt.txt` beneath the selected witness root for
+quick navigation and never deletes previous attempt directories, because Windows may keep linked
 `.wat` or `.wasm` files open briefly after a failed run. A row whose command is
 only `python -m molt build ... field_solve.py` is historical build evidence, not
 Pact acceptance, and must be rerun through the named current spec after it exits.
@@ -1142,7 +1162,7 @@ dossier.
 Before spending the heavy slot, inspect the rendered lane:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --print-spec
+uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --target native --print-spec
 ```
 
 Root selection is authority-driven, not directory-discovery ordered. The queue
@@ -1150,12 +1170,16 @@ admits exactly the versioned NumPy seal and the configured SciPy
 `pact-witness` set resolved from `config/scientific_stack_versions.toml`. The
 SciPy root lives under
 `C:\Molt\package-seals\scipy\<version>\variants\cpython-<version>\`
-`cpython-abi\wasm32-wasip1\pact_scipy_witness` on Windows (the
+`cpython-abi\<target-triple>\pact_scipy_witness` on Windows (the
 platform custody root, independent of `$MOLT_EXT_ROOT`) and must
 contain the exact configured four-module transaction; historical per-module
 roots under `tmp/` are evidence only and are never unioned or used as fallback.
 Missing, extra, stale-ABI, nondeterministic, checksum-inconsistent, or
 incomplete transaction manifests fail before the heavyweight acceptance lane.
+Both packages must have the selected Python/ABI/target cell registered in
+`config/source_extension_package_sets.toml`; native resolves the actual host
+OS/architecture through the shared target authority. An unregistered cell fails
+early; registering a seal does not assert witness parity or public-release readiness.
 
 ## Append-Only Notes
 

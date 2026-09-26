@@ -9,8 +9,6 @@ import shutil
 
 import pytest
 
-from tools.proof_queue_pkg import pact
-
 from molt.cli import external_native as cli_external_native
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.external_native import _resolve_external_package_native_artifact_plan
@@ -21,8 +19,12 @@ from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
     SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
+from molt.cli.source_extension_set_validation import validate_source_extension_set_seal
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
-from molt.scientific_stack_versions import resolve_scientific_stack
+from molt.scientific_stack_versions import (
+    resolve_scientific_stack,
+    scientific_extension_variant,
+)
 from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -200,14 +202,19 @@ def test_canonical_scipy_root_resolves_exact_four_module_set(tmp_path: Path) -> 
     }
 
 
-def test_pact_seal_gate_delegates_to_generic_set_validator(tmp_path: Path) -> None:
+def test_scipy_seal_requires_generic_set_manifest(tmp_path: Path) -> None:
     root = tmp_path / "pact_scipy_witness"
     _stage_canonical_scipy_root(root)
     extension_set = _extension_set("scipy")
 
-    problems = pact._scientific_extension_set_seal_problems(root, extension_set)
-
-    assert any("extension_set_manifest.json" in problem for problem in problems)
+    stack = resolve_scientific_stack()
+    with pytest.raises(ValueError, match="extension_set_manifest.json"):
+        validate_source_extension_set_seal(
+            root,
+            extension_set,
+            variant=scientific_extension_variant("wasm", stack=stack),
+            registry=stack.source_extension_registry,
+        )
 
 
 def test_identical_duplicate_package_roots_are_order_independent(

@@ -56,12 +56,13 @@ from molt.cli.source_extension_set_identity import (
     SOURCE_EXTENSION_SET_SCHEMA_VERSION,
 )
 import molt.cli.source_extension_set_validation as set_validation
+import molt.scientific_stack_versions as scientific_stack
 from molt.cli.source_extension_target import source_extension_artifact_suffix
 from molt.cli.source_extension_toolchain import MOLT_PKGCONF_REQUIREMENT
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
 from molt.scientific_stack_versions import (
     resolve_scientific_stack,
-    scientific_witness_variant,
+    scientific_extension_variant,
 )
 from tools.proof_queue_pkg import (
     cli,
@@ -104,7 +105,7 @@ def _scientific_extension_manifest_path(
     stack=None,
 ) -> Path:
     selected = resolve_scientific_stack() if stack is None else stack
-    variant = scientific_witness_variant(stack=selected)
+    variant = scientific_extension_variant("wasm", stack=selected)
     artifact_suffix = source_extension_artifact_suffix(variant.target_triple)
     return payload_root.joinpath(
         *module.split(".")[:-1],
@@ -558,8 +559,14 @@ def _write_synthetic_guarded_execution(
         "child_process_custody": {
             "policy": {
                 "descendants": request["envelope"]["process_closure"]["descendants"],
+                "derived_roots": supervisor_policy["derived_roots"],
             },
-            "receipt": {"broker_complete": True},
+            "receipt": {
+                "broker_complete": True,
+                "events": [],
+                "errors": [],
+                "violations": [],
+            },
         },
         "process_supervisor": v3["supervisor"],
         "execution_environment": {
@@ -3174,10 +3181,8 @@ def test_python_leaf_blocks_cargo_and_node_children_before_launch(
         "node",
     ]
     assert receipt["broker_complete"] is True
-    assert (
-        "undeclared-child-process"
-        not in context["source_custody"]["ineligible_reasons"]
-    )
+    assert "child-custody-violation" in context["source_custody"]["ineligible_reasons"]
+    assert context["source_custody"]["evidence_eligible"] is False
     assert context["process_supervisor"]["receipt"]["complete"] is True
 
 
@@ -13639,15 +13644,26 @@ def test_proof_queue_submit_rejects_invalid_memory_guard_poll_env(
     assert _rows(db) == []
 
 
-def test_proof_queue_pact_witness_acceptance_is_queue_native(
+@pytest.mark.parametrize(
+    ("target", "resource_family"),
+    [("native", "native-build"), ("wasm", "wasm-browser")],
+)
+def test_proof_queue_pact_witness_acceptance_is_target_qualified(
     monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    resource_family: str,
 ) -> None:
-    monkeypatch.setattr(pact, "_pact_witness_env_overrides", lambda _root: {})
-    spec = pact._pact_witness_acceptance_spec()
+    monkeypatch.setattr(
+        pact,
+        "_pact_witness_env_overrides",
+        lambda _target, _root: dict(pact.ACCEPTANCE_ENV),
+    )
+    spec = pact._pact_witness_acceptance_spec(target)
 
-    assert spec["logical_id"] == "pact-witness-acceptance"
-    assert spec["resource_family"] == "wasm-browser"
-    assert spec["contention_key"] == "wasm:pact-witness"
+    assert spec["logical_id"] == f"pact-witness-acceptance-{target}"
+    assert spec["prepared_named_lane"] == f"pact.witness.acceptance.{target}"
+    assert spec["resource_family"] == resource_family
+    assert spec["contention_key"] == "pact:witness"
     command = list(spec["command"])
     assert command[:10] == [
         "uv",
@@ -13666,10 +13682,13 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
         "python",
         "tools/pact_witness_acceptance.py",
     ]
+    assert command[command.index("--target") + 1] == target
     # Outputs go to the run's scratch root; the registered argv names no
     # repository-relative output path.
     assert not any(value.startswith("tmp/") for value in command)
     assert "tools/pact_witness_acceptance.py" in spec["scopes"]
+    assert "tools/pact_witness_receipt.py" in spec["scopes"]
+    assert ("wasm/run_wasm.js" in spec["scopes"]) is (target == "wasm")
     # The oracle environment's authorities (the locked pact-witness group).
     assert "pyproject.toml" in spec["scopes"]
     assert "uv.lock" in spec["scopes"]
@@ -13677,13 +13696,33 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
         state.ROOT.resolve()
     )
     assert spec["env_overrides"]["MOLT_WITNESS_EXPECTED_GIT_HEAD"]
+    assert spec["env_overrides"]["MOLT_WITNESS_ITERATION"] == "0"
     assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
-    assert "collab/pact/pact_witness_kernel/check_parity.py" in spec["scopes"]
+    assert "collab/pact/parity/check_parity.py" in spec["scopes"]
     assert any(
         "regenerates the fixture/reference oracle" in note for note in spec["notes"]
     )
     assert any("candidate_outputs.npz" in note for note in spec["notes"])
     assert policy._proof_command_policy_error(command) is None
+
+
+@pytest.mark.parametrize("target", ["native", "wasm"])
+def test_proof_queue_pact_witness_env_uses_shared_pair_for_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str
+) -> None:
+    roots = (tmp_path / target / "numpy", tmp_path / target / "scipy")
+    seen: list[str] = []
+
+    def validate(selected: str) -> SimpleNamespace:
+        seen.append(selected)
+        return SimpleNamespace(payload_roots=roots)
+
+    monkeypatch.setattr(pact, "validate_scientific_extension_seals", validate)
+    env = pact._pact_witness_env_overrides(target)
+    assert seen == [target]
+    assert env["MOLT_MODULE_ROOTS"].split(os.pathsep) == [str(root) for root in roots]
+    assert env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "numpy scipy"
+    assert env["MOLT_WITNESS_ITERATION"] == "0"
 
 
 @pytest.mark.parametrize(
@@ -13837,6 +13876,33 @@ def test_proof_queue_named_spec_requires_launch_value_for_every_locked_name() ->
         pact._run_named_spec(args, spec)
 
 
+def test_proof_queue_pact_witness_acceptance_requires_explicit_target(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    with pytest.raises(SystemExit) as exc:
+        cli.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(state.ROOT),
+                "pact-witness-acceptance",
+                "--print-spec",
+            ]
+        )
+    assert exc.value.code == 2
+    assert "--target" in capsys.readouterr().err
+    assert not db.exists()
+
+
+def test_proof_queue_pact_witness_iteration_is_locked() -> None:
+    assert "MOLT_WITNESS_ITERATION" in pact._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV
+    assert pact.ACCEPTANCE_ENV["MOLT_WITNESS_ITERATION"] == "0"
+
+
 @pytest.mark.parametrize(
     "name",
     pact._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
@@ -13858,6 +13924,8 @@ def test_proof_queue_pact_witness_acceptance_rejects_locked_env_before_print_spe
                 "--repo-root",
                 str(state.ROOT),
                 "pact-witness-acceptance",
+                "--target",
+                "wasm",
                 "--env",
                 f"{name}=user-value",
                 "--print-spec",
@@ -13872,12 +13940,18 @@ def test_proof_queue_pact_witness_acceptance_rejects_locked_env_before_print_spe
     assert not db.exists()
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("molt_module_roots", "user-root"), ("molt_witness_iteration", "1")],
+)
 def test_proof_queue_pact_witness_acceptance_rejects_locked_env_before_queue(
     tmp_path: Path,
+    name: str,
+    value: str,
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
 
-    with pytest.raises(SystemExit, match="MOLT_MODULE_ROOTS"):
+    with pytest.raises(SystemExit, match=name.upper()):
         cli.main(
             [
                 "--db",
@@ -13887,8 +13961,10 @@ def test_proof_queue_pact_witness_acceptance_rejects_locked_env_before_queue(
                 "--repo-root",
                 str(state.ROOT),
                 "pact-witness-acceptance",
+                "--target",
+                "wasm",
                 "--env",
-                "molt_module_roots=user-root",
+                f"{name}={value}",
                 "--queue-only",
             ]
         )
@@ -13902,7 +13978,13 @@ def test_proof_queue_pact_witness_acceptance_allows_diagnostic_env(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    monkeypatch.setattr(pact, "_pact_witness_extension_roots", lambda _root: [])
+    monkeypatch.setattr(
+        pact,
+        "validate_scientific_extension_seals",
+        lambda _target: SimpleNamespace(
+            payload_roots=(state.ROOT / "planned-numpy", state.ROOT / "planned-scipy")
+        ),
+    )
     monkeypatch.setattr(
         pact,
         "source_build_environment",
@@ -13922,6 +14004,8 @@ def test_proof_queue_pact_witness_acceptance_allows_diagnostic_env(
                 "--repo-root",
                 str(state.ROOT),
                 "pact-witness-acceptance",
+                "--target",
+                "wasm",
                 "--env",
                 "MOLT_TRACE_CAPI=1",
                 "--env",
@@ -13934,6 +14018,7 @@ def test_proof_queue_pact_witness_acceptance_allows_diagnostic_env(
     spec = json.loads(capsys.readouterr().out)
     assert spec["env_overrides"]["MOLT_TRACE_CAPI"] == "1"
     assert spec["env_overrides"]["MOLT_TRACE_IMPORT_STAGE"] == "1"
+    assert spec["env_overrides"]["MOLT_WITNESS_ITERATION"] == "0"
     assert set(spec["locked_env"]) == {
         *pact._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
         *pact._SOURCE_EXTENSION_PRODUCER_LOCKED_ENV,
@@ -13951,7 +14036,13 @@ def test_proof_queue_pact_witness_acceptance_scrubs_ambient_input_redirects(
     monkeypatch.setenv(
         "MOLT_EXTERNAL_ARTIFACT_ROOTS", str(tmp_path / "other-artifacts")
     )
-    monkeypatch.setattr(pact, "_pact_witness_extension_roots", lambda _root: [])
+    monkeypatch.setattr(
+        pact,
+        "validate_scientific_extension_seals",
+        lambda _target: SimpleNamespace(
+            payload_roots=(state.ROOT / "planned-numpy", state.ROOT / "planned-scipy")
+        ),
+    )
     monkeypatch.setattr(
         pact,
         "source_build_environment",
@@ -13971,6 +14062,8 @@ def test_proof_queue_pact_witness_acceptance_scrubs_ambient_input_redirects(
                 "--repo-root",
                 str(state.ROOT),
                 "pact-witness-acceptance",
+                "--target",
+                "wasm",
                 "--print-spec",
             ]
         )
@@ -14620,28 +14713,38 @@ def _patch_pact_expected_identities(
             / extension_set.seal_name
         )
 
-    monkeypatch.setattr(pact, "scientific_witness_seal_root", witness_seal_root)
+    monkeypatch.setattr(
+        scientific_stack, "scientific_extension_seal_root", witness_seal_root
+    )
 
 
-def _scientific_extension_set_rejection_problems(
+def _validate_rejected_scientific_seal(
     root: Path,
     extension_set,
     *,
     expected_identity: str,
-) -> list[str]:
+) -> str:
+    stack = resolve_scientific_stack()
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
             set_validation,
             "source_extension_set_expected_identity",
             lambda _extension_set, *, variant, registry=None: expected_identity,
         )
-        return pact._scientific_extension_set_seal_problems(root, extension_set)
+        with pytest.raises(ValueError) as exc:
+            set_validation.validate_source_extension_set_seal(
+                root,
+                extension_set,
+                variant=scientific_extension_variant("wasm", stack=stack),
+                registry=stack.source_extension_registry,
+            )
+    return str(exc.value)
 
 
 def _pact_witness_fixture_root(artifact_root: Path, package: str) -> Path:
     stack = resolve_scientific_stack()
     extension_set = _extension_set(package, "pact-witness", stack=stack)
-    variant = scientific_witness_variant(stack=stack)
+    variant = scientific_extension_variant("wasm", stack=stack)
     version = {"numpy": stack.numpy, "scipy": stack.scipy}[package]
     return (
         artifact_root
@@ -14737,7 +14840,7 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_extension_roots(
     for root in legacy_roots[:4]:
         (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
 
-    spec = pact._pact_witness_acceptance_spec(repo_root=tmp_path)
+    spec = pact._pact_witness_acceptance_spec("wasm", repo_root=tmp_path)
     env = spec["env_overrides"]
 
     assert env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "numpy scipy"
@@ -14745,7 +14848,7 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_extension_roots(
         str((expected_seals[0] / "files").resolve()),
         str((expected_seals[1] / "files").resolve()),
     ]
-    assert any("canonical scientific extension seals" in note for note in spec["notes"])
+    assert any("target-qualified canonical NumPy" in note for note in spec["notes"])
 
 
 def test_proof_queue_pact_witness_acceptance_fails_when_canonical_scipy_is_absent(
@@ -14763,8 +14866,8 @@ def test_proof_queue_pact_witness_acceptance_fails_when_canonical_scipy_is_absen
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
-    with pytest.raises(ValueError, match="canonical SciPy witness seal is absent"):
-        pact._pact_witness_extension_roots(repo_root=tmp_path)
+    with pytest.raises(ValueError, match="canonical scipy.*does not exist"):
+        scientific_stack.validate_scientific_extension_seals("wasm")
 
 
 def test_proof_queue_pact_witness_acceptance_rejects_incomplete_scipy_set(
@@ -14786,8 +14889,8 @@ def test_proof_queue_pact_witness_acceptance_rejects_incomplete_scipy_set(
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
-    with pytest.raises(ValueError, match=r"absent or incomplete.*_rank_filter_1d"):
-        pact._pact_witness_extension_roots(repo_root=tmp_path)
+    with pytest.raises(ValueError, match=r"canonical scipy.*_rank_filter_1d"):
+        scientific_stack.validate_scientific_extension_seals("wasm")
 
 
 def test_proof_queue_pact_witness_acceptance_rejects_scipy_export_drift(
@@ -14810,8 +14913,8 @@ def test_proof_queue_pact_witness_acceptance_rejects_scipy_export_drift(
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
-    with pytest.raises(ValueError, match="absent or incomplete"):
-        pact._pact_witness_extension_roots(repo_root=tmp_path)
+    with pytest.raises(ValueError, match="canonical scipy.*invalid"):
+        scientific_stack.validate_scientific_extension_seals("wasm")
 
 
 def test_proof_queue_rejects_expected_extension_identity_drift(tmp_path: Path) -> None:
@@ -14827,9 +14930,14 @@ def test_proof_queue_rejects_expected_extension_identity_drift(tmp_path: Path) -
         ),
     )
 
-    problems = pact._scientific_extension_set_seal_problems(root, extension_set)
-
-    assert any("registry authority" in problem for problem in problems), problems
+    stack = resolve_scientific_stack()
+    with pytest.raises(ValueError, match="registry authority"):
+        set_validation.validate_source_extension_set_seal(
+            root,
+            extension_set,
+            variant=scientific_extension_variant("wasm", stack=stack),
+            registry=stack.source_extension_registry,
+        )
 
 
 @pytest.mark.parametrize(
@@ -14873,13 +14981,13 @@ def test_proof_queue_rejects_scipy_seal_contract_drift(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _reseal_scientific_fixture(root)
 
-    problems = _scientific_extension_set_rejection_problems(
+    rejection = _validate_rejected_scientific_seal(
         root,
         extension_set,
         expected_identity=expected_identity,
     )
 
-    assert problems, f"canonical validator admitted {problem} mutation"
+    assert rejection, f"canonical validator admitted {problem} mutation"
 
 
 def test_proof_queue_requires_explicit_scipy_determinism_attestation(
@@ -14898,13 +15006,13 @@ def test_proof_queue_requires_explicit_scipy_determinism_attestation(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _reseal_scientific_fixture(root)
 
-    problems = _scientific_extension_set_rejection_problems(
+    rejection = _validate_rejected_scientific_seal(
         root,
         extension_set,
         expected_identity=expected_identity,
     )
 
-    assert problems, "canonical validator admitted a missing determinism attestation"
+    assert rejection, "canonical validator admitted a missing determinism attestation"
 
 
 @pytest.mark.parametrize(
@@ -14931,13 +15039,13 @@ def test_proof_queue_rejects_scipy_object_closure_identity_drift(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _reseal_scientific_fixture(root)
 
-    problems = _scientific_extension_set_rejection_problems(
+    rejection = _validate_rejected_scientific_seal(
         root,
         extension_set,
         expected_identity=expected_identity,
     )
 
-    assert problems, f"canonical validator admitted {problem} mutation"
+    assert rejection, f"canonical validator admitted {problem} mutation"
 
 
 @pytest.mark.parametrize(
@@ -14967,13 +15075,13 @@ def test_proof_queue_rejects_scipy_set_manifest_identity_drift(
     set_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _reseal_scientific_fixture(root)
 
-    problems = _scientific_extension_set_rejection_problems(
+    rejection = _validate_rejected_scientific_seal(
         root,
         _extension_set("scipy", "pact-witness"),
         expected_identity=expected_identity,
     )
 
-    assert problems, f"canonical validator admitted {problem} mutation"
+    assert rejection, f"canonical validator admitted {problem} mutation"
 
 
 @pytest.mark.parametrize(
@@ -15145,13 +15253,13 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
         set_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _reseal_scientific_fixture(root)
 
-    problems = _scientific_extension_set_rejection_problems(
+    rejection = _validate_rejected_scientific_seal(
         root,
         _extension_set("scipy", "pact-witness"),
         expected_identity=expected_identity,
     )
 
-    assert problems, f"canonical validator admitted {expected} mutation"
+    assert rejection, f"canonical validator admitted {expected} mutation"
 
 
 def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
@@ -15171,12 +15279,12 @@ def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
         artifact_root=artifact_root,
     )
 
-    roots = pact._pact_witness_extension_roots(repo_root=tmp_path)
+    validated = scientific_stack.validate_scientific_extension_seals("wasm")
 
-    assert roots == [
+    assert validated.payload_roots == (
         (durable_numpy / "files").resolve(),
         (durable_scipy / "files").resolve(),
-    ]
+    )
 
 
 def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
