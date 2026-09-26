@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 import hashlib
+import ast
+import configparser
 import json
 import os
 import re
+import tokenize
+from io import StringIO
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePath
 from typing import Any
+from molt.cli.compiler_target import (
+    SourceExtensionCompilerDialect,
+    source_extension_compiler_dialect,
+)
+from molt.llvm_linker_roles import (
+    executable_entrypoint_name,
+    executable_selects_linker_role,
+)
+from molt.cli.source_extension_manifest_codec import (
+    _expand_source_extension_manifest_authorities,
+)
 
 from molt.cli.source_extension_object_closure import (
     finalize_source_extension_object_closure,
@@ -26,10 +41,6 @@ _HOME_PATH_RE = re.compile(
     r"(?i)(?:^|(?<=[=,:;\s'\"\(\[\{]))(?:~(?:/|$)|\$HOME(?:/|$)|"
     r"\$\{HOME\}(?:/|$)|%(?:USERPROFILE|HOME)%(?:/|$))"
 )
-_JOINED_PATH_FLAG_RE = re.compile(
-    r"(?i)(?:^|(?<=\s))(?:-I|-L|-isystem|-iquote|-include|--sysroot=|"
-    r"/I|/LIBPATH:|@)(?P<path>(?:[A-Z]:/+|//|/)[^\s'\"]+)"
-)
 _JOINED_PATH_PREFIXES = (
     "-I",
     "-L",
@@ -38,10 +49,131 @@ _JOINED_PATH_PREFIXES = (
     "-include",
     "--sysroot=",
     "/I",
+    "/FI",
+    "/Fa",
+    "/Fo",
+    "/Fd",
+    "/Fe",
+    "/Fi",
+    "/Fp",
+    "/FR",
+    "/FU",
+    "/DEF:",
+    "/IMPLIB:",
+    "/MANIFESTFILE:",
+    "/OUT:",
+    "/PDB:",
+    "/PDBALTPATH:",
+    "/PGD:",
+    "-MF",
     "/LIBPATH:",
     "@",
 )
-_MSVC_PATH_FLAG_PREFIXES = ("/I", "/LIBPATH:", "/Fo", "/Fd", "/Fe")
+_JOINED_PATH_FLAG_RE = re.compile(
+    r"(?i)(?:^|(?<=\s))(?:"
+    + "|".join(
+        re.escape(prefix)
+        for prefix in sorted(_JOINED_PATH_PREFIXES, key=len, reverse=True)
+    )
+    + r")(?P<path>(?:[A-Z]:/+|//|/)[^\s'\"]+)"
+)
+_MSVC_PATH_FLAG_PREFIXES = tuple(
+    sorted(
+        (prefix for prefix in _JOINED_PATH_PREFIXES if prefix.startswith("/")),
+        key=len,
+        reverse=True,
+    )
+)
+# Option syntax is not driver selection. Only a schema-owned command or its
+# explicitly associated option list may interpret this syntax as an option.
+_MSVC_OPTION_RE = re.compile(r"/[A-Za-z?][A-Za-z0-9?+_.-]*(?::[^/\\\s]+)?")
+_COMMAND_FIELDS = frozenset(
+    {
+        "compiler",
+        "linker",
+        "arguments",
+        "command",
+        "compile_command",
+        "symbol_command",
+        "commands",
+        "tool_commands",
+    }
+)
+_COMMAND_ROLES = frozenset(
+    {"c", "cpp", "cc", "cxx", "ar", "ranlib", "ld", "wasm_ld", "nm", "strip"}
+)
+_OPTION_FIELDS = frozenset(
+    {"parameters", "compile_args", "extra_compile_args", "link_args"}
+)
+
+
+def _recorded_command_argv(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        # Compile database strings use the same Windows quoting grammar at
+        # ingestion and at location-neutrality validation.
+        from molt.cli.source_extensions import _split_windows_command_line
+
+        return tuple(_split_windows_command_line(value) or ())
+    if (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes))
+        and all(isinstance(item, str) for item in value)
+    ):
+        return tuple(value)
+    return ()
+
+
+def _command_uses_msvc_options(value: Any) -> bool:
+    argv = _recorded_command_argv(value)
+    if not argv:
+        return False
+    executable = Path(argv[0])
+    if executable_selects_linker_role(
+        executable, "lld-link"
+    ) or executable_entrypoint_name(executable) in {"link", "lib", "llvm-lib"}:
+        return True
+    try:
+        return (
+            source_extension_compiler_dialect(argv)
+            is SourceExtensionCompilerDialect.CLANG_CL
+        )
+    except ValueError:
+        return False
+
+
+def _mapping_uses_msvc_options(value: Mapping[object, Any]) -> bool:
+    if any(
+        _command_uses_msvc_options(value.get(field))
+        for field in ("compiler", "linker", "compile_command")
+    ):
+        return True
+    units = value.get("compile_units")
+    return (
+        isinstance(units, Sequence)
+        and not isinstance(units, (str, bytes))
+        and bool(units)
+        and all(
+            isinstance(unit, Mapping)
+            and _command_uses_msvc_options(unit.get("compiler"))
+            for unit in units
+        )
+    )
+
+
+def _neutral_msvc_option(token: str, *, canonical_path_only: bool = False) -> bool:
+    for prefix in _MSVC_PATH_FLAG_PREFIXES:
+        if token.upper().startswith(prefix.upper()):
+            payload = token[len(prefix) :]
+            if canonical_path_only and not payload.startswith("@"):
+                return False
+            return not _residual_producer_paths(payload)
+    if canonical_path_only:
+        return False
+    if token.startswith("/clang:"):
+        return not _residual_producer_paths(token.removeprefix("/clang:"))
+    if token.startswith(("/D", "/U")):
+        return not _residual_producer_paths(token[2:])
+    return _MSVC_OPTION_RE.fullmatch(token) is not None
 
 
 def _inside_url_token(value: str, index: int) -> bool:
@@ -84,7 +216,7 @@ def _filesystem_root_pattern(root: PurePath) -> re.Pattern[str]:
 def _residual_producer_paths(value: Any, *, location: str = "$") -> list[str]:
     findings: list[str] = []
 
-    def inspect(text: str, item_location: str) -> None:
+    def inspect(text: str, item_location: str, *, msvc_options: bool = False) -> None:
         normalized = text.replace("\\", "/")
         if _FILE_URL_RE.search(normalized):
             findings.append(f"{item_location}: residual file URL in {text!r}")
@@ -94,18 +226,16 @@ def _residual_producer_paths(value: Any, *, location: str = "$") -> list[str]:
                 f"{item_location}: residual home-relative producer path in {text!r}"
             )
             return
+        if msvc_options and _neutral_msvc_option(normalized):
+            return
         for pattern, kind in (
             (_WINDOWS_ABSOLUTE_RE, "drive"),
             (_UNC_ABSOLUTE_RE, "UNC"),
             (_POSIX_ABSOLUTE_RE, "POSIX"),
         ):
             for match in pattern.finditer(normalized):
-                if (
-                    kind == "POSIX"
-                    and match.start() == 0
-                    and normalized.upper().startswith(
-                        tuple(prefix.upper() for prefix in _MSVC_PATH_FLAG_PREFIXES)
-                    )
+                if kind == "POSIX" and _neutral_msvc_option(
+                    match.group(0), canonical_path_only=True
                 ):
                     continue
                 if not _inside_url_token(normalized, match.start()):
@@ -120,30 +250,145 @@ def _residual_producer_paths(value: Any, *, location: str = "$") -> list[str]:
                 )
                 return
 
-    def walk(item: Any, item_location: str) -> None:
+    def walk(
+        item: Any,
+        item_location: str,
+        *,
+        msvc_options: bool = False,
+        command_field: bool = False,
+    ) -> None:
         if isinstance(item, str):
-            inspect(item, item_location)
-        elif isinstance(item, list):
+            if command_field and _command_uses_msvc_options(item):
+                for index, argument in enumerate(_recorded_command_argv(item)):
+                    inspect(
+                        argument,
+                        f"{item_location}.argv[{index}]",
+                        msvc_options=index > 0,
+                    )
+            else:
+                inspect(item, item_location, msvc_options=msvc_options)
+        elif isinstance(item, Sequence) and not isinstance(item, (str, bytes)):
+            is_command = command_field and _command_uses_msvc_options(item)
             for index, child in enumerate(item):
-                walk(child, f"{item_location}[{index}]")
+                walk(
+                    child,
+                    f"{item_location}[{index}]",
+                    msvc_options=msvc_options or (is_command and index > 0),
+                    command_field=command_field and not is_command,
+                )
         elif isinstance(item, Mapping):
+            owner_uses_msvc = _mapping_uses_msvc_options(item)
             for raw_key, child in item.items():
                 key = str(raw_key)
                 inspect(key, f"{item_location}.<key>")
-                walk(child, f"{item_location}.{key}")
+                walk(
+                    child,
+                    f"{item_location}.{key}",
+                    msvc_options=key in _OPTION_FIELDS and owner_uses_msvc,
+                    command_field=key in _COMMAND_FIELDS
+                    or key == "compile_commands"
+                    or (command_field and key in _COMMAND_ROLES),
+                )
 
-    walk(value, location)
+    walk(value, location, command_field=isinstance(value, (list, tuple)))
     return findings
 
 
 def _require_location_neutral(value: Any, *, authority: str) -> None:
-    findings = _residual_producer_paths(value)
+    semantic_value = (
+        _expand_source_extension_manifest_authorities(value)
+        if isinstance(value, Mapping) and "build_authorities" in value
+        else value
+    )
+    findings = _residual_producer_paths(semantic_value)
     if findings:
         preview = "; ".join(findings[:8])
         suffix = "" if len(findings) <= 8 else f"; +{len(findings) - 8} more"
         raise ValueError(
             f"{authority} retains producer filesystem paths: {preview}{suffix}"
         )
+
+
+def require_source_extension_machine_file_location_neutral(
+    text: str,
+    *,
+    authority: str,
+) -> None:
+    """Validate generated Meson machine text with explicit option ownership.
+
+    The staging caller selects this grammar by machine-file artifact kind; raw
+    source text is never promoted to compiler context by mentioning a driver.
+    Only literal binary argv and their C/C++ built-in option arrays are options.
+    Other sections and properties remain ordinary path-checked text.
+    """
+    for line in text.splitlines():
+        if line.lstrip().startswith(("#", ";")):
+            _require_location_neutral(line, authority=authority)
+
+    def literal(raw: str, field: str) -> Any:
+        try:
+            # literal_eval discards trailing Python comments. They remain in
+            # the staged text, so validate them as text, never option context.
+            for token in tokenize.generate_tokens(StringIO(raw).readline):
+                if token.type == tokenize.COMMENT:
+                    _require_location_neutral(token.string, authority=authority)
+            return ast.literal_eval(raw)
+        except (ValueError, SyntaxError, tokenize.TokenError) as exc:
+            raise ValueError(
+                f"{authority} {field} must be literal argv: {exc}"
+            ) from exc
+
+    parser = configparser.ConfigParser(
+        interpolation=None, delimiters=("=",), strict=True
+    )
+    try:
+        parser.read_string(text)
+    except configparser.Error as exc:
+        raise ValueError(
+            f"{authority} has invalid Meson machine-file syntax: {exc}"
+        ) from exc
+    if parser.defaults():
+        raise ValueError(f"{authority} cannot use implicit machine-file defaults")
+    binaries: dict[str, tuple[str, ...]] = {}
+    for section in parser.sections():
+        _require_location_neutral(section, authority=authority)
+        for name, raw in parser.items(section):
+            _require_location_neutral(name, authority=authority)
+            if section != "binaries":
+                continue
+            value = literal(raw, f"binary {name}")
+            argv = (value,) if isinstance(value, str) else value
+            if (
+                not isinstance(argv, (list, tuple))
+                or not argv
+                or any(not isinstance(item, str) or not item for item in argv)
+            ):
+                raise ValueError(
+                    f"{authority} binary {name} must be non-empty string argv"
+                )
+            binaries[name] = tuple(argv)
+            _require_location_neutral({"command": argv}, authority=authority)
+    for section in parser.sections():
+        if section == "binaries":
+            continue
+        for name, raw in parser.items(section):
+            role = name.split("_", 1)[0]
+            if (
+                section == "built-in options"
+                and name in {"c_args", "cpp_args", "c_link_args", "cpp_link_args"}
+                and role in binaries
+            ):
+                args = literal(raw, f"option {name}")
+                if not isinstance(args, (list, tuple)) or any(
+                    not isinstance(arg, str) for arg in args
+                ):
+                    raise ValueError(f"{authority} option {name} must be string argv")
+                _require_location_neutral(
+                    {"compiler": binaries[role], "parameters": args},
+                    authority=authority,
+                )
+            else:
+                _require_location_neutral(raw, authority=authority)
 
 
 def _ordered_location_roots(
@@ -202,11 +447,9 @@ def _source_extension_deterministic_path_args(
     if not compiler_command:
         return []
     ordered = _ordered_location_roots(roots)
-    tool = Path(compiler_command[0]).name.lower()
-    if tool in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"}:
-        return [f"/pathmap:{path}={replacement}" for path, replacement in ordered]
+    dialect = source_extension_compiler_dialect(compiler_command)
     return [
-        argument
+        dialect.forward(argument)
         for path, replacement in ordered
         for argument in (
             f"-ffile-prefix-map={path}={replacement}",

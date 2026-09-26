@@ -1556,7 +1556,53 @@ def test_receipt_issuance_detects_installed_byte_mutation(
         (("schema_version",), 5.0, "manifest schema is invalid"),
         (("target",), "wasm", "keys differ from schema"),
         (("target_metadata", "schema_version"), True, "metadata contract differs"),
-        (("target_metadata", "schema_version"), 3.0, "metadata contract differs"),
+        (("target_metadata", "schema_version"), 4.0, "metadata contract differs"),
+        (
+            ("target_metadata", "build_toolchain", "target_triple"),
+            "wasm32-wasip1",
+            "build-machine toolchain is invalid",
+        ),
+        (
+            ("target_metadata", "build_toolchain", "compiler_kind"),
+            "",
+            "build-machine coordinates",
+        ),
+        (
+            ("target_metadata", "build_toolchain", "commands", "c"),
+            ["unattested-compiler"],
+            "identity is invalid",
+        ),
+        (
+            ("target_metadata", "build_toolchain", "commands", "c"),
+            ["clang", "--target=wasm32-wasip1"],
+            "command is invalid",
+        ),
+        (
+            ("target_metadata", "digests", "meson_native_sha256"),
+            "0" * 64,
+            "meson_native_sha256 is false",
+        ),
+        (
+            ("target_metadata", "paths", "pkg_config_dir"),
+            None,
+            "no Meson pkg-config path",
+        ),
+        (
+            ("target_metadata", "abi", "include_dirs"),
+            ["@molt/include", None],
+            "invalid Meson include paths",
+        ),
+        (
+            (
+                "target_metadata",
+                "toolchain",
+                "link_probe_archives",
+                "compiler_builtins",
+                "path",
+            ),
+            None,
+            "no Meson compiler-builtins path",
+        ),
         (
             ("target_metadata", "target", "requested"),
             True,
@@ -1608,6 +1654,36 @@ def test_structural_receipt_rejects_inexact_schema_and_command_types(
     target_sidecar.write_text(json.dumps(target_metadata), encoding="utf-8")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match=error):
+        _identity_from_root(root)
+
+
+@pytest.mark.parametrize("machine", ["cross", "native"])
+def test_structural_receipt_rejects_rehashed_unbound_meson_machine(
+    tmp_path: Path, machine: str
+) -> None:
+    root = tmp_path / f"unbound-{machine}"
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
+    machine_file = root / f"provenance/metadata/target/meson.{machine}"
+    machine_file.write_bytes(
+        machine_file.read_bytes().replace(b"'clang'", b"'rogue-clang'", 1)
+    )
+    manifest_path = root / "extension_set_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    target_metadata = manifest["target_metadata"]
+    target_metadata["digests"][f"meson_{machine}_sha256"] = hashlib.sha256(
+        machine_file.read_bytes()
+    ).hexdigest()
+    target_identity = dict(target_metadata)
+    target_identity.pop("digest")
+    target_metadata["digest"] = hashlib.sha256(
+        json.dumps(target_identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    (
+        root / "provenance/metadata/target/source-extension-target-metadata.json"
+    ).write_text(json.dumps(target_metadata), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"Meson {machine} file differs from bound"):
         _identity_from_root(root)
 
 

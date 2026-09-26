@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from typing import Literal, TypeGuard
 
@@ -18,7 +19,23 @@ def lexical_executable_path(path: Path) -> Path:
     driver's emulation, so resolving that alias changes the executable contract.
     """
 
-    return Path(os.path.abspath(os.fspath(path.expanduser())))
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    if os.name == "nt" and lexical.name != lexical.name.lower():
+        # PATHEXT and explicit selectors can spell .EXE in uppercase, while
+        # build tools may dispatch by a case-sensitive driver basename. Only
+        # canonicalize an alias that names the same lexical file: do not resolve
+        # symlinks or change selection in case-sensitive Windows directories.
+        canonical = lexical.with_name(lexical.name.lower())
+        try:
+            original = lexical.lstat()
+            normalized = canonical.lstat()
+        except FileNotFoundError:
+            return lexical
+        if (stat.S_ISREG(original.st_mode) or stat.S_ISLNK(original.st_mode)) and (
+            os.path.samestat(original, normalized)
+        ):
+            return canonical
+    return lexical
 
 
 def executable_entrypoint_name(path: Path) -> str:

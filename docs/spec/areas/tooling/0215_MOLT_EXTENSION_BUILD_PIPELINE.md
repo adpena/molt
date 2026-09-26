@@ -45,6 +45,17 @@ Flags (implemented):
 - `--deterministic/--no-deterministic`
 - `--json` / `--verbose`
 
+Compiler commands share one typed driver/language authority. MSVC-ABI targets
+use the clang-cl C/C++ driver family; incompatible explicit drivers are rejected
+before configuration. GNU-style native and WASM drivers retain their own argument
+grammar. Compile emission, dependency files, replay normalization, deterministic
+path maps and persisted language validation consume the same dialect selection.
+Replay replaces all compiler-owned target, SDK, dependency and side-output
+selectors, including forwarded frontend selectors, while preserving language,
+runtime-library and optimization semantics. Forced headers resolve relative to
+the recorded compilation directory. Precompiled-header/module inputs require
+explicit custody and are rejected until that capability is implemented.
+
 Outputs:
 - `.whl` tagged with `py3-molt_abi<major>-<platform_tag>`.
 - `extension_manifest.json` sidecar (ABI/capability metadata + checksums).
@@ -128,6 +139,29 @@ worktree's `src`, user-site/PYTHONHOME injection disabled, and the attested
 environment's `Scripts`/`bin` directory first on executable `PATH`; the
 environment itself therefore has no editable-worktree identity and is reusable
 by sibling worktrees.
+
+Target metadata binds both Meson machine files: `meson.cross` for the extension
+target and `meson.native` for programs executed on the build machine. Both use
+the same tool resolver and content-attested family; a native build reuses its
+resolved family, while a cross build records a separate native-machine family.
+Both machine files bind C and C++ explicitly; a missing role is an admission error,
+not permission for Meson to rediscover a compiler. Direct C-only extension builds
+outside the Meson metadata surface do not require an unused C++ compiler.
+Meson never selects build-machine compilers from ambient `CC`/`CXX` or `PATH`.
+Both machine files bind C/C++ compile and link argument arrays, so ambient
+Meson flag variables cannot supply another machine configuration. Package setup
+arguments may select project options or build type, not replace machine files,
+compiler/linker arguments, install prefix or dependency search paths.
+Configuration, tool probes, generators and object replay remove implicit command
+overrides (`CL`, `_CL_`, `CCC_OVERRIDE_OPTIONS`, and Meson `CC_LD`/`CXX_LD`, including
+build-machine variants) from child environments. SDK search inputs such as
+`INCLUDE` and `LIB` remain available; this does not claim hermetic SDK custody.
+Schema v4 includes both file digests and machine identities in the canonical
+sidecar and package seal. Seal validation reconstructs both machine files from
+the same command/path projection used by the producer and requires canonical
+UTF-8/LF bytes; rehashing an inconsistent machine file cannot admit it.
+Historical metadata without build-machine custody must
+be reproduced; it is not silently upgraded or admitted as current evidence.
 
 One invocation performs one real Meson setup, consumes the unchanged
 `intro-targets.json`, `compile_commands.json`, `intro-installed.json`, and Ninja

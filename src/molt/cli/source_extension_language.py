@@ -7,6 +7,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
+from molt.cli.compiler_target import (
+    SourceExtensionCompilerDialect,
+    source_extension_compiler_dialect,
+)
+
 
 class SourceExtensionLanguage(StrEnum):
     C = "c"
@@ -85,29 +90,50 @@ def resolve_source_extension_compile_language(
     args: list[str] = []
     index = 0
     while index < len(compile_args):
-        token = compile_args[index]
+        argument = compile_args[index].removeprefix("/clang:")
         value: str | None = None
-        if token == "-x":
+        if argument == "-x":
             index += 1
             if index == len(compile_args):
                 raise ValueError("source-extension -x requires a language")
-            value = compile_args[index]
-        elif token.startswith("-x") and len(token) > 2:
-            value = token[2:]
-        elif token in {"/TC", "/TP"}:
-            value = "c" if token == "/TC" else "cpp"
-        elif token.startswith(("/Tc", "/Tp")):
+            value = compile_args[index].removeprefix("/clang:")
+        elif argument.startswith("-x") and len(argument) > 2:
+            value = argument[2:]
+        elif argument in {"/TC", "/TP"}:
+            value = "c" if argument == "/TC" else "cpp"
+        elif argument.startswith(("/Tc", "/Tp")):
             raise ValueError(
                 "source-extension per-file /Tc or /Tp must be normalized by the compile database"
             )
         if value is None:
-            args.append(token)
+            args.append(compile_args[index])
         else:
             selected = declared if value == "none" else _input_language(value)
         index += 1
     if selected is None:
         selected = _source_path_language(source_path)
     return selected, tuple(args)
+
+
+def source_extension_compile_io_args(
+    language: SourceExtensionLanguage,
+    compiler_command: Sequence[str],
+    source: Path,
+    output: Path,
+) -> tuple[str, ...]:
+    dialect = source_extension_compiler_dialect(compiler_command)
+    if dialect is SourceExtensionCompilerDialect.CLANG_CL:
+        if language not in {SourceExtensionLanguage.C, SourceExtensionLanguage.CPP}:
+            raise ValueError(
+                f"clang-cl has no admitted {language.value} language capability"
+            )
+        return (
+            "/TC" if language is SourceExtensionLanguage.C else "/TP",
+            "/c",
+            str(source),
+            f"/Fo{output}",
+        )
+    return ("-x", language.driver_language, "-c", str(source), "-o", str(output))
 
 
 def validate_source_extension_language_command(
@@ -121,7 +147,13 @@ def validate_source_extension_language_command(
     ``source`` path but deliberately preserves the original command operands.
     Neither the retained path nor a declared default supplies missing evidence.
     """
-    compile_indexes = [index for index, token in enumerate(command) if token == "-c"]
+    dialect = source_extension_compiler_dialect(command)
+    cl = dialect is SourceExtensionCompilerDialect.CLANG_CL
+    compile_indexes = [
+        index
+        for index, token in enumerate(command)
+        if token.removeprefix("/clang:") in {"-c", "/c"}
+    ]
     if len(compile_indexes) != 1:
         raise ValueError(
             "source-extension compile command requires one -c source operand"
@@ -130,7 +162,8 @@ def validate_source_extension_language_command(
     if (
         compile_index + 1 >= len(command)
         or not command[compile_index + 1]
-        or command[compile_index + 1].startswith("-")
+        or command[compile_index + 1].startswith(("-", "/Fo"))
+        or command[compile_index] != ("/c" if cl else "-c")
     ):
         raise ValueError(
             "source-extension compile command has no canonical source operand"
@@ -140,11 +173,27 @@ def validate_source_extension_language_command(
         for index, token in enumerate(command)
         if index != compile_index + 1
         and (
-            token.startswith("-x")
-            or token in {"/TC", "/TP"}
-            or token.startswith(("/Tc", "/Tp"))
+            token.removeprefix("/clang:").startswith("-x")
+            or token.removeprefix("/clang:") in {"/TC", "/TP"}
+            or token.removeprefix("/clang:").startswith(("/Tc", "/Tp"))
         )
     ]
+    if cl:
+        if (
+            language not in {SourceExtensionLanguage.C, SourceExtensionLanguage.CPP}
+            or compile_index < 2
+            or "--" in command[: compile_index + 1]
+            or selector_indexes != [compile_index - 1]
+        ):
+            raise ValueError(
+                "source-extension compile command requires one canonical /TC or /TP immediately before /c source"
+            )
+        expected = "/TC" if language is SourceExtensionLanguage.C else "/TP"
+        if command[compile_index - 1] != expected:
+            raise ValueError(
+                "source-extension compile command differs from declared language"
+            )
+        return
     if (
         compile_index < 3
         or "--" in command[: compile_index + 1]
