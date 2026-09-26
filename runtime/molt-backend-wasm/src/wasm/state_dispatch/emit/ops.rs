@@ -8,9 +8,7 @@ use crate::wasm::state_dispatch::common::{
     require_stateful,
 };
 use crate::wasm::state_dispatch::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
-use crate::wasm::state_dispatch::stateful_ops::{
-    emit_chan_recv_yield, emit_chan_send_yield, emit_state_transition, emit_state_yield,
-};
+use crate::wasm::state_dispatch::stateful_ops::{emit_state_transition, emit_state_yield};
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::emit_branch_truthiness_i32;
 use std::collections::BTreeMap;
@@ -69,16 +67,6 @@ pub(super) fn emit_dispatch_op(
         "state_yield" => {
             require_stateful(mode, func_ir, idx, op);
             emit_state_yield(func, op_emitter, plan, locals, op, idx);
-            true
-        }
-        "chan_send_yield" => {
-            require_stateful(mode, func_ir, idx, op);
-            emit_chan_send_yield(func, op_emitter, plan, locals, op, idx, depth);
-            true
-        }
-        "chan_recv_yield" => {
-            require_stateful(mode, func_ir, idx, op);
-            emit_chan_recv_yield(func, op_emitter, plan, locals, op, idx, depth);
             true
         }
         "if" => {

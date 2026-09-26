@@ -316,7 +316,7 @@ The algorithm (per §2.4):
 
 **What changes:** Extend the `generator_fusion.rs` module with a `run_await_inlining` function. Recognizes `await non_suspending_coro()` patterns.
 
-Recognition predicate for await inlining: the awaited coroutine's `_poll` body contains no `STATE_YIELD`/`STATE_TRANSITION`/`ChanSendYield`/`ChanRecvYield` that route to the event loop — i.e., it always returns `(value, True)` on the first call. This can be proven by SCCP on the `_poll` body: if every control-flow path through the body ends in `return (value, True)` (or equivalently, if the `_poll` body has no `STATE_TRANSITION` ops at all, only `STATE_YIELD` with the exhausted pair), then the coroutine is a one-shot.
+Recognition predicate for await inlining: the awaited coroutine's `_poll` body contains no `STATE_YIELD`/`STATE_TRANSITION` that routes to the event loop — i.e., it always returns `(value, True)` on the first call. This can be proven by SCCP on the `_poll` body: if every control-flow path through the body ends in `return (value, True)` (or equivalently, if the `_poll` body has no `STATE_TRANSITION` ops at all, only `STATE_YIELD` with the exhausted pair), then the coroutine is a one-shot.
 
 For the non-zero-suspension case (the coroutine genuinely suspends on I/O), the await remains as-is.
 

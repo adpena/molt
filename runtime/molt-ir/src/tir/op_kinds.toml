@@ -458,7 +458,7 @@ simpleir_defined_function_reference_s_value_kinds = [
     "call", "call_internal", "func_new", "func_new_closure", "func_new_builtin",
     "code_new", "call_guarded", "call_indirect", "alloc_task", "call_async",
     "asyncgen_locals_register", "gen_locals_register", "task_new",
-    "generator_send", "spawn", "call_func", "call_method", "import_from",
+    "generator_send", "call_func", "call_method", "import_from",
     "import_name", "class_def", "decorator", "super_call", "yield_from", "await",
 ]
 simpleir_runtime_qualified_callable = [
@@ -584,17 +584,9 @@ simpleir_fallible_protocol_semantics_kinds = [
     "chr", "ord", "ord_at", "print", "builtin_print",
 ]
 simpleir_async_runtime_semantics_kinds = [
-    "alloc_task", "call_async", "block_on", "spawn", "is_native_awaitable",
+    "alloc_task", "call_async", "block_on", "is_native_awaitable",
     "asyncgen_locals_register", "gen_locals_register",
-    "chan_new", "chan_drop", "chan_recv_yield", "chan_send_yield",
     "state_label", "state_switch", "state_transition", "state_yield",
-    "cancel_token_new", "cancel_token_clone", "cancel_token_drop",
-    "cancel_token_cancel", "cancel_token_is_cancelled",
-    "cancel_token_set_current", "cancel_token_get_current",
-    "cancelled", "cancel_current",
-    "future_cancel", "future_cancel_msg", "future_cancel_clear",
-    "promise_new", "promise_set_result", "promise_set_exception",
-    "thread_submit", "task_register_token_owned",
 ]
 # Servicing CPython pending calls and the eval breaker is independent from task
 # scheduling and suspension-state semantics. The explicit wire alias carries
@@ -988,8 +980,6 @@ alias_rc_barrier_opcodes = [
     "CallMethod",
     "CallMethodIc",
     "CallSuperMethodIc",
-    "ChanRecvYield",
-    "ChanSendYield",
     "CheckException",
     "ClosureLoad",
     "ClosureStore",
@@ -1042,8 +1032,6 @@ refcount_balance_dec_opcodes = ["DecRef"]
 # but not by themselves proof of the lowered re-entrant dispatch shape that the
 # drop-insertion state-machine bail guards.
 lowered_state_machine_body_opcodes = [
-    "ChanRecvYield",
-    "ChanSendYield",
     "StateSwitch",
     "StateTransition",
     "StateYield",
@@ -1056,8 +1044,6 @@ lowered_state_machine_body_opcodes = [
 # machinery, but construction alone is neither a re-entrant body nor a
 # suspension that publishes the live frame.
 drop_insertion_suspension_point_opcodes = [
-    "ChanRecvYield",
-    "ChanSendYield",
     "StateYield",
     "Yield",
     "YieldFrom",
@@ -1078,7 +1064,7 @@ drop_insertion_return_deferral_barrier_opcodes = [
 # A fusable poll must contain at least one RequiredYield and no Reject opcode.
 # StateSwitch is neutral here: clone_and_rewrite_poll drops the bookkeeping
 # switch, while StateYield is the splice point and the reject set covers
-# delegation, async/channel/state-transition, and nested task shapes that Phase 1
+# delegation, async/state-transition, and nested task shapes that Phase 1
 # cannot linearize.
 generator_fusion_poll_required_yield_opcodes = ["StateYield"]
 generator_fusion_poll_reject_opcodes = [
@@ -1086,8 +1072,6 @@ generator_fusion_poll_reject_opcodes = [
     "Yield",
     "StateBlockStart",
     "StateBlockEnd",
-    "ChanSendYield",
-    "ChanRecvYield",
     "StateTransition",
     "AllocTask",
 ]
@@ -1112,8 +1096,6 @@ generator_fusion_iter_use_roles = [
 # become inlinable or promotable through a default-false hand-set.
 state_machine_opcodes = [
     "AllocTask",
-    "ChanRecvYield",
-    "ChanSendYield",
     "StateBlockEnd",
     "StateBlockStart",
     "StateSwitch",
@@ -1747,7 +1729,6 @@ classifier_transparent_alias = [
     "anext",
     "asyncgen_locals_register",
     "asyncgen_new",
-    "asyncgen_shutdown",
     "bound_method_new",
     "block_on",
     "bridge_unavailable",
@@ -1788,17 +1769,6 @@ classifier_transparent_alias = [
     "callargs_new",
     "callargs_push_kw",
     "callargs_push_pos",
-    "cancel_current",
-    "cancel_token_cancel",
-    "cancel_token_clone",
-    "cancel_token_drop",
-    "cancel_token_get_current",
-    "cancel_token_is_cancelled",
-    "cancel_token_new",
-    "cancel_token_set_current",
-    "cancelled",
-    "chan_drop",
-    "chan_new",
     "chr",
     "class_apply_set_name",
     "class_layout_version",
@@ -1863,9 +1833,6 @@ classifier_transparent_alias = [
     "func_new",
     "func_new_closure",
     "function_closure_bits",
-    "future_cancel",
-    "future_cancel_clear",
-    "future_cancel_msg",
     "gen_locals_register",
     "get_attr_name_default",
     "has_attr_name",
@@ -1897,9 +1864,6 @@ classifier_transparent_alias = [
     "ord",
     "pow_mod",
     "print_newline",
-    "promise_set_exception",
-    "promise_set_result",
-    "promise_new",
     "property_new",
     "round",
     "set_add",
@@ -1911,7 +1875,6 @@ classifier_transparent_alias = [
     "set_remove",
     "set_symdiff_update",
     "set_update",
-    "spawn",
     "staticmethod_new",
     "statistics_mean_slice",
     "statistics_stdev_slice",
@@ -1940,8 +1903,6 @@ classifier_transparent_alias = [
     "string_upper",
     "super_new",
     "taq_ingest_line",
-    "task_register_token_owned",
-    "thread_submit",
     "trunc",
     "tuple_count",
     "tuple_index",
@@ -2380,42 +2341,6 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "state_transition"
-structural = false
-terminator = false
-suspend = true
-repoll = true
-block_leader = true
-block_ender = true
-conditional_branch = false
-pre_ssa_rewritten = false
-ssa_only = false
-wasm_split_barrier = true
-wasm_dispatch_block_leader = false
-wasm_dispatch_block_terminator = true
-wasm_stateful_dispatch = true
-wasm_state_resume_after = true
-wasm_state_resume_at = false
-
-[[simpleir_control_kind]]
-kind = "chan_send_yield"
-structural = false
-terminator = false
-suspend = true
-repoll = true
-block_leader = true
-block_ender = true
-conditional_branch = false
-pre_ssa_rewritten = false
-ssa_only = false
-wasm_split_barrier = true
-wasm_dispatch_block_leader = false
-wasm_dispatch_block_terminator = true
-wasm_stateful_dispatch = true
-wasm_state_resume_after = true
-wasm_state_resume_at = false
-
-[[simpleir_control_kind]]
-kind = "chan_recv_yield"
 structural = false
 terminator = false
 suspend = true
@@ -3536,24 +3461,6 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
-name = "ChanSendYield"
-may_throw = true
-side_effecting = true
-purity = "impure"
-result_arity = "one"
-operand_ownership = "all_borrowed"
-result_absorbs_operands = false
-
-[[opcode]]
-name = "ChanRecvYield"
-may_throw = true
-side_effecting = true
-purity = "impure"
-result_arity = "one"
-operand_ownership = "all_borrowed"
-result_absorbs_operands = false
-
-[[opcode]]
 name = "ClosureLoad"
 may_throw = true
 side_effecting = false
@@ -4321,16 +4228,6 @@ mapper_opcode = "StateTransition"
 canonical = "state_yield"
 aliases = []
 mapper_opcode = "StateYield"
-
-[[kind]]
-canonical = "chan_send_yield"
-aliases = []
-mapper_opcode = "ChanSendYield"
-
-[[kind]]
-canonical = "chan_recv_yield"
-aliases = []
-mapper_opcode = "ChanRecvYield"
 
 [[kind]]
 canonical = "closure_load"

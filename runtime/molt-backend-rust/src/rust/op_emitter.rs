@@ -207,19 +207,9 @@ impl RustBackend {
             "jump" | "goto" | "br_if" | "branch" | "branch_true" | "branch_false" => {
                 self.emit_op_unstructured_branch(op)
             }
-            "alloc_task"
-            | "block_on"
-            | "asyncgen_locals_register"
-            | "cancel_current"
-            | "cancel_token_cancel"
-            | "cancel_token_clone"
-            | "cancel_token_drop"
-            | "cancel_token_get_current"
-            | "cancel_token_is_cancelled"
-            | "cancel_token_new"
-            | "cancel_token_set_current"
-            | "cancelled"
-            | "check_exception" => self.emit_op_runtime_control_gap(op),
+            "alloc_task" | "block_on" | "asyncgen_locals_register" | "check_exception" => {
+                self.emit_op_runtime_control_gap(op)
+            }
             "inc_ref" | "borrow" | "binding_alias" => self.emit_op_inc_ref(op),
             "dec_ref" | "release" => self.emit_op_dec_ref(op),
             "alloc_instance" | "init_instance" | "instance_set_field" | "instance_get_field"

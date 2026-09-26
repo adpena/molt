@@ -22,11 +22,7 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
     let is_stateful = func_ir.ops.iter().any(|op| {
         matches!(
             op.kind.as_str(),
-            "state_switch"
-                | "state_transition"
-                | "state_yield"
-                | "chan_send_yield"
-                | "chan_recv_yield"
+            "state_switch" | "state_transition" | "state_yield"
         )
     });
     if !is_stateful {
@@ -39,12 +35,7 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
         if let Some(id) = op.value
             && matches!(
                 op.kind.as_str(),
-                "state_yield"
-                    | "state_transition"
-                    | "state_label"
-                    | "label"
-                    | "chan_send_yield"
-                    | "chan_recv_yield"
+                "state_yield" | "state_transition" | "state_label" | "label"
             )
         {
             max_state_id = max_state_id.max(id);
@@ -78,7 +69,7 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
                     break_if_falses: Vec::new(),
                 });
             }
-            "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
+            "state_yield" => {
                 for frame in loop_stack.iter_mut() {
                     frame.has_yield = true;
                 }

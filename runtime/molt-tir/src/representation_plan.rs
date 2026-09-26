@@ -1496,7 +1496,7 @@ impl ScalarRepresentationPlan {
                         unsafe_set.insert(var.clone());
                     }
                 }
-                "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
+                "state_yield" => {
                     self.collect_scalar_args(op, &mut unsafe_set);
                     if let Some(var) = &op.var
                         && self.name_is_slot_scalar(var)

@@ -271,7 +271,8 @@ Python's `asyncio.Queue` maps to `tokio::sync::mpsc`:
 let (tx, mut rx) = tokio::sync::mpsc::channel(capacity);
 ```
 
-This aligns with Molt's existing `ChanNew`/`ChanSendYield`/`ChanRecvYield` IR ops.
+Molt's channel operations are runtime-bound calls; async wrappers own retries
+and suspension explicitly rather than using channel-specific IR opcodes.
 
 ### 5.4 Generator/coroutine translation
 

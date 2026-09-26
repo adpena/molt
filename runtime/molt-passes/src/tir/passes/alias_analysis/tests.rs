@@ -101,8 +101,6 @@ fn all_opcodes() -> Vec<OpCode> {
         StateSwitch,
         StateTransition,
         StateYield,
-        ChanSendYield,
-        ChanRecvYield,
         ClosureLoad,
         ClosureStore,
         Yield,
@@ -217,8 +215,6 @@ fn assert_opcode_listed(opcode: OpCode) {
         | StateSwitch
         | StateTransition
         | StateYield
-        | ChanSendYield
-        | ChanRecvYield
         | ClosureLoad
         | ClosureStore
         | Yield
@@ -274,8 +270,6 @@ const OLD_REFCOUNT_BARRIER_OPCODES: &[OpCode] = &[
     OpCode::StateYield,
     OpCode::ClosureLoad,
     OpCode::ClosureStore,
-    OpCode::ChanSendYield,
-    OpCode::ChanRecvYield,
 ];
 
 const OLD_DSE_DIRECT_OBSERVERS: &[OpCode] = &[

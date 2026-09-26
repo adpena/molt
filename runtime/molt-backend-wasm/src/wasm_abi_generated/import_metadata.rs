@@ -609,7 +609,6 @@ impl WasmRuntimeImport {
             Self::BytesSplitMax => "bytes_split_max",
             Self::BytesStartswith => "bytes_startswith",
             Self::BytesStartswithSlice => "bytes_startswith_slice",
-            Self::CancelCurrent => "cancel_current",
             Self::CancelTokenCancel => "cancel_token_cancel",
             Self::CancelTokenClone => "cancel_token_clone",
             Self::CancelTokenDrop => "cancel_token_drop",
@@ -617,7 +616,6 @@ impl WasmRuntimeImport {
             Self::CancelTokenIsCancelled => "cancel_token_is_cancelled",
             Self::CancelTokenNew => "cancel_token_new",
             Self::CancelTokenSetCurrent => "cancel_token_set_current",
-            Self::Cancelled => "cancelled",
             Self::ContextlibAsyncExitstackEnterContextPoll => {
                 "contextlib_async_exitstack_enter_context_poll"
             }
@@ -3703,7 +3701,6 @@ impl WasmRuntimeImport {
             Self::BytesSplitMax => "molt_bytes_split_max",
             Self::BytesStartswith => "molt_bytes_startswith",
             Self::BytesStartswithSlice => "molt_bytes_startswith_slice",
-            Self::CancelCurrent => "molt_cancel_current",
             Self::CancelTokenCancel => "molt_cancel_token_cancel",
             Self::CancelTokenClone => "molt_cancel_token_clone",
             Self::CancelTokenDrop => "molt_cancel_token_drop",
@@ -3711,7 +3708,6 @@ impl WasmRuntimeImport {
             Self::CancelTokenIsCancelled => "molt_cancel_token_is_cancelled",
             Self::CancelTokenNew => "molt_cancel_token_new",
             Self::CancelTokenSetCurrent => "molt_cancel_token_set_current",
-            Self::Cancelled => "molt_cancelled",
             Self::ContextlibAsyncExitstackEnterContextPoll => {
                 "molt_contextlib_async_exitstack_enter_context_poll"
             }
@@ -6825,7 +6821,6 @@ impl WasmRuntimeImport {
             Self::BytesSplitMax => 5,
             Self::BytesStartswith => 3,
             Self::BytesStartswithSlice => 9,
-            Self::CancelCurrent => 0,
             Self::CancelTokenCancel => 2,
             Self::CancelTokenClone => 2,
             Self::CancelTokenDrop => 2,
@@ -6833,7 +6828,6 @@ impl WasmRuntimeImport {
             Self::CancelTokenIsCancelled => 2,
             Self::CancelTokenNew => 2,
             Self::CancelTokenSetCurrent => 2,
-            Self::Cancelled => 0,
             Self::ContextlibAsyncExitstackEnterContextPoll => 2,
             Self::ContextlibAsyncExitstackExitPoll => 2,
             Self::ContextlibAsyncgenEnterPoll => 2,
@@ -9861,7 +9855,6 @@ impl WasmRuntimeImport {
             Self::BytesSplitMax => WasmRuntimeReturn::OwnedObject,
             Self::BytesStartswith => WasmRuntimeReturn::OwnedObject,
             Self::BytesStartswithSlice => WasmRuntimeReturn::OwnedObject,
-            Self::CancelCurrent => WasmRuntimeReturn::OwnedObject,
             Self::CancelTokenCancel => WasmRuntimeReturn::OwnedObject,
             Self::CancelTokenClone => WasmRuntimeReturn::OwnedObject,
             Self::CancelTokenDrop => WasmRuntimeReturn::OwnedObject,
@@ -9869,7 +9862,6 @@ impl WasmRuntimeImport {
             Self::CancelTokenIsCancelled => WasmRuntimeReturn::OwnedObject,
             Self::CancelTokenNew => WasmRuntimeReturn::OwnedObject,
             Self::CancelTokenSetCurrent => WasmRuntimeReturn::OwnedObject,
-            Self::Cancelled => WasmRuntimeReturn::OwnedObject,
             Self::ContextlibAsyncExitstackEnterContextPoll => WasmRuntimeReturn::PollResult,
             Self::ContextlibAsyncExitstackExitPoll => WasmRuntimeReturn::PollResult,
             Self::ContextlibAsyncgenEnterPoll => WasmRuntimeReturn::PollResult,

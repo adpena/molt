@@ -69,6 +69,108 @@ def test_tuple_conversion_does_not_treat_annotations_as_exact(annotation: str) -
 @pytest.mark.parametrize(
     "name",
     [
+        "molt_spawn",
+        "molt_cancel_token_new",
+        "molt_cancel_token_clone",
+        "molt_cancel_token_drop",
+        "molt_cancel_token_cancel",
+        "molt_future_cancel",
+        "molt_future_cancel_msg",
+        "molt_future_cancel_clear",
+        "molt_promise_new",
+        "molt_promise_set_result",
+        "molt_promise_set_exception",
+        "molt_task_register_token_owned",
+        "molt_cancel_token_is_cancelled",
+        "molt_cancel_token_set_current",
+        "molt_cancel_token_get_current",
+        "molt_cancelled",
+        "molt_cancel_current",
+        "molt_block_on",
+        "molt_asyncgen_shutdown",
+        "molt_async_sleep",
+        "molt_thread_submit",
+        "molt_chan_new",
+        "molt_chan_send",
+        "molt_chan_recv",
+        "molt_chan_drop",
+    ],
+)
+def test_runtime_spelling_does_not_override_python_call_binding(name: str) -> None:
+    generator = SimpleTIRGenerator()
+    generator.visit(
+        ast.parse(
+            f"def {name}(**kwargs):\n    return kwargs\n"
+            f"result = {name}(python_argument=42)\n"
+        )
+    )
+    ops = generator.to_json()["functions"]
+    main = next(fn["ops"] for fn in ops if fn["name"] == "molt_main")
+    definitions = {op["out"]: op for op in main if "out" in op}
+    published = {
+        definitions[op["args"][1]]["s_value"]: op["args"][2]
+        for op in main
+        if op["kind"] == "module_set_attr"
+    }
+    call = definitions[published["result"]]
+    assert call["kind"] == "call_bind"
+    callee = definitions[call["args"][0]]
+    if callee["kind"] == "module_get_global":
+        assert definitions[callee["args"][1]]["s_value"] == name
+    else:
+        assert call["args"][0] == published[name]
+    (keyword,) = [
+        op
+        for op in main
+        if op["kind"] == "callargs_push_kw" and op["args"][0] == call["args"][1]
+    ]
+    assert definitions[keyword["args"][1]]["s_value"] == "python_argument"
+    assert definitions[keyword["args"][2]]["value"] == 42
+    assert not any(
+        op["kind"]
+        in {
+            "chan_send_yield",
+            "chan_recv_yield",
+            "spawn",
+            "call_async",
+            "cancel_current",
+        }
+        for op in main
+    )
+
+
+@pytest.mark.parametrize(
+    "expression", ["molt_chan_send(channel, value)", "molt_chan_recv(channel)"]
+)
+def test_channel_spelling_does_not_create_a_suspension_point(expression: str) -> None:
+    from molt.frontend._types import GEN_CONTROL_SIZE
+    from molt.frontend.sema.funcmeta import FunctionKind, stateful_function_frame_plan
+
+    generator = SimpleTIRGenerator()
+    plan = stateful_function_frame_plan(
+        kind=FunctionKind.ASYNC,
+        poll_symbol="channel_spelling_poll",
+        param_count=0,
+        has_closure=False,
+        gen_control_size=GEN_CONTROL_SIZE,
+    )
+    generator.start_function(
+        plan.poll_symbol,
+        params=["self"],
+        compiler_params={"self"},
+        stateful_frame_plan=plan,
+    )
+    call = ast.parse(expression, mode="eval").body
+    assert not generator._expr_may_yield(call)
+    assert not generator._expr_needs_async(call)
+    awaited = ast.parse(f"await {expression}", mode="eval").body
+    assert generator._expr_may_yield(awaited)
+    assert generator._expr_needs_async(awaited)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
         "list",
         "tuple",
         "dict",

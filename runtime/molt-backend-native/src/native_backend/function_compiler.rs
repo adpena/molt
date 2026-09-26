@@ -1546,20 +1546,6 @@ impl SimpleBackend {
                         fc::OpFlow::Proceed => {}
                     }
                 }
-                // handle_future_promise_op family — extracted to fc::future_promise (M1)
-                _ if op_family == Some(fc::NativeOpFamily::FuturePromise) => {
-                    fc::future_promise::handle_future_promise_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
                 // handle_funcobj_op family - extracted to fc::funcobj (M1)
                 _ if op_family == Some(fc::NativeOpFamily::Funcobj) => {
                     let __flow = fc::funcobj::handle_funcobj_op(

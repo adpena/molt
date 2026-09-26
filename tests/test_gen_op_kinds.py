@@ -352,8 +352,6 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
         "state_switch": {"structural", "block_ender"},
         "state_yield": {"suspend", "block_ender"},
         "state_transition": {"suspend", "repoll", "block_leader", "block_ender"},
-        "chan_send_yield": {"suspend", "repoll", "block_leader", "block_ender"},
-        "chan_recv_yield": {"suspend", "repoll", "block_leader", "block_ender"},
         "loop_index_start": {"pre_ssa_rewritten"},
         "loop_index_next": {"pre_ssa_rewritten"},
         "phi": {"ssa_only"},
@@ -420,18 +418,6 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
             "wasm_stateful_dispatch",
             "wasm_state_resume_after",
         },
-        "chan_send_yield": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_terminator",
-            "wasm_stateful_dispatch",
-            "wasm_state_resume_after",
-        },
-        "chan_recv_yield": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_terminator",
-            "wasm_stateful_dispatch",
-            "wasm_state_resume_after",
-        },
         "loop_index_start": {
             "wasm_split_barrier",
             "wasm_dispatch_block_leader",
@@ -491,8 +477,6 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
     for mapped_suspend in {
         "state_yield",
         "state_transition",
-        "chan_send_yield",
-        "chan_recv_yield",
     }:
         assert f'"{mapped_suspend}"' not in consumed_body
         assert mapped_suspend not in audit_exempt
@@ -953,11 +937,6 @@ def test_audit_llvm_decomposition_sources_real_coverage_authorities() -> None:
         assert row.llvm_vec_table
         assert row.llvm_covered
 
-    chan_new = res.rows["chan_new"]
-    assert chan_new.llvm_dedicated_arm
-    assert not chan_new.llvm_runtime_fallback_eligible
-    assert chan_new.llvm_covered
-
     inplace_matmul = res.rows["inplace_matmul"]
     assert inplace_matmul.llvm_runtime_fallback_eligible
     assert inplace_matmul.llvm_covered
@@ -1175,8 +1154,6 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
         "DeleteVar": "one",
         "AllocTask": "one",
         "StateTransition": "one",
-        "ChanSendYield": "one",
-        "ChanRecvYield": "one",
         "ClosureStore": "zero",
         "Yield": "zero",
         "YieldFrom": "zero",
@@ -3226,8 +3203,6 @@ def test_alias_rc_barrier_predicate_delegates_to_generated_table() -> None:
         "CallMethod",
         "CallMethodIc",
         "CallSuperMethodIc",
-        "ChanRecvYield",
-        "ChanSendYield",
         "CheckException",
         "ClosureLoad",
         "ClosureStore",
@@ -3333,8 +3308,6 @@ def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
     required = {"StateYield"}
     reject = {
         "AllocTask",
-        "ChanRecvYield",
-        "ChanSendYield",
         "StateBlockEnd",
         "StateBlockStart",
         "StateTransition",
@@ -3429,8 +3402,6 @@ def test_lowered_state_machine_body_opcodes_delegate_to_generated_table() -> Non
     function = _read_rs_module_cluster(tir_path("function.rs"))
 
     expected = {
-        "ChanRecvYield",
-        "ChanSendYield",
         "StateSwitch",
         "StateTransition",
         "StateYield",
@@ -3479,8 +3450,6 @@ def test_drop_insertion_suspension_points_delegate_to_generated_table() -> None:
     )
 
     expected = {
-        "ChanRecvYield",
-        "ChanSendYield",
         "StateYield",
         "Yield",
         "YieldFrom",
@@ -3553,8 +3522,6 @@ def test_state_machine_opcodes_delegate_to_generated_table() -> None:
 
     expected = {
         "AllocTask",
-        "ChanRecvYield",
-        "ChanSendYield",
         "StateBlockEnd",
         "StateBlockStart",
         "StateSwitch",
@@ -4857,8 +4824,6 @@ def test_frontend_effect_classes_match_generated_authority() -> None:
     )
     for callback_control in {
         "STATE_TRANSITION",
-        "CHAN_SEND_YIELD",
-        "CHAN_RECV_YIELD",
     }:
         assert py.FRONTEND_EFFECT_CLASS[callback_control] == "control"
         assert py.FRONTEND_ARBITRARY_HEAP_EFFECT[callback_control]
@@ -5855,7 +5820,6 @@ def test_defined_function_reference_authority_is_distinct_and_generated() -> Non
         "gen_locals_register",
         "task_new",
         "generator_send",
-        "spawn",
         "call_func",
         "call_method",
         "import_from",
@@ -5932,7 +5896,7 @@ def test_frontend_repoll_publication_uses_shared_control_authority() -> None:
             for row in data["simpleir_control_kind"]
             if row["repoll"]
         }
-        == {"STATE_TRANSITION", "CHAN_SEND_YIELD", "CHAN_RECV_YIELD"}
+        == {"STATE_TRANSITION"}
     )
 
 

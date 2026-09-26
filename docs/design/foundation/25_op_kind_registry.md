@@ -6,6 +6,14 @@
 
 **Bug class killed:** cross-component op-"kind"-string drift — molt's most prolific silent-miscompile family (5 proven instances; see "Motivation").
 
+The gap counts and async-op examples in §4 below are a June 2026 audit snapshot,
+not the current operation inventory. Source calls now dispatch through live
+callable bindings: the obsolete spelling-specialized channel, spawn,
+cancellation, future/promise, and thread-submit SimpleIR lanes (including
+channel-specific yield opcodes) were retired. `block_on` and `call_async`
+remain live state-machine operations; runtime intrinsic providers remain
+separate from retired compiler operation spellings.
+
 ---
 
 ## Predicate result, effect, and representation authority

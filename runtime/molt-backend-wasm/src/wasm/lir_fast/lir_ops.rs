@@ -148,8 +148,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::StateSwitch
         | OpCode::StateTransition
         | OpCode::StateYield
-        | OpCode::ChanSendYield
-        | OpCode::ChanRecvYield
         | OpCode::Import
         | OpCode::ImportFrom
         | OpCode::Raise

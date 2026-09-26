@@ -116,7 +116,8 @@ def test_cfg_records_complete_edge_modes_at_the_edge_authority() -> None:
     }
     entry = cfg.index_to_block[0]
     assert cfg.edge_kinds[entry, cfg.index_to_block[1]] == CFGEdgeKind.NORMAL
-    assert cfg.edge_kinds[entry, cfg.index_to_block[3]] == CFGEdgeKind.EXCEPTION
+    # Region custody routes to the handler, never past a textual TRY_END.
+    assert (entry, cfg.index_to_block[3]) not in cfg.edge_kinds
     assert cfg.edge_kinds[entry, cfg.index_to_block[4]] == CFGEdgeKind.EXCEPTION
     assert (
         cfg.edge_kinds[cfg.index_to_block[5], cfg.index_to_block[6]]
@@ -193,11 +194,6 @@ def test_guard_cannot_hoist_across_dynamic_branch_truth_callback() -> None:
             "STATE_TRANSITION",
             [MoltValue("task"), MoltValue("slot"), MoltValue("pending"), 1],
         ),
-        (
-            "CHAN_SEND_YIELD",
-            [MoltValue("channel"), MoltValue("item"), MoltValue("pending"), 1],
-        ),
-        ("CHAN_RECV_YIELD", [MoltValue("channel"), MoltValue("pending"), 1]),
         ("IF", [MoltValue("condition")]),
     ],
 )
@@ -212,17 +208,10 @@ def test_callback_controls_invalidate_guard_availability(
     assert not available
 
 
-@pytest.mark.parametrize(
-    "kind", ["STATE_TRANSITION", "CHAN_SEND_YIELD", "CHAN_RECV_YIELD"]
-)
-def test_callback_control_preserves_control_class_but_advances_heap_epoch(
-    kind: str,
-) -> None:
+def test_callback_control_preserves_control_class_but_advances_heap_epoch() -> None:
     gen = SimpleTIRGenerator()
     args = [MoltValue("task"), MoltValue("slot"), MoltValue("pending"), 1]
-    if kind == "CHAN_RECV_YIELD":
-        args = [MoltValue("task"), MoltValue("pending"), 1]
-    control = op(kind, *args)
+    control = op("STATE_TRANSITION", *args)
     assert gen._op_effect_class(control) == "control"
     assert gen._op_may_access_arbitrary_heap(control)
     state = gen._empty_canonicalization_state()

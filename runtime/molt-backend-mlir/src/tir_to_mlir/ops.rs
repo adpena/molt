@@ -431,8 +431,6 @@ pub(super) fn emit_tir_op<'c, 'a>(
             | OpCode::StateSwitch
             | OpCode::StateTransition
             | OpCode::StateYield
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
             | OpCode::ClosureLoad
             | OpCode::ClosureStore
             | OpCode::Yield
