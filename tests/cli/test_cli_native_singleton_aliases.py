@@ -3,6 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from molt.cli import native_link_command
+from molt.cli.native_link_plan import _host_target_triple
+from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkRequirements,
+    SourceExtensionLinkLoadingPolicy,
+    source_extension_link_file,
+)
 from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
 
 
@@ -48,7 +54,17 @@ def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
         sysroot_path=None,
         profile="dev",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
-        external_static_archives=(external_archive,),
+        external_link_requirements=(
+            SourceExtensionLinkRequirements(
+                _host_target_triple(host_platform=platform),
+                (
+                    source_extension_link_file(
+                        external_archive,
+                        loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS,
+                    ),
+                ),
+            ),
+        ),
         host_platform=platform,
     )
     return list(plan.command)

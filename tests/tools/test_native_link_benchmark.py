@@ -595,7 +595,6 @@ def test_link_benchmark_cannot_reconstruct_link_or_publication_policy() -> None:
     assert "_finalize_native_link_candidate(" in source
     assert 'inputs["runtime_link_manifest"]' in source
     assert "native_link_dependency_manifest_path(" in source
-    assert "external_static_archives=external_archives" in source
     assert "external_link_requirements=external_link_requirements" in source
     assert "--export-runtime-symbols" not in source
     for forbidden in (
@@ -635,13 +634,10 @@ def test_parser_preserves_external_static_link_contract() -> None:
             "full",
             "--output",
             "app",
-            "--external-static-archive",
-            "libextension.a",
-            "--external-link-requirements-manifest=extension-manifest.json",
+            "--external-link-plan=extension-link-plan.json",
             "--json-out",
             "report.json",
         )
     )
 
-    assert args.external_static_archive == ["libextension.a"]
-    assert args.external_link_requirements_manifest == ["extension-manifest.json"]
+    assert args.external_link_plan == ["extension-link-plan.json"]

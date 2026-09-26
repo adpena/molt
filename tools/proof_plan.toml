@@ -1990,7 +1990,7 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges"]
 toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm"]
 
 [[command]]

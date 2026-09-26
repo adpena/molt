@@ -91,6 +91,9 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkProvider,
     SourceExtensionLinkProviderKind,
     SourceExtensionLinkRequirements,
+    SourceExtensionLinkLoadingPolicy,
+    source_extension_link_file,
+    read_source_extension_link_plan,
 )
 from molt.cli.source_extension_object_closure import (
     finalize_source_extension_object_closure,
@@ -5224,7 +5227,7 @@ def test_external_static_package_wasm_artifact_plan_is_manifest_led(
     assert artifact.artifact_kind == "wasm_relocatable_object"
 
 
-def test_external_static_package_wasm_manifest_support_archives_are_link_inputs(
+def test_external_static_package_wasm_support_archives_require_typed_link_custody(
     native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5271,9 +5274,11 @@ def test_external_static_package_wasm_manifest_support_archives_are_link_inputs(
     staged_archive = staged[0].runtime_root / "nativepkg" / "_loops.a"
     assert staged_archive in staged[0].staged_support_paths
     assert staged_archive.read_bytes() == support_archive.read_bytes()
-    assert staged_archive in (
-        cli_non_native_output._wasm_static_link_native_artifact_inputs(staged)
+    requirements = cli_external_native._external_native_link_requirements(
+        staged,
+        target_triple="wasm32-wasip1",
     )
+    assert staged_archive not in {Path(item.path) for item in requirements.inputs}
 
 
 def test_external_static_package_manifest_support_python_source_is_staged_not_linked(
@@ -5330,9 +5335,11 @@ def test_external_static_package_manifest_support_python_source_is_staged_not_li
     assert staged_wrapper.read_text(encoding="utf-8") == wrapper.read_text(
         encoding="utf-8"
     )
-    assert staged_wrapper not in (
-        cli_non_native_output._wasm_static_link_native_artifact_inputs(staged)
+    requirements = cli_external_native._external_native_link_requirements(
+        staged,
+        target_triple="wasm32-wasip1",
     )
+    assert staged_wrapper not in {Path(item.path) for item in requirements.inputs}
 
 
 def test_external_package_artifact_specific_manifests_allow_same_directory_modules(
@@ -12328,10 +12335,15 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
-        external_static_archives=(extension_archive,),
         external_link_requirements=(
             SourceExtensionLinkRequirements(
                 "x86_64-unknown-linux-gnu",
+                items=(
+                    source_extension_link_file(
+                        extension_archive,
+                        loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS,
+                    ),
+                ),
                 retained_symbols=("PyInit_extension",),
             ),
         ),
@@ -12339,10 +12351,14 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
     )
 
     start = link_plan.command.index("-Wl,--start-group")
-    assert link_plan.command[start + 1 : start + 3] == (
-        str(extension_archive.resolve()),
-        str(runtime_lib),
+    end = link_plan.command.index("-Wl,--end-group")
+    assert (
+        start
+        < link_plan.command.index(str(extension_archive.resolve()))
+        < link_plan.command.index(str(runtime_lib))
+        < end
     )
+    assert "--whole-archive" in link_plan.command[start:end]
     assert "-Wl,--undefined=PyInit_extension" in link_plan.command
     assert "-Wl,--export-dynamic" not in link_plan.command
     version_script = tmp_path / ".molt_version.ver"
@@ -12380,6 +12396,12 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         SourceExtensionLinkRequirements(
             "aarch64-apple-darwin",
             items=(
+                *(
+                    source_extension_link_file(
+                        archive, loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+                    )
+                    for archive in extension_archives
+                ),
                 SourceExtensionLinkProvider(
                     SourceExtensionLinkProviderKind.FRAMEWORK,
                     "Accelerate",
@@ -12397,7 +12419,6 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
-        external_static_archives=extension_archives,
         external_link_requirements=external_link_requirements,
         host_platform="darwin",
         host_arch="arm64",
@@ -12411,9 +12432,9 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
     start = link_plan.command.index(str(extension_archives[0].resolve())) - 3
     expected_link_arguments = (
         *force_load_arguments,
-        str(runtime_lib),
-        str(runtime_lib),
         *external_link_arguments,
+        str(runtime_lib),
+        str(runtime_lib),
     )
     assert link_plan.command[start : start + len(expected_link_arguments)] == (
         expected_link_arguments
@@ -12531,10 +12552,15 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
-        external_static_archives=(extension_archive,),
         external_link_requirements=(
             SourceExtensionLinkRequirements(
                 "x86_64-pc-windows-msvc",
+                items=(
+                    source_extension_link_file(
+                        extension_archive,
+                        loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS,
+                    ),
+                ),
                 retained_symbols=("PyInit_extension",),
             ),
         ),
@@ -22285,19 +22311,20 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     link_cmd = link_calls[0]
     assert link_cmd[link_cmd.index("--deploy-runtime") + 1] == str(runtime_wasm)
     assert runtime_wasm in link_fingerprint_inputs
-    assert "--native-object" in link_cmd
-    staged_native_input = Path(link_cmd[link_cmd.index("--native-object") + 1])
+    native_plan = read_source_extension_link_plan(
+        Path(link_cmd[link_cmd.index("--native-link-plan") + 1]),
+        expected_target_triple="wasm32-wasip1",
+    )
+    staged_native_input = Path(native_plan.inputs[0].path)
     assert staged_native_input.exists()
     assert staged_native_input != artifact_path
     assert staged_native_input.read_bytes() == artifact_bytes
     assert "external_static_packages" in staged_native_input.parts
-    native_link_arguments = [
-        link_cmd[index + 1]
-        for index, argument in enumerate(link_cmd)
-        if argument == "--native-link-arg"
-    ]
-    assert native_link_arguments[0] == "--undefined=PyInit__ndimage"
-    staged_dependency = Path(native_link_arguments[1])
+    assert native_plan.retained_symbols == (
+        "PyInit__ndimage",
+        "molt_nativepkg_ndimage_distance_transform_edt",
+    )
+    staged_dependency = Path(native_plan.inputs[1].path)
     assert staged_dependency != dependency_path
     assert staged_dependency.read_bytes() == dependency_bytes
     assert staged_dependency in link_fingerprint_inputs
@@ -22509,7 +22536,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
     assert "--split-runtime" in link_cmd
-    assert "--native-object" in link_cmd
+    assert "--native-link-plan" in link_cmd
 
 
 def test_split_runtime_static_native_reuse_rejects_hidden_active_table_slot(
@@ -22712,11 +22739,11 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     assert prepared is not None
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
-    native_inputs = [
-        Path(link_cmd[index + 1])
-        for index, arg in enumerate(link_cmd)
-        if arg == "--native-object"
-    ]
+    native_plan = read_source_extension_link_plan(
+        Path(link_cmd[link_cmd.index("--native-link-plan") + 1]),
+        expected_target_triple="wasm32-wasip1",
+    )
+    native_inputs = [Path(item.path) for item in native_plan.inputs]
     assert cpython_abi_provider not in native_inputs
     assert libc_provider in native_inputs
     assert compiler_rt_provider in native_inputs
@@ -22860,11 +22887,11 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
     assert "--split-runtime" in link_cmd
-    native_inputs = [
-        Path(link_cmd[index + 1])
-        for index, arg in enumerate(link_cmd)
-        if arg == "--native-object"
-    ]
+    native_plan = read_source_extension_link_plan(
+        Path(link_cmd[link_cmd.index("--native-link-plan") + 1]),
+        expected_target_triple="wasm32-wasip1",
+    )
+    native_inputs = [Path(item.path) for item in native_plan.inputs]
     assert cpython_abi_provider not in native_inputs
     assert libc_provider in native_inputs
     assert compiler_rt_provider in native_inputs
@@ -22876,7 +22903,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     assert staged_native_inputs[0].read_bytes() == artifact_bytes
 
 
-def test_wasm_static_link_native_artifact_inputs_include_linkable_support_paths(
+def test_static_link_inputs_do_not_infer_loading_from_support_suffixes(
     tmp_path: Path,
 ) -> None:
     artifact_path = tmp_path / "pkg" / "_native.molt.wasm"
@@ -22906,9 +22933,23 @@ def test_wasm_static_link_native_artifact_inputs_include_linkable_support_paths(
         link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
     )
 
-    assert cli_non_native_output._wasm_static_link_native_artifact_inputs(
-        (staged,)
-    ) == (
+    plan = cli_external_native._external_native_link_requirements(
+        (staged,),
+        target_triple="wasm32-wasip1",
+    )
+    assert tuple(Path(item.path) for item in plan.inputs) == (artifact_path,)
+    explicit = replace(
+        staged,
+        link_requirements=SourceExtensionLinkRequirements(
+            "wasm32-wasip1",
+            (source_extension_link_file(support_archive),),
+        ),
+    )
+    plan = cli_external_native._external_native_link_requirements(
+        (explicit,),
+        target_triple="wasm32-wasip1",
+    )
+    assert tuple(Path(item.path) for item in plan.inputs) == (
         artifact_path,
         support_archive,
     )

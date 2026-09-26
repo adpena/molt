@@ -50,8 +50,13 @@ from molt.toolchain_identity import (  # noqa: E402
     snapshot_stable_regular_file,
 )
 from molt.cli.source_extension_link_requirements import (  # noqa: E402
+    SourceExtensionLinkRequirements,
+    SourceExtensionLinkInput,
+    map_source_extension_link_inputs,
+    merge_source_extension_link_requirements,
+    read_source_extension_link_plan,
     render_source_extension_link_arguments as render_source_extension_link_arguments,
-    source_extension_link_requirements as source_extension_link_requirements,
+    source_extension_link_file,
 )
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmExpectedPair,
@@ -599,7 +604,7 @@ _WASM_OPT_CACHE_METRIC_SUFFIXES = (
 
 
 def _empty_wasm_link_cache_metrics() -> dict[str, int | float]:
-    metrics = {
+    metrics: dict[str, int | float] = {
         f"{prefix}_{suffix}": 0
         for prefix in ("runtime_tree_shake_cache", "split_app_optimize_cache")
         for suffix in _WASM_LINK_CACHE_METRIC_SUFFIXES
@@ -761,6 +766,7 @@ def _snapshot_link_input(
     required_prefix: bytes | None = None,
     accept_path: Callable[[Path], bool] | None = None,
     expected_identity: StableRegularFileIdentity | None = None,
+    expected_sha256: str | None = None,
     snapshot_directory: Path | None = None,
 ) -> Path:
     """Capture one complete immutable linker input from a mutable build path."""
@@ -817,6 +823,12 @@ def _snapshot_link_input(
         ):
             captured.discard()
             raise OSError(f"Failed to attest linker input snapshot: {snapshot}")
+        if expected_sha256 is not None and captured.source.sha256 != expected_sha256:
+            captured.discard()
+            raise ValueError(
+                f"link requirement checksum mismatch for {source}: "
+                f"expected {expected_sha256}, got {captured.source.sha256}"
+            )
         if required_prefix is not None and captured.prefix != required_prefix:
             captured.discard()
             raise OSError(
@@ -1617,14 +1629,25 @@ def _compiler_rt_provider_inputs(
     return (provider,)
 
 
-def _resolve_native_link_inputs(native_objects: Sequence[Path]) -> tuple[Path, ...]:
-    native_inputs = tuple(native_objects)
+def _resolve_native_link_requirements(
+    requirements: SourceExtensionLinkRequirements,
+) -> SourceExtensionLinkRequirements:
+    native_inputs = tuple(Path(item.path) for item in requirements.inputs)
     required_compiler_rt = _compiler_rt_imports_required_by_native_objects(
         native_inputs
     )
-    return (
-        *native_inputs,
-        *_compiler_rt_provider_inputs(native_inputs, required_compiler_rt),
+    providers = _compiler_rt_provider_inputs(native_inputs, required_compiler_rt)
+    if not providers:
+        return requirements
+    return merge_source_extension_link_requirements(
+        (
+            requirements,
+            SourceExtensionLinkRequirements(
+                requirements.target_triple,
+                tuple(source_extension_link_file(path) for path in providers),
+            ),
+        ),
+        target_triple=requirements.target_triple,
     )
 
 
@@ -1652,7 +1675,9 @@ def _sealed_native_init_symbols(native_objects: Sequence[Path]) -> tuple[str, ..
     return tuple(sorted(symbols))
 
 
-def _split_app_native_link_args(native_inputs: Sequence[Path]) -> list[str]:
+def _split_app_native_link_args(
+    requirements: SourceExtensionLinkRequirements,
+) -> list[str]:
     """wasm-ld args for the SPLIT app link, overriding wasi-libc's ``%L`` stub.
 
     The split ``app.wasm`` statically links numpy/scipy + their own wasi-libc
@@ -1672,17 +1697,20 @@ def _split_app_native_link_args(native_inputs: Sequence[Path]) -> list[str]:
     whole-archiving there duplicate-symbols. Non-numpy builds (no ``libc.a``) get
     the plain passthrough.
     """
-    inputs = list(native_inputs)
+    inputs = [Path(item.path) for item in requirements.inputs]
     if not any(path.name == "libc.a" for path in inputs):
-        return [str(path) for path in inputs]
+        return list(render_source_extension_link_arguments(requirements))
     # libc.a present => numpy/scipy static tier: a missing formatter archive is a
     # HARD ERROR (relinking the abort stub would trap at import).
     policy = wasm_link_inputs.resolve_long_double_link_policy(required=True)
     if policy.error is not None:
         raise ValueError(policy.error)
-    return wasm_link_inputs.long_double_whole_archive_link_argv(
-        policy, whole_archive=[], trailing=[str(path) for path in inputs]
-    )
+    return [
+        *wasm_link_inputs.long_double_whole_archive_link_argv(
+            policy, whole_archive=[], trailing=[]
+        ),
+        *render_source_extension_link_arguments(requirements),
+    ]
 
 
 def _read_const_i32_init_expr(data: bytes, offset: int) -> tuple[int, int]:
@@ -1967,7 +1995,7 @@ def _validate_required_native_direct_symbols(
 def _compose_wasm_ld_allowlist(
     *,
     base_allowlist: Path,
-    native_objects: Sequence[Path],
+    native_link_requirements: SourceExtensionLinkRequirements,
     temp_dir: tempfile.TemporaryDirectory,
 ) -> Path:
     """Return the wasm-ld allowlist for this link transaction.
@@ -1977,7 +2005,7 @@ def _compose_wasm_ld_allowlist(
     surface too; keep that authority generated and transaction-local so the base
     runtime allowlist does not grow a second copy of package closure policy.
     """
-    if not native_objects:
+    if not native_link_requirements.inputs:
         return base_allowlist
     symbols = sorted(
         {
@@ -2003,7 +2031,7 @@ def _compose_wasm_ld_allowlist(
 def _compose_split_runtime_native_allowlist(
     *,
     base_allowlist: Path,
-    native_objects: Sequence[Path],
+    native_link_requirements: SourceExtensionLinkRequirements,
     split_runtime_exports: set[str],
     temp_dir: tempfile.TemporaryDirectory,
 ) -> Path:
@@ -2019,7 +2047,7 @@ def _compose_split_runtime_native_allowlist(
     spell the CPython ABI canonically (``PyType_Ready``) while the split app
     imports ``molt_PyType_Ready``.
     """
-    if not native_objects:
+    if not native_link_requirements.inputs:
         return base_allowlist
     symbols = sorted(
         {
@@ -2147,8 +2175,7 @@ def _run_wasm_ld_with_custodied_inputs(
     split_runtime: bool = False,
     split_output_dir: Path | None = None,
     deploy_runtime_override: Path | None = None,
-    native_objects: Sequence[Path] = (),
-    native_link_arguments: Sequence[str] = (),
+    native_link_requirements: SourceExtensionLinkRequirements | None = None,
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
     wasm_facts_scanner: Path,
@@ -2168,8 +2195,7 @@ def _run_wasm_ld_with_custodied_inputs(
         split_runtime=split_runtime,
         split_output_dir=split_output_dir,
         deploy_runtime_override=deploy_runtime_override,
-        native_objects=native_objects,
-        native_link_arguments=native_link_arguments,
+        native_link_requirements=native_link_requirements,
         preserve_debug_sections=preserve_debug_sections,
         phase_timings_file=phase_timings_file,
         wasm_facts_scanner=wasm_facts_scanner,
@@ -2191,8 +2217,7 @@ def _run_wasm_ld(
     split_runtime: bool = False,
     split_output_dir: Path | None = None,
     deploy_runtime_override: Path | None = None,
-    native_objects: Sequence[Path] = (),
-    native_link_arguments: Sequence[str] = (),
+    native_link_requirements: SourceExtensionLinkRequirements | None = None,
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
     wasm_facts_scanner: Path,
@@ -2200,11 +2225,16 @@ def _run_wasm_ld(
     runtime_identity: StableRegularFileIdentity | None = None,
     deploy_runtime_identity: StableRegularFileIdentity | None = None,
 ) -> int:
-    for native_object in native_objects:
-        if not native_object.exists():
-            print(f"Native WASM link input not found: {native_object}", file=sys.stderr)
-            return 1
+    expected_target = "wasm32-unknown-unknown" if freestanding else "wasm32-wasip1"
     try:
+        native_link_requirements = (
+            native_link_requirements or SourceExtensionLinkRequirements(expected_target)
+        )
+        if native_link_requirements.target_triple != expected_target:
+            raise ValueError(
+                "native WASM link requirements target mismatch: "
+                f"{native_link_requirements.target_triple} != {expected_target}"
+            )
         with tempfile.TemporaryDirectory(prefix="molt-wasm-link-custody-") as tmp:
             snapshot_root = Path(tmp)
             runtime_snapshot_root = snapshot_root / "runtime-pair"
@@ -2241,25 +2271,64 @@ def _run_wasm_ld(
                     snapshot_root,
                     label="app-export-contract",
                 )
-            native_snapshot_list: list[Path] = []
-            for index, native_object in enumerate(native_objects):
-                native_snapshot = _snapshot_link_input(
-                    native_object,
-                    snapshot_root,
-                    label=f"native-{index}",
-                )
-                manifest = native_object.with_name(
-                    native_object.name + ".extension_manifest.json"
-                )
-                if manifest.exists():
-                    _snapshot_link_input(
-                        manifest,
+            native_snapshots: dict[Path, tuple[Path, str]] = {}
+
+            def snapshot_native_input(
+                item: SourceExtensionLinkInput,
+            ) -> SourceExtensionLinkInput:
+                source = Path(item.path)
+                if not source.is_absolute():
+                    raise ValueError(f"local link input must be absolute: {item.path}")
+                try:
+                    source = source.resolve(strict=True)
+                except OSError as exc:
+                    raise ValueError(
+                        f"Native WASM link input is unavailable: {item.path}: {exc}"
+                    ) from exc
+                previous = native_snapshots.get(source)
+                if previous is not None:
+                    snapshot, digest = previous
+                    if digest != item.sha256:
+                        raise ValueError(
+                            f"conflicting link requirement checksum claims for {source}"
+                        )
+                else:
+                    index = len(native_snapshots)
+                    snapshot = _snapshot_link_input(
+                        source,
                         snapshot_root,
-                        label=f"native-{index}-manifest",
-                        snapshot_directory=native_snapshot.parent,
+                        label=f"native-{index}",
+                        expected_sha256=item.sha256,
                     )
-                native_snapshot_list.append(native_snapshot)
-            native_snapshots = tuple(native_snapshot_list)
+                    manifest = source.with_name(
+                        source.name + ".extension_manifest.json"
+                    )
+                    if manifest.exists():
+                        _snapshot_link_input(
+                            manifest,
+                            snapshot_root,
+                            label=f"native-{index}-manifest",
+                            snapshot_directory=snapshot.parent,
+                        )
+                    native_snapshots[source] = (snapshot, item.sha256)
+                return SourceExtensionLinkInput(
+                    str(snapshot), item.sha256, item.loading
+                )
+
+            snapshot_requirements = map_source_extension_link_inputs(
+                native_link_requirements,
+                snapshot_native_input,
+            )
+            resolved_requirements = _resolve_native_link_requirements(
+                snapshot_requirements
+            )
+            admitted_inputs = set(snapshot_requirements.inputs)
+            snapshot_requirements = map_source_extension_link_inputs(
+                resolved_requirements,
+                lambda item: (
+                    item if item in admitted_inputs else snapshot_native_input(item)
+                ),
+            )
             deploy_runtime_snapshot = None
             if split_runtime:
                 deploy_runtime = _resolve_deploy_runtime(deploy_runtime_override)
@@ -2282,8 +2351,7 @@ def _run_wasm_ld(
                 split_runtime=split_runtime,
                 split_output_dir=split_output_dir,
                 deploy_runtime_override=deploy_runtime_snapshot,
-                native_objects=native_snapshots,
-                native_link_arguments=native_link_arguments,
+                native_link_requirements=snapshot_requirements,
                 preserve_debug_sections=preserve_debug_sections,
                 phase_timings_file=phase_timings_file,
                 wasm_facts_scanner=wasm_facts_scanner,
@@ -2343,19 +2411,9 @@ def main() -> int:
         help="Override the deploy runtime wasm path (non-relocatable variant)",
     )
     parser.add_argument(
-        "--native-object",
+        "--native-link-plan",
         type=Path,
-        action="append",
-        default=[],
-        dest="native_objects",
-        help="Validated external static package WASM object/archive input",
-    )
-    parser.add_argument(
-        "--native-link-arg",
-        action="append",
-        default=[],
-        dest="native_link_arguments",
-        help="Validated external source-extension final wasm link argument",
+        help="JSON plan containing typed, checksummed native link requirements",
     )
     parser.add_argument(
         "--preserve-debug-sections",
@@ -2394,6 +2452,18 @@ def main() -> int:
     if not output.exists():
         print(f"Output wasm not found: {output}", file=sys.stderr)
         return 1
+    native_link_requirements = None
+    if args.native_link_plan is not None:
+        try:
+            expected_target = (
+                "wasm32-unknown-unknown" if args.freestanding else "wasm32-wasip1"
+            )
+            native_link_requirements = read_source_extension_link_plan(
+                args.native_link_plan, expected_target_triple=expected_target
+            )
+        except (OSError, ValueError) as exc:
+            print(f"Invalid native WASM link plan: {exc}", file=sys.stderr)
+            return 1
     linked.parent.mkdir(parents=True, exist_ok=True)
 
     wasm_ld = _find_wasm_ld()
@@ -2416,8 +2486,7 @@ def main() -> int:
         split_runtime=args.split_runtime,
         split_output_dir=args.split_output_dir,
         deploy_runtime_override=generation.shared if args.split_runtime else None,
-        native_objects=tuple(args.native_objects),
-        native_link_arguments=tuple(args.native_link_arguments),
+        native_link_requirements=native_link_requirements,
         preserve_debug_sections=args.preserve_debug_sections,
         phase_timings_file=args.phase_timings_file,
         wasm_facts_scanner=args.wasm_facts_scanner,

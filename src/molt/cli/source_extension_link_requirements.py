@@ -14,8 +14,9 @@ from molt.cli.native_link_plan import whole_archive_link_arguments
 from molt.cli.source_extension_link_arguments import source_extension_link_arguments
 from molt.cli.atomic_io import _atomic_copy_file
 from molt.file_hashing import _sha256_file
+from molt.exact_json import read_exact
 
-_STATIC_INPUT_SUFFIXES = frozenset({".a", ".lib", ".o", ".obj", ".molt.wasm"})
+_STATIC_INPUT_SUFFIXES = frozenset({".a", ".lib", ".rlib", ".o", ".obj", ".wasm"})
 _BARE_LIBRARY_SUFFIXES = {
     SourceExtensionLinkDialect.ELF_GNU: frozenset({".a"}),
     SourceExtensionLinkDialect.MACHO: frozenset({".a"}),
@@ -136,6 +137,82 @@ class SourceExtensionLinkRequirements:
             "items": [item.manifest_payload() for item in self.items],
             "retained_symbols": list(self.retained_symbols),
         }
+
+
+def source_extension_link_file(
+    path: Path,
+    *,
+    loading: SourceExtensionLinkLoadingPolicy = SourceExtensionLinkLoadingPolicy.DEFAULT,
+    expected_sha256: str | None = None,
+) -> SourceExtensionLinkInput:
+    """Bind a local link operand to bytes, not its filename or ambient cwd."""
+    resolved = path.resolve(strict=True)
+    digest = _sha256_file(resolved)
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise ValueError(f"link requirement checksum mismatch for {path}")
+    return SourceExtensionLinkInput(str(resolved), digest, loading)
+
+
+def merge_source_extension_link_requirements(
+    requirements: Sequence[SourceExtensionLinkRequirements],
+    *,
+    target_triple: str,
+) -> SourceExtensionLinkRequirements:
+    """Compose ordered inputs; only retained roots are set-valued.
+
+    Repeated archives and group boundaries are semantic and must not be
+    deduplicated, sorted, or split into file and option buckets.
+    """
+    items: list[SourceExtensionLinkItem] = []
+    roots: set[str] = set()
+    for requirement in requirements:
+        if requirement.target_triple != target_triple:
+            raise ValueError(
+                "External source-extension link requirements cross target triples: "
+                f"{requirement.target_triple} != {target_triple}"
+            )
+        items.extend(requirement.items)
+        roots.update(requirement.retained_symbols)
+    return SourceExtensionLinkRequirements(
+        target_triple, tuple(items), tuple(sorted(roots))
+    )
+
+
+def validate_source_extension_link_input_files(
+    requirements: SourceExtensionLinkRequirements,
+) -> None:
+    """Validate each distinct local file once, including repeated-operand claims."""
+    digests: dict[Path, str] = {}
+    for item in requirements.inputs:
+        path = Path(item.path)
+        if not path.is_absolute():
+            raise ValueError(f"local link input must be absolute: {item.path}")
+        resolved = path.resolve(strict=True)
+        if resolved not in digests:
+            digests[resolved] = _sha256_file(resolved)
+        if digests[resolved] != item.sha256:
+            raise ValueError(f"link requirement checksum mismatch for {item.path}")
+
+
+def read_source_extension_link_plan(
+    path: Path,
+    *,
+    expected_target_triple: str,
+) -> SourceExtensionLinkRequirements:
+    """Read a local final-link projection with the publication authority's codec."""
+    payload = read_exact(
+        path, max_bytes=16 * 1024 * 1024, label="source-extension link plan"
+    )
+    if not isinstance(payload, Mapping) or set(payload) != {"link_requirements"}:
+        raise ValueError("local link plan requires exactly link_requirements")
+    requirements, errors = parse_source_extension_link_requirements(
+        payload,
+        expected_target_triple=expected_target_triple,
+        package_relative=False,
+    )
+    if requirements is None:
+        raise ValueError("invalid local link plan: " + "; ".join(errors))
+    return requirements
 
 
 def _is_static_input_path(path: str) -> bool:
@@ -540,6 +617,7 @@ def _parse_atom(
     location: str,
     dialect: SourceExtensionLinkDialect,
     errors: list[str],
+    package_relative: bool,
 ) -> SourceExtensionLinkAtom | None:
     if not isinstance(raw, Mapping):
         errors.append(f"{location} must be an object")
@@ -588,7 +666,13 @@ def _parse_atom(
         errors.append(f"{location}.kind must be provider or input")
         return None
     try:
-        _validate_item(item, dialect=dialect, package_relative=True)
+        _validate_item(item, dialect=dialect, package_relative=package_relative)
+        if (
+            not package_relative
+            and isinstance(item, SourceExtensionLinkInput)
+            and not Path(item.path).is_absolute()
+        ):
+            raise ValueError("local link input must be absolute")
     except ValueError as exc:
         errors.append(f"{location}: {exc}")
         return None
@@ -599,6 +683,7 @@ def parse_source_extension_link_requirements(
     manifest: Mapping[str, Any],
     *,
     expected_target_triple: str,
+    package_relative: bool = True,
 ) -> tuple[SourceExtensionLinkRequirements | None, list[str]]:
     raw = manifest.get("link_requirements")
     if raw is None:
@@ -666,6 +751,7 @@ def parse_source_extension_link_requirements(
                         location=f"{location}.members[{member_index}]",
                         dialect=dialect,
                         errors=errors,
+                        package_relative=package_relative,
                     )
                 )
                 is not None
@@ -673,7 +759,9 @@ def parse_source_extension_link_requirements(
             if len(members) == len(raw_members):
                 group = SourceExtensionLinkCyclicGroup(members)
                 try:
-                    _validate_item(group, dialect=dialect, package_relative=True)
+                    _validate_item(
+                        group, dialect=dialect, package_relative=package_relative
+                    )
                 except ValueError as exc:
                     errors.append(f"{location}: {exc}")
                 else:
@@ -684,6 +772,7 @@ def parse_source_extension_link_requirements(
             location=location,
             dialect=dialect,
             errors=errors,
+            package_relative=package_relative,
         )
         if item is not None:
             items.append(item)
@@ -729,7 +818,7 @@ def _resolved_link_input(
     return selected, None
 
 
-def _map_link_inputs(
+def map_source_extension_link_inputs(
     requirements: SourceExtensionLinkRequirements,
     mapper: Callable[[SourceExtensionLinkInput], SourceExtensionLinkInput],
 ) -> SourceExtensionLinkRequirements:
@@ -782,7 +871,7 @@ def resolve_source_extension_link_requirements(
         )
     if errors:
         return None, errors
-    return _map_link_inputs(requirements, resolved.__getitem__), []
+    return map_source_extension_link_inputs(requirements, resolved.__getitem__), []
 
 
 def resolve_source_extension_link_arguments(
@@ -812,7 +901,7 @@ def relocate_source_extension_link_inputs(
         raise ValueError(
             "missing relocated source-extension link inputs: " + ", ".join(missing)
         )
-    return _map_link_inputs(
+    return map_source_extension_link_inputs(
         requirements,
         lambda item: SourceExtensionLinkInput(
             str(relocated_paths[item.path]),
@@ -850,4 +939,4 @@ def materialize_source_extension_link_requirements(
         )
     if errors:
         return None, errors
-    return _map_link_inputs(requirements, published.__getitem__), []
+    return map_source_extension_link_inputs(requirements, published.__getitem__), []

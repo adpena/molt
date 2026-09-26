@@ -7736,12 +7736,38 @@ def test_extension_build_rejects_lazy_fold_with_typed_external_provider_before_c
     assert not (out_dir / "extension_manifest.json").exists()
 
 
-def test_meson_force_member_target_gate_rejects_lazy_elf_publication(
+@pytest.mark.parametrize(
+    ("target", "whole_archive"),
+    [
+        (
+            "x86_64-unknown-linux-gnu",
+            ("-Wl,--whole-archive", "{}", "-Wl,--no-whole-archive"),
+        ),
+        ("x86_64-pc-windows-msvc", ("/WHOLEARCHIVE:{}",)),
+        ("aarch64-apple-darwin", ("-Wl,-force_load,{}",)),
+        ("wasm32-wasip1", ("-Wl,--whole-archive", "{}", "-Wl,--no-whole-archive")),
+    ],
+)
+def test_meson_force_members_are_supported_by_eager_primary_publication(
     tmp_path: Path,
+    target: str,
+    whole_archive: tuple[str, ...],
 ) -> None:
     project_root = tmp_path / "meson_elf"
     project_root.mkdir()
-    intro_path = _adversarial_rooted_meson_plan(project_root, "whole-archive")
+    intro_path = _adversarial_rooted_meson_plan(project_root, "lazy")
+    targets = json.loads(intro_path.read_text(encoding="utf-8"))
+    targets[0]["linker_parameters"] = [
+        operand.format(archive)
+        for archive in targets[0]["linker_parameters"]
+        for operand in whole_archive
+    ]
+    intro_path.write_text(json.dumps(targets), encoding="utf-8")
+    database = project_root / "build" / "compile_commands.json"
+    commands = json.loads(database.read_text(encoding="utf-8"))
+    for command in commands:
+        command["arguments"].insert(1, f"--target={target}")
+    database.write_text(json.dumps(commands), encoding="utf-8")
     plan, errors = (
         cli_source_extensions._load_meson_intro_targets_source_extension_plan(
             plan_path=intro_path,
@@ -7757,10 +7783,6 @@ def test_meson_force_member_target_gate_rejects_lazy_elf_publication(
     assert any(unit.force_include for unit in plan.compile_units)
     errors = cli_source_extensions._validate_source_extension_build_plan_target(
         plan,
-        target_triple="x86_64-unknown-linux-gnu",
+        target_triple=target,
     )
-    assert any("ELF forced source members require" in error for error in errors)
-    assert not cli_source_extensions._validate_source_extension_build_plan_target(
-        plan,
-        target_triple="x86_64-pc-windows-msvc",
-    )
+    assert not errors

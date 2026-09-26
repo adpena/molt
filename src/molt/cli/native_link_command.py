@@ -35,7 +35,6 @@ from molt.cli.native_link_plan import (
     _host_target_triple,
     native_link_capabilities,
     native_artifact_link_arguments,
-    whole_archive_link_arguments,
     native_link_policy_flags,
     native_linker_name_from_driver_command,
     native_link_policy,
@@ -43,14 +42,15 @@ from molt.cli.native_link_plan import (
 )
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
+    merge_source_extension_link_requirements,
     render_source_extension_link_arguments,
+    validate_source_extension_link_input_files,
 )
 from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
     _detect_macos_arch,
     _detect_macos_deployment_target,
 )
-from molt.cli.source_extension_target import source_extension_link_dialect
 
 
 _CPYTHON_SINGLETON_CANONICAL_ALIASES = (
@@ -262,7 +262,6 @@ def _build_native_link_plan(
     output_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
     stdlib_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
     stdlib_obj_path: Path | None = None,
-    external_static_archives: Sequence[Path] = (),
     external_link_requirements: Sequence[SourceExtensionLinkRequirements] = (),
     bolt_requested: bool = False,
     host_platform: str | None = None,
@@ -297,30 +296,18 @@ def _build_native_link_plan(
                 stdlib_obj_path, kind=stdlib_kind, target=target
             )
         )
-    target_dialect = source_extension_link_dialect(
-        target_triple,
-        host_platform=host_platform,
-        host_arch=host_arch,
-    )
-    external_link_arguments: tuple[str, ...] = ()
     effective_target_triple = target.triple or _host_target_triple(
         host_platform=host_platform, host_arch=host_arch
     )
-    for requirements in external_link_requirements:
-        if requirements.target_triple != effective_target_triple:
-            raise RuntimeError(
-                "External source-extension link requirements cross target triples: "
-                f"{requirements.target_triple} != {effective_target_triple}"
-            )
-        if (
-            source_extension_link_dialect(requirements.target_triple)
-            is not target_dialect
-        ):
-            raise RuntimeError(
-                "External source-extension link requirements cross target dialects: "
-                f"{requirements.target_triple} is not {target_dialect.value}"
-            )
-        external_link_arguments += render_source_extension_link_arguments(requirements)
+    try:
+        external_inputs = merge_source_extension_link_requirements(
+            external_link_requirements, target_triple=effective_target_triple
+        )
+        validate_source_extension_link_input_files(external_inputs)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    external_link_arguments = render_source_extension_link_arguments(external_inputs)
+    has_external_inputs = bool(external_inputs.inputs)
     selected_linker_name = native_linker_name_from_driver_command(
         link_cmd,
         hinted=linker_hint,
@@ -353,21 +340,14 @@ def _build_native_link_plan(
         keep_symbols=os.environ.get("MOLT_KEEP_SYMBOLS") == "1",
         bolt_requested=bolt_requested,
     )
-    try:
-        resolved_external_archives = tuple(
-            archive.resolve(strict=True) for archive in external_static_archives
-        )
-    except OSError as exc:
-        raise RuntimeError(f"External static archive is unavailable: {exc}") from exc
     runtime_lib_str = str(runtime_lib)
     if target.object_format is NativeObjectFormat.ELF:
         link_inputs.extend(
             [
                 "-Wl,--start-group",
-                *[str(archive) for archive in resolved_external_archives],
+                *external_link_arguments,
                 runtime_lib_str,
                 "-Wl,--end-group",
-                *external_link_arguments,
                 "-o",
                 str(output_binary),
             ]
@@ -375,15 +355,8 @@ def _build_native_link_plan(
     elif target.object_format is NativeObjectFormat.COFF:
         link_inputs.extend(
             [
-                *[
-                    argument
-                    for archive in resolved_external_archives
-                    for argument in whole_archive_link_arguments(
-                        str(archive), dialect=target.link_dialect
-                    )
-                ],
-                runtime_lib_str,
                 *external_link_arguments,
+                runtime_lib_str,
                 "-o",
                 str(output_binary),
             ]
@@ -394,16 +367,9 @@ def _build_native_link_plan(
         # archive graph or a measured -force_load policy replaces it.
         link_inputs.extend(
             [
-                *[
-                    argument
-                    for archive in resolved_external_archives
-                    for argument in whole_archive_link_arguments(
-                        str(archive), dialect=target.link_dialect
-                    )
-                ],
-                runtime_lib_str,
-                runtime_lib_str,
                 *external_link_arguments,
+                runtime_lib_str,
+                runtime_lib_str,
                 "-o",
                 str(output_binary),
             ]
@@ -413,7 +379,7 @@ def _build_native_link_plan(
     if target.object_format is NativeObjectFormat.MACHO:
         exported_symbols_path = output_binary.parent / ".molt_exports.exp"
         exported_symbols = ["_main"]
-        if resolved_external_archives:
+        if has_external_inputs:
             for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES:
                 link_cmd.append(f"-Wl,-alias,_{storage},_{canonical}")
         _atomic_write_text(exported_symbols_path, "\n".join(exported_symbols) + "\n")
@@ -427,7 +393,7 @@ def _build_native_link_plan(
             link_cmd.append("-Wl,--emit-relocs")
         version_script_path = output_binary.parent / ".molt_version.ver"
         globals = "main;"
-        if resolved_external_archives:
+        if has_external_inputs:
             singleton_globals = " ".join(
                 f"{canonical}; {storage};"
                 for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES
@@ -442,7 +408,7 @@ def _build_native_link_plan(
         link_cmd.append("-lstdc++")
         link_cmd.append("-lm")
     elif target.object_format is NativeObjectFormat.COFF:
-        if resolved_external_archives:
+        if has_external_inputs:
             def_path = output_binary.parent / ".molt_exports.def"
             exports = "\n".join(
                 (
