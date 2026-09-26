@@ -302,11 +302,6 @@ __all__ = [
     "EncodingWarning",
 ]
 
-try:
-    open.__module__ = "_io"
-except Exception:
-    pass
-
 # CPython exposes these through site; Molt supplies its native site helpers.
 import _sitebuiltins as _sitebuiltins  # noqa: PLC0415,E402
 

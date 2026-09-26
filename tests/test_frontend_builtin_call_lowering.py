@@ -1799,11 +1799,18 @@ def test_frontend_intrinsic_function_objects_carry_manifest_defaults() -> None:
     )
 
 
-def test_python_builtin_func_serializes_metadata_name_operand() -> None:
+@pytest.mark.parametrize(
+    ("name", "runtime_name"), [("open", "molt_open_builtin"), ("len", "molt_len")]
+)
+def test_python_builtin_func_serializes_metadata_name_operand(
+    name: str, runtime_name: str
+) -> None:
+    import builtins
+
     gen = SimpleTIRGenerator(module_name="open_builtin_metadata_probe")
     # Test explicit wrapper publication, not a Python reference: source-level
     # open must capture the actual namespace binding before its arguments.
-    gen._emit_builtin_function("open")
+    gen._emit_builtin_function(name)
     gen._emit_function_exception_handler()
     main_ops = next(
         func["ops"]
@@ -1817,16 +1824,26 @@ def test_python_builtin_func_serializes_metadata_name_operand() -> None:
         and isinstance(op.get("out"), str)
         and isinstance(op.get("s_value"), str)
     }
-    open_ops = [
+    builtin_ops = [
         op
         for op in main_ops
-        if op.get("kind") == "builtin_func" and op.get("s_value") == "molt_open_builtin"
+        if op.get("kind") == "builtin_func" and op.get("builtin_name") == name
     ]
-    assert open_ops
-    open_op = open_ops[0]
-    assert open_op.get("builtin_name") == "open"
-    assert len(open_op.get("args") or []) == 1
-    assert const_str[open_op["args"][0]] == "open"
+    assert len(builtin_ops) == 1
+    builtin = builtin_ops[0]
+    assert builtin["s_value"] == runtime_name
+    assert len(builtin.get("args") or []) == 1
+    assert const_str[builtin["args"][0]] == name
+    metadata = next(
+        op
+        for op in main_ops
+        if op.get("kind") == "call"
+        and op.get("s_value") == "molt_function_init_metadata_packed"
+        and op["args"][0] == builtin["out"]
+    )
+    packed = next(op for op in main_ops if op.get("out") == metadata["args"][1])
+    assert packed["kind"] == "tuple_new"
+    assert const_str[packed["args"][2]] == getattr(builtins, name).__module__
 
 
 def test_non_phi_or_with_call_avoids_list_cell_result_plumbing() -> None:

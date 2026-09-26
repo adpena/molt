@@ -93,6 +93,7 @@ pub(crate) enum GeneratedBuiltinDefaultValue {
 pub(crate) struct PythonBuiltinFunctionInfo {
     pub(crate) index: usize,
     pub(crate) python_name: &'static str,
+    pub(crate) python_module: &'static str,
     pub(crate) runtime_name: &'static str,
     pub(crate) arity: u64,
     pub(crate) posonly_params: &'static [&'static str],
@@ -503,6 +504,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 43,
             python_name: "__import__",
+            python_module: "builtins",
             runtime_name: "molt_importlib_import_transaction",
             arity: 5,
             posonly_params: &[],
@@ -517,6 +519,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 6,
             python_name: "abs",
+            python_module: "builtins",
             runtime_name: "molt_abs_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -531,6 +534,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 32,
             python_name: "aiter",
+            python_module: "builtins",
             runtime_name: "molt_aiter",
             arity: 1,
             posonly_params: &["obj"],
@@ -545,6 +549,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 24,
             python_name: "all",
+            python_module: "builtins",
             runtime_name: "molt_all_builtin",
             arity: 1,
             posonly_params: &["iterable"],
@@ -559,6 +564,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 33,
             python_name: "anext",
+            python_module: "builtins",
             runtime_name: "molt_anext_builtin",
             arity: 2,
             posonly_params: &["aiter", "default"],
@@ -573,6 +579,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 23,
             python_name: "any",
+            python_module: "builtins",
             runtime_name: "molt_any_builtin",
             arity: 1,
             posonly_params: &["iterable"],
@@ -587,6 +594,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 7,
             python_name: "ascii",
+            python_module: "builtins",
             runtime_name: "molt_ascii_from_obj",
             arity: 1,
             posonly_params: &["obj"],
@@ -601,6 +609,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 8,
             python_name: "bin",
+            python_module: "builtins",
             runtime_name: "molt_bin_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -615,6 +624,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 14,
             python_name: "callable",
+            python_module: "builtins",
             runtime_name: "molt_callable_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -629,6 +639,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 5,
             python_name: "chr",
+            python_module: "builtins",
             runtime_name: "molt_chr",
             arity: 1,
             posonly_params: &["obj"],
@@ -643,6 +654,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 38,
             python_name: "compile",
+            python_module: "builtins",
             runtime_name: "molt_compile_builtin",
             arity: 6,
             posonly_params: &["source", "filename", "mode", "flags", "dont_inherit", "optimize"],
@@ -657,6 +669,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 36,
             python_name: "delattr",
+            python_module: "builtins",
             runtime_name: "molt_del_attr_name",
             arity: 2,
             posonly_params: &["obj", "name"],
@@ -671,6 +684,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 29,
             python_name: "dir",
+            python_module: "builtins",
             runtime_name: "molt_dir_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -685,6 +699,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 11,
             python_name: "divmod",
+            python_module: "builtins",
             runtime_name: "molt_divmod_builtin",
             arity: 2,
             posonly_params: &["a", "b"],
@@ -699,6 +714,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 16,
             python_name: "enumerate",
+            python_module: "builtins",
             runtime_name: "molt_enumerate_builtin",
             arity: 2,
             posonly_params: &["iterable", "start"],
@@ -713,6 +729,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 20,
             python_name: "filter",
+            python_module: "builtins",
             runtime_name: "molt_filter_builtin",
             arity: 2,
             posonly_params: &["func", "iterable"],
@@ -727,6 +744,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 13,
             python_name: "format",
+            python_module: "builtins",
             runtime_name: "molt_format_builtin",
             arity: 2,
             posonly_params: &["value"],
@@ -741,6 +759,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 34,
             python_name: "getattr",
+            python_module: "builtins",
             runtime_name: "molt_getattr_builtin",
             arity: 3,
             posonly_params: &["obj", "name", "default"],
@@ -755,6 +774,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 41,
             python_name: "globals",
+            python_module: "builtins",
             runtime_name: "molt_globals_builtin",
             arity: 0,
             posonly_params: &[],
@@ -769,6 +789,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 37,
             python_name: "hasattr",
+            python_module: "builtins",
             runtime_name: "molt_has_attr_name",
             arity: 2,
             posonly_params: &["obj", "name"],
@@ -783,6 +804,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 3,
             python_name: "hash",
+            python_module: "builtins",
             runtime_name: "molt_hash_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -797,6 +819,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 10,
             python_name: "hex",
+            python_module: "builtins",
             runtime_name: "molt_hex_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -811,6 +834,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 15,
             python_name: "id",
+            python_module: "builtins",
             runtime_name: "molt_id",
             arity: 1,
             posonly_params: &["obj"],
@@ -825,6 +849,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 0,
             python_name: "isinstance",
+            python_module: "builtins",
             runtime_name: "molt_isinstance",
             arity: 2,
             posonly_params: &["obj", "classinfo"],
@@ -839,6 +864,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 1,
             python_name: "issubclass",
+            python_module: "builtins",
             runtime_name: "molt_issubclass",
             arity: 2,
             posonly_params: &["sub", "classinfo"],
@@ -853,6 +879,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 18,
             python_name: "iter",
+            python_module: "builtins",
             runtime_name: "molt_iter_checked",
             arity: 1,
             posonly_params: &["obj"],
@@ -867,6 +894,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 2,
             python_name: "len",
+            python_module: "builtins",
             runtime_name: "molt_len",
             arity: 1,
             posonly_params: &["obj"],
@@ -881,6 +909,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 42,
             python_name: "locals",
+            python_module: "builtins",
             runtime_name: "molt_locals_builtin",
             arity: 0,
             posonly_params: &[],
@@ -895,6 +924,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 19,
             python_name: "map",
+            python_module: "builtins",
             runtime_name: "molt_map_builtin",
             arity: 2,
             posonly_params: &["func"],
@@ -909,6 +939,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 27,
             python_name: "max",
+            python_module: "builtins",
             runtime_name: "molt_max_builtin",
             arity: 3,
             posonly_params: &[],
@@ -923,6 +954,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 26,
             python_name: "min",
+            python_module: "builtins",
             runtime_name: "molt_min_builtin",
             arity: 3,
             posonly_params: &[],
@@ -937,6 +969,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 31,
             python_name: "next",
+            python_module: "builtins",
             runtime_name: "molt_next_builtin",
             arity: 2,
             posonly_params: &["iterator", "default"],
@@ -951,6 +984,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 9,
             python_name: "oct",
+            python_module: "builtins",
             runtime_name: "molt_oct_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -965,6 +999,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 30,
             python_name: "open",
+            python_module: "_io",
             runtime_name: "molt_open_builtin",
             arity: 8,
             posonly_params: &[],
@@ -979,6 +1014,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 4,
             python_name: "ord",
+            python_module: "builtins",
             runtime_name: "molt_ord",
             arity: 1,
             posonly_params: &["obj"],
@@ -993,6 +1029,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 39,
             python_name: "print",
+            python_module: "builtins",
             runtime_name: "molt_print_builtin",
             arity: 5,
             posonly_params: &[],
@@ -1007,6 +1044,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 12,
             python_name: "repr",
+            python_module: "builtins",
             runtime_name: "molt_repr_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -1021,6 +1059,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 22,
             python_name: "reversed",
+            python_module: "builtins",
             runtime_name: "molt_reversed_builtin",
             arity: 1,
             posonly_params: &["seq"],
@@ -1035,6 +1074,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 17,
             python_name: "round",
+            python_module: "builtins",
             runtime_name: "molt_round_builtin",
             arity: 2,
             posonly_params: &[],
@@ -1049,6 +1089,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 35,
             python_name: "setattr",
+            python_module: "builtins",
             runtime_name: "molt_set_attr_name",
             arity: 3,
             posonly_params: &["obj", "name", "value"],
@@ -1063,6 +1104,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 28,
             python_name: "sorted",
+            python_module: "builtins",
             runtime_name: "molt_sorted_builtin",
             arity: 3,
             posonly_params: &["iterable", "key", "reverse"],
@@ -1077,6 +1119,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 25,
             python_name: "sum",
+            python_module: "builtins",
             runtime_name: "molt_sum_builtin",
             arity: 2,
             posonly_params: &["iterable"],
@@ -1091,6 +1134,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 40,
             python_name: "vars",
+            python_module: "builtins",
             runtime_name: "molt_vars_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -1105,6 +1149,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             index: 21,
             python_name: "zip",
+            python_module: "builtins",
             runtime_name: "molt_zip_builtin",
             arity: 2,
             posonly_params: &[],

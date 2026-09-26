@@ -3534,7 +3534,13 @@ mod tests {
             assert!(!module_ptr.is_null());
             let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
-            for builtin_name in ["globals", "locals", "vars", "__import__"] {
+            for (builtin_name, expected_module) in [
+                ("globals", "builtins"),
+                ("locals", "builtins"),
+                ("vars", "builtins"),
+                ("__import__", "builtins"),
+                ("open", "_io"),
+            ] {
                 let name_ptr = alloc_string(_py, builtin_name.as_bytes());
                 assert!(!name_ptr.is_null());
                 let name_bits = MoltObject::from_ptr(name_ptr).bits();
@@ -3561,6 +3567,19 @@ mod tests {
                     builtin_bits_again, builtin_bits,
                     "lazy builtin lookup must cache {builtin_name}"
                 );
+
+                // Identity must be complete before any compiled facade runs;
+                // bootstrap must never acquire an optional provider to patch it.
+                let module_attr_bits = attr_name_bits_from_bytes(_py, b"__module__").unwrap();
+                let module_value =
+                    unsafe { crate::function_attr_bits(_py, builtin_ptr, module_attr_bits) }
+                        .expect("generated builtin must publish its defining module");
+                assert_eq!(
+                    string_obj_to_owned(obj_from_bits(module_value)).as_deref(),
+                    Some(expected_module),
+                    "{builtin_name}"
+                );
+                dec_ref_bits(_py, module_attr_bits);
 
                 if builtin_name == "__import__" {
                     let defaults_attr_bits =

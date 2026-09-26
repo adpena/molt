@@ -17,7 +17,6 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
     GEN_CONTROL_SIZE,
-    MOLT_BIND_KIND_OPEN,
     MoltOp,
     MoltValue,
     _builtin_func_abi_arity,
@@ -629,8 +628,8 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             default_exprs=list(spec.defaults),
             kw_default_exprs=list(spec.kw_defaults),
             docstring=None,
-            bind_kind=MOLT_BIND_KIND_OPEN if func_id == "open" else None,
-            module_override="builtins",
+            bind_kind=spec.bind_kind,
+            module_override=spec.module,
             freevars=(),
             cellvars=(),
         )

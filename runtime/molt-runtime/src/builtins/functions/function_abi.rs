@@ -578,7 +578,7 @@ fn alloc_python_builtin_metadata_tuple_bits(
 
     let name_bits = alloc_owned_static_str_bits(_py, info.python_name, &mut owned)?;
     let qualname_bits = alloc_owned_static_str_bits(_py, info.python_name, &mut owned)?;
-    let module_bits = alloc_owned_static_str_bits(_py, "builtins", &mut owned)?;
+    let module_bits = alloc_owned_static_str_bits(_py, info.python_module, &mut owned)?;
     let arg_names_bits = alloc_static_str_tuple_bits(
         _py,
         info.posonly_params
