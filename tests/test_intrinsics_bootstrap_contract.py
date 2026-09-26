@@ -65,6 +65,57 @@ def _load_stdlib_intrinsics(module_name: str) -> types.ModuleType:
     return _load_intrinsics(STDLIB_INTRINSICS_PATH, module_name)
 
 
+def test_builtins_facade_only_acquires_its_wrapper_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = _load_stdlib_intrinsics("_molt_test_facade_intrinsics")
+    marked = []
+    registry = {
+        "molt_pow": builtins.pow,
+        "molt_pow_mod": builtins.pow,
+        "molt_function_set_builtin": marked.append,
+    }
+    monkeypatch.setattr(builtins, "_molt_intrinsics", registry, raising=False)
+    monkeypatch.setattr(builtins, "_molt_runtime", True, raising=False)
+    monkeypatch.setitem(sys.modules, "_intrinsics", loader)
+    # Site helpers are a separate runtime-owned surface, outside this bootstrap
+    # dependency contract. Use CPython's published values for the facade inputs.
+    site_names = ("help", "credits", "copyright", "license", "quit", "exit")
+    monkeypatch.setitem(
+        sys.modules,
+        "_sitebuiltins",
+        types.SimpleNamespace(**{name: getattr(builtins, name) for name in site_names}),
+    )
+    path = STDLIB_INTRINSICS_PATH.parent / "builtins.py"
+    namespace = dict(vars(builtins))
+    exec(compile(path.read_text(), str(path), "exec"), namespace)
+    assert {fn.__name__ for fn in marked} == {
+        "compile",
+        "input",
+        "breakpoint",
+        "eval",
+        "exec",
+        "pow",
+    }
+    assert namespace["pow"](2, 5) == builtins.pow(2, 5)
+    assert namespace["pow"](2, 5, 7) == builtins.pow(2, 5, 7)
+    assert "_molt_asyncgen_hooks_get" not in namespace
+
+
+@pytest.mark.parametrize("path", [ROOT_INTRINSICS_PATH, STDLIB_INTRINSICS_PATH])
+@pytest.mark.parametrize("attribute", ["molt_probe", "_molt_probe"])
+def test_intrinsic_registry_miss_cannot_be_bypassed_by_builtin_attributes(
+    monkeypatch: pytest.MonkeyPatch, path: Path, attribute: str
+) -> None:
+    loader = _load_intrinsics(path, "_molt_test_intrinsics_attribute_denial")
+    monkeypatch.setattr(builtins, "_molt_intrinsics", {}, raising=False)
+    monkeypatch.setattr(builtins, "_molt_runtime", True, raising=False)
+    monkeypatch.setattr(builtins, attribute, lambda: "not admitted", raising=False)
+    with pytest.raises(RuntimeError, match="intrinsic unavailable: molt_probe"):
+        loader.require_intrinsic("molt_probe")
+    assert loader.load_intrinsic("molt_probe") is None
+
+
 @pytest.fixture(autouse=True)
 def _clear_runtime_intrinsics(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delattr(builtins, "_molt_intrinsic_lookup", raising=False)

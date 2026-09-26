@@ -1960,7 +1960,10 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
         if (
             python_name.startswith("_") and python_name != "__import__"
         ) or python_name.startswith("molt_"):
-            continue
+            raise ValueError(
+                f"private runtime spelling {python_name!r} is not a Python builtin; "
+                "bind intrinsics through the runtime resolver"
+            )
         arity = _builtin_func_abi_arity(spec)
         import_entry = callable_imports.get(spec.runtime)
         if import_entry is None:

@@ -14,6 +14,9 @@ checklist for new or modified stdlib shims.
   require an active runtime helper/registry; an arbitrary namespace callable
   alone is not authority. `tests/test_intrinsics_bootstrap_contract.py` covers
   wrapper resolution and activation.
+- A missing intrinsic cannot be supplied by an ordinary `builtins` attribute,
+  whether named `molt_*` or `_molt_*`. Alias normalization belongs to the
+  runtime registry; a callable with that spelling is not admission evidence.
 - Do not create alternative registries, hidden loaders, or import-time side
   effects that bypass the canonical loader.
 
@@ -32,7 +35,8 @@ provider is excluded. Actual calls, builtin materialization, global builtin
 lookup and operation requirements still fail early for unsupported profiles.
 
 Mutable global lookup remains a runtime lookup. Its possible builtin target
-comes from `BUILTIN_FUNC_SPECS` in `src/molt/frontend/_types.py`, projected by
+comes from the public Python-only `BUILTIN_FUNC_SPECS` in
+`src/molt/frontend/_types.py`, projected by
 `tools/gen_wasm_abi.py` into the shared `molt-ir` builtin table and runtime
 materialization metadata. This includes `globals`, `locals`, `vars`, and
 `__import__`, with their Python defaults and verified callable ABI. A proven
@@ -62,6 +66,11 @@ Its remaining intrinsic operations call the canonical `require_intrinsic`
 directly with the executing namespace. There is no builtin-local forwarding
 loader: the same literal operation evidence feeds build enforcement and stdlib
 audits, without bootstrap marker calls or a module-name exemption.
+The facade acquires only intrinsics actually used by its wrappers. It does not
+eagerly populate a private helper bank: importing `builtins` must not require
+unrelated capabilities, and retired helper spellings are ordinary Python names,
+not frontend-created builtins. Stdlib consumers bind their own dependencies
+through the runtime resolver and canonical intrinsic signatures.
 
 Only the current ModuleTable initializer before its first publication can seed
 the namespace. A standalone same-named module or a repeated cache publication
