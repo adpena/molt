@@ -32,7 +32,7 @@ from molt.cli.native_link_plan import (
 )
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
-from molt.cli.runtime_fingerprints import _write_runtime_fingerprint
+from molt.cli import link_fingerprints
 
 
 def _build_cache_info(
@@ -341,24 +341,6 @@ def _finalize_native_link_candidate(
     return None
 
 
-def _write_link_fingerprint_if_needed(
-    *,
-    link_skipped: bool,
-    link_fingerprint: dict[str, Any] | None,
-    link_fingerprint_path: Path,
-    json_output: bool,
-) -> str | None:
-    del json_output
-    if link_skipped or link_fingerprint is None:
-        return None
-    try:
-        link_fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_runtime_fingerprint(link_fingerprint_path, link_fingerprint)
-    except OSError as exc:
-        return f"failed to write link fingerprint metadata: {exc}"
-    return None
-
-
 def _emit_native_link_result(
     *,
     link_process: subprocess.CompletedProcess[str],
@@ -469,11 +451,11 @@ def _emit_native_link_result(
                 verbosity=resolved_diagnostics_verbosity,
             )
             return 1
-        link_fingerprint_warning = _write_link_fingerprint_if_needed(
+        link_fingerprint_warning = link_fingerprints._write_link_fingerprint_if_needed(
             link_skipped=link_skipped,
             link_fingerprint=link_fingerprint,
             link_fingerprint_path=link_fingerprint_path,
-            json_output=json_output,
+            outputs={"binary": output_binary},
         )
         if link_fingerprint_warning is not None:
             warnings.append(link_fingerprint_warning)

@@ -1414,7 +1414,24 @@ def _prepare_host_precompile_routing(
     manifest_path = tmp_path / "manifest.json"
     native_path = tmp_path / "output_linked.molt.cwasm"
     host_binary = str(tmp_path / "molt-wasm-host")
-    fingerprint = {"fixture": "unchanged linked artifact"}
+    fingerprint = {
+        "hash": "a" * 64,
+        "rustc": None,
+        "inputs_digest": None,
+        "meta_digest": None,
+    }
+    stored_receipt = {
+        "schema": "molt.final-link.v1",
+        "fingerprint": {"version": 3, **fingerprint},
+        "outputs": {
+            "linked": {
+                "path": str(linked_output.resolve()),
+                "identity": nno.link_fingerprints.artifact_content_identity(
+                    linked_output
+                ),
+            }
+        },
+    }
 
     def ensure_pair(required_exports=None) -> bool:  # noqa: ANN001
         assert required_exports == {"anchor"}
@@ -1433,14 +1450,17 @@ def _prepare_host_precompile_routing(
         assert command[command.index("--runtime-expected-identity") + 1] == str(
             expected_identity
         )
-        assert kwargs["stored_fingerprint"] == fingerprint
+        assert kwargs["stored_fingerprint"] == stored_receipt["fingerprint"]
         return fingerprint
 
-    def reusable(path, current, stored):  # type: ignore[no-untyped-def]
-        assert path == linked_output and path.is_file()
-        assert current == stored == fingerprint
+    def reusable(*, outputs, fingerprint, stored_fingerprint):  # type: ignore[no-untyped-def]
+        assert outputs == {"linked": linked_output} and linked_output.is_file()
+        assert fingerprint == fingerprint_key
+        assert stored_fingerprint == stored_receipt
         events.append("link-reuse")
-        return False
+        return True
+
+    fingerprint_key = fingerprint
 
     real_app_exports = nno._app_export_manifest
 
@@ -1522,14 +1542,16 @@ def _prepare_host_precompile_routing(
             source_bytes=0,
         ),
     )
-    monkeypatch.setattr(nno, "_read_runtime_fingerprint", lambda _path: fingerprint)
     monkeypatch.setattr(
-        nno._link_pipeline,
+        nno.link_fingerprints, "_read_link_fingerprint", lambda _path: stored_receipt
+    )
+    monkeypatch.setattr(
+        nno.link_fingerprints,
         "_link_fingerprint_path",
         lambda *_args: tmp_path / "link-fingerprint.json",
     )
-    monkeypatch.setattr(nno._link_pipeline, "_link_fingerprint", link_fingerprint)
-    monkeypatch.setattr(nno, "_artifact_needs_rebuild", reusable)
+    monkeypatch.setattr(nno.link_fingerprints, "_link_fingerprint", link_fingerprint)
+    monkeypatch.setattr(nno.link_fingerprints, "_link_outputs_match", reusable)
     monkeypatch.setattr(
         nno, "_wasm_export_function_signatures", lambda *_args, **_kwargs: {}
     )

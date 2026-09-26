@@ -139,16 +139,14 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
         captured_link_cmd[:] = link_cmd
         return subprocess.CompletedProcess(link_cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
     monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
+        cli_link_pipeline.link_fingerprints, "_read_link_fingerprint", lambda path: None
     )
     monkeypatch.setattr(
         cli_link_pipeline, "_run_native_link_command", fake_run_native_link_command
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
-        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -222,16 +220,14 @@ def test_prepare_native_link_snapshots_same_root_stdlib_input(
         captured_link_cmd[:] = link_cmd
         return subprocess.CompletedProcess(link_cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
     monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
+        cli_link_pipeline.link_fingerprints, "_read_link_fingerprint", lambda path: None
     )
     monkeypatch.setattr(
         cli_link_pipeline, "_run_native_link_command", fake_run_native_link_command
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
-        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,

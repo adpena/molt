@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from wasm_link_format import CallableTableLayout
 from molt.dx import proof_scratch_root
+from molt.link_outputs import wasm_link_output_paths
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkInput,
     SourceExtensionLinkRequirements,
@@ -63,6 +64,19 @@ def run_wasm_ld_with_custodied_inputs(
         native_link_requirements or SourceExtensionLinkRequirements(expected_target)
     )
     try:
+        link_outputs = wasm_link_output_paths(
+            linked,
+            split_output_dir=(split_output_dir or linked.parent)
+            if split_runtime
+            else None,
+            inputs=(
+                runtime,
+                output,
+                *((deploy_runtime_override,) if deploy_runtime_override else ()),
+                *(Path(item.path) for item in native_link_requirements.inputs),
+                *((app_export_contract_path,) if app_export_contract_path else ()),
+            ),
+        )
         if native_link_requirements.target_triple != expected_target:
             raise ValueError(
                 "native WASM link requirements target mismatch: "
@@ -827,14 +841,14 @@ def run_wasm_ld_with_custodied_inputs(
         # -- Split-runtime: emit app.wasm + molt_runtime.wasm ---------------
         split_runtime_start = time.perf_counter()
         if split_runtime:
-            out_dir = split_output_dir or linked.parent
+            out_dir = link_outputs["app"].parent
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            app_wasm = out_dir / "app.wasm"
-            rt_wasm = out_dir / "molt_runtime.wasm"
+            app_wasm = link_outputs["app"]
+            rt_wasm = link_outputs["runtime"]
             app_stage = api["artifact_publish"].staged_output_path(app_wasm)
             rt_stage = api["artifact_publish"].staged_output_path(rt_wasm)
-            size_attestation_path = out_dir / "wasm_size_attestation.json"
+            size_attestation_path = link_outputs["size_attestation"]
             size_attestation_stage = api["artifact_publish"].staged_output_path(
                 size_attestation_path
             )

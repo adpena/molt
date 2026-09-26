@@ -275,7 +275,6 @@ def _emit_backend_pipeline_outputs(
     prepared_native_link, prepared_native_link_error = (
         _link_pipeline._prepare_native_link(
             output_artifact=output_layout.output_artifact,
-            backend_bin=prepared_backend_runtime_context.backend_bin,
             resolved_capability_policy=prepared_build_config.resolved_capability_policy,
             artifacts_root=artifacts_root,
             json_output=json_output,

@@ -40,6 +40,48 @@ wasm_link = _load_wasm_link()
 _REAL_MAKE_RUST_WASM_FACTS_PROVIDER = wasm_link._make_rust_wasm_facts_provider
 
 
+@pytest.mark.parametrize(
+    "collision", ["app-input", "runtime-input", "split-role", "deploy-input"]
+)
+def test_final_link_rejects_original_path_aliases_before_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, collision: str
+) -> None:
+    runtime = tmp_path / "runtime-input.wasm"
+    app = tmp_path / "app-input.wasm"
+    deploy = tmp_path / "molt_runtime.wasm"
+    for path in (runtime, app, deploy):
+        path.write_bytes(b"original input")
+    linked = {
+        "app-input": app,
+        "runtime-input": runtime,
+        "split-role": tmp_path / "app.wasm",
+        "deploy-input": tmp_path / "linked.wasm",
+    }[collision]
+    monkeypatch.setattr(
+        wasm_link,
+        "_snapshot_link_input",
+        lambda *args, **kwargs: pytest.fail(
+            "alias must fail before input snapshot/link"
+        ),
+    )
+    result = wasm_link._run_wasm_ld(
+        "unused-wasm-ld",
+        runtime,
+        app,
+        linked,
+        runtime_role="reloc",
+        split_runtime=collision in {"split-role", "deploy-input"},
+        split_output_dir=tmp_path,
+        deploy_runtime_override=deploy,
+        wasm_facts_scanner=tmp_path / "unused-scanner",
+    )
+    assert result == 1
+    assert "alias" in capsys.readouterr().err
+    assert all(
+        path.read_bytes() == b"original input" for path in (runtime, app, deploy)
+    )
+
+
 def _native_link_requirements(
     *paths: Path,
     retained_symbols: tuple[str, ...] = (),

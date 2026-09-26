@@ -30,6 +30,7 @@ from command_execution import CommandExecutor  # noqa: E402
 from wasm_optimize import find_wasm_opt as find_wasm_opt, optimize as optimize_wasm  # noqa: E402, F401
 from wasm_metrics import wasm_metrics as wasm_metrics  # noqa: E402
 from molt.cli import wasm_link_inputs  # noqa: E402
+from molt.link_outputs import wasm_link_output_paths  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
 from molt.cli.app_export_contract import (  # noqa: E402
     app_export_call_abi as app_export_call_abi,
@@ -2235,6 +2236,24 @@ def _run_wasm_ld(
                 "native WASM link requirements target mismatch: "
                 f"{native_link_requirements.target_triple} != {expected_target}"
             )
+        deploy_runtime = (
+            _resolve_deploy_runtime(deploy_runtime_override) if split_runtime else None
+        )
+        # Check original inputs before custody rewrites their paths. Otherwise
+        # successful publication could overwrite an immutable runtime or app input.
+        wasm_link_output_paths(
+            linked,
+            split_output_dir=(split_output_dir or linked.parent)
+            if split_runtime
+            else None,
+            inputs=(
+                runtime,
+                output,
+                *((deploy_runtime,) if deploy_runtime is not None else ()),
+                *(Path(item.path) for item in native_link_requirements.inputs),
+                *((app_export_contract_path,) if app_export_contract_path else ()),
+            ),
+        )
         with tempfile.TemporaryDirectory(prefix="molt-wasm-link-custody-") as tmp:
             snapshot_root = Path(tmp)
             runtime_snapshot_root = snapshot_root / "runtime-pair"
@@ -2330,8 +2349,7 @@ def _run_wasm_ld(
                 ),
             )
             deploy_runtime_snapshot = None
-            if split_runtime:
-                deploy_runtime = _resolve_deploy_runtime(deploy_runtime_override)
+            if deploy_runtime is not None:
                 deploy_runtime_snapshot = _snapshot_link_input(
                     deploy_runtime,
                     snapshot_root,

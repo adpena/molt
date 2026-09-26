@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 
 import molt.cli as cli
-from molt.cli import build_results
+from molt.cli import build_results, link_fingerprints
 
 _BUILD_RESULTS_NAMES = (
     "_attach_build_metadata",
@@ -16,7 +16,6 @@ _BUILD_RESULTS_NAMES = (
     "_emit_native_link_result",
     "_emit_non_native_build_result",
     "_post_link_strip",
-    "_write_link_fingerprint_if_needed",
 )
 
 _BUILD_RESULTS_DEFINITIONS = (
@@ -30,11 +29,13 @@ _BUILD_RESULTS_DEFINITIONS = (
     "def _emit_native_link_result(",
     "def _emit_non_native_build_result(",
     "def _post_link_strip(",
-    "def _write_link_fingerprint_if_needed(",
 )
 
 
 def test_cli_build_results_authority_is_single_home() -> None:
+    assert hasattr(link_fingerprints, "_write_link_fingerprint_if_needed")
+    assert not hasattr(build_results, "_write_link_fingerprint_if_needed")
+    assert not hasattr(cli, "_write_link_fingerprint_if_needed")
     for name in _BUILD_RESULTS_NAMES:
         assert hasattr(build_results, name)
         assert not hasattr(cli, name)
