@@ -29,9 +29,7 @@ from molt.cli.source_extension_target import (
     source_extension_link_dialect,
     source_extension_target_is_wasm,
 )
-from molt.cli.source_extension_link_requirements import (
-    _forced_input_operand,
-)
+from molt.cli.source_extension_link_arguments import source_extension_link_arguments
 from molt.cli.source_extension_language import (
     SourceExtensionLanguage,
     resolve_source_extension_compile_language,
@@ -364,6 +362,7 @@ class _SourceExtensionBuildPlan:
     link_args: tuple[str, ...]
     digest: str
     consumed_forced_link_args: tuple[str, ...] = ()
+    producer_link_args: tuple[str, ...] = ()
     lazy_static_target_ids: tuple[str, ...] = ()
 
     def manifest_payload(self) -> dict[str, Any]:
@@ -398,6 +397,7 @@ class _SourceExtensionBuildPlan:
             "compile_args": list(self.compile_args),
             "link_args": list(self.link_args),
             "consumed_forced_link_args": list(self.consumed_forced_link_args),
+            "producer_link_args": list(self.producer_link_args),
             "lazy_static_target_ids": list(self.lazy_static_target_ids),
         }
 
@@ -520,6 +520,37 @@ def _meson_target_filename_names(filename: Any) -> set[str]:
     return {name for name in names if name}
 
 
+def _meson_extension_targets_by_selector(
+    payload: Sequence[Any],
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    """One alias/ambiguity authority for live plans and published receipts."""
+    index: dict[str, list[Mapping[str, Any]]] = {}
+    target_ids: set[str] = set()
+    for target in payload:
+        if not isinstance(target, Mapping):
+            raise ValueError("Meson intro-targets entry is not an object")
+        target_id = target.get("id")
+        if not isinstance(target_id, str) or not target_id or target_id in target_ids:
+            raise ValueError("Meson target identity is missing or duplicated")
+        target_ids.add(target_id)
+        target_type = target.get("type")
+        if (
+            not isinstance(target_type, str)
+            or target_type not in _MESON_EXTENSION_TARGET_TYPES
+        ):
+            continue
+        name = target.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("Meson extension target has no non-empty name")
+        for alias in {
+            target_id,
+            name,
+            *_meson_target_filename_names(target.get("filename")),
+        }:
+            index.setdefault(alias, []).append(target)
+    return {alias: tuple(targets) for alias, targets in index.items()}
+
+
 def _meson_target_output_paths(filename: Any, *, build_root: Path) -> tuple[Path, ...]:
     raw_filenames = filename if isinstance(filename, list) else (filename,)
     outputs: list[Path] = []
@@ -565,6 +596,7 @@ def _source_extension_build_plan_digest(plan: _SourceExtensionBuildPlan) -> str:
         "compile_args": list(plan.compile_args),
         "link_args": list(plan.link_args),
         "consumed_forced_link_args": list(plan.consumed_forced_link_args),
+        "producer_link_args": list(plan.producer_link_args),
         "lazy_static_target_ids": list(plan.lazy_static_target_ids),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1080,6 +1112,7 @@ class _MesonStaticLibraryProjection:
     forced_target_ids: frozenset[str]
     link_args: tuple[str, ...]
     consumed_forced_args: tuple[str, ...]
+    producer_link_args: tuple[str, ...]
     lazy_static_target_ids: tuple[str, ...]
 
 
@@ -1203,56 +1236,36 @@ def _meson_static_library_projection(
     retained: list[str] = []
     consumed_forced_args: list[str] = []
     whole_archive = False
-    paired_framework = False
-    for argument in _meson_link_args(primary_target):
-        if paired_framework:
-            retained.append(argument)
-            paired_framework = False
+    producer_link_args = _meson_link_args(primary_target)
+    for span in source_extension_link_arguments(producer_link_args):
+        if span.kind == "product":
             continue
-        if argument == "-framework":
-            retained.append(argument)
-            paired_framework = True
+        if span.kind == "framework":
+            retained.extend(span.arguments)
             continue
-        if argument in {"-Wl,--whole-archive", "--whole-archive"}:
+        if span.kind == "scope" and span.value == "--whole-archive":
             if whole_archive:
                 raise ValueError("Meson whole-archive scopes cannot be nested")
             whole_archive = True
-            retained.append(argument)
+            retained.extend(span.arguments)
             continue
-        if argument in {"-Wl,--no-whole-archive", "--no-whole-archive"}:
+        if span.kind == "scope" and span.value == "--no-whole-archive":
             if not whole_archive:
                 raise ValueError("Meson whole-archive end has no start")
             whole_archive = False
-            retained.append(argument)
+            retained.extend(span.arguments)
             continue
-        forced_operand = next(
-            (
-                operand
-                for dialect in SourceExtensionLinkDialect
-                if (operand := _forced_input_operand(argument, dialect=dialect))
-                is not None
-            ),
-            None,
-        )
-        operand = forced_operand if forced_operand is not None else argument
         # Search directives and linker flags are not positive output custody.
-        explicit_input = forced_operand is not None or not (
-            argument.startswith("-")
-            or argument.upper().startswith(
-                ("/DEFAULTLIB:", "/INCLUDE:", "/WHOLEARCHIVE:")
-            )
-        )
-        owner = identity.resolve(operand) if explicit_input else None
+        explicit_input = span.kind in {"forced", "input"}
+        owner = identity.resolve(span.value) if explicit_input else None
         if owner is not None and str(owner.get("type", "")).strip() == "static library":
-            append_target(owner, forced=whole_archive or forced_operand is not None)
-            if forced_operand is not None:
-                consumed_forced_args.append(argument)
+            append_target(owner, forced=whole_archive or span.kind == "forced")
+            if span.kind == "forced":
+                consumed_forced_args.extend(span.arguments)
             continue
-        retained.append(argument)
+        retained.extend(span.arguments)
     if whole_archive:
         raise ValueError("Meson whole-archive start has no end")
-    if paired_framework:
-        raise ValueError("Meson -framework is missing its paired name")
 
     # Aggregate archives carry object ownership in Ninja, not intro source lists.
     static_targets = [
@@ -1338,6 +1351,7 @@ def _meson_static_library_projection(
         ),
         link_args=tuple(retained),
         consumed_forced_args=tuple(consumed_forced_args),
+        producer_link_args=producer_link_args,
         lazy_static_target_ids=tuple(
             str(target["id"]) for target in targets if id(target) not in forced_ids
         ),
@@ -1431,19 +1445,10 @@ def _load_meson_intro_targets_source_extension_plan(
         module_name=module_name,
         selector=selector,
     )
-    matches: list[Mapping[str, Any]] = []
-    for entry in payload:
-        if not isinstance(entry, Mapping):
-            continue
-        if str(entry.get("type", "")).strip() not in _MESON_EXTENSION_TARGET_TYPES:
-            continue
-        names = {
-            str(entry.get("id", "")),
-            str(entry.get("name", "")),
-        }
-        names.update(_meson_target_filename_names(entry.get("filename")))
-        if selected in names:
-            matches.append(entry)
+    try:
+        matches = _meson_extension_targets_by_selector(payload).get(selected, ())
+    except ValueError as exc:
+        return None, [str(exc)]
     if not matches:
         return None, [f"Meson intro-targets plan has no target matching {selected!r}"]
     if len(matches) > 1:
@@ -1778,6 +1783,7 @@ def _load_meson_intro_targets_source_extension_plan(
         compile_args=tuple(compile_args),
         link_args=link_args,
         consumed_forced_link_args=projection.consumed_forced_args,
+        producer_link_args=projection.producer_link_args,
         lazy_static_target_ids=projection.lazy_static_target_ids,
         digest="",
     )
@@ -1803,6 +1809,7 @@ def _load_meson_intro_targets_source_extension_plan(
             compile_args=plan.compile_args,
             link_args=plan.link_args,
             consumed_forced_link_args=plan.consumed_forced_link_args,
+            producer_link_args=plan.producer_link_args,
             lazy_static_target_ids=plan.lazy_static_target_ids,
             digest=_source_extension_build_plan_digest(plan),
         ),
@@ -1882,11 +1889,17 @@ def _validate_source_extension_build_plan_target(
     require_explicit = source_extension_target_is_wasm(target_triple)
     errors: list[str] = []
     dialect = source_extension_link_dialect(target_triple)
-    for argument in plan.consumed_forced_link_args:
-        if _forced_input_operand(argument, dialect=dialect) is None:
-            errors.append(
-                f"Source-plan forced loading operand is invalid for {dialect.value}: {argument!r}"
-            )
+    try:
+        for span in source_extension_link_arguments(plan.producer_link_args):
+            span.validate_dialect(dialect)
+        for span in source_extension_link_arguments(plan.consumed_forced_link_args):
+            span.validate_dialect(dialect)
+            if span.kind != "forced":
+                raise ValueError(
+                    f"invalid consumed forced loading operand: {span.arguments!r}"
+                )
+    except ValueError as exc:
+        errors.append(f"Source-plan linker custody: {exc}")
     if dialect is SourceExtensionLinkDialect.ELF_GNU and any(
         unit.force_include for unit in plan.compile_units
     ):

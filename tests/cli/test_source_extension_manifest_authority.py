@@ -400,6 +400,21 @@ def test_shared_source_does_not_weaken_object_or_checksum_custody(
         finalize_source_extension_object_closure(manifest)
 
 
+@pytest.mark.parametrize("producer_args", [None, ["/DLL"], ["-o"], [1]])
+def test_compact_manifest_rejects_missing_or_foreign_producer_link_custody(
+    producer_args,
+) -> None:
+    manifest = _manifest(1)
+    manifest["source_plan"] = {
+        "kind": "meson-intro-targets",
+        "producer_link_args": producer_args,
+    }
+    with pytest.raises(ValueError):
+        _validate_compact_source_extension_manifest(
+            _compact_source_extension_manifest(manifest)
+        )
+
+
 def test_132_unit_manifest_compaction_reconstructs_exact_commands_and_content() -> None:
     manifest = _manifest()
     original = copy.deepcopy(manifest)
@@ -800,6 +815,7 @@ def _write_identity_fixture(
     artifact_path = root / "pkg/_native.molt.wasm"
     from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
     from tests.cli.test_source_extension_producer import (
+        _fixture_source_plan,
         _write_meson_metadata,
         _write_target_metadata,
     )
@@ -826,6 +842,9 @@ def _write_identity_fixture(
     wheel.parent.mkdir(parents=True, exist_ok=True)
     wheel.write_bytes(b"wheel:pkg._native")
     wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    source_plan = _fixture_source_plan(
+        root, artifact_path, "pkg._native", modules=("pkg._native",)
+    )
     payload = {
         "schema_version": 1,
         "name": "pkg",
@@ -849,9 +868,10 @@ def _write_identity_fixture(
             "items": [],
             "retained_symbols": [],
         },
-        "source_plan": {"target_selector": "_native"},
+        "source_plan": source_plan,
         "build": {
-            "producer_host_sha256": hashlib.sha256(producer_root.encode()).hexdigest()
+            "producer_host_sha256": hashlib.sha256(producer_root.encode()).hexdigest(),
+            "source_plan_digest": source_plan["digest"],
         },
         "object_closure": {
             "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,

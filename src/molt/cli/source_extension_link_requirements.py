@@ -2,12 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import hashlib
-import os
 from pathlib import Path
 import re
-import shutil
-import tempfile
 from typing import Any, Callable, Mapping, Sequence
 
 from molt.cli.source_extension_target import (
@@ -15,6 +11,9 @@ from molt.cli.source_extension_target import (
     source_extension_link_dialect,
 )
 from molt.cli.native_link_plan import whole_archive_link_arguments
+from molt.cli.source_extension_link_arguments import source_extension_link_arguments
+from molt.cli.atomic_io import _atomic_copy_file
+from molt.file_hashing import _sha256_file
 
 _STATIC_INPUT_SUFFIXES = frozenset({".a", ".lib", ".o", ".obj", ".molt.wasm"})
 _BARE_LIBRARY_SUFFIXES = {
@@ -32,14 +31,6 @@ _GROUP_DIALECTS = frozenset(
     }
 )
 _WHOLE_ARCHIVE_DIALECTS = frozenset(SourceExtensionLinkDialect)
-_GNU_LIBRARY_DIALECTS = frozenset(
-    {
-        SourceExtensionLinkDialect.ELF_GNU,
-        SourceExtensionLinkDialect.MACHO,
-        SourceExtensionLinkDialect.COFF_GNU,
-        SourceExtensionLinkDialect.WASM,
-    }
-)
 _LINK_SYMBOL = re.compile(r"[A-Za-z_.$?@][A-Za-z0-9_.$?@-]*")
 _BARE_PROVIDER_NAME = re.compile(r"[A-Za-z0-9_+.@-]+")
 
@@ -177,90 +168,6 @@ def _is_link_symbol(value: str) -> bool:
     return _LINK_SYMBOL.fullmatch(value) is not None
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _atomic_copy_file(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        dir=destination.parent,
-        prefix=f".{destination.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as stream:
-        temporary = Path(stream.name)
-    try:
-        shutil.copyfile(source, temporary)
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _canonical_link_arguments(
-    link_args: Sequence[str], *, dialect: SourceExtensionLinkDialect
-) -> tuple[str, ...]:
-    # Unwrap the driver envelope before interpreting linker operands. Keep each
-    # payload intact: a comma or space in a path is not an argument separator.
-    raw_args = tuple(str(argument) for argument in link_args)
-    unwrapped: list[str] = []
-    raw_index = 0
-    while raw_index < len(raw_args):
-        argument = raw_args[raw_index]
-        if argument == "-Xlinker":
-            raw_index += 1
-            if raw_index == len(raw_args) or not raw_args[raw_index]:
-                raise ValueError("source-extension -Xlinker requires one operand")
-            argument = raw_args[raw_index]
-        unwrapped.append(argument)
-        raw_index += 1
-    raw = tuple(unwrapped)
-    canonical: list[str] = []
-    index = 0
-    while index < len(raw):
-        argument = raw[index]
-        if not argument:
-            index += 1
-            continue
-        if argument == "-force_load":
-            if dialect is not SourceExtensionLinkDialect.MACHO:
-                raise ValueError("source-extension -force_load requires Mach-O")
-            if index + 1 >= len(raw) or not _is_static_input_path(raw[index + 1]):
-                raise ValueError(
-                    "source-extension -force_load requires one static input"
-                )
-            canonical.append(f"-Wl,-force_load,{raw[index + 1]}")
-            index += 2
-            continue
-        if dialect is SourceExtensionLinkDialect.MACHO and argument == "-framework":
-            if index + 1 >= len(raw) or not _is_bare_provider_name(raw[index + 1]):
-                raise ValueError(
-                    "source-extension Mach-O -framework requires a bare name"
-                )
-            canonical.append(f"-Wl,-framework,{raw[index + 1]}")
-            index += 2
-            continue
-        if (
-            dialect is SourceExtensionLinkDialect.COFF_MSVC
-            and argument.upper().startswith("/DEFAULTLIB:")
-        ):
-            provider = argument.split(":", 1)[1]
-            if not _is_bare_library_name(provider, dialect=dialect):
-                raise ValueError(
-                    "source-extension COFF-MSVC /DEFAULTLIB requires a bare .lib name"
-                )
-            canonical.append(provider)
-            index += 1
-            continue
-        canonical.append(argument)
-        index += 1
-    return tuple(canonical)
-
-
 def _resolve_source_path(path: str, roots: Sequence[Path]) -> Path | None:
     resolved_roots = tuple(root.resolve() for root in roots)
     candidate = Path(path.replace("\\", "/")).expanduser()
@@ -281,96 +188,6 @@ def _resolve_source_path(path: str, roots: Sequence[Path]) -> Path | None:
                 + str(resolved)
             )
         return resolved
-    return None
-
-
-def _forced_input_operand(
-    argument: str, *, dialect: SourceExtensionLinkDialect
-) -> str | None:
-    prefixes = {
-        SourceExtensionLinkDialect.MACHO: ("-Wl,-force_load,",),
-        SourceExtensionLinkDialect.COFF_MSVC: (
-            "-Wl,/WHOLEARCHIVE:",
-            "/WHOLEARCHIVE:",
-        ),
-    }.get(dialect, ())
-    for prefix in prefixes:
-        matches = (
-            argument[: len(prefix)].casefold() == prefix.casefold()
-            if dialect is SourceExtensionLinkDialect.COFF_MSVC
-            else argument.startswith(prefix)
-        )
-        if matches:
-            path = argument[len(prefix) :]
-            return path if _is_static_input_path(path) else None
-    return None
-
-
-def _retained_symbol(
-    argument: str, *, dialect: SourceExtensionLinkDialect
-) -> str | None:
-    prefixes = {
-        SourceExtensionLinkDialect.ELF_GNU: ("-Wl,--undefined=", "-Wl,-u,"),
-        SourceExtensionLinkDialect.MACHO: ("-Wl,-u,",),
-        SourceExtensionLinkDialect.COFF_GNU: ("-Wl,--undefined=", "-Wl,-u,"),
-        SourceExtensionLinkDialect.COFF_MSVC: ("-Wl,/INCLUDE:", "/INCLUDE:"),
-        SourceExtensionLinkDialect.WASM: ("--undefined=", "-Wl,--undefined="),
-    }[dialect]
-    for prefix in prefixes:
-        matches = (
-            argument[: len(prefix)].casefold() == prefix.casefold()
-            if dialect is SourceExtensionLinkDialect.COFF_MSVC
-            else argument.startswith(prefix)
-        )
-        if matches:
-            symbol = argument[len(prefix) :]
-            return symbol if _is_link_symbol(symbol) else None
-    return None
-
-
-def _provider_from_argument(
-    argument: str,
-    *,
-    dialect: SourceExtensionLinkDialect,
-    loading: SourceExtensionLinkLoadingPolicy,
-) -> SourceExtensionLinkProvider | None:
-    if argument == "-pthread" and dialect not in {
-        SourceExtensionLinkDialect.COFF_MSVC,
-        SourceExtensionLinkDialect.WASM,
-    }:
-        return SourceExtensionLinkProvider(
-            SourceExtensionLinkProviderKind.THREAD_RUNTIME,
-            "pthread",
-            loading,
-        )
-    if (
-        dialect in _GNU_LIBRARY_DIALECTS
-        and argument.startswith("-l")
-        and _is_bare_provider_name(argument[2:])
-    ):
-        return SourceExtensionLinkProvider(
-            SourceExtensionLinkProviderKind.LIBRARY,
-            argument[2:],
-            loading,
-        )
-    framework_prefix = "-Wl,-framework,"
-    if (
-        dialect is SourceExtensionLinkDialect.MACHO
-        and argument.startswith(framework_prefix)
-        and _is_bare_provider_name(argument[len(framework_prefix) :])
-    ):
-        return SourceExtensionLinkProvider(
-            SourceExtensionLinkProviderKind.FRAMEWORK,
-            argument[len(framework_prefix) :],
-            loading,
-        )
-    if _is_bare_library_name(argument, dialect=dialect):
-        kind = (
-            SourceExtensionLinkProviderKind.ARCHIVE
-            if argument.lower().endswith(".a")
-            else SourceExtensionLinkProviderKind.LIBRARY
-        )
-        return SourceExtensionLinkProvider(kind, argument, loading)
     return None
 
 
@@ -562,22 +379,41 @@ def source_extension_link_requirements(
             )
         digest = _sha256_file(source)
         destination = publish_root / "__molt_link__" / digest / source.name
-        _atomic_copy_file(source, destination)
+        _atomic_copy_file(source, destination, expected_sha256=digest)
         return SourceExtensionLinkInput(
             path=destination.relative_to(publish_root).as_posix(),
             sha256=digest,
             loading=loading,
         )
 
-    for argument in _canonical_link_arguments(link_args, dialect=dialect):
-        symbol = _retained_symbol(argument, dialect=dialect)
-        if symbol is not None:
-            retained_symbols.add(symbol)
+    for span in source_extension_link_arguments(link_args):
+        span.validate_dialect(dialect)
+        if span.kind == "product":
+            raise ValueError(
+                "source-extension final link requirements cannot select producer "
+                f"output/image policy: {span.arguments!r}"
+            )
+        argument = span.arguments[0]
+        if span.kind == "default-library":
+            if not _is_bare_library_name(span.value, dialect=dialect):
+                raise ValueError(
+                    "source-extension COFF-MSVC /DEFAULTLIB requires a bare .lib name"
+                )
+            argument = span.value
+        if span.kind == "symbol":
+            if not _is_link_symbol(span.value):
+                raise ValueError(
+                    f"source-extension retained symbol is invalid: {span.value!r}"
+                )
+            retained_symbols.add(span.value)
             continue
-        forced_input = _forced_input_operand(argument, dialect=dialect)
-        if forced_input is not None:
+        if span.kind == "forced":
+            if not _is_static_input_path(span.value):
+                raise ValueError(
+                    "source-extension forced loading requires one static input"
+                )
             item = make_input(
-                forced_input,
+                span.value,
                 loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS,
             )
             append_item(item)
@@ -642,7 +478,9 @@ def source_extension_link_requirements(
                 else SourceExtensionLinkLoadingPolicy.DEFAULT
             )
         )
-        if _is_static_input_path(argument):
+        if span.kind in {"input", "default-library"} and _is_static_input_path(
+            argument
+        ):
             source = _resolve_source_path(argument, path_roots)
             if source is not None:
                 item = make_input(
@@ -652,18 +490,25 @@ def source_extension_link_requirements(
                 )
                 append_item(item)
                 continue
-        provider = _provider_from_argument(
-            argument,
-            dialect=dialect,
-            loading=loading,
-        )
-        if provider is None:
+        provider_kind = {
+            "library": SourceExtensionLinkProviderKind.LIBRARY,
+            "default-library": SourceExtensionLinkProviderKind.LIBRARY,
+            "framework": SourceExtensionLinkProviderKind.FRAMEWORK,
+            "thread-runtime": SourceExtensionLinkProviderKind.THREAD_RUNTIME,
+        }.get(span.kind)
+        if span.kind == "input" and _is_bare_library_name(argument, dialect=dialect):
+            provider_kind = (
+                SourceExtensionLinkProviderKind.ARCHIVE
+                if argument.lower().endswith(".a")
+                else SourceExtensionLinkProviderKind.LIBRARY
+            )
+        if provider_kind is None:
             raise ValueError(
                 f"source-extension {dialect.value} final link requirement is not a "
                 "typed provider, retained symbol, cyclic group, or checksummed input: "
                 f"{argument!r}"
             )
-        append_item(provider)
+        append_item(SourceExtensionLinkProvider(provider_kind, span.value, loading))
 
     if group_members is not None:
         raise ValueError("source-extension cyclic group start has no end")
@@ -997,7 +842,7 @@ def materialize_source_extension_link_requirements(
             continue
         assert source is not None
         destination = publish_root / "__molt_link__" / item.sha256 / source.name
-        _atomic_copy_file(source, destination)
+        _atomic_copy_file(source, destination, expected_sha256=item.sha256)
         published[item] = SourceExtensionLinkInput(
             destination.relative_to(publish_root).as_posix(),
             item.sha256,

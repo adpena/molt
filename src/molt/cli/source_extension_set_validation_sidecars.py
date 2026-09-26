@@ -1,6 +1,9 @@
 """One sidecar validation pass retaining current language, input and binary custody."""
 
 from __future__ import annotations
+
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Mapping, cast
 from molt.cli.source_extension_manifest_codec import (
@@ -12,7 +15,11 @@ from molt.cli.source_extension_object_closure import (
     validate_source_extension_object_closure,
     validate_source_extension_object_closure_sources,
 )
-from molt.cli.source_extensions import validate_source_extension_artifact_object_closure
+from molt.cli.source_extensions import (
+    _meson_extension_targets_by_selector,
+    _meson_link_args,
+    validate_source_extension_artifact_object_closure,
+)
 from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
     SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
@@ -41,6 +48,93 @@ from molt.toolchain_identity import (
 )
 
 
+def _load_meson_link_producer_index(
+    publish_root: Path,
+    set_manifest: Mapping[str, Any],
+) -> tuple[Path, str, dict[str, tuple[Mapping[str, Any], ...]]]:
+    meson = set_manifest.get("meson")
+    expected_intro_sha256 = (
+        meson.get("intro_targets_sha256") if isinstance(meson, Mapping) else None
+    )
+    intro_path = publish_root / "provenance/metadata/meson/intro-targets.json"
+    try:
+        intro_bytes = intro_path.read_bytes()
+        intro_sha256 = _sha256_bytes(intro_bytes)
+        intro_targets = loads_exact(intro_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SourceExtensionSetValidationError(
+            f"failed to read checksum-pinned Meson intro-targets: {exc}"
+        ) from exc
+    if expected_intro_sha256 != intro_sha256 or not isinstance(intro_targets, list):
+        raise SourceExtensionSetValidationError(
+            "extension-set Meson intro-targets checksum or structure differs from custody"
+        )
+    try:
+        targets = _meson_extension_targets_by_selector(intro_targets)
+    except ValueError as exc:
+        raise SourceExtensionSetValidationError(str(exc)) from exc
+    return intro_path.resolve(), intro_sha256, targets
+
+
+def _producer_link_plan_errors(
+    source_plan: Mapping[str, Any],
+    *,
+    selector: str,
+    sidecar_path: Path,
+    intro_path: Path,
+    intro_sha256: str,
+    targets: Mapping[str, tuple[Mapping[str, Any], ...]],
+    build: Any,
+) -> list[str]:
+    errors: list[str] = []
+    matches = targets.get(selector, ())
+    if len(matches) != 1:
+        errors.append(
+            f"Meson target selector {selector!r} matched {len(matches)} targets"
+        )
+    else:
+        selected = matches[0]
+        for field, expected in (
+            ("target_id", selected["id"]),
+            ("target_name", selected["name"]),
+            ("target_type", selected["type"]),
+        ):
+            if source_plan.get(field) != expected:
+                errors.append(f"source_plan.{field} differs from Meson target")
+        try:
+            expected_args = _meson_link_args(selected)
+        except ValueError as exc:
+            raise SourceExtensionSetValidationError(
+                f"Meson target {selector!r} linker metadata is invalid: {exc}"
+            ) from exc
+        if source_plan.get("producer_link_args") != list(expected_args):
+            errors.append("source_plan.producer_link_args differs from Meson target")
+    raw_plan_path = source_plan.get("plan")
+    if (
+        type(source_plan.get("schema_version")) is not int
+        or source_plan.get("schema_version") != 1
+        or source_plan.get("kind") != "meson-intro-targets"
+        or not isinstance(raw_plan_path, str)
+        or "\\" in raw_plan_path
+        or Path(raw_plan_path).is_absolute()
+        or (sidecar_path.parent / raw_plan_path).resolve() != intro_path
+        or source_plan.get("plan_sha256") != intro_sha256
+    ):
+        errors.append("source_plan Meson metadata custody is false")
+    identity = dict(source_plan)
+    digest = identity.pop("digest", None)
+    expected_digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if (
+        digest != expected_digest
+        or not isinstance(build, Mapping)
+        or build.get("source_plan_digest") != expected_digest
+    ):
+        errors.append("source_plan digest is false")
+    return errors
+
+
 def validate_source_extension_sidecars(
     *,
     publish_root: Path,
@@ -58,6 +152,9 @@ def validate_source_extension_sidecars(
         raise SourceExtensionSetValidationError(
             "extension-set manifest has no target-triple authority"
         )
+    intro_path, intro_sha256, targets = _load_meson_link_producer_index(
+        publish_root, set_manifest
+    )
     artifact_suffix = source_extension_artifact_suffix(target_triple)
     expected_artifacts = {
         publish_root.joinpath(
@@ -142,6 +239,18 @@ def validate_source_extension_sidecars(
             or source_plan.get("target_selector") != spec.target
         ):
             sidecar_mismatches.append("source_plan.target_selector differs from set")
+        else:
+            sidecar_mismatches.extend(
+                _producer_link_plan_errors(
+                    source_plan,
+                    selector=spec.target,
+                    sidecar_path=sidecar_path,
+                    intro_path=intro_path,
+                    intro_sha256=intro_sha256,
+                    targets=targets,
+                    build=sidecar.get("build"),
+                )
+            )
         if sidecar_mismatches:
             raise SourceExtensionSetValidationError(
                 "extension sidecar differs from set variant contract: "

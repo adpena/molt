@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from molt.cli.compiler_target import compiler_argument_spans
+from molt.cli.source_extension_link_arguments import source_extension_link_arguments
+from molt.cli.source_extension_target import source_extension_link_dialect
 from molt.cli.source_extension_link_requirements import (
     parse_source_extension_link_requirements,
 )
@@ -384,6 +386,18 @@ def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> 
     target_triple = manifest.get("target_triple")
     if not isinstance(target_triple, str) or not target_triple:
         raise ValueError("compact extension manifest has no target triple")
+    source_plan = manifest.get("source_plan")
+    if (
+        isinstance(source_plan, Mapping)
+        and source_plan.get("kind") == "meson-intro-targets"
+    ):
+        producer_args = source_plan.get("producer_link_args")
+        if not isinstance(producer_args, list) or any(
+            not isinstance(argument, str) for argument in producer_args
+        ):
+            raise ValueError("source-plan receipt requires producer_link_args")
+        for span in source_extension_link_arguments(producer_args):
+            span.validate_dialect(source_extension_link_dialect(target_triple))
     link_requirements, link_requirement_errors = (
         parse_source_extension_link_requirements(
             manifest,
