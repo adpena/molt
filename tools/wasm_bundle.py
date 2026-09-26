@@ -3,44 +3,28 @@
 
 from __future__ import annotations
 import argparse
-import io
 import json
 import sys
-import tarfile
 from pathlib import Path
 
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-def create_bundle(source_dir: Path, output: Path) -> dict:
-    """Package source_dir into a tar archive with manifest."""
-    manifest = {"files": [], "total_bytes": 0}
+from molt.wasm_bundle import BundleManifest, write_wasm_bundle  # noqa: E402
 
-    with tarfile.open(output, "w") as tar:
-        for path in sorted(source_dir.rglob("*")):
-            if not path.is_file():
-                continue
-            # Security: reject symlinks
-            if path.is_symlink():
-                print(f"Warning: skipping symlink {path}", file=sys.stderr)
-                continue
-            arcname = str(path.relative_to(source_dir))
-            # Security: reject paths with ..
-            if ".." in arcname:
-                print(f"Warning: skipping path with '..': {arcname}", file=sys.stderr)
-                continue
-            # Skip __pycache__ and .pyc files
-            if "__pycache__" in arcname or arcname.endswith(".pyc"):
-                continue
-            tar.add(str(path), arcname=arcname)
-            file_size = path.stat().st_size
-            manifest["files"].append({"path": arcname, "size": file_size})
-            manifest["total_bytes"] += file_size
 
-        # Write manifest as last entry
-        manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
-        info = tarfile.TarInfo("__manifest__.json")
-        info.size = len(manifest_bytes)
-        tar.addfile(info, io.BytesIO(manifest_bytes))
-
+def create_bundle(source_dir: Path, output: Path) -> BundleManifest:
+    """Publish one deterministic archive of a coherent source generation."""
+    manifest = write_wasm_bundle(
+        (source_dir,),
+        output,
+        include=lambda root, path: (
+            "__pycache__" not in path.relative_to(root).parts
+            and path.suffix not in {".pyc", ".pyo"}
+        ),
+    )
+    assert manifest is not None
     return manifest
 
 
@@ -57,7 +41,11 @@ def main() -> int:
         print(f"Source is not a directory: {args.source}", file=sys.stderr)
         return 1
 
-    manifest = create_bundle(args.source, args.output)
+    try:
+        manifest = create_bundle(args.source, args.output)
+    except (OSError, ValueError) as exc:
+        print(f"Bundle failed: {exc}", file=sys.stderr)
+        return 1
 
     n_files = len(manifest["files"])
     total = manifest["total_bytes"]

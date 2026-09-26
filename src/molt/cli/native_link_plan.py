@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
 from pathlib import Path
 import platform
 import re
 import sys
-from typing import Sequence
+from typing import Iterator, Sequence
 
+from molt import file_publication
 from molt.llvm_linker_roles import LlvmLinkerRole
 from molt.native_artifact_header import (
     NativeArtifactError,
@@ -118,6 +121,24 @@ class NativeLinkPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class NativeLinkSidecar:
+    """Semantic linker input kept in a plan, not a shared filesystem leaf."""
+
+    role: str
+    planned_path: Path
+    content: bytes
+    command_index: int
+    operand_prefix: str
+
+    def fact(self) -> dict[str, object]:
+        return {
+            "role": self.role,
+            "sha256": hashlib.sha256(self.content).hexdigest(),
+            "size_bytes": len(self.content),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class NativeLinkPlan:
     target: NativeTargetSpec
     capabilities: NativeLinkCapabilities
@@ -125,6 +146,59 @@ class NativeLinkPlan:
     command: tuple[str, ...]
     linker_hint: str | None
     normalized_target: str | None
+    sidecars: tuple[NativeLinkSidecar, ...] = ()
+
+    def sidecar_facts(self) -> tuple[dict[str, object], ...]:
+        return tuple(sidecar.fact() for sidecar in self.sidecars)
+
+
+@contextmanager
+def native_link_execution_command(
+    plan: NativeLinkPlan,
+    *,
+    planned_output: Path,
+    execution_output: Path,
+) -> Iterator[list[str]]:
+    """Own private sidecars while retargeting one typed plan for execution."""
+
+    result = list(plan.command)
+    matches = [
+        index
+        for index in range(1, len(result))
+        if result[index - 1] == "-o" and result[index] == str(planned_output)
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Native link plan must contain exactly one canonical output operand; "
+            f"found {len(matches)} for {planned_output}."
+        )
+    result[matches[0]] = str(execution_output)
+    staged_sidecars: list[Path] = []
+    try:
+        for sidecar in plan.sidecars:
+            expected = f"{sidecar.operand_prefix}{sidecar.planned_path}"
+            if (
+                sidecar.command_index < 0
+                or sidecar.command_index >= len(result)
+                or result[sidecar.command_index] != expected
+            ):
+                raise RuntimeError(
+                    "Native link plan sidecar operand mismatch: "
+                    f"{sidecar.role}, index {sidecar.command_index}, {expected}."
+                )
+            staged = file_publication.staged_file_path(
+                sidecar.planned_path,
+                purpose="native-link",
+                suffix=sidecar.planned_path.suffix,
+            )
+            staged_sidecars.append(staged)
+            with staged.open("xb") as stream:
+                stream.write(sidecar.content)
+            result[sidecar.command_index] = f"{sidecar.operand_prefix}{staged}"
+        yield result
+    finally:
+        for staged in staged_sidecars:
+            staged.unlink(missing_ok=True)
 
 
 def native_artifact_link_arguments(

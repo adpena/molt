@@ -204,24 +204,28 @@ def test_windows_write_through_replace_retries_only_sharing_violations(
     assert calls == 2
 
 
-def test_readonly_copy_applies_final_mode_after_durability(
+def test_readonly_copy_flushes_payload_and_preserves_final_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "readonly-source"
     destination = tmp_path / "destination"
     source.write_bytes(b"immutable")
     source.chmod(stat.S_IREAD)
-    original = file_publication.durable_replace
-    staged_modes: list[int] = []
+    original = file_publication.os.fsync
+    flushed_files: list[tuple[int, int]] = []
 
-    def observe(staged: Path, target: Path) -> None:
-        staged_modes.append(staged.stat().st_mode)
-        original(staged, target)
+    def observe(descriptor: int) -> None:
+        metadata = file_publication.os.fstat(descriptor)
+        original(descriptor)
+        if stat.S_ISREG(metadata.st_mode):
+            flushed_files.append((metadata.st_size, metadata.st_mode))
 
-    monkeypatch.setattr(file_publication, "durable_replace", observe)
+    monkeypatch.setattr(file_publication.os, "fsync", observe)
     atomic_io._atomic_copy_file(source, destination)
 
-    assert staged_modes[0] & stat.S_IWRITE
+    assert len(flushed_files) == 1
+    assert flushed_files[0][0] == len(b"immutable")
+    assert flushed_files[0][1] & stat.S_IWRITE
     assert not destination.stat().st_mode & stat.S_IWRITE
     assert destination.read_bytes() == b"immutable"
 
@@ -229,5 +233,8 @@ def test_readonly_copy_applies_final_mode_after_durability(
     replacement.write_bytes(b"replacement")
     replacement.chmod(stat.S_IREAD)
     atomic_io._atomic_copy_file(replacement, destination)
+    assert len(flushed_files) == 2
+    assert flushed_files[1][0] == len(b"replacement")
+    assert flushed_files[1][1] & stat.S_IWRITE
     assert destination.read_bytes() == b"replacement"
     assert not destination.stat().st_mode & stat.S_IWRITE

@@ -26,16 +26,21 @@ def _retry_readonly(
     operation(raw_path)
 
 
+def unlink_file(path: Path) -> None:
+    """Remove one owned leaf, including read-only files; never recurse."""
+    try:
+        path.unlink(missing_ok=True)
+    except PermissionError as error:
+        _retry_readonly(os.unlink, str(path), error)
+
+
 def delete_path(path: Path) -> tuple[bool, str]:
     """Delete one already-authorized path and report failure without hiding it."""
     try:
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path, onexc=_retry_readonly)
         else:
-            try:
-                path.unlink(missing_ok=True)
-            except PermissionError as error:
-                _retry_readonly(os.unlink, str(path), error)
+            unlink_file(path)
         return True, ""
     except OSError as error:
         return False, str(error)

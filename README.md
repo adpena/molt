@@ -91,6 +91,14 @@ uv run --python 3.12 molt compare examples/hello.py
 macOS, and Linux invocation, see
 [build and run](docs/getting-started.md#build-and-run-hello-world).
 
+Final-link reuse checks the complete output family against its receipt. Linked
+WASM deployment files are published together; failed builds preserve the previous
+generation. Keep the hidden `.molt-artifact-*` custody files beside local outputs,
+but exclude them from deployment packages. See the
+[publication contract](docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md).
+WASM package bundles normalize host metadata and use portable paths; unsupported
+or colliding archive names fail with a diagnostic before replacing prior output.
+
 These profiles select optimization of **your program**, not the compiler itself.
 Release bundles ship a production-optimized compiler that is reused for both
 profiles, alongside the matching runtime sources. Compiler developers can opt

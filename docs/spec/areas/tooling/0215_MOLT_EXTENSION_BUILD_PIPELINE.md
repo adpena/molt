@@ -889,16 +889,65 @@ source search.
   are admitted.
 
   Final-link cache receipts bind the input/command/tool fingerprint to the exact
-  published output roles, resolved paths, and content identities. Native receipts
+  published output roles, resolved paths, and content identities. A hidden receipt
+  beside the destination owns the family independently of project/cache roots,
+  profile, or target; native executables anchor their own receipt and WASM
+  deployments anchor it to `manifest.json`. Native receipts
   identify the final executable after strip, optimization, and signing. Combined
-  WASM identifies the linked module; split WASM additionally identifies `app.wasm`,
-  `molt_runtime.wasm`, and `wasm_size_attestation.json` as one reusable family.
-  A receipt is written only after successful publication. Missing, malformed,
+  WASM identifies the complete deployment family: linked/split modules, size
+  attestation, execution manifest, loader/worker/configuration assets, package
+  bundle, and requested host precompiled outputs. Standalone linker invocations
+  publish their module family; the CLI derives its deployment from one private
+  linker generation, never by reopening shared public module names.
+  The producer hashes private finalized candidates, then publishes the receipt
+  with the output family through `molt.artifact_publication`. Native, BOLT, and
+  combined/split WASM use the same generation boundary. Destination-parent locks
+  serialize overlapping publication and cache observations; compilation runs
+  outside those locks. Journal recovery restores an interrupted generation before
+  another publisher or cache reader proceeds. Commit and abort decisions reach
+  every surviving journal copy before cleanup; inode-bound recovery rejects
+  replacement files belonging to another generation. WASM receipt requests are private
+  invocation transport, excluded from logical cache keys, and removed by the
+  caller. Native linker policy sidecars, the WASM native-link plan, and phase
+  timings are invocation-private; native sidecars carry typed command operand
+  bindings and their semantic bytes contribute to input identity. Production,
+  benchmark execution, and driver tracing share their materialization authority.
+  The WASM plan's canonical content digest, not its temporary path, binds its meaning
+  into the key. Cache hits create none of these transport files. The outer CLI
+  publishes finalized private deployment candidates together with their receipt.
+  Obsolete receipt-owned members are retired in the same transaction after
+  verifying their identity and explicit retirement scope.
+  Destination directories retain an empty publication lock file, including after
+  rollback into an otherwise empty directory. It is custody metadata, not output
+  payload, and must not be unlinked while other publishers can use the directory.
+  Packagers select explicit roles or use `publication_payload_snapshot` to lock
+  existing publication namespaces, recover journals, and validate payload
+  membership and mutation identity. Private stages, backups, journals, and locks
+  are never payload. Plain read-only source trees need no lock-file creation.
+  Archives remain private until source validation succeeds; failure preserves
+  the previous archive. Malformed reserved lock leaves fail closed.
+  The CLI and standalone WASM bundle tool share `molt.wasm_bundle`: portable
+  collision admission, globally sorted relative POSIX names, streamed regular
+  USTAR members and fixed read-only-data permissions/owner/timestamp metadata.
+  Source-root order and host metadata do not affect bundle bytes. Paths that
+  cannot be represented in USTAR fail explicitly rather than adding extensions
+  that a deployment reader might silently ignore. The browser VFS consumes
+  USTAR prefix names and validates checksums, payload bounds, entry types and
+  file/directory collisions before exposing a bundle.
+  Snapshot membership applies the consumer's payload filter before taking
+  mutation-only file tokens, avoiding redundant content hashing or invalidation
+  from excluded bytecode caches. Deployment source tokens span fingerprinting
+  and private rendering without holding locks across subprocess execution.
+  Worker compatibility dates are an explicit versioned renderer contract, not
+  the wall clock; changing that contract deliberately invalidates deployment reuse.
+  Earlier observation-only receipts are invalidated by the generation schema.
+  Missing, malformed,
   older, relocated, or content-changed outputs force relinking; timestamps alone
   neither authorize reuse nor invalidate byte-identical rebuilt inputs. Output
   roles cannot alias each other or consumed inputs, including original paths
-  before snapshotting. Deployment manifests/assets are regenerated downstream,
-  not treated as linker outputs. This byte custody does not establish selected
+  before snapshotting. Deployment policy, assets, package payloads and requested
+  precompile identity participate in reuse; a complete family hit bypasses
+  regeneration. This byte custody does not establish selected
   archive-member extraction or expand the admitted source-extension subset.
 
   Artifact closure is not permission policy. Capability requests and host grants

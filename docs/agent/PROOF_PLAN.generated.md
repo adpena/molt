@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 186 |
+| Hashed executable authority inputs | 1 | 187 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 96 |
 | Handwritten Python classifier rule tables | 5 | 0 |

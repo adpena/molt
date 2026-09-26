@@ -57,7 +57,7 @@ from molt.toolchain_identity import (  # noqa: E402
 from molt.exact_json import dumps_exact, encode_exact, loads_exact  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt.ustar import RegularUstarTarInfo  # noqa: E402
-from tools.artifact_publish import (  # noqa: E402
+from molt.artifact_publication import (  # noqa: E402
     fsync_file,
     publish_validated_outputs,
     staged_output_path,
@@ -1044,6 +1044,9 @@ def verify_extract_bundle(
                 key=lambda path: len(path.parts),
                 reverse=True,
             ):
+                # Once publication began, persistent parent locks retain custody
+                # even after rollback. Never unlink them to make rmdir succeed:
+                # a concurrent publisher may already be waiting on the same inode.
                 with contextlib.suppress(OSError):
                     directory.rmdir()
     return manifest

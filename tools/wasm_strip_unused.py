@@ -32,7 +32,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from tools import artifact_publish, harness_memory_guard  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
+from molt import artifact_publication  # noqa: E402
 from molt import _wasm_abi_generated as _WASM_ABI  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     WASM_EXTERN_KIND_FUNCTION,
@@ -242,13 +243,13 @@ def strip_imports(wasm_path: Path, output_path: Path, result: AnalysisResult) ->
     strippable = result.strippable_imports
     if not strippable:
         print("No strippable imports found. Output is a copy of input.")
-        artifact_publish.atomic_copy_file(wasm_path, output_path)
+        artifact_publication.atomic_copy_file(wasm_path, output_path)
         return output_path
 
     # Use wasm-tools strip to remove debug/name sections and report size savings.
     print("Stripping debug and name sections...")
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
-    tmp_output = artifact_publish.staged_output_path(output_path)
+    tmp_output = artifact_publication.staged_output_path(output_path)
     try:
         strip_proc = harness_memory_guard.guarded_completed_process(
             [wasm_tools, "strip", str(wasm_path), "-o", str(tmp_output)],
@@ -264,7 +265,7 @@ def strip_imports(wasm_path: Path, output_path: Path, result: AnalysisResult) ->
                 file=sys.stderr,
             )
             sys.exit(1)
-        artifact_publish.publish_validated_outputs([(tmp_output, output_path)])
+        artifact_publication.publish_validated_outputs([(tmp_output, output_path)])
     finally:
         try:
             tmp_output.unlink()

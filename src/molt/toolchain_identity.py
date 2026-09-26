@@ -47,14 +47,20 @@ class ExecutableIdentity:
 
 
 @dataclass(frozen=True, slots=True)
-class StableRegularFileIdentity:
-    """Immutable content and mutation identity for one direct regular file."""
+class StableRegularFileVersion:
+    """Mutation identity for one direct regular file; no payload hashing."""
 
     path: Path
     size: int
-    sha256: str
     _stat_identity: tuple[int, int, int, int, int, int]
     _content_change_time_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class StableRegularFileIdentity(StableRegularFileVersion):
+    """Content and mutation identity for one direct regular file."""
+
+    sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -647,6 +653,16 @@ def stable_regular_file_identity(
     return _regular_file_identity(lexical, file_stat, change_time_ns, digest)
 
 
+def stable_regular_file_version(path: Path, *, label: str) -> StableRegularFileVersion:
+    """Capture the shared no-follow handle/mutation token without reading bytes."""
+    lexical, metadata, change_time_ns, _ = _stable_regular_file_snapshot(
+        path, label=label, hash_content=False
+    )
+    return StableRegularFileVersion(
+        lexical, metadata.st_size, _stat_identity(metadata), change_time_ns
+    )
+
+
 _STABLE_SNAPSHOT_CHUNK_BYTES = 1024 * 1024
 _STABLE_SNAPSHOT_MAX_PREFIX_BYTES = 64 * 1024
 
@@ -744,7 +760,7 @@ def snapshot_stable_regular_file(
 
 
 def verify_stable_regular_file_identity(
-    identity: StableRegularFileIdentity,
+    identity: StableRegularFileVersion,
     *,
     label: str,
 ) -> None:

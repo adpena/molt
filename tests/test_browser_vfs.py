@@ -7,6 +7,7 @@ import tarfile
 from pathlib import Path
 
 from tests.native_process_guard import run_native_test_process
+from molt.wasm_bundle import write_wasm_bundle
 
 
 def test_browser_vfs_js_exists():
@@ -100,3 +101,46 @@ console.log(JSON.stringify(results));
     messages = json.loads(result.stdout)
     assert messages[0] == "bundle tar contains '..' component in path: ../secret.txt"
     assert messages[1] == "bundle tar contains link entry: linked.txt"
+
+
+def test_real_bundle_roundtrips_browser_vfs_and_rejects_corruption(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "source"
+    # Forces the USTAR prefix field; the old reader silently truncated this name.
+    name = "package/" + "nested/" * 15 + "caf\u00e9.py"
+    source = root / name
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"VALUE = 42\n")
+    (root / "empty.py").write_bytes(b"")
+    output = tmp_path / "bundle.tar"
+    write_wasm_bundle((root,), output)
+    module = Path(__file__).resolve().parents[1] / "wasm" / "molt_vfs_browser.js"
+    js = f"""
+const {{ BundleFs }} = require({json.dumps(str(module))});
+const bytes = require('fs').readFileSync({json.dumps(str(output))});
+const fs = BundleFs.fromTar(bytes);
+const damaged = Buffer.from(bytes);
+damaged[0] ^= 1;
+const errors = [];
+for (const payload of [damaged, bytes.subarray(0, 1025)]) {{
+  try {{ BundleFs.fromTar(payload); errors.push('accepted'); }}
+  catch (error) {{ errors.push(error.message); }}
+}}
+console.log(JSON.stringify({{
+  value: Buffer.from(fs.read({json.dumps(name)})).toString('utf8'),
+  empty: fs.read('empty.py').length, errors,
+}}));
+"""
+    result = run_native_test_process(
+        ["node", "-e", js],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    result_payload = json.loads(result.stdout)
+    assert result_payload["value"] == "VALUE = 42\n"
+    assert result_payload["empty"] == 0
+    assert result_payload["errors"][0] == "bundle tar checksum mismatch"
+    assert "truncated" in result_payload["errors"][1]

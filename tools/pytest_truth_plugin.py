@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from tools.artifact_publish import atomic_write_json
+from molt.artifact_publication import atomic_write_json
 
 RECEIPT_ENV = "MOLT_PYTEST_TRUTH_RECEIPT"
 MINIMUM_ENV = "MOLT_PYTEST_TRUTH_MINIMUM_EXECUTED"

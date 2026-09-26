@@ -611,6 +611,63 @@ def split_build_b(tmp_path_factory):
 class TestSplitRuntimeArtifacts:
     """Verify the split-runtime build produces all expected artifacts."""
 
+    def test_repeated_build_preserves_complete_generation_and_executes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two real builds, one deployed generation, then its actual Node consumer."""
+        from molt.cli.link_fingerprints import _read_link_fingerprint
+        from molt.artifact_publication import publication_receipt_path
+        from molt.cli.static_archive_identity import artifact_content_identity
+
+        state_root = tmp_path / "build-state"
+        monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(state_root))
+        source = tmp_path / "program.py"
+        source.write_text(PROGRAM_A, encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        first = _build_split(source, out)
+        assert first.returncode == 0, first.stderr[-4000:]
+        receipt_path = publication_receipt_path(out / "manifest.json")
+        receipt = _read_link_fingerprint(receipt_path)
+        assert receipt is not None
+        assert {
+            "app",
+            "runtime",
+            "manifest",
+            "worker_js",
+            "wrangler_config",
+            "target_features",
+        } <= receipt["outputs"].keys()
+        before = {
+            Path(record["path"]): (
+                Path(record["path"]).stat().st_mtime_ns,
+                artifact_content_identity(Path(record["path"])),
+            )
+            for record in receipt["outputs"].values()
+        }
+        before[receipt_path] = (
+            receipt_path.stat().st_mtime_ns,
+            artifact_content_identity(receipt_path),
+        )
+        second = _build_split(source, out)
+        assert second.returncode == 0, second.stderr[-4000:]
+        assert _read_link_fingerprint(receipt_path) == receipt
+        assert {
+            path: (path.stat().st_mtime_ns, artifact_content_identity(path))
+            for path in before
+        } == before
+        manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+        for role, descriptor in manifest["modules"].items():
+            module = out / descriptor["path"]
+            assert descriptor["sha256"] == _sha256(module)
+            assert descriptor["size"] == module.stat().st_size
+            assert receipt["outputs"][role]["identity"] == artifact_content_identity(
+                module
+            )
+        executed = _run_split_direct(out)
+        assert executed.returncode == 0, executed.stderr
+        assert executed.stdout.strip() == "42"
+
     def test_build_succeeds(self, split_build_a):
         out_dir, result = split_build_a
         assert result.returncode == 0, (

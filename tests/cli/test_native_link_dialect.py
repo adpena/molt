@@ -161,6 +161,8 @@ def test_final_gnu_coff_link_has_no_msvc_archive_policy_or_definition_options(
     assert "-Wl,--no-insert-timestamp" in plan.command
     assert "-Wl,--icf=none" in plan.command
     assert str(tmp_path / ".molt_exports.def") in plan.command
+    assert not (tmp_path / ".molt_exports.def").exists()
+    assert plan.sidecars[0].content.startswith(b"EXPORTS\n")
     assert not any(
         any(option in arg for option in ("/OPT:", "/DEF:", "/WHOLEARCHIVE:", "/Brepro"))
         for arg in plan.command

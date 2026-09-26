@@ -6,10 +6,10 @@ import subprocess
 import sys
 import time
 import traceback
-import uuid
 from pathlib import Path
 from typing import Collection, Sequence
 
+from molt import file_publication
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli import link_fingerprints
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
@@ -40,6 +40,7 @@ from molt.cli.native_link_command import (
 from molt.cli.native_link_plan import (
     _host_target_triple,
     NativeArtifactKind,
+    native_link_execution_command as _native_link_execution_command,
     resolve_native_target_spec,
     validate_native_object_artifact,
 )
@@ -78,28 +79,6 @@ def _run_native_link_command(
             output=result.stdout,
             stderr=result.stderr,
         )
-    return result
-
-
-def _native_link_execution_command(
-    command: Sequence[str],
-    *,
-    planned_output: Path,
-    execution_output: Path,
-) -> list[str]:
-    """Retarget only the canonical `-o` operand to a private link candidate."""
-    result = list(command)
-    matches = [
-        index
-        for index in range(1, len(result))
-        if result[index - 1] == "-o" and result[index] == str(planned_output)
-    ]
-    if len(matches) != 1:
-        raise RuntimeError(
-            "Native link plan must contain exactly one canonical output operand; "
-            f"found {len(matches)} for {planned_output}."
-        )
-    result[matches[0]] = str(execution_output)
     return result
 
 
@@ -301,9 +280,7 @@ def _prepare_native_link(
             f"Zig target normalized to {normalized_target} from {target_triple}."
         )
 
-    link_fingerprint_path = link_fingerprints._link_fingerprint_path(
-        project_root, output_binary, profile, target_triple
-    )
+    link_fingerprint_path = link_fingerprints._link_fingerprint_path(output_binary)
     stored_link_fingerprint = link_fingerprints._read_link_fingerprint(
         link_fingerprint_path
     )
@@ -326,7 +303,7 @@ def _prepare_native_link(
     ]
     try:
         validate_link_output_paths(
-            {"binary": output_binary},
+            {"binary": output_binary, "receipt": link_fingerprint_path},
             inputs=(
                 *link_inputs,
                 *((stdlib_obj_path,) if stdlib_obj_path is not None else ()),
@@ -339,7 +316,10 @@ def _prepare_native_link(
         )
     except (OSError, ValueError) as exc:
         return None, _fail(str(exc), json_output, command="build")
-    link_tool_facts = native_link_cache_tool_facts(link_plan)
+    link_tool_facts = [
+        *native_link_cache_tool_facts(link_plan),
+        *link_plan.sidecar_facts(),
+    ]
     link_fingerprint = link_fingerprints._link_fingerprint(
         project_root=project_root,
         inputs=link_inputs,
@@ -352,7 +332,7 @@ def _prepare_native_link(
     link_skipped = link_fingerprints._link_outputs_match(
         outputs={"binary": output_binary},
         fingerprint=link_fingerprint,
-        stored_fingerprint=stored_link_fingerprint,
+        receipt_path=link_fingerprint_path,
     )
     # BOLT replaces the linked image with a post-link transformed artifact.
     # Always recreate the unoptimized, relocation-bearing input before another
@@ -368,30 +348,32 @@ def _prepare_native_link(
             stderr="",
         )
     else:
-        link_output = output_binary.with_name(
-            f".{output_binary.stem}.link-{os.getpid()}-{uuid.uuid4().hex}"
-            f"{output_binary.suffix}"
+        link_output = file_publication.staged_file_path(
+            output_binary,
+            purpose="native-link",
+            suffix=output_binary.suffix or ".tmp",
         )
-        try:
-            execution_link_cmd = _native_link_execution_command(
-                link_cmd,
-                planned_output=output_binary,
-                execution_output=link_output,
-            )
-        except RuntimeError as exc:
-            return None, _fail(str(exc), json_output, command="build")
         if diagnostics_enabled and "link" not in phase_starts:
             phase_starts["link"] = time.perf_counter()
         try:
-            link_process = _run_native_link_command(
-                link_cmd=execution_link_cmd,
-                json_output=json_output,
-                link_timeout=link_timeout,
-            )
+            with _native_link_execution_command(
+                link_plan,
+                planned_output=output_binary,
+                execution_output=link_output,
+            ) as execution_link_cmd:
+                link_process = _run_native_link_command(
+                    link_cmd=execution_link_cmd,
+                    json_output=json_output,
+                    link_timeout=link_timeout,
+                )
         except subprocess.TimeoutExpired:
             with contextlib.suppress(OSError):
                 link_output.unlink()
             return None, _fail("Linker timed out", json_output, command="build")
+        except (OSError, ValueError, RuntimeError) as exc:
+            with contextlib.suppress(OSError):
+                link_output.unlink()
+            return None, _fail(str(exc), json_output, command="build")
         if (
             link_process.returncode == 0
             and sys.platform == "darwin"

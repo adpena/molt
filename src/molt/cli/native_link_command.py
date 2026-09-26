@@ -7,7 +7,6 @@ import shlex
 import sys
 from typing import Sequence
 
-from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.compiler_target import (
     compiler_target_triple,
     validate_compiler_target,
@@ -31,6 +30,7 @@ from molt.cli.native_link_plan import (
     LinkDialect,
     NativeArtifactKind,
     NativeLinkPlan,
+    NativeLinkSidecar,
     NativeObjectFormat,
     _host_target_triple,
     native_link_capabilities,
@@ -375,6 +375,7 @@ def _build_native_link_plan(
             ]
         )
     link_cmd.extend(link_inputs)
+    sidecars: list[NativeLinkSidecar] = []
 
     if target.object_format is NativeObjectFormat.MACHO:
         exported_symbols_path = output_binary.parent / ".molt_exports.exp"
@@ -382,7 +383,15 @@ def _build_native_link_plan(
         if has_external_inputs:
             for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES:
                 link_cmd.append(f"-Wl,-alias,_{storage},_{canonical}")
-        _atomic_write_text(exported_symbols_path, "\n".join(exported_symbols) + "\n")
+        sidecars.append(
+            NativeLinkSidecar(
+                role="macho-exports",
+                planned_path=exported_symbols_path,
+                content=("\n".join(exported_symbols) + "\n").encode("utf-8"),
+                command_index=len(link_cmd),
+                operand_prefix="-Wl,-exported_symbols_list,",
+            )
+        )
         link_cmd.append(f"-Wl,-exported_symbols_list,{exported_symbols_path}")
         link_cmd.append("-lc++")
     elif target.object_format is NativeObjectFormat.ELF:
@@ -403,7 +412,15 @@ def _build_native_link_plan(
                 f"-Wl,--defsym={canonical}={storage}"
                 for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES
             )
-        _atomic_write_text(version_script_path, f"{{ global: {globals} local: *; }};\n")
+        sidecars.append(
+            NativeLinkSidecar(
+                role="elf-version-script",
+                planned_path=version_script_path,
+                content=f"{{ global: {globals} local: *; }};\n".encode("utf-8"),
+                command_index=len(link_cmd),
+                operand_prefix="-Wl,--version-script=",
+            )
+        )
         link_cmd.append(f"-Wl,--version-script={version_script_path}")
         link_cmd.append("-lstdc++")
         link_cmd.append("-lm")
@@ -418,7 +435,21 @@ def _build_native_link_plan(
                     ),
                 )
             )
-            _atomic_write_text(def_path, f"EXPORTS\n{exports}\n")
+            sidecars.append(
+                NativeLinkSidecar(
+                    role="coff-exports",
+                    planned_path=def_path,
+                    content=f"EXPORTS\n{exports}\n".encode("utf-8"),
+                    command_index=(
+                        len(link_cmd) + 1
+                        if target.link_dialect is LinkDialect.COFF_MSVC
+                        else len(link_cmd)
+                    ),
+                    operand_prefix=(
+                        "/DEF:" if target.link_dialect is LinkDialect.COFF_MSVC else ""
+                    ),
+                )
+            )
             if target.link_dialect is LinkDialect.COFF_MSVC:
                 link_cmd.extend(("-Xlinker", f"/DEF:{def_path}"))
             else:
@@ -445,4 +476,5 @@ def _build_native_link_plan(
         command=tuple(link_cmd),
         linker_hint=selected_linker_name,
         normalized_target=normalized_target,
+        sidecars=tuple(sidecars),
     )

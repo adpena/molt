@@ -49,6 +49,25 @@ def test_capture_bytes_and_identity_share_one_stable_read(tmp_path, monkeypatch)
     assert read_sizes == [-1]
 
 
+def test_mutation_version_avoids_hashing_and_detects_restored_timestamps(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "payload"
+    path.write_bytes(b"original")
+    before = path.stat()
+
+    def forbid_hash(*args, **kwargs):
+        pytest.fail("mutation-only capture must not read payload bytes")
+
+    monkeypatch.setattr(identity, "_sha256_stream", forbid_hash)
+    version = identity.stable_regular_file_version(path, label="payload")
+    identity.verify_stable_regular_file_identity(version, label="payload")
+    path.write_bytes(b"modified")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(ValueError, match="changed"):
+        identity.verify_stable_regular_file_identity(version, label="payload")
+
+
 def test_capture_rejects_short_source_read(tmp_path, monkeypatch):
     path = tmp_path / "source.py"
     path.write_bytes(b"print('captured')\n")

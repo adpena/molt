@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from molt import exact_json, file_publication
+from molt import exact_json, file_deletion, file_publication
 
 
 @pytest.mark.parametrize("factory", [dict, UserDict, MappingProxyType])
@@ -209,10 +209,10 @@ def test_owned_cleanup_rejects_resolved_filesystem_root(
     root = Path(tmp_path.anchor)
     supplied = root / "molt-missing-child" / ".." if parent_traversal else root
 
-    def refuse_delete(path: Path) -> None:
+    def refuse_delete(path: Path, **kwargs) -> None:
         raise AssertionError(f"root must be rejected before deletion: {path}")
 
-    monkeypatch.setattr(file_publication.shutil, "rmtree", refuse_delete)
+    monkeypatch.setattr(file_deletion.shutil, "rmtree", refuse_delete)
     with pytest.raises(ValueError, match="real owned leaf"):
         file_publication.durable_remove_path(supplied)
 
@@ -269,6 +269,20 @@ def test_retirement_moves_same_parent_before_reclamation(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_retirement_reclaims_readonly_payload(tmp_path: Path, kind: str) -> None:
+    source = tmp_path / "readonly"
+    if kind == "directory":
+        source.mkdir()
+        payload = source / "pack.idx"
+    else:
+        payload = source
+    payload.write_bytes(b"retired payload")
+    payload.chmod(0o444)
+    file_publication.durable_remove_path(source, retirement_scope="owned")
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_retirement_barrier_failure_retains_intact_payload_and_new_live_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -305,11 +319,11 @@ def test_retirement_recovery_rejects_substituted_identity_and_preserves_other_sc
     (source / "journal").write_bytes(b"old")
     with monkeypatch.context() as faults:
 
-        def partial_remove(path):
+        def partial_remove(path, **kwargs):
             (path / "journal").unlink()
             raise OSError("injected after journal removal")
 
-        faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+        faults.setattr(file_deletion.shutil, "rmtree", partial_remove)
         with pytest.raises(file_publication.RetirementError) as caught:
             file_publication.durable_remove_path(source, retirement_scope="owned")
     retired = caught.value.retired_path

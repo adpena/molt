@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import functools
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ from molt.cli.llvm_wasi_tools import (
     llvm_named_tool_candidates,
     llvm_tool_candidates,
 )
-from molt.cli.native_link_plan import NativeLinkPlan
+from molt.cli.native_link_plan import NativeLinkPlan, native_link_execution_command
 from molt.llvm_linker_roles import (
     executable_selects_linker_role,
     lexical_executable_path,
@@ -109,19 +110,37 @@ def _system_linker_from_driver(driver: Path) -> Path | None:
 
 
 def _linker_from_driver_trace(plan: NativeLinkPlan, driver: Path) -> Path | None:
-    command = list(plan.command)
-    command[0] = str(driver)
-    insert_at = 2 if driver.stem.lower() == "zig" and command[1:2] == ["cc"] else 1
-    command.insert(insert_at, "-###")
-    try:
-        result = process_guard.run_completed_command(
-            command,
-            cwd=driver.parent,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
+    output_operands = [
+        plan.command[index]
+        for index in range(1, len(plan.command))
+        if plan.command[index - 1] == "-o"
+    ]
+    if plan.sidecars and len(output_operands) != 1:
+        raise RuntimeError("native link sidecar trace requires one planned output")
+    command_context = (
+        native_link_execution_command(
+            plan,
+            planned_output=Path(output_operands[0]),
+            execution_output=Path(output_operands[0]),
         )
+        if plan.sidecars
+        else nullcontext(list(plan.command))
+    )
+    try:
+        with command_context as command:
+            command[0] = str(driver)
+            insert_at = (
+                2 if driver.stem.lower() == "zig" and command[1:2] == ["cc"] else 1
+            )
+            command.insert(insert_at, "-###")
+            result = process_guard.run_completed_command(
+                command,
+                cwd=driver.parent,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
     except (OSError, subprocess.SubprocessError):
         return None
     paths = re.findall(r'"([^"\r\n]+)"', result.stderr)

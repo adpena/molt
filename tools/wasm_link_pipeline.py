@@ -15,6 +15,7 @@ from typing import Any, Literal
 from wasm_link_format import CallableTableLayout
 from molt.dx import proof_scratch_root
 from molt.link_outputs import wasm_link_output_paths
+from molt.cli.link_fingerprints import FinalLinkReceiptRequest, publish_link_outputs
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkInput,
     SourceExtensionLinkRequirements,
@@ -45,6 +46,7 @@ def run_wasm_ld_with_custodied_inputs(
     phase_timings_file: Path | None = None,
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
+    link_receipt: FinalLinkReceiptRequest | None = None,
 ) -> int:
     phase_timings_ms: dict[str, float] = {}
     facts_metrics: dict[str, float] = {}
@@ -1361,7 +1363,7 @@ def run_wasm_ld_with_custodied_inputs(
                 )
             return 1
 
-        publish_pairs = [(work_linked, linked)]
+        publish_candidates = {"linked": (work_linked, linked)}
         validation_start = time.perf_counter()
         if split_runtime:
             assert app_stage is not None
@@ -1372,12 +1374,10 @@ def run_wasm_ld_with_custodied_inputs(
             assert size_attestation_stage is not None
             if not api["_validate_split_runtime_outputs"](app_stage, rt_stage):
                 return 1
-            publish_pairs.extend(
-                [
-                    (rt_stage, rt_wasm),
-                    (app_stage, app_wasm),
-                    (size_attestation_stage, size_attestation_path),
-                ]
+            publish_candidates.update(
+                runtime=(rt_stage, rt_wasm),
+                app=(app_stage, app_wasm),
+                size_attestation=(size_attestation_stage, size_attestation_path),
             )
         phase_timings_ms["fail_closed_validation"] = round(
             phase_timings_ms.get("fail_closed_validation", 0.0)
@@ -1385,8 +1385,8 @@ def run_wasm_ld_with_custodied_inputs(
             6,
         )
         try:
-            api["artifact_publish"].publish_validated_outputs(publish_pairs)
-        except OSError as exc:
+            publish_link_outputs(publish_candidates, receipt=link_receipt)
+        except (OSError, ValueError, RuntimeError) as exc:
             print(f"Failed to publish wasm linker outputs: {exc}", file=sys.stderr)
             return 1
 
