@@ -434,9 +434,11 @@ fn deliver_worker_response(
             Some(&message),
             response.metrics.as_ref(),
         );
-        let _ = exports
-            .stream_close
-            .call(caller, &[Val::I64(stream_bits as i64)], &mut []);
+        let _ = call_i64(
+            &exports.stream_close,
+            caller,
+            &[Val::I64(stream_bits as i64)],
+        );
         return;
     }
 
@@ -468,9 +470,11 @@ fn deliver_worker_response(
             response.metrics.as_ref(),
         );
     }
-    let _ = exports
-        .stream_close
-        .call(caller, &[Val::I64(stream_bits as i64)], &mut []);
+    let _ = call_i64(
+        &exports.stream_close,
+        caller,
+        &[Val::I64(stream_bits as i64)],
+    );
 }
 
 fn fail_pending_requests(

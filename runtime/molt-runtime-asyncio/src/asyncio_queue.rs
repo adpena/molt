@@ -565,7 +565,7 @@ pub extern "C" fn molt_asyncio_queue_is_shutdown(handle_bits: u64) -> u64 {
 
 /// Drop and clean up a queue handle. All remaining items are dec_ref'd.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_drop(handle_bits: u64) {
+pub extern "C" fn molt_asyncio_queue_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
 
@@ -580,5 +580,5 @@ pub extern "C" fn molt_asyncio_queue_drop(handle_bits: u64) {
         }
 
         MoltObject::none().bits()
-    });
+    })
 }

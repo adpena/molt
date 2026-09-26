@@ -48,7 +48,8 @@ def test_llvm_generic_eligibility_uses_generated_boxed_contracts() -> None:
 
     actual = AUDIT.extract_llvm_boxed_runtime_abis()
     assert actual == {fact.symbol: fact for fact in runtime_boxed_abi_facts().values()}
-    assert actual["molt_spawn"].return_abi == "Void"
+    assert actual["molt_spawn"].return_abi == "I64"
+    assert actual["molt_print_newline"].return_abi == "Void"
     assert actual["molt_cell_new"].arity == 1
     for symbol in (
         "molt_int_from_i64",

@@ -228,7 +228,13 @@ Independent of all in-flight arcs. Adding `regex` crate to `molt-runtime-regex/C
 
 **math.** `/Users/adpena/Projects/molt/runtime/molt-runtime/src/builtins/math.rs:1-60+` — full `stdlib_math` feature, backed by `libm` on WASM and native `f64` on x86/arm64. `math.sumprod` (3.12 new) implemented. Most transcendentals present. `cmath` is partial (doc 16: "complex math pending complex literal support"). `statistics` has `NormalDist` pending.
 
-**decimal.** `/Users/adpena/Projects/molt/runtime/molt-runtime/src/builtins/decimal.rs:1-13` — conditional dispatch: `decimal_with_mpdec.rs` when `molt_has_mpdec` is set, else `decimal_without_mpdec.rs:1-80+`. The without-mpdec version is a complete pure-Rust reimplementation using `BigInt` arithmetic. Doc 16 marks decimal as "Full — complete 3.12 API." The key gap: no `libmpdec` (C library used by CPython) binding. The pure-Rust path may have performance gaps on very high precision.
+**decimal.** `runtime/molt-runtime-serial/src/decimal.rs` is the shared native/WASM
+authority using `BigInt` arithmetic; the former with/without-libmpdec split and
+build selection are retired. The
+[stdlib surface matrix](../../spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)
+marks support partial, not full CPython compatibility. High-precision correctness
+and performance require differential execution and measurements against this
+implementation; a libmpdec binding is not an existing alternate runtime path.
 
 **random.** `/Users/adpena/Projects/molt/runtime/molt-runtime/src/builtins/random_mod.rs:1-80+` — Mersenne Twister (MT19937), parameters match CPython's `_randommodule.c`. Handle model: `Mutex<HashMap<i64, MersenneTwisterRng>>`. Distribution algorithms are described as "follows CPython 3.12 random.py exactly." `getrandom::fill` for OS entropy. Determinism contract: seeded Random instances produce identical output to CPython — critical for reproducible ML training and test fixtures.
 

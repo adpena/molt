@@ -250,7 +250,6 @@ def test_runtime_source_paths_follow_runtime_feature_closure() -> None:
         "Cargo.toml",
         "Cargo.lock",
         "LICENSE",
-        "third_party/cpython/Modules/_decimal/libmpdec",
     }
     assert common_paths.issubset(micro_paths)
     assert common_paths.issubset(full_paths)
@@ -263,6 +262,8 @@ def test_runtime_source_paths_follow_runtime_feature_closure() -> None:
     assert "runtime/molt-runtime-stringprep" in full_paths
     assert "runtime/molt-runtime-http" in full_paths
     assert "runtime/molt-runtime-tk" in full_paths
+    assert "runtime/molt-runtime-serial" in full_paths
+    assert all((ROOT / path).exists() for path in micro_paths | full_paths)
 
 
 def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:

@@ -1871,7 +1871,7 @@ type = 27
 
 [[import]]
 name = "spawn"
-type = 1
+type = 2
 
 [[import]]
 name = "task_new"
@@ -3793,17 +3793,15 @@ callable_arity = 1
 
 [[import]]
 name = "stream_close"
-type = 1
+type = 2
 runtime_name = "molt_stream_close"
 callable_arity = 1
-callable_result = "void"
 
 [[import]]
 name = "stream_drop"
-type = 1
+type = 2
 runtime_name = "molt_stream_drop"
 callable_arity = 1
-callable_result = "void"
 
 [[import]]
 name = "stream_new"
@@ -4516,10 +4514,9 @@ callable_arity = 1
 
 [[import]]
 name = "socket_drop"
-type = 1
+type = 2
 runtime_name = "molt_socket_drop"
 callable_arity = 1
-callable_result = "void"
 
 [[import]]
 name = "socket_fileno"
@@ -4870,10 +4867,9 @@ callable_arity = 3
 
 [[import]]
 name = "process_drop"
-type = 1
+type = 2
 runtime_name = "molt_process_drop"
 callable_arity = 1
-callable_result = "void"
 
 [[import]]
 name = "process_kill"
@@ -5245,10 +5241,9 @@ callable_arity = 1
 
 [[import]]
 name = "ws_close"
-type = 1
+type = 2
 runtime_name = "molt_ws_close"
 callable_arity = 1
-callable_result = "void"
 
 [[import]]
 name = "ws_connect"
@@ -5262,10 +5257,9 @@ callable_arity = 1
 
 [[import]]
 name = "ws_drop"
-type = 1
+type = 2
 runtime_name = "molt_ws_drop"
 callable_arity = 1
-callable_result = "void"
 
 [[import]]
 name = "ws_pair"

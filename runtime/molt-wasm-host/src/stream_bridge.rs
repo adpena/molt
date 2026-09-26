@@ -114,7 +114,7 @@ pub(super) fn new_stream(
         errors.push(cleanup.to_string());
         if let Some(bits) = stream {
             // Opaque stream handles are not object-refcount owners.
-            if let Err(error) = exports.stream_drop.call(caller, &[Val::I64(bits)], &mut []) {
+            if let Err(error) = call_i64(&exports.stream_drop, caller, &[Val::I64(bits)]) {
                 errors.push(error.to_string());
             }
         }
@@ -262,9 +262,11 @@ pub(super) fn send_stream_error(
         Some(message),
         None,
     )?;
-    exports
-        .stream_close
-        .call(caller, &[Val::I64(stream_bits as i64)], &mut [])?;
+    call_i64(
+        &exports.stream_close,
+        caller,
+        &[Val::I64(stream_bits as i64)],
+    )?;
     Ok(())
 }
 
@@ -302,11 +304,12 @@ mod tests {
                     local.get 0 i64.const 123 i64.ne if unreachable end
                     i32.const 0 global.set $boxes
                     i32.const {mode} i32.const 3 i32.ge_s if unreachable end)
-                (func (export "molt_stream_drop") (param i64)
+                (func (export "molt_stream_drop") (param i64) (result i64)
                     local.get 0 i64.const 456 i64.ne if unreachable end
                     i32.const 0 global.set $streams
-                    i32.const 1 global.set $dropped)
-                (func (export "molt_stream_close") (param i64))
+                    i32.const 1 global.set $dropped i64.const 0x7ffb000000000000)
+                (func (export "molt_stream_close") (param i64) (result i64)
+                    i64.const 0x7ffb000000000000)
                 (func (export "molt_stream_send") (param i64 i32 i64) (result i64) i64.const 0)
                 (func (export "molt_alloc") (param i64) (result i64) i64.const 0)
                 (func (export "molt_handle_resolve") (param i64) (result i64) i64.const 0)
@@ -334,7 +337,7 @@ mod tests {
             if mode == 0 {
                 assert_eq!(result.unwrap(), 456);
                 instance
-                    .get_typed_func::<i64, ()>(&mut store, "molt_stream_drop")
+                    .get_typed_func::<i64, i64>(&mut store, "molt_stream_drop")
                     .unwrap()
                     .call(&mut store, 456)
                     .unwrap();

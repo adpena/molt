@@ -1524,16 +1524,16 @@ pub unsafe extern "C" fn molt_ws_recv(ws_bits: u64) -> i64 {
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is a valid websocket pointer.
-pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) {
+pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
-            return;
+            return MoltObject::none().bits();
         }
         // SAFETY: caller contract guarantees `ws_bits` points to a live websocket.
         let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
         if ws.closed.swap(true, AtomicOrdering::AcqRel) {
-            return;
+            return MoltObject::none().bits();
         }
         if let Some(hook) = ws.close_hook {
             hook(ws.hook_ctx);
@@ -1544,19 +1544,21 @@ pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) {
                 .io_poller()
                 .deregister_socket(_py, ws_ptr);
         }
+        MoltObject::none().bits()
     })
 }
 
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is a valid websocket pointer.
-pub unsafe extern "C" fn molt_ws_drop(ws_bits: u64) {
+pub unsafe extern "C" fn molt_ws_drop(ws_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
-            return;
+            return MoltObject::none().bits();
         }
         ws_ref_dec(_py, ws_ptr as *mut MoltWebSocket);
+        MoltObject::none().bits()
     })
 }
 

@@ -337,16 +337,17 @@ pub unsafe extern "C" fn molt_stream_reader_new(stream_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid stream reader handle from `molt_stream_reader_new`.
-pub unsafe extern "C" fn molt_stream_reader_drop(reader_bits: u64) {
+pub unsafe extern "C" fn molt_stream_reader_drop(reader_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let reader_ptr = ptr_from_bits(reader_bits);
         if reader_ptr.is_null() {
-            return;
+            return MoltObject::none().bits();
         }
         // SAFETY: ownership of the boxed reader is transferred for drop.
         let reader = unsafe { Box::from_raw(reader_ptr as *mut MoltStreamReader) };
         // SAFETY: stream handle was retained when this reader was created.
         unsafe { molt_stream_drop(reader.stream_bits) };
+        MoltObject::none().bits()
     })
 }
 
@@ -671,11 +672,11 @@ pub unsafe extern "C" fn molt_stream_recv(stream_bits: u64) -> i64 {
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `stream_bits` is a valid stream pointer.
-pub unsafe extern "C" fn molt_stream_close(stream_bits: u64) {
+pub unsafe extern "C" fn molt_stream_close(stream_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let stream_ptr = ptr_from_bits(stream_bits);
         if stream_ptr.is_null() {
-            return;
+            return MoltObject::none().bits();
         }
         // SAFETY: caller contract guarantees `stream_bits` points to a live stream.
         let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
@@ -683,22 +684,23 @@ pub unsafe extern "C" fn molt_stream_close(stream_bits: u64) {
             hook(stream.hook_ctx);
         }
         stream_close_local(stream);
+        MoltObject::none().bits()
     })
 }
 
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `stream_bits` is a valid stream pointer.
-pub unsafe extern "C" fn molt_stream_drop(stream_bits: u64) {
+pub unsafe extern "C" fn molt_stream_drop(stream_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let stream_ptr = ptr_from_bits(stream_bits);
         if stream_ptr.is_null() {
-            return;
+            return MoltObject::none().bits();
         }
         // SAFETY: caller contract guarantees `stream_bits` points to a live stream.
         let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
         if stream.refs.fetch_sub(1, AtomicOrdering::AcqRel) > 1 {
-            return;
+            return MoltObject::none().bits();
         }
         if !stream.closed.load(AtomicOrdering::Relaxed)
             && let Some(hook) = stream.close_hook
@@ -709,6 +711,7 @@ pub unsafe extern "C" fn molt_stream_drop(stream_bits: u64) {
         release_ptr(stream_ptr);
         // SAFETY: this is the final ref-counted owner.
         unsafe { drop(Box::from_raw(stream_ptr as *mut MoltStream)) };
+        MoltObject::none().bits()
     })
 }
 #[cfg(test)]

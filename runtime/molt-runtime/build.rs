@@ -2,8 +2,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use cc::Build;
-
 #[path = "../build_support/build_python.rs"]
 mod build_python;
 #[path = "../build_support/unicode_tables.rs"]
@@ -21,10 +19,7 @@ fn main() {
         println!("cargo:rustc-env=MOLT_CARGO_{key}={value}");
     }
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let target_family = env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
-    let target_ptr_width = env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_default();
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR missing"));
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let build_python = build_python::resolve();
@@ -33,8 +28,6 @@ fn main() {
     // The manifest owns only the dependency rlib. Final native/WASM producers
     // select their exact external crate types at Cargo level; Cargo's artifact
     // report, rather than a fixed-name target alias, owns publication identity.
-    let _ = &target_os;
-    println!("cargo:rustc-check-cfg=cfg(molt_has_mpdec)");
     emit_cpython_abi_requested_export_anchors(&out_dir, &target_arch);
 
     // Emit `molt_has_net_io` only when the target has Molt's native socket ABI
@@ -51,16 +44,6 @@ fn main() {
         if env::var("CARGO_FEATURE_STDLIB_NET").is_ok() {
             println!("cargo:rustc-cfg=molt_has_net_io");
         }
-    }
-
-    if build_libmpdec(
-        &manifest_dir,
-        &out_dir,
-        &target_env,
-        &target_ptr_width,
-        &target_arch,
-    ) {
-        println!("cargo:rustc-cfg=molt_has_mpdec");
     }
 
     emit_wasm_long_double_link_policy(&out_dir, &target_arch);
@@ -274,116 +257,4 @@ fn resolve_wasm_link_archive(env_key: &str, file_name: &str) -> Option<PathBuf> 
     } else {
         None
     }
-}
-
-fn build_libmpdec(
-    manifest_dir: &Path,
-    out_dir: &Path,
-    target_env: &str,
-    target_ptr_width: &str,
-    target_arch: &str,
-) -> bool {
-    let repo_root = manifest_dir
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("failed to locate repo root");
-    let libmpdec_dir = repo_root.join("third_party/cpython/Modules/_decimal/libmpdec");
-    let sources = [
-        "basearith.c",
-        "constants.c",
-        "context.c",
-        "convolute.c",
-        "crt.c",
-        "difradix2.c",
-        "fnt.c",
-        "fourstep.c",
-        "io.c",
-        "mpalloc.c",
-        "mpdecimal.c",
-        "numbertheory.c",
-        "sixstep.c",
-        "transpose.c",
-    ];
-    let headers = [
-        "basearith.h",
-        "bits.h",
-        "constants.h",
-        "convolute.h",
-        "crt.h",
-        "difradix2.h",
-        "fnt.h",
-        "fourstep.h",
-        "io.h",
-        "mpalloc.h",
-        "mpdecimal.h",
-        "numbertheory.h",
-        "sixstep.h",
-        "transpose.h",
-        "typearith.h",
-        "umodarith.h",
-    ];
-
-    for file in sources.iter().chain(headers.iter()) {
-        println!(
-            "cargo:rerun-if-changed={}",
-            libmpdec_dir.join(file).display()
-        );
-    }
-
-    let pyconfig = out_dir.join("pyconfig.h");
-    if !pyconfig.exists() {
-        fs::write(
-            &pyconfig,
-            "#ifndef Py_CONFIG_H\n#define Py_CONFIG_H\n#endif\n",
-        )
-        .expect("failed to write stub pyconfig.h");
-    }
-    println!("cargo:rerun-if-changed={}", pyconfig.display());
-
-    let missing: Vec<String> = sources
-        .iter()
-        .chain(headers.iter())
-        .map(|name| libmpdec_dir.join(name))
-        .filter(|path| !path.exists())
-        .map(|path| path.display().to_string())
-        .collect();
-    if !missing.is_empty() {
-        return false;
-    }
-
-    let mut build = Build::new();
-    build.include(&libmpdec_dir);
-    build.include(out_dir);
-    for src in sources {
-        build.file(libmpdec_dir.join(src));
-    }
-    build.flag_if_supported("-std=c99");
-    build.define("ANSI", "1");
-    if target_ptr_width == "64" {
-        build.define("CONFIG_64", "1");
-        if target_env != "msvc" {
-            build.define("HAVE_UINT128_T", "1");
-        }
-    } else {
-        build.define("CONFIG_32", "1");
-    }
-    if target_arch == "wasm32" {
-        build.define("_WASI_EMULATED_SIGNAL", "1");
-        let Some(sysroot) = wasi_sysroot::resolve_wasi_sysroot() else {
-            panic!(
-                "WASI sysroot not found: set MOLT_WASI_SYSROOT, WASI_SYSROOT, \
-                 WASI_SDK_PATH, WASI_SDK_PREFIX, or MOLT_TARGET_ROOT so \
-                 wasm32-wasip1 runtime C shims can compile."
-            );
-        };
-        build.flag(sysroot.sysroot_flag());
-        if let Some(include_dir) = sysroot.include_dir() {
-            build.include(include_dir);
-        }
-        let lib_path = sysroot.lib_dir("wasm32-wasip1");
-        println!("cargo:rustc-link-search=native={}", lib_path.display());
-        println!("cargo:rustc-link-lib=wasi-emulated-signal");
-    }
-    build.compile("molt_mpdec");
-    true
 }

@@ -322,10 +322,6 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
     },
 ];
 
-#[rustfmt::skip]
-const VOID_RESERVED_RUNTIME_CALLABLE_INDICES: &[u64] = &[
-];
-
 #[inline]
 pub(crate) fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
     runtime_reserved_callable_key_from_symbol_name(symbol_name)
@@ -424,14 +420,6 @@ fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> 
 pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
     runtime_reserved_callable_target_ptr(fn_ptr)
         .or_else(|| runtime_poll_callable_target_ptr(fn_ptr))
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-pub(crate) fn runtime_callable_returns_void_from_target_ptr(fn_ptr: u64) -> bool {
-    fn_ptr
-        .checked_sub(RUNTIME_CALLABLE_KEY_BASE)
-        .is_some_and(|idx| VOID_RESERVED_RUNTIME_CALLABLE_INDICES.contains(&idx))
 }
 
 #[inline]

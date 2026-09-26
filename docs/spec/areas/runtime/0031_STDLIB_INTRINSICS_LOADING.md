@@ -52,6 +52,17 @@ names and `_molt_` aliases, not inferred Python spellings. Runtime unit tests
 without a compiled app use generated, test-only callable address fixtures; an
 installed app resolver's miss is authoritative even in tests.
 
+Every Python-callable intrinsic provider uses boxed-object arguments and a
+boxed-object result on native and WASM, including providers annotated `-> None`.
+Those providers return canonical boxed `None`; C `void` is not a Python return
+value. ABI generation rejects differing native/WASM provider signatures rather
+than inferring a callable convention from the implementation. Raw internal C
+helpers remain a separate, non-Python-callable surface. App-resolved addresses,
+builtin wrappers, bound calls and keyword/default binding share this contract.
+The CLI and host adapters consume normalized import signatures directly;
+callable admission retains only its distinct arity metadata, not a second
+result-type table or signature-reconstruction fallback.
+
 Canonical `builtins` publication atomically seeds the runtime-backed Python
 namespace before either generated module metadata or the Python body can import
 another module. Class names and their public/internal distinction come from the

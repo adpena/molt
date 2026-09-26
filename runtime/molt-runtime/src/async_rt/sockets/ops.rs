@@ -190,13 +190,14 @@ pub unsafe extern "C" fn molt_socket_close(sock_bits: u64) -> u64 {
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_socket_drop(sock_bits: u64) {
+pub unsafe extern "C" fn molt_socket_drop(sock_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let socket_ptr = ptr_from_bits(sock_bits);
         if !socket_ptr.is_null() {
             socket_close_ptr(_py, socket_ptr);
             socket_ref_dec(_py, socket_ptr);
         }
+        MoltObject::none().bits()
     })
 }
 

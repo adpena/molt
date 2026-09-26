@@ -57,7 +57,7 @@ def test_boxed_projection_does_not_infer_semantics_from_machine_facts() -> None:
         assert boxed[(symbol, arity)] == AUDIT.AbiFact(
             symbol, arity, "I64", ("I64",) * arity
         )
-    assert boxed[("molt_spawn", 1)].return_abi == "Void"
+    assert boxed[("molt_spawn", 1)].return_abi == "I64"
     assert boxed[("molt_print_newline", 0)].return_abi == "Void"
 
 

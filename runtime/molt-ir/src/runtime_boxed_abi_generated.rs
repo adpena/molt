@@ -386,7 +386,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_asyncio_event_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_asyncio_event_is_set",
@@ -491,7 +491,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_asyncio_future_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_asyncio_future_exception",
@@ -546,7 +546,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_asyncio_lock_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_asyncio_lock_locked",
@@ -571,7 +571,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_asyncio_queue_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_asyncio_queue_empty",
@@ -681,7 +681,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_asyncio_semaphore_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_asyncio_semaphore_new",
@@ -3991,7 +3991,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_email_message_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_email_message_filename",
@@ -9461,7 +9461,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_pipe_transport_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_pipe_transport_get_fd",
@@ -9626,7 +9626,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_process_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_process_kill",
@@ -10881,7 +10881,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_socket_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_socket_fileno",
@@ -11036,7 +11036,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_socket_reader_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_socket_reader_new",
@@ -11216,7 +11216,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_spawn",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_ssl_cert_none",
@@ -11626,12 +11626,12 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_stream_close",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_stream_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_stream_new",
@@ -11646,7 +11646,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_stream_reader_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_stream_reader_new",
@@ -13696,7 +13696,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_ws_close",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_ws_connect_obj",
@@ -13706,7 +13706,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_ws_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_ws_pair_obj",
@@ -13756,7 +13756,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_xml_element_drop",
         arity: 1,
-        result: RuntimeBoxedReturn::Void,
+        result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_xml_element_find",

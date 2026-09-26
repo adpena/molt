@@ -20,6 +20,22 @@ NATIVE_BOOTSTRAP_SESSION_ID = "pytest-native-bootstrap"
 NATIVE_BUILD_TIMEOUT_SECS = 600
 
 
+def test_native_runtime_resolved_intrinsics_return_boxed_none(tmp_path: Path) -> None:
+    source = (ROOT / "tests/fixtures/intrinsic_boxed_none.py").read_text(
+        encoding="utf-8"
+    )
+    run = _build_and_run_with_env(
+        tmp_path,
+        source,
+        "intrinsic_boxed_none",
+        session_id=NATIVE_BOOTSTRAP_SESSION_ID,
+        cache_dir=Path(os.environ.get("MOLT_CACHE", str(ROOT / ".molt_cache"))),
+        backend="cranelift",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.splitlines() == ["boxed-none-ok"]
+
+
 def _native_bootstrap_target_dirs(env: dict[str, str]) -> tuple[Path, Path]:
     default_target_dir = ROOT / "target"
     raw_target = env.get("CARGO_TARGET_DIR", "").strip()

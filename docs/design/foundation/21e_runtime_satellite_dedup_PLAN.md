@@ -62,7 +62,14 @@ Feature chain micro ⊂ edge ⊂ standard ⊂ server ⊂ full; default profile =
 - **Two bridge sub-architectures coexist:** per-symbol `extern "C"` (15 of 16 satellites — http_bridge.rs=56 shims, math=56, path=25) vs **`RuntimeVtable` single-dispatch (serial only — the pilot):** serial fetches one `&'static RuntimeVtable` via the single extern `__molt_serial_get_vtable()`; serial_bridge.rs:740-812 defines the 66-field vtable + getter; serial's bridge has 2 no_mangle vs http's 56.
 - **Token types ALREADY unified:** core lib.rs:265 `pub type CoreGilToken = PyToken;`; serial bridge fns take `_py: &PyToken` (in-tree shape). Residual divergence = (a) macro name, (b) import block, (c) token-threading (normalized by RT_WRAPPER_EQUIVALENTS).
 
-### 1.5 decimal is special: builtins/decimal.rs is a 13-line dispatcher (`#[cfg(molt_has_mpdec)]`→with_mpdec else without); guard compares satellite vs decimal_without_mpdec.rs; `stdlib_decimal=["stdlib_math"]`. Do decimal LAST, bespoke (preserve the mpdec split or have the satellite absorb both).
+### 1.5 Decimal consolidation is complete
+
+`molt-runtime-serial/src/decimal.rs` is the single implementation, selected by
+`stdlib_decimal` through `stdlib_serial` and re-exported by the runtime facade.
+The old with/without-mpdec implementations and their build probe are retired;
+do not reconstruct that split from the historical migration ordering below.
+Semantic coverage remains governed by the
+[stdlib surface matrix](../../spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md).
 
 ### 1.6 The R.1 guard invariant (R.2/R.3 must preserve): tools/check_satellite_parity.py + tests/satellite_parity.rs. Per pair: normalize access-layer diffs (_strip_use_blocks, GIL macros→__GIL__!, tokens→__TOK__, strip crate::/bridge::/molt_runtime_core:: prefixes, collapse unsafe{}, strip #[cfg(test)]+comments), compare sorted line-multiset symmetric difference. FAIL if any pair's residual > baseline, content-hash differs at equal count, a pair is missing, or total > ratchet_ceiling (one-way ratchet). R.2 changes to canonical access spelling MUST update the normalizer in the SAME commit. `tools/check_runtime_symbol_owners.py` is the sibling satellite-link guard: every `#[no_mangle] extern "C"` symbol may have only one satellite-crate owner under `stdlib_full`, so accidental cross-satellite duplicates fail before the linker.
 

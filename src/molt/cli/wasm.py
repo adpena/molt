@@ -14,8 +14,6 @@ from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
     wasm_import_result_kind,
     wasm_import_signature,
-    wasm_runtime_callable_result,
-    wasm_runtime_callable_spec,
     wasm_runtime_import_name,
 )
 from molt._target_feature_manifest import WEBGPU_DISPATCH_HOST_IMPORT
@@ -118,16 +116,7 @@ def _runtime_import_signature_from_manifest(
     import_name: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
     manifest_import_name = _runtime_lookup_import_name_from_manifest(import_name)
-    signature = wasm_import_signature(manifest_import_name)
-    if signature is not None:
-        return signature
-    spec = wasm_runtime_callable_spec(manifest_import_name)
-    if spec is not None:
-        _import_name, arity, result = spec
-        params = tuple("i64" for _ in range(arity))
-        results: tuple[str, ...] = () if result == "void" else ("i64",)
-        return (params, results)
-    return None
+    return wasm_import_signature(manifest_import_name)
 
 
 def _runtime_lookup_import_name_from_manifest(name: str) -> str:
@@ -216,13 +205,7 @@ def _runtime_export_signature_for_cpython_abi_link_import(
 
 def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
     manifest_import_name = _runtime_lookup_import_name_from_manifest(import_name)
-    result_kind = wasm_import_result_kind(manifest_import_name)
-    if result_kind is not None:
-        return result_kind
-    result = wasm_runtime_callable_result(manifest_import_name)
-    if result is not None:
-        return "nil" if result == "void" else result
-    return None
+    return wasm_import_result_kind(manifest_import_name)
 
 
 def _runtime_import_fallbacks_from_manifest() -> dict[str, dict[str, object]]:

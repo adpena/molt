@@ -9,6 +9,16 @@ from tests.wasm_linked_runner import (
 )
 
 
+def test_wasm_runtime_resolved_intrinsics_return_boxed_none(tmp_path: Path) -> None:
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    src = root / "tests/fixtures/intrinsic_boxed_none.py"
+    output = build_wasm_linked(root, src, tmp_path)
+    run = run_wasm_linked(root, output)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.splitlines() == ["boxed-none-ok"]
+
+
 def test_wasm_importlib_import_forms_and_os_sys_bootstrap_smoke(
     tmp_path: Path,
 ) -> None:

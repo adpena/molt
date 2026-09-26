@@ -59,7 +59,7 @@ fn import_transaction_callable_wrapper_matches_runtime_import_abi() {
 }
 
 #[test]
-fn void_runtime_callable_wrapper_uses_manifest_result_type() {
+fn none_returning_runtime_callable_uses_boxed_result_type() {
     let mut socket_drop = wasm_test_op("builtin_func", Some("fn"), vec![]);
     socket_drop.s_value = Some("molt_socket_drop".to_string());
     socket_drop.value = Some(1);
@@ -82,7 +82,7 @@ fn void_runtime_callable_wrapper_uses_manifest_result_type() {
 
     wasmparser::Validator::new()
         .validate_all(&wasm)
-        .expect("void callable wrapper must synthesize None after the runtime import call");
+        .expect("Python-callable provider and wrapper must share the boxed result ABI");
 
     let imports = wasm_function_import_type_indices(&wasm);
     let sigs = wasm_type_section_signatures(&wasm);
@@ -91,8 +91,8 @@ fn void_runtime_callable_wrapper_uses_manifest_result_type() {
         .expect("socket_drop runtime import must be registered");
     assert_eq!(
         sigs[import_type as usize],
-        (1, 0),
-        "socket_drop import ABI must be manifest void, not locally defaulted to i64"
+        (1, 1),
+        "socket_drop must return boxed None, including through app-resolved raw imports"
     );
 }
 

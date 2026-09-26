@@ -2,7 +2,15 @@
 
 Generated from stub-sweep workflow `wja8h01o7` (8 parallel clusters + triage critic). Total confirmed stubs: **23**.
 
-Operator directive (2026-06-25): zero fakes, zero no-op stubs; molt's object model, ops, memory model, and all management must be **world-class**. This file is the live delete-the-crap / make-world-class work queue. NOTE: the sweep read only a MINORITY of the runtime — see 'Completeness gaps' for the second-pass scope.
+This is a historical discovery inventory, not current release evidence. In
+particular, the Decimal with/without-libmpdec files cited below were removed;
+`runtime/molt-runtime-serial/src/decimal.rs` now owns Decimal on both native and
+WASM, with no libmpdec build selection. Reproduce any retained semantic finding
+against that authority before treating it as a current defect or a resolved
+claim. The [stdlib surface matrix](../../spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)
+owns current support status.
+
+Operator directive (2026-06-25): zero fakes, zero no-op stubs; molt's object model, ops, memory model, and all management must be **world-class**. Retain this inventory as discovery input, not a second live release queue. The sweep read only a minority of the runtime; see 'Completeness gaps' for its original scope.
 
 ## ✅ Resolved (landed on main)
 
