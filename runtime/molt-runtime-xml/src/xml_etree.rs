@@ -718,9 +718,10 @@ pub extern "C" fn molt_xml_element_iter(handle_bits: u64, tag_bits: u64) -> u64 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_drop(handle_bits: u64) {
+pub extern "C" fn molt_xml_element_drop(handle_bits: u64) -> u64 {
     let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
     ELEMENTS.with(|m| m.borrow_mut().remove(&handle));
+    MoltObject::none().bits()
 }
 
 #[unsafe(no_mangle)]

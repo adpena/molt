@@ -37,7 +37,7 @@ def test_manifest_membership_stamp_observes_same_metadata_content_change(
     assert after != before
 
 
-def test_source_closure_deduplicates_features_and_keeps_libmpdec(
+def test_source_closure_deduplicates_features_and_keeps_shared_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _manifest_tree(tmp_path)
@@ -58,8 +58,14 @@ def test_source_closure_deduplicates_features_and_keeps_libmpdec(
 
     assert first == second
     assert calls == [("feature-a", "feature-b")]
-    assert tmp_path / "third_party/cpython/Modules/_decimal/libmpdec" in extras[0]
-    assert tmp_path / "LICENSE" in extras[0]
+    assert extras == [
+        (
+            tmp_path / "Cargo.toml",
+            tmp_path / "Cargo.lock",
+            tmp_path / "runtime/build_support",
+            tmp_path / "LICENSE",
+        )
+    ]
 
 
 def test_cargo_closure_owns_build_script_non_src_inputs(tmp_path: Path) -> None:

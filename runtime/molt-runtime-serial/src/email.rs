@@ -1160,15 +1160,16 @@ pub extern "C" fn molt_email_message_items(message_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_drop(message_bits: u64) {
+pub extern "C" fn molt_email_message_drop(message_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(id) = email_message_id_from_bits(_py, message_bits) else {
-            return;
+            return MoltObject::none().bits();
         };
         let mut registry = email_message_registry()
             .lock()
             .expect("email message registry lock poisoned");
         registry.remove(&id);
+        MoltObject::none().bits()
     })
 }
 

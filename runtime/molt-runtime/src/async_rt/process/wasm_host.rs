@@ -626,12 +626,12 @@ pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
+pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
-                return;
+                return MoltObject::none().bits();
             }
             let handle = &*(proc_ptr as *mut MoltProcessHandle);
             runtime_state(_py)
@@ -639,6 +639,7 @@ pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
                 .remove_wasm_handle(handle.state.handle);
             release_ptr(proc_ptr);
             drop(Box::from_raw(proc_ptr as *mut MoltProcessHandle));
+            MoltObject::none().bits()
         })
     }
 }

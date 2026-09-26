@@ -1071,10 +1071,10 @@ pub(super) fn define_process_host(
                         .get(&handle)
                         .and_then(|entry| entry.stdout_stream);
                     if let Some(stream_bits) = stream_bits {
-                        let _ = exports.stream_close.call(
+                        let _ = call_i64(
+                            &exports.stream_close,
                             &mut caller,
                             &[Val::I64(stream_bits as i64)],
-                            &mut [],
                         );
                     }
                 }
@@ -1086,10 +1086,10 @@ pub(super) fn define_process_host(
                         .get(&handle)
                         .and_then(|entry| entry.stderr_stream);
                     if let Some(stream_bits) = stream_bits {
-                        let _ = exports.stream_close.call(
+                        let _ = call_i64(
+                            &exports.stream_close,
                             &mut caller,
                             &[Val::I64(stream_bits as i64)],
-                            &mut [],
                         );
                     }
                 }

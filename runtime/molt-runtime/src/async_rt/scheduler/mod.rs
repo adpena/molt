@@ -944,7 +944,7 @@ pub(crate) fn is_block_on_task(task_ptr: *mut u8) -> bool {
 /// # Safety
 /// - `task_bits` must be a valid pointer to a Molt task with a valid header.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
+pub unsafe extern "C" fn molt_spawn(task_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(task_ptr) = resolve_task_ptr(task_bits) else {
@@ -967,6 +967,7 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
                 spawned_task_inc();
             }
             enqueue_task_ptr(_py, task_ptr);
+            MoltObject::none().bits()
         })
     }
 }

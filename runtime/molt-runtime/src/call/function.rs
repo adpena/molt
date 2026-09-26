@@ -552,28 +552,12 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                         arg0_bits,
                     ) as u64
                 } else {
-                    if crate::builtins::functions::runtime_callable_returns_void(fn_ptr) {
-                        // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
-                        // `function_fn_ptr`. This branch handles void intrinsics (drop/close
-                        // functions) identified by the generated WASM ABI manifest result facts.
-                        // These return nothing, so the void signature `fn(u64)` is correct.
-                        // UB if fn_ptr is null or the target actually returns a value.
-                        let func: extern "C" fn(u64) = std::mem::transmute(
-                            required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                        );
-                        func(arg0_bits);
-                        MoltObject::none().bits()
-                    } else {
-                        // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
-                        // `function_fn_ptr`. Arity == 1, no closure, so the 1-arg signature
-                        // `fn(u64) -> i64` is correct. The compiler guarantees this pointer
-                        // was emitted for a 1-arg non-closure function. UB if fn_ptr is null
-                        // or the target has a different calling convention.
-                        let func: extern "C" fn(u64) -> i64 = std::mem::transmute(
-                            required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                        );
-                        func(arg0_bits) as u64
-                    }
+                    // SAFETY: all published Python callables, including None-returning
+                    // intrinsics, use the boxed-result ABI. Arity == 1, no closure.
+                    let func: extern "C" fn(u64) -> i64 = std::mem::transmute(
+                        required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
+                    );
+                    func(arg0_bits) as u64
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]

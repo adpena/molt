@@ -424,7 +424,7 @@ pub extern "C" fn molt_pipe_transport_get_write_buffer_size(handle_bits: u64) ->
 /// If the transport is not yet closed, it is closed first (native only).
 /// On WASM, simply removes from the registry (no fd to close).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_pipe_transport_drop(handle_bits: u64) {
+pub extern "C" fn molt_pipe_transport_drop(handle_bits: u64) -> u64 {
     // Close first to flush any pending writes and release the fd.
     // On WASM, skip close since pipe transports cannot be created there.
     #[cfg(not(target_arch = "wasm32"))]
@@ -435,7 +435,8 @@ pub extern "C" fn molt_pipe_transport_drop(handle_bits: u64) {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let mut map = pipe_transport_registry(_py).transports.lock().unwrap();
         map.remove(&handle);
-    });
+        MoltObject::none().bits()
+    })
 }
 
 /// Connect a read pipe on the event loop.

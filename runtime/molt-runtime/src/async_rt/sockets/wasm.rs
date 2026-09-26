@@ -121,14 +121,15 @@ pub extern "C" fn molt_socket_close(_sock_bits: u64) -> u64 {
 
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_drop(_sock_bits: u64) {
+pub extern "C" fn molt_socket_drop(_sock_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
             Ok(val) => val,
-            Err(_) => return,
+            Err(_) => return MoltObject::none().bits(),
         };
         let _ = unsafe { crate::molt_socket_close_host(handle) };
         wasm_socket_meta_remove(handle);
+        MoltObject::none().bits()
     })
 }
 

@@ -1089,11 +1089,11 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
 
     assert _runtime_import_result_kinds_from_manifest(import_names) == {
         "abc_bootstrap": "i64",
-        "socket_drop": "nil",
+        "socket_drop": "i64",
         "function_set_builtin": "i64",
         "molt_abc_bootstrap": "i64",
         "molt_importlib_import_transaction": "i64",
-        "molt_socket_drop": "nil",
+        "molt_socket_drop": "i64",
         "molt_add": "i64",
         "molt_bool_from_i32": "i64",
         "molt_buffer_acquire": "i32",
@@ -1102,14 +1102,14 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
     }
     assert _runtime_import_signatures_from_manifest(import_names) == {
         "abc_bootstrap": {"params": [], "result": "i64"},
-        "socket_drop": {"params": ["i64"], "result": "nil"},
+        "socket_drop": {"params": ["i64"], "result": "i64"},
         "function_set_builtin": {"params": ["i64"], "result": "i64"},
         "molt_abc_bootstrap": {"params": [], "result": "i64"},
         "molt_importlib_import_transaction": {
             "params": ["i64", "i64", "i64", "i64", "i64"],
             "result": "i64",
         },
-        "molt_socket_drop": {"params": ["i64"], "result": "nil"},
+        "molt_socket_drop": {"params": ["i64"], "result": "i64"},
         "molt_add": {"params": ["i64", "i64"], "result": "i64"},
         "molt_bool_from_i32": {"params": ["i32"], "result": "i64"},
         "molt_buffer_acquire": {"params": ["i64", "i32"], "result": "i32"},
@@ -1242,7 +1242,7 @@ def test_runtime_export_signatures_use_cpython_abi_split_export_names(
                 "params": ["i32", "i32", "i32"],
                 "result": "i32",
             },
-            "molt_socket_drop": {"params": ["i64"], "result": "nil"},
+            "molt_socket_drop": {"params": ["i64"], "result": "i64"},
         }
 
     monkeypatch.setattr(
@@ -1256,7 +1256,7 @@ def test_runtime_export_signatures_use_cpython_abi_split_export_names(
         {"PyArg_ParseTuple", "socket_drop"},
     ) == {
         "PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"},
-        "socket_drop": {"params": ["i64"], "result": "nil"},
+        "socket_drop": {"params": ["i64"], "result": "i64"},
     }
     assert requested["export_names"] == {"molt_PyArg_ParseTuple", "molt_socket_drop"}
     assert non_native_output._runtime_export_signatures_for_imports(

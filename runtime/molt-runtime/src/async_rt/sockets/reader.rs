@@ -182,15 +182,16 @@ pub unsafe extern "C" fn molt_socket_reader_new(sock_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
-pub unsafe extern "C" fn molt_socket_reader_drop(reader_bits: u64) {
+pub unsafe extern "C" fn molt_socket_reader_drop(reader_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let reader_ptr = ptr_from_bits(reader_bits);
             if reader_ptr.is_null() {
-                return;
+                return MoltObject::none().bits();
             }
             let reader = Box::from_raw(reader_ptr as *mut MoltSocketReader);
             molt_socket_drop(reader.socket_bits);
+            MoltObject::none().bits()
         })
     }
 }

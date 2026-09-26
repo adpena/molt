@@ -1497,7 +1497,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::Spawn,
         name: "spawn",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TaskNew,
@@ -3527,12 +3527,12 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamClose,
         name: "stream_close",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamDrop,
         name: "stream_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamNew,
@@ -4132,7 +4132,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketDrop,
         name: "socket_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketFileno,
@@ -4487,7 +4487,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessDrop,
         name: "process_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessKill,
@@ -4802,7 +4802,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsClose,
         name: "ws_close",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsConnect,
@@ -4817,7 +4817,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsDrop,
         name: "ws_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::WsPair,
@@ -6482,7 +6482,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageDrop,
         name: "email_message_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailUtilsMakeMsgid,
@@ -8757,7 +8757,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamReaderDrop,
         name: "stream_reader_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketReaderNew,
@@ -8787,7 +8787,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketReaderDrop,
         name: "socket_reader_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonEncodeBasestringObj,
@@ -13662,7 +13662,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportDrop,
         name: "pipe_transport_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::Base64B64encode,
@@ -14047,7 +14047,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioFutureDrop,
         name: "asyncio_future_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventNew,
@@ -14072,7 +14072,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventDrop,
         name: "asyncio_event_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioLockNew,
@@ -14097,7 +14097,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioLockDrop,
         name: "asyncio_lock_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSemaphoreNew,
@@ -14122,7 +14122,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSemaphoreDrop,
         name: "asyncio_semaphore_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueNew,
@@ -14182,7 +14182,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioQueueDrop,
         name: "asyncio_queue_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkEventBuildFromArgs,
@@ -15132,7 +15132,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::XmlElementDrop,
         name: "xml_element_drop",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::XmlElementClear,

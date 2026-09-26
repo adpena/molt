@@ -10,6 +10,7 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
         ("molt_math_sin", 1),
         ("molt_cell_eq", 2),
         ("molt_chan_new", 1),
+        ("molt_spawn", 1),
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
@@ -57,7 +58,7 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
 
 #[test]
 fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
-    for (symbol, arity) in [("molt_spawn", 1), ("molt_print_newline", 0)] {
+    for (symbol, arity) in [("molt_print_newline", 0)] {
         for with_result in [false, true] {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);

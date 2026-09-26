@@ -1475,6 +1475,28 @@ def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
     )
 
 
+def test_boxed_none_consumer_uses_runtime_resolver_not_direct_intrinsics() -> None:
+    source_path = Path(__file__).resolve().parent / "fixtures/intrinsic_boxed_none.py"
+    gen = SimpleTIRGenerator(module_name="__main__", source_path=str(source_path))
+    gen.visit(ast.parse(source_path.read_text(encoding="utf-8")))
+    builtins = {
+        op.args[0]
+        for function in gen.funcs_map.values()
+        for op in function["ops"]
+        if op.kind == "BUILTIN_FUNC"
+    }
+    assert "molt_require_intrinsic_runtime" in builtins
+    assert (
+        not {
+            "molt_asyncio_event_drop",
+            "molt_stream_close",
+            "molt_stream_drop",
+            "molt_spawn",
+        }
+        & builtins
+    )
+
+
 def test_chunked_stdlib_intrinsics_value_binding_uses_runtime_require_intrinsic() -> (
     None
 ):

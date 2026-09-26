@@ -101,18 +101,6 @@ def render_py(
         f"WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT: int = {callable_table['value_type_format']}\n\n"
     )
     lines.append(
-        "WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (\n"
-    )
-    for entry in data["import"]:
-        if "callable_arity" not in entry:
-            continue
-        result = entry.get("callable_result", "i64")
-        lines.append(
-            f'    ("{entry["runtime_name"]}", "{entry["name"]}", '
-            f'{entry["callable_arity"]}, "{result}"),\n'
-        )
-    lines.append(")\n\n")
-    lines.append(
         "WASM_RESERVED_RUNTIME_CALLABLES: "
         "tuple[tuple[int, str, str, int, str], ...] = (\n"
     )
@@ -128,48 +116,25 @@ def render_py(
         "WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = "
         "len(WASM_RESERVED_RUNTIME_CALLABLES)\n\n"
     )
+    # Callable admission/arity is distinct from raw transport signatures, but
+    # names and result types already belong to the normalized import authority.
+    lines.append("WASM_RUNTIME_CALLABLE_ARITY_BY_IMPORT: dict[str, int] = {\n")
+    callable_arities = {
+        entry["name"]: entry["callable_arity"]
+        for entry in data["import"]
+        if "callable_arity" in entry
+    }
+    callable_arities.update(
+        (entry["import_name"], entry["callable_arity"]) for entry in reserved_callables
+    )
+    for import_name, arity in sorted(callable_arities.items()):
+        lines.append(f'    "{import_name}": {arity},\n')
     lines.extend(
         [
-            "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME: dict[str, tuple[str, int, str]] = {\n",
-            "    runtime_name: (import_name, arity, result)\n",
-            "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
             "}\n\n",
-            "WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT: dict[str, tuple[str, int, str]] = {\n",
-            "    import_name: (runtime_name, arity, result)\n",
-            "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
-            "}\n\n",
-            "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME: dict[str, tuple[str, int, str]] = {\n",
-            '    runtime_name: (import_name, arity, "i64")\n',
-            "    for _index, runtime_name, import_name, arity, _dispatch in WASM_RESERVED_RUNTIME_CALLABLES\n",
-            "}\n\n",
-            "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT: dict[str, tuple[str, int, str]] = {\n",
-            '    import_name: (runtime_name, arity, "i64")\n',
-            "    for _index, runtime_name, import_name, arity, _dispatch in WASM_RESERVED_RUNTIME_CALLABLES\n",
-            "}\n\n",
-            "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {\n",
-            "    **{\n",
-            "        runtime_name: arity\n",
-            "        for runtime_name, _import_name, arity, _result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
-            "    },\n",
-            "    **{\n",
-            "        runtime_name: spec[1]\n",
-            "        for runtime_name, spec in WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME.items()\n",
-            "    },\n",
-            "}\n\n",
-            "def wasm_runtime_callable_spec(name: str) -> tuple[str, int, str] | None:\n",
-            "    return WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME.get(\n",
-            "        name\n",
-            "    ) or WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT.get(\n",
-            "        name\n",
-            "    ) or WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME.get(\n",
-            "        name\n",
-            "    ) or WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT.get(name)\n\n",
             "def wasm_runtime_callable_arity(name: str) -> int | None:\n",
-            "    spec = wasm_runtime_callable_spec(name)\n",
-            "    return None if spec is None else spec[1]\n\n",
-            "def wasm_runtime_callable_result(name: str) -> str | None:\n",
-            "    spec = wasm_runtime_callable_spec(name)\n",
-            "    return None if spec is None else spec[2]\n\n",
+            "    import_name = wasm_runtime_import_name(name)\n",
+            "    return WASM_RUNTIME_CALLABLE_ARITY_BY_IMPORT.get(import_name or name)\n\n",
         ]
     )
     lines.append(

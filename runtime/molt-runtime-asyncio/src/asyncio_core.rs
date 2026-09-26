@@ -512,7 +512,7 @@ pub extern "C" fn molt_asyncio_future_add_done_callback_fast(
 
 /// Drop a future handle. Dec-refs all stored bits and removes from registry.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_drop(handle_bits: u64) {
+pub extern "C" fn molt_asyncio_future_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
@@ -526,6 +526,7 @@ pub extern "C" fn molt_asyncio_future_drop(handle_bits: u64) {
                 dec_ref_bits(_py, *cb);
             }
         }
+        MoltObject::none().bits()
     })
 }
 
@@ -611,7 +612,7 @@ pub extern "C" fn molt_asyncio_event_clear(handle_bits: u64) -> u64 {
 
 /// Drop an event handle. Dec-refs all stored waiter bits and removes from registry.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_drop(handle_bits: u64) {
+pub extern "C" fn molt_asyncio_event_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
@@ -621,6 +622,7 @@ pub extern "C" fn molt_asyncio_event_drop(handle_bits: u64) {
                 dec_ref_bits(_py, *w);
             }
         }
+        MoltObject::none().bits()
     })
 }
 
@@ -720,7 +722,7 @@ pub extern "C" fn molt_asyncio_lock_release_fast(handle_bits: u64) -> u64 {
 
 /// Drop a lock handle. Dec-refs all stored waiter bits and removes from registry.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_lock_drop(handle_bits: u64) {
+pub extern "C" fn molt_asyncio_lock_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
@@ -730,6 +732,7 @@ pub extern "C" fn molt_asyncio_lock_drop(handle_bits: u64) {
                 dec_ref_bits(_py, *w);
             }
         }
+        MoltObject::none().bits()
     })
 }
 
@@ -848,7 +851,7 @@ pub extern "C" fn molt_asyncio_semaphore_value(handle_bits: u64) -> u64 {
 
 /// Drop a semaphore handle. Dec-refs all stored waiter bits and removes from registry.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_semaphore_drop(handle_bits: u64) {
+pub extern "C" fn molt_asyncio_semaphore_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
@@ -858,5 +861,6 @@ pub extern "C" fn molt_asyncio_semaphore_drop(handle_bits: u64) {
                 dec_ref_bits(_py, *w);
             }
         }
+        MoltObject::none().bits()
     })
 }
