@@ -10,13 +10,14 @@ import hashlib
 import os
 import re
 from pathlib import Path
-import shutil
 import stat
 import sys
 import time
 from typing import Protocol
 import uuid
 import warnings
+
+from molt.file_deletion import delete_path
 
 
 MOVEFILE_REPLACE_EXISTING = 0x1
@@ -450,10 +451,9 @@ def _reclaim_retired_leaf(retired: Path, identity: tuple[str, int, int]) -> None
         resolved = resolve_owned_path(retired)
         if resolved != retired or _retirement_identity(retired.lstat()) != identity:
             raise ValueError(f"retired leaf identity changed: {retired}")
-        if identity[0] == "d":
-            shutil.rmtree(retired)
-        else:
-            retired.unlink()
+        removed, error = delete_path(retired)
+        if not removed:
+            raise OSError(error)
     except (OSError, ValueError) as exc:
         raise RetirementError(retired, "physical reclamation", exc) from exc
     try:
@@ -646,22 +646,43 @@ def durable_publish_exclusive(staged: Path, destination: Path) -> None:
         raise OSError(f"unsupported exclusive publication platform: {os.name}")
 
 
-def _canonical_leaf(path: Path, *, create_parent: bool) -> Path:
+def canonical_file_leaf(
+    path: Path,
+    *,
+    create_parent: bool,
+    role: str = "file publication destination",
+) -> Path:
+    """Canonicalize parent aliases and reject indirect or non-file leaves."""
+
     path = Path(path)
     if not path.name:
-        raise ValueError(f"file publication requires a leaf path: {path}")
+        raise ValueError(f"{role} requires a leaf path: {path}")
     if create_parent:
         path.parent.mkdir(parents=True, exist_ok=True)
     parent = path.parent.resolve(strict=True)
     leaf = parent / path.name
     if is_link_like(leaf):
-        raise ValueError(f"file publication destination is indirect: {leaf}")
+        raise ValueError(f"{role} is indirect: {leaf}")
     if leaf.exists() and not leaf.is_file():
-        raise ValueError(f"file publication destination is not a file: {leaf}")
+        raise ValueError(f"{role} is not a file: {leaf}")
     return leaf
 
 
-def staged_file_path(destination: Path, *, purpose: str = "write") -> Path:
+_STAGED_NAME_RE = re.compile(
+    r"^\.molt-(?P<purpose>[a-z0-9][a-z0-9-]{0,15})-"
+    r"(?P<identity>[0-9a-f]{16})-(?P<nonce>[0-9a-f]{32})"
+    r"(?P<suffix>\.[^/\\]+)$"
+)
+
+
+def _staged_purpose(purpose: str) -> str:
+    normalized = re.sub(r"[^a-z0-9-]+", "-", purpose.strip().casefold()).strip("-")
+    return (normalized or "stage")[:16]
+
+
+def staged_file_path(
+    destination: Path, *, purpose: str = "write", suffix: str = ".tmp"
+) -> Path:
     """Return a bounded, destination-bound staging path in the same directory.
 
     Every file-publication consumer uses this naming authority, including when
@@ -672,9 +693,44 @@ def staged_file_path(destination: Path, *, purpose: str = "write") -> Path:
     protocol and must clean up their own stage on failure.
     """
 
-    destination = _canonical_leaf(destination, create_parent=True)
+    if (
+        not suffix.startswith(".")
+        or suffix in {".", ".."}
+        or "/" in suffix
+        or "\\" in suffix
+    ):
+        raise ValueError(f"invalid staged file suffix: {suffix!r}")
+    destination = canonical_file_leaf(destination, create_parent=True)
     identity = hashlib.sha256(os.fsencode(destination.name)).hexdigest()[:16]
-    return destination.parent / f".molt-{purpose}-{identity}-{uuid.uuid4().hex}.tmp"
+    return destination.parent / (
+        f".molt-{_staged_purpose(purpose)}-{identity}-{uuid.uuid4().hex}{suffix}"
+    )
+
+
+def is_owned_staged_file_path(
+    staged: Path,
+    destination: Path,
+    *,
+    purpose: str | None = None,
+    suffix: str | None = None,
+) -> bool:
+    """Recognize only a same-directory stage issued by the naming authority."""
+    staged = Path(staged)
+    destination = Path(destination)
+    match = _STAGED_NAME_RE.fullmatch(staged.name)
+    if match is None or staged.parent != destination.parent:
+        return False
+    identity = hashlib.sha256(os.fsencode(destination.name)).hexdigest()[:16]
+    return (
+        match.group("identity") == identity
+        and (purpose is None or match.group("purpose") == _staged_purpose(purpose))
+        and (suffix is None or match.group("suffix") == suffix)
+    )
+
+
+def is_staged_file_path(path: Path) -> bool:
+    """Recognize reserved private staging names, without claiming ownership."""
+    return _STAGED_NAME_RE.fullmatch(path.name.casefold()) is not None
 
 
 def atomic_write_bytes(
@@ -686,7 +742,7 @@ def atomic_write_bytes(
 ) -> None:
     """Publish complete bytes atomically after crossing the durability barrier."""
 
-    destination = _canonical_leaf(path, create_parent=True)
+    destination = canonical_file_leaf(path, create_parent=True)
     if exclusive and destination.exists():
         raise FileExistsError(destination)
     staged = staged_file_path(destination)

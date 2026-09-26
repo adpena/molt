@@ -12,7 +12,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from tools.artifact_publish import atomic_write_json
+from molt.artifact_publication import atomic_write_json
 from tools import nightly_shard_profile, nightly_sharding
 
 

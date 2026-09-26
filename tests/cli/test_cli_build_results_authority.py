@@ -33,7 +33,8 @@ _BUILD_RESULTS_DEFINITIONS = (
 
 
 def test_cli_build_results_authority_is_single_home() -> None:
-    assert hasattr(link_fingerprints, "_write_link_fingerprint_if_needed")
+    assert hasattr(link_fingerprints, "publish_link_outputs")
+    assert not hasattr(link_fingerprints, "_write_link_fingerprint_if_needed")
     assert not hasattr(build_results, "_write_link_fingerprint_if_needed")
     assert not hasattr(cli, "_write_link_fingerprint_if_needed")
     for name in _BUILD_RESULTS_NAMES:

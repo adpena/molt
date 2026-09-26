@@ -1384,24 +1384,33 @@ def _prepare_host_precompile_routing(
     tmp_path: Path,
     *,
     outcome: str,
+    verify_reuse: bool = False,
 ) -> tuple[_PreparedNonNativeResult | None, int | None, list[str], Path]:
-    """Reach the real manifest-to-host boundary through successful upstream setup."""
+    """Run the real private deployment and host receipt admission boundary."""
+    from molt import artifact_publication
+
     monkeypatch.delenv("MOLT_SPLIT_RUNTIME", raising=False)
+    monkeypatch.delenv("MOLT_WASM_PRECOMPILED_PATH", raising=False)
+    monkeypatch.delenv("MOLT_WASM_PRECOMPILED_RUNTIME_PATH", raising=False)
     linked = outcome != "unlinked"
     output = tmp_path / "app_out.wasm"
     linked_output = tmp_path / "output_linked.wasm"
     output.write_bytes(b"\0asm\x01\0\0\0")
-    linked_output.write_bytes(b"\0asm\x01\0\0\0")
+    linked_output.write_bytes(b"previous linked generation")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text('{"previous":"deployment"}\n', encoding="utf-8")
+    native_path = tmp_path / "output_linked.molt.cwasm"
+    native_path.write_bytes(b"previous native generation")
     pair_dir = tmp_path / "runtime-pair"
     pair_dir.mkdir()
     shared = pair_dir / "molt_runtime.wasm"
     reloc = pair_dir / "molt_runtime_reloc.wasm"
     generation = pair_dir / "runtime-generation.json"
     expected_identity = pair_dir / "runtime-expected-identity.json"
-    shared.write_bytes(b"\0asm\x01\0\0\0")
-    reloc.write_bytes(b"\0asm\x01\0\0\0")
-    generation.write_text('{"fixture": "admitted generation"}', encoding="utf-8")
-    expected_identity.write_text('{"fixture": "expected identity"}', encoding="utf-8")
+    for path in (shared, reloc):
+        path.write_bytes(output.read_bytes())
+    for path in (generation, expected_identity):
+        path.write_text("{}", encoding="utf-8")
     state = _RuntimeArtifactState(
         runtime_wasm=shared,
         runtime_reloc_wasm=reloc,
@@ -1411,97 +1420,56 @@ def _prepare_host_precompile_routing(
         runtime_wasm_expected_identity=expected_identity,
     )
     events: list[str] = []
-    manifest_path = tmp_path / "manifest.json"
-    native_path = tmp_path / "output_linked.molt.cwasm"
-    host_binary = str(tmp_path / "molt-wasm-host")
-    fingerprint = {
-        "hash": "a" * 64,
-        "rustc": None,
-        "inputs_digest": None,
-        "meta_digest": None,
-    }
-    stored_receipt = {
-        "schema": "molt.final-link.v1",
-        "fingerprint": {"version": 3, **fingerprint},
-        "outputs": {
-            "linked": {
-                "path": str(linked_output.resolve()),
-                "identity": nno.link_fingerprints.artifact_content_identity(
-                    linked_output
-                ),
-            }
-        },
-    }
+    host_binary = tmp_path / "molt-wasm-host"
+    host_binary.write_bytes(b"fixture host identity")
 
     def ensure_pair(required_exports=None) -> bool:  # noqa: ANN001
         assert required_exports == {"anchor"}
-        assert all(
-            path.is_file() for path in (shared, reloc, generation, expected_identity)
-        )
         events.append("ensure-pair")
         return True
 
     def imports(path: Path, namespace: str) -> set[str]:
         return {"anchor"} if path == output and namespace == "molt_runtime" else set()
 
-    def link_fingerprint(**kwargs):  # type: ignore[no-untyped-def]
-        command = kwargs["link_cmd"]
-        assert command[command.index("--runtime-generation") + 1] == str(generation)
-        assert command[command.index("--runtime-expected-identity") + 1] == str(
-            expected_identity
-        )
-        assert kwargs["stored_fingerprint"] == stored_receipt["fingerprint"]
-        return fingerprint
-
-    def reusable(*, outputs, fingerprint, stored_fingerprint):  # type: ignore[no-untyped-def]
-        assert outputs == {"linked": linked_output} and linked_output.is_file()
-        assert fingerprint == fingerprint_key
-        assert stored_fingerprint == stored_receipt
-        events.append("link-reuse")
-        return True
-
-    fingerprint_key = fingerprint
-
     real_app_exports = nno._app_export_manifest
 
     def app_exports(contract, artifact):  # type: ignore[no-untyped-def]
-        assert artifact == linked_output
+        assert artifact != linked_output and artifact.name == linked_output.name
         events.append("app-exports")
         return real_app_exports(contract, artifact)
 
-    def admitted_manifest() -> None:
-        # Do not create this file in the fixture: publication and digesting here
-        # must be the real linked manifest generation inside the producer.
-        assert manifest_path.is_file(), "host invoked before manifest publication"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        assert manifest["version"] == 2 and manifest["mode"] == "linked"
-        assert manifest["entry"] == {"module": "linked", "function": "molt_main"}
-        assert manifest["modules"] == {
-            "linked": {
-                "path": linked_output.name,
-                "size": linked_output.stat().st_size,
-                "sha256": hashlib.sha256(linked_output.read_bytes()).hexdigest(),
-            }
-        }
-        assert manifest["abi"]["app_exports"]["bindings"] == []
-
     def resolve_host(root: Path, *, cargo_profile: str) -> str | None:
         assert root == tmp_path and cargo_profile == "release"
-        admitted_manifest()
         events.append("resolve-host")
-        return None if outcome == "missing-host" else host_binary
+        return None if outcome == "missing-host" else str(host_binary)
 
-    def run_host(command, **kwargs):  # type: ignore[no-untyped-def]
-        assert command == [host_binary, "--precompile", str(manifest_path)]
-        assert kwargs == {
-            "cwd": tmp_path,
-            "env": None,
-            "capture_output": True,
-            "memory_guard_prefix": "MOLT_WASM_LINK",
-            "timeout": 60,
-        }
-        admitted_manifest()
+    def run_child(command, **kwargs):  # type: ignore[no-untyped-def]
+        if "--output" in command:
+            events.append("link")
+            private = Path(command[command.index("--output") + 1])
+            assert private != linked_output
+            stage = artifact_publication.staged_output_path(private)
+            stage.write_bytes(output.read_bytes())
+            nno.link_fingerprints.publish_link_outputs({"linked": (stage, private)})
+            return subprocess.CompletedProcess(command, 0, "", "")
+        assert command[:2] == [str(host_binary), "--precompile"]
+        private_manifest = Path(command[2])
+        assert private_manifest != manifest_path
+        manifest = json.loads(private_manifest.read_text(encoding="utf-8"))
+        private_linked = private_manifest.parent / manifest["modules"]["linked"]["path"]
+        assert (
+            manifest["modules"]["linked"]["sha256"]
+            == hashlib.sha256(private_linked.read_bytes()).hexdigest()
+        )
+        assert manifest["abi"]["app_exports"]["bindings"] == []
+        assert kwargs["cwd"] == tmp_path and kwargs["timeout"] == 60
+        private_native = Path(kwargs["env"]["MOLT_WASM_PRECOMPILED_PATH"])
+        assert private_native != native_path
         events.append("invoke-host")
+        # Even a partially successful host may only modify this invocation.
+        payload = b"opaque host-produced native container"
+        private_native.parent.mkdir(parents=True, exist_ok=True)
+        private_native.write_bytes(payload)
         if outcome == "child-error":
             return subprocess.CompletedProcess(
                 command, 1, "", "host compile rejected input"
@@ -1511,17 +1479,15 @@ def _prepare_host_precompile_routing(
                 command, 60, stderr=b"host compiler stalled"
             )
         assert outcome == "success"
-        payload = b"opaque host-produced native container"
-        native_path.write_bytes(payload)
         receipt = {
             "version": 1,
             "kind": "molt-wasm-precompile",
             "artifacts": {
                 "main": {
-                    "source": str(linked_output),
-                    "path": str(native_path),
+                    "source": str(private_linked),
+                    "path": str(private_native),
                     "source_sha256": hashlib.sha256(
-                        linked_output.read_bytes()
+                        private_linked.read_bytes()
                     ).hexdigest(),
                     "sha256": hashlib.sha256(payload).hexdigest(),
                     "size": len(payload),
@@ -1543,22 +1509,12 @@ def _prepare_host_precompile_routing(
         ),
     )
     monkeypatch.setattr(
-        nno.link_fingerprints, "_read_link_fingerprint", lambda _path: stored_receipt
-    )
-    monkeypatch.setattr(
-        nno.link_fingerprints,
-        "_link_fingerprint_path",
-        lambda *_args: tmp_path / "link-fingerprint.json",
-    )
-    monkeypatch.setattr(nno.link_fingerprints, "_link_fingerprint", link_fingerprint)
-    monkeypatch.setattr(nno.link_fingerprints, "_link_outputs_match", reusable)
-    monkeypatch.setattr(
         nno, "_wasm_export_function_signatures", lambda *_args, **_kwargs: {}
     )
     monkeypatch.setattr(nno, "_app_export_manifest", app_exports)
     monkeypatch.setattr(nno, "resolve_molt_wasm_host_binary", resolve_host)
-    monkeypatch.setattr(nno, "_run_completed_command", run_host)
-    prepared, error = nno._prepare_non_native_build_result(
+    monkeypatch.setattr(nno, "_run_completed_command", run_child)
+    build_kwargs = dict(
         resolved_capability_policy=CapabilityManifest().resolve(),
         is_rust_transpile=False,
         is_luau_transpile=False,
@@ -1576,9 +1532,30 @@ def _prepare_host_precompile_routing(
         wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
-    assert events and events[0] == "ensure-pair", (
-        "upstream pair admission was not reached"
-    )
+    prepared, error = nno._prepare_non_native_build_result(**build_kwargs)
+    if verify_reuse:
+        assert error is None and prepared is not None
+        before = {
+            path: path.stat().st_mtime_ns
+            for path in (linked_output, manifest_path, native_path)
+        }
+        event_count = len(events)
+        reused, reuse_error = nno._prepare_non_native_build_result(**build_kwargs)
+        assert reuse_error is None and reused is not None
+        assert events[event_count:] == ["ensure-pair", "resolve-host"]
+        assert {path: path.stat().st_mtime_ns for path in before} == before
+        native_path.write_bytes(b"tampered host container")
+        repaired, repair_error = nno._prepare_non_native_build_result(**build_kwargs)
+        assert repair_error is None and repaired is not None
+        assert events.count("invoke-host") == 2
+        assert native_path.read_bytes() == b"opaque host-produced native container"
+    assert events and events[0] == "ensure-pair"
+    if error is not None:
+        assert linked_output.read_bytes() == b"previous linked generation"
+        assert (
+            manifest_path.read_text(encoding="utf-8") == '{"previous":"deployment"}\n'
+        )
+        assert native_path.read_bytes() == b"previous native generation"
     return prepared, error, events, native_path
 
 
@@ -1592,9 +1569,9 @@ def test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt(
     assert prepared is not None
     assert events == [
         "ensure-pair",
-        "link-reuse",
-        "app-exports",
         "resolve-host",
+        "link",
+        "app-exports",
         "invoke-host",
     ]
     assert prepared.artifacts is not None
@@ -1605,15 +1582,27 @@ def test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt(
     assert f"Precompiled {native_path}" in prepared.success_messages
 
 
+def test_precompile_deployment_cache_covers_host_outputs_without_rewriting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _prepare_host_precompile_routing(
+        monkeypatch, tmp_path, outcome="success", verify_reuse=True
+    )
+
+
 @pytest.mark.parametrize(
     "outcome,diagnostic,tail",
     [
         ("missing-host", "requires a matching molt-wasm-host binary", ["resolve-host"]),
-        ("child-error", "host compile rejected input", ["resolve-host", "invoke-host"]),
+        (
+            "child-error",
+            "host compile rejected input",
+            ["resolve-host", "link", "app-exports", "invoke-host"],
+        ),
         (
             "timeout",
             "timed out after 60 seconds: host compiler stalled",
-            ["resolve-host", "invoke-host"],
+            ["resolve-host", "link", "app-exports", "invoke-host"],
         ),
         (
             "unlinked",
@@ -1635,11 +1624,9 @@ def test_precompile_build_failures_reach_exact_routing_boundary(
     )
     assert prepared is None and error == 2
     expected = ["ensure-pair"]
-    if outcome != "unlinked":
-        expected += ["link-reuse", "app-exports"]
     assert events == expected + tail, "test did not reach its intended failure boundary"
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "error" and report["command"] == "build"
     assert len(report["errors"]) == 1 and diagnostic in report["errors"][0]
-    assert not native_path.exists()
-    assert (tmp_path / "manifest.json").exists() == (outcome != "unlinked")
+    assert native_path.read_bytes() == b"previous native generation"
+    assert (tmp_path / "manifest.json").read_text() == '{"previous":"deployment"}\n'

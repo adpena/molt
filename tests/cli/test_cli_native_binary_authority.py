@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import inspect
+import os
 from pathlib import Path
 
 import pytest
 import molt.cli as cli
-from molt.cli import native_binary, build_results
+from molt.cli import native_binary, build_results, atomic_io
 from molt.cli import native_link_plan
 from tests.native_artifact_fixtures import (
     elf_header,
@@ -177,25 +178,56 @@ def test_actual_native_finalization_consumer_rejects_before_publication(
     monkeypatch.delenv("MOLT_SKIP_BINARY_VALIDITY_CHECK", raising=False)
     monkeypatch.delenv("MOLT_BUILD_SMOKE_EXEC", raising=False)
 
-    def publish(source: Path, destination: Path, *, codesign: bool) -> None:
-        assert codesign
+    def sign(source: Path) -> None:
         published.append(source)
-        destination.write_bytes(source.read_bytes())
 
-    monkeypatch.setattr(build_results, "_atomic_copy_file", publish)
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", sign)
+    timings: dict[str, int] = {}
     error = build_results._finalize_native_link_candidate(
         candidate=candidate,
         output_binary=output,
         target_triple="x86_64-unknown-linux-gnu",
         strip=False,
+        phase_times=timings,
     )
+    assert {"strip_wall_ns", "validate_wall_ns", "publish_wall_ns"} <= timings.keys()
+    assert all(value >= 0 for value in timings.values())
     if valid:
         assert error is None
-        assert published == [candidate]
+        assert len(published) == 1 and published[0] != output
         assert output.read_bytes() == payload
         assert not candidate.exists()
     else:
         assert "native candidate validation failed" in error
-        assert not published
+        assert len(published) == 1 and published[0] != output
         assert output.read_bytes() == b"previous-generation"
         assert candidate.read_bytes() == payload
+
+
+@pytest.mark.parametrize("alias", ["same", "relative", "hardlink"])
+def test_finalization_rejects_public_candidate_aliases_before_strip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alias: str
+) -> None:
+    output = tmp_path / "published"
+    output.write_bytes(b"public generation")
+    candidate = output
+    if alias == "relative":
+        nested = tmp_path / "nested"
+        nested.mkdir()
+        candidate = nested / ".." / output.name
+    elif alias == "hardlink":
+        candidate = tmp_path / "candidate"
+        os.link(output, candidate)
+    monkeypatch.setattr(
+        build_results,
+        "_post_link_strip",
+        lambda *_args: pytest.fail("must not strip a public or aliased candidate"),
+    )
+    error = build_results._finalize_native_link_candidate(
+        candidate=candidate,
+        output_binary=output,
+        target_triple="x86_64-unknown-linux-gnu",
+        strip=True,
+    )
+    assert error is not None and "private candidate" in error
+    assert output.read_bytes() == b"public generation"

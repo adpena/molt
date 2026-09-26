@@ -27,7 +27,7 @@ import uuid
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, NotRequired, Sequence, TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -37,6 +37,7 @@ for import_root in (ROOT, SRC):
 
 from molt.cli.build_results import _finalize_native_link_candidate  # noqa: E402
 from molt.cli.link_pipeline import _native_link_execution_command  # noqa: E402
+from molt.file_publication import staged_file_path  # noqa: E402
 from molt.cli.native_link_command import _build_native_link_plan  # noqa: E402
 from molt.cli.native_link_manifest import (  # noqa: E402
     native_link_dependency_manifest_path,
@@ -58,7 +59,7 @@ from tools import harness_memory_guard, perf_calibration  # noqa: E402
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+    from command_execution import CommandExecutor
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -75,6 +76,85 @@ IDENTITY_FIELDS = (
     "measurement_fingerprint",
     "comparison_fingerprint",
 )
+
+
+class InputFileFacts(TypedDict):
+    role: str
+    path: str
+    size_bytes: int
+    content_identity: dict[str, object]
+
+
+class InputFacts(TypedDict):
+    count: int
+    total_bytes: int
+    files: list[InputFileFacts]
+    fingerprint: str
+
+
+class ToolFacts(TypedDict):
+    # Individual tool records belong to native_link_tool_facts; this envelope
+    # adds only the benchmark comparison identity, not a second tool schema.
+    tools: list[dict[str, object]]
+    fingerprint: str
+
+
+class ExecutionMetrics(TypedDict):
+    wall_ns: int
+    orchestration_wall_ns: int
+    cpu_user_ns: int | None
+    cpu_system_ns: int | None
+    cpu_source: str
+    peak_process_rss_bytes: int | None
+    peak_tree_rss_bytes: int | None
+    peak_job_commit_bytes: int | None
+    returncode: int
+    timed_out: bool
+
+
+class BenchmarkRun(TypedDict):
+    phase: str
+    iteration: int
+    execution: ExecutionMetrics
+    candidate_size_bytes: int | None
+    stderr_tail: NotRequired[str]
+    bolt_total: NotRequired[ExecutionMetrics]
+    bolt: NotRequired[dict[str, object]]
+    # The production finalizer supplies extensible, named integer phase times.
+    finalization: NotRequired[dict[str, int | str | None]]
+    published_size_bytes: NotRequired[int]
+    strip_delta_bytes: NotRequired[int]
+
+
+class QuiescenceSamples(TypedDict):
+    policy: str
+    before: dict[str, object]
+    after: dict[str, object] | None
+
+
+class BenchmarkReport(TypedDict):
+    schema_version: int
+    kind: str
+    status: str
+    created_at_utc: str
+    hot_path: str
+    big_o: str
+    host: dict[str, object]
+    quiescence: QuiescenceSamples
+    target: dict[str, object]
+    cell: dict[str, object]
+    identity: dict[str, str]
+    plan: dict[str, object]
+    plan_metrics: dict[str, object]
+    inputs: InputFacts
+    tools: ToolFacts
+    variant: str
+    implementation: dict[str, object]
+    runs: list[BenchmarkRun]
+    summary: NotRequired[dict[str, object]]
+    output: NotRequired[dict[str, object] | None]
+    attestation: NotRequired[dict[str, object]]
+    comparison: NotRequired[dict[str, object]]
 
 
 class LinkBenchmarkError(RuntimeError):
@@ -196,8 +276,8 @@ def benchmark_runtime_build_identity(
         ) from exc
 
 
-def collect_input_facts(inputs: Mapping[str, Path]) -> dict[str, object]:
-    files: list[dict[str, object]] = []
+def collect_input_facts(inputs: Mapping[str, Path]) -> InputFacts:
+    files: list[InputFileFacts] = []
     for role, path in sorted(inputs.items()):
         resolved = path.expanduser().resolve(strict=True)
         if not resolved.is_file():
@@ -223,7 +303,7 @@ def collect_input_facts(inputs: Mapping[str, Path]) -> dict[str, object]:
     ]
     return {
         "count": len(files),
-        "total_bytes": sum(int(fact["size_bytes"]) for fact in files),
+        "total_bytes": sum(fact["size_bytes"] for fact in files),
         "files": files,
         "fingerprint": _stable_hash(identity),
     }
@@ -363,6 +443,7 @@ def normalized_plan_payload(
         "capabilities": asdict(plan.capabilities),
         "policy": asdict(plan.policy),
         "command": command,
+        "sidecars": list(plan.sidecar_facts()),
         "linker_hint": plan.linker_hint,
         "normalized_target": plan.normalized_target,
     }
@@ -428,7 +509,7 @@ def profile_plan(
     }
 
 
-def collect_tool_facts(plan: NativeLinkPlan) -> dict[str, object]:
+def collect_tool_facts(plan: NativeLinkPlan) -> ToolFacts:
     facts = native_link_tool_facts(plan)
     identity = [
         {key: fact[key] for key in ("role", "resolved", "version", "sha256")}
@@ -455,7 +536,7 @@ def measure_command(
     cwd: Path,
     timeout: float,
     env: Mapping[str, str] | None = None,
-) -> tuple[harness_memory_guard.GuardedCompletedProcess, dict[str, object]]:
+) -> tuple[harness_memory_guard.GuardedCompletedProcess, ExecutionMetrics]:
     cpu_before = _child_cpu_snapshot()
     started = time.perf_counter_ns()
     result = harness_memory_guard.guarded_completed_process(
@@ -502,7 +583,9 @@ def measure_command(
     }
 
 
-def _measure_finalization(action: Callable[[], str | None]) -> dict[str, object]:
+def _measure_finalization(
+    action: Callable[[], str | None],
+) -> dict[str, int | str | None]:
     wall_started = time.perf_counter_ns()
     cpu_started = time.process_time_ns()
     error = action()
@@ -556,7 +639,7 @@ def _count_llvm_readobj_records(text: str) -> dict[str, int]:
     return {name: counts[name] for name in ("symbols", "sections", "relocations")}
 
 
-def inspect_binary(path: Path, tool_facts: Mapping[str, object]) -> dict[str, object]:
+def inspect_binary(path: Path, tool_facts: ToolFacts) -> dict[str, object]:
     inspector = next(
         (
             fact
@@ -605,31 +688,31 @@ def inspect_binary(path: Path, tool_facts: Mapping[str, object]) -> dict[str, ob
     return base
 
 
-def summarize_runs(runs: Sequence[Mapping[str, object]]) -> dict[str, object]:
+def summarize_runs(runs: Sequence[BenchmarkRun]) -> dict[str, object]:
     summary: dict[str, object] = {}
     for phase in ("cold_first", "warm", "relink"):
         selected = [run for run in runs if run.get("phase") == phase]
         if not selected:
             continue
-        walls = [int(run["execution"]["wall_ns"]) for run in selected]  # type: ignore[index]
+        walls = [run["execution"]["wall_ns"] for run in selected]
         orchestration_walls = [
-            int(run["execution"]["orchestration_wall_ns"])
-            for run in selected  # type: ignore[index]
+            run["execution"]["orchestration_wall_ns"] for run in selected
         ]
         finalization = [
-            int(finalize["wall_ns"])
+            wall
             for run in selected
-            if isinstance((finalize := run.get("finalization")), Mapping)
+            if (finalize := run.get("finalization")) is not None
+            and isinstance((wall := finalize.get("wall_ns")), int)
         ]
         tree_rss = [
-            int(value)
+            value
             for run in selected
-            if (value := run["execution"].get("peak_tree_rss_bytes")) is not None  # type: ignore[union-attr,index]
+            if (value := run["execution"]["peak_tree_rss_bytes"]) is not None
         ]
         job_commit = [
-            int(value)
+            value
             for run in selected
-            if (value := run["execution"].get("peak_job_commit_bytes")) is not None  # type: ignore[union-attr,index]
+            if (value := run["execution"]["peak_job_commit_bytes"]) is not None
         ]
         median_wall = int(statistics.median(walls))
         mad_wall = int(statistics.median(abs(value - median_wall) for value in walls))
@@ -898,7 +981,7 @@ def _write_report(path: Path, report: Mapping[str, object]) -> None:
     os.replace(temporary, path)
 
 
-def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
+def run_benchmark(args: argparse.Namespace) -> BenchmarkReport:
     quiescence_before = asdict(perf_calibration.measure_quiescence())
     output = Path(args.output).expanduser().resolve(strict=False)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -957,7 +1040,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
     inputs.update(
         plan_auxiliary_inputs(
             plan.command,
-            excluded=(*inputs.values(), output),
+            excluded=(
+                *inputs.values(),
+                output,
+                *(sidecar.planned_path for sidecar in plan.sidecars),
+            ),
         )
     )
     input_facts = collect_input_facts(inputs)
@@ -981,7 +1068,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         bolt_training_command=args.bolt_training_command,
         measurement_mode="plan_only" if args.plan_only else "full",
     )
-    report: dict[str, object] = {
+    report: BenchmarkReport = {
         "schema_version": SCHEMA_VERSION,
         "kind": KIND,
         "status": "ok",
@@ -1044,9 +1131,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
     if args.plan_only:
         report["summary"] = {}
         report["output"] = None
-        report["quiescence"]["after"] = asdict(  # type: ignore[index]
-            perf_calibration.measure_quiescence()
-        )
+        report["quiescence"]["after"] = asdict(perf_calibration.measure_quiescence())
         report["attestation"] = report_attestation(report)
         validate_report(report, require_runs=False)
         if args.compare:
@@ -1055,18 +1140,20 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         return report
 
     phase_names = ["cold_first", *("warm" for _ in range(args.warm_runs)), "relink"]
-    runs: list[dict[str, object]] = []
+    runs: list[BenchmarkRun] = []
     for index, phase in enumerate(phase_names):
-        candidate = output.with_name(
-            f".{output.stem}.{phase}-{index}-{uuid.uuid4().hex}{output.suffix}"
+        candidate = staged_file_path(
+            output,
+            purpose="native-link",
+            suffix=output.suffix or ".tmp",
         )
-        command = _native_link_execution_command(
-            plan.command, planned_output=output, execution_output=candidate
-        )
-        execution_result, execution = measure_command(
-            command, cwd=output.parent, timeout=args.timeout
-        )
-        run: dict[str, object] = {
+        with _native_link_execution_command(
+            plan, planned_output=output, execution_output=candidate
+        ) as command:
+            execution_result, execution = measure_command(
+                command, cwd=output.parent, timeout=args.timeout
+            )
+        run: BenchmarkRun = {
             "phase": phase,
             "iteration": index,
             "execution": execution,
@@ -1149,9 +1236,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
     report["runs"] = runs
     report["summary"] = summarize_runs(runs)
     report["output"] = inspect_binary(output, tools)
-    report["quiescence"]["after"] = asdict(  # type: ignore[index]
-        perf_calibration.measure_quiescence()
-    )
+    report["quiescence"]["after"] = asdict(perf_calibration.measure_quiescence())
     report["attestation"] = report_attestation(report)
     validate_report(report)
     if args.compare:

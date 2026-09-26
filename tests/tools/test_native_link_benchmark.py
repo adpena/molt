@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import hashlib
 import inspect
 import json
@@ -17,6 +18,7 @@ from molt.cli.native_link_plan import (
     NativeLinkCapabilities,
     NativeLinkerKind,
     NativeLinkPlan,
+    NativeLinkSidecar,
     NativeLinkPolicy,
     NativeObjectFormat,
     NativeTargetSpec,
@@ -166,6 +168,49 @@ def test_plan_fingerprint_normalizes_workspace_and_fixture_paths(
     assert str(tmp_path) not in serialized
     assert "{input:object}" in serialized
     assert "{output}" in serialized
+
+
+def test_generated_sidecar_bytes_are_semantic_plan_facts(tmp_path: Path) -> None:
+    obj = tmp_path / "program.obj"
+    obj.write_bytes(b"obj")
+    output = tmp_path / "program.exe"
+    base = _plan(tmp_path)
+    logical = tmp_path / ".molt_version.ver"
+    command = (*base.command, f"-Wl,--version-script={logical}")
+    first = replace(
+        base,
+        command=command,
+        sidecars=(
+            NativeLinkSidecar(
+                "elf-version-script",
+                logical,
+                b"main;\n",
+                len(base.command),
+                "-Wl,--version-script=",
+            ),
+        ),
+    )
+    second = replace(
+        base,
+        command=command,
+        sidecars=(
+            NativeLinkSidecar(
+                "elf-version-script",
+                logical,
+                b"main; alias;\n",
+                len(base.command),
+                "-Wl,--version-script=",
+            ),
+        ),
+    )
+    first_payload = benchmark.normalized_plan_payload(
+        first, inputs={"object": obj}, output=output
+    )
+    second_payload = benchmark.normalized_plan_payload(
+        second, inputs={"object": obj}, output=output
+    )
+    assert first_payload["sidecars"] != second_payload["sidecars"]
+    assert not logical.exists()
 
 
 def test_plan_allocation_profile_reports_real_tracemalloc_facts(tmp_path: Path) -> None:

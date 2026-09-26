@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 import zipfile
 
-from molt.file_hashing import _sha256_file
-from molt import file_publication
+from molt import artifact_publication, file_publication
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -78,22 +77,28 @@ def _atomic_copy_file(
     codesign: bool = False,
     expected_sha256: str | None = None,
 ) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = file_publication.staged_file_path(dst, purpose="copy")
-    try:
-        shutil.copyfile(src, tmp_path)
-        if codesign:
-            _codesign_atomic_copy_temp(tmp_path)
-        if expected_sha256 is not None and _sha256_file(tmp_path) != expected_sha256:
-            raise ValueError(f"source changed while staging verified copy: {src}")
+    with _staged_copy_file(
+        src, dst, codesign=codesign, expected_sha256=expected_sha256
+    ) as tmp_path:
         file_publication.durable_replace(tmp_path, dst)
-        # A read-only source must not make the staged file impossible to fsync.
-        # Final metadata belongs after the content and namespace durability barrier.
-        shutil.copymode(src, dst)
-    finally:
-        with contextlib.suppress(OSError):
-            if tmp_path.exists():
-                tmp_path.unlink()
+
+
+@contextmanager
+def _staged_copy_file(
+    src: Path,
+    dst: Path,
+    *,
+    codesign: bool = False,
+    expected_sha256: str | None = None,
+) -> Iterator[Path]:
+    """Own the final byte/mode copy until its caller publishes or abandons it."""
+    with artifact_publication.staged_copy_file(
+        src,
+        dst,
+        prepare=_codesign_atomic_copy_temp if codesign else None,
+        expected_sha256=expected_sha256,
+    ) as candidate:
+        yield candidate
 
 
 # os.link is only an optimization over copying. When it fails because hard

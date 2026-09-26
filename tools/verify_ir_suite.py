@@ -29,7 +29,7 @@ POOL_POLICY = ROOT / "config" / "ir_verification_pool.toml"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.artifact_publish import atomic_write_json  # noqa: E402
+from molt.artifact_publication import atomic_write_json  # noqa: E402
 from tools.check_ir_structure import verify_frontend_tir  # noqa: E402
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 from tools.resource_pressure import plan_resource_pressure  # noqa: E402

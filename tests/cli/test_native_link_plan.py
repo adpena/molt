@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 import subprocess
 import sys
@@ -8,10 +8,14 @@ import sys
 import pytest
 
 import molt.cli as cli
-from molt.cli import build_results, native_link_command, native_link_plan
+from molt.cli import build_results, link_pipeline, native_link_command, native_link_plan
+from molt.cli import atomic_io
+from molt.cli import link_fingerprints
+from molt import file_publication
 from molt.cli.native_link_plan import NativeArtifactKind, NativeObjectFormat
 from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
 from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkInput,
     SourceExtensionLinkRequirements,
     SourceExtensionLinkLoadingPolicy,
     source_extension_link_file,
@@ -37,6 +41,7 @@ def _plan(
     bolt_requested: bool = False,
     cc: str = "clang",
     external_target: str | None = None,
+    external_inputs: tuple[SourceExtensionLinkInput, ...] = (),
     output_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
     stdlib_path: Path | None = None,
 ):
@@ -82,9 +87,84 @@ def _plan(
         external_link_requirements=(
             ()
             if external_target is None
-            else (SourceExtensionLinkRequirements(external_target),)
+            else (
+                SourceExtensionLinkRequirements(external_target, items=external_inputs),
+            )
         ),
     )
+
+
+def test_native_link_sidecars_are_private_for_overlapping_plans(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plain = _plan(monkeypatch, tmp_path, host_platform="linux")
+    extension = tmp_path / "extension.a"
+    extension.write_bytes(b"archive")
+    external = _plan(
+        monkeypatch,
+        tmp_path,
+        host_platform="linux",
+        external_target=native_link_plan._host_target_triple(host_platform="linux"),
+        external_inputs=(source_extension_link_file(extension),),
+    )
+    assert plain.sidecars[0].planned_path == external.sidecars[0].planned_path
+    assert plain.sidecar_facts() != external.sidecar_facts()
+    assert not plain.sidecars[0].planned_path.exists()
+
+    def version_script(command: list[str]) -> Path:
+        token = next(
+            item for item in command if item.startswith("-Wl,--version-script=")
+        )
+        return Path(token.split("=", 1)[1])
+
+    with link_pipeline._native_link_execution_command(
+        plain,
+        planned_output=tmp_path / "app",
+        execution_output=tmp_path / "plain-candidate",
+    ) as plain_command:
+        plain_script = version_script(plain_command)
+        assert plain_script.read_bytes() == plain.sidecars[0].content
+        with link_pipeline._native_link_execution_command(
+            external,
+            planned_output=tmp_path / "app",
+            execution_output=tmp_path / "external-candidate",
+        ) as external_command:
+            external_script = version_script(external_command)
+            assert external_script != plain_script
+            assert external_script.read_bytes() == external.sidecars[0].content
+            assert plain_script.read_bytes() == plain.sidecars[0].content
+        assert not external_script.exists()
+        assert plain_script.read_bytes() == plain.sidecars[0].content
+    assert not plain_script.exists()
+    assert not plain.sidecars[0].planned_path.exists()
+
+
+def test_native_link_sidecar_retargets_only_its_typed_operand(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan = _plan(monkeypatch, tmp_path, host_platform="linux")
+    sidecar = plan.sidecars[0]
+    unrelated = f"-Wl,--user-note={sidecar.planned_path}.unrelated"
+    plan = replace(plan, command=(*plan.command, unrelated))
+    with native_link_plan.native_link_execution_command(
+        plan,
+        planned_output=tmp_path / "app",
+        execution_output=tmp_path / "candidate",
+    ) as command:
+        assert command[-1] == unrelated
+        assert command[sidecar.command_index] != plan.command[sidecar.command_index]
+        assert sidecar.planned_path.exists() is False
+    tampered = replace(
+        plan,
+        sidecars=(replace(sidecar, command_index=len(plan.command) - 1),),
+    )
+    with pytest.raises(RuntimeError, match="sidecar operand mismatch"):
+        with native_link_plan.native_link_execution_command(
+            tampered,
+            planned_output=tmp_path / "app",
+            execution_output=tmp_path / "candidate",
+        ):
+            pass
 
 
 @pytest.mark.parametrize("host_platform", ["linux", "darwin", "win32"])
@@ -240,16 +320,53 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
             ),
         ),
     )
-    run(list(plan.command))
+    output = tmp_path / "app.elf"
+    candidate = file_publication.staged_file_path(
+        output, purpose="native-link", suffix=output.suffix
+    )
+    with native_link_plan.native_link_execution_command(
+        plan,
+        planned_output=output,
+        execution_output=candidate,
+    ) as command:
+        run(command)
     symbols = {
         line.split()[0]
         for line in run(
-            [nm, "--format=posix", "--defined-only", str(tmp_path / "app.elf")]
+            [nm, "--format=posix", "--defined-only", str(candidate)]
         ).splitlines()
         if line.strip()
     }
     assert {"eager_ctor", "dependency", "runtime_value"} <= symbols
     assert "dormant" not in symbols
+    fingerprint = link_fingerprints._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[app, primary, dependency, runtime, stub],
+        link_cmd=list(plan.command),
+        tool_facts=plan.sidecar_facts(),
+    )
+    assert fingerprint is not None
+    receipt_path = tmp_path / "app.elf.fingerprint"
+    monkeypatch.delenv("MOLT_SKIP_BINARY_VALIDITY_CHECK", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_SMOKE_EXEC", raising=False)
+    assert (
+        build_results._finalize_native_link_candidate(
+            candidate=candidate,
+            output_binary=output,
+            target_triple=target,
+            strip=False,
+            receipt=link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
+                receipt_path, fingerprint
+            ),
+        )
+        is None
+    )
+    assert not candidate.exists()
+    assert link_fingerprints._link_outputs_match(
+        outputs={"binary": output},
+        fingerprint=fingerprint,
+        receipt_path=receipt_path,
+    )
 
 
 def test_link_plan_is_immutable_and_preserves_elf_function_identity(
@@ -322,14 +439,35 @@ def test_native_link_preserves_matching_target_flags(monkeypatch, tmp_path):
     assert "-m64" in plan.command
 
 
-def test_host_native_link_accepts_exact_extension_target(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("host_platform", "target", "user_flag", "identity_flag"),
+    [
+        ("linux", "x86_64-unknown-linux-gnu", "-Wl,--icf=all", "-Wl,--icf=none"),
+        ("darwin", "x86_64-apple-darwin", "-Wl,-deduplicate", "-Wl,-no_deduplicate"),
+        ("win32", "x86_64-pc-windows-msvc", "-Wl,/OPT:ICF", "-Wl,/OPT:NOICF"),
+    ],
+)
+def test_extension_link_applies_identity_policy_after_user_link_arguments(
+    monkeypatch, tmp_path, host_platform, target, user_flag, identity_flag
+):
+    extension = tmp_path / "extension.a"
+    extension.write_bytes(b"extension archive")
+    monkeypatch.setenv("CFLAGS", user_flag)
     plan = _plan(
         monkeypatch,
         tmp_path,
-        host_platform="linux",
-        external_target="x86_64-unknown-linux-gnu",
+        host_platform=host_platform,
+        linker="lld",
+        external_target=target,
+        external_inputs=(source_extension_link_file(extension),),
     )
     assert plan.target.arch == "x86_64"
+    assert (
+        plan.command.index(user_flag)
+        < plan.command.index(str(extension))
+        < plan.command.index(str(tmp_path / "libmolt_runtime.a"))
+        < plan.command.index(identity_flag)
+    )
 
 
 def test_macho_plan_preserves_identity_without_suppressing_warnings(
@@ -691,16 +829,14 @@ def test_native_candidate_is_finalized_before_atomic_publication(
         assert path.read_bytes() == b"stripped"
         events.append("validate")
 
-    def fake_publish(path: Path, destination: Path, *, codesign: bool) -> None:
-        assert codesign
+    def fake_sign(path: Path) -> None:
         assert path.read_bytes() == b"stripped"
-        assert destination.read_bytes() == b"previous"
-        events.append("publish")
-        destination.write_bytes(path.read_bytes())
+        assert output.read_bytes() == b"previous"
+        events.append("sign")
 
     monkeypatch.setattr(build_results, "_post_link_strip", fake_strip)
     monkeypatch.setattr(build_results, "_assert_native_binary_valid", fake_validate)
-    monkeypatch.setattr(build_results, "_atomic_copy_file", fake_publish)
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", fake_sign)
     phase_times: dict[str, int] = {}
 
     assert (
@@ -713,7 +849,7 @@ def test_native_candidate_is_finalized_before_atomic_publication(
         )
         is None
     )
-    assert events == ["strip", "validate", "publish"]
+    assert events == ["strip", "sign", "validate"]
     assert output.read_bytes() == b"stripped"
     assert not candidate.exists()
     assert set(phase_times) == {

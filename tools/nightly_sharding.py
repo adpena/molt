@@ -26,7 +26,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 import zipfile
 
-from tools.artifact_publish import (
+from molt.artifact_publication import (
     atomic_write_json,
     publish_validated_outputs,
     staged_output_path,

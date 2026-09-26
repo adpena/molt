@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from molt.cli import native_link_command
-from molt.cli.native_link_plan import _host_target_triple
+from molt.cli.native_link_plan import NativeLinkPlan, _host_target_triple
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
     SourceExtensionLinkLoadingPolicy,
@@ -28,7 +28,7 @@ def test_bool_singletons_need_no_final_link_aliases() -> None:
     assert '("Py_False", "_Py_FalseStruct")' not in discovery
 
 
-def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
+def _plan(monkeypatch, tmp_path: Path, platform: str) -> NativeLinkPlan:
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
@@ -67,34 +67,39 @@ def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
         ),
         host_platform=platform,
     )
-    return list(plan.command)
+    return plan
 
 
 def test_darwin_native_artifact_link_aliases_singletons_to_same_storage(
     monkeypatch, tmp_path: Path
 ) -> None:
-    command = _command(monkeypatch, tmp_path, "darwin")
+    plan = _plan(monkeypatch, tmp_path, "darwin")
     for canonical, storage in native_link_command._CPYTHON_SINGLETON_CANONICAL_ALIASES:
-        assert f"-Wl,-alias,_{storage},_{canonical}" in command
-    exports = (tmp_path / ".molt_exports.exp").read_text(encoding="utf-8")
-    assert exports == "_main\n"
+        assert f"-Wl,-alias,_{storage},_{canonical}" in plan.command
+    assert plan.sidecars[0].role == "macho-exports"
+    assert plan.sidecars[0].content == b"_main\n"
+    assert not plan.sidecars[0].planned_path.exists()
 
 
 def test_linux_native_artifact_link_defines_canonical_singleton_aliases(
     monkeypatch, tmp_path: Path
 ) -> None:
-    command = _command(monkeypatch, tmp_path, "linux")
+    plan = _plan(monkeypatch, tmp_path, "linux")
     for canonical, storage in native_link_command._CPYTHON_SINGLETON_CANONICAL_ALIASES:
-        assert f"-Wl,--defsym={canonical}={storage}" in command
-    version_script = (tmp_path / ".molt_version.ver").read_text(encoding="utf-8")
+        assert f"-Wl,--defsym={canonical}={storage}" in plan.command
+    assert plan.sidecars[0].role == "elf-version-script"
+    version_script = plan.sidecars[0].content.decode("utf-8")
     assert "_Py_NoneStruct; Py_None;" in version_script
+    assert not plan.sidecars[0].planned_path.exists()
 
 
 def test_windows_native_artifact_exports_aliases_not_duplicate_storage(
     monkeypatch, tmp_path: Path
 ) -> None:
-    command = _command(monkeypatch, tmp_path, "win32")
-    assert any(arg.startswith("/DEF:") for arg in command)
-    exports = (tmp_path / ".molt_exports.def").read_text(encoding="utf-8")
+    plan = _plan(monkeypatch, tmp_path, "win32")
+    assert any(arg.startswith("/DEF:") for arg in plan.command)
+    assert plan.sidecars[0].role == "coff-exports"
+    exports = plan.sidecars[0].content.decode("utf-8")
     assert "_Py_NoneStruct=Py_None\n" in exports
     assert "_Py_NotImplementedStruct=Py_NotImplementedSentinel\n" in exports
+    assert not plan.sidecars[0].planned_path.exists()

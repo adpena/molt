@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli import non_native_output as _non_native_output
+from molt.cli.link_fingerprints import FinalLinkReceiptRequest
 from molt.cli.build_diagnostics import _emit_build_diagnostics_if_present
 from molt.cli.build_results import (
     _emit_native_link_result,
@@ -313,6 +314,10 @@ def _emit_backend_pipeline_outputs(
             out_dir=None,
             build_rc=0,
             json_output=json_output,
+            receipt=FinalLinkReceiptRequest.from_fingerprint(
+                prepared_native_link.link_fingerprint_path,
+                prepared_native_link.link_fingerprint,
+            ),
         )
         if bolt_rc != 0:
             return return_after_build_diagnostics(

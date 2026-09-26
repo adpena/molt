@@ -9,6 +9,8 @@ import subprocess
 import pytest
 
 from molt.capability_manifest import CapabilityManifest
+from molt import artifact_publication
+from molt.cli import atomic_io
 from molt.cli import build_results, link_fingerprints as receipts, link_pipeline
 from molt.cli import native_link_command
 from molt.link_outputs import validate_link_output_paths, wasm_link_output_paths
@@ -26,19 +28,19 @@ def _publish_receipt(tmp_path: Path, outputs: dict[str, Path]):
     )
     assert fingerprint is not None
     sidecar = tmp_path / "link.fingerprint"
-    assert (
-        receipts._write_link_fingerprint_if_needed(
-            link_skipped=False,
-            link_fingerprint=fingerprint,
-            link_fingerprint_path=sidecar,
-            outputs=outputs,
-        )
-        is None
+    candidates = {}
+    for role, final in outputs.items():
+        candidate = artifact_publication.staged_output_path(final)
+        candidate.write_bytes(final.read_bytes())
+        candidates[role] = (candidate, final)
+    receipts.publish_link_outputs(
+        candidates,
+        receipt=receipts.FinalLinkReceiptRequest.from_fingerprint(sidecar, fingerprint),
     )
     stored = receipts._read_link_fingerprint(sidecar)
     assert stored is not None
     assert receipts._link_outputs_match(
-        outputs=outputs, fingerprint=fingerprint, stored_fingerprint=stored
+        outputs=outputs, fingerprint=fingerprint, receipt_path=sidecar
     )
     return source, fingerprint, sidecar, stored
 
@@ -55,7 +57,7 @@ def test_every_split_output_role_is_content_and_path_bound(
         path.write_bytes(
             b"\0asm\x01\0\0\0\0\x02\x01a" if path.suffix == ".wasm" else b"{}"
         )
-    _, fingerprint, _, stored = _publish_receipt(tmp_path, outputs)
+    _, fingerprint, sidecar, _ = _publish_receipt(tmp_path, outputs)
     damaged = outputs[role]
     if damage == "missing":
         damaged.unlink()
@@ -69,7 +71,7 @@ def test_every_split_output_role_is_content_and_path_bound(
         replacement.write_bytes(damaged.read_bytes())
         outputs[role] = replacement
     assert not receipts._link_outputs_match(
-        outputs=outputs, fingerprint=fingerprint, stored_fingerprint=stored
+        outputs=outputs, fingerprint=fingerprint, receipt_path=sidecar
     )
 
 
@@ -79,7 +81,7 @@ def test_input_rebuild_metadata_does_not_replace_content_identity(
     output = tmp_path / "app.exe"
     output.write_bytes(b"binary")
     outputs = {"binary": output}
-    source, fingerprint, _, stored = _publish_receipt(tmp_path, outputs)
+    source, fingerprint, sidecar, stored = _publish_receipt(tmp_path, outputs)
     for path in (source, output):
         before = path.stat()
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 2_000_000_000))
@@ -91,7 +93,7 @@ def test_input_rebuild_metadata_does_not_replace_content_identity(
     )
     assert unchanged is not None and unchanged["hash"] == fingerprint["hash"]
     assert receipts._link_outputs_match(
-        outputs=outputs, fingerprint=unchanged, stored_fingerprint=stored
+        outputs=outputs, fingerprint=unchanged, receipt_path=sidecar
     )
     before = source.stat()
     source.write_bytes(b"mutant")
@@ -103,7 +105,7 @@ def test_input_rebuild_metadata_does_not_replace_content_identity(
         stored_fingerprint=stored["fingerprint"],
     )
     assert not receipts._link_outputs_match(
-        outputs=outputs, fingerprint=changed, stored_fingerprint=stored
+        outputs=outputs, fingerprint=changed, receipt_path=sidecar
     )
 
 
@@ -132,7 +134,7 @@ def test_unusable_receipts_are_cache_misses(tmp_path: Path, damage: str) -> None
     assert not receipts._link_outputs_match(
         outputs=outputs,
         fingerprint=fingerprint,
-        stored_fingerprint=receipts._read_link_fingerprint(sidecar),
+        receipt_path=sidecar,
     )
 
 
@@ -149,6 +151,167 @@ def test_link_output_aliases_are_rejected_before_publication(tmp_path: Path) -> 
         validate_link_output_paths(
             {"binary": tmp_path / "app"}, inputs=[tmp_path / "app"]
         )
+
+
+def test_receipt_never_adopts_a_later_publishers_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "app"
+    output.write_bytes(b"old")
+    _, fingerprint, sidecar, _ = _publish_receipt(tmp_path, {"binary": output})
+    request = receipts.FinalLinkReceiptRequest.from_fingerprint(sidecar, fingerprint)
+    assert request is not None
+    transport = tmp_path / "request.json"
+    transport.write_bytes(request.encode())
+    request = receipts.FinalLinkReceiptRequest.read(transport)
+    candidate = artifact_publication.staged_output_path(output)
+    candidate.write_bytes(b"producer A")
+    real_publish = artifact_publication.publish_validated_outputs
+
+    def racing_publish(pairs, **kwargs):
+        real_publish(pairs, **kwargs)
+        # Deterministic interleaving: another producer commits after A's
+        # publication but before A returns to the caller. A must never mint
+        # a receipt labeling B's bytes as its own input generation.
+        rival = artifact_publication.staged_output_path(output)
+        rival.write_bytes(b"producer B")
+        real_publish([(rival, output)])
+
+    monkeypatch.setattr(
+        artifact_publication, "publish_validated_outputs", racing_publish
+    )
+    receipts.publish_link_outputs({"binary": (candidate, output)}, receipt=request)
+    stored = receipts._read_link_fingerprint(sidecar)
+    assert stored is not None and output.read_bytes() == b"producer B"
+    assert not receipts._link_outputs_match(
+        outputs={"binary": output}, fingerprint=fingerprint, receipt_path=sidecar
+    )
+
+
+def test_observation_only_receipts_are_not_generation_evidence(tmp_path: Path) -> None:
+    output = tmp_path / "app"
+    output.write_bytes(b"old")
+    _, _, sidecar, stored = _publish_receipt(tmp_path, {"binary": output})
+    stored["schema"] = "molt.final-link.v1"
+    sidecar.write_text(json.dumps(stored), encoding="utf-8")
+    assert receipts._read_link_fingerprint(sidecar) is None
+
+
+def test_archive_candidate_identity_uses_final_role_not_private_suffix(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "libapp.a"
+    write_test_static_archive(archive)
+    _, fingerprint, sidecar, _ = _publish_receipt(tmp_path, {"archive": archive})
+    assert receipts._link_outputs_match(
+        outputs={"archive": archive}, fingerprint=fingerprint, receipt_path=sidecar
+    )
+
+
+def test_obsolete_receipt_cannot_authorize_retirement_or_block_rebuild(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "app.bin"
+    output.write_bytes(b"old")
+    unrelated = tmp_path / "unrelated.bin"
+    unrelated.write_bytes(b"preserve")
+    _, fingerprint, sidecar, old = _publish_receipt(tmp_path, {"binary": output})
+    old["schema"] = "molt.final-link.v1"
+    old["outputs"]["untrusted"] = {
+        "path": str(unrelated),
+        "identity": receipts.artifact_content_identity(unrelated),
+    }
+    sidecar.write_text(json.dumps(old), encoding="utf-8")
+    stage = artifact_publication.staged_output_path(output)
+    stage.write_bytes(b"new")
+    receipts.publish_link_outputs(
+        {"binary": (stage, output)},
+        receipt=receipts.FinalLinkReceiptRequest.from_fingerprint(sidecar, fingerprint),
+        retire_previous_outputs_under=tmp_path,
+    )
+    assert output.read_bytes() == b"new" and unrelated.read_bytes() == b"preserve"
+    assert receipts._link_outputs_match(
+        outputs={"binary": output}, fingerprint=fingerprint, receipt_path=sidecar
+    )
+
+
+@pytest.mark.parametrize("state", ["unchanged", "changed", "absent"])
+def test_generation_retires_only_unchanged_previous_family_members(
+    tmp_path: Path, state: str
+) -> None:
+    output = tmp_path / "app.wasm"
+    old_module = b"\0asm\x01\0\0\0\0\x02\x01a"
+    new_module = b"\0asm\x01\0\0\0\0\x02\x01b"
+    output.write_bytes(old_module)
+    obsolete = tmp_path / "assets" / "retired.js"
+    obsolete.parent.mkdir()
+    obsolete.write_bytes(b"old asset")
+    _, fingerprint, sidecar, _ = _publish_receipt(
+        tmp_path, {"linked": output, "asset": obsolete}
+    )
+    unrelated = obsolete.parent / "keep.js"
+    unrelated.write_bytes(b"unrelated")
+    candidate = artifact_publication.staged_output_path(output)
+    candidate.write_bytes(new_module)
+
+    def publish():
+        receipts.publish_link_outputs(
+            {"linked": (candidate, output)},
+            receipt=receipts.FinalLinkReceiptRequest.from_fingerprint(
+                sidecar, fingerprint
+            ),
+            retire_previous_outputs_under=tmp_path,
+        )
+
+    if state == "changed":
+        obsolete.write_bytes(b"user changed asset")
+        with pytest.raises(ValueError, match="changed outside publication"):
+            publish()
+        assert output.read_bytes() == old_module
+        assert obsolete.read_bytes() == b"user changed asset"
+    else:
+        if state == "absent":
+            obsolete.unlink()
+        publish()
+        assert not obsolete.exists()
+        assert output.read_bytes() == new_module
+        assert receipts._link_outputs_match(
+            outputs={"linked": output}, fingerprint=fingerprint, receipt_path=sidecar
+        )
+    assert unrelated.read_bytes() == b"unrelated"
+
+
+def test_family_receipt_follows_destination_not_project_cache_policy(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "out" / "app"
+    first = receipts._link_fingerprint_path(output)
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "different-cache"))
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "different-runtime-cache"))
+    assert receipts._link_fingerprint_path(output) == first
+    assert first.parent == output.parent
+
+
+@pytest.mark.parametrize("damage", ["relative", "schema", "extra", "fingerprint"])
+def test_invalid_receipt_transport_is_rejected(tmp_path: Path, damage: str) -> None:
+    output = tmp_path / "app"
+    output.write_bytes(b"old")
+    _, fingerprint, sidecar, _ = _publish_receipt(tmp_path, {"binary": output})
+    request = receipts.FinalLinkReceiptRequest.from_fingerprint(sidecar, fingerprint)
+    assert request is not None
+    payload = json.loads(request.encode())
+    if damage == "relative":
+        payload["path"] = "relative-receipt"
+    elif damage == "schema":
+        payload["schema"] = "unowned"
+    elif damage == "extra":
+        payload["unowned"] = True
+    else:
+        payload["fingerprint"]["version"] = True
+    transport = tmp_path / "request.json"
+    transport.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError):
+        receipts.FinalLinkReceiptRequest.read(transport)
 
 
 @pytest.mark.parametrize(
@@ -185,12 +348,11 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
         linked.append(candidate)
         return subprocess.CompletedProcess(link_cmd, 0, "", "")
 
-    def publish(candidate, destination, **kwargs):
-        # Model the byte-changing codesigning publication boundary.
-        destination.write_bytes(candidate.read_bytes() + b" signed")
+    def sign(candidate):
+        candidate.write_bytes(candidate.read_bytes() + b" signed")
 
     monkeypatch.setattr(link_pipeline, "_run_native_link_command", run)
-    monkeypatch.setattr(build_results, "_atomic_copy_file", publish)
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", sign)
     runtime = tmp_path / "runtime.a"
     app = tmp_path / "app.a"
     for path in (runtime, app):

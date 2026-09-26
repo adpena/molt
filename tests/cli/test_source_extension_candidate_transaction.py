@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from molt import file_deletion
 
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli import source_extension_candidate_transaction as transaction_authority
@@ -323,11 +324,11 @@ def test_real_recovery_resumes_after_retirement_deleted_the_transaction_journal(
             )
         with monkeypatch.context() as faults:
 
-            def partial_remove(path):
+            def partial_remove(path, **kwargs):
                 (path / "candidate-transaction.json").unlink()
                 raise OSError("injected after actual journal unlink")
 
-            faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+            faults.setattr(file_deletion.shutil, "rmtree", partial_remove)
             with pytest.raises(file_publication.RetirementError) as caught:
                 recover_and_prune_source_extension_candidate_transactions(
                     custody=custody, now_ns=10**20, failed_retention_seconds=0

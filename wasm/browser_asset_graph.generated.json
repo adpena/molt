@@ -216,7 +216,7 @@
       "reference_facts": [],
       "references": [],
       "role": "browser",
-      "sha256": "1790828ada67d454de67ed7e07d65448cf0d84d434ad2774e5427d20a7905002",
+      "sha256": "88987b94877544b632b1d8916b37697749f337beee7dc66aa451e58d0f0048b9",
       "source_type": "module"
     },
     "native_callable_abi_generated.js": {

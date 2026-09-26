@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
 import platform
@@ -10,6 +9,7 @@ import time
 from typing import Any
 
 from molt.capability_manifest import ResolvedRuntimePolicy
+from molt.artifact_publication import discard_staged_output
 from molt.cli.binary_image_analysis import (
     _merge_binary_image_analysis_stage,
     _native_artifact_binary_image_analysis_payload,
@@ -25,7 +25,9 @@ from molt.cli.native_binary import (
     _NativeBinaryInvalid,
     _assert_native_binary_valid,
 )
-from molt.cli.atomic_io import _atomic_copy_file
+from molt.cli.atomic_io import _staged_copy_file
+from molt.file_publication import canonical_file_leaf
+from molt.link_outputs import validate_link_output_paths
 from molt.cli.native_link_plan import (
     native_strip_flags,
     resolve_native_target_spec,
@@ -303,10 +305,21 @@ def _finalize_native_link_candidate(
     target_triple: str | None,
     strip: bool,
     phase_times: MutableMapping[str, int] | None = None,
+    receipt: link_fingerprints.FinalLinkReceiptRequest | None = None,
 ) -> str | None:
     """Finalize and validate a private candidate before atomic publication."""
-    if candidate == output_binary:
-        return None
+    try:
+        candidate = canonical_file_leaf(
+            candidate, create_parent=False, role="native candidate"
+        )
+        outputs = {"binary": output_binary}
+        if receipt is not None:
+            outputs["receipt"] = receipt.path
+        validate_link_output_paths(outputs, inputs=(candidate,))
+        if candidate.stat().st_nlink != 1:
+            raise ValueError("candidate has other filesystem names")
+    except (OSError, ValueError) as exc:
+        return f"native publication requires a private candidate: {exc}"
     strip_started = time.perf_counter_ns() if phase_times is not None else 0
     strip_error: str | None = None
     if strip:
@@ -315,27 +328,31 @@ def _finalize_native_link_candidate(
         phase_times["strip_wall_ns"] = time.perf_counter_ns() - strip_started
     if strip and strip_error:
         return strip_error
-    validate_started = time.perf_counter_ns() if phase_times is not None else 0
-    try:
-        _assert_native_binary_valid(candidate, target_triple)
-    except _NativeBinaryInvalid as exc:
-        if phase_times is not None:
-            phase_times["validate_wall_ns"] = time.perf_counter_ns() - validate_started
-        return f"native candidate validation failed: {exc}"
-    if phase_times is not None:
-        phase_times["validate_wall_ns"] = time.perf_counter_ns() - validate_started
     publish_started = time.perf_counter_ns() if phase_times is not None else 0
+    validate_elapsed = 0
     try:
-        _atomic_copy_file(candidate, output_binary, codesign=True)
-    except OSError as exc:
-        if phase_times is not None:
-            phase_times["publish_wall_ns"] = time.perf_counter_ns() - publish_started
+        with _staged_copy_file(candidate, output_binary, codesign=True) as signed:
+            validate_started = time.perf_counter_ns() if phase_times is not None else 0
+            try:
+                _assert_native_binary_valid(signed, target_triple)
+            except _NativeBinaryInvalid as exc:
+                return f"native candidate validation failed: {exc}"
+            finally:
+                if phase_times is not None:
+                    validate_elapsed = time.perf_counter_ns() - validate_started
+                    phase_times["validate_wall_ns"] = validate_elapsed
+            link_fingerprints.publish_link_outputs(
+                {"binary": (signed, output_binary)}, receipt=receipt
+            )
+    except (OSError, ValueError, RuntimeError) as exc:
         return f"atomic native publication failed: {exc}"
-    if phase_times is not None:
-        phase_times["publish_wall_ns"] = time.perf_counter_ns() - publish_started
+    finally:
+        if phase_times is not None:
+            phase_times["publish_wall_ns"] = (
+                time.perf_counter_ns() - publish_started - validate_elapsed
+            )
     cleanup_started = time.perf_counter_ns() if phase_times is not None else 0
-    with contextlib.suppress(OSError):
-        candidate.unlink()
+    discard_staged_output(candidate)
     if phase_times is not None:
         phase_times["cleanup_wall_ns"] = time.perf_counter_ns() - cleanup_started
     return None
@@ -396,6 +413,9 @@ def _emit_native_link_result(
                 output_binary=output_binary,
                 target_triple=target_triple,
                 strip=strip_after_link,
+                receipt=link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
+                    link_fingerprint_path, link_fingerprint
+                ),
             ):
                 message = f"Build failed during native finalization: {finalize_error}"
                 if json_output:
@@ -417,22 +437,15 @@ def _emit_native_link_result(
                     verbosity=resolved_diagnostics_verbosity,
                 )
                 return 1
-        # Build-time output validity gate (self-protection, task #18): a link
-        # that returns 0 can still emit a structurally corrupt artifact (e.g. a
-        # mis-applied relocation that flips the Mach-O magic 0xFEEDFACF->0xFEEDFACE,
-        # yielding a kernel-SIGKILLed binary). Validate the produced binary's
-        # object-file magic against the target format (deterministic and side-
-        # effect-free); the deeper exec loader probe is opt-in via
-        # MOLT_BUILD_SMOKE_EXEC=1 (it runs the image). On failure, fail the build
-        # loudly instead of reporting success — this class must never ship.
+        # Fresh candidates were validated after signing, before publication.
+        # Reused/already-finalized names still receive the target admission gate;
+        # no receipt is ever minted from this public-name observation.
         try:
-            _assert_native_binary_valid(output_binary, target_triple)
+            if candidate == output_binary:
+                _assert_native_binary_valid(output_binary, target_triple)
         except _NativeBinaryInvalid as validity_error:
-            # Remove the corrupt artifact so a stale-but-invalid binary cannot be
-            # picked up by a later step, then surface a clear error and fail.
-            with contextlib.suppress(OSError):
-                if emit_mode == "bin" and output_binary.exists():
-                    output_binary.unlink()
+            # This name may now belong to another publisher. Never delete a
+            # public destination based on an unlocked post-publication check.
             message = f"Build failed: produced binary is invalid. {validity_error}"
             if json_output:
                 payload = _json_payload(
@@ -451,16 +464,6 @@ def _emit_native_link_result(
                 verbosity=resolved_diagnostics_verbosity,
             )
             return 1
-        link_fingerprint_warning = link_fingerprints._write_link_fingerprint_if_needed(
-            link_skipped=link_skipped,
-            link_fingerprint=link_fingerprint,
-            link_fingerprint_path=link_fingerprint_path,
-            outputs={"binary": output_binary},
-        )
-        if link_fingerprint_warning is not None:
-            warnings.append(link_fingerprint_warning)
-            if not json_output:
-                print(f"Warning: {link_fingerprint_warning}", file=sys.stderr)
         _merge_binary_image_analysis_stage(
             diagnostics_payload,
             "artifacts",
