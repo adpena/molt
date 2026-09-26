@@ -28,6 +28,7 @@ print(
 print(hasattr(builtins, "PythonFinalizationError") == (sys.version_info >= (3, 13)))
 print(hasattr(builtins, "WindowsError") == (sys.platform == "win32"))
 print(importlib.machinery.ModuleSpec("pkg.leaf", None).parent == "pkg")
+print(builtins.len.__module__, builtins.open.__module__)
 
 # Cold startup must finish builtin capture before recursive loader metadata;
 # user code sees the original namespace and complete parent/module specs.
