@@ -4,7 +4,8 @@ Endpoint hashes prove only the endpoints.  This module supplies the missing
 execution-time authority: kernel filesystem notifications retain any write,
 rename, deletion, or metadata mutation until the parent consumes it, and the
 Python/Node launch hooks reject child executables before launch unless the
-admitted envelope declares their captured toolchain identity.
+admitted envelope declares their captured toolchain identity or the native
+supervisor has admitted their run-owned output root.
 """
 
 from __future__ import annotations
@@ -817,6 +818,8 @@ def watch_specs(
 def child_policy(
     envelope: Mapping[str, object],
     toolchains: Mapping[str, object],
+    *,
+    derived_roots: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object]:
     closure = envelope.get("process_closure")
     if not isinstance(closure, Mapping):
@@ -824,6 +827,23 @@ def child_policy(
     descendants = closure.get("descendants")
     if descendants not in {"forbidden", "declared-toolchains"}:
         raise ValueError("proof envelope has an unknown child-process policy")
+    # The native supervisor's prelaunch provenance owns this grant. Do not
+    # discover roots from the payload environment or grant arbitrary directories.
+    projected_roots: list[dict[str, str]] = []
+    for root in derived_roots:
+        role, raw_path = root.get("role"), root.get("path")
+        if (
+            descendants == "forbidden"
+            or root.get("run_owned") is not True
+            or not isinstance(role, str)
+            or not role
+            or not isinstance(raw_path, str)
+            or not Path(raw_path).is_absolute()
+        ):
+            raise ValueError(
+                "child executable root requires admitted run-owned provenance"
+            )
+        projected_roots.append({"role": role, "path": raw_path})
     allowed: list[dict[str, str]] = []
     if descendants == "declared-toolchains":
         for name, identity in toolchains.items():
@@ -849,6 +869,7 @@ def child_policy(
         "schema": CHILD_POLICY_SCHEMA,
         "descendants": descendants,
         "allowed": allowed,
+        "derived_roots": projected_roots,
     }
 
 
@@ -1137,6 +1158,25 @@ class ChildCustodyEventServer:
                     {"admitted": True, "toolchain": authority.get("toolchain")}
                 )
                 return decision
+        try:
+            canonical = path.resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            decision["reason"] = f"identity-unavailable:{type(exc).__name__}"
+            return decision
+        for root in self.policy.get("derived_roots", []):
+            root_path = Path(root["path"])
+            # Compare canonical components exactly, as the native supervisor
+            # does; a case-folded lexical prefix can grant a sibling directory.
+            if canonical.parts[: len(root_path.parts)] == root_path.parts:
+                decision.update(
+                    {
+                        "admitted": True,
+                        "resolved": str(canonical),
+                        "derived_role": root["role"],
+                        "sha256": digest,
+                    }
+                )
+                return decision
         decision["reason"] = "outside-declared-toolchain-closure"
         return decision
 
@@ -1181,6 +1221,69 @@ class ChildCustodyEventServer:
                 json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest(),
         }
+
+
+def child_receipt_is_admitted(receipt: Mapping[str, object]) -> bool:
+    """A complete transport is not proof that every requested child was allowed."""
+    events = receipt.get("events")
+    return (
+        receipt.get("broker_complete") is True
+        and receipt.get("violations") == []
+        and receipt.get("errors") == []
+        and isinstance(events, list)
+        and all(
+            isinstance(event, Mapping)
+            and (
+                (
+                    event.get("event") in ("hook-start", "hook-end")
+                    and event.get("runtime") in ("python", "node")
+                    and type(event.get("connection_id")) is int
+                    and event["connection_id"] >= 0
+                )
+                or (
+                    event.get("event") == "child-process"
+                    and event.get("admitted") is True
+                )
+            )
+            for event in events
+        )
+    )
+
+
+def require_derived_child_image_bindings(
+    receipt: Mapping[str, object], verified_event_log: Path
+) -> None:
+    """Bind broker decisions to the native supervisor's actual executed bytes.
+
+    The caller first verifies the native event artifact. Fixed toolchains have
+    their prelaunch identity law; generated images need this execution boundary.
+    """
+    expected: set[tuple[str, str, str]] = set()
+    for event in receipt.get("events", []):
+        if not isinstance(event, Mapping) or "derived_role" not in event:
+            continue
+        fields = tuple(
+            event.get(name) for name in ("resolved", "sha256", "derived_role")
+        )
+        if not all(isinstance(value, str) and value for value in fields):
+            raise ValueError("derived child decision has no exact image identity")
+        expected.add(fields)
+    if not expected:
+        return
+    observed: set[tuple[str, str, str]] = set()
+    with verified_event_log.open(encoding="utf-8") as stream:
+        for line in stream:
+            image = json.loads(line).get("image")
+            if not isinstance(image, Mapping) or image.get("class") != "derived":
+                continue
+            for role in image.get("roles", []):
+                identity = (image.get("path"), image.get("sha256"), role)
+                if identity in expected:
+                    observed.add(identity)
+    if observed != expected:
+        raise ValueError(
+            "derived child decision differs from native executed image identity"
+        )
 
 
 class ExecutionCustodySession:

@@ -767,7 +767,9 @@ def execute_guarded_request(request_path: Path) -> int:
                 "toolchain capture contains paths outside armed custody: "
                 + ", ".join(uncovered[:3])
             )
-        child_policy = execution_custody.child_policy(envelope, toolchains_full)
+        child_policy = execution_custody.child_policy(
+            envelope, toolchains_full, derived_roots=derived_root_provenance
+        )
         child_event_server = execution_custody.ChildCustodyEventServer(
             expected_child_runtime, child_policy
         )
@@ -1206,8 +1208,19 @@ def execute_guarded_request(request_path: Path) -> int:
                 ineligible_reasons.append("live-input-monitor-incomplete")
         if child_custody_receipt.get("broker_complete") is not True:
             ineligible_reasons.append("child-custody-broker-incomplete")
+        elif not execution_custody.child_receipt_is_admitted(child_custody_receipt):
+            ineligible_reasons.append("child-custody-violation")
         if supervisor_receipt.get("complete") is not True:
             ineligible_reasons.append("native-process-supervision-incomplete")
+        else:
+            event_artifact = supervisor_event_artifact["artifact"]
+            assert isinstance(event_artifact, Mapping)
+            try:
+                execution_custody.require_derived_child_image_bindings(
+                    child_custody_receipt, Path(str(event_artifact["path"]))
+                )
+            except ValueError as exc:
+                ineligible_reasons.append(f"derived-child-image-mismatch:{exc}")
         ineligible_reasons.extend(
             environment._python_editable_ineligible_reasons(
                 proof_python,

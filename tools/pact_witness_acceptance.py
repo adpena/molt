@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import os
@@ -14,16 +15,20 @@ import time
 from typing import Any
 
 from molt.cli.source_build_environment import source_build_environment
+from molt.cli.source_extension_set_registry import SourceExtensionVariant
+from molt.cli.source_extension_target import resolve_source_extension_target_plan
+from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
+from molt.cli.json_contract import _wrapper_build_payload_data
+from molt.exact_json import loads_exact
 from molt.dx import proof_scratch_root
 from molt.scientific_stack_versions import (
     PACT_WITNESS_DEPENDENCY_GROUP,
-    attest_numpy_witness_seal,
-    resolve_scientific_stack,
-    scientific_witness_seal_root,
-    scientific_witness_variant,
+    ValidatedScientificExtensionSeals,
+    validate_scientific_extension_seals,
 )
 from molt.node_runtime import NodeRuntimeError, resolve_node_runtime
 from molt.wasm_artifact import wasm_runtime_manifest_entry_path
+from tools import pact_witness_receipt
 
 try:
     from tools.command_execution import CommandExecutor
@@ -65,6 +70,22 @@ def _default_out_dir() -> Path:
 # pact-witness-oracle sanity lane in tools/pact_witness_oracle.py).
 PARITY_ENGINE = ROOT / "collab" / "pact" / "parity" / "check_parity.py"
 KERNEL_A_GATES = KERNEL_ROOT / "field_solve_gates.json"
+# A receipt represents the shipped profiles, never an ambient debug override.
+# The queue locks these values; the producer checks them even on direct invocation.
+ACCEPTANCE_ENV = {
+    "MOLT_WITNESS_ITERATION": "0",
+    "MOLT_RUNTIME_BUILD_PROFILE": "",
+    "MOLT_WASM_CARGO_PROFILE": "",
+    "MOLT_RELEASE_CARGO_PROFILE": "",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _ExecutionDescriptor:
+    target: str
+    target_artifact: Path
+    execution_command: tuple[str, ...]
+    execution_manifest: Path | None = None
 
 
 def _git_output(*args: str) -> str:
@@ -84,7 +105,7 @@ def _git_output(*args: str) -> str:
     return result.stdout.strip()
 
 
-def _assert_build_provenance() -> None:
+def _assert_build_provenance() -> str:
     expected_root_raw = os.environ.get("MOLT_WITNESS_EXPECTED_REPO_ROOT", "").strip()
     expected_head = os.environ.get("MOLT_WITNESS_EXPECTED_GIT_HEAD", "").strip()
     if not expected_root_raw or not expected_head:
@@ -105,6 +126,8 @@ def _assert_build_provenance() -> None:
             "pact witness provenance HEAD mismatch: "
             f"expected={expected_head} actual={actual_head}"
         )
+    if _git_output("status", "--porcelain", "--untracked-files=all"):
+        raise SystemExit("pact witness acceptance requires a clean source worktree")
     import molt
     from tools import wasm_link
 
@@ -128,6 +151,7 @@ def _assert_build_provenance() -> None:
         f"wasm_link={linker_path}",
         flush=True,
     )
+    return actual_head
 
 
 _STATIC_LINK_EXEC_FAILURE_RE = re.compile(
@@ -188,20 +212,17 @@ def _run_capture(
     return result
 
 
-def _iteration_mode() -> bool:
-    """Frontier-iteration lane: fast, exact runtime generation identity.
-
-    Set ``MOLT_WITNESS_ITERATION=1`` for import/frontier debugging cycles.
-    A run in this mode is loudly stamped and its PASS is NOT acceptance
-    evidence — the exit-criteria green must be reproduced with this unset
-    (exact ship-profile artifacts, M05).
-    """
-    return os.environ.get("MOLT_WITNESS_ITERATION", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+def _require_non_iteration_mode() -> None:
+    if os.environ.get("MOLT_WITNESS_ITERATION") != "0":
+        raise SystemExit(
+            "Pact acceptance requires queue-locked MOLT_WITNESS_ITERATION=0; "
+            "diagnostic iterations cannot produce acceptance evidence"
+        )
+    for name, expected in ACCEPTANCE_ENV.items():
+        if os.environ.get(name, "") != expected:
+            raise SystemExit(
+                f"Pact acceptance requires the shipping profile: {name}={expected!r}"
+            )
 
 
 def _node_bin() -> str:
@@ -343,17 +364,10 @@ def _summarize_build_diagnostics(diagnostics_path: Path) -> None:
     print("build diagnostics: " + " ".join(parts), flush=True)
 
 
-def _build_wasm(build_dir: Path) -> Path:
+def _build_target(
+    target: str, build_dir: Path, *, variant: SourceExtensionVariant
+) -> _ExecutionDescriptor:
     env = _build_env()
-    if _iteration_mode():
-        # Frontier-iteration lane (doctrine 74 law 3 + doc 75 lever #1): the
-        # ship profile's ThinLTO/cgu=16 runtime codegen neither ships nor
-        # changes a deterministic import/frontier outcome, so iteration cycles
-        # use the landed fast knobs. `setdefault` keeps an operator pin
-        # authoritative. Final green MUST run WITHOUT MOLT_WITNESS_ITERATION:
-        # the result is stamped non-acceptance below and cannot count as the
-        # exit-criteria PASS (M05).
-        env.setdefault("MOLT_RUNTIME_BUILD_PROFILE", "dev-fast")
     # Diagnostics-only (no build-output change): attribute the hidden
     # frontend-lowering + runtime-wasm-rebuild wall and capture the
     # cross-session lowering-cache hit_rate on the witness path. Absolute file
@@ -364,7 +378,12 @@ def _build_wasm(build_dir: Path) -> Path:
     env["MOLT_BUILD_DIAGNOSTICS"] = "1"
     env["MOLT_BUILD_DIAGNOSTICS_FILE"] = str(diagnostics_path)
     env["MOLT_BUILD_DIAGNOSTICS_VERBOSITY"] = "summary"
-    _run(
+    target_options = (
+        ["--platform", "browser", "--wasm-profile", "auto", "--split-runtime"]
+        if target == "wasm"
+        else []
+    )
+    result = _run_capture(
         [
             sys.executable,
             "-m",
@@ -372,24 +391,73 @@ def _build_wasm(build_dir: Path) -> Path:
             "build",
             "collab/pact/pact_witness_kernel/field_solve.py",
             "--target",
-            "wasm",
-            "--profile",
-            "browser",
-            "--wasm-profile",
-            "auto",
-            "--split-runtime",
+            target,
+            "--python-version",
+            variant.cpython,
+            "--build-profile",
+            "release",
+            *target_options,
             "--out-dir",
             str(build_dir),
+            "--json",
         ],
         cwd=ROOT,
         env=env,
     )
     _summarize_build_diagnostics(diagnostics_path)
+    result.check_returncode()
     _run_build_health_gate(diagnostics_path)
-    manifest = _select_wasm_manifest(build_dir)
-    entry = wasm_runtime_manifest_entry_path(manifest)
+    payload = loads_exact(result.stdout)
+    if not isinstance(payload, Mapping) or payload.get("status") != "ok":
+        raise SystemExit("Pact witness build did not report a successful JSON result")
+    data = _wrapper_build_payload_data(payload)
+    effective_plan = resolve_source_extension_target_plan(
+        data.get("target_triple") or str(data.get("target"))
+    )
+    raw_entry = data.get("entry")
+    if (
+        data.get("profile") != "release"
+        or data.get("emit") != ("wasm" if target == "wasm" else "bin")
+        or effective_plan.target_triple != variant.target_triple
+        or not isinstance(raw_entry, str)
+        or (ROOT / raw_entry).resolve() != (KERNEL_ROOT / "field_solve.py").resolve()
+    ):
+        raise SystemExit(
+            "Pact witness build effective entry/profile/target differs from acceptance"
+        )
+    raw_output = data.get("consumer_output")
+    if (
+        data.get("target") != target
+        or not isinstance(raw_output, str)
+        or not raw_output
+    ):
+        raise SystemExit("Pact witness build has no target-qualified consumer_output")
+    output = Path(raw_output)
+    output = (ROOT / output).resolve(strict=True)
+    if not output.is_file() or not output.is_relative_to(build_dir.resolve()):
+        raise SystemExit(
+            f"Pact witness consumer_output escapes its build directory: {output}"
+        )
+    if target == "native":
+        return _ExecutionDescriptor(target, output, (str(output),))
+    manifest = _select_wasm_manifest(output.parent).resolve()
+    entry = wasm_runtime_manifest_entry_path(manifest).resolve(strict=True)
+    if not entry.is_file() or not entry.is_relative_to(build_dir.resolve()):
+        raise SystemExit(
+            f"Pact witness manifest entry escapes its build directory: {entry}"
+        )
     _assert_no_poison_stubs(build_dir, entry)
-    return manifest
+    return _ExecutionDescriptor(
+        target,
+        entry,
+        (
+            _node_bin(),
+            "--experimental-wasm-exnref",
+            str(ROOT / "wasm" / "run_wasm.js"),
+            str(manifest),
+        ),
+        manifest,
+    )
 
 
 def _run_build_health_gate(diagnostics_path: Path) -> None:
@@ -520,9 +588,12 @@ def _module_roots_from_env(env: Mapping[str, str]) -> tuple[Path, ...]:
 def _find_extension_manifests(
     module_name: str,
     module_roots: Sequence[Path],
+    *,
+    target: str,
 ) -> tuple[Path, ...]:
     leaf = module_name.rsplit(".", 1)[-1]
-    sidecar_name = f"{leaf}.molt.wasm.extension_manifest.json"
+    suffix = resolve_source_extension_target_plan(target).artifact_suffix
+    sidecar_name = f"{leaf}{suffix}.extension_manifest.json"
     direct_rel: Path | None = None
     if "." in module_name:
         module_rel = Path(*module_name.split("."))
@@ -662,6 +733,7 @@ def _static_extension_init_failure_report(
     *,
     output_text: str,
     env: Mapping[str, str],
+    target: str,
 ) -> dict[str, Any] | None:
     match = _STATIC_LINK_EXEC_FAILURE_RE.search(output_text)
     if match is None:
@@ -669,7 +741,9 @@ def _static_extension_init_failure_report(
     module_name = match.group("module")
     module_roots = _module_roots_from_env(env)
     manifest_matches = []
-    for manifest_path in _find_extension_manifests(module_name, module_roots):
+    for manifest_path in _find_extension_manifests(
+        module_name, module_roots, target=target
+    ):
         manifest = _load_json_object(manifest_path)
         if manifest is None:
             manifest_matches.append(
@@ -773,8 +847,11 @@ def _write_static_extension_init_failure_diagnostic(
     output_text: str,
     run_dir: Path,
     env: Mapping[str, str],
+    target: str,
 ) -> Path | None:
-    report = _static_extension_init_failure_report(output_text=output_text, env=env)
+    report = _static_extension_init_failure_report(
+        output_text=output_text, env=env, target=target
+    )
     if report is None:
         return None
     report_path = run_dir / "static_extension_init_failure.json"
@@ -786,42 +863,40 @@ def _write_static_extension_init_failure_diagnostic(
     return report_path
 
 
-def _run_candidate(manifest: Path, run_dir: Path) -> tuple[Path, Path]:
+def _run_candidate(
+    descriptor: _ExecutionDescriptor, run_dir: Path
+) -> tuple[Path, Path]:
     reference = _prepare_reference_oracle(run_dir)
     raw_output = run_dir / "reference_outputs.npz"
     candidate = run_dir / "candidate_outputs.npz"
     raw_output.unlink(missing_ok=True)
     candidate.unlink(missing_ok=True)
-    node_args = [
-        _node_bin(),
-        "--experimental-wasm-exnref",
-        str(ROOT / "wasm" / "run_wasm.js"),
-        str(manifest),
-    ]
+    command = list(descriptor.execution_command)
     env = os.environ.copy()
-    result = _run_capture(node_args, cwd=run_dir, env=env)
+    result = _run_capture(command, cwd=run_dir, env=env)
     if result.returncode != 0:
         _write_static_extension_init_failure_diagnostic(
             output_text=(result.stdout or "") + (result.stderr or ""),
             run_dir=run_dir,
             env=env,
+            target=descriptor.target,
         )
         raise subprocess.CalledProcessError(
             result.returncode,
-            node_args,
+            command,
             output=result.stdout,
             stderr=result.stderr,
         )
     if not raw_output.is_file():
         raise SystemExit(
-            "Pact witness WASM execution did not produce reference_outputs.npz"
+            f"Pact witness {descriptor.target} execution did not produce reference_outputs.npz"
         )
     raw_output.replace(candidate)
     print(f"candidate_outputs={candidate}", flush=True)
     return candidate, reference
 
 
-def _check_parity(candidate: Path, reference: Path) -> None:
+def _check_parity(candidate: Path, reference: Path, *, gates: Path) -> None:
     if not reference.is_file():
         raise SystemExit(f"missing Pact reference oracle: {reference}")
     _run(
@@ -830,45 +905,99 @@ def _check_parity(candidate: Path, reference: Path) -> None:
             str(PARITY_ENGINE),
             str(candidate),
             str(reference),
-            str(KERNEL_A_GATES),
+            str(gates),
         ],
         cwd=candidate.parent,
         env=_build_env(),
     )
 
 
-def _attest_effective_numpy_seal() -> Path:
-    stack = resolve_scientific_stack()
-    configured_roots = [
-        Path(raw)
-        for raw in os.environ.get("MOLT_MODULE_ROOTS", "").split(os.pathsep)
-        if raw.strip()
-    ]
-    durable_root = scientific_witness_seal_root(
-        "numpy",
-        variant=scientific_witness_variant(stack=stack),
-        stack=stack,
-    )
-    candidates = [durable_root, *configured_roots]
-    for root in candidates:
-        if not (root / "numpy/version.py").is_file():
-            continue
-        effective = attest_numpy_witness_seal(root, stack=stack)
-        print(
-            f"[preflight] NumPy seal attested: configured={stack.numpy} "
-            f"effective={effective} root={root}",
-            flush=True,
+def _validated_extension_seals(target: str) -> ValidatedScientificExtensionSeals:
+    seals = validate_scientific_extension_seals(target)
+    configured = tuple(path.resolve() for path in _module_roots_from_env(os.environ))
+    if (
+        configured != seals.payload_roots
+        or os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES") != "numpy scipy"
+    ):
+        raise SystemExit(
+            "Pact witness module roots differ from the target's validated seals"
         )
-        return root
-    raise SystemExit(
-        f"NumPy seal attestation failed: no effective seal for configured={stack.numpy}; "
-        f"expected {durable_root}"
+    return seals
+
+
+def _write_acceptance_receipt(
+    *,
+    descriptor: _ExecutionDescriptor,
+    source_sha: str,
+    seals: ValidatedScientificExtensionSeals,
+    candidate: Path,
+    reference: Path,
+    gates: Path,
+    attempt_dir: Path,
+) -> Path:
+    # Build and run already belong to this attempt. Bind the actual executed
+    # closure in place instead of copying large artifacts or rewriting manifests.
+    receipt = attempt_dir / "acceptance-receipt.json"
+    paths = {
+        "candidate_outputs": candidate,
+        "reference_oracle": reference,
+        "target_artifact": descriptor.target_artifact,
+    }
+    if descriptor.execution_manifest is not None:
+        paths["execution_manifest"] = descriptor.execution_manifest
+    packages = {}
+    for package in sorted(pact_witness_receipt.PACKAGE_NAMES):
+        validated = seals.receipt(package)
+        extension_set = validated.validation.recorded
+        packages[package] = {
+            "version": extension_set.package_version,
+            "module_set": extension_set.name,
+            "seal_sha256": validated.seal.seal_sha256,
+            "identity_sha256": validated.canonical_identity.canonical_sha256,
+        }
+    payload = {
+        "schema_version": pact_witness_receipt.SCHEMA_VERSION,
+        "kind": pact_witness_receipt.KIND,
+        "status": pact_witness_receipt.STATUS_PASS,
+        "target": descriptor.target,
+        "variant": {
+            "cpython": seals.variant.cpython,
+            "abi_tier": seals.variant.abi_tier,
+            "target_triple": seals.variant.target_triple,
+        },
+        "packages": packages,
+        "git": {"source_sha": source_sha},
+        "artifacts": [
+            pact_witness_receipt.artifact_receipt(role, path, receipt_path=receipt)
+            for role, path in sorted(paths.items())
+        ],
+        "parity_gate": {
+            key: value
+            for key, value in pact_witness_receipt.artifact_receipt(
+                "parity_gate", gates, receipt_path=receipt
+            ).items()
+            if key != "role"
+        },
+        "iteration_mode": False,
+    }
+    problems = pact_witness_receipt.validate_acceptance_receipt(
+        payload, receipt_path=receipt
     )
+    if problems:
+        raise SystemExit(
+            "generated Pact acceptance receipt is invalid:\n" + "\n".join(problems)
+        )
+    _atomic_write_json(receipt, payload, sort_keys=True)
+    print(f"acceptance_receipt={receipt.resolve()}", flush=True)
+    return receipt
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build, execute, and parity-check the Pact Kernel A WASM witness."
+        description="Build, execute, and parity-check one Pact Kernel A acceptance target."
+    )
+    parser.add_argument(
+        "--target", required=True, choices=sorted(pact_witness_receipt.TARGETS)
     )
     parser.add_argument(
         "--out-dir",
@@ -888,28 +1017,36 @@ def main(argv: list[str] | None = None) -> int:
             "use proof_queue.py pact-witness-acceptance"
         )
 
-    _assert_build_provenance()
-    _attest_effective_numpy_seal()
+    _require_non_iteration_mode()
+    source_sha = _assert_build_provenance()
+    seals = _validated_extension_seals(args.target)
     build_dir, run_dir = _prepare_attempt_dirs(
         _default_out_dir() if args.out_dir is None else args.out_dir
     )
 
-    if _iteration_mode():
-        print(
-            "!! ITERATION MODE (MOLT_WITNESS_ITERATION=1): fast runtime profile; "
-            "result is NOT acceptance evidence — reproduce green with it unset.",
-            flush=True,
+    gates = run_dir / KERNEL_A_GATES.name
+    _atomic_copy_file(KERNEL_A_GATES, gates)
+    descriptor = _build_target(args.target, build_dir, variant=seals.variant)
+    candidate, reference = _run_candidate(descriptor, run_dir)
+    _check_parity(candidate, reference, gates=gates)
+    _require_non_iteration_mode()
+    if (
+        _assert_build_provenance() != source_sha
+        or _validated_extension_seals(args.target) != seals
+    ):
+        raise SystemExit(
+            "Pact witness source or seal identity changed during acceptance"
         )
-    manifest = _build_wasm(build_dir)
-    candidate, reference = _run_candidate(manifest, run_dir)
-    _check_parity(candidate, reference)
-    if _iteration_mode():
-        print(
-            "pact witness acceptance PASS [ITERATION MODE — NOT acceptance evidence]",
-            flush=True,
-        )
-    else:
-        print("pact witness acceptance PASS", flush=True)
+    _write_acceptance_receipt(
+        descriptor=descriptor,
+        source_sha=source_sha,
+        seals=seals,
+        candidate=candidate,
+        reference=reference,
+        gates=gates,
+        attempt_dir=run_dir.parent,
+    )
+    print(f"pact witness acceptance PASS target={args.target}", flush=True)
     return 0
 
 

@@ -17,7 +17,8 @@ from tools.proof_queue_pkg import pact
 ROOT = Path(__file__).resolve().parents[2]
 PLAN = proof_plan.ProofPlan.load()
 LANE_IDS = (
-    "pact.witness.acceptance",
+    "pact.witness.acceptance.native",
+    "pact.witness.acceptance.wasm",
     "pact.witness.oracle",
 )
 
@@ -431,10 +432,12 @@ def test_tool_release_lanes_run_the_pinned_release_first_on_path(
     assert prefixes == {} and untouched["PATH"] == ambient
 
 
+@pytest.mark.parametrize("target", ["native", "wasm"])
 def test_named_lane_entry_routes_dedicated_lanes_through_their_aperture(
     monkeypatch: pytest.MonkeyPatch,
+    target: str,
 ) -> None:
-    # `named-lane pact.witness.acceptance` must produce the same run as the
+    # A named acceptance lane must produce the same target-qualified run as the
     # dedicated `pact-witness-acceptance` command: the acceptance tool fails
     # closed without the provenance pins that spec carries.
     seen: list[str] = []
@@ -443,16 +446,41 @@ def test_named_lane_entry_routes_dedicated_lanes_through_their_aperture(
         seen.append(args.lane_id)
         return 0
 
-    monkeypatch.setitem(
-        pact._DEDICATED_NAMED_LANE_HANDLERS, "pact.witness.acceptance", acceptance
-    )
-    args = argparse.Namespace(lane_id="pact.witness.acceptance", timeout=None)
+    lane_id = f"pact.witness.acceptance.{target}"
+    monkeypatch.setitem(pact._DEDICATED_NAMED_LANE_HANDLERS, lane_id, acceptance)
+    args = argparse.Namespace(lane_id=lane_id, timeout=None)
     assert pact._cmd_named_lane(args) == 0
-    assert seen == ["pact.witness.acceptance"]
+    assert seen == [lane_id]
     assert set(pact._DEDICATED_NAMED_LANE_HANDLERS) == {
-        "pact.witness.acceptance",
+        "pact.witness.acceptance.native",
+        "pact.witness.acceptance.wasm",
         "pact.witness.oracle",
     }
+
+
+@pytest.mark.parametrize("target", ["native", "wasm"])
+def test_named_acceptance_dispatch_preserves_target(
+    monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    seen: list[tuple[str, str]] = []
+
+    def spec(selected: str, _timeout, _repo_root):
+        return {"target": selected}
+
+    def run(args: argparse.Namespace, selected_spec: dict[str, str]) -> int:
+        seen.append((args.lane_id, selected_spec["target"]))
+        return 0
+
+    monkeypatch.setattr(pact, "_pact_witness_acceptance_spec", spec)
+    monkeypatch.setattr(pact, "_run_named_spec", run)
+    args = argparse.Namespace(
+        lane_id=f"pact.witness.acceptance.{target}",
+        timeout=None,
+        env=[],
+        repo_root=None,
+    )
+    assert pact._cmd_named_lane(args) == 0
+    assert seen == [(args.lane_id, target)]
 
 
 def test_obsolete_dynamic_environment_field_is_rejected() -> None:
