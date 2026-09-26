@@ -12,10 +12,11 @@ use crate::builtins::exceptions::{
 use crate::builtins::functions_re::this_build_rot13_text;
 use crate::builtins::platform::molt_importlib_import_transaction;
 use crate::builtins::types::{
-    molt_object_new_bound, molt_type_init, molt_type_new, molt_types_capsule_new,
-    molt_types_cell_new, molt_types_coroutine, molt_types_dynamic_class_attr_init,
-    molt_types_get_original_bases, molt_types_mappingproxy_init, molt_types_mappingproxy_new,
-    molt_types_method_init, molt_types_method_new, molt_types_new_class, molt_types_prepare_class,
+    molt_importlib_module_spec_init, molt_object_new_bound, molt_type_init, molt_type_new,
+    molt_types_capsule_new, molt_types_cell_new, molt_types_coroutine,
+    molt_types_dynamic_class_attr_init, molt_types_get_original_bases,
+    molt_types_mappingproxy_init, molt_types_mappingproxy_new, molt_types_method_init,
+    molt_types_method_new, molt_types_new_class, molt_types_prepare_class,
     molt_types_resolve_bases, molt_types_simplenamespace_init,
 };
 use crate::object::layout::{
@@ -58,10 +59,12 @@ pub use opcode_payload::*;
 pub use tokenize::*;
 
 pub(crate) use function_abi::python_builtin_functions_clear_runtime_state;
-#[cfg(test)]
-pub(crate) use wasm_callables_generated::resolve_test_python_builtin_symbol;
 pub(crate) use wasm_callables_generated::{
-    PYTHON_BUILTIN_FUNCTIONS, python_builtin_function_info, runtime_callable_symbol_is_non_callable,
+    PYTHON_BUILTIN_FUNCTIONS, runtime_callable_symbol_is_non_callable,
+};
+#[cfg(test)]
+pub(crate) use wasm_callables_generated::{
+    python_builtin_function_info, resolve_test_python_builtin_symbol,
 };
 
 #[cfg(target_arch = "wasm32")]

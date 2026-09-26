@@ -565,19 +565,20 @@ pub struct RuntimeHooks {
     pub buffer_release: unsafe extern "C" fn(view: *mut MoltBufferView) -> std::os::raw::c_int,
     /// Return owned obj.name using the runtime object model, or an explicit failure status.
     pub object_get_attr: unsafe extern "C" fn(obj_bits: u64, name_bits: u64) -> OwnedHandleResult,
-    /// Set obj.name using the runtime object model. Returns 0 on success, -1 on failure.
-    pub object_set_attr:
-        unsafe extern "C" fn(obj_bits: u64, name_bits: u64, value_bits: u64) -> std::os::raw::c_int,
+    /// Set or delete obj.name. The deletion flag is separate because a zero
+    /// value payload is the valid float +0.0. Returns 0 on success, -1 on error.
+    pub object_set_attr: unsafe extern "C" fn(
+        obj_bits: u64,
+        name_bits: u64,
+        value_bits: u64,
+        delete: bool,
+    ) -> std::os::raw::c_int,
     /// Return owned format(obj, spec), or `Error` with a pending exception.
     pub object_format: unsafe extern "C" fn(obj_bits: u64, spec_bits: u64) -> OwnedHandleResult,
-    /// Format an `f64` as CPython's `repr(float)` / `str(float)` using the
-    /// runtime's single float-format authority (`object::float_repr`). Writes
-    /// up to `cap` UTF-8 bytes into `out` and returns the total byte length of
-    /// the formatted string. When the return value exceeds `cap`, `out` is left
-    /// untouched and the caller must retry with a buffer of at least that size.
-    /// The ABI MUST NOT reimplement float formatting; Rust's own `{f}` breaks
-    /// round-half-to-even ties differently from CPython.
-    pub float_repr: unsafe extern "C" fn(value: f64, out: *mut u8, cap: usize) -> usize,
+    /// Return owned str(obj) / repr(obj) through the runtime protocol, including
+    /// subclass overrides and exceptions. The ABI does not format value bytes.
+    pub object_str: unsafe extern "C" fn(obj_bits: u64) -> OwnedHandleResult,
+    pub object_repr: unsafe extern "C" fn(obj_bits: u64) -> OwnedHandleResult,
     pub sys_get_object_borrowed:
         unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> BorrowedHandleResult,
     /// Resolve the current frame's effective builtins dict, or the interpreter
@@ -608,6 +609,9 @@ pub struct RuntimeHooks {
     /// Allocate a new Molt module object whose `__name__` is the UTF-8 string
     /// in `name_data[..name_len]`.  Returns module handle bits, 0 on failure.
     pub alloc_module: unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> u64,
+    /// Single-phase PyModule_Create allocation, resolving the currently scoped
+    /// initializer's package context exactly once for a matching leaf name.
+    pub alloc_extension_module: unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> u64,
     /// Return the runtime-owned module dict handle as a borrowed result.
     pub module_get_dict_borrowed: unsafe extern "C" fn(module_bits: u64) -> BorrowedHandleResult,
     /// Atomically get or create `sys.modules[name]`, replacing an existing
@@ -622,15 +626,17 @@ pub struct RuntimeHooks {
         name_len: usize,
         value_bits: u64,
     ) -> std::os::raw::c_int,
-    /// Register C-API module metadata and allocate per-module state when
-    /// `module_state_size` is non-zero.
+    /// Register C-API module metadata. Multi-phase construction defers state
+    /// allocation until execution; single-phase construction allocates now.
     pub module_capi_register: unsafe extern "C" fn(
         module_bits: u64,
         module_def_ptr: usize,
         module_state_size: u64,
+        defer_state: bool,
     ) -> std::os::raw::c_int,
     /// Return the runtime-owned C-API module state pointer for a module.
     pub module_capi_get_state: unsafe extern "C" fn(module_bits: u64) -> *mut u8,
+    pub module_capi_get_def: unsafe extern "C" fn(module_bits: u64) -> usize,
     /// Add `def -> module` to the process module-state registry.
     pub module_state_add:
         unsafe extern "C" fn(module_bits: u64, module_def_ptr: usize) -> std::os::raw::c_int,
@@ -639,6 +645,10 @@ pub struct RuntimeHooks {
     pub module_state_find: unsafe extern "C" fn(module_def_ptr: usize) -> BorrowedHandleResult,
     /// Remove a module definition pointer from the module-state registry.
     pub module_state_remove: unsafe extern "C" fn(module_def_ptr: usize) -> std::os::raw::c_int,
+    /// Allocate state and mark execution before calling arbitrary slots.
+    /// 0 starts execution, 1 means already started, -1 is an error.
+    pub module_exec_begin:
+        unsafe extern "C" fn(module_bits: u64, module_def_ptr: usize) -> std::os::raw::c_int,
     /// Register a `PyCFunction`-style C function pointer (`meth_addr`) as a
     /// callable Molt function.  `flags` follows CPython's `METH_*` bitmask.
     /// `self_bits` and `defining_class_bits` are borrowed; the callable retains
@@ -665,6 +675,16 @@ pub struct RuntimeHooks {
     /// owned module handle, or 0 on failure with the import error left in
     /// the runtime pending-exception state.
     pub import_module: unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> u64,
+    /// Invoke PyInit under a scoped package context, then consume its result
+    /// through the canonical create/publish/exec transaction. All handles are
+    /// borrowed; the result is one owned module or an error.
+    pub initialize_extension: unsafe extern "C" fn(
+        init: unsafe extern "C" fn() -> *mut crate::abi_types::PyObject,
+        name_bits: u64,
+        origin_bits: u64,
+        spec_bits: u64,
+        create_only: bool,
+    ) -> OwnedHandleResult,
     /// Return non-zero when the runtime holds a pending Python exception.
     /// Lets ABI-side fallbacks avoid masking a real runtime error with a
     /// synthetic "without setting an exception" message.
@@ -749,6 +769,9 @@ pub struct RuntimeHooks {
         args_bits: u64,
         kwargs_bits: u64,
     ) -> OwnedHandleResult,
+    /// The same non-invoking predicate as Python callable(). A semantic class
+    /// view does not carry the runtime's native tp_call layout.
+    pub object_is_callable: unsafe extern "C" fn(obj_bits: u64) -> std::os::raw::c_int,
     // ── Foreign-object custody (C-extension objects into Molt) ────────────────
     //
     // When a genuine C-extension `PyObject*` (a numpy static type, an extension
@@ -825,10 +848,10 @@ pub struct RuntimeHooks {
     /// a cleared cause/context/traceback; args always returns its tuple.
     pub exception_get_field:
         unsafe extern "C" fn(exception_bits: u64, field: u32) -> OwnedHandleResult,
-    /// Borrow the exact runtime class handle of a managed exception instance.
-    /// Used when materializing its C view so `Py_TYPE(value)` is the same class
-    /// returned by Fetch/Occurred, never the neutral managed-view type.
-    pub exception_class_borrowed: unsafe extern "C" fn(exception_bits: u64) -> BorrowedHandleResult,
+    /// Borrow the actual runtime class of any managed value. Builtin classes
+    /// reuse their bound static type objects; user classes reuse their managed
+    /// Type projections. This does not transfer a runtime reference.
+    pub runtime_class_borrowed: unsafe extern "C" fn(value_bits: u64) -> BorrowedHandleResult,
     /// Allocation-free physical layout discriminator for an exception instance
     /// or exception class. The bridge calls this before publishing either
     /// skeleton, so it must not allocate or re-enter the bridge. Returns an
@@ -897,7 +920,7 @@ pub struct RuntimeHooks {
 }
 
 pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 23;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 26;
 
 /// Target projection used to construct an attached runtime-context capability.
 /// This is deliberately not a boolean: native GIL, free-threaded attachment,
@@ -1318,14 +1341,15 @@ unsafe extern "C" fn stub_object_set_attr(
     _obj: u64,
     _name: u64,
     _value: u64,
+    _delete: bool,
 ) -> std::os::raw::c_int {
     -1
 }
 unsafe extern "C" fn stub_object_format(_obj: u64, _spec: u64) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
-unsafe extern "C" fn stub_float_repr(_value: f64, _out: *mut u8, _cap: usize) -> usize {
-    0
+unsafe extern "C" fn stub_object_stringify(_value: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 unsafe extern "C" fn stub_sys_get_object_borrowed(
     _data: *const u8,
@@ -1350,6 +1374,11 @@ unsafe extern "C" fn stub_ref_count(_bits: u64) -> usize {
 unsafe extern "C" fn stub_alloc_module(_data: *const u8, _len: usize) -> u64 {
     0
 }
+unsafe extern "C" fn stub_alloc_extension_module(data: *const u8, len: usize) -> u64 {
+    // Hook-only ABI fixtures have no active initializer scope. The real runtime
+    // supplies the scoped resolver; ordinary module allocation stays shared.
+    unsafe { (hooks_or_stubs().alloc_module)(data, len) }
+}
 unsafe extern "C" fn stub_module_get_dict_borrowed(_module_bits: u64) -> BorrowedHandleResult {
     BorrowedHandleResult::error()
 }
@@ -1371,11 +1400,15 @@ unsafe extern "C" fn stub_module_capi_register(
     _module_bits: u64,
     _module_def_ptr: usize,
     _module_state_size: u64,
+    _defer_state: bool,
 ) -> std::os::raw::c_int {
     -1
 }
 unsafe extern "C" fn stub_module_capi_get_state(_module_bits: u64) -> *mut u8 {
     std::ptr::null_mut()
+}
+unsafe extern "C" fn stub_module_capi_get_def(_module_bits: u64) -> usize {
+    0
 }
 unsafe extern "C" fn stub_module_state_add(
     _module_bits: u64,
@@ -1402,6 +1435,18 @@ unsafe extern "C" fn stub_register_c_function(
 }
 unsafe extern "C" fn stub_import_module(_data: *const u8, _len: usize) -> u64 {
     0
+}
+unsafe extern "C" fn stub_initialize_extension(
+    _init: unsafe extern "C" fn() -> *mut crate::abi_types::PyObject,
+    _name: u64,
+    _origin: u64,
+    _spec: u64,
+    _create_only: bool,
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_module_exec_begin(_module: u64, _def: usize) -> std::os::raw::c_int {
+    -1
 }
 unsafe extern "C" fn stub_exception_pending() -> std::os::raw::c_int {
     0
@@ -1449,6 +1494,9 @@ unsafe extern "C" fn stub_object_call(
     _kwargs: u64,
 ) -> OwnedHandleResult {
     OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_object_is_callable(_obj: u64) -> std::os::raw::c_int {
+    0
 }
 unsafe extern "C" fn stub_foreign_new(_c_ptr: usize) -> u64 {
     0
@@ -1523,7 +1571,7 @@ unsafe extern "C" fn stub_exception_get_field(
 ) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
-unsafe extern "C" fn stub_exception_class_borrowed(_exception_bits: u64) -> BorrowedHandleResult {
+unsafe extern "C" fn stub_runtime_class_borrowed(_value_bits: u64) -> BorrowedHandleResult {
     BorrowedHandleResult::error()
 }
 unsafe extern "C" fn stub_exception_layout_kind(_exception_bits: u64) -> u8 {
@@ -1651,7 +1699,8 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     object_get_attr: stub_object_get_attr,
     object_set_attr: stub_object_set_attr,
     object_format: stub_object_format,
-    float_repr: stub_float_repr,
+    object_str: stub_object_stringify,
+    object_repr: stub_object_stringify,
     sys_get_object_borrowed: stub_sys_get_object_borrowed,
     eval_get_builtins_borrowed: stub_eval_get_builtins_borrowed,
     classify_heap: stub_classify_heap,
@@ -1661,16 +1710,20 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     ref_count: stub_ref_count,
     try_mark_abi_view: stub_try_mark_abi_view,
     alloc_module: stub_alloc_module,
+    alloc_extension_module: stub_alloc_extension_module,
     module_get_dict_borrowed: stub_module_get_dict_borrowed,
     import_add_module_borrowed: stub_import_add_module_borrowed,
     module_set_attr: stub_module_set_attr,
     module_capi_register: stub_module_capi_register,
     module_capi_get_state: stub_module_capi_get_state,
+    module_capi_get_def: stub_module_capi_get_def,
     module_state_add: stub_module_state_add,
     module_state_find: stub_module_state_find,
     module_state_remove: stub_module_state_remove,
+    module_exec_begin: stub_module_exec_begin,
     register_c_function: stub_register_c_function,
     import_module: stub_import_module,
+    initialize_extension: stub_initialize_extension,
     exception_pending: stub_exception_pending,
     number_binary_op: stub_number_binary_op,
     number_unary_op: stub_number_unary_op,
@@ -1684,12 +1737,13 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     set_discard: stub_set_discard,
     object_dir: stub_object_dir,
     object_call: stub_object_call,
+    object_is_callable: stub_object_is_callable,
     foreign_new: stub_foreign_new,
     report_unraisable: stub_report_unraisable,
     normalize_exception: stub_normalize_exception,
     exception_set_field: stub_exception_set_field,
     exception_get_field: stub_exception_get_field,
-    exception_class_borrowed: stub_exception_class_borrowed,
+    runtime_class_borrowed: stub_runtime_class_borrowed,
     exception_layout_kind: stub_exception_layout_kind,
     exception_snapshot: stub_exception_snapshot,
     exception_commit_snapshot: stub_exception_commit_snapshot,

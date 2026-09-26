@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, btree_map::Entry};
 use wasm_encoder::{EntityType, ValType};
 
 use crate::native_callable_abi::{
-    NATIVE_CALLABLE_ABI_CHOICES, NativeCallableAbi, NativeCallableWasmType,
+    NATIVE_CALLABLE_ABI_CHOICES, NativeCallableAbi, NativeCallableLowering, NativeCallableWasmType,
     parse_native_callable_abi,
 };
 use crate::wasm::WasmBackend;
@@ -18,6 +18,16 @@ pub(super) struct WasmNativeCallableImportEmission {
 #[derive(Clone, Debug, Default)]
 pub(in crate::wasm) struct WasmNativeCallableImports {
     by_export: BTreeMap<String, WasmNativeCallableImport>,
+    /// One entry per `molt_native` function import, in import-section order.
+    /// The position is the relocation-stable native import ordinal.
+    symbols: Vec<WasmNativeSymbolImport>,
+}
+
+#[derive(Clone, Debug)]
+pub(in crate::wasm) struct WasmNativeSymbolImport {
+    pub(in crate::wasm) symbol: String,
+    pub(in crate::wasm) abi_contract: NativeCallableAbi,
+    pub(in crate::wasm) function_index: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +58,27 @@ impl WasmNativeCallableImports {
                 "native callable export `{export_name}` reached wasm codegen without native import custody"
             )
         })
+    }
+
+    /// Ordinal of the native import at `function_index`; imports are emitted
+    /// contiguously, so their function indices are strictly increasing.
+    pub(in crate::wasm) fn import_ordinal(&self, function_index: u32) -> Option<u32> {
+        self.symbols
+            .binary_search_by_key(&function_index, |import| import.function_index)
+            .ok()
+            .map(|ordinal| {
+                u32::try_from(ordinal).expect("native callable import ordinal exceeds u32")
+            })
+    }
+
+    /// Initializers whose table address, not a direct call, crosses into the
+    /// runtime extension-init transaction.
+    pub(in crate::wasm) fn address_taken_initializers(
+        &self,
+    ) -> impl Iterator<Item = &WasmNativeSymbolImport> {
+        self.symbols
+            .iter()
+            .filter(|import| import.abi_contract.lowering() == NativeCallableLowering::PyinitModule)
     }
 }
 
@@ -190,6 +221,11 @@ impl WasmBackend {
                         EntityType::Function(type_idx),
                     );
                     self.func_count += 1;
+                    imports.symbols.push(WasmNativeSymbolImport {
+                        symbol: request.symbol.clone(),
+                        abi_contract: request.abi_contract,
+                        function_index,
+                    });
                     entry
                         .insert(NativeSymbolImport {
                             abi: request.abi.clone(),

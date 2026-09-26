@@ -507,6 +507,12 @@ pub(crate) unsafe fn visit_owned_values(
                 visit_bits(super::memoryview_format_bits(ptr), visit);
             }
             HeapLifecycleHandler::Function => {
+                if (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW)
+                    && let Some(bits) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .cfunction_view_handles_for_gc(MoltObject::from_ptr(ptr).bits())
+                {
+                    visit_bits(bits, visit);
+                }
                 visit_bits(super::layout::function_dict_bits(ptr), visit);
                 visit_bits(super::layout::function_annotations_bits(ptr), visit);
                 visit_bits(super::layout::function_annotate_bits(ptr), visit);

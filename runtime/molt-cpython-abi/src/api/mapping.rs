@@ -639,11 +639,10 @@ pub unsafe extern "C" fn PyDict_SetDefaultRef(
     default_value: *mut PyObject,
     result: *mut *mut PyObject,
 ) -> c_int {
-    if result.is_null() {
-        return -1;
-    }
-    unsafe {
-        *result = ptr::null_mut();
+    // Unlike GetItemRef, this result sink is optional. A caller that only
+    // needs the found/inserted status must not acquire an extra C reference.
+    if !result.is_null() {
+        unsafe { *result = ptr::null_mut() };
     }
     if op.is_null() || key.is_null() || default_value.is_null() {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
@@ -651,9 +650,11 @@ pub unsafe extern "C" fn PyDict_SetDefaultRef(
     }
     let existing = unsafe { PyDict_GetItemWithError(op, key) };
     if !existing.is_null() {
-        unsafe {
-            crate::api::refcount::Py_INCREF(existing);
-            *result = existing;
+        if !result.is_null() {
+            unsafe {
+                crate::api::refcount::Py_INCREF(existing);
+                *result = existing;
+            }
         }
         return 1;
     }
@@ -663,9 +664,11 @@ pub unsafe extern "C" fn PyDict_SetDefaultRef(
     if unsafe { PyDict_SetItem(op, key, default_value) } != 0 {
         return -1;
     }
-    unsafe {
-        crate::api::refcount::Py_INCREF(default_value);
-        *result = default_value;
+    if !result.is_null() {
+        unsafe {
+            crate::api::refcount::Py_INCREF(default_value);
+            *result = default_value;
+        }
     }
     0
 }

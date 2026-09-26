@@ -14,6 +14,12 @@ pub(crate) enum WasmFunctionSymbol {
     UserImport {
         user_import_ordinal: u32,
     },
+    /// Stable ordinal among `molt_native` callable imports in import-section
+    /// order. Address-taken native initializers resolve by this identity so a
+    /// relocatable link binds the table slot to the provider's definition.
+    NativeCallableImport {
+        native_import_ordinal: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

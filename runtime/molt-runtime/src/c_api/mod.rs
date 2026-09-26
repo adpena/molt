@@ -36,6 +36,8 @@ pub use crate::object::memoryview::MoltBufferView;
 struct CApiModuleMetadata {
     module_def_ptr: usize,
     module_state: Option<Box<[u8]>>,
+    module_state_size: usize,
+    exec_started: bool,
 }
 
 #[derive(Default)]

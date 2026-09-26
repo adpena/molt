@@ -1223,8 +1223,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default(
                 }
                 if name == "__code__" {
                     // CPython parity: builtin_function_or_method objects do not expose __code__.
-                    let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-                    if object_class_bits(obj_ptr) == builtin_bits {
+                    if builtin_classes(_py).is_builtin_callable_class(object_class_bits(obj_ptr)) {
                         return None;
                     }
                     let code_bits = ensure_function_code_bits(_py, obj_ptr);
@@ -1237,8 +1236,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default(
                 if name == "__text_signature__" {
                     // CPython parity: builtin_function_or_method objects expose a read-only
                     // `__text_signature__` string used by `inspect.signature`.
-                    let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-                    if object_class_bits(obj_ptr) == builtin_bits {
+                    if builtin_classes(_py).is_builtin_callable_class(object_class_bits(obj_ptr)) {
                         let fn_ptr = function_fn_ptr(obj_ptr);
                         let text_sig = match fn_ptr {
                             v if v == fn_addr!(molt_abs_builtin) => Some("(x, /)"),
@@ -1291,8 +1289,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default(
                     }
                 }
                 if name == "__closure__" {
-                    let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-                    if object_class_bits(obj_ptr) == builtin_bits {
+                    if builtin_classes(_py).is_builtin_callable_class(object_class_bits(obj_ptr)) {
                         return None;
                     }
                     if function_call_abi(obj_ptr) == FunctionCallAbi::OpaqueContextFirst {
@@ -1306,6 +1303,17 @@ pub(crate) unsafe fn attr_lookup_ptr_default(
                     return Some(MoltObject::none().bits());
                 }
                 if name == "__module__" {
+                    if let Some(result) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .cfunction_module(MoltObject::from_ptr(obj_ptr).bits())
+                    {
+                        return match result {
+                            Ok(bits) => Some(bits),
+                            Err(()) => {
+                                crate::cpython_abi_hooks::transfer_pending_cpython_exception();
+                                None
+                            }
+                        };
+                    }
                     // `__module__` is writable on CPython builtin_function_or_method objects.
                     // Ensure attribute reads consult the per-function dict rather than falling
                     // back to the type's own `__module__` (which is always "builtins").

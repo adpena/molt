@@ -874,7 +874,7 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 } else {
                     String::new()
                 };
-                if object_class_bits(ptr) == builtin_classes(_py).builtin_function_or_method {
+                if builtin_classes(_py).is_builtin_callable_class(object_class_bits(ptr)) {
                     if name.is_empty() {
                         return "<built-in function>".to_string();
                     }

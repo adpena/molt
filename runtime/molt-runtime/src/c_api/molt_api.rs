@@ -848,6 +848,15 @@ pub extern "C" fn molt_module_capi_register(
     module_def_ptr: usize,
     module_state_size: u64,
 ) -> i32 {
+    register_module_capi(module_bits, module_def_ptr, module_state_size, false)
+}
+
+pub(crate) fn register_module_capi(
+    module_bits: MoltHandle,
+    module_def_ptr: usize,
+    module_state_size: u64,
+    defer_state: bool,
+) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let module_ptr = match require_module_handle(_py, module_bits) {
             Ok(ptr) => ptr,
@@ -864,7 +873,7 @@ pub extern "C" fn molt_module_capi_register(
                 );
             }
         };
-        let state = if size == 0 {
+        let state = if defer_state || size == 0 {
             None
         } else {
             match alloc_zeroed_state(_py, size) {
@@ -875,6 +884,8 @@ pub extern "C" fn molt_module_capi_register(
         let metadata = CApiModuleMetadata {
             module_def_ptr,
             module_state: state,
+            module_state_size: size,
+            exec_started: false,
         };
         c_api_module_state(_py)
             .metadata
@@ -895,6 +906,57 @@ pub extern "C" fn molt_module_capi_get_def(module_bits: MoltHandle) -> usize {
             .metadata
             .get(&module_key)
             .map_or(0, |entry| entry.module_def_ptr)
+    })
+}
+
+/// Importlib's once-entered check is distinct from PyModule_ExecDef, whose
+/// direct C callers may deliberately run execution slots more than once.
+pub(crate) fn module_exec_started(module_bits: MoltHandle) -> bool {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
+            return false;
+        };
+        c_api_module_state(_py)
+            .metadata
+            .get(&module_ptr_key(module_ptr))
+            .is_some_and(|metadata| metadata.exec_started)
+    })
+}
+
+/// Allocate the CPython md_state marker before arbitrary slots, including for
+/// zero-sized state. Failed allocation leaves execution eligible for retry;
+/// a callback failure does not undo the entered marker.
+pub(crate) fn module_exec_begin(module_bits: MoltHandle, def: usize) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let module_ptr = match require_module_handle(_py, module_bits) {
+            Ok(ptr) => ptr,
+            Err(code) => return code,
+        };
+        let mut state = c_api_module_state(_py);
+        let Some(metadata) = state.metadata.get_mut(&module_ptr_key(module_ptr)) else {
+            drop(state);
+            return raise_i32(_py, "SystemError", "extension module has no C-API metadata");
+        };
+        if metadata.module_def_ptr != def {
+            drop(state);
+            return raise_i32(_py, "SystemError", "extension module definition mismatch");
+        }
+        let started = metadata.exec_started;
+        if metadata.module_state.is_none() {
+            let size = metadata.module_state_size;
+            // Allocation can raise; do not hold the C-API state lock then.
+            drop(state);
+            let allocation = match alloc_zeroed_state(_py, size) {
+                Ok(value) => value,
+                Err(code) => return code,
+            };
+            state = c_api_module_state(_py);
+            let metadata = state.metadata.get_mut(&module_ptr_key(module_ptr)).unwrap();
+            metadata.module_state = Some(allocation);
+        }
+        let metadata = state.metadata.get_mut(&module_ptr_key(module_ptr)).unwrap();
+        metadata.exec_started = true;
+        i32::from(started)
     })
 }
 

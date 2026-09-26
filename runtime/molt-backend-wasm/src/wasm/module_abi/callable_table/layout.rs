@@ -6,6 +6,7 @@ use super::super::poll_table::WasmPollTableLayout;
 use super::runtime_callables::WasmRuntimeCallableTablePlan;
 use super::{WasmCallableTableEntry, WasmCallableTablePlan, WasmCallableTrampolineEntry};
 use crate::wasm::WasmBackend;
+use crate::wasm::module_abi::WasmNativeCallableImports;
 use crate::wasm::module_abi::user_functions::WasmUserFunctionImports;
 use crate::wasm_abi::{
     RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
@@ -27,6 +28,7 @@ struct CallableTableRegionLayout {
     app_callable_resolver_entry_start: Option<u32>,
     user_func_table_start: u32,
     user_trampoline_table_start: u32,
+    native_initializer_table_start: u32,
     table_len: u32,
     table_min: u32,
     user_func_start: u32,
@@ -50,6 +52,7 @@ impl CallableTableRegionLayout {
         user_func_count: u64,
         defined_user_func_count: u64,
         reserved_runtime_trampoline_count: u64,
+        native_initializer_count: u64,
     ) -> Result<Self, String> {
         let compact_builtin_count = checked_u32_count(
             "compact builtin callable-table count",
@@ -66,6 +69,8 @@ impl CallableTableRegionLayout {
             "reserved runtime trampoline count",
             reserved_runtime_trampoline_count,
         )?;
+        let native_initializer_count =
+            checked_u32_count("native initializer count", native_initializer_count)?;
         let app_callable_resolver_table_len = if app_callable_resolver_name_count == 0 {
             0
         } else {
@@ -119,10 +124,18 @@ impl CallableTableRegionLayout {
             user_func_table_start,
             user_func_count,
         )?;
-        let table_len = checked_add(
+        // Native initializers are imports: they own app table slots, never
+        // defined function indices, and always sit above the fixed runtime
+        // prefix so split runtime/app builds publish them from the app side.
+        let native_initializer_table_start = checked_add(
             "user trampoline-table end",
             user_trampoline_table_start,
             user_func_count,
+        )?;
+        let table_len = checked_add(
+            "native initializer-table end",
+            native_initializer_table_start,
+            native_initializer_count,
         )?;
         let fixed_shared_runtime_abi_slot_end = if fixed_shared_runtime_abi_base.is_some() {
             compact_builtin_table_start
@@ -191,6 +204,7 @@ impl CallableTableRegionLayout {
             app_callable_resolver_entry_start,
             user_func_table_start,
             user_trampoline_table_start,
+            native_initializer_table_start,
             table_len,
             table_min,
             user_func_start,
@@ -200,6 +214,14 @@ impl CallableTableRegionLayout {
             user_trampoline_start,
         })
     }
+}
+
+/// Import-class authorities that give every imported table target a
+/// relocation-stable symbol identity.
+#[derive(Clone, Copy)]
+struct ImportSymbolAuthorities<'a> {
+    user_functions: &'a WasmUserFunctionImports,
+    native_callables: &'a WasmNativeCallableImports,
 }
 
 fn checked_u32_count(label: &str, count: u64) -> Result<u32, String> {
@@ -236,11 +258,16 @@ impl WasmBackend {
         task_closure_sizes: &BTreeMap<String, i64>,
         function_abi_returns_value: &BTreeMap<String, bool>,
         user_function_imports: &WasmUserFunctionImports,
+        native_callable_imports: &WasmNativeCallableImports,
         user_type_map: &BTreeMap<usize, u32>,
         reloc_enabled: bool,
         sentinel_func_idx: u32,
         manifest_intrinsic_names: &BTreeSet<String>,
     ) -> WasmCallableTablePlan {
+        let import_symbols = ImportSymbolAuthorities {
+            user_functions: user_function_imports,
+            native_callables: native_callable_imports,
+        };
         let runtime_callable_plan = WasmRuntimeCallableTablePlan::build(builtin_trampoline_specs);
         let compact_builtin_table_len = runtime_callable_plan.compact_builtin_table_len();
         let app_callable_resolver_names =
@@ -304,6 +331,10 @@ impl WasmBackend {
             usize_count(
                 "reserved runtime trampoline count",
                 reserved_runtime_trampoline_count,
+            ),
+            usize_count(
+                "native initializer count",
+                native_callable_imports.address_taken_initializers().count(),
             ),
         )
         .unwrap_or_else(|error| panic!("invalid wasm callable-table layout: {error}"));
@@ -465,7 +496,7 @@ impl WasmBackend {
                     target_func_index: import_idx,
                     target: callable_target(
                         self,
-                        user_function_imports,
+                        import_symbols,
                         table_base,
                         fixed_shared_runtime_abi_base,
                         split_runtime_shared_abi_slot_end,
@@ -506,7 +537,7 @@ impl WasmBackend {
                     name: runtime_name.clone(),
                     target: callable_target(
                         self,
-                        user_function_imports,
+                        import_symbols,
                         table_base,
                         fixed_shared_runtime_abi_base,
                         split_runtime_shared_abi_slot_end,
@@ -520,7 +551,7 @@ impl WasmBackend {
                 resolver_func_index,
                 resolver_target: callable_target(
                     self,
-                    user_function_imports,
+                    import_symbols,
                     table_base,
                     fixed_shared_runtime_abi_base,
                     split_runtime_shared_abi_slot_end,
@@ -575,7 +606,7 @@ impl WasmBackend {
                     target_func_index,
                     target: callable_target(
                         self,
-                        user_function_imports,
+                        import_symbols,
                         table_base,
                         fixed_shared_runtime_abi_base,
                         split_runtime_shared_abi_slot_end,
@@ -663,7 +694,7 @@ impl WasmBackend {
                     target_func_index,
                     target: callable_target(
                         self,
-                        user_function_imports,
+                        import_symbols,
                         table_base,
                         fixed_shared_runtime_abi_base,
                         split_runtime_shared_abi_slot_end,
@@ -683,13 +714,26 @@ impl WasmBackend {
                 },
             );
         }
+        let mut native_initializer_to_table_idx = BTreeMap::new();
+        for (offset, initializer) in native_callable_imports
+            .address_taken_initializers()
+            .enumerate()
+        {
+            let slot = region_index(
+                "native initializer table slot",
+                layout.native_initializer_table_start,
+                usize_index("native initializer offset", offset),
+            );
+            slots.set(slot, initializer.function_index, &initializer.symbol);
+            native_initializer_to_table_idx.insert(initializer.symbol.clone(), slot);
+        }
 
         let table_entries = slots
             .finish()
             .into_iter()
             .map(|func_index| WasmCallableTableEntry {
                 func_index,
-                symbol: function_symbol(self, user_function_imports, func_index),
+                symbol: function_symbol(self, import_symbols, func_index),
             })
             .collect();
 
@@ -736,6 +780,7 @@ impl WasmBackend {
             func_to_table_idx,
             func_to_index,
             func_to_trampoline_idx,
+            native_initializer_to_table_idx,
             app_callable_resolver,
             positional_call_shapes: default_trampoline_spec.clone(),
             function_abi_returns_value: call_target_abi_returns_value,
@@ -746,20 +791,28 @@ impl WasmBackend {
 
 fn function_symbol(
     backend: &WasmBackend,
-    user_function_imports: &WasmUserFunctionImports,
+    import_symbols: ImportSymbolAuthorities<'_>,
     func_index: u32,
 ) -> WasmFunctionSymbol {
     if func_index < backend.func_import_count {
         if let Some(import) = backend.import_ids.import_for_index(func_index) {
             return WasmFunctionSymbol::RuntimeImport(import);
         }
-        if let Some(user_import_ordinal) = user_function_imports.import_ordinal(func_index) {
+        if let Some(user_import_ordinal) = import_symbols.user_functions.import_ordinal(func_index)
+        {
             return WasmFunctionSymbol::UserImport {
                 user_import_ordinal,
             };
         }
+        if let Some(native_import_ordinal) =
+            import_symbols.native_callables.import_ordinal(func_index)
+        {
+            return WasmFunctionSymbol::NativeCallableImport {
+                native_import_ordinal,
+            };
+        }
         panic!(
-            "callable table target import index {func_index} has neither runtime nor user-function import identity"
+            "callable table target import index {func_index} has no runtime, user-function, or native-callable import identity"
         );
     }
     WasmFunctionSymbol::Defined {
@@ -769,7 +822,7 @@ fn function_symbol(
 
 fn callable_target(
     backend: &WasmBackend,
-    user_function_imports: &WasmUserFunctionImports,
+    import_symbols: ImportSymbolAuthorities<'_>,
     table_base: u32,
     fixed_shared_runtime_abi_base: Option<u32>,
     shared_runtime_abi_slot_end: usize,
@@ -796,7 +849,7 @@ fn callable_target(
                 .expect("relocatable callable-table address overflow"),
             WasmCallableTableAddress::Relocatable(function_symbol(
                 backend,
-                user_function_imports,
+                import_symbols,
                 func_index,
             )),
         )
@@ -910,18 +963,33 @@ mod tests {
             user_functions,
             user_functions,
             2,
+            0,
         )
     }
 
     #[test]
     fn extern_user_functions_consume_table_slots_but_not_defined_function_indices() {
-        let layout = CallableTableRegionLayout::build(64, None, 100, 3, 4, 5, 5, 2, 7, 5, 2)
+        let layout = CallableTableRegionLayout::build(64, None, 100, 3, 4, 5, 5, 2, 7, 5, 2, 0)
             .expect("five definitions plus two extern declarations");
 
         assert_eq!(layout.user_trampoline_table_start, 31);
         assert_eq!(layout.table_len, 38);
         assert_eq!(layout.app_callable_resolver_func_index, Some(105));
         assert_eq!(layout.reserved_runtime_trampoline_func_start, 106);
+        assert_eq!(layout.user_trampoline_start, 113);
+    }
+
+    #[test]
+    fn native_initializers_take_app_owned_table_slots_without_function_indices() {
+        let layout = CallableTableRegionLayout::build(512, Some(1), 100, 3, 4, 5, 5, 2, 7, 5, 2, 3)
+            .expect("split layout with three address-taken native initializers");
+
+        // The fixed runtime prefix ends at the compact builtin region (slot 11).
+        assert_eq!(layout.fixed_shared_runtime_abi_slot_end, 11);
+        assert_eq!(layout.native_initializer_table_start, 38);
+        assert_eq!(layout.table_len, 41);
+        // Initializer slots 38..41 publish at app addresses 539..542.
+        assert_eq!(layout.table_min, 542);
         assert_eq!(layout.user_trampoline_start, 113);
     }
 

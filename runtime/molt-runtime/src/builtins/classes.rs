@@ -133,6 +133,7 @@ pub(crate) struct BuiltinClasses {
     pub(crate) map: u64,
     pub(crate) filter: u64,
     pub(crate) builtin_function_or_method: u64,
+    pub(crate) builtin_method: u64,
     pub(crate) code: u64,
     pub(crate) frame: u64,
     pub(crate) traceback: u64,
@@ -147,7 +148,13 @@ pub(crate) struct BuiltinClasses {
 }
 
 impl BuiltinClasses {
-    pub(crate) fn anchors(&self) -> [u64; 78] {
+    /// The closed native-function class family shares metadata and binding
+    /// semantics; CMethod keeps its distinct concrete ABI/Python type.
+    pub(crate) fn is_builtin_callable_class(&self, class_bits: u64) -> bool {
+        class_bits == self.builtin_function_or_method || class_bits == self.builtin_method
+    }
+
+    pub(crate) fn anchors(&self) -> [u64; 79] {
         [
             self.object,
             self.type_obj,
@@ -216,6 +223,7 @@ impl BuiltinClasses {
             self.map,
             self.filter,
             self.builtin_function_or_method,
+            self.builtin_method,
             self.code,
             self.frame,
             self.traceback,
@@ -538,6 +546,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let map = make_builtin_class(_py, "map");
     let filter = make_builtin_class(_py, "filter");
     let builtin_function_or_method = make_builtin_class(_py, "builtin_function_or_method");
+    let builtin_method = make_builtin_class(_py, "builtin_method");
     let code = make_builtin_class(_py, "code");
     let frame = make_builtin_class(_py, "frame");
     let traceback = make_builtin_class(_py, "traceback");
@@ -618,6 +627,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         map,
         filter,
         builtin_function_or_method,
+        builtin_method,
         code,
         frame,
         traceback,
@@ -741,6 +751,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(map, object);
     let _ = molt_class_set_base(filter, object);
     let _ = molt_class_set_base(builtin_function_or_method, object);
+    let _ = molt_class_set_base(builtin_method, builtin_function_or_method);
     let _ = molt_class_set_base(code, object);
     let _ = molt_class_set_base(frame, object);
     let _ = molt_class_set_base(traceback, object);
@@ -819,6 +830,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         map,
         filter,
         builtin_function_or_method,
+        builtin_method,
         code,
         frame,
         traceback,
@@ -930,6 +942,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         map,
         filter,
         builtin_function_or_method,
+        builtin_method,
         code,
         frame,
         traceback,

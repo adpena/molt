@@ -29,8 +29,7 @@
 #![cfg(all(feature = "extension-loader", not(target_arch = "wasm32")))]
 
 use crate::abi_types::PyObject;
-use crate::bridge::GLOBAL_BRIDGE;
-use libloading::{Library, Symbol};
+use libloading::Library;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::path::Path;
@@ -44,12 +43,11 @@ pub enum LoadError {
     DlopenFailed(libloading::Error),
     /// `PyInit_<name>` symbol not found in the library.
     InitSymbolMissing { lib_path: String, symbol: String },
-    /// `PyInit_<name>()` returned NULL — initialization error.
-    InitReturnedNull { name: String },
+    /// The shared initialization transaction failed; the C error indicator
+    /// retains the actual exception. This may precede or follow PyInit.
+    InitializationFailed { name: String },
     /// `PyInit_<name>()` violated the result/error-indicator contract.
     InitContractViolation { name: String, detail: String },
-    /// `PyInit_<name>()` returned an object that is not known to the bridge.
-    InitReturnedUnmappedObject { name: String },
     /// No explicit extension artifact was found for this module.
     ExtensionNotFound { name: String },
 }
@@ -61,17 +59,14 @@ impl std::fmt::Display for LoadError {
             Self::InitSymbolMissing { lib_path, symbol } => {
                 write!(f, "{symbol} not found in {lib_path}")
             }
-            Self::InitReturnedNull { name } => {
-                write!(f, "PyInit_{name}() returned NULL (module init error)")
+            Self::InitializationFailed { name } => {
+                write!(
+                    f,
+                    "extension {name} initialization failed (C exception pending)"
+                )
             }
             Self::InitContractViolation { name, detail } => {
                 write!(f, "PyInit_{name}() {detail}")
-            }
-            Self::InitReturnedUnmappedObject { name } => {
-                write!(
-                    f,
-                    "PyInit_{name}() returned an object outside the libmolt bridge registry"
-                )
             }
             Self::ExtensionNotFound { name } => {
                 write!(
@@ -91,216 +86,95 @@ impl std::fmt::Display for LoadError {
 ///   beyond what our ABI shim provides.
 /// - Must be called after `init_static_types()` and `init_tag_table()`.
 pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, LoadError> {
-    // Ensure ABI is initialized.
+    unsafe {
+        load_extension(
+            path,
+            name,
+            molt_lang_obj_model::MoltObject::none().bits(),
+            false,
+        )
+    }
+}
+
+/// Create, but do not execute or publish, an extension using its real import
+/// spec. Returns one owned runtime module for importlib.module_from_spec.
+///
+/// # Safety
+/// Same requirements as `load_cpython_extension`; `spec_bits` must be retained
+/// by the caller throughout the call.
+pub unsafe fn create_cpython_extension(
+    path: &Path,
+    name: &str,
+    spec_bits: u64,
+) -> Result<u64, LoadError> {
+    unsafe { load_extension(path, name, spec_bits, true) }
+}
+
+unsafe fn load_extension(
+    path: &Path,
+    name: &str,
+    spec_bits: u64,
+    create_only: bool,
+) -> Result<u64, LoadError> {
     unsafe { crate::abi_types::init_static_types() };
     crate::bridge::init_tag_table();
-
-    // dlopen the .so
+    let Some(h) = crate::hooks::hooks() else {
+        return Err(LoadError::InitContractViolation {
+            name: name.to_owned(),
+            detail: "requires registered runtime extension-initialization hooks".into(),
+        });
+    };
+    let origin = path.to_string_lossy();
+    let name_bits = unsafe { (h.alloc_str)(name.as_ptr(), name.len()) };
+    if name_bits == 0 {
+        crate::api::imports::propagate_hook_error(c"extension name allocation failed");
+        return Err(LoadError::InitializationFailed {
+            name: name.to_owned(),
+        });
+    }
+    let name_owner = unsafe { crate::bridge::RuntimeValue::from_owned(name_bits) };
+    let origin_bits = unsafe { (h.alloc_str)(origin.as_ptr(), origin.len()) };
+    if origin_bits == 0 {
+        crate::api::imports::propagate_hook_error(c"extension origin allocation failed");
+        return Err(LoadError::InitializationFailed {
+            name: name.to_owned(),
+        });
+    }
+    let origin_owner = unsafe { crate::bridge::RuntimeValue::from_owned(origin_bits) };
     let lib = unsafe { Library::new(path) }.map_err(LoadError::DlopenFailed)?;
-
-    // Locate PyInit_<name> entry point.
-    let symbol_name = format!("PyInit_{name}");
-    let init_fn: Symbol<unsafe extern "C" fn() -> *mut PyObject> = unsafe {
-        lib.get(symbol_name.as_bytes())
+    let leaf = name.rsplit('.').next().unwrap_or(name);
+    let symbol_name = format!("PyInit_{leaf}");
+    let init_fn: unsafe extern "C" fn() -> *mut PyObject = unsafe {
+        *lib.get::<unsafe extern "C" fn() -> *mut PyObject>(symbol_name.as_bytes())
             .map_err(|_| LoadError::InitSymbolMissing {
                 lib_path: path.display().to_string(),
                 symbol: symbol_name.clone(),
             })?
     };
-
-    // Call the init function. This runs the extension's module setup code,
-    // which calls back into our PyModule_Create2, PyType_Ready, etc.
-    let raw_init = unsafe { init_fn() };
-    let has_error = crate::api::errors::transfer_runtime_pending_to_current();
-    match (raw_init.is_null(), has_error) {
-        (false, false) => {}
-        (true, true) => {
-            return Err(LoadError::InitReturnedNull {
-                name: name.to_owned(),
-            });
-        }
-        (true, false) => {
-            unsafe {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_SystemError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    c"PyInit returned NULL without setting an exception".as_ptr(),
-                )
-            };
-            return Err(LoadError::InitContractViolation {
-                name: name.to_owned(),
-                detail: "returned NULL without setting an exception".to_owned(),
-            });
-        }
-        (false, true) => {
-            let pending = crate::api::errors::take_current_error();
-            unsafe { crate::api::refcount::Py_DECREF(raw_init) };
-            drop(crate::api::errors::take_current_error());
-            if let Some(pending) = pending {
-                crate::api::errors::restore_current_error_exact(pending);
-            }
-            unsafe {
-                crate::api::errors::replace_current_with_system_error(
-                    "PyInit returned a result with an exception set",
-                )
-            };
-            return Err(LoadError::InitContractViolation {
-                name: name.to_owned(),
-                detail: "returned a result with an exception set".to_owned(),
-            });
-        }
-    }
-
-    // PEP 489 multi-phase init: `PyInit_<name>()` may return a `PyModuleDef*`
-    // (produced by `PyModuleDef_Init`) instead of a fully-created module. Drive
-    // the create/exec slots (`PyModule_FromDefAndSpec`) if so; single-phase C
-    // extensions return the module directly and pass through unchanged.
-    let module_ptr = unsafe { drive_multiphase_if_needed(raw_init, name, path)? };
-
-    // Convert the returned `*mut PyObject` to a Molt handle.
-    //
-    // Resolve through the canonical bridge registry (or mint a first-class
-    // foreign wrapper) and validate the result as a module.
-    let molt_bits = {
-        let bridge = &*GLOBAL_BRIDGE;
-        let candidate_bits = match bridge.molt_handle_for_pyobj(module_ptr) {
-            Some(value) => value.bits(),
-            None => unsafe { bridge.molt_value_for_pyobj(module_ptr) }.ok_or_else(|| {
-                LoadError::InitReturnedUnmappedObject {
-                    name: name.to_owned(),
-                }
-            })?,
-        };
-        let h = crate::hooks::hooks_or_stubs();
-        let tag = unsafe { (h.classify_heap)(candidate_bits) };
-        if tag != crate::abi_types::MoltTypeTag::Module as u8 {
-            return Err(LoadError::InitReturnedUnmappedObject {
-                name: name.to_owned(),
-            });
-        }
-        candidate_bits
-    };
-
-    // Keep the library alive for the process lifetime; extension code/data may
-    // be referenced by module objects and function pointers after init.
+    // Once extension code runs, callbacks/types may escape even if init fails.
+    // Never unload their executable storage on a failed transaction.
     LOADED_EXTENSION_LIBRARIES.lock().push(lib);
-
-    Ok(molt_bits)
-}
-
-/// If `raw` is a `PyModuleDef` returned by a PEP 489 multi-phase `PyInit_<name>`,
-/// drive `PyModule_FromDefAndSpec` (which executes the `Py_mod_create` and
-/// `Py_mod_exec` slots) and return the resulting module; otherwise return `raw`
-/// unchanged (single-phase init already produced the module).
-///
-/// CPython's import machinery makes exactly this distinction by the returned
-/// object's type (`ob_type == &PyModuleDef_Type`). Modern Cython extensions
-/// (e.g. scipy's `_ni_label` / `_nd_image`) use multi-phase init; hand-written
-/// single-phase C extensions (e.g. numpy's `_multiarray_umath`) do not. Without
-/// this branch a multi-phase `PyInit` return is a bare `PyModuleDef` that no
-/// Molt handle maps to (`InitReturnedUnmappedObject`), blocking the whole
-/// multi-phase extension class.
-///
-/// # Safety
-/// `raw` must be the non-null pointer returned by an extension `PyInit_<name>()`.
-unsafe fn drive_multiphase_if_needed(
-    raw: *mut PyObject,
-    name: &str,
-    origin: &Path,
-) -> Result<*mut PyObject, LoadError> {
-    let ob_type = unsafe { (*raw).ob_type };
-    let is_moduledef =
-        !ob_type.is_null() && std::ptr::eq(ob_type, &raw mut crate::abi_types::PyModuleDef_Type);
-    if !is_moduledef {
-        return Ok(raw);
-    }
-    let def = raw.cast::<crate::abi_types::PyModuleDef>();
-    // A minimal module spec carrying `.name`: a `Py_mod_create` slot reads
-    // `spec.name`; exec-only modules ignore it. Any object exposing `name`
-    // satisfies the create-slot contract.
-    let spec = unsafe { build_min_module_spec(name, origin) };
-    let module = unsafe { crate::api::modules::PyModule_FromDefAndSpec(def, spec) };
-    if !spec.is_null() {
-        unsafe { crate::api::refcount::Py_DECREF(spec) };
-    }
-    if module.is_null() {
-        return Err(LoadError::InitReturnedNull {
-            name: name.to_owned(),
-        });
-    }
-    if unsafe { crate::api::modules::PyModule_ExecDef(module, def) } != 0 {
-        unsafe { crate::api::refcount::Py_DECREF(module) };
-        return Err(LoadError::InitReturnedNull {
-            name: name.to_owned(),
-        });
-    }
-    Ok(module)
-}
-
-/// Build a throwaway object serving as the PEP 489 module spec. It exposes the
-/// attributes a multi-phase init reads: `name` (the dotted module name),
-/// `loader` (None — Cython's `__Pyx_copy_spec_to_module` copies `spec.loader`
-/// to `__loader__` with `allow_missing = 0`, i.e. the attribute must be
-/// present), `origin` (the `.so` path — copied to `__file__`), and `parent`
-/// (empty — copied to `__package__`). This mirrors what importlib's real
-/// `ModuleSpec` supplies in a stock CPython import; without `loader` present,
-/// Cython bails during exec. Returns null on allocation failure.
-///
-/// # Safety
-/// Calls the ABI string/module/object entry points; must run after ABI init.
-unsafe fn build_min_module_spec(name: &str, origin: &Path) -> *mut PyObject {
-    let Ok(cname) = std::ffi::CString::new(name) else {
-        return std::ptr::null_mut();
-    };
-    let spec = unsafe { crate::api::modules::PyModule_New(cname.as_ptr()) };
-    if spec.is_null() {
-        return std::ptr::null_mut();
-    }
-    unsafe fn set_owned(spec: *mut PyObject, key: &std::ffi::CStr, value: *mut PyObject) {
-        if value.is_null() {
-            return;
-        }
-        let rc = unsafe { crate::api::object::PyObject_SetAttrString(spec, key.as_ptr(), value) };
-        unsafe { crate::api::refcount::Py_DECREF(value) };
-        if rc != 0 {
-            unsafe { crate::api::errors::PyErr_Clear() };
-        }
-    }
-    // name -> spec.name
-    let name_obj = unsafe { crate::api::strings::PyUnicode_FromString(cname.as_ptr()) };
-    unsafe { set_owned(spec, c"name", name_obj) };
-    // loader -> spec.loader = None (required-present by Cython; None is allowed)
-    let none = &raw mut crate::abi_types::Py_None;
-    let rc = unsafe { crate::api::object::PyObject_SetAttrString(spec, c"loader".as_ptr(), none) };
-    if rc != 0 {
-        unsafe { crate::api::errors::PyErr_Clear() };
-    }
-    // origin -> spec.origin = <.so path> (copied to __file__)
-    if let Ok(corigin) = std::ffi::CString::new(origin.to_string_lossy().into_owned()) {
-        let origin_obj = unsafe { crate::api::strings::PyUnicode_FromString(corigin.as_ptr()) };
-        unsafe { set_owned(spec, c"origin", origin_obj) };
-    }
-    // parent -> spec.parent = "" (copied to __package__)
-    let parent_obj = unsafe { crate::api::strings::PyUnicode_FromString(c"".as_ptr()) };
-    unsafe { set_owned(spec, c"parent", parent_obj) };
-    // submodule_search_locations -> __path__ = None (None => not a package)
-    let none = &raw mut crate::abi_types::Py_None;
-    let rc = unsafe {
-        crate::api::object::PyObject_SetAttrString(
-            spec,
-            c"submodule_search_locations".as_ptr(),
-            none,
+    match unsafe {
+        (h.initialize_extension)(
+            init_fn,
+            name_owner.bits(),
+            origin_owner.bits(),
+            spec_bits,
+            create_only,
         )
-    };
-    if rc != 0 {
-        unsafe { crate::api::errors::PyErr_Clear() };
     }
-    // cached -> spec.cached = None (copied to __cached__)
-    let rc = unsafe { crate::api::object::PyObject_SetAttrString(spec, c"cached".as_ptr(), none) };
-    if rc != 0 {
-        unsafe { crate::api::errors::PyErr_Clear() };
+    .decode()
+    {
+        crate::hooks::DecodedHandleResult::Ok(bits) => Ok(bits),
+        crate::hooks::DecodedHandleResult::Missing | crate::hooks::DecodedHandleResult::Error => {
+            crate::api::imports::propagate_hook_error(
+                c"extension initialization failed without an exception",
+            );
+            Err(LoadError::InitializationFailed {
+                name: name.to_owned(),
+            })
+        }
     }
-    spec
 }
 
 /// Search standard CPython extension paths for `name`.
@@ -314,24 +188,18 @@ pub fn find_extension(name: &str) -> Option<std::path::PathBuf> {
 }
 
 fn extension_candidate_paths(name: &str) -> Vec<std::path::PathBuf> {
-    use std::path::PathBuf;
+    extension_candidates_in(name, std::env::var_os("MOLT_EXTENSION_PATH").as_deref())
+}
 
-    let mut out = Vec::new();
-
-    if let Ok(env_path) = std::env::var("MOLT_EXTENSION_PATH") {
-        for dir in env_path.split(':') {
-            if dir.is_empty() {
-                continue;
-            }
-            let dir = PathBuf::from(dir);
-            // Try common suffixes.
-            for suffix in cpython_so_suffixes(name) {
-                out.push(dir.join(&suffix));
-            }
-        }
-    }
-
-    out
+fn extension_candidates_in(name: &str, paths: Option<&std::ffi::OsStr>) -> Vec<std::path::PathBuf> {
+    let Some(paths) = paths else {
+        return Vec::new();
+    };
+    let suffixes = cpython_so_suffixes(name);
+    std::env::split_paths(paths)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .flat_map(|dir| suffixes.iter().map(move |suffix| dir.join(suffix)))
+        .collect()
 }
 
 fn cpython_so_suffixes(name: &str) -> Vec<String> {
@@ -340,10 +208,16 @@ fn cpython_so_suffixes(name: &str) -> Vec<String> {
         // CPython 3.12 ABI tag — most common on modern systems.
         #[cfg(target_os = "macos")]
         format!("{name}.cpython-312-darwin.so"),
-        #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         format!("{name}.cpython-312-x86_64-linux-gnu.so"),
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         format!("{name}.cpython-312-aarch64-linux-gnu.so"),
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        format!("{name}.cp312-win_amd64.pyd"),
+        #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+        format!("{name}.cp312-win_arm64.pyd"),
+        #[cfg(target_os = "windows")]
+        format!("{name}.pyd"),
         // Stable ABI (abi3)
         format!("{name}.abi3.so"),
         // Bare name (rare, non-versioned)
@@ -367,31 +241,23 @@ pub unsafe fn import_cpython_extension(name: &str) -> Result<u64, LoadError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadError, extension_candidate_paths};
+    use super::{LoadError, extension_candidates_in};
 
     #[test]
     fn extension_search_uses_only_explicit_env_roots() {
-        let prior = std::env::var("MOLT_EXTENSION_PATH").ok();
-        unsafe {
-            std::env::set_var("MOLT_EXTENSION_PATH", "/explicit/a:/explicit/b");
-        }
-
-        let candidates = extension_candidate_paths("demoext");
-
-        match prior {
-            Some(value) => unsafe {
-                std::env::set_var("MOLT_EXTENSION_PATH", value);
-            },
-            None => unsafe {
-                std::env::remove_var("MOLT_EXTENSION_PATH");
-            },
-        }
-
+        let roots = [
+            std::path::PathBuf::from("explicit").join("a"),
+            std::path::PathBuf::from("explicit").join("b"),
+        ];
+        let path = std::env::join_paths(&roots).unwrap();
+        let candidates = extension_candidates_in("demoext", Some(&path));
         assert!(!candidates.is_empty());
-        assert!(candidates.iter().all(|path| {
-            let text = path.to_string_lossy();
-            text.starts_with("/explicit/a/") || text.starts_with("/explicit/b/")
+        assert!(candidates.iter().all(|candidate| {
+            roots
+                .iter()
+                .any(|root| candidate.parent() == Some(root.as_path()))
         }));
+        assert!(extension_candidates_in("demoext", None).is_empty());
     }
 
     #[test]

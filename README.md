@@ -58,7 +58,9 @@ defines test selection, source-change checks, and the exact cross-target pass la
   tracked.
 - Third-party integration through shared import/runtime primitives and
   source-recompiled extensions. C-API symbol coverage alone does not establish
-  package compatibility; see the [ecosystem matrix](docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md).
+  package compatibility. See the [extension ABI contract](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
+  for header and runtime-linkage requirements, and the [ecosystem matrix](docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md)
+  for package support.
 
 ## Source Checkout Quickstart
 

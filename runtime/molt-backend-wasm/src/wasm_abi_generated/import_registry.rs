@@ -4975,6 +4975,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 5,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibModuleSpecInit,
+        name: "importlib_module_spec_init",
+        type_idx: 12,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::TkAvailable,
         name: "tk_available",
         type_idx: 0,
@@ -8985,6 +8990,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 12,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibExtensionLoaderCreateModule,
+        name: "importlib_extension_loader_create_module",
+        type_idx: 5,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibExtensionLoaderExecModule,
         name: "importlib_extension_loader_exec_module",
         type_idx: 7,
@@ -9008,6 +9018,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::ImportlibLoadModuleFromSpec,
         name: "importlib_load_module_from_spec",
         type_idx: 5,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibModuleSpecType,
+        name: "importlib_module_spec_type",
+        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResourcesOpenResourceBytesFromPackageParts,
@@ -9095,14 +9110,9 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::CpythonAbiPrepareStaticExtension,
-        name: "cpython_abi_prepare_static_extension",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::CpythonAbiPyinitModuleToBits,
-        name: "cpython_abi_pyinit_module_to_bits",
-        type_idx: 2,
+        import: WasmRuntimeImport::CpythonAbiRunStaticExtensionInit,
+        name: "cpython_abi_run_static_extension_init",
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UnraisableHookArgsIsExact,
@@ -17361,6 +17371,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_cpython_abi_cext_call_trampoline" => {
             Some(WasmRuntimeImport::CpythonAbiCextCallTrampoline)
         }
+        "importlib_module_spec_init" => Some(WasmRuntimeImport::ImportlibModuleSpecInit),
+        "molt_importlib_module_spec_init" => Some(WasmRuntimeImport::ImportlibModuleSpecInit),
         "tk_available" => Some(WasmRuntimeImport::TkAvailable),
         "molt_tk_available" => Some(WasmRuntimeImport::TkAvailable),
         "tk_app_new" => Some(WasmRuntimeImport::TkAppNew),
@@ -19277,6 +19289,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_zip_source_loader_exec_module" => {
             Some(WasmRuntimeImport::ImportlibZipSourceLoaderExecModule)
         }
+        "importlib_extension_loader_create_module" => {
+            Some(WasmRuntimeImport::ImportlibExtensionLoaderCreateModule)
+        }
+        "molt_importlib_extension_loader_create_module" => {
+            Some(WasmRuntimeImport::ImportlibExtensionLoaderCreateModule)
+        }
         "importlib_extension_loader_exec_module" => {
             Some(WasmRuntimeImport::ImportlibExtensionLoaderExecModule)
         }
@@ -19301,6 +19319,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_load_module_from_spec" => {
             Some(WasmRuntimeImport::ImportlibLoadModuleFromSpec)
         }
+        "importlib_module_spec_type" => Some(WasmRuntimeImport::ImportlibModuleSpecType),
+        "molt_importlib_module_spec_type" => Some(WasmRuntimeImport::ImportlibModuleSpecType),
         "importlib_resources_open_resource_bytes_from_package_parts" => {
             Some(WasmRuntimeImport::ImportlibResourcesOpenResourceBytesFromPackageParts)
         }
@@ -19339,17 +19359,11 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_copyreg_remove_extension" => Some(WasmRuntimeImport::CopyregRemoveExtension),
         "copyreg_clear_extension_cache" => Some(WasmRuntimeImport::CopyregClearExtensionCache),
         "molt_copyreg_clear_extension_cache" => Some(WasmRuntimeImport::CopyregClearExtensionCache),
-        "cpython_abi_prepare_static_extension" => {
-            Some(WasmRuntimeImport::CpythonAbiPrepareStaticExtension)
+        "cpython_abi_run_static_extension_init" => {
+            Some(WasmRuntimeImport::CpythonAbiRunStaticExtensionInit)
         }
-        "molt_cpython_abi_prepare_static_extension" => {
-            Some(WasmRuntimeImport::CpythonAbiPrepareStaticExtension)
-        }
-        "cpython_abi_pyinit_module_to_bits" => {
-            Some(WasmRuntimeImport::CpythonAbiPyinitModuleToBits)
-        }
-        "molt_cpython_abi_pyinit_module_to_bits" => {
-            Some(WasmRuntimeImport::CpythonAbiPyinitModuleToBits)
+        "molt_cpython_abi_run_static_extension_init" => {
+            Some(WasmRuntimeImport::CpythonAbiRunStaticExtensionInit)
         }
         "unraisable_hook_args_is_exact" => Some(WasmRuntimeImport::UnraisableHookArgsIsExact),
         "molt_unraisable_hook_args_is_exact" => Some(WasmRuntimeImport::UnraisableHookArgsIsExact),

@@ -42,6 +42,10 @@ _NATIVE_TYPES = frozenset({"molt_value", "pointer", "u64", "i32"})
 _LOWERINGS = frozenset(
     {"object_values", "object_callargs", "forward_f32", "pyinit_module"}
 )
+# Lowerings whose IR payload is consumed by a runtime transaction instead of
+# being forwarded to the raw symbol. Their browser/WASM/native signatures
+# describe the exported C symbol, so fixed_arity is not a raw parameter count.
+_RUNTIME_TRANSACTION_LOWERINGS = frozenset({"pyinit_module"})
 _REQUIRED_ABI_KEYS = frozenset(
     {
         "name",
@@ -85,7 +89,7 @@ _LOWERING_CONTRACTS = {
         ("i32",),
     ),
     "pyinit_module": (
-        0,
+        1,
         (),
         "molt.pyobject_ptr",
         (),
@@ -265,7 +269,11 @@ def load_schema(path: Path = SOURCE) -> Schema:
             raise SchemaError(
                 f"abi {name!r} has unsupported native machine types {sorted(unknown_native)!r}"
             )
-        if fixed_arity is not None and fixed_arity != len(browser_params):
+        if (
+            fixed_arity is not None
+            and lowering not in _RUNTIME_TRANSACTION_LOWERINGS
+            and fixed_arity != len(browser_params)
+        ):
             raise SchemaError(
                 f"abi {name!r} fixed_arity must equal its browser payload parameter count"
             )

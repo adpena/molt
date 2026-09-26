@@ -8,6 +8,10 @@ from functools import lru_cache
 from pathlib import Path
 
 from molt import rust_source_scan
+from molt.cli.source_extension_toolchain import (
+    _source_extension_include_dirs_for_abi_tier,
+    _source_extension_python_header_for_abi_tier,
+)
 
 try:
     import tomllib
@@ -22,6 +26,7 @@ from wasm_abi_gen.paths import (
     FRONTEND_TYPES,
     MANIFEST,
     OUT_RUNTIME_CALLABLES_RS,
+    ROOT,
     RUNTIME_ROOT,
 )
 from wasm_abi_gen.intrinsic_availability import (
@@ -454,47 +459,86 @@ def _strip_c_parameter_name(parameter: str) -> str:
     return re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\s*$", "", value).strip()
 
 
+def _cpython_abi_link_header_closure() -> tuple[Path, ...]:
+    """Follow the linked SDK's local includes from its public Python.h."""
+
+    include_dirs = _source_extension_include_dirs_for_abi_tier(
+        molt_root=ROOT, abi_tier="cpython-abi"
+    )
+    header = _source_extension_python_header_for_abi_tier(
+        molt_root=ROOT, abi_tier="cpython-abi"
+    )
+    pending = [header]
+    visited: set[Path] = set()
+    include_re = re.compile(r'^\s*#\s*include\s*([<"])([^>"]+)[>"]', re.M)
+    while pending:
+        current = pending.pop().resolve()
+        if current in visited:
+            continue
+        visited.add(current)
+        source = current.read_text(encoding="utf-8")
+        source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        source = re.sub(r"//[^\n]*", "", source)
+        for match in include_re.finditer(source):
+            name = match.group(2)
+            quoted = match.group(1) == '"'
+            search_dirs = (current.parent, *include_dirs) if quoted else include_dirs
+            for directory in search_dirs:
+                dependency = directory / name
+                if dependency.is_file():
+                    pending.append(dependency)
+                    break
+            else:
+                # Quoted and Molt-private includes belong to the linked SDK;
+                # unresolved standard angle includes belong to the target C toolchain.
+                if quoted or Path(name).name.startswith("_"):
+                    raise WasmAbiManifestError(
+                        f"linked CPython ABI header {current} includes missing local header {name!r}"
+                    )
+    return tuple(sorted(visited, key=lambda path: path.as_posix()))
+
+
 @lru_cache(maxsize=1)
 def generator_cpython_abi_link_import_signatures() -> tuple[
     tuple[str, tuple[str, ...], tuple[str, ...]], ...
 ]:
-    """Derive every CPython function export's wasm32 C ABI from Python.h."""
+    """Derive every CPython function export's wasm32 C ABI from linked headers."""
 
-    header = CPYTHON_ABI_SOURCE_ROOT.parent / "include" / "Python.h"
-    text = header.read_text(encoding="utf-8")
-    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
-    text = re.sub(r"//[^\n]*", " ", text)
     declarations: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
-    for statement_match in re.finditer(r"\bextern\s+(.*?);", text, flags=re.S):
-        statement = re.sub(r"\s+", " ", statement_match.group(1)).strip()
-        name_match = re.search(
-            r"\b(?P<name>(?:Py|_Py|molt_capi_|molt_cpython_abi_)"
-            r"[A-Za-z0-9_]*)\s*\((?P<params>.*)\)\s*$",
-            statement,
-        )
-        if name_match is None:
-            continue
-        name = name_match.group("name")
-        return_type = statement[: name_match.start("name")].strip()
-        result_kind, sret = _normalize_c_wasm_scalar(return_type, result=True)
-        params: list[str] = ["i32"] if sret else []
-        raw_params = name_match.group("params").strip()
-        if raw_params and raw_params != "void":
-            for raw_param in _split_rust_top_level_commas(raw_params):
-                if raw_param == "...":
-                    params.append("i32")
-                    continue
-                param_type = _strip_c_parameter_name(raw_param)
-                scalar, _ = _normalize_c_wasm_scalar(param_type, result=False)
-                params.append(scalar)
-        results = () if result_kind == "void" else (result_kind,)
-        signature = (tuple(params), results)
-        previous = declarations.get(name)
-        if previous is not None and previous != signature:
-            raise WasmAbiManifestError(
-                f"CPython ABI declaration {name!r} has conflicting signatures"
+    for header in _cpython_abi_link_header_closure():
+        text = header.read_text(encoding="utf-8")
+        text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+        text = re.sub(r"//[^\n]*", " ", text)
+        for statement_match in re.finditer(r"\bextern\s+(.*?);", text, flags=re.S):
+            statement = re.sub(r"\s+", " ", statement_match.group(1)).strip()
+            name_match = re.search(
+                r"\b(?P<name>(?:Py|_Py|molt_capi_|molt_cpython_abi_)"
+                r"[A-Za-z0-9_]*)\s*\((?P<params>.*)\)\s*$",
+                statement,
             )
-        declarations[name] = signature
+            if name_match is None:
+                continue
+            name = name_match.group("name")
+            return_type = statement[: name_match.start("name")].strip()
+            result_kind, sret = _normalize_c_wasm_scalar(return_type, result=True)
+            params: list[str] = ["i32"] if sret else []
+            raw_params = name_match.group("params").strip()
+            if raw_params and raw_params != "void":
+                for raw_param in _split_rust_top_level_commas(raw_params):
+                    if raw_param == "...":
+                        params.append("i32")
+                        continue
+                    param_type = _strip_c_parameter_name(raw_param)
+                    scalar, _ = _normalize_c_wasm_scalar(param_type, result=False)
+                    params.append(scalar)
+            results = () if result_kind == "void" else (result_kind,)
+            signature = (tuple(params), results)
+            previous = declarations.get(name)
+            if previous is not None and previous != signature:
+                raise WasmAbiManifestError(
+                    f"CPython ABI declaration {name!r} has conflicting signatures"
+                )
+            declarations[name] = signature
     required = {
         name
         for name, kind in generator_cpython_abi_link_import_kinds()
@@ -2730,16 +2774,20 @@ def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
 
     Runtime Rust sources are parsed into normalized export-signature rows below
     instead of being raw cache-key inputs. The separately scanned CPython ABI
-    sources and header are direct generator inputs and must be keyed byte-for-byte.
+    sources and reachable linked SDK headers are direct generator inputs and
+    must be keyed byte-for-byte.
     """
     direct = {
         path,
         Path(rust_source_scan.__file__).resolve(),
+        Path(
+            _source_extension_include_dirs_for_abi_tier.__code__.co_filename
+        ).resolve(),
         INTRINSICS_MANIFEST,
         INTRINSIC_CATEGORIES,
         FRONTEND_TYPES,
         CPYTHON_ABI_VARIADIC_SHIM,
-        CPYTHON_ABI_SOURCE_ROOT.parent / "include" / "Python.h",
+        *_cpython_abi_link_header_closure(),
         *CPYTHON_ABI_SOURCE_ROOT.rglob("*.rs"),
     }
     return tuple(sorted(direct, key=lambda item: item.as_posix()))

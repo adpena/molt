@@ -1159,6 +1159,7 @@ pub enum MoltTypeTag {
     FrozenSet = 14,
     Traceback = 15,
     Exception = 16,
+    BuiltinCallable = 17,
     Other = 255,
 }
 
@@ -1300,6 +1301,7 @@ pub static mut PyModuleDef_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyCFunction_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[unsafe(no_mangle)]
 pub static mut PyCMethod_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]

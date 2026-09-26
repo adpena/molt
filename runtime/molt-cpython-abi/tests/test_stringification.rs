@@ -18,6 +18,54 @@ use molt_cpython_abi::hooks::RuntimeHooks;
 use std::os::raw::c_char;
 use std::ptr;
 
+#[derive(Clone, Copy)]
+enum StringifyMode {
+    Scalars,
+    ProtocolProbe,
+    Failure,
+}
+
+thread_local! {
+    static STRINGIFY_MODE: std::cell::Cell<StringifyMode> = const {
+        std::cell::Cell::new(StringifyMode::Scalars)
+    };
+}
+
+unsafe fn runtime_stringify(bits: u64, repr: bool) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    use molt_cpython_abi::hooks::OwnedHandleResult;
+    match STRINGIFY_MODE.with(std::cell::Cell::get) {
+        StringifyMode::Scalars => unsafe {
+            if repr {
+                support::fake_strings::object_repr(bits)
+            } else {
+                support::fake_strings::object_str(bits)
+            }
+        },
+        StringifyMode::ProtocolProbe => {
+            let text: &[u8] = if repr {
+                b"runtime repr"
+            } else {
+                b"runtime str"
+            };
+            OwnedHandleResult::ok(unsafe {
+                support::fake_strings::alloc_str(text.as_ptr(), text.len())
+            })
+        }
+        StringifyMode::Failure => {
+            unsafe { foreign_str_raises(ptr::null_mut()) };
+            OwnedHandleResult::error()
+        }
+    }
+}
+
+unsafe extern "C" fn runtime_str(bits: u64) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    unsafe { runtime_stringify(bits, false) }
+}
+
+unsafe extern "C" fn runtime_repr(bits: u64) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    unsafe { runtime_stringify(bits, true) }
+}
+
 unsafe extern "C" {
     fn molt_capi_unicode_from_format_probe(
         temporary_heap_allocations: *mut usize,
@@ -28,9 +76,8 @@ unsafe extern "C" {
 }
 
 // ── Faithful mini runtime backend: real native strings ───────────────────────
-// Each interned str handle is a genuine `TAG_PTR` `MoltObject` over a leaked
-// byte buffer, so `classify_heap` -> Str, `str_data` -> the bytes, and
-// `handle_to_pyobj` stamps `ob_type == &PyUnicode_Type`.
+// Fake strings supply protocol transport fixtures, not a formatting oracle.
+// Runtime-backed tests prove the real Python rendering semantics.
 
 unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
     use molt_cpython_abi::abi_types::MoltTypeTag;
@@ -45,6 +92,8 @@ fn install() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.classify_heap = fake_classify_heap;
     support::fake_strings::wire(&mut hooks);
+    hooks.object_str = runtime_str;
+    hooks.object_repr = runtime_repr;
     support::prepare_abi_test_thread(hooks);
 }
 
@@ -169,6 +218,46 @@ fn native_str_repr_is_quoted() {
     let r = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(s) };
     assert!(!r.is_null());
     assert_eq!(unsafe { read_native_str(r) }, b"'hi'");
+}
+
+#[test]
+fn managed_heap_stringification_uses_runtime_protocol_not_projected_type_slots() {
+    install();
+    STRINGIFY_MODE.with(|mode| mode.set(StringifyMode::ProtocolProbe));
+    let heap = Box::into_raw(Box::new(0_u64));
+    let bits = molt_lang_obj_model::MoltObject::from_ptr(heap.cast()).bits();
+    unsafe {
+        let object = molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits);
+        assert!(!object.is_null());
+        let text = molt_cpython_abi::api::typeobj::PyObject_Str(object);
+        let repr = molt_cpython_abi::api::typeobj::PyObject_Repr(object);
+        assert_eq!(read_native_str(text), b"runtime str");
+        assert_eq!(read_native_str(repr), b"runtime repr");
+        for value in [text, repr, object] {
+            molt_cpython_abi::api::refcount::Py_DECREF(value);
+        }
+    }
+}
+
+#[test]
+fn managed_stringification_failure_does_not_fall_back_or_replace_the_error() {
+    install();
+    STRINGIFY_MODE.with(|mode| mode.set(StringifyMode::Failure));
+    unsafe {
+        use molt_cpython_abi::api::{errors, numbers, refcount, typeobj};
+        let object = numbers::PyLong_FromLong(123);
+        for render in [typeobj::PyObject_Str, typeobj::PyObject_Repr] {
+            assert!(render(object).is_null());
+            assert_eq!(
+                errors::PyErr_ExceptionMatches(
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast()
+                ),
+                1
+            );
+            errors::PyErr_Clear();
+        }
+        refcount::Py_DECREF(object);
+    }
 }
 
 // ===========================================================================

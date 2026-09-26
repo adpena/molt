@@ -6671,6 +6671,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_importlib_extension_loader_create_module",
+        symbol: "molt_importlib_extension_loader_create_module",
+        arity: 3,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_importlib_extension_loader_exec_module",
         symbol: "molt_importlib_extension_loader_exec_module",
         arity: 4,
@@ -6866,6 +6872,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_importlib_find_in_path_package_context",
         symbol: "molt_importlib_find_in_path_package_context",
         arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_module_spec_type",
+        symbol: "molt_importlib_module_spec_type",
+        arity: 0,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -7259,15 +7271,9 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_cpython_abi_prepare_static_extension",
-        symbol: "molt_cpython_abi_prepare_static_extension",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_cpython_abi_pyinit_module_to_bits",
-        symbol: "molt_cpython_abi_pyinit_module_to_bits",
-        arity: 1,
+        name: "molt_cpython_abi_run_static_extension_init",
+        symbol: "molt_cpython_abi_run_static_extension_init",
+        arity: 2,
         defaults: &[],
     },
     IntrinsicSpec {

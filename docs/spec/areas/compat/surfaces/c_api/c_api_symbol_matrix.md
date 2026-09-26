@@ -11,7 +11,7 @@
 - **V0 Contract:** The target surface area and semantics are defined in
   `docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md`.
 - **Current Status:** A `libmolt` C-API bootstrap surface is implemented with
-  `molt_*` wrapper symbols (`runtime/molt-runtime/src/c_api.rs` + `include/molt/molt.h`),
+  `molt_*` wrapper symbols (`runtime/molt-runtime/src/c_api/` + `include/molt/molt.h`),
   and `include/molt/Python.h` now carries a broad partial CPython source-compat
   layer. NumPy headers flow from package/source-plan custody, not Molt.
 - **Historical scan baseline (2026-02-26):** `Py*` symbol surface exported by
@@ -91,6 +91,12 @@ Status legend:
 | `PyErr_WarnFormat` | Formatted warning | Partial | Header shim formats message and delegates to `PyErr_WarnEx`. |
 
 ### 2.6 Types & Modules
+
+Both Python headers share their module/C-callable declarations and link the
+same `runtime/molt-cpython-abi/src/api/modules.rs` implementation. The
+[extension ABI contract](../../contracts/libmolt_extension_abi_contract.md)
+owns initialization, publication, reference and single-image linkage semantics.
+
 | Symbol | Semantics | Status | Notes |
 | --- | --- | --- | --- |
 | `PyType_Ready` | Init type | Partial | `include/molt/Python.h` maps to `molt_type_ready`. |
@@ -105,30 +111,30 @@ Status legend:
 | `PyThreadState_Get` | Current thread state | Partial | Header shim returns a singleton thread-state token when GIL is held and raises otherwise. |
 | `PyGILState_Ensure` | Acquire GIL if needed | Partial | Header shim routes to `molt_gil_is_held` + `molt_gil_acquire`. |
 | `PyGILState_Release` | Release ensured GIL | Partial | Header shim conditionally routes to `molt_gil_release`. |
-| `PyModule_NewObject` | Init module from name object | Partial | `include/molt/Python.h` maps to `molt_module_create`. |
-| `PyModule_New` | Init module from UTF-8 name | Partial | `include/molt/Python.h` maps to `_molt_string_from_utf8` + `molt_module_create`. |
-| `PyModule_Create` | Init module from `PyModuleDef` | Partial | `include/molt/Python.h` maps to `molt_module_create` (`PyModule_Create2` shim) and records `PyModuleDef` metadata. |
-| `PyModuleDef_Init` | Initialize module definition | Partial | Header shim returns the passed `PyModuleDef` pointer as a `PyObject*` token. |
-| `PyModule_AddObjectRef` | `mod.attr = v` (borrowed) | Partial | `include/molt/Python.h` maps to `molt_module_add_object_bytes`. |
-| `PyModule_AddObject` | `mod.attr = v` (steals ref) | Partial | Header shim wraps `PyModule_AddObjectRef` and decrefs on success. |
-| `PyModule_Add` | Alias of `PyModule_AddObject` | Partial | Header shim alias. |
-| `PyModule_AddType` | Add type attribute | Partial | `include/molt/Python.h` maps to `molt_module_add_type`. |
-| `PyModule_GetObject` | Get module attribute | Partial | `include/molt/Python.h` maps to `molt_module_get_object_bytes`. |
-| `PyModule_GetNameObject` | Get module `__name__` object | Partial | Header shim uses `PyModule_GetObject`. |
-| `PyModule_GetName` | Get UTF-8 module name | Partial | Header shim copies UTF-8 bytes into thread-local storage. |
-| `PyModule_GetDef` | Get creating `PyModuleDef` | Partial | Header shim returns metadata attached by `PyModule_Create2`; returns `NULL` when unavailable. |
-| `PyModule_GetState` | Get per-module state pointer | Partial | Header shim returns metadata attached by `PyModule_Create2`; currently allocates only when `m_size > 0`. |
-| `PyModule_SetDocString` | Set module docstring | Partial | Header shim writes `__doc__` via Molt attribute setters. |
-| `PyModule_GetFilenameObject` | Get module `__file__` object | Partial | Header shim validates a string-like `__file__` attribute and raises when unavailable. |
-| `PyModule_GetFilename` | Get UTF-8 module filename | Partial | Header shim copies UTF-8 bytes into thread-local storage. |
-| `PyModule_AddFunctions` | Add `PyMethodDef[]` to module | Partial | Header shim registers callback-backed callables via `molt_module_add_cfunction_bytes` for `METH_VARARGS`, `METH_VARARGS|METH_KEYWORDS`, `METH_NOARGS`, and `METH_O`; class/static method flags (`METH_CLASS`, `METH_STATIC`) are supported in type slot method tables. |
-| `PyModule_FromDefAndSpec(2)` | Create module from `ModuleSpec` | Partial | Header shim creates module from `spec.name` (fallback: `m_name`), attaches C-API metadata, and stores `__spec__`. |
-| `PyModule_ExecDef` | Execute module definition | Partial | Header shim wires metadata/doc/method registration and `PyState_AddModule`; unsupported callback flag combinations still fail fast. |
-| `PyState_AddModule` | Register module by def pointer | Partial | Runtime-backed O(1) registry keyed by `PyModuleDef*` with ref-held module entries. |
-| `PyState_FindModule` | Find module by def pointer | Partial | Header shim resolves via runtime-backed state registry and returns `NULL` when absent. |
-| `PyState_RemoveModule` | Remove module by def pointer | Partial | Runtime-backed removal with explicit error when entry is missing. |
-| `PyModule_AddIntConstant` | Add integer constant | Partial | `include/molt/Python.h` maps to `molt_module_add_int_constant`. |
-| `PyModule_AddStringConstant` | Add string constant | Partial | `include/molt/Python.h` maps to `molt_module_add_string_constant`. |
+| `PyModule_NewObject` | Init module from name object | Partial | Shared ABI validates the name and constructs a runtime-owned module. |
+| `PyModule_New` | Init module from UTF-8 name | Partial | Shared ABI constructs a runtime-owned module without definition state. |
+| `PyModule_Create` | Init module from `PyModuleDef` | Partial | Shared linked ABI constructs the module, methods, documentation and definition state; rejects slotted definitions. |
+| `PyModuleDef_Init` | Initialize module definition | Partial | Shared ABI establishes canonical `PyModuleDef_Type` identity before returning the definition. |
+| `PyModule_AddObjectRef` | Add borrowed attribute | Partial | Shared module mutation retains the value without consuming the caller's reference. |
+| `PyModule_AddObject` | Add attribute, steal on success | Partial | Shared ABI consumes the caller's reference only on success. |
+| `PyModule_Add` | Add attribute, always steal | Partial | Shared ABI consumes the caller's reference on both success and failure. |
+| `PyModule_AddType` | Add type attribute | Partial | Shared ABI readies the type and adds it under its unqualified name. |
+| `PyModule_GetObject` | Get module attribute | Partial | Shared ABI returns an owned attribute reference. |
+| `PyModule_GetNameObject` | Get module name object | Partial | Shared ABI validates `__name__` and returns an owned string reference. |
+| `PyModule_GetName` | Get UTF-8 module name | Partial | Shared ABI returns the module name's UTF-8 view. |
+| `PyModule_GetDef` | Get creating definition | Partial | Reads the module's canonical C-API state. |
+| `PyModule_GetState` | Get per-module state pointer | Partial | Single-phase creation and first multi-phase execution own state allocation. |
+| `PyModule_SetDocString` | Set module docstring | Partial | Shared module mutation installs `__doc__`. |
+| `PyModule_GetFilenameObject` | Get module filename object | Partial | Shared ABI validates `__file__` and returns an owned string reference. |
+| `PyModule_GetFilename` | Get UTF-8 module filename | Partial | Shared ABI returns the filename's UTF-8 view. |
+| `PyModule_AddFunctions` | Add `PyMethodDef[]` | Partial | Uses canonical physical `PyCFunction` construction, conventions and receiver ownership. |
+| `PyModule_FromDefAndSpec(2)` | Create from `ModuleSpec` | Partial | Uses the actual supplied spec for `Py_mod_create`, attaches methods/doc/state metadata, and does not execute slots. |
+| `PyModule_ExecDef` | Execute module definition | Partial | Allocates first-execution state and runs exec slots with result/error validation; does not add a single-phase `PyState` root. |
+| `PyState_AddModule` | Register module by definition | Partial | Ref-held single-phase registry; slotted definitions are rejected. |
+| `PyState_FindModule` | Find module by definition | Partial | Shared registry lookup returns a borrowed reference, or `NULL` when absent. |
+| `PyState_RemoveModule` | Remove module by definition | Partial | Shared registry removal releases its owner and reports missing entries. |
+| `PyModule_AddIntConstant` | Add integer constant | Partial | Shared ABI constructs and transfers an integer attribute. |
+| `PyModule_AddStringConstant` | Add string constant | Partial | Shared ABI constructs and transfers a string attribute. |
 
 ### 2.7 Memory & Refcounting
 | Symbol | Semantics | Status | Notes |

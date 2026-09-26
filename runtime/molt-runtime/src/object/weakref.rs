@@ -38,8 +38,8 @@ pub(crate) fn object_supports_weakrefs(_py: &PyToken<'_>, target_bits: u64) -> b
     if type_id == crate::TYPE_ID_BOUND_METHOD {
         let func_bits = unsafe { crate::bound_method_func_bits(target_ptr) };
         let func_class = crate::type_of_bits(_py, func_bits);
-        return func_class
-            != crate::builtins::classes::builtin_classes(_py).builtin_function_or_method;
+        return !crate::builtins::classes::builtin_classes(_py)
+            .is_builtin_callable_class(func_class);
     }
     policy == crate::object::HeapWeakrefPolicy::Allow
 }

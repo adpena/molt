@@ -119,34 +119,34 @@ Tier B/C are scoped below with the exact remaining gaps.
   frontiers (the ledger has 180 catalogued, 11 High) in seconds with real
   backtraces, cross-platform, no C toolchain. This kills the reproduce-and-fix
   loop for the entire known-divergence queue without a single wasm E2E.
-* **C-extension discovery (not landed — the deeper Tier A).** To catch *unknown*
-  frontiers you must run real C-extension init sequences (ideally numpy's
-  `_multiarray_umath`) against the ABI + **real** `molt-runtime` hooks. The load
-  machinery already exists and is cross-platform: `loader.rs` uses `libloading`
-  (LoadLibrary/dlopen) and is gated only by `not(wasm32)`. Gaps blocking it:
-  1. **Windows compile+load is currently broken.** `tests/cext_integration.rs`
-     does not compile on Windows (`libc::dlsym` is Unix-only), and
-     `tools/scripts/build-cext.sh` is Unix-only (it explicitly says Windows
-     "not yet supported — use clang-cl"). This box *has* the toolchain
-     (`clang-cl`, `lld-link`, VS2022), and `cargo` already emits
-     `molt_cpython_abi.dll` + `.dll.lib` (import lib, `#[no_mangle]` exports), so
-     a `clang-cl … -link molt_cpython_abi.dll.lib` → `.pyd` → `LoadLibrary` path
-     is viable. The real friction is Windows' **no-flat-namespace** link model:
-     unlike Unix `RTLD_GLOBAL`, the extension's `Py*` imports bind to
-     `molt_cpython_abi.dll` at load time while a cargo-test binary links its own
-     `rlib` copy of the ABI statics — two static pools, so the extension's minted
-     module is invisible to the test's bridge. Fix: drive the extension from a
-     host that links **only** the DLL (not the rlib), or preload+init the DLL and
-     route all bridge lookups through it. On **Linux/WSL this already works today**
-     (the existing `cext_integration.rs` + `build-cext.sh` path) — the fastest way
-     to stand up the discovery engine is there.
-  2. **Real hooks not yet wired into the cext harness.** `cext_integration.rs`
-     installs the no-op `STUB_HOOKS`, so it can only test *loud failure*. Driving
-     real semantics needs `molt_runtime::cpython_abi_hooks::register_cpython_hooks()`
-     — which lives in `molt-runtime` (can't be a dep of `molt-cpython-abi`:
-     circular). Host it in a harness crate that may depend on both (or in a
-     `molt-runtime` integration test).
-  3. **Real numpy compile.** `_multiarray_umath` is a meson build of many objects
+* **C-extension discovery (deeper Tier A).** To catch *unknown* frontiers,
+  run real C-extension init sequences (ideally numpy's `_multiarray_umath`)
+  against the ABI and live `molt-runtime` hooks. Runtime and ABI state must
+  be one linked image: an executable that links the ABI rlib while the
+  extension binds a separately built ABI library has two bridges, type sets and
+  error indicators, and registering shared hooks does not merge them. The
+  `cext_host` example of `molt-runtime` is that image; `cext_dlopen_smoke.rs`
+  links `hello.c` to it through `runtime/test_support/cext_fixture.rs`, loads
+  only the host, and runs the whole scenario inside it: binding topology,
+  single-phase init, physical method identity, `greet()`, an exact C
+  exception, owner/cache/state release, collection and runtime shutdown.
+  Build the host in the test's exact target/profile/features, then run it:
+
+  ```bash
+  cargo build -p molt-runtime --features cext_loader --example cext_host --test cext_dlopen_smoke
+  cargo test -p molt-runtime --features cext_loader --test cext_dlopen_smoke
+  ```
+
+  Build both targets with the same features; the fixture uses Cargo's compiled
+  host/target identities for C-tool selection,
+  including cross-target execution. A missing host fails naming that build
+  command and a missing C toolchain
+  fails at compiler discovery; neither skips. This is a smoke path, not
+  proof that the full numpy discovery lane works; record its native executable
+  result per claimed host before claiming that. `molt-cext-discovery` shows
+  the same link topology but carries discovery stubs and is not acceptance.
+  `cext_integration.rs` covers only pre-open admission.
+  1. **Real numpy compile.** `_multiarray_umath` is a meson build of many objects
      needing numpy's generated headers/config, not one `.c`. The witness already
      has a wasm seal pipeline (`tmp/pact_numpy_multiarray_sealed_for_witness`,
      `tools/pact_witness_numpy_generated_modules.py`); a native seal reuses it
@@ -160,9 +160,9 @@ Tier B/C are scoped below with the exact remaining gaps.
 Native `molt build` links `molt-runtime` + `molt-cpython-abi` statically and is
 known to work for other extensions (e.g. tinygrad native builds). Whether the
 native tier statically links a **cpython-abi C extension** end-to-end was not
-proven this session; it shares gaps (2) and (3) above. Lower ROI than Tier A for
-*frontier* work because a native `molt build` is far heavier than a
-`molt-cpython-abi`-only `cargo test`.
+proven this session; it shares the native numpy-compile gap above. Lower ROI
+than Tier A for *frontier* work because a native `molt build` is far heavier
+than a `molt-cpython-abi`-only `cargo test`.
 
 ### Tier C — fast wasm re-link loop — not needed
 
@@ -178,13 +178,7 @@ only in a full app.wasm).
    single-/double-pointer-arg (e.g. `PyObject_IsTrue([])` #5, `PyLong_AsSsize_t`
    #7). `PyArg_ParseTuple` O!/b-format memory bugs (#1/#2) need the C-ext path
    (variadic) — see below.
-2. **Stand up the C-ext discovery engine on Linux/WSL** first (the path already
-   works there): wire `register_cpython_hooks()` into a harness crate that
-   depends on both `molt-runtime` and `molt-cpython-abi`, load `_testmolt.c`, and
-   *drive its methods* (not just assert loud-fail). Then point it at a
-   numpy-init-shaped extension.
-3. **Port the C-ext harness to Windows**: fix `cext_integration.rs` (`libc::dlsym`
-   → `libloading`), add a `clang-cl` branch to `build-cext.sh` (or a
-   `build-cext.ps1`) producing a `.pyd` linked against `molt_cpython_abi.dll.lib`,
-   and solve the two-static-pools problem by linking the harness against the DLL
-   only.
+2. **Prove the cross-platform C-extension smoke** with a native executable
+   result for each claimed host, then extend the one-image fixture to a
+   numpy-init-shaped extension. A static compile or a loader-admission test
+   does not prove the one-image binding boundary.

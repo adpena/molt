@@ -1639,9 +1639,9 @@ pub unsafe extern "C" fn molt_type_clear(op: *mut PyObject) -> c_int {
 /// slot inheritance (numpy's `PyArrayDTypeMeta_Type` is the canonical case —
 /// calling a DType class like `BoolDType()` dispatches
 /// `Py_TYPE(cls)->tp_call`, i.e. `type.tp_call`) can instantiate its
-/// instances. Molt-compiled classes are NOT affected: their bridge proxies
-/// carry `ob_type == PyBaseObject_Type` (see `bridge::tag_to_type`), so
-/// `PyObject_Call` still routes them through the runtime call authority.
+/// instances. A canonical managed Type view instead delegates to the runtime
+/// call authority; its physical `PyType_Type` carrier is not an independent
+/// `tp_new` implementation.
 pub unsafe extern "C" fn molt_type_call(
     callable: *mut PyObject,
     args: *mut PyObject,
@@ -1667,7 +1667,10 @@ pub unsafe extern "C" fn molt_type_call(
                 if item.is_null() {
                     return ptr::null_mut();
                 }
-                let item_type = (*item).ob_type.cast::<PyObject>();
+                let item_type = crate::bridge::semantic_type(item).cast::<PyObject>();
+                if item_type.is_null() {
+                    return ptr::null_mut();
+                }
                 crate::api::refcount::Py_INCREF(item_type);
                 return item_type;
             }
@@ -1679,6 +1682,10 @@ pub unsafe extern "C" fn molt_type_call(
                 );
                 return ptr::null_mut();
             }
+        }
+
+        if crate::api::object::runtime_call_authority(callable, true) {
+            return crate::api::object::call_managed_callable(callable, args, kwds);
         }
 
         let Some(tp_new) = (*tp).tp_new else {
@@ -3166,11 +3173,16 @@ pub unsafe extern "C" fn PyObject_Type(op: *mut PyObject) -> *mut PyObject {
     }
     let tp = unsafe { crate::bridge::semantic_type(op) };
     if tp.is_null() {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                c"object has NULL type".as_ptr(),
-            );
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null()
+            && !crate::api::errors::transfer_runtime_pending_to_current()
+        {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"object has NULL type".as_ptr(),
+                );
+            }
         }
         return ptr::null_mut();
     }
@@ -3225,11 +3237,30 @@ pub unsafe extern "C" fn PyCallable_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    // Check if the object's type has tp_call set — the CPython definition of
-    // "callable".  Without tp_call we cannot determine callability from the
-    // bridge alone, but checking it is strictly better than always returning 0,
-    // which caused extensions to wrongly reject callable objects.
-    let tp = unsafe { crate::bridge::semantic_type(op) };
+    // A generic managed view has no authoritative C call slot. Its semantic
+    // class projection is identity only; it may omit `tp_call` even when the
+    // runtime class implements `__call__`. Use the same runtime predicate as
+    // Python `callable()`. Concrete CFunction views and raw C objects retain
+    // their physical slot protocol.
+    if unsafe { crate::api::object::runtime_call_authority(op, false) } {
+        if unsafe { crate::bridge::semantic_type(op) }.is_null() {
+            return 0;
+        }
+        let Some(bits) = GLOBAL_BRIDGE.observed_handle_for_pyobj(op) else {
+            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null()
+                && !crate::api::errors::transfer_runtime_pending_to_current()
+            {
+                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            }
+            return 0;
+        };
+        let result = unsafe { (crate::hooks::hooks_or_stubs().object_is_callable)(bits.bits()) };
+        if crate::api::errors::transfer_runtime_pending_to_current() {
+            return 0;
+        }
+        return c_int::from(result != 0);
+    }
+    let tp = unsafe { (*op).ob_type };
     if tp.is_null() {
         return 0;
     }
@@ -3571,32 +3602,17 @@ unsafe fn check_stringifier_result(res: *mut PyObject, dunder: &str) -> *mut PyO
     res
 }
 
-/// Materialize the runtime str/repr bytes of a Molt-native (bridge-managed)
-/// object into a fresh `str`. Fails closed with `NULL` + `MemoryError` when the
-/// string allocation fails (the CPython contract), never a fabricated value.
+/// Project the owned result from the canonical runtime str/repr protocol.
+/// This does not copy or format bytes and preserves the exact pending error.
 unsafe fn native_stringify(bits: u64, want_repr: bool) -> *mut PyObject {
-    let bytes = if want_repr {
-        crate::bridge::molt_repr_string(bits)
+    let hooks = crate::hooks::hooks_or_stubs();
+    let result = if want_repr {
+        unsafe { (hooks.object_repr)(bits) }
     } else {
-        crate::bridge::molt_str_string(bits)
+        unsafe { (hooks.object_str)(bits) }
     };
-    let Some(bytes) = bytes else {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
-                c"object has no native string representation".as_ptr(),
-            );
-        }
-        return ptr::null_mut();
-    };
-    // PyUnicode_FromStringAndSize routes through the runtime `alloc_str` hook and
-    // sets MemoryError on failure, so the native path stays fail-closed.
-    unsafe {
-        crate::api::strings::PyUnicode_FromStringAndSize(
-            bytes.as_ptr().cast(),
-            bytes.len() as isize,
-        )
-    }
+    let result = unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
+    unsafe { check_stringifier_result(result, if want_repr { "__repr__" } else { "__str__" }) }
 }
 
 #[unsafe(no_mangle)]
@@ -3623,7 +3639,14 @@ pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
     if op.is_null() {
         return unsafe { crate::api::strings::PyUnicode_FromString(c"<NULL>".as_ptr()) };
     }
-    let tp = unsafe { crate::bridge::semantic_type(op) };
+    match crate::bridge::observe_pyobject(op) {
+        Some(crate::bridge::ResolvedPyObject::ManagedMolt(value)) => {
+            return unsafe { native_stringify(value.bits(), true) };
+        }
+        None => return ptr::null_mut(),
+        Some(crate::bridge::ResolvedPyObject::Foreign) => {}
+    }
+    let tp = unsafe { (*op).ob_type };
     if !tp.is_null()
         && let Some(reprfunc) = unsafe { (*tp).tp_repr }
     {
@@ -3653,10 +3676,16 @@ pub unsafe extern "C" fn PyObject_Str(op: *mut PyObject) -> *mut PyObject {
     if op.is_null() {
         return unsafe { crate::api::strings::PyUnicode_FromString(c"<NULL>".as_ptr()) };
     }
-    // Exact-str fast path: str(s) is s (identity, incref) — CPython
-    // PyUnicode_CheckExact branch. Generic managed strings keep an honest
-    // physical carrier, so exactness is resolved through semantic Py_TYPE.
-    let tp = unsafe { crate::bridge::semantic_type(op) };
+    // Managed string identity and every subclass override belong to the same
+    // runtime authority. A semantic type projection is not a native slot table.
+    match crate::bridge::observe_pyobject(op) {
+        Some(crate::bridge::ResolvedPyObject::ManagedMolt(value)) => {
+            return unsafe { native_stringify(value.bits(), false) };
+        }
+        None => return ptr::null_mut(),
+        Some(crate::bridge::ResolvedPyObject::Foreign) => {}
+    }
+    let tp = unsafe { (*op).ob_type };
     if tp == &raw mut crate::abi_types::PyUnicode_Type {
         unsafe { crate::api::refcount::Py_INCREF(op) };
         return op;

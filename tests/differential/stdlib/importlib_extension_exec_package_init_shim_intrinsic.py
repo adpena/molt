@@ -19,12 +19,13 @@ loader = importlib.machinery.ExtensionFileLoader("pkgext_exec", ext_path)
 spec = importlib.util.spec_from_file_location(
     "pkgext_exec", ext_path, loader=loader, submodule_search_locations=[pkg_dir]
 )
-module = importlib.util.module_from_spec(spec) if spec is not None else None
+module = None
 
 loaded = False
 is_pkg = False
 error_name = "none"
 try:
+    module = importlib.util.module_from_spec(spec) if spec is not None else None
     if spec is not None and spec.loader is not None and module is not None:
         spec.loader.exec_module(module)
         loaded = getattr(module, "value", None) == 73

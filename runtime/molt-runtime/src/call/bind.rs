@@ -1950,20 +1950,28 @@ unsafe fn call_foreign_with_builder(
     }
     let result =
         unsafe { molt_cpython_abi::bridge::molt_foreign_call(c_ptr, args_bits, kwargs_bits) };
-    if args_bits != 0 {
-        dec_ref_bits(_py, args_bits);
-    }
-    if kwargs_bits != 0 {
-        dec_ref_bits(_py, kwargs_bits);
-    }
+    crate::cpython_abi_hooks::with_preserved_native_error(|| {
+        if args_bits != 0 {
+            dec_ref_bits(_py, args_bits);
+        }
+        if kwargs_bits != 0 {
+            dec_ref_bits(_py, kwargs_bits);
+        }
+    });
     match result.decode() {
         molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => bits,
         molt_cpython_abi::hooks::DecodedHandleResult::Missing
         | molt_cpython_abi::hooks::DecodedHandleResult::Error => {
-            if exception_pending(_py) {
+            if crate::cpython_abi_hooks::transfer_pending_cpython_exception()
+                || exception_pending(_py)
+            {
                 return MoltObject::none().bits();
             }
-            raise_exception::<_>(_py, "TypeError", "foreign object call failed")
+            raise_exception::<_>(
+                _py,
+                "SystemError",
+                "foreign object call failed without an exception",
+            )
         }
     }
 }

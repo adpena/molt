@@ -3766,8 +3766,8 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     assert invoke_ops == [
         {
             "kind": "invoke_ffi",
-            "args": [],
-            "out": "v2",
+            "args": ["v0"],
+            "out": "v1",
             "native_callable_export": (
                 "__molt_static_pyinit__.nativepkg.ndimage._nd_image"
             ),
@@ -3776,11 +3776,16 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
             "native_callable_symbol": "PyInit__nd_image",
         }
     ]
+    assert extension_ops[extension_ops.index(invoke_ops[0]) + 1] == {
+        "kind": "check_exception",
+        "value": 1,
+    }
     extension_call_targets = [
         op.get("s_value") for op in extension_ops if op.get("kind") == "call"
     ]
-    assert "molt_cpython_abi_prepare_static_extension" in extension_call_targets
-    assert "molt_cpython_abi_pyinit_module_to_bits" in extension_call_targets
+    assert "molt_cpython_abi_prepare_static_extension" not in extension_call_targets
+    assert "molt_cpython_abi_pyinit_module_to_bits" not in extension_call_targets
+    assert not any(op.get("kind") == "module_cache_set" for op in extension_ops)
 
     # Init-exactly-once is owned by the shared ModuleTable on native and WASM;
     # generated bodies are pure executors and aliases are data-only rows.
@@ -9278,6 +9283,57 @@ def test_generated_native_publication_is_direct_first_once_and_rollback_owned(
                 op["kind"] == "module_cache_del"
                 for op in failure_handler(parent_publication)
             )
+
+
+@pytest.mark.parametrize("registry_lane", [False, True])
+def test_static_extension_pyinit_is_the_single_publication_owner(
+    registry_lane: bool,
+) -> None:
+    build = (
+        BACKEND_IR._build_registry_native_module_init_ops
+        if registry_lane
+        else BACKEND_IR._build_static_native_module_init_ops
+    )
+    ops = build(
+        _ExternalNativeModuleInitSpec(
+            module="nativepkg._native",
+            init_symbol="PyInit__native",
+        ),
+        register_global_code_id=lambda _symbol: 1,
+    )
+    module_name = next(
+        op["out"]
+        for op in ops
+        if op["kind"] == "const_str" and op.get("s_value") == "nativepkg._native"
+    )
+    pyinit_ops = [op for op in ops if op["kind"] == "invoke_ffi"]
+    assert len(pyinit_ops) == 1
+    pyinit = pyinit_ops[0]
+    assert pyinit["args"] == [module_name]
+    assert (
+        pyinit["native_callable_export"] == "__molt_static_pyinit__.nativepkg._native"
+    )
+    assert pyinit["native_callable_abi"] == "molt.pyinit_module_v1"
+    assert pyinit["native_callable_symbol"] == "PyInit__native"
+    pyinit_index = ops.index(pyinit)
+    assert ops[pyinit_index + 1] == {"kind": "check_exception", "value": 1}
+    assert all(
+        pyinit["out"] not in op.get("args", []) for op in ops[: pyinit_index + 2]
+    )
+    assert not any(
+        op.get("s_value")
+        in {
+            "molt_cpython_abi_prepare_static_extension",
+            "molt_cpython_abi_pyinit_module_to_bits",
+        }
+        for op in ops
+    )
+    assert not any(op["kind"] == "module_cache_set" for op in ops)
+    # PyInit owns publish-before-exec and its own failure rollback; later
+    # generated-body failures still remove that published name.
+    assert [op["args"] for op in ops if op["kind"] == "module_cache_del"] == [
+        [module_name]
+    ]
 
 
 @_source_tree_fingerprint_transaction()

@@ -544,10 +544,10 @@ pub(in super::super) fn importlib_module_from_spec_impl(_py: &PyToken<'_>, spec_
                 let created_bits = unsafe { call_callable1(_py, create_module_bits, spec_bits) };
                 dec_ref_bits(_py, create_module_bits);
                 if exception_pending(_py) {
-                    clear_exception(_py);
                     if !obj_from_bits(created_bits).is_none() {
                         dec_ref_bits(_py, created_bits);
                     }
+                    return Err(MoltObject::none().bits());
                 } else if !obj_from_bits(created_bits).is_none() {
                     module_bits = created_bits;
                 }

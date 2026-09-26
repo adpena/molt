@@ -966,7 +966,7 @@ fn inspect_cleandoc_impl(_py: &crate::PyToken<'_>, doc_bits: u64) -> u64 {
 pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let builtins = crate::builtins::classes::builtin_classes(_py);
-        let is_builtin_fn = type_of_bits(_py, obj_bits) == builtins.builtin_function_or_method;
+        let is_builtin_fn = builtins.is_builtin_callable_class(type_of_bits(_py, obj_bits));
 
         // Prefer `__text_signature__` when present (CPython parity), but only for objects where
         // CPython uses it for signature discovery (builtin functions and types). Avoid inheriting

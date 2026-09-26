@@ -59,7 +59,7 @@ pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 32;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 1 + 32;
 #[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 24;
+pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 25;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
     RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
@@ -277,6 +277,13 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
         arity: 5,
         dispatch: ReservedRuntimeCallableDispatch::Trampoline,
     },
+    ReservedRuntimeCallableInfo {
+        index: 24,
+        runtime_name: "molt_importlib_module_spec_init",
+        import_name: "importlib_module_spec_init",
+        arity: 5,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
 ];
 
 #[rustfmt::skip]
@@ -419,6 +426,7 @@ fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         21 => Some(molt_types_new_class as *const ()),
         22 => Some(molt_cpython_abi_cext_call_trampoline as *const ()),
         23 => Some(molt_importlib_import_transaction as *const ()),
+        24 => Some(molt_importlib_module_spec_init as *const ()),
         _ => None,
     }
 }
@@ -1198,4 +1206,5 @@ pub(crate) fn assert_reserved_runtime_symbols_resolve() {
     let _ = molt_types_new_class as *const ();
     let _ = molt_cpython_abi_cext_call_trampoline as *const ();
     let _ = molt_importlib_import_transaction as *const ();
+    let _ = molt_importlib_module_spec_init as *const ();
 }

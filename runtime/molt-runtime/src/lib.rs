@@ -180,8 +180,7 @@ mod tk_bridge;
 pub use molt_runtime_tk;
 pub mod cpython_abi_hooks;
 pub use cpython_abi_hooks::{
-    molt_cpython_abi_cext_call_trampoline, molt_cpython_abi_prepare_static_extension,
-    molt_cpython_abi_pyinit_module_to_bits,
+    molt_cpython_abi_cext_call_trampoline, molt_cpython_abi_run_static_extension_init,
 };
 pub use molt_runtime_audit as audit;
 pub(crate) use molt_runtime_constants::*;

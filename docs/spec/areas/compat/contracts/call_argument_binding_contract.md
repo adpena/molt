@@ -187,8 +187,9 @@ ordinary traced closure. The executable registry owns no hidden Python edges.
 METHOD requires an actual defining class; other conventions forbid one. STATIC
 passes a null effective receiver while retaining the supplied object's lifetime.
 Receiver presence is explicit: C NULL, Python None, and floating-point zero
-cannot share an absence sentinel. Raw bridge bindings distinguish borrowed
-identities from transferred runtime holds and retire the latter outside locks.
+cannot share an absence sentinel. Raw bridge bindings are borrowed identities;
+runtime-backed C callables are canonical managed views whose member edges
+retire with the runtime callable, outside bridge locks.
 Direct aliases retire their own forward identity even when no reverse view
 exists; they cannot retire a different canonical managed view. Static binding
 rejections carry typed collision facts captured by the publication transaction.

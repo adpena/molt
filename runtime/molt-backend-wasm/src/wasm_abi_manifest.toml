@@ -144,6 +144,7 @@ reserved_runtime_callables = [
   "molt_types_new_class",
   "molt_cpython_abi_cext_call_trampoline",
   "molt_importlib_import_transaction",
+  "molt_importlib_module_spec_init",
 ]
 
 [[reserved_runtime_callable]]
@@ -291,6 +292,12 @@ runtime_name = "molt_importlib_import_transaction"
 import_name = "importlib_import_transaction"
 callable_arity = 5
 callable_dispatch = "trampoline"
+
+[[reserved_runtime_callable]]
+index = 24
+runtime_name = "molt_importlib_module_spec_init"
+import_name = "importlib_module_spec_init"
+callable_arity = 5
 
 
 # Return contracts derive from boxed-call semantics, poll-table membership,
