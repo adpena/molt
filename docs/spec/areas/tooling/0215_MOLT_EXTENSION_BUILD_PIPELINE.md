@@ -482,6 +482,31 @@ remain unrepresentable until a typed closure/loading policy can preserve them.
 Driver `-Wl,` lists and paired `-Xlinker` operands use the same grammar for projection
 and dependency admission; literal comma-bearing paths require `-Xlinker`.
 
+The host interpreter's Python link provider is a separate, attested role—not an
+external target dependency. Extension-set schema 7 stages and checksums Meson's
+`intro-dependencies.json` alongside target and compile metadata. An exact
+`python` system dependency may consume the selected Windows interpreter's
+file-node-owned import library only after its DLL and machine identity are
+validated. The runtime-library and stdlib roles establish its base-prefix
+layout; an equal basename elsewhere grants no authority. Ordered operand
+occurrences, interpreter closure, import-library content, target Python version,
+ABI tier and target triple remain in the source-plan receipt. Publication replays
+the same projection from sealed metadata; rehashing a forged provider cannot
+replace these facts. No filesystem roots are broadened and unrelated operands
+remain subject to final-link admission. Other Python provider layouts, debug or
+free-threaded host providers fail explicitly until their ABI contract is modeled;
+dependencies with no Python link operand need no Windows-specific layout.
+The shared compact-manifest validator also rejects reintroduction of the consumed
+provider as an equal-content final-link input (including cyclic groups), or as
+an ambiguous bare lookup for that interpreter library. A renamed checksummed
+copy cannot evade the content check.
+
+Extensions are recompiled against Molt's static ABI headers on both native and
+WASM targets. Object and publication validation reject residual COFF
+`__imp_Py*`/`__imp__Py*` obligations: importing CPython DLL data or functions is
+not equivalent to referencing Molt's static C API. This provider projection
+does not bypass the external-member dependency gate for lazy static targets.
+
 Meson source folding uses one ordered linker-operand projection and only
 metadata-declared static-library outputs. Exact output paths outrank basename
 fallback; ambiguous basenames fail instead of selecting multiple targets.

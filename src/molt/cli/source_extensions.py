@@ -6,7 +6,7 @@ import os
 import re
 import shlex
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -14,7 +14,10 @@ from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES,
 )
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
-from molt.c_api_symbols import is_c_api_external_requirement
+from molt.c_api_symbols import (
+    is_c_api_external_requirement,
+    is_cpython_abi_dynamic_import_symbol,
+)
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.python_module_names import encode_python_module_names
 from molt.cli.compiler_target import (
@@ -30,6 +33,7 @@ from molt.cli.source_extension_target import (
     source_extension_target_is_wasm,
 )
 from molt.cli.source_extension_link_arguments import source_extension_link_arguments
+from molt.cli.source_extension_python_provider import SourceExtensionPythonProvider
 from molt.cli.source_extension_language import (
     SourceExtensionLanguage,
     resolve_source_extension_compile_language,
@@ -364,6 +368,9 @@ class _SourceExtensionBuildPlan:
     consumed_forced_link_args: tuple[str, ...] = ()
     producer_link_args: tuple[str, ...] = ()
     lazy_static_target_ids: tuple[str, ...] = ()
+    dependencies_path: Path | None = None
+    dependencies_sha256: str | None = None
+    python_provider: Mapping[str, Any] | None = None
 
     def manifest_payload(self) -> dict[str, Any]:
         return {
@@ -399,6 +406,11 @@ class _SourceExtensionBuildPlan:
             "consumed_forced_link_args": list(self.consumed_forced_link_args),
             "producer_link_args": list(self.producer_link_args),
             "lazy_static_target_ids": list(self.lazy_static_target_ids),
+            "dependencies": str(self.dependencies_path)
+            if self.dependencies_path
+            else None,
+            "dependencies_sha256": self.dependencies_sha256,
+            "python_provider": self.python_provider,
         }
 
     def source_paths(self) -> tuple[Path, ...]:
@@ -598,6 +610,8 @@ def _source_extension_build_plan_digest(plan: _SourceExtensionBuildPlan) -> str:
         "consumed_forced_link_args": list(plan.consumed_forced_link_args),
         "producer_link_args": list(plan.producer_link_args),
         "lazy_static_target_ids": list(plan.lazy_static_target_ids),
+        "dependencies_sha256": plan.dependencies_sha256,
+        "python_provider": plan.python_provider,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -1406,6 +1420,7 @@ def _load_meson_intro_targets_source_extension_plan(
     build_root: Any = None,
     compile_commands: Any = None,
     exclude_linked_static_libraries: Sequence[str] | None = None,
+    python_provider: SourceExtensionPythonProvider | None = None,
 ) -> tuple[_SourceExtensionBuildPlan | None, list[str]]:
     errors: list[str] = []
     excluded_linked_static_libraries = tuple(exclude_linked_static_libraries or ())
@@ -1485,6 +1500,9 @@ def _load_meson_intro_targets_source_extension_plan(
         return None, [str(exc)]
     linked_static_targets = projection.targets
     link_args = projection.link_args
+    provider_receipt = None
+    if python_provider is not None:
+        link_args, provider_receipt = python_provider.project(link_args)
     for linked_target in linked_static_targets:
         if str(linked_target["id"]) not in projection.forced_target_ids:
             continue
@@ -1785,34 +1803,17 @@ def _load_meson_intro_targets_source_extension_plan(
         consumed_forced_link_args=projection.consumed_forced_args,
         producer_link_args=projection.producer_link_args,
         lazy_static_target_ids=projection.lazy_static_target_ids,
+        dependencies_path=python_provider.dependencies_path
+        if python_provider
+        else None,
+        dependencies_sha256=python_provider.dependencies_sha256
+        if python_provider
+        else None,
+        python_provider=provider_receipt,
         digest="",
     )
     return (
-        _SourceExtensionBuildPlan(
-            kind=plan.kind,
-            plan_path=plan.plan_path,
-            plan_sha256=plan.plan_sha256,
-            compile_commands_path=plan.compile_commands_path,
-            compile_commands_sha256=plan.compile_commands_sha256,
-            target_id=plan.target_id,
-            target_name=plan.target_name,
-            target_selector=plan.target_selector,
-            target_type=plan.target_type,
-            source_root=plan.source_root,
-            build_root=plan.build_root,
-            sources=plan.sources,
-            generated_sources=plan.generated_sources,
-            skipped_generated_sources=plan.skipped_generated_sources,
-            non_compiled_inputs=plan.non_compiled_inputs,
-            compile_units=plan.compile_units,
-            include_dirs=plan.include_dirs,
-            compile_args=plan.compile_args,
-            link_args=plan.link_args,
-            consumed_forced_link_args=plan.consumed_forced_link_args,
-            producer_link_args=plan.producer_link_args,
-            lazy_static_target_ids=plan.lazy_static_target_ids,
-            digest=_source_extension_build_plan_digest(plan),
-        ),
+        replace(plan, digest=_source_extension_build_plan_digest(plan)),
         [],
     )
 
@@ -1841,6 +1842,7 @@ def _load_source_extension_build_plan(
     project_root: Path,
     module_name: str,
     plan_config: Mapping[str, Any],
+    python_provider: SourceExtensionPythonProvider | None = None,
 ) -> tuple[_SourceExtensionBuildPlan | None, list[str]]:
     kind = plan_config.get("kind") or plan_config.get("type") or "meson-intro-targets"
     if not isinstance(kind, str) or kind not in _SOURCE_EXTENSION_PLAN_KINDS:
@@ -1877,6 +1879,7 @@ def _load_source_extension_build_plan(
                 plan_config.get("exclude_linked_static_libraries")
                 or plan_config.get("exclude-linked-static-libraries")
             ),
+            python_provider=python_provider,
         )
     return None, [f"unsupported source extension build plan kind: {kind!r}"]
 
@@ -2720,6 +2723,16 @@ def _source_extension_required_c_api_by_object(
             generated_prefixes.update(input_prefixes)
         required_capsules_by_object[object_path] = tuple(sorted(capsules))
         project_generated_prefixes.update(generated_prefixes)
+        dynamic_python_imports = sorted(
+            symbol
+            for symbol in fact.undefined_symbols
+            if is_cpython_abi_dynamic_import_symbol(symbol)
+        )
+        if dynamic_python_imports:
+            return None, (
+                "static extension retains dynamic CPython import-address requirements: "
+                + ", ".join(dynamic_python_imports)
+            )
         required = sorted(
             symbol
             for symbol in set(fact.undefined_symbols) - project_defined_symbols

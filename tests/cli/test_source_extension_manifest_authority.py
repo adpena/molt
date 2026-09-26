@@ -315,6 +315,26 @@ def test_closure_identity_rejects_foreign_compiler_target(selector: str) -> None
         finalize_source_extension_object_closure(manifest)
 
 
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "__imp_PyLong_FromLong",
+        "__imp_PyExc_TypeError",
+        "__imp__Py_NoneStruct",
+        "__imp___Py_TrueStruct",
+    ],
+)
+def test_static_closure_rejects_cpython_import_address_requirements(
+    symbol: str,
+) -> None:
+    manifest = _manifest(1)
+    manifest["object_closure"]["objects"][0]["undefined_symbols"] = [symbol]
+    with pytest.raises(
+        SourceExtensionObjectClosureError, match="dynamic CPython import-address"
+    ):
+        finalize_source_extension_object_closure(manifest)
+
+
 def test_object_units_can_share_retained_source_content() -> None:
     manifest = _manifest(2)
     objects = manifest["object_closure"]["objects"]
@@ -410,6 +430,30 @@ def test_compact_manifest_rejects_missing_or_foreign_producer_link_custody(
         "producer_link_args": producer_args,
     }
     with pytest.raises(ValueError):
+        _validate_compact_source_extension_manifest(
+            _compact_source_extension_manifest(manifest)
+        )
+
+
+def test_compact_manifest_rejects_reintroduced_python_provider_bytes() -> None:
+    manifest = _manifest(1)
+    manifest["source_plan"] = {
+        "kind": "meson-intro-targets",
+        "producer_link_args": ["@python-base/libs/python312.lib"],
+        "python_provider": {
+            "target_triple": "wasm32-wasip1",
+            "import_library": {"path": "libs/python312.lib", "sha256": "c" * 64},
+        },
+    }
+    manifest["link_requirements"]["items"] = [
+        {
+            "kind": "input",
+            "path": "renamed.a",
+            "sha256": "c" * 64,
+            "loading": "default",
+        }
+    ]
+    with pytest.raises(ValueError, match="consumed Python provider survives"):
         _validate_compact_source_extension_manifest(
             _compact_source_extension_manifest(manifest)
         )
