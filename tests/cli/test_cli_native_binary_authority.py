@@ -174,6 +174,12 @@ def test_actual_native_finalization_consumer_rejects_before_publication(
     payload = bytes(elf_header(kind=2 if valid else 1))
     candidate.write_bytes(payload)
     output.write_bytes(b"previous-generation")
+    selection_output = tmp_path / "selection.json"
+    from molt.artifact_publication import staged_output_path
+
+    selection = staged_output_path(selection_output)
+    selection.write_bytes(b"new-selection")
+    selection_output.write_bytes(b"previous-selection")
     published = []
     monkeypatch.delenv("MOLT_SKIP_BINARY_VALIDITY_CHECK", raising=False)
     monkeypatch.delenv("MOLT_BUILD_SMOKE_EXEC", raising=False)
@@ -189,19 +195,23 @@ def test_actual_native_finalization_consumer_rejects_before_publication(
         target_triple="x86_64-unknown-linux-gnu",
         strip=False,
         phase_times=timings,
+        link_selection=(selection, selection_output),
     )
     assert {"strip_wall_ns", "validate_wall_ns", "publish_wall_ns"} <= timings.keys()
     assert all(value >= 0 for value in timings.values())
+    assert not selection.exists()
     if valid:
         assert error is None
         assert len(published) == 1 and published[0] != output
         assert output.read_bytes() == payload
         assert not candidate.exists()
+        assert selection_output.read_bytes() == b"new-selection"
     else:
         assert "native candidate validation failed" in error
         assert len(published) == 1 and published[0] != output
         assert output.read_bytes() == b"previous-generation"
         assert candidate.read_bytes() == payload
+        assert selection_output.read_bytes() == b"previous-selection"
 
 
 @pytest.mark.parametrize("alias", ["same", "relative", "hardlink"])

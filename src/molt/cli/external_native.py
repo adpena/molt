@@ -7,7 +7,6 @@ import platform
 import re
 import sys
 from dataclasses import dataclass
-from functools import lru_cache
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -53,9 +52,15 @@ from molt.python_module_names import canonical_python_module_names
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.extension_scan_surface import _load_c_api_scan_surface
+from molt.cli.extension_scan_surface import (
+    _molt_runtime_namespace_symbol,
+    _wasm_runtime_backed_abi_symbols,
+    runtime_owned_link_symbol,
+)
 from molt.cli.source_extensions import (
     _SourceExtensionArtifactSymbolInspection,
     _inspect_source_extension_artifact_symbols,
+    _wasm_relocatable_external_symbols,
     source_extension_manifest_errors_are_missing_sources,
     source_extension_manifest_required_capsule_imports,
     validate_source_extension_artifact_object_closure,
@@ -731,23 +736,6 @@ def _manifest_object_closure_undefined_symbols(
     return _manifest_str_tuple(object_closure, "undefined_symbols")
 
 
-def _wasm_relocatable_external_symbols(
-    inspection: _SourceExtensionArtifactSymbolInspection,
-) -> tuple[str, ...] | None:
-    """Project requirements from the same bytes used for closure validation."""
-    if inspection.wasm_imports is None:
-        return None
-    return tuple(
-        sorted(
-            {
-                *inspection.undefined_symbols,
-                *(item.name for item in inspection.wasm_imports if item.kind != 2),
-            }
-            - inspection.defined_symbols
-        )
-    )
-
-
 def _molt_root_for_external_native_scan() -> Path:
     return compiler_source_root()
 
@@ -762,18 +750,6 @@ def _c_api_scan_header_for_manifest(
     return None
 
 
-@lru_cache(maxsize=1)
-def _wasm_runtime_backed_abi_symbols() -> frozenset[str]:
-    symbols = set(WASM_LINK_ALLOWED_IMPORTS)
-    symbols.update(WASM_RUNTIME_HOST_EXPORTS)
-    for import_name in WASM_IMPORT_REGISTRY:
-        symbols.add(import_name)
-        export_name = wasm_runtime_export_name(import_name)
-        if export_name is not None:
-            symbols.add(export_name)
-    return frozenset(symbols)
-
-
 def _abi_primitive_class(symbol: str) -> str:
     if symbol in WASM_LINK_ALLOWED_IMPORTS:
         return WASM_LINK_ALLOWED_IMPORT_PRIMITIVE_CLASSES[symbol]
@@ -782,10 +758,6 @@ def _abi_primitive_class(symbol: str) -> str:
     if symbol in WASM_RUNTIME_HOST_EXPORTS:
         return "wasm_runtime_host_export"
     return "native_project_symbol"
-
-
-def _molt_runtime_namespace_symbol(symbol: str) -> bool:
-    return symbol.startswith(("molt_", "__molt"))
 
 
 def _archive_provider_candidate_symbols(
@@ -1657,12 +1629,7 @@ def _package_symbol_provider_edges(
             if not providers:
                 continue
             if interface is not None:
-                reserved = (
-                    name in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
-                    or name in _wasm_runtime_backed_abi_symbols()
-                    or _molt_runtime_namespace_symbol(name)
-                    or is_cpython_abi_link_symbol(name)
-                )
+                reserved = runtime_owned_link_symbol(name, wasm=True)
                 if not reserved and is_c_api_symbol(name):
                     if c_api_surface is None:
                         molt_root = _molt_root_for_external_native_scan()
@@ -1679,7 +1646,7 @@ def _package_symbol_provider_edges(
                                 f"{candidate.package}: cannot load package symbol authority {header_path}: {load_error}"
                             )
                             continue
-                    reserved = c_api_surface.status_for(name) != "missing"
+                    reserved = runtime_owned_link_symbol(name, c_api_surface, wasm=True)
                 if reserved:
                     errors.append(
                         f"{candidate.package}: package symbol {name!r} collides with "

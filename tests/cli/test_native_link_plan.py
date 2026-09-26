@@ -324,12 +324,23 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
     candidate = file_publication.staged_file_path(
         output, purpose="native-link", suffix=output.suffix
     )
-    with native_link_plan.native_link_execution_command(
-        plan,
-        planned_output=output,
-        execution_output=candidate,
-    ) as command:
-        run(command)
+    from molt.cli.link_selection_admission import native_link_selection
+    from molt.link_outputs import link_selection_path
+
+    selection_output = link_selection_path(output)
+    selection_candidate = file_publication.staged_file_path(
+        selection_output, purpose="native-link"
+    )
+    with native_link_selection(plan, candidate) as selection:
+        assert selection is not None
+        with native_link_plan.native_link_execution_command(
+            plan,
+            planned_output=output,
+            execution_output=candidate,
+            selection_arguments=selection.arguments,
+        ) as command:
+            trace = run(command)
+        selection.admit(stdout=trace, stderr="", output=selection_candidate)
     symbols = {
         line.split()[0]
         for line in run(
@@ -355,6 +366,7 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
             output_binary=output,
             target_triple=target,
             strip=False,
+            link_selection=(selection_candidate, selection_output),
             receipt=link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
                 receipt_path, fingerprint
             ),
@@ -363,7 +375,13 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
     )
     assert not candidate.exists()
     assert link_fingerprints._link_outputs_match(
-        outputs={"binary": output},
+        outputs={"binary": output, "selection": selection_output},
+        fingerprint=fingerprint,
+        receipt_path=receipt_path,
+    )
+    selection_output.write_bytes(b"tampered selection")
+    assert not link_fingerprints._link_outputs_match(
+        outputs={"binary": output, "selection": selection_output},
         fingerprint=fingerprint,
         receipt_path=receipt_path,
     )

@@ -37,6 +37,11 @@ for import_root in (ROOT, SRC):
 
 from molt.cli.build_results import _finalize_native_link_candidate  # noqa: E402
 from molt.cli.link_pipeline import _native_link_execution_command  # noqa: E402
+from molt.cli.link_selection_admission import (  # noqa: E402
+    native_link_selection,
+)
+from molt.link_outputs import link_selection_path  # noqa: E402
+from molt.artifact_publication import discard_staged_output  # noqa: E402
 from molt.file_publication import staged_file_path  # noqa: E402
 from molt.cli.native_link_command import _build_native_link_plan  # noqa: E402
 from molt.cli.native_link_manifest import (  # noqa: E402
@@ -124,6 +129,7 @@ class BenchmarkRun(TypedDict):
     finalization: NotRequired[dict[str, int | str | None]]
     published_size_bytes: NotRequired[int]
     strip_delta_bytes: NotRequired[int]
+    selection_wall_ns: NotRequired[int]
 
 
 class QuiescenceSamples(TypedDict):
@@ -211,6 +217,7 @@ def implementation_source_facts() -> dict[str, object]:
                 _build_native_link_plan,
                 _native_link_execution_command,
                 _finalize_native_link_candidate,
+                native_link_selection,
                 current_native_runtime_build_identity,
             )
         ),
@@ -704,6 +711,9 @@ def summarize_runs(runs: Sequence[BenchmarkRun]) -> dict[str, object]:
             if (finalize := run.get("finalization")) is not None
             and isinstance((wall := finalize.get("wall_ns")), int)
         ]
+        selection = [
+            run["selection_wall_ns"] for run in selected if "selection_wall_ns" in run
+        ]
         tree_rss = [
             value
             for run in selected
@@ -731,6 +741,9 @@ def summarize_runs(runs: Sequence[BenchmarkRun]) -> dict[str, object]:
             "finalize_wall_ns_median": (
                 int(statistics.median(finalization)) if finalization else None
             ),
+            "selection_wall_ns_median": int(statistics.median(selection))
+            if selection
+            else None,
             "peak_tree_rss_bytes_max": max(tree_rss, default=None),
             "peak_job_commit_bytes_max": max(job_commit, default=None),
         }
@@ -1147,91 +1160,128 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkReport:
             purpose="native-link",
             suffix=output.suffix or ".tmp",
         )
-        with _native_link_execution_command(
-            plan, planned_output=output, execution_output=candidate
-        ) as command:
-            execution_result, execution = measure_command(
-                command, cwd=output.parent, timeout=args.timeout
+        selection_candidate = None
+        try:
+            selection_started = time.perf_counter_ns()
+            with native_link_selection(plan, candidate) as selection:
+                with _native_link_execution_command(
+                    plan,
+                    planned_output=output,
+                    execution_output=candidate,
+                    selection_arguments=selection.arguments if selection else (),
+                ) as command:
+                    execution_result, execution = measure_command(
+                        command, cwd=output.parent, timeout=args.timeout
+                    )
+                if execution_result.returncode == 0 and selection is not None:
+                    selection_candidate = staged_file_path(
+                        link_selection_path(output), purpose="native-link"
+                    )
+                    selection.admit(
+                        stdout=execution_result.stdout,
+                        stderr=execution_result.stderr,
+                        output=selection_candidate,
+                    )
+            selection_wall_ns = max(
+                0,
+                time.perf_counter_ns()
+                - selection_started
+                - execution["orchestration_wall_ns"],
             )
-        run: BenchmarkRun = {
-            "phase": phase,
-            "iteration": index,
-            "execution": execution,
-            "candidate_size_bytes": candidate.stat().st_size
-            if candidate.exists()
-            else None,
-        }
-        if execution_result.returncode != 0 or not candidate.is_file():
-            stderr_tail = "\n".join((execution_result.stderr or "").splitlines()[-20:])
-            run["stderr_tail"] = stderr_tail
-            runs.append(run)
-            report["runs"] = runs
-            report["summary"] = summarize_runs(runs)
-            raise LinkBenchmarkError(
-                f"native linker failed in {phase} with rc={execution_result.returncode}: "
-                f"{stderr_tail or 'no stderr'}",
-                report=report,
-            )
-
-        final_candidate = candidate
-        if args.bolt:
-            telemetry_path = output.parent / f".{candidate.name}.bolt-telemetry.json"
-            bolt_script = ROOT / "tools" / "bolt_optimize.sh"
-            bolt_command = ["bash", str(bolt_script), str(candidate)]
-            if args.bolt_training_command:
-                bolt_command.append(args.bolt_training_command)
-            bolt_env = dict(os.environ)
-            bolt_env["MOLT_BOLT_TELEMETRY_JSON"] = str(telemetry_path)
-            bolt_result, bolt_measurement = measure_command(
-                bolt_command,
-                cwd=output.parent,
-                timeout=args.bolt_timeout,
-                env=bolt_env,
-            )
-            run["bolt_total"] = bolt_measurement
-            if bolt_result.returncode != 0:
+            run: BenchmarkRun = {
+                "selection_wall_ns": selection_wall_ns,
+                "phase": phase,
+                "iteration": index,
+                "execution": execution,
+                "candidate_size_bytes": candidate.stat().st_size
+                if candidate.exists()
+                else None,
+            }
+            if execution_result.returncode != 0 or not candidate.is_file():
+                stderr_tail = "\n".join(
+                    (execution_result.stderr or "").splitlines()[-20:]
+                )
+                run["stderr_tail"] = stderr_tail
                 runs.append(run)
                 report["runs"] = runs
                 report["summary"] = summarize_runs(runs)
                 raise LinkBenchmarkError(
-                    f"BOLT failed in {phase} with rc={bolt_result.returncode}",
+                    f"native linker failed in {phase} with rc={execution_result.returncode}: "
+                    f"{stderr_tail or 'no stderr'}",
                     report=report,
                 )
-            run["bolt"] = _read_bolt_telemetry(telemetry_path)
-            final_candidate = Path(f"{candidate}.bolt")
-            if not final_candidate.is_file():
-                raise LinkBenchmarkError(
-                    "BOLT succeeded without its optimized candidate", report=report
-                )
 
-        before_finalize = final_candidate.stat().st_size
-        finalize_phases: dict[str, int] = {}
-        finalization = _measure_finalization(
-            lambda: _finalize_native_link_candidate(
-                candidate=final_candidate,
-                output_binary=output,
-                target_triple=args.target_triple,
-                strip=(
-                    os.environ.get("MOLT_KEEP_SYMBOLS") != "1"
-                    if args.bolt
-                    else plan.policy.strip_after_link
-                ),
-                phase_times=finalize_phases,
+            final_candidate = candidate
+            if args.bolt:
+                telemetry_path = (
+                    output.parent / f".{candidate.name}.bolt-telemetry.json"
+                )
+                bolt_script = ROOT / "tools" / "bolt_optimize.sh"
+                bolt_command = ["bash", str(bolt_script), str(candidate)]
+                if args.bolt_training_command:
+                    bolt_command.append(args.bolt_training_command)
+                bolt_env = dict(os.environ)
+                bolt_env["MOLT_BOLT_TELEMETRY_JSON"] = str(telemetry_path)
+                bolt_result, bolt_measurement = measure_command(
+                    bolt_command,
+                    cwd=output.parent,
+                    timeout=args.bolt_timeout,
+                    env=bolt_env,
+                )
+                run["bolt_total"] = bolt_measurement
+                if bolt_result.returncode != 0:
+                    runs.append(run)
+                    report["runs"] = runs
+                    report["summary"] = summarize_runs(runs)
+                    raise LinkBenchmarkError(
+                        f"BOLT failed in {phase} with rc={bolt_result.returncode}",
+                        report=report,
+                    )
+                run["bolt"] = _read_bolt_telemetry(telemetry_path)
+                final_candidate = Path(f"{candidate}.bolt")
+                if not final_candidate.is_file():
+                    raise LinkBenchmarkError(
+                        "BOLT succeeded without its optimized candidate", report=report
+                    )
+
+            before_finalize = final_candidate.stat().st_size
+            finalize_phases: dict[str, int] = {}
+            finalization = _measure_finalization(
+                lambda: _finalize_native_link_candidate(
+                    candidate=final_candidate,
+                    output_binary=output,
+                    target_triple=args.target_triple,
+                    strip=(
+                        os.environ.get("MOLT_KEEP_SYMBOLS") != "1"
+                        if args.bolt
+                        else plan.policy.strip_after_link
+                    ),
+                    phase_times=finalize_phases,
+                    link_selection=(selection_candidate, link_selection_path(output))
+                    if selection_candidate
+                    else None,
+                )
             )
-        )
-        finalization.update(finalize_phases)
-        run["finalization"] = finalization
-        if finalization["error"] is not None:
+            finalization.update(finalize_phases)
+            run["finalization"] = finalization
+            if finalization["error"] is not None:
+                runs.append(run)
+                report["runs"] = runs
+                report["summary"] = summarize_runs(runs)
+                raise LinkBenchmarkError(str(finalization["error"]), report=report)
+            published_size = output.stat().st_size
+            run["published_size_bytes"] = published_size
+            run["strip_delta_bytes"] = published_size - before_finalize
+            if args.bolt:
+                candidate.unlink(missing_ok=True)
             runs.append(run)
-            report["runs"] = runs
-            report["summary"] = summarize_runs(runs)
-            raise LinkBenchmarkError(str(finalization["error"]), report=report)
-        published_size = output.stat().st_size
-        run["published_size_bytes"] = published_size
-        run["strip_delta_bytes"] = published_size - before_finalize
-        if args.bolt:
-            candidate.unlink(missing_ok=True)
-        runs.append(run)
+        except (OSError, ValueError) as exc:
+            raise LinkBenchmarkError(
+                f"native selection/publication failed: {exc}", report=report
+            ) from exc
+        finally:
+            if selection_candidate is not None:
+                discard_staged_output(selection_candidate)
 
     report["runs"] = runs
     report["summary"] = summarize_runs(runs)

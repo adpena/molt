@@ -147,9 +147,10 @@ and verifies both Sigstore provenance and the exact receipt closure. Receipt
 verification pins the signer workflow, source digest, repository, and hosted
 runner requirement. Release staging must repeat that provenance verification for
 every E3 receipt inside the source-addressed release-exit archive before any
-candidate build may proceed. That publication admission is not yet wired into
-the active release workflow; it is a release blocker, as recorded in the
+candidate build may proceed. The release workflow's plan step performs that
+provenance admission before candidate builds, as specified by the
 [packaging acceptance contract](../../../../../packaging/PACKAGING.md).
+Wiring the gate does not supply missing receipts or establish conformance.
 The verified-subset workflow is the execution authority; the local
 `check` command validates policy and reports remaining expected-failure debt but
 does not claim conformance.

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Collection, Sequence
 
 from molt import file_publication
+from molt.artifact_publication import discard_staged_output
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli import link_fingerprints
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
@@ -48,7 +49,11 @@ from molt.cli.native_link_tool_identity import native_link_cache_tool_facts
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
-from molt.link_outputs import validate_link_output_paths
+from molt.link_outputs import link_selection_path, validate_link_output_paths
+from molt.cli.link_selection_admission import (
+    link_selection_policy,
+    native_link_selection,
+)
 from molt.cli.runtime_paths import _runtime_lib_path
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.atomic_io import _write_text_if_changed
@@ -62,7 +67,7 @@ def _run_native_link_command(
 ) -> subprocess.CompletedProcess[str]:
     result = _run_completed_command(
         list(link_cmd),
-        capture_output=json_output,
+        capture_output=True,
         env=None,
         cwd=None,
         timeout=link_timeout,
@@ -281,6 +286,14 @@ def _prepare_native_link(
         )
 
     link_fingerprint_path = link_fingerprints._link_fingerprint_path(output_binary)
+    selection_output = (
+        link_selection_path(output_binary)
+        if link_plan.selection_requirements is not None
+        else None
+    )
+    link_outputs = {"binary": output_binary}
+    if selection_output is not None:
+        link_outputs["selection"] = selection_output
     stored_link_fingerprint = link_fingerprints._read_link_fingerprint(
         link_fingerprint_path
     )
@@ -303,7 +316,7 @@ def _prepare_native_link(
     ]
     try:
         validate_link_output_paths(
-            {"binary": output_binary, "receipt": link_fingerprint_path},
+            {**link_outputs, "receipt": link_fingerprint_path},
             inputs=(
                 *link_inputs,
                 *((stdlib_obj_path,) if stdlib_obj_path is not None else ()),
@@ -316,9 +329,20 @@ def _prepare_native_link(
         )
     except (OSError, ValueError) as exc:
         return None, _fail(str(exc), json_output, command="build")
+    try:
+        from molt.cli.link_selection_admission import _support_surface
+
+        selection_surface = _support_surface() if selection_output is not None else None
+    except (OSError, ValueError) as exc:
+        return None, _fail(str(exc), json_output, command="build")
     link_tool_facts = [
         *native_link_cache_tool_facts(link_plan),
         *link_plan.sidecar_facts(),
+        *(
+            (link_selection_policy(selection_surface),)
+            if selection_surface is not None
+            else ()
+        ),
     ]
     link_fingerprint = link_fingerprints._link_fingerprint(
         project_root=project_root,
@@ -330,7 +354,7 @@ def _prepare_native_link(
         ),
     )
     link_skipped = link_fingerprints._link_outputs_match(
-        outputs={"binary": output_binary},
+        outputs=link_outputs,
         fingerprint=link_fingerprint,
         receipt_path=link_fingerprint_path,
     )
@@ -340,6 +364,7 @@ def _prepare_native_link(
     if link_plan.policy.bolt_requested:
         link_skipped = False
     link_output = output_binary
+    link_selection_candidate = None
     if link_skipped:
         link_process = subprocess.CompletedProcess(
             args=link_cmd,
@@ -353,62 +378,72 @@ def _prepare_native_link(
             purpose="native-link",
             suffix=output_binary.suffix or ".tmp",
         )
+        if selection_output is not None:
+            link_selection_candidate = file_publication.staged_file_path(
+                selection_output, purpose="native-link"
+            )
         if diagnostics_enabled and "link" not in phase_starts:
             phase_starts["link"] = time.perf_counter()
         try:
-            with _native_link_execution_command(
-                link_plan,
-                planned_output=output_binary,
-                execution_output=link_output,
-            ) as execution_link_cmd:
-                link_process = _run_native_link_command(
-                    link_cmd=execution_link_cmd,
-                    json_output=json_output,
-                    link_timeout=link_timeout,
-                )
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(OSError):
-                link_output.unlink()
-            return None, _fail("Linker timed out", json_output, command="build")
-        except (OSError, ValueError, RuntimeError) as exc:
-            with contextlib.suppress(OSError):
-                link_output.unlink()
-            return None, _fail(str(exc), json_output, command="build")
-        if (
-            link_process.returncode == 0
-            and sys.platform == "darwin"
-            and not target_triple
-        ):
-            try:
+            with native_link_selection(
+                link_plan, link_output, surface=selection_surface
+            ) as selection:
+                with _native_link_execution_command(
+                    link_plan,
+                    planned_output=output_binary,
+                    execution_output=link_output,
+                    selection_arguments=selection.arguments if selection else (),
+                ) as execution_link_cmd:
+                    link_process = _run_native_link_command(
+                        link_cmd=execution_link_cmd,
+                        json_output=json_output,
+                        link_timeout=link_timeout,
+                    )
+                if link_process.returncode == 0 and selection is not None:
+                    assert link_selection_candidate is not None
+                    selection.admit(
+                        stdout=link_process.stdout,
+                        stderr=link_process.stderr,
+                        output=link_selection_candidate,
+                    )
+            if (
+                link_process.returncode == 0
+                and sys.platform == "darwin"
+                and not target_triple
+            ):
                 link_process = _validate_darwin_link_output(
                     link_process=link_process,
                     link_cmd=execution_link_cmd,
                     output_binary=link_output,
                     validation_kind="magic",
                 )
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(OSError):
-                    link_output.unlink()
-                return None, _fail("Linker timed out", json_output, command="build")
-        if (
-            link_process.returncode == 0
-            and sys.platform == "darwin"
-            and not target_triple
-        ):
-            try:
+            if (
+                link_process.returncode == 0
+                and sys.platform == "darwin"
+                and not target_triple
+            ):
                 link_process = _validate_darwin_link_output(
                     link_process=link_process,
                     link_cmd=execution_link_cmd,
                     output_binary=link_output,
                     validation_kind="dyld",
                 )
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(OSError):
-                    link_output.unlink()
-                return None, _fail("Linker timed out", json_output, command="build")
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            with contextlib.suppress(OSError):
+                link_output.unlink()
+            if link_selection_candidate is not None:
+                discard_staged_output(link_selection_candidate)
+            message = (
+                "Linker timed out"
+                if isinstance(exc, subprocess.TimeoutExpired)
+                else str(exc)
+            )
+            return None, _fail(message, json_output, command="build")
         if link_process.returncode != 0:
             with contextlib.suppress(OSError):
                 link_output.unlink()
+            if link_selection_candidate is not None:
+                discard_staged_output(link_selection_candidate)
     return _PreparedNativeLink(
         output_obj=output_obj,
         stub_path=stub_path,
@@ -424,4 +459,7 @@ def _prepare_native_link(
         link_skipped=link_skipped,
         link_process=link_process,
         strip_after_link=link_plan.policy.strip_after_link,
+        link_selection=(link_selection_candidate, selection_output)
+        if link_selection_candidate is not None and selection_output is not None
+        else None,
     ), None

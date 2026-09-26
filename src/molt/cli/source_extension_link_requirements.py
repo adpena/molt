@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import re
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from molt.cli.source_extension_target import (
     SourceExtensionLinkDialect,
@@ -118,21 +118,27 @@ class SourceExtensionLinkRequirements:
         for item in self.items:
             _validate_item(item, dialect=dialect, package_relative=False)
 
-    @property
-    def inputs(self) -> tuple[SourceExtensionLinkInput, ...]:
-        result: list[SourceExtensionLinkInput] = []
+    def _atoms(self) -> Iterator[SourceExtensionLinkAtom]:
         for item in self.items:
-            members = (
+            yield from (
                 item.members
                 if isinstance(item, SourceExtensionLinkCyclicGroup)
                 else (item,)
             )
-            result.extend(
-                member
-                for member in members
-                if isinstance(member, SourceExtensionLinkInput)
-            )
-        return tuple(result)
+
+    @property
+    def inputs(self) -> tuple[SourceExtensionLinkInput, ...]:
+        return tuple(
+            atom for atom in self._atoms() if isinstance(atom, SourceExtensionLinkInput)
+        )
+
+    @property
+    def providers(self) -> tuple[SourceExtensionLinkProvider, ...]:
+        return tuple(
+            atom
+            for atom in self._atoms()
+            if isinstance(atom, SourceExtensionLinkProvider)
+        )
 
     def manifest_payload(self) -> dict[str, object]:
         return {

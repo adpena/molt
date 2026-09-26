@@ -306,6 +306,7 @@ def _finalize_native_link_candidate(
     strip: bool,
     phase_times: MutableMapping[str, int] | None = None,
     receipt: link_fingerprints.FinalLinkReceiptRequest | None = None,
+    link_selection: tuple[Path, Path] | None = None,
 ) -> str | None:
     """Finalize and validate a private candidate before atomic publication."""
     try:
@@ -313,49 +314,76 @@ def _finalize_native_link_candidate(
             candidate, create_parent=False, role="native candidate"
         )
         outputs = {"binary": output_binary}
+        if link_selection is not None:
+            outputs["selection"] = link_selection[1]
         if receipt is not None:
             outputs["receipt"] = receipt.path
-        validate_link_output_paths(outputs, inputs=(candidate,))
+        validate_link_output_paths(
+            outputs,
+            inputs=(
+                candidate,
+                *((link_selection[0],) if link_selection is not None else ()),
+            ),
+        )
         if candidate.stat().st_nlink != 1:
             raise ValueError("candidate has other filesystem names")
+        if link_selection is not None and link_selection[0].stat().st_nlink != 1:
+            raise ValueError("selection candidate has other filesystem names")
     except (OSError, ValueError) as exc:
         return f"native publication requires a private candidate: {exc}"
-    strip_started = time.perf_counter_ns() if phase_times is not None else 0
-    strip_error: str | None = None
-    if strip:
-        strip_error = _post_link_strip(candidate, target_triple)
-    if phase_times is not None:
-        phase_times["strip_wall_ns"] = time.perf_counter_ns() - strip_started
-    if strip and strip_error:
-        return strip_error
-    publish_started = time.perf_counter_ns() if phase_times is not None else 0
-    validate_elapsed = 0
     try:
-        with _staged_copy_file(candidate, output_binary, codesign=True) as signed:
-            validate_started = time.perf_counter_ns() if phase_times is not None else 0
-            try:
-                _assert_native_binary_valid(signed, target_triple)
-            except _NativeBinaryInvalid as exc:
-                return f"native candidate validation failed: {exc}"
-            finally:
-                if phase_times is not None:
-                    validate_elapsed = time.perf_counter_ns() - validate_started
-                    phase_times["validate_wall_ns"] = validate_elapsed
-            link_fingerprints.publish_link_outputs(
-                {"binary": (signed, output_binary)}, receipt=receipt
-            )
-    except (OSError, ValueError, RuntimeError) as exc:
-        return f"atomic native publication failed: {exc}"
-    finally:
+        strip_started = time.perf_counter_ns() if phase_times is not None else 0
+        strip_error: str | None = None
+        if strip:
+            strip_error = _post_link_strip(candidate, target_triple)
         if phase_times is not None:
-            phase_times["publish_wall_ns"] = (
-                time.perf_counter_ns() - publish_started - validate_elapsed
-            )
-    cleanup_started = time.perf_counter_ns() if phase_times is not None else 0
-    discard_staged_output(candidate)
-    if phase_times is not None:
-        phase_times["cleanup_wall_ns"] = time.perf_counter_ns() - cleanup_started
-    return None
+            phase_times["strip_wall_ns"] = time.perf_counter_ns() - strip_started
+        if strip and strip_error:
+            return strip_error
+        publish_started = time.perf_counter_ns() if phase_times is not None else 0
+        validate_elapsed = 0
+        try:
+            with _staged_copy_file(candidate, output_binary, codesign=True) as signed:
+                validate_started = (
+                    time.perf_counter_ns() if phase_times is not None else 0
+                )
+                try:
+                    _assert_native_binary_valid(signed, target_triple)
+                except _NativeBinaryInvalid as exc:
+                    return f"native candidate validation failed: {exc}"
+                finally:
+                    if phase_times is not None:
+                        validate_elapsed = time.perf_counter_ns() - validate_started
+                        phase_times["validate_wall_ns"] = validate_elapsed
+                link_fingerprints.publish_link_outputs(
+                    {
+                        "binary": (signed, output_binary),
+                        **(
+                            {"selection": link_selection}
+                            if link_selection is not None
+                            else {}
+                        ),
+                    },
+                    receipt=receipt,
+                    retire_previous_outputs_under=output_binary.parent
+                    if receipt is not None
+                    else None,
+                )
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"atomic native publication failed: {exc}"
+        finally:
+            if phase_times is not None:
+                phase_times["publish_wall_ns"] = (
+                    time.perf_counter_ns() - publish_started - validate_elapsed
+                )
+        cleanup_started = time.perf_counter_ns() if phase_times is not None else 0
+        discard_staged_output(candidate)
+        if phase_times is not None:
+            phase_times["cleanup_wall_ns"] = time.perf_counter_ns() - cleanup_started
+        return None
+    finally:
+        if link_selection is not None:
+            discard_staged_output(link_selection[0])
 
 
 def _emit_native_link_result(
@@ -401,6 +429,7 @@ def _emit_native_link_result(
     json_output: bool,
     resolved_diagnostics_verbosity: str,
     strip_after_link: bool = True,
+    link_selection: tuple[Path, Path] | None = None,
 ) -> int:
     if link_process.returncode == 0:
         # LinkPlan owns strip ordering. Ordinary release plans strip here;
@@ -413,6 +442,7 @@ def _emit_native_link_result(
                 output_binary=output_binary,
                 target_triple=target_triple,
                 strip=strip_after_link,
+                link_selection=link_selection,
                 receipt=link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
                     link_fingerprint_path, link_fingerprint
                 ),

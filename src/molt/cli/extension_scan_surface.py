@@ -3,12 +3,59 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Set as AbstractSet
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import cast
 
 from molt.c_api_headers import CAPIHeaderClosureError, c_api_header_closure
 from molt.c_api_symbols import C_API_TOKEN as _C_API_TOKEN
 from molt.c_api_symbols import C_API_TOKEN_RE as _C_API_TOKEN_RE
+from molt.c_api_symbols import is_c_api_symbol, is_cpython_abi_link_symbol
+from molt._wasm_abi_generated import (
+    WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
+    WASM_IMPORT_REGISTRY,
+    WASM_LINK_ALLOWED_IMPORTS,
+    WASM_RUNTIME_HOST_EXPORTS,
+    wasm_runtime_export_name,
+)
+
+
+@lru_cache(maxsize=1)
+def _wasm_runtime_backed_abi_symbols() -> frozenset[str]:
+    symbols = set(WASM_LINK_ALLOWED_IMPORTS) | set(WASM_RUNTIME_HOST_EXPORTS)
+    for import_name in WASM_IMPORT_REGISTRY:
+        symbols.add(import_name)
+        export_name = wasm_runtime_export_name(import_name)
+        if export_name is not None:
+            symbols.add(export_name)
+    return frozenset(symbols)
+
+
+def _molt_runtime_namespace_symbol(symbol: str) -> bool:
+    return symbol.startswith(("molt_", "__molt"))
+
+
+def runtime_owned_link_symbol(
+    symbol: str, surface: _ExtensionScanSurface | None = None, *, wasm: bool
+) -> bool:
+    """External providers cannot replace the canonical runtime or link ABI."""
+    return (
+        _molt_runtime_namespace_symbol(symbol)
+        or is_cpython_abi_link_symbol(symbol)
+        or (
+            surface is not None
+            and is_c_api_symbol(symbol)
+            and surface.status_for(symbol) != "missing"
+        )
+        or (
+            wasm
+            and (
+                symbol in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
+                or symbol in _wasm_runtime_backed_abi_symbols()
+            )
+        )
+    )
+
 
 _C_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", flags=re.DOTALL)
 _C_LINE_COMMENT_RE = re.compile(r"//.*?$", flags=re.MULTILINE)
@@ -982,6 +1029,11 @@ class _ExtensionScanSurface:
         if symbol in self.source_compile_only:
             return "source_compile_only"
         return "missing"
+
+    def link_status_for(self, symbol: str) -> str:
+        """Compile-time header vocabulary does not discharge a link obligation."""
+        status = self.status_for(symbol)
+        return "missing" if status == "source_compile_only" else status
 
 
 def _extract_numpy_fail_fast_symbols(text: str) -> set[str]:

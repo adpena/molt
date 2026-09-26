@@ -8,7 +8,12 @@ from pathlib import Path
 import platform
 import re
 import sys
-from typing import Iterator, Sequence
+from typing import TYPE_CHECKING, Iterator, Sequence
+
+if TYPE_CHECKING:
+    from molt.cli.source_extension_link_requirements import (
+        SourceExtensionLinkRequirements,
+    )
 
 from molt import file_publication
 from molt.llvm_linker_roles import LlvmLinkerRole
@@ -147,6 +152,7 @@ class NativeLinkPlan:
     linker_hint: str | None
     normalized_target: str | None
     sidecars: tuple[NativeLinkSidecar, ...] = ()
+    selection_requirements: SourceExtensionLinkRequirements | None = None
 
     def sidecar_facts(self) -> tuple[dict[str, object], ...]:
         return tuple(sidecar.fact() for sidecar in self.sidecars)
@@ -158,10 +164,11 @@ def native_link_execution_command(
     *,
     planned_output: Path,
     execution_output: Path,
+    selection_arguments: Sequence[str] = (),
 ) -> Iterator[list[str]]:
     """Own private sidecars while retargeting one typed plan for execution."""
 
-    result = list(plan.command)
+    result = [*plan.command, *selection_arguments]
     matches = [
         index
         for index in range(1, len(result))

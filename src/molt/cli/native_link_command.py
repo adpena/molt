@@ -477,4 +477,5 @@ def _build_native_link_plan(
         linker_hint=selected_linker_name,
         normalized_target=normalized_target,
         sidecars=tuple(sidecars),
+        selection_requirements=external_inputs if external_inputs.items else None,
     )
