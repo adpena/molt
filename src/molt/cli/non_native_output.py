@@ -44,7 +44,10 @@ from molt.cli.browser_target_features import (
 )
 from molt.cli.build_results import _write_link_fingerprint_if_needed
 from molt.cli.command_runtime import _run_completed_command
-from molt.cli.external_native import _stage_external_package_native_artifacts_for_build
+from molt.cli.external_native import (
+    _external_native_link_requirements,
+    _stage_external_package_native_artifacts_for_build,
+)
 from molt.cli.models import (
     BuildProfile,
     _ExternalPackageNativeArtifactPlan,
@@ -68,7 +71,9 @@ from molt.cli.runtime_wasm_validation import (
 )
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary
 from molt.cli.source_extension_link_requirements import (
-    render_source_extension_link_arguments,
+    SourceExtensionLinkRequirements,
+    merge_source_extension_link_requirements,
+    source_extension_link_file,
 )
 from molt.cli.wasm import (
     _effective_split_worker_table_base,
@@ -739,45 +744,6 @@ def _browser_native_callable_manifest(
     }
 
 
-def _wasm_linkable_static_artifact_path(path: Path) -> bool:
-    return path.suffix in {".a", ".o"} or path.name.endswith(".molt.wasm")
-
-
-def _wasm_static_link_native_artifact_inputs(
-    artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
-) -> tuple[Path, ...]:
-    out: list[Path] = []
-    for artifact in artifacts:
-        if artifact.runtime_linkage != "static_link" or artifact.artifact_kind not in {
-            "wasm_relocatable_object",
-            "static_archive",
-        }:
-            raise ValueError(
-                "linked WASM external native artifacts must be wasm32 static_link "
-                f"objects/archives; got {artifact.module}="
-                f"{artifact.runtime_linkage}/{artifact.artifact_kind}"
-            )
-        out.append(artifact.staged_path)
-        out.extend(
-            path
-            for path in artifact.staged_support_paths
-            if _wasm_linkable_static_artifact_path(path)
-        )
-    return tuple(out)
-
-
-def _wasm_static_link_arguments(
-    artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
-) -> tuple[str, ...]:
-    return tuple(
-        argument
-        for artifact in artifacts
-        for argument in render_source_extension_link_arguments(
-            artifact.link_requirements
-        )
-    )
-
-
 def _staged_artifacts_need_wasm_libc_link(
     artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
 ) -> bool:
@@ -900,8 +866,10 @@ def _prepare_non_native_build_result(
             _StagedExternalPackageNativeArtifact, ...
         ] = ()
         external_native_fingerprint_inputs: tuple[Path, ...] = ()
-        wasm_static_link_native_inputs: tuple[Path, ...] = ()
-        wasm_static_link_arguments: tuple[str, ...] = ()
+        wasm_link_target = (
+            "wasm32-unknown-unknown" if is_wasm_freestanding else "wasm32-wasip1"
+        )
+        wasm_link_requirements = SourceExtensionLinkRequirements(wasm_link_target)
         app_export_contract: dict[str, object] | None = None
         if linked or _split_runtime:
             if app_export_contract_path is None:
@@ -926,14 +894,11 @@ def _prepare_non_native_build_result(
                             artifacts_root=artifacts_root or output_wasm.parent,
                         )
                     )
-                    wasm_static_link_native_inputs = (
-                        _wasm_static_link_native_artifact_inputs(
-                            staged_external_native_artifacts
-                        )
+                    wasm_link_requirements = _external_native_link_requirements(
+                        staged_external_native_artifacts,
+                        target_triple=wasm_link_target,
                     )
-                    wasm_static_link_arguments = _wasm_static_link_arguments(
-                        staged_external_native_artifacts
-                    )
+                    provider_inputs: list[Path] = []
                     external_native_fingerprint_inputs = (
                         _external_native_artifact_fingerprint_inputs(
                             staged_external_native_artifacts
@@ -958,10 +923,7 @@ def _prepare_non_native_build_result(
                                 "wasm32-wasip1 self-contained libc.a"
                             )
                         libc_provider = libc_provider.resolve(strict=False)
-                        wasm_static_link_native_inputs = (
-                            *wasm_static_link_native_inputs,
-                            libc_provider,
-                        )
+                        provider_inputs.append(libc_provider)
                         external_native_fingerprint_inputs = (
                             *external_native_fingerprint_inputs,
                             libc_provider,
@@ -978,10 +940,7 @@ def _prepare_non_native_build_result(
                         compiler_rt_provider = compiler_rt_provider.resolve(
                             strict=False
                         )
-                        wasm_static_link_native_inputs = (
-                            *wasm_static_link_native_inputs,
-                            compiler_rt_provider,
-                        )
+                        provider_inputs.append(compiler_rt_provider)
                         external_native_fingerprint_inputs = (
                             *external_native_fingerprint_inputs,
                             compiler_rt_provider,
@@ -1000,14 +959,24 @@ def _prepare_non_native_build_result(
                             provider.resolve(strict=False)
                             for provider in cxx_runtime_providers
                         )
-                        wasm_static_link_native_inputs = (
-                            *wasm_static_link_native_inputs,
-                            *resolved_cxx_runtime_providers,
-                        )
+                        provider_inputs.extend(resolved_cxx_runtime_providers)
                         external_native_fingerprint_inputs = (
                             *external_native_fingerprint_inputs,
                             *resolved_cxx_runtime_providers,
                         )
+                    wasm_link_requirements = merge_source_extension_link_requirements(
+                        (
+                            wasm_link_requirements,
+                            SourceExtensionLinkRequirements(
+                                wasm_link_target,
+                                tuple(
+                                    source_extension_link_file(path)
+                                    for path in provider_inputs
+                                ),
+                            ),
+                        ),
+                        target_triple=wasm_link_target,
+                    )
                 except (OSError, ValueError) as exc:
                     return None, _fail(
                         f"Failed to stage external native artifacts for WASM link: {exc}",
@@ -1104,10 +1073,20 @@ def _prepare_non_native_build_result(
                 str(wasm_facts_scanner),
             ]
             link_cmd.extend(["--app-export-contract", str(app_export_contract_path)])
-            for native_input in wasm_static_link_native_inputs:
-                link_cmd.extend(["--native-object", str(native_input)])
-            for native_link_argument in wasm_static_link_arguments:
-                link_cmd.extend(["--native-link-arg", native_link_argument])
+            native_link_plan_path = output_wasm.with_name(
+                f".{output_wasm.name}.native-link-plan.json"
+            )
+            _atomic_write_json(
+                native_link_plan_path,
+                {
+                    "link_requirements": wasm_link_requirements.manifest_payload(),
+                },
+            )
+            link_cmd.extend(["--native-link-plan", str(native_link_plan_path)])
+            external_native_fingerprint_inputs = (
+                *external_native_fingerprint_inputs,
+                native_link_plan_path,
+            )
             if _split_runtime:
                 if runtime_wasm is not None:
                     link_cmd.extend(["--deploy-runtime", str(runtime_wasm)])
@@ -1189,7 +1168,7 @@ def _prepare_non_native_build_result(
                 link_fingerprint,
                 stored_link_fingerprint,
             )
-            if link_skipped and wasm_static_link_native_inputs:
+            if link_skipped and wasm_link_requirements.inputs:
                 link_skipped = _is_reusable_static_native_link_artifact(
                     resolved_linked_output
                 )
@@ -1200,7 +1179,7 @@ def _prepare_non_native_build_result(
                 link_skipped = _is_reusable_split_runtime_artifacts(
                     app_wasm,
                     rt_wasm,
-                    static_native_inputs=bool(wasm_static_link_native_inputs),
+                    static_native_inputs=bool(wasm_link_requirements.inputs),
                     wasm_table_base=wasm_table_base,
                 )
             if link_skipped:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,11 @@ from molt.cli.source_extension_link_requirements import (
     render_source_extension_link_arguments,
     resolve_source_extension_link_arguments,
     source_extension_link_requirements,
+    merge_source_extension_link_requirements,
+    map_source_extension_link_inputs,
+    read_source_extension_link_plan,
+    source_extension_link_file,
+    validate_source_extension_link_input_files,
 )
 from molt.cli.source_extension_target import (
     SourceExtensionLinkDialect,
@@ -29,6 +35,71 @@ from molt.cli.source_extensions import _meson_static_library_projection
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def test_local_link_plan_preserves_order_loading_groups_and_repeated_inputs(tmp_path):
+    path = tmp_path / "library, with spaces.a"
+    path.write_bytes(b"archive")
+    lazy = source_extension_link_file(path)
+    eager = source_extension_link_file(
+        path, loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+    )
+    group = SourceExtensionLinkCyclicGroup((lazy, eager))
+    target = "x86_64-unknown-linux-gnu"
+    plan = merge_source_extension_link_requirements(
+        (
+            SourceExtensionLinkRequirements(target, (group,), ("root_b",)),
+            SourceExtensionLinkRequirements(target, (lazy,), ("root_a", "root_b")),
+        ),
+        target_triple=target,
+    )
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps({"link_requirements": plan.manifest_payload()}), encoding="utf-8"
+    )
+    loaded = read_source_extension_link_plan(plan_path, expected_target_triple=target)
+    assert loaded.items == (group, lazy)
+    assert loaded.retained_symbols == ("root_a", "root_b")
+    assert loaded.inputs == (lazy, eager, lazy)
+    validate_source_extension_link_input_files(loaded)
+    mapped = map_source_extension_link_inputs(
+        loaded,
+        lambda item: SourceExtensionLinkInput(
+            str(tmp_path / "snapshot.a"),
+            item.sha256,
+            item.loading,
+        ),
+    )
+    assert [item.loading for item in mapped.inputs] == [
+        lazy.loading,
+        eager.loading,
+        lazy.loading,
+    ]
+    path.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        validate_source_extension_link_input_files(loaded)
+    with pytest.raises(ValueError, match="must match target_triple"):
+        read_source_extension_link_plan(
+            plan_path, expected_target_triple="aarch64-unknown-linux-gnu"
+        )
+
+
+def test_local_link_plan_rejects_ambiguous_json_and_relative_inputs(tmp_path):
+    path = tmp_path / "plan.json"
+    path.write_text(
+        '{"link_requirements": {}, "link_requirements": {}}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        read_source_extension_link_plan(path, expected_target_triple="wasm32-wasip1")
+    requirements = SourceExtensionLinkRequirements(
+        "wasm32-wasip1", (SourceExtensionLinkInput("relative.a", "0" * 64),)
+    )
+    path.write_text(
+        json.dumps({"link_requirements": requirements.manifest_payload()}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="local link input must be absolute"):
+        read_source_extension_link_plan(path, expected_target_triple="wasm32-wasip1")
 
 
 @pytest.mark.parametrize(

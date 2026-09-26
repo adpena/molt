@@ -28,7 +28,6 @@ from molt.cli.compiler_target import (
     COMPILER_OWNED_OPTIONS,
 )
 from molt.cli.source_extension_target import (
-    SourceExtensionLinkDialect,
     source_extension_link_dialect,
     source_extension_target_is_wasm,
 )
@@ -1903,13 +1902,6 @@ def _validate_source_extension_build_plan_target(
                 )
     except ValueError as exc:
         errors.append(f"Source-plan linker custody: {exc}")
-    if dialect is SourceExtensionLinkDialect.ELF_GNU and any(
-        unit.force_include for unit in plan.compile_units
-    ):
-        errors.append(
-            "ELF forced source members require a final extension-artifact loading "
-            "policy; lazy archive publication cannot preserve whole-archive semantics"
-        )
     for unit in plan.compile_units:
         try:
             explicit = validate_compiler_target(

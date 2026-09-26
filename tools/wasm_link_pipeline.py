@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 import contextlib
 import json
 from pathlib import Path
@@ -14,6 +14,10 @@ from typing import Any, Literal
 
 from wasm_link_format import CallableTableLayout
 from molt.dx import proof_scratch_root
+from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkInput,
+    SourceExtensionLinkRequirements,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,8 +39,7 @@ def run_wasm_ld_with_custodied_inputs(
     split_runtime: bool = False,
     split_output_dir: Path | None = None,
     deploy_runtime_override: Path | None = None,
-    native_objects: Sequence[Path] = (),
-    native_link_arguments: Sequence[str] = (),
+    native_link_requirements: SourceExtensionLinkRequirements | None = None,
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
     wasm_facts_scanner: Path,
@@ -55,22 +58,21 @@ def run_wasm_ld_with_custodied_inputs(
     # The finally block records partial-failure timing even when lld rejects an
     # input before split processing begins.
     split_runtime_start = total_start
-    for native_object in native_objects:
-        if not native_object.exists():
-            print(f"Native WASM link input not found: {native_object}", file=sys.stderr)
-            return 1
+    expected_target = "wasm32-unknown-unknown" if freestanding else "wasm32-wasip1"
+    native_link_requirements = (
+        native_link_requirements or SourceExtensionLinkRequirements(expected_target)
+    )
     try:
-        native_objects = api["_resolve_native_link_inputs"](tuple(native_objects))
-        native_link_requirements = api["source_extension_link_requirements"](
-            native_link_arguments,
-            target_triple="wasm32-wasip1",
-        )
-        native_link_arguments = api["render_source_extension_link_arguments"](
-            native_link_requirements
-        )
-    except ValueError as exc:
+        if native_link_requirements.target_triple != expected_target:
+            raise ValueError(
+                "native WASM link requirements target mismatch: "
+                f"{native_link_requirements.target_triple} != {expected_target}"
+            )
+    except (OSError, ValueError) as exc:
         print(f"Wasm link failed: {exc}", file=sys.stderr)
         return 1
+    native_objects = tuple(Path(item.path) for item in native_link_requirements.inputs)
+    distinct_native_objects = tuple(dict.fromkeys(native_objects))
     runtime_exports: set[str]
     try:
         runtime_data = runtime.read_bytes()
@@ -188,7 +190,7 @@ def run_wasm_ld_with_custodied_inputs(
     required_native_direct_symbols = tuple(
         sorted(
             set(api["_required_native_direct_symbols"](output_data))
-            | set(api["_sealed_native_init_symbols"](native_objects))
+            | set(api["_sealed_native_init_symbols"](distinct_native_objects))
         )
     )
     try:
@@ -302,13 +304,29 @@ def run_wasm_ld_with_custodied_inputs(
         for name in preserved_output_exports
         if name in export_symbol_map
     ]
-    native_link_inputs, native_force_exports = api["_rewrite_native_runtime_imports"](
-        tuple(native_objects),
+    rewritten_native_paths, native_force_exports = api[
+        "_rewrite_native_runtime_imports"
+    ](
+        distinct_native_objects,
         runtime_exports,
         temp_dir,
         split_runtime=split_runtime,
     )
     force_exports.extend(native_force_exports)
+    rewritten_by_source = {
+        source: api["source_extension_link_file"](rewritten)
+        for source, rewritten in zip(
+            distinct_native_objects, rewritten_native_paths, strict=True
+        )
+    }
+    rewritten_requirements = api["map_source_extension_link_inputs"](
+        native_link_requirements,
+        lambda item: SourceExtensionLinkInput(
+            rewritten_by_source[Path(item.path)].path,
+            rewritten_by_source[Path(item.path)].sha256,
+            item.loading,
+        ),
+    )
     rewritten_path = api["_inject_call_indirect_alias"](
         rewritten_path, runtime, temp_dir
     )
@@ -321,11 +339,11 @@ def run_wasm_ld_with_custodied_inputs(
         return 1
     allowlist = api["_compose_wasm_ld_allowlist"](
         base_allowlist=base_allowlist,
-        native_objects=native_objects,
+        native_link_requirements=native_link_requirements,
         temp_dir=temp_dir,
     )
     linked_rewritten_path = rewritten_path
-    linked_native_inputs = native_link_inputs
+    linked_requirements = rewritten_requirements
     if split_runtime and native_objects:
         # The published linked artifact resolves Molt ABI imports in the normal
         # wasm-ld symbol namespace. The deployed split app keeps the same
@@ -342,7 +360,7 @@ def run_wasm_ld_with_custodied_inputs(
             return 1
         linked_rewritten_path, linked_force_exports = linked_rewrite
         force_exports.extend(linked_force_exports)
-        linked_native_inputs = tuple(native_objects)
+        linked_requirements = native_link_requirements
     staged_outputs: list[Path] = []
     work_linked = api["artifact_publish"].staged_output_path(linked)
     staged_outputs.append(work_linked)
@@ -450,8 +468,7 @@ def run_wasm_ld_with_custodied_inputs(
         str(linked_rewritten_path),
         str(link_runtime_path),
     ]
-    cmd.extend(str(native_object) for native_object in linked_native_inputs)
-    cmd.extend(native_link_arguments)
+    cmd.extend(api["render_source_extension_link_arguments"](linked_requirements))
 
     split_linked_app_path: Path | None = None
     split_app_cmd: list[str] | None = None
@@ -461,7 +478,7 @@ def run_wasm_ld_with_custodied_inputs(
     if split_runtime:
         assert deploy_runtime_path is not None
         deploy_runtime_data = deploy_runtime_path.read_bytes()
-        split_native_inputs = native_link_inputs
+        split_requirements = rewritten_requirements
         # Keep the active-data-segment alias: it defines each CPython-ABI data
         # symbol (Py_None/Py_False/PyExc_*/Py*_Type/...) so the split app link
         # resolves both a PIC extension's GOT references (numpy, via
@@ -480,7 +497,7 @@ def run_wasm_ld_with_custodied_inputs(
             try:
                 assert deploy_runtime_path is not None
                 data_alias_object = api["_split_runtime_data_alias_object"](
-                    native_objects=native_link_inputs,
+                    native_objects=rewritten_native_paths,
                     deploy_runtime=deploy_runtime_path,
                     temp_dir=temp_dir,
                     reloc_runtime=link_runtime_path,
@@ -492,10 +509,19 @@ def run_wasm_ld_with_custodied_inputs(
                 print(str(exc), file=sys.stderr)
                 return 1
             if data_alias_object is not None:
-                split_native_inputs = (*native_link_inputs, data_alias_object)
+                split_requirements = api["merge_source_extension_link_requirements"](
+                    (
+                        split_requirements,
+                        SourceExtensionLinkRequirements(
+                            expected_target,
+                            (api["source_extension_link_file"](data_alias_object),),
+                        ),
+                    ),
+                    target_triple=expected_target,
+                )
         split_native_allowlist = api["_compose_split_runtime_native_allowlist"](
             base_allowlist=base_allowlist,
-            native_objects=split_native_inputs,
+            native_link_requirements=split_requirements,
             split_runtime_exports=api["_collect_exports"](deploy_runtime_data),
             temp_dir=temp_dir,
         )
@@ -518,9 +544,7 @@ def run_wasm_ld_with_custodied_inputs(
             if part != "--export=molt_main" and not part.startswith("--table-base=")
         ]
         try:
-            split_app_link_args = api["_split_app_native_link_args"](
-                split_native_inputs
-            )
+            split_app_link_args = api["_split_app_native_link_args"](split_requirements)
         except ValueError as exc:
             print(f"WASM split app native link failed: {exc}", file=sys.stderr)
             return 1
@@ -533,7 +557,6 @@ def run_wasm_ld_with_custodied_inputs(
             str(split_linked_app_path),
             str(rewritten_path),
             *split_app_link_args,
-            *native_link_arguments,
         ]
         operation_counts["split_app_data_base_bytes"] = split_app_data_base
 
