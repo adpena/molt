@@ -36,7 +36,7 @@ print(
     all(
         module.__spec__.name == module.__name__
         and isinstance(module.__spec__, importlib.machinery.ModuleSpec)
-        for module in (builtins, sys, importlib)
+        for module in (builtins, sys, importlib, importlib.machinery)
     )
 )
 frame = sys._getframe()

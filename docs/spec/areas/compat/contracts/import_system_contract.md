@@ -74,17 +74,20 @@ Modules may be:
 Source initialization has one ordering across entry paths and targets: publish
 the module object, establish its lexical frame and captured builtin namespace,
 then construct loader metadata before publishing native providers or executing
-the source body. In particular, constructing `__spec__` through the canonical
-`importlib.machinery.ModuleSpec` must not trigger the first builtin-frame capture:
-that would recursively request metadata from an unfinished machinery module.
+the source body. Generated `__spec__` construction obtains the canonical class
+directly from the runtime, never through an attribute of the machinery facade:
+machinery's dependencies need specs before its source body publishes that class.
+Imported modules, including machinery itself and modules compiled without the
+facade, use the same class; script entry points retain `__spec__ = None`.
 Explicit and inherited builtin namespaces remain authoritative; initialization
 does not re-import `builtins` unconditionally or refill a mutated namespace.
 Generated annotation callables and module chunks run after this bootstrap.
 
-The machinery facade and bootstrap-free extension initialization share one
-runtime-owned `ModuleSpec` class and its initializer. Its current Python facade
-contract remains partial: the constructor accepts positional `origin` and
-`is_package`, coerces the name to `str`, and treats `cached`, `loader_state` and
+Generated module metadata, the machinery facade and bootstrap-free extension
+initialization share one runtime-owned `ModuleSpec` class and its initializer.
+Its current Python facade contract remains partial: the constructor accepts
+positional `origin` and `is_package`, coerces the name to `str`, and treats
+`cached`, `loader_state` and
 `has_location` as mutable fields. This authority consolidation does not claim
 complete CPython `ModuleSpec` signature, property or equality conformance.
 
