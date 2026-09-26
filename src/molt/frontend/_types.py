@@ -367,6 +367,8 @@ class BuiltinFuncSpec:
     pos_or_kw_params: tuple[str, ...] = ()
     kwonly_params: tuple[str, ...] = ()
     kw_defaults: tuple[ast.expr | None, ...] = ()
+    module: str = "builtins"
+    bind_kind: int | None = None
 
 
 @dataclass(frozen=True)
@@ -695,6 +697,8 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
             "closefd",
             "opener",
         ),
+        module="_io",
+        bind_kind=MOLT_BIND_KIND_OPEN,
     ),
     "next": BuiltinFuncSpec(
         "molt_next_builtin", ("iterator", "default"), (_MOLT_MISSING,)

@@ -1947,7 +1947,6 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
         sys.path.insert(0, str(src_root))
     from molt.frontend._types import (  # noqa: PLC0415
         BUILTIN_FUNC_SPECS,
-        MOLT_BIND_KIND_OPEN,
         _builtin_func_abi_arity,
     )
 
@@ -1979,6 +1978,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
             {
                 "index": len(entries),
                 "python_name": python_name,
+                "python_module": spec.module,
                 "runtime_name": spec.runtime,
                 "arity": arity,
                 "posonly_params": list(spec.params),
@@ -1992,7 +1992,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
                     for name, expr in zip(spec.kwonly_params, spec.kw_defaults)
                     if expr is not None
                 ],
-                "bind_kind": MOLT_BIND_KIND_OPEN if python_name == "open" else None,
+                "bind_kind": spec.bind_kind,
             }
         )
     return entries
@@ -2127,6 +2127,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "pub(crate) struct PythonBuiltinFunctionInfo {\n",
             "    pub(crate) index: usize,\n",
             "    pub(crate) python_name: &'static str,\n",
+            "    pub(crate) python_module: &'static str,\n",
             "    pub(crate) runtime_name: &'static str,\n",
             "    pub(crate) arity: u64,\n",
             "    pub(crate) posonly_params: &'static [&'static str],\n",
@@ -2291,6 +2292,7 @@ def render_runtime_callables_rs(data: dict) -> str:
                 "        PythonBuiltinFunctionInfo {\n",
                 f"            index: {entry['index']},\n",
                 f'            python_name: "{entry["python_name"]}",\n',
+                f"            python_module: {_rust_str_lit(entry['python_module'])},\n",
                 f'            runtime_name: "{entry["runtime_name"]}",\n',
                 f"            arity: {entry['arity']},\n",
                 f"            posonly_params: {_rust_str_slice(entry['posonly_params'])},\n",

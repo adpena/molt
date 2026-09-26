@@ -1524,6 +1524,18 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_returns_void(fn_ptr)" in call_function
 
 
+def test_python_builtin_module_metadata_matches_cpython() -> None:
+    import builtins
+
+    gen = _load_gen_wasm_abi()
+    entries = gen._python_builtin_global_callables(gen.load_manifest())
+    assert entries
+    for entry in entries:
+        assert (
+            entry["python_module"] == getattr(builtins, entry["python_name"]).__module__
+        ), entry["python_name"]
+
+
 def test_wasm_runtime_callable_resolver_is_app_local_in_production() -> None:
     registry = (ROOT / "runtime/molt-runtime/src/intrinsics/registry.rs").read_text(
         encoding="utf-8"

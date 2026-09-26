@@ -163,6 +163,11 @@ when allocation fails or the task was constructed inside a non-entry block.
 
 When a compiled builtins body is admitted, its canonical module transaction
 publishes the builtins namespace before a user frame captures its default.
+Builtin callable metadata (including defining module and binding policy) comes
+from `BuiltinFuncSpec` for both frontend materialization and generated runtime
+publication. The Python facade must not reacquire optional providers merely to
+patch their metadata: a pure profile can omit filesystem callables without
+making builtin namespace initialization itself require filesystem support.
 Global reads preserve subclass/custom mapping `__getitem__` and treat only
 `KeyError` as a miss. Global stores/deletes and function metadata capture use
 the underlying dictionary protocol, not user `__setitem__`/`__delitem__` hooks.
