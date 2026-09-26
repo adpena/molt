@@ -7,6 +7,10 @@ import pytest
 
 from molt.cli import external_link_providers as providers
 from molt.cli import native_symbol_inspection
+from tests.cli.native_link_test_support import (
+    single_member_archive_symbol_facts,
+    static_archive_bytes,
+)
 
 
 def test_archive_symbol_facts_use_central_cache_without_toolchain_sidecar(
@@ -15,17 +19,20 @@ def test_archive_symbol_facts_use_central_cache_without_toolchain_sidecar(
 ) -> None:
     archive = tmp_path / "toolchain" / "libc.a"
     archive.parent.mkdir()
-    archive.write_bytes(b"!<arch>\n")
+    archive.write_bytes(static_archive_bytes())
     cache_root = tmp_path / "cache"
     reads = 0
 
-    def read_symbols(*_args, **_kwargs):
+    def read_symbols(*_args, archive_members, **_kwargs):
         nonlocal reads
         reads += 1
-        return native_symbol_inspection._NativeGlobalSymbolFacts(
-            defined=frozenset({"exit"}),
-            undefined=frozenset({"fd_write"}),
-            defined_functions=frozenset({"exit"}),
+        return single_member_archive_symbol_facts(
+            archive_members,
+            native_symbol_inspection._NativeGlobalSymbolFacts(
+                defined=frozenset({"exit"}),
+                undefined=frozenset({"fd_write"}),
+                defined_functions=frozenset({"exit"}),
+            ),
         )
 
     monkeypatch.setattr(
@@ -194,7 +201,7 @@ def test_outer_provider_cache_rechecks_generation_before_return(
     tmp_path, monkeypatch, query
 ):
     archive = tmp_path / "libc.a"
-    archive.write_bytes(b"original")
+    archive.write_bytes(static_archive_bytes(b"original"))
     monkeypatch.setattr(
         providers,
         "_resolved_provider_archives",
@@ -207,14 +214,51 @@ def test_outer_provider_cache_rechecks_generation_before_return(
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_read_native_global_symbol_facts",
-        lambda *args, **kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
-            defined=frozenset({"exit"}),
-            undefined=frozenset(),
-            defined_functions=frozenset({"exit"}),
+
+    reader_path = tmp_path / "llvm-nm"
+    reader_path.write_bytes(b"test reader")
+    reader_identity = native_symbol_inspection.stable_regular_file_identity(
+        reader_path, label="test llvm-nm"
+    )
+    requirement = native_symbol_inspection.NativeSymbolRequirement()
+    reader = native_symbol_inspection._NativeSymbolReader(
+        candidates=(
+            native_symbol_inspection._NativeSymbolReaderCandidate(
+                (str(reader_path),), executable_identity=reader_identity
+            ),
         ),
+        input_identity=(
+            "outer-provider-cache-test-reader",
+            str(reader_path),
+            reader_identity.sha256,
+            requirement.cache_identity(),
+        ),
+        requirement=requirement,
+    )
+
+    def symbol_reader(*, nm_command, target_triple, requirement):
+        assert nm_command is None
+        assert target_triple == "wasm32-wasip1"
+        assert requirement == reader.requirement
+        return reader
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "_native_symbol_reader", symbol_reader
+    )
+
+    def read_symbols(*_args, archive_members, _reader, **_kwargs):
+        assert _reader is reader
+        return single_member_archive_symbol_facts(
+            archive_members,
+            native_symbol_inspection._NativeGlobalSymbolFacts(
+                defined=frozenset({"exit"}),
+                undefined=frozenset(),
+                defined_functions=frozenset({"exit"}),
+            ),
+        )
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "_read_native_global_symbol_facts", read_symbols
     )
     for cached in (
         providers._provider_surfaces_from_key,
@@ -228,7 +272,7 @@ def test_outer_provider_cache_rechecks_generation_before_return(
     def replace_after_key(target):
         key = original(target)
         stamp = archive.stat()
-        archive.write_bytes(b"replaced")
+        archive.write_bytes(static_archive_bytes(b"replaced"))
         os.utime(archive, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         return key
 

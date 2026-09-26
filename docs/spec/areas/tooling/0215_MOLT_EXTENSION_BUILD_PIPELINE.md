@@ -67,7 +67,7 @@ Outputs:
   declares `runtime_linkage = "static_link"`, `artifact_kind = "static_archive"`,
   the exact target triple, object closure, and explicit link requirements.
 
-Native symbol evidence has one typed reader in `cli/backend_cache.py`, shared
+Native symbol evidence has one typed reader in `cli/native_symbol_inspection.py`, shared
 by application caches, shared-stdlib closure, extension object inspection, and
 external providers. Missing tools, failed reads, malformed output, and partial
 archive inspection are errors, never empty symbol tables or reusable negative
@@ -220,6 +220,16 @@ One shared parsing-protocol identity also binds both cache forms. GNU/BSD
 against the exact input before parsing delimiters, including Windows drive paths.
 Successful archives may contain empty members; unknown diagnostics, malformed
 members and nonzero partial symbol output never become complete symbol evidence.
+Archive facts retain every non-index member in stored order, including empty
+members and duplicate names. Each symbol table binds to the shared archive
+parser's ordinal, byte offset, size and content hash; reader headers must match
+that sequence. Strong and weak undefined references and weak definitions remain
+distinct. Object sidecars and central toolchain caches use one fact codec, and
+archive-wide sets are projections of member facts, not separately stored claims.
+Shared-stdlib validation tokens bind that same parsing-protocol generation.
+Those aggregate sets do **not** establish lazy member extraction, linker order,
+or external-provider resolution. The lazy source/external dependency gate remains
+closed until the selected provider and final-link topology are represented.
 
 Candidate journals survive bundle installation and are completed or recovered
 under the candidate-name lock. Shared publication recovery handles both producer

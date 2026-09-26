@@ -6,9 +6,11 @@ from typing import Sequence
 from molt.cli.native_symbol_inspection import (
     NativeSymbolInspectionError,
     NativeSymbolRequirement,
+    _NativeArchiveMemberSymbolFacts,
     _NativeGlobalSymbolFacts,
     _NativeSymbolReader,
 )
+from molt.cli.static_archive_identity import StaticArchiveMemberIdentity
 
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
@@ -41,6 +43,22 @@ def static_archive_bytes(payload: bytes = b"object") -> bytes:
         )
     )
     return b"!<arch>\n" + header + payload + (b"\n" if len(payload) & 1 else b"")
+
+
+def single_member_archive_symbol_facts(
+    archive_members: tuple[StaticArchiveMemberIdentity, ...],
+    object_facts: _NativeGlobalSymbolFacts,
+) -> _NativeGlobalSymbolFacts:
+    if len(archive_members) != 1:
+        raise ValueError("synthetic archive must contain exactly one member")
+    if object_facts.members is not None:
+        raise ValueError("synthetic archive member facts must describe an object")
+    return _NativeGlobalSymbolFacts(
+        defined=frozenset(),
+        undefined=frozenset(),
+        defined_functions=frozenset(),
+        members=(_NativeArchiveMemberSymbolFacts(archive_members[0], object_facts),),
+    )
 
 
 class NativeArchiveFixtureCatalog:
@@ -84,6 +102,7 @@ class NativeArchiveFixtureCatalog:
         target_triple: str | None = None,
         _reader: _NativeSymbolReader | None = None,
         requirement: NativeSymbolRequirement | None = None,
+        archive_members: tuple[StaticArchiveMemberIdentity, ...] | None = None,
     ) -> _NativeGlobalSymbolFacts:
         del timeout, nm_command, target_triple
         descriptor = self._descriptors.get(path.read_bytes())
@@ -91,11 +110,16 @@ class NativeArchiveFixtureCatalog:
             raise NativeSymbolInspectionError(
                 path, ["unregistered synthetic native artifact bytes"]
             )
-        facts = _NativeGlobalSymbolFacts(
+        if archive_members is None:
+            raise NativeSymbolInspectionError(
+                path, ["synthetic native archive was read without member identities"]
+            )
+        object_facts = _NativeGlobalSymbolFacts(
             defined=frozenset(descriptor.defined),
             undefined=frozenset(),
             defined_functions=frozenset(descriptor.functions),
         )
+        facts = single_member_archive_symbol_facts(archive_members, object_facts)
         selected = requirement or (
             _reader.requirement if _reader is not None else NativeSymbolRequirement()
         )

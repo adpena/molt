@@ -12,6 +12,10 @@ from molt.cli import source_extension_toolchain
 from molt import llvm_toolchain
 from molt.toolchain_identity import resolve_explicit_tool_command
 from molt.llvm_linker_roles import LlvmLinkerRole, executable_selects_linker_role
+from tests.cli.native_link_test_support import (
+    single_member_archive_symbol_facts,
+    static_archive_bytes,
+)
 import pytest
 
 
@@ -1252,9 +1256,10 @@ def test_wasm_archive_cache_identity_includes_verified_reader_attestation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     native_symbol_inspection._cached_wasm_llvm_nm_verification.cache_clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
     monkeypatch.delenv("MOLT_LLVM_NM", raising=False)
     artifact = tmp_path / "libc.a"
-    artifact.write_bytes(b"archive")
+    artifact.write_bytes(static_archive_bytes())
     verified_nm = tmp_path / "llvm" / "bin" / "llvm-nm"
     verified_nm.parent.mkdir(parents=True)
     verified_nm.write_bytes(b"tool")
@@ -1276,12 +1281,17 @@ def test_wasm_archive_cache_identity_includes_verified_reader_attestation(
         )
 
     monkeypatch.setattr(native_symbol_inspection, "verify_wasm_llvm_nm", verify)
+
+    def read_symbols(*_args, archive_members, **_kwargs):
+        return single_member_archive_symbol_facts(
+            archive_members,
+            native_symbol_inspection._NativeGlobalSymbolFacts(
+                frozenset({"provider"}), frozenset(), frozenset({"provider"})
+            ),
+        )
+
     monkeypatch.setattr(
-        native_symbol_inspection,
-        "_read_native_global_symbol_facts",
-        lambda *_args, **_kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
-            frozenset({"provider"}), frozenset(), frozenset({"provider"})
-        ),
+        native_symbol_inspection, "_read_native_global_symbol_facts", read_symbols
     )
 
     native_symbol_inspection._native_archive_global_symbol_facts(
