@@ -22,7 +22,14 @@ print(
 print(
     all(
         not hasattr(builtins, name)
-        for name in ("NoneType", "list_iterator", "GenericAlias")
+        for name in (
+            "NoneType",
+            "list_iterator",
+            "GenericAlias",
+            "_molt_asyncgen_hooks_get",
+            "_molt_getargv",
+            "_molt_class_new",
+        )
     )
 )
 print(hasattr(builtins, "PythonFinalizationError") == (sys.version_info >= (3, 13)))

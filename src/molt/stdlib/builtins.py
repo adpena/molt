@@ -24,76 +24,6 @@ if False:  # TYPE_CHECKING
 # This facade only supplies Python-defined wrappers and public API metadata.
 import sys as _sys
 
-if False:  # TYPE_CHECKING
-    from typing import Callable, Optional  # noqa: F401
-
-    _molt_getargv: Callable[[], list[str]]
-    _molt_getframe: Callable[[object], object]
-    _molt_trace_enter_slot: Callable[[int], object]
-    _molt_trace_exit: Callable[[], object]
-    _molt_getrecursionlimit: Callable[[], int]
-    _molt_setrecursionlimit: Callable[[int], None]
-    _molt_sys_version: Callable[[], str]
-    _molt_sys_stdin: Callable[[], object]
-    _molt_sys_stdout: Callable[[], object]
-    _molt_sys_stderr: Callable[[], object]
-    _molt_sys_executable: Callable[[], str]
-    _molt_exception_last: Callable[[], Optional[BaseException]]
-    _molt_exception_last_pending: Callable[[], Optional[BaseException]]
-    _molt_exception_active: Callable[[], Optional[BaseException]]
-    _molt_asyncgen_hooks_get: Callable[[], object]
-    _molt_asyncgen_hooks_set: Callable[[object, object], object]
-    _molt_asyncgen_locals: Callable[[object], object]
-    _molt_gen_locals: Callable[[object], object]
-    _molt_code_new: Callable[
-        [object, object, object, object, object, object, object, object, object], object
-    ]
-    molt_compile_builtin: Callable[[object, object, object, int, bool, int], object]
-    _molt_module_new: Callable[[object], object]
-    _molt_function_set_builtin: Callable[[object], object]
-    _molt_class_new: Callable[[object], object]
-    _molt_class_set_base: Callable[[object, object], object]
-    _molt_class_apply_set_name: Callable[[object], object]
-    _molt_sys_platform: Callable[[], str]
-    _molt_getpid: Callable[[], int]
-    _molt_getcwd: Callable[[], str]
-    _molt_io_wait_new: Callable[[object, int, object], object]
-    _molt_ws_wait_new: Callable[[object, int, object], object]
-    molt_block_on: Callable[[object], object]
-    molt_asyncgen_shutdown: Callable[[], object]
-    molt_db_query_obj: Callable[[object, object], object]
-    molt_db_exec_obj: Callable[[object, object], object]
-    molt_msgpack_parse_scalar_obj: Callable[[object], object]
-    molt_weakref_register: Callable[[object, object, object], None]
-    molt_weakref_get: Callable[[object], object]
-    molt_thread_spawn: Callable[[object], object]
-    molt_thread_join: Callable[[object, object], object]
-    molt_thread_is_alive: Callable[[object], object]
-    molt_thread_ident: Callable[[object], object]
-    molt_thread_native_id: Callable[[object], object]
-    molt_thread_current_ident: Callable[[], object]
-    molt_thread_current_native_id: Callable[[], object]
-    molt_thread_drop: Callable[[object], object]
-    molt_chan_new: Callable[[object], object]
-    molt_chan_send: Callable[[object, object], object]
-    molt_chan_recv: Callable[[object], object]
-    molt_chan_try_send: Callable[[object, object], object]
-    molt_chan_try_recv: Callable[[object], object]
-    molt_chan_send_blocking: Callable[[object, object], object]
-    molt_chan_recv_blocking: Callable[[object], object]
-    molt_chan_drop: Callable[[object], object]
-    molt_lock_new: Callable[[], object]
-    molt_lock_acquire: Callable[[object, object, object], object]
-    molt_lock_release: Callable[[object], object]
-    molt_lock_locked: Callable[[object], object]
-    molt_lock_drop: Callable[[object], object]
-    molt_rlock_new: Callable[[], object]
-    molt_rlock_acquire: Callable[[object, object, object], object]
-    molt_rlock_release: Callable[[object], object]
-    molt_rlock_locked: Callable[[object], object]
-    molt_rlock_drop: Callable[[object], object]
-
-
 def compile(
     source: object,
     filename: object,
@@ -316,23 +246,6 @@ exit = _sitebuiltins.exit
 # Project the public list from that namespace instead of repeating its gates.
 __all__ = [name for name in __all__ if name in _NS]
 
-_molt_getargv = _require_intrinsic("molt_getargv", _NS)
-_molt_getframe = _require_intrinsic("molt_getframe", _NS)
-_molt_trace_enter_slot = _require_intrinsic("molt_trace_enter_slot", _NS)
-_molt_trace_exit = _require_intrinsic("molt_trace_exit", _NS)
-_molt_getrecursionlimit = _require_intrinsic("molt_getrecursionlimit", _NS)
-_molt_setrecursionlimit = _require_intrinsic("molt_setrecursionlimit", _NS)
-_molt_sys_version = _require_intrinsic("molt_sys_version", _NS)
-_molt_sys_stdin = _require_intrinsic("molt_sys_stdin", _NS)
-_molt_sys_stdout = _require_intrinsic("molt_sys_stdout", _NS)
-_molt_sys_stderr = _require_intrinsic("molt_sys_stderr", _NS)
-_molt_exception_last = _require_intrinsic("molt_exception_last", _NS)
-_molt_exception_last_pending = _require_intrinsic("molt_exception_last_pending", _NS)
-_molt_exception_active = _require_intrinsic("molt_exception_active", _NS)
-_molt_asyncgen_hooks_get = _require_intrinsic("molt_asyncgen_hooks_get", _NS)
-_molt_asyncgen_hooks_set = _require_intrinsic("molt_asyncgen_hooks_set", _NS)
-_molt_asyncgen_locals = _require_intrinsic("molt_asyncgen_locals", _NS)
-_molt_module_new = _require_intrinsic("molt_module_new", _NS)
 _molt_function_set_builtin = _require_intrinsic("molt_function_set_builtin", _NS)
 _molt_function_set_builtin(compile)
 _molt_function_set_builtin(input)
@@ -362,9 +275,3 @@ except Exception as _exc:  # noqa: BLE001
     raise RuntimeError(
         "builtins.compile/input/pow missing __text_signature__ support for inspect.signature parity"
     ) from _exc
-_molt_class_new = _require_intrinsic("molt_class_new", _NS)
-_molt_class_set_base = _require_intrinsic("molt_class_set_base", _NS)
-_molt_class_apply_set_name = _require_intrinsic("molt_class_apply_set_name", _NS)
-_molt_sys_platform = _require_intrinsic("molt_sys_platform", _NS)
-_molt_getpid = _require_intrinsic("molt_getpid", _NS)
-_molt_getcwd = _require_intrinsic("molt_getcwd", _NS)

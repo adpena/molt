@@ -26,8 +26,8 @@ def test_runtime_seeded_builtins_keeps_real_intrinsic_policy_evidence(
         "molt_input_builtin",
         "molt_pow",
         "molt_pow_mod",
-        "molt_getframe",
-    } <= stdlib_intrinsic_policy.module_required_intrinsic_names(path)
+        "molt_function_set_builtin",
+    } == stdlib_intrinsic_policy.module_required_intrinsic_names(path)
     target = _parse_target_python_version(version)
     if sys.version_info[:2] < target.feature_version:
         # Version support is a real frontend capability, not a policy bypass.
