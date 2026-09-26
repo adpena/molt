@@ -2964,6 +2964,14 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
         static_library_suffix=static_library_suffix,
         nested_linker=nested_linker,
     )
+    # This fixture supplies a synthetic Ninja archive graph, not a runnable
+    # generator. Model its non-Cython generated-C recipe at the process boundary;
+    # source folding, object closure and archive membership remain real.
+    monkeypatch.setattr(
+        cli_commands._source_extension_cython,
+        "_query_ninja_generator_commands",
+        lambda **_kwargs: ("python generate_sources.py", None),
+    )
     commands: list[list[str]] = []
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -7460,7 +7468,20 @@ def test_meson_fold_retained_symbol_is_forwarded_not_erased(
         build_root=tmp_path,
     )
     assert [target["id"] for target in projection.targets] == ["local.library"]
-    assert projection.link_args == (directive,)
+    assert projection.producer_link_args == (directive, "local/libsame.a")
+    from molt.cli.source_extension_link_requirements import (
+        source_extension_link_requirements,
+    )
+
+    requirements = source_extension_link_requirements(
+        projection.link_args,
+        target_triple=(
+            "x86_64-pc-windows-msvc"
+            if directive.startswith("/")
+            else "x86_64-unknown-linux-gnu"
+        ),
+    )
+    assert requirements.retained_symbols == ("registration",)
 
 
 @pytest.mark.parametrize("force_folded", [False, True])

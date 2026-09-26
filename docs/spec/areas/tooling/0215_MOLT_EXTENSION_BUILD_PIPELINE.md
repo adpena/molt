@@ -464,6 +464,24 @@ bare system providers, and explicitly admitted semantic options. Output modes,
 tool selection, search/sysroot paths, response files, secondary outputs, and
 unsealed scripts are not representable.
 
+Captured upstream image commands are not final-link requirements. The shared
+`source_extension_link_arguments` grammar separates their output destinations,
+shared-image mode, diagnostics and image optimization controls from dependencies.
+Meson projection consumes only that closed, target-dialect-checked policy class;
+Molt owns its static artifact and the consuming executable's link profile. The
+complete original `producer_link_args` remains in the source-plan digest and
+receipt, including consumed controls. Publication validation indexes the sealed
+Meson targets once using the live planner's selector authority, then requires
+the receipt's target identity and ordered producer arguments to match that
+checksummed target exactly. Rehashing an incomplete or reordered receipt cannot
+replace the producer record. Explicit `extra_link_args` cannot use this
+projection to take output authority. Unknown options, search paths, response
+files, export scripts and ABI selectors are never silently dropped. Explicit
+retention overrides (`/OPT:NOREF`, `--no-gc-sections`) and folding controls
+remain unrepresentable until a typed closure/loading policy can preserve them.
+Driver `-Wl,` lists and paired `-Xlinker` operands use the same grammar for projection
+and dependency admission; literal comma-bearing paths require `-Xlinker`.
+
 Meson source folding uses one ordered linker-operand projection and only
 metadata-declared static-library outputs. Exact output paths outrank basename
 fallback; ambiguous basenames fail instead of selecting multiple targets.
