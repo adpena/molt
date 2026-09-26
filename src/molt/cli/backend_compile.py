@@ -76,11 +76,9 @@ from molt.cli.runtime_callable_symbols import (
 from molt.cli.runtime_native_build import _maybe_start_native_runtime_lib_ready_async
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
 from molt.target_python import TargetPythonVersion
-from molt.wasm_artifact import (
-    _read_wasm_data_end,
-    _read_wasm_memory_min_bytes,
-    _read_wasm_table_min,
-    read_wasm_split_runtime_callable_layout,
+from molt.cli.wasm_codegen_layout import (
+    WasmCodegenLayout,
+    prepare_wasm_codegen_layout,
 )
 
 _BACKEND_COMPILER_FINGERPRINT_ENV = "MOLT_BACKEND_COMPILER_FINGERPRINT"
@@ -397,12 +395,9 @@ def _prepare_backend_dispatch(
     is_rust_transpile: bool,
     is_luau_transpile: bool = False,
     is_wasm: bool,
-    split_runtime: bool = False,
-    linked: bool,
+    wasm_layout: WasmCodegenLayout | None,
     deterministic: bool,
     profile: BuildProfile,
-    runtime_state: _RuntimeArtifactState,
-    runtime_cargo_profile: str,
     cargo_timeout: float | None,
     molt_root: Path,
     target_triple: str | None,
@@ -411,9 +406,6 @@ def _prepare_backend_dispatch(
     phase_starts: dict[str, float],
     json_output: bool,
     backend_daemon_config_digest: str | None,
-    ensure_runtime_wasm_both: Callable[[set[str] | frozenset[str] | None], bool],
-    resolved_modules: set[str] | frozenset[str] | None,
-    ir: Mapping[str, Any],
     warnings: list[str],
     backend_bin: Path | None = None,
     backend_compiler_fingerprint: str | None = None,
@@ -423,9 +415,17 @@ def _prepare_backend_dispatch(
         os.environ, backend_compiler_fingerprint
     )
     if is_wasm:
+        if wasm_layout is None:
+            return None, _fail(
+                "WASM backend dispatch requires a bound runtime layout",
+                json_output,
+                command="build",
+            )
         backend_env.pop("MOLT_WASM_DATA_BASE", None)
         backend_env.pop("MOLT_WASM_TABLE_BASE", None)
         backend_env.pop("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", None)
+        backend_env.pop("MOLT_WASM_LINK", None)
+        backend_env.update(wasm_layout.backend_environment())
     # Single source of truth (shared with the cache-key binary-identity
     # resolver): the 'llvm' feature is folded in by the helper when
     # MOLT_BACKEND == "llvm" so the backend binary is compiled with inkwell/LLVM
@@ -441,142 +441,7 @@ def _prepare_backend_dispatch(
     # builds.  speed_and_size balances code quality with binary density.
     if profile in ("release-size", "wasm-release"):
         backend_env.setdefault("MOLT_BACKEND_OPT_LEVEL", "speed_and_size")
-    reloc_requested = is_wasm and (linked or backend_env.get("MOLT_WASM_LINK") == "1")
-    runtime_wasm = runtime_state.runtime_wasm_selected
-    runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
-    if is_wasm and backend_env is not None:
-        layout_probe_path: Path | None = None
-        if split_runtime:
-            # The executable shared runtime is the only authority for the
-            # memory/table/callable layout consumed by a split app.  Close the
-            # native-extension export plan before backend code generation and
-            # ensure BOTH crate types in one Cargo invocation; checking only
-            # for file existence here admitted a fingerprint-stale shared
-            # runtime and the old reloc-first path forced a second full runtime
-            # compile after final app imports became known.
-            if not ensure_runtime_wasm_both(None):
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
-            runtime_wasm = runtime_state.runtime_wasm_selected
-            runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
-            if runtime_wasm is not None and runtime_wasm.is_file():
-                layout_probe_path = runtime_wasm
-        elif reloc_requested and linked:
-            if not ensure_runtime_wasm_both(None):
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
-            runtime_wasm = runtime_state.runtime_wasm_selected
-            runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
-            if runtime_reloc_wasm is not None and runtime_reloc_wasm.is_file():
-                layout_probe_path = runtime_reloc_wasm
-        if "MOLT_WASM_DATA_BASE" not in backend_env:
-            if layout_probe_path is None and not split_runtime:
-                if not ensure_runtime_wasm_both(None):
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-                runtime_wasm = runtime_state.runtime_wasm_selected
-                runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
-                if runtime_wasm is not None and runtime_wasm.is_file():
-                    layout_probe_path = runtime_wasm
-        if (
-            "MOLT_WASM_DATA_BASE" not in backend_env
-            and layout_probe_path is not None
-            and layout_probe_path.exists()
-        ):
-            data_base_candidates: list[int] = []
-            data_end = _read_wasm_data_end(layout_probe_path)
-            if data_end is not None:
-                data_base_candidates.append((data_end + 7) & ~7)
-            memory_min = _read_wasm_memory_min_bytes(layout_probe_path)
-            if memory_min is not None:
-                data_base_candidates.append((memory_min + 7) & ~7)
-            if data_base_candidates:
-                # Place output data well above the runtime's heap growth
-                # region.  In the non-linked (split-runtime) path both
-                # modules share linear memory: the runtime's dlmalloc heap
-                # starts at __heap_base (near data_end) and grows upward.
-                # If the heap reaches the output module's data segments the
-                # allocator will hand out pointers inside the data region
-                # and subsequent writes corrupt string constants and other
-                # read-only data — manifesting as null-byte function
-                # metadata on large modules (see MOL-heap-corruption).
-                #
-                # 64 MB gives ample room; the previous 16 MB was too tight
-                # for apps with 1000+ functions where module-init alone can
-                # allocate tens of MB of runtime objects.
-                _HEAP_SAFETY_MARGIN = 64 * 1024 * 1024  # 64 MB
-                raw_base = max(data_base_candidates)
-                safe_base = (raw_base + _HEAP_SAFETY_MARGIN + 7) & ~7
-                backend_env["MOLT_WASM_DATA_BASE"] = str(safe_base)
-            else:
-                warnings.append(
-                    "Failed to read runtime memory layout; using default data base."
-                )
-        if linked and not split_runtime and runtime_wasm is None:
-            if not ensure_runtime_wasm_both(None):
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
-            runtime_wasm = runtime_state.runtime_wasm_selected
-            runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
-        if not split_runtime and "MOLT_WASM_TABLE_BASE" not in backend_env:
-            table_probe_path = layout_probe_path or runtime_wasm
-            if table_probe_path is not None and table_probe_path.exists():
-                table_base = _read_wasm_table_min(table_probe_path)
-                if table_base is not None:
-                    backend_env["MOLT_WASM_TABLE_BASE"] = str(table_base)
-                else:
-                    warnings.append(
-                        "Failed to read runtime table size; using default table base."
-                    )
-        if not split_runtime and runtime_wasm is not None and runtime_wasm.is_file():
-            runtime_table_min = _read_wasm_table_min(runtime_wasm)
-            if runtime_table_min is not None:
-                raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
-                try:
-                    current_table_base = (
-                        int(raw_table_base) if raw_table_base is not None else None
-                    )
-                except ValueError:
-                    current_table_base = None
-                if current_table_base is None or current_table_base < runtime_table_min:
-                    backend_env["MOLT_WASM_TABLE_BASE"] = str(runtime_table_min)
-        if split_runtime:
-            if runtime_wasm is None or not runtime_wasm.is_file():
-                return None, _fail(
-                    "Split-runtime layout requires the current executable shared runtime",
-                    json_output,
-                    command="build",
-                )
-            try:
-                split_callable_layout = read_wasm_split_runtime_callable_layout(
-                    runtime_wasm
-                )
-            except ValueError as exc:
-                return None, _fail(
-                    f"Invalid split-runtime callable layout: {exc}",
-                    json_output,
-                    command="build",
-                )
-            backend_env["MOLT_WASM_TABLE_BASE"] = str(
-                split_callable_layout.runtime_callable_base
-            )
-            backend_env["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] = str(
-                split_callable_layout.runtime_table_min
-            )
-    if reloc_requested and backend_env is not None:
-        backend_env["MOLT_WASM_LINK"] = "1"
+    reloc_requested = is_wasm and wasm_layout is not None and wasm_layout.relocatable
 
     if backend_bin is None:
         backend_bin = _backend_bin_path(
@@ -1148,7 +1013,6 @@ def _prepare_backend_compile(
     deterministic: bool,
     profile: BuildProfile,
     runtime_state: _RuntimeArtifactState,
-    runtime_cargo_profile: str,
     cargo_timeout: float | None,
     molt_root: Path,
     target_triple: str | None,
@@ -1156,8 +1020,6 @@ def _prepare_backend_compile(
     backend_timeout: float | None,
     backend_daemon_config_digest: str | None,
     entry_module: str,
-    resolved_modules: frozenset[str],
-    ensure_runtime_wasm_both: Callable[[set[str] | frozenset[str] | None], bool],
     artifacts_root: Path,
     ir: Mapping[str, Any],
     _ensure_backend_ir_file_path: Callable[[], Path],
@@ -1170,7 +1032,16 @@ def _prepare_backend_compile(
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     cache_enabled = cache_setup.cache_enabled
-    wasm_table_base: int | None = None
+    wasm_layout = None
+    if is_wasm:
+        try:
+            wasm_layout = prepare_wasm_codegen_layout(
+                runtime_state.runtime_wasm_codegen_binding,
+                linked=linked,
+                split_runtime=split_runtime,
+            )
+        except (OSError, ValueError) as exc:
+            return None, _fail(str(exc), json_output, command="build")
 
     if (verbose or cache_report) and not json_output:
         if not cache_enabled:
@@ -1222,12 +1093,9 @@ def _prepare_backend_compile(
                     is_rust_transpile=is_rust_transpile,
                     is_luau_transpile=is_luau_transpile,
                     is_wasm=is_wasm,
-                    split_runtime=split_runtime,
-                    linked=linked,
+                    wasm_layout=wasm_layout,
                     deterministic=deterministic,
                     profile=profile,
-                    runtime_state=runtime_state,
-                    runtime_cargo_profile=runtime_cargo_profile,
                     cargo_timeout=cargo_timeout,
                     molt_root=molt_root,
                     target_triple=target_triple,
@@ -1236,9 +1104,6 @@ def _prepare_backend_compile(
                     phase_starts=phase_starts,
                     json_output=json_output,
                     backend_daemon_config_digest=backend_daemon_config_digest,
-                    ensure_runtime_wasm_both=ensure_runtime_wasm_both,
-                    resolved_modules=resolved_modules,
-                    ir=ir,
                     warnings=warnings,
                     backend_bin=backend_bin,
                     backend_compiler_fingerprint=backend_compiler_fingerprint,
@@ -1247,16 +1112,6 @@ def _prepare_backend_compile(
             if prepared_backend_dispatch_error is not None:
                 return None, prepared_backend_dispatch_error
             assert prepared_backend_dispatch is not None
-            if is_wasm and prepared_backend_dispatch.backend_env is not None:
-                raw_table_base = prepared_backend_dispatch.backend_env.get(
-                    "MOLT_WASM_TABLE_BASE"
-                )
-                try:
-                    wasm_table_base = (
-                        int(raw_table_base) if raw_table_base is not None else None
-                    )
-                except ValueError:
-                    wasm_table_base = None
             if diagnostics_enabled and "backend_dispatch" not in phase_starts:
                 phase_starts["backend_dispatch"] = time.perf_counter()
             backend_execution_result, backend_execution_error = (
@@ -1314,7 +1169,7 @@ def _prepare_backend_compile(
         cache_enabled=cache_enabled,
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,
-        wasm_table_base=wasm_table_base,
+        wasm_table_base=wasm_layout.table_base if wasm_layout is not None else None,
         backend_daemon_cached=backend_daemon_cached,
         backend_daemon_cache_tier=backend_daemon_cache_tier,
         backend_daemon_health=backend_daemon_health,

@@ -918,15 +918,15 @@ def test_effective_split_worker_table_base_uses_backend_authority() -> None:
 
 
 def test_effective_split_worker_table_base_does_not_infer_fallback() -> None:
+    import pytest
+
     from molt.cli import _effective_split_worker_table_base
 
-    assert (
+    with pytest.raises(ValueError, match="requires the bound backend table base"):
         _effective_split_worker_table_base(
             wasm_table_base=None,
             app_callable_table_slots=[4130],
         )
-        is None
-    )
 
 
 def test_effective_split_worker_table_base_rejects_callable_below_backend_base() -> (

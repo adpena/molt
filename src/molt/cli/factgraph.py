@@ -9,6 +9,7 @@ import subprocess
 import sys
 from typing import Any
 from molt.cli.native_link_plan import NativeArtifactKind
+from molt.cli.wasm_codegen_layout import prepare_wasm_codegen_layout
 
 
 @dataclass(frozen=True)
@@ -262,8 +263,6 @@ def emit_pipeline_fact_graph(
     build_config: Any,
     build_roots: Any,
     build_preamble: Any,
-    ir: Mapping[str, Any],
-    resolved_modules: set[str] | frozenset[str],
     json_output: bool,
     verbose: bool,
     target: str,
@@ -282,16 +281,23 @@ def emit_pipeline_fact_graph(
 ) -> int:
     request = resolve_request_output_path(request, build_roots.project_root)
     try:
+        wasm_layout = None
+        if output_layout.is_wasm:
+            try:
+                wasm_layout = prepare_wasm_codegen_layout(
+                    runtime_context.runtime_state.runtime_wasm_codegen_binding,
+                    linked=output_layout.linked,
+                    split_runtime=output_layout.split_runtime,
+                )
+            except (OSError, ValueError) as exc:
+                return fail(str(exc), json_output, command="build")
         prepared_backend_dispatch, dispatch_error = prepare_backend_dispatch(
             is_rust_transpile=output_layout.is_rust_transpile,
             is_luau_transpile=output_layout.is_luau_transpile,
             is_wasm=output_layout.is_wasm,
-            split_runtime=output_layout.split_runtime,
-            linked=output_layout.linked,
+            wasm_layout=wasm_layout,
             deterministic=deterministic,
             profile=profile,
-            runtime_state=runtime_context.runtime_state,
-            runtime_cargo_profile=build_config.runtime_cargo_profile,
             cargo_timeout=build_config.cargo_timeout,
             molt_root=build_roots.molt_root,
             target_triple=output_layout.target_triple,
@@ -300,9 +306,6 @@ def emit_pipeline_fact_graph(
             phase_starts=build_preamble.phase_starts,
             json_output=json_output,
             backend_daemon_config_digest=build_preamble.backend_daemon_config_digest,
-            ensure_runtime_wasm_both=runtime_context.ensure_runtime_wasm_both,
-            resolved_modules=resolved_modules,
-            ir=ir,
             warnings=build_preamble.warnings,
             backend_compiler_fingerprint=(runtime_context.backend_compiler_fingerprint),
             start_daemon=False,
