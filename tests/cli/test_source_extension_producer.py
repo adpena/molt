@@ -592,7 +592,7 @@ def _source_environment(
         marker_environment=payload["marker_environment"],
         active_requirements=tuple(payload["active_requirements"]),
         resolved=tuple(
-            producer._ResolvedBuildRequirement(**row) for row in payload["resolved"]
+            producer.ResolvedBuildRequirement(**row) for row in payload["resolved"]
         ),
         custody=payload["custody"],
         inventory=producer.SourceBuildInventory(payload["custody"], Path(sys.prefix)),
@@ -1078,6 +1078,9 @@ def test_build_extension_routes_real_meson_authority_deterministically(
     output = tmp_path / "transaction" / "module"
     calls: list[dict[str, object]] = []
     expected = object()
+    inventory = producer.SourceBuildInventory(
+        _build_environment_manifest()["custody"], tmp_path
+    )
     backend = producer._SourceNinjaDriver(
         image=_tool_image(tmp_path / "ninja"),
         manifest={"distribution": "ninja"},
@@ -1111,6 +1114,7 @@ def test_build_extension_routes_real_meson_authority_deterministically(
         abi_tier="cpython-abi",
         tool_commands={"ld": ("/tools/wasm-ld",)},
         backend=backend,
+        inventory=inventory,
     )
 
     assert actual is expected
@@ -1121,6 +1125,7 @@ def test_build_extension_routes_real_meson_authority_deterministically(
     assert calls[0]["source_plan_build_root"] == str(build)
     assert calls[0]["source_plan_compile_commands"] == str(compile_commands)
     assert calls[0]["source_plan_target"] == "_nd_image"
+    assert calls[0]["source_build_inventory"] is inventory
     assert calls[0]["python_export"] == ["scipy"]
     assert calls[0]["capabilities"] == []
     assert calls[0]["tool_commands"] == {"ld": ("/tools/wasm-ld",)}

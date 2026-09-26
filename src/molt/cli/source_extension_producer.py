@@ -17,9 +17,9 @@ from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Literal
 
 from packaging.requirements import Requirement
-from packaging.version import InvalidVersion
 from molt.source_root import compiler_source_root
 from molt.cli.source_build_inventory import SourceBuildInventory
+from molt.cli.source_build_requirements import ResolvedBuildRequirement
 from molt.cli.source_extension_python_provider import (
     SourceExtensionPythonProvider,
     source_extension_python_provider,
@@ -204,26 +204,12 @@ class _ProducedExtension:
 
 
 @dataclass(frozen=True)
-class _ResolvedBuildRequirement:
-    requirement: str
-    distribution: str
-    version: str
-
-    def manifest_payload(self) -> dict[str, str]:
-        return {
-            "requirement": self.requirement,
-            "distribution": self.distribution,
-            "version": self.version,
-        }
-
-
-@dataclass(frozen=True)
 class _SourceBuildEnvironment:
     python_executable: str
     requirements: tuple[str, ...]
     marker_environment: Mapping[str, str]
     active_requirements: tuple[str, ...]
-    resolved: tuple[_ResolvedBuildRequirement, ...]
+    resolved: tuple[ResolvedBuildRequirement, ...]
     custody: Mapping[str, object]
     inventory: SourceBuildInventory
 
@@ -596,37 +582,6 @@ def _source_build_requirements(
     return originals, marker_environment, active
 
 
-def _realized_build_requirement(
-    raw: str, requirement: Requirement, inventory: SourceBuildInventory
-) -> _ResolvedBuildRequirement | None:
-    distribution = inventory.distribution(requirement.name)
-    if distribution is None:
-        return None
-    version = str(distribution["version"])
-    try:
-        satisfied = not requirement.specifier or requirement.specifier.contains(
-            version, prereleases=True
-        )
-    except InvalidVersion as exc:
-        raise SourceExtensionProducerError(
-            f"installed build requirement {requirement.name!r} has invalid version "
-            f"{version!r}"
-        ) from exc
-    if not satisfied:
-        return None
-    distribution_name = distribution["name"]
-    if not isinstance(distribution_name, str) or not distribution_name.strip():
-        raise SourceExtensionProducerError(
-            f"installed build requirement {requirement.name!r} has no distribution "
-            "Name metadata"
-        )
-    return _ResolvedBuildRequirement(
-        requirement=raw,
-        distribution=distribution_name.strip(),
-        version=version,
-    )
-
-
 def _ensure_source_build_environment(
     source_root: Path, *, custody: Mapping[str, object]
 ) -> _SourceBuildEnvironment:
@@ -635,10 +590,10 @@ def _ensure_source_build_environment(
         inventory = SourceBuildInventory(custody, Path(sys.prefix))
     except (OSError, ValueError) as exc:
         raise SourceExtensionProducerError(str(exc)) from exc
-    resolved: list[_ResolvedBuildRequirement] = []
+    resolved: list[ResolvedBuildRequirement] = []
     unsatisfied: list[str] = []
     for raw, requirement in active:
-        installed = _realized_build_requirement(raw, requirement, inventory)
+        installed = inventory.requirement(raw, requirement)
         if installed is None:
             unsatisfied.append(raw)
         else:
@@ -730,9 +685,7 @@ def _ensure_meson_pkg_config(
 ) -> _SourceBuildConfigTool:
     inventory = environment.inventory
     requirement = Requirement(MOLT_PKGCONF_REQUIREMENT)
-    resolved = _realized_build_requirement(
-        MOLT_PKGCONF_REQUIREMENT, requirement, inventory
-    )
+    resolved = inventory.requirement(MOLT_PKGCONF_REQUIREMENT, requirement)
     if resolved is None:
         raise SourceExtensionProducerError(
             "source build environment is missing Molt's locked Meson tool "
@@ -1350,6 +1303,7 @@ def _build_extension(
     tool_commands: Mapping[str, Sequence[str]],
     backend: _SourceNinjaDriver,
     python_provider: SourceExtensionPythonProvider | None = None,
+    inventory: SourceBuildInventory | None = None,
 ) -> _ProducedExtension:
     target_plan = resolve_source_extension_target_plan(
         target,
@@ -1381,6 +1335,7 @@ def _build_extension(
             tool_commands=tool_commands,
             source_plan_ninja_command=backend.command,
             source_plan_python_provider=python_provider,
+            source_build_inventory=inventory,
             json_output=False,
             verbose=False,
         )
@@ -2612,6 +2567,7 @@ def _build_source_extension_set(
                 tool_commands=tool_commands,
                 backend=ninja_driver,
                 python_provider=python_provider,
+                inventory=build_environment.inventory,
             )
             result = _stage_extension(
                 result,

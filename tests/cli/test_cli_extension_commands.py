@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -2582,12 +2583,11 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         language: cli_commands._source_extension_cython.SourceExtensionLanguage,
         out_dir: Path,
         include_dirs: object,
-        cython_version: str,
-        python_exe: str | None = None,
+        tool: object,
         package_roots: object = (),
         ninja_command: object = (),
     ) -> tuple[cli_commands._source_extension_cython.CythonRegeneration, None]:
-        del include_dirs, cython_version, python_exe, ninja_command
+        del include_dirs, tool, ninja_command
         assert (
             language is cli_commands._source_extension_cython.SourceExtensionLanguage.C
         )
@@ -2619,8 +2619,8 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
     monkeypatch.setattr(
         cli_commands._source_extension_cython,
-        "provision_cython",
-        lambda *, python_exe, requirement: ("test", None),
+        "cython_execution",
+        lambda **kw: nullcontext(None),
     )
     monkeypatch.setattr(
         cli_commands._source_extension_cython,
