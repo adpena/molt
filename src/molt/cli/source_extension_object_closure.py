@@ -22,6 +22,10 @@ from molt.cli.source_extension_language import (
     require_source_extension_language,
     validate_source_extension_language_command,
 )
+from molt.cli.source_extension_link_projection import (
+    SourceExtensionLinkProjection,
+    SourceExtensionSourceArchiveOperand,
+)
 from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
     SOURCE_EXTENSION_OBJECT_CLOSURE_FIELDS,
@@ -91,6 +95,52 @@ def _producer_unit_identity(value: object) -> dict[str, str]:
             "build-root-relative object path"
         )
     return {"target_id": target_id, "object": output}
+
+
+def _validate_source_plan_selected_objects(
+    manifest: Mapping[str, Any] | None,
+    objects: Sequence[Mapping[str, Any]],
+) -> None:
+    """An exact selected closure cannot omit an eager producer member."""
+    plan = manifest.get("source_plan") if manifest is not None else None
+    if not isinstance(plan, Mapping) or plan.get("kind") != "meson-intro-targets":
+        return
+    try:
+        projection = SourceExtensionLinkProjection.from_manifest(
+            plan.get("link_projection")
+        )
+    except ValueError as exc:
+        raise SourceExtensionObjectClosureError(str(exc)) from exc
+    if projection.primary_target_id != plan.get("target_id"):
+        raise SourceExtensionObjectClosureError(
+            "source-link primary target differs from source_plan.target_id"
+        )
+    primary = {path.as_posix() for path in projection.primary_member_objects}
+    candidates = primary | {
+        path.as_posix()
+        for item in projection.items
+        if isinstance(item, SourceExtensionSourceArchiveOperand)
+        and item.disposition == "source"
+        for path in item.member_object_paths
+    }
+    eager = {path.as_posix() for path in projection.eager_member_objects}
+    selected: set[str] = set()
+    for item in objects:
+        unit = _producer_unit_identity(item.get("producer_unit"))
+        selected.add(unit["object"])
+        if (
+            unit["object"] in primary
+            and unit["target_id"] != projection.primary_target_id
+        ):
+            raise SourceExtensionObjectClosureError(
+                "primary source-link member has a different producer target owner"
+            )
+    if eager - selected or selected - candidates:
+        raise SourceExtensionObjectClosureError(
+            "object_closure differs from source-link member custody; "
+            f"missing eager={sorted(eager - selected)!r}; "
+            f"unowned selected={sorted(selected - candidates)!r}"
+        )
 
 
 def source_extension_wasm_import_receipts(
@@ -577,6 +627,7 @@ def source_extension_object_closure_identity_payload(
             else:
                 object_project_generated_c_api_union.update(values)
         digest_objects.append(digest_object)
+    _validate_source_plan_selected_objects(manifest, digest_objects)
     aggregate_object_fields = (
         (
             "required_c_api_symbols",

@@ -25,6 +25,7 @@ from molt.cli import source_extension_producer as producer
 from molt.cli import source_extension_set_validation as set_validation
 from molt.cli import source_extension_publication as publication
 from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
+from molt.cli.source_extension_link_arguments import source_extension_link_arguments
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.extension_wheel import _write_extension_wheel
 from molt.cli.extension_seal import (
@@ -132,7 +133,17 @@ def _fixture_source_plan(
         "target_name": target["name"],
         "target_selector": target["name"],
         "target_type": target["type"],
-        "producer_link_args": target["target_sources"][0]["parameters"],
+        "link_projection": {
+            "schema_version": 1,
+            "primary_target_id": module,
+            "primary_member_objects": [f"{module}.so.p/0.o"],
+            "items": [
+                {"disposition": "product", "arguments": list(span.arguments)}
+                for span in source_extension_link_arguments(
+                    target["target_sources"][0]["parameters"]
+                )
+            ],
+        },
         "plan": os.path.relpath(
             root / "provenance/metadata/meson/intro-targets.json", artifact.parent
         ).replace(os.sep, "/"),
@@ -3068,7 +3079,7 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
     )
     original_sidecar = first_sidecar.read_bytes()
     for field, value, diagnostic in (
-        ("producer_link_args", [], "producer_link_args differs from Meson target"),
+        ("link_projection", {}, "link_projection is invalid"),
         (
             "python_provider",
             {"forged": True},
@@ -3303,11 +3314,19 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
             ],
             "digest": "stale-location-dependent-digest",
             "kind": "meson-intro-targets",
-            "producer_link_args": [
-                "--no-entry",
-                "-o",
-                str(build_root / "_nd_image.wasm"),
-            ],
+            "target_id": "_nd_image",
+            "link_projection": {
+                "schema_version": 1,
+                "primary_target_id": "_nd_image",
+                "primary_member_objects": ["_nd_image.so.p/0.o", "_nd_image.so.p/1.o"],
+                "items": [
+                    {"disposition": "product", "arguments": ["--no-entry"]},
+                    {
+                        "disposition": "product",
+                        "arguments": ["-o", str(build_root / "_nd_image.wasm")],
+                    },
+                ],
+            },
         },
         "build": {"source_plan_digest": "stale"},
         "object_closure": closure,
@@ -3360,10 +3379,9 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     assert "build_root" not in staged_manifest["source_plan"]
     assert "compile_units" not in staged_manifest["source_plan"]
     assert "generated_sources" not in staged_manifest["source_plan"]
-    assert staged_manifest["source_plan"]["producer_link_args"] == [
-        "--no-entry",
-        "-o",
-        "@build/_nd_image.wasm",
+    assert staged_manifest["source_plan"]["link_projection"]["items"] == [
+        {"disposition": "product", "arguments": ["--no-entry"]},
+        {"disposition": "product", "arguments": ["-o", "@build/_nd_image.wasm"]},
     ]
     assert staged_manifest["sources"] == [
         item["source"] for item in staged_manifest["object_closure"]["objects"]

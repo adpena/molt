@@ -29,9 +29,16 @@ from molt.cli.source_extension_input_custody import (
     source_extension_manifest_input_rows,
 )
 from molt.cli.source_extension_language import SourceExtensionLanguage
+from molt.cli.source_extension_link_projection import SourceExtensionLinkProjection
 from molt.cli.source_extensions import (
+    _MesonOutputIdentity,
+    _meson_static_library_projection,
     canonicalize_source_extension_manifest_runtime_python_imports,
     source_extension_manifest_path,
+)
+from molt.cli.source_extension_python_provider import SourceExtensionPythonProvider
+from molt.cli.source_extension_set_validation_sidecars import (
+    _validate_projection_ownership,
 )
 from molt.cli.source_extension_reproducibility import (
     _canonicalize_locations,
@@ -407,6 +414,122 @@ def test_source_plan_requires_per_object_producer_custody() -> None:
         finalize_source_extension_object_closure(manifest)
 
 
+@pytest.mark.parametrize(
+    "violation", ["missing-eager", "unowned-selected", "wrong-owner"]
+)
+def test_selected_closure_is_bound_to_exact_eager_source_members(
+    violation: str,
+) -> None:
+    manifest = _manifest(1)
+    unit = {"target_id": "native", "object": "native.p/0.o"}
+    manifest["object_closure"]["objects"][0]["producer_unit"] = unit
+    projection = {
+        "schema_version": 1,
+        "primary_target_id": "native",
+        "primary_member_objects": ["native.p/0.o"],
+        "items": [],
+    }
+    manifest["source_plan"] = {
+        "kind": "meson-intro-targets",
+        "target_id": "native",
+        "link_projection": projection,
+    }
+    finalize_source_extension_object_closure(manifest)
+    if violation == "missing-eager":
+        projection["primary_member_objects"].append("native.p/constructor.o")
+    elif violation == "unowned-selected":
+        unit["object"] = "unowned.p/0.o"
+    else:
+        unit["target_id"] = "other"
+    with pytest.raises(SourceExtensionObjectClosureError, match="member|custody"):
+        finalize_source_extension_object_closure(manifest)
+
+
+def test_portable_source_partition_receipt_retains_order_and_exact_member_custody() -> (
+    None
+):
+    source = {
+        "disposition": "source",
+        "arguments": ["@build/archive with spaces.a"],
+        "target_id": "support",
+        "archive_output": "archive with spaces.a",
+        "member_objects": ["support.p/second.o", "support.p/first.o"],
+        "loading": "default",
+    }
+    payload = {
+        "schema_version": 1,
+        "primary_target_id": "native",
+        "primary_member_objects": ["native.p/0.o"],
+        "items": [source, {"disposition": "external", "arguments": ["-lm"]}, source],
+    }
+    projection = SourceExtensionLinkProjection.from_manifest(payload)
+    projection.validate_dialect("x86_64-unknown-linux-gnu")
+    assert projection.manifest_payload(build_root=Path("unused")) == payload
+    assert projection.producer_arguments() == (
+        "@build/archive with spaces.a",
+        "-lm",
+        "@build/archive with spaces.a",
+    )
+    assert projection.external_arguments() == ("-lm",)
+    for invalid in ("../escape.o", "C:/escape.o", "nested/name:stream", "."):
+        bad = copy.deepcopy(payload)
+        bad["items"][0]["member_objects"] = [invalid]
+        with pytest.raises(ValueError, match="canonical relative path"):
+            SourceExtensionLinkProjection.from_manifest(bad)
+    bad = copy.deepcopy(payload)
+    bad["items"][0]["arguments"] = ["@unowned.rsp"]
+    with pytest.raises(ValueError, match="input/forced"):
+        SourceExtensionLinkProjection.from_manifest(bad)
+
+
+def test_source_partition_producer_and_receipt_require_one_archive_output(tmp_path):
+    primary = {
+        "id": "native",
+        "type": "shared module",
+        "filename": ["native.so"],
+        "linker_parameters": ["libsupport.a"],
+    }
+    support = {"id": "support", "type": "static library", "filename": ["libsupport.a"]}
+    projection = SourceExtensionLinkProjection.from_manifest(
+        {
+            "schema_version": 1,
+            "primary_target_id": "native",
+            "primary_member_objects": ["native.so.p/0.o"],
+            "items": [
+                {
+                    "disposition": "source",
+                    "arguments": ["libsupport.a"],
+                    "target_id": "support",
+                    "archive_output": "libsupport.a",
+                    "member_objects": ["libsupport.a.p/0.o"],
+                    "loading": "default",
+                }
+            ],
+        }
+    )
+    provider = SourceExtensionPythonProvider(
+        tmp_path / "intro-dependencies.json", "", None, None
+    )
+    _validate_projection_ownership(
+        projection,
+        outputs=_MesonOutputIdentity([primary, support], build_root=tmp_path),
+        exclusions=(),
+        python_provider=provider,
+    )
+    support["filename"].append("different.a")
+    with pytest.raises(ValueError, match="one archive output"):
+        _meson_static_library_projection(
+            primary_target=primary, payload=[primary, support], build_root=tmp_path
+        )
+    with pytest.raises(ValueError, match="one archive output"):
+        _validate_projection_ownership(
+            projection,
+            outputs=_MesonOutputIdentity([primary, support], build_root=tmp_path),
+            exclusions=(),
+            python_provider=provider,
+        )
+
+
 @pytest.mark.parametrize("conflict", ["object", "source_sha256"])
 def test_shared_source_does_not_weaken_object_or_checksum_custody(
     conflict: str,
@@ -420,14 +543,14 @@ def test_shared_source_does_not_weaken_object_or_checksum_custody(
         finalize_source_extension_object_closure(manifest)
 
 
-@pytest.mark.parametrize("producer_args", [None, ["/DLL"], ["-o"], [1]])
+@pytest.mark.parametrize("projection", [None, {}, [], {"schema_version": True}])
 def test_compact_manifest_rejects_missing_or_foreign_producer_link_custody(
-    producer_args,
+    projection,
 ) -> None:
     manifest = _manifest(1)
     manifest["source_plan"] = {
         "kind": "meson-intro-targets",
-        "producer_link_args": producer_args,
+        "link_projection": projection,
     }
     with pytest.raises(ValueError):
         _validate_compact_source_extension_manifest(
@@ -439,7 +562,17 @@ def test_compact_manifest_rejects_reintroduced_python_provider_bytes() -> None:
     manifest = _manifest(1)
     manifest["source_plan"] = {
         "kind": "meson-intro-targets",
-        "producer_link_args": ["@python-base/libs/python312.lib"],
+        "link_projection": {
+            "schema_version": 1,
+            "primary_target_id": "native",
+            "primary_member_objects": ["native.p/0.o"],
+            "items": [
+                {
+                    "disposition": "python-provider",
+                    "arguments": ["@python-base/libs/python312.lib"],
+                }
+            ],
+        },
         "python_provider": {
             "target_triple": "wasm32-wasip1",
             "import_library": {"path": "libs/python312.lib", "sha256": "c" * 64},
@@ -933,8 +1066,8 @@ def _write_identity_fixture(
                     "source": source_reference,
                     "object": "0.o",
                     "producer_unit": {
-                        "target_id": "_native",
-                        "object": "_native.so.p/0.o",
+                        "target_id": "pkg._native",
+                        "object": "pkg._native.so.p/0.o",
                     },
                     "language": "c",
                     "source_sha256": source_sha256,

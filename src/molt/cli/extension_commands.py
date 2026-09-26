@@ -285,7 +285,7 @@ def _source_plan_skipped_generated_sources_warning(
     noun = "source" if len(source_plan.skipped_generated_sources) == 1 else "sources"
     return (
         "source_plan skipped "
-        f"{len(source_plan.skipped_generated_sources)} cleaned generated {noun} "
+        f"{len(source_plan.skipped_generated_sources)} unselected generated {noun} "
         "absent from disk: " + ", ".join(preview) + suffix
     )
 
@@ -560,7 +560,7 @@ def extension_build(
             ]
             include_paths = list(loaded_source_plan.include_dirs)
             compile_args = list(loaded_source_plan.compile_args)
-            link_args = list(loaded_source_plan.link_args)
+            link_args = list(loaded_source_plan.link_projection.external_arguments())
 
     provided_capsules_input: str | list[str] | None = provided_capsules
     if provided_capsules_input is None:
@@ -879,13 +879,18 @@ def extension_build(
 
     if (
         loaded_source_plan is not None
-        and loaded_source_plan.lazy_static_target_ids
+        and loaded_source_plan.link_projection.lazy_source_operands
         and link_requirements.items
     ):
         return _fail(
             "Source-plan lazy static targets lack external member undefined-symbol "
             "custody for typed link requirements: "
-            + ", ".join(loaded_source_plan.lazy_static_target_ids),
+            + ", ".join(
+                dict.fromkeys(
+                    operand.target_id
+                    for operand in loaded_source_plan.link_projection.lazy_source_operands
+                )
+            ),
             json_output,
             command="extension-build",
         )
@@ -1155,16 +1160,21 @@ def extension_build(
                 and str(export.get("symbol")).strip()
             }
         )
+        eager_member_objects = (
+            frozenset(loaded_source_plan.link_projection.eager_member_objects)
+            if loaded_source_plan is not None
+            else frozenset()
+        )
         forced_object_paths = (
             tuple(
                 fact.object_path
                 for fact, unit in zip(
                     object_facts, loaded_source_plan.compile_units, strict=True
                 )
-                if unit.force_include
+                if unit.producer_object_path in eager_member_objects
             )
             if loaded_source_plan is not None
-            else ()
+            else tuple(fact.object_path for fact in object_facts)
         )
         source_plan_object_closure, object_closure_errors = (
             _source_extensions._compute_source_extension_object_closure(

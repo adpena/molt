@@ -840,6 +840,13 @@ def _write_meson_source_plan_project(
         },
     ]
     if linked_static_library:
+        (project_root / "build/build.ninja").write_text(
+            (
+                "build pkg/libunique_hash.a: STATIC_LINKER "
+                "pkg/libunique_hash.a.p/unique.cpp.o\n"
+            ).replace(".a", static_library_suffix),
+            encoding="utf-8",
+        )
         compile_commands.append(
             {
                 "directory": str(project_root),
@@ -2772,6 +2779,18 @@ def test_extension_build_derives_module_attr_support_source_closure(
     assert not (out_dir / "pkg" / "ndimage" / "_dead_support.py").exists()
 
 
+@pytest.fixture
+def non_cython_ninja_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Synthetic archive graphs model a non-Cython generated-C recipe at the
+    # process boundary. Source folding and exact object membership stay real.
+    monkeypatch.setattr(
+        cli_commands._source_extension_cython,
+        "_query_ninja_generator_commands",
+        lambda **_kwargs: ("python generate_sources.py", None),
+    )
+
+
+@pytest.mark.usefixtures("non_cython_ninja_recipe")
 @pytest.mark.parametrize("static_library_suffix", [".a", ".lib"])
 @pytest.mark.parametrize("nested_linker", [False, True])
 def test_extension_build_follows_linked_static_library_source_closure(
@@ -2825,7 +2844,7 @@ def test_extension_build_follows_linked_static_library_source_closure(
         project_root / "build" / "generated" / "cleaned_unique.c"
     ).resolve()
     assert (
-        "Warning: source_plan skipped 1 cleaned generated source absent from disk"
+        "Warning: source_plan skipped 1 unselected generated source absent from disk"
         in captured.err
     )
     assert str(skipped_generated_source) in captured.err
@@ -2860,6 +2879,7 @@ def test_extension_build_follows_linked_static_library_source_closure(
     assert "array__unique_hash" in defined_symbols
 
 
+@pytest.mark.usefixtures("non_cython_ninja_recipe")
 @pytest.mark.parametrize("static_library_suffix", [".a", ".lib"])
 @pytest.mark.parametrize("nested_linker", [False, True])
 def test_extension_build_excludes_linked_static_library(
@@ -2948,6 +2968,7 @@ def test_extension_build_excludes_linked_static_library(
     assert "array__unique_hash" not in defined_symbols
 
 
+@pytest.mark.usefixtures("non_cython_ninja_recipe")
 @pytest.mark.parametrize("static_library_suffix", [".a", ".lib"])
 @pytest.mark.parametrize("nested_linker", [False, True])
 def test_extension_build_follows_meson_aggregate_static_library_members(
@@ -2963,14 +2984,6 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
         aggregate_static_library=True,
         static_library_suffix=static_library_suffix,
         nested_linker=nested_linker,
-    )
-    # This fixture supplies a synthetic Ninja archive graph, not a runnable
-    # generator. Model its non-Cython generated-C recipe at the process boundary;
-    # source folding, object closure and archive membership remain real.
-    monkeypatch.setattr(
-        cli_commands._source_extension_cython,
-        "_query_ninja_generator_commands",
-        lambda **_kwargs: ("python generate_sources.py", None),
     )
     commands: list[list[str]] = []
 
@@ -7335,6 +7348,15 @@ def _adversarial_meson_fold_fixture(
     return primary, local, other
 
 
+def _meson_template_arguments(projection: Any, disposition: str) -> tuple[str, ...]:
+    return tuple(
+        argument
+        for item in projection.ordered_items
+        if item.disposition == disposition
+        for argument in item.span.arguments
+    )
+
+
 @pytest.mark.parametrize("suffix", [".a", ".lib"])
 @pytest.mark.parametrize("separator", ["/", "\\"])
 def test_meson_fold_exact_output_beats_same_basename(
@@ -7350,7 +7372,7 @@ def test_meson_fold_exact_output_beats_same_basename(
         build_root=tmp_path,
     )
     assert [target["id"] for target in projection.targets] == ["local.library"]
-    assert projection.link_args == ("-lm", "-lm")
+    assert _meson_template_arguments(projection, "external") == ("-lm", "-lm")
 
 
 @pytest.mark.parametrize("suffix", [".a", ".lib"])
@@ -7384,7 +7406,9 @@ def test_meson_fold_explicit_external_path_cannot_alias_declared_basename(
         build_root=tmp_path,
     )
     assert not projection.targets
-    assert projection.link_args == (f"external/libsame{suffix}",)
+    assert _meson_template_arguments(projection, "external") == (
+        f"external/libsame{suffix}",
+    )
 
 
 def test_meson_fold_nested_link_operands_preserve_scope_and_repeats(
@@ -7413,8 +7437,12 @@ def test_meson_fold_nested_link_operands_preserve_scope_and_repeats(
         build_root=tmp_path,
     )
     assert [target["id"] for target in projection.targets] == ["local.library"]
-    assert set(projection.forced_target_ids) == {"local.library"}
-    assert projection.link_args == (
+    assert [
+        item.target_id
+        for item in projection.ordered_items
+        if item.disposition == "source" and item.loading.value == "all-members"
+    ] == ["local.library"]
+    assert _meson_template_arguments(projection, "external") == (
         "-Wl,--start-group",
         "-Wl,--whole-archive",
         "-Wl,--no-whole-archive",
@@ -7444,8 +7472,12 @@ def test_meson_fold_forced_operand_preserves_member_root_custody(
         build_root=tmp_path,
     )
     assert [target["id"] for target in projection.targets] == ["local.library"]
-    assert set(projection.forced_target_ids) == {"local.library"}
-    assert projection.link_args == ()
+    assert [
+        item.target_id
+        for item in projection.ordered_items
+        if item.disposition == "source" and item.loading.value == "all-members"
+    ] == ["local.library"]
+    assert _meson_template_arguments(projection, "external") == ()
 
 
 @pytest.mark.parametrize(
@@ -7468,13 +7500,22 @@ def test_meson_fold_retained_symbol_is_forwarded_not_erased(
         build_root=tmp_path,
     )
     assert [target["id"] for target in projection.targets] == ["local.library"]
-    assert projection.producer_link_args == (directive, "local/libsame.a")
+    assert tuple(
+        argument
+        for item in projection.ordered_items
+        for argument in item.span.arguments
+    ) == (
+        "-Wl,--undefined=registration"
+        if directive == "--undefined=registration"
+        else directive,
+        "local/libsame.a",
+    )
     from molt.cli.source_extension_link_requirements import (
         source_extension_link_requirements,
     )
 
     requirements = source_extension_link_requirements(
-        projection.link_args,
+        _meson_template_arguments(projection, "external"),
         target_triple=(
             "x86_64-pc-windows-msvc"
             if directive.startswith("/")
@@ -7518,14 +7559,18 @@ def test_meson_fold_preserves_external_operands_for_typed_custody_validation(
         payload=[primary, local],
         build_root=tmp_path,
     )
-    assert set(projection.forced_target_ids) == (
-        {"local.library"} if force_folded else set()
-    )
-    assert projection.lazy_static_target_ids == (
-        () if force_folded else ("local.library",)
-    )
+    assert [
+        item.target_id
+        for item in projection.ordered_items
+        if item.disposition == "source" and item.loading.value == "all-members"
+    ] == (["local.library"] if force_folded else [])
+    assert tuple(
+        item.target_id
+        for item in projection.ordered_items
+        if item.disposition == "source" and item.loading.value == "default"
+    ) == (() if force_folded else ("local.library",))
     assert [target["id"] for target in projection.targets] == ["local.library"]
-    assert projection.link_args == (
+    assert _meson_template_arguments(projection, "external") == (
         "-Wl,--start-group",
         *(("-Wl,--whole-archive", "-Wl,--no-whole-archive") if force_folded else ()),
         external_operand,
@@ -7564,7 +7609,7 @@ def test_meson_fold_import_library_output_has_no_static_source_authority(
         build_root=tmp_path,
     )
     assert not projection.targets
-    assert projection.link_args == ("local/libsame.lib",)
+    assert _meson_template_arguments(projection, "external") == ("local/libsame.lib",)
 
 
 def _adversarial_rooted_meson_plan(project_root: Path, root_kind: str) -> Path:
@@ -7625,7 +7670,8 @@ def _adversarial_meson_append_external_operand(intro_path: Path, operand: str) -
         ("whole-archive", "/DEFAULTLIB:consumer.lib"),
     ],
 )
-def test_extension_build_keeps_folded_member_root_not_reachable_from_init(
+@pytest.mark.usefixtures("non_cython_ninja_recipe")
+def test_extension_build_keeps_primary_and_folded_members_not_reachable_from_init(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -7650,7 +7696,9 @@ def test_extension_build_keeps_folded_member_root_not_reachable_from_init(
         monkeypatch,
         default_init_symbol="PyInit_demoext",
         by_stem={
-            "demoext": ({"PyInit_demoext"}, {"helper_generated"}),
+            # The primary's generated unit can carry constructors without an
+            # undefined-symbol path from PyInit; it is an eager input, too.
+            "demoext": ({"PyInit_demoext"}, set()),
             "helper_generated": ({"helper_generated"}, set()),
             "unique": ({"array__unique_hash"}, set()),
         },
@@ -7780,9 +7828,152 @@ def test_meson_force_members_are_supported_by_eager_primary_publication(
     )
     assert not errors
     assert plan is not None
-    assert any(unit.force_include for unit in plan.compile_units)
+    assert any(
+        item.loading.value == "all-members"
+        for item in plan.link_projection.items
+        if hasattr(item, "loading") and item.loading is not None
+    )
     errors = cli_source_extensions._validate_source_extension_build_plan_target(
         plan,
         target_triple=target,
     )
     assert not errors
+
+
+def test_meson_forced_aggregate_uses_exact_edge_not_missing_sibling_source(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "meson_aggregate"
+    project_root.mkdir()
+    intro_path = _write_meson_source_plan_project(
+        project_root, aggregate_static_library=True
+    )
+    targets = json.loads(intro_path.read_text(encoding="utf-8"))
+    archive = targets[0]["linker_parameters"][0]
+    targets[0]["linker_parameters"] = [
+        "-Wl,--whole-archive",
+        archive,
+        "-Wl,--no-whole-archive",
+    ]
+    loops = next(
+        target
+        for target in targets
+        if target["id"] == "pkg.libloops_arithmetic_dispatch"
+    )
+    loops["target_sources"][0]["generated_sources"].append(
+        "generated/not_in_aggregate.c"
+    )
+    loops["target_sources"][0]["generated_sources"].append("generated/live_sibling.c")
+    sibling_source = project_root / "build/generated/live_sibling.c"
+    sibling_source.write_text("int unrelated_variant;\n", encoding="utf-8")
+    database = project_root / "build/compile_commands.json"
+    commands = json.loads(database.read_text(encoding="utf-8"))
+    commands.append(
+        {
+            "directory": str(project_root / "build"),
+            "file": "generated/live_sibling.c",
+            "arguments": [
+                "clang",
+                "-c",
+                "generated/live_sibling.c",
+                "unowned.a",
+                "-o",
+                "pkg/libloops_arithmetic.dispatch.h_baseline.a.p/live_sibling.o",
+            ],
+        }
+    )
+    database.write_text(json.dumps(commands), encoding="utf-8")
+    intro_path.write_text(json.dumps(targets), encoding="utf-8")
+
+    plan, errors = (
+        cli_source_extensions._load_meson_intro_targets_source_extension_plan(
+            plan_path=intro_path,
+            project_root=project_root,
+            module_name="pkg.demoext",
+            selector="pkg.demoext",
+            source_root=".",
+            build_root="build",
+        )
+    )
+    assert not errors
+    assert plan is not None
+    source_items = [
+        item
+        for item in plan.link_projection.items
+        if getattr(item, "disposition", None) == "source"
+    ]
+    assert len(source_items) == 1
+    assert tuple(path.name for path in source_items[0].member_object_paths) == (
+        "loops_arithmetic.dispatch.c.o",
+    )
+    assert all(
+        "simd" not in str(path) for path in plan.link_projection.eager_member_objects
+    )
+    assert sibling_source not in plan.source_paths()
+    assert all(unit.source_path != sibling_source for unit in plan.compile_units)
+    assert project_root / "build" / "generated" / "not_in_aggregate.c" in (
+        plan.skipped_generated_sources
+    )
+
+
+@pytest.mark.parametrize("member", ["nested.a", "members.rsp"])
+def test_meson_archive_edge_never_silently_discards_explicit_inputs(
+    tmp_path: Path, member: str
+) -> None:
+    primary, local, _other = _adversarial_meson_fold_fixture(tmp_path)
+    primary["linker_parameters"] = ["local/libsame.a"]
+    (tmp_path / "build.ninja").write_text(
+        f"build local/libsame.a: STATIC_LINKER local/libsame.a.p/unit.o {member}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="explicit non-object member"):
+        cli_source_extensions._meson_static_library_projection(
+            primary_target=primary, payload=[primary, local], build_root=tmp_path
+        )
+
+
+@pytest.mark.parametrize("field", ["sources", "generated_sources"])
+@pytest.mark.parametrize("explicit_edge", [False, True])
+def test_meson_missing_source_is_irrelevant_only_outside_exact_archive_members(
+    tmp_path: Path, field: str, explicit_edge: bool
+) -> None:
+    intro_path = _write_meson_source_plan_project(tmp_path, linked_static_library=True)
+    targets = json.loads(intro_path.read_text(encoding="utf-8"))
+    group = targets[1]["target_sources"][0]
+    group["generated_sources"] = []
+    missing = tmp_path / "build/absent.c"
+    group.setdefault(field, []).append(str(missing))
+    intro_path.write_text(json.dumps(targets), encoding="utf-8")
+    database = tmp_path / "build/compile_commands.json"
+    commands = json.loads(database.read_text(encoding="utf-8"))
+    commands.append(
+        {
+            "directory": str(tmp_path / "build"),
+            "file": str(missing),
+            "arguments": [
+                "clang",
+                "-c",
+                str(missing),
+                "-o",
+                "pkg/libunique_hash.a.p/absent.o",
+            ],
+        }
+    )
+    database.write_text(json.dumps(commands), encoding="utf-8")
+    if not explicit_edge:
+        (tmp_path / "build/build.ninja").unlink()
+    plan, errors = (
+        cli_source_extensions._load_meson_intro_targets_source_extension_plan(
+            plan_path=intro_path,
+            project_root=tmp_path,
+            module_name="pkg.demoext",
+            source_root=".",
+            build_root="build",
+        )
+    )
+    if explicit_edge:
+        assert not errors and plan is not None
+        assert missing not in plan.source_paths()
+    else:
+        assert plan is None
+        assert any("source does not exist" in error for error in errors)

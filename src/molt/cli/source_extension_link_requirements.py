@@ -11,7 +11,10 @@ from molt.cli.source_extension_target import (
     source_extension_link_dialect,
 )
 from molt.cli.native_link_plan import whole_archive_link_arguments
-from molt.cli.source_extension_link_arguments import source_extension_link_arguments
+from molt.cli.source_extension_link_arguments import (
+    SourceExtensionLinkScope,
+    source_extension_link_arguments,
+)
 from molt.cli.atomic_io import _atomic_copy_file
 from molt.file_hashing import _sha256_file
 from molt.exact_json import read_exact
@@ -430,8 +433,7 @@ def source_extension_link_requirements(
     items: list[SourceExtensionLinkItem] = []
     group_members: list[SourceExtensionLinkAtom] | None = None
     retained_symbols: set[str] = set()
-    whole_archive = False
-    as_needed = False
+    scope = SourceExtensionLinkScope()
 
     def append_item(item: SourceExtensionLinkAtom) -> None:
         if group_members is None:
@@ -465,6 +467,7 @@ def source_extension_link_requirements(
 
     for span in source_extension_link_arguments(link_args):
         span.validate_dialect(dialect)
+        scope.advance(span)
         if span.kind == "product":
             raise ValueError(
                 "source-extension final link requirements cannot select producer "
@@ -495,63 +498,22 @@ def source_extension_link_requirements(
             )
             append_item(item)
             continue
-        group_start = argument in {"-Wl,--start-group", "--start-group"}
-        group_end = argument in {"-Wl,--end-group", "--end-group"}
-        whole_start = argument in {"-Wl,--whole-archive", "--whole-archive"}
-        whole_end = argument in {"-Wl,--no-whole-archive", "--no-whole-archive"}
-        if group_start or group_end:
-            if dialect not in _GROUP_DIALECTS:
-                raise ValueError(
-                    f"source-extension {dialect.value} does not support cyclic groups"
-                )
-            if whole_archive:
-                raise ValueError(
-                    "source-extension whole-archive scope must close before a group boundary"
-                )
-            if group_start:
-                if group_members is not None:
-                    raise ValueError("source-extension cyclic groups cannot be nested")
+        if span.kind == "scope":
+            if span.value == "--start-group":
                 group_members = []
-            else:
-                if group_members is None:
-                    raise ValueError("source-extension cyclic group end has no start")
+            elif span.value == "--end-group":
+                assert group_members is not None
                 if group_members:
                     items.append(SourceExtensionLinkCyclicGroup(tuple(group_members)))
                 group_members = None
             continue
-        if whole_start or whole_end:
-            if dialect not in _GROUP_DIALECTS:
-                raise ValueError(
-                    f"source-extension {dialect.value} does not support GNU whole-archive scopes"
-                )
-            if whole_start:
-                if whole_archive:
-                    raise ValueError(
-                        "source-extension whole-archive scopes cannot be nested"
-                    )
-                whole_archive = True
-            else:
-                if not whole_archive:
-                    raise ValueError("source-extension whole-archive end has no start")
-                whole_archive = False
-            continue
-        if argument == "-Wl,--as-needed":
-            if dialect is not SourceExtensionLinkDialect.ELF_GNU or as_needed:
-                raise ValueError("source-extension as-needed scope is invalid")
-            as_needed = True
-            continue
-        if argument == "-Wl,--no-as-needed":
-            if dialect is not SourceExtensionLinkDialect.ELF_GNU or not as_needed:
-                raise ValueError("source-extension no-as-needed has no active scope")
-            as_needed = False
-            continue
 
         loading = (
             SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
-            if whole_archive
+            if scope.whole_archive
             else (
                 SourceExtensionLinkLoadingPolicy.AS_NEEDED
-                if as_needed
+                if scope.as_needed
                 else SourceExtensionLinkLoadingPolicy.DEFAULT
             )
         )
@@ -587,10 +549,7 @@ def source_extension_link_requirements(
             )
         append_item(SourceExtensionLinkProvider(provider_kind, span.value, loading))
 
-    if group_members is not None:
-        raise ValueError("source-extension cyclic group start has no end")
-    if whole_archive:
-        raise ValueError("source-extension whole-archive start has no end")
+    scope.finish()
     result = SourceExtensionLinkRequirements(
         target_triple=target_triple.strip().lower(),
         items=tuple(items),

@@ -50,6 +50,70 @@ def test_compile_database_identity_is_output_not_source(tmp_path: Path) -> None:
     assert units[first].source_path == units[second].source_path == source
 
 
+@pytest.mark.parametrize("scope", ["root", "exact"])
+@pytest.mark.parametrize("malformed", ["arguments", "file", "option", "output"])
+def test_compile_database_scopes_declared_rows_before_diagnostics(
+    tmp_path: Path, scope: str, malformed: str
+) -> None:
+    source = tmp_path / "shared.c"
+    selected = tmp_path / "owned.p/selected.o"
+    unrelated = tmp_path / "unrelated.p/other.o"
+    bad = _command(source, unrelated)
+    if malformed == "arguments":
+        bad.pop("arguments")
+    elif malformed == "file":
+        bad.pop("file")
+    elif malformed == "option":
+        bad["arguments"].append("-I")
+    else:
+        bad["arguments"][-1] = str(unrelated.with_name("disagrees.o"))
+    database = tmp_path / "compile_commands.json"
+    rows = [_command(source, selected), bad]
+    database.write_text(json.dumps(rows), encoding="utf-8")
+    selection = (
+        {"target_output_roots": (selected.parent,)}
+        if scope == "root"
+        else {"object_outputs": {selected}}
+    )
+    units, errors = extensions._load_compile_command_units(
+        database, required_sources={source}, **selection
+    )
+    assert errors == [] and units is not None and set(units) == {selected}
+
+    # Moving the very same defect into the selected partition must fail closed.
+    bad["output"] = str(selected)
+    if "arguments" in bad and malformed != "output":
+        bad["arguments"] = [
+            str(selected) if arg == str(unrelated) else arg for arg in bad["arguments"]
+        ]
+    database.write_text(json.dumps(rows), encoding="utf-8")
+    units, errors = extensions._load_compile_command_units(
+        database, required_sources={source}, **selection
+    )
+    assert units is None and len(errors) == 1
+
+
+def test_compile_database_unidentified_rows_preserve_selected_source_errors(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "shared.c"
+    output = tmp_path / "owned.p/unit.o"
+    bad = {"file": str(tmp_path / "unrelated.c")}
+    rows = [_command(source, output), bad]
+    database = tmp_path / "compile_commands.json"
+    database.write_text(json.dumps(rows), encoding="utf-8")
+    units, errors = extensions._load_compile_command_units(
+        database, required_sources={source}, object_outputs={output}
+    )
+    assert errors == [] and units is not None and set(units) == {output}
+    bad["file"] = str(source)
+    database.write_text(json.dumps(rows), encoding="utf-8")
+    units, errors = extensions._load_compile_command_units(
+        database, required_sources={source}, object_outputs={output}
+    )
+    assert units is None and len(errors) == 1 and "lacks arguments" in errors[0]
+
+
 @pytest.mark.parametrize("forwarder", ["-mllvm", "-Xassembler", "-Xpreprocessor"])
 @pytest.mark.parametrize(
     "operand",
@@ -298,7 +362,10 @@ def test_meson_units_preserve_target_scoped_forced_membership(tmp_path: Path) ->
     assert plan is not None
     units = {unit.owner_target_id: unit for unit in plan.compile_units}
     assert set(units) == {"extension", "variant-3", "variant-4"}
-    assert [unit.force_include for unit in units.values()] == [False, True, False]
+    assert set(plan.link_projection.eager_member_objects) == {
+        units["extension"].producer_object_path,
+        units["variant-3"].producer_object_path,
+    }
     assert [unit.compile_args for unit in units.values()] == [
         ("-DVARIANT=0",),
         ("-DVARIANT=3",),
