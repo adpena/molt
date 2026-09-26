@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+from types import CodeType
 from pathlib import Path
 from textwrap import indent
 
@@ -9,6 +10,7 @@ import pytest
 
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError
+from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.frontend._types import BUILTIN_FUNC_SPECS, _builtin_func_abi_arity
 
@@ -349,6 +351,116 @@ def test_function_module_binding_reads_use_active_global_lookup() -> None:
 
     assert _module_attr_accesses(ops, "module_get_global", "target")
     assert not _module_attr_accesses(ops, "module_get_attr", "target")
+
+
+@pytest.mark.parametrize("consumer", ["captured", "captured()", "captured.marker"])
+@pytest.mark.parametrize(
+    "scope", ["local", "nonlocal", "async", "generator", "comprehension", "class"]
+)
+def test_invalidated_lexical_binding_preserves_storage_owner(
+    consumer: str, scope: str
+) -> None:
+    if scope == "comprehension":
+        source = (
+            "def owner(effect):\n"
+            f"    return [(effect(lambda: captured), {consumer})[1] for captured in [[1]]]\n"
+        )
+    elif scope == "class":
+        source = (
+            "def owner(captured, effect):\n"
+            "    captured = [1]\n"
+            "    class Namespace:\n"
+            "        effect(lambda: captured)\n"
+            f"        result = {consumer}\n"
+            "    return Namespace.result\n"
+        )
+    elif scope == "nonlocal":
+        source = (
+            "def outer(captured):\n"
+            "    captured = [1]\n"
+            "    def owner(effect):\n"
+            "        nonlocal captured\n"
+            "        effect()\n"
+            f"        return {consumer}\n"
+            "    return owner\n"
+        )
+    else:
+        prefix = "async " if scope == "async" else ""
+        action = "yield" if scope == "generator" else "return"
+        source = (
+            f"{prefix}def owner(captured, effect):\n"
+            "    captured = [1]\n"
+            "    def read():\n"
+            "        return captured\n"
+            "    effect(read)\n"
+            f"    {action} {consumer}\n"
+        )
+
+    def code_objects(code: CodeType):
+        yield code
+        for constant in code.co_consts:
+            if isinstance(constant, CodeType):
+                yield from code_objects(constant)
+
+    # CPython independently establishes lexical custody; an arbitrary callback
+    # can change the cell's value, never redirect its load to the module dict.
+    owner = next(
+        code
+        for code in code_objects(compile(source, "<binding>", "exec"))
+        if code.co_name == "owner"
+    )
+    assert any(
+        "captured" in code.co_cellvars + code.co_freevars
+        for code in code_objects(owner)
+    )
+    tree = ast.parse(source)
+    reads = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id == "captured"
+    ]
+    target_read = max(reads, key=lambda n: (n.lineno, n.col_offset))
+    fact = analyze_python_source_bindings(source).expression_fact(target_read)
+    assert fact is not None and fact.binding_invalidated
+    assert fact.name_lookup == ("class_lexical" if scope == "class" else "lexical")
+    observed_loads = []
+
+    class ObserveLoad(SimpleTIRGenerator):
+        def visit_Name(self, node: ast.Name):
+            value = super().visit_Name(node)
+            if node is target_read:
+                assert isinstance(value, MoltValue)
+                observed_loads.append(
+                    (
+                        value.type_hint,
+                        value.exact_class,
+                        self._container_elem_hint(value),
+                    )
+                )
+            return value
+
+    gen = ObserveLoad()
+    gen.visit(tree)
+    assert observed_loads == [("Any", None, None)]
+    for function in gen.to_json()["functions"]:
+        assert not _module_attr_accesses(
+            function["ops"], "module_get_global", "captured"
+        )
+
+
+def test_lexical_name_shadows_module_name_specialization() -> None:
+    source = "def owner(__name__):\n    return __name__\n"
+    namespace = {}
+    exec(source, namespace)
+    assert namespace["owner"]("local-name") == "local-name"
+    ops = next(
+        fn["ops"]
+        for fn in compile_to_tir(source)["functions"]
+        if fn["name"].endswith("__owner")
+    )
+    assert any(op["kind"] == "ret" and op["args"] == ["__name__"] for op in ops)
 
 
 def test_active_global_read_does_not_inherit_lexical_module_type() -> None:

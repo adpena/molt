@@ -197,6 +197,11 @@ outer region is still active, allowing its manager to observe or suppress it.
 
 ## Builtin shape and lifetime authority
 
+Source binding invalidation removes value and specialization facts, never the
+lexical storage owner. Name, callee and attribute-receiver evaluation retain
+their local/cell loads and unbound guards after callbacks; only names whose
+canonical binding fact selects global lookup re-read the module namespace.
+
 Generic attribute reads keep boxed receivers and enter `molt_get_attr_object_ic`,
 which caches only an owned interned name before invoking `molt_get_attr_name`.
 Stable function/source-operation identity selects the name-cache site; the actual
