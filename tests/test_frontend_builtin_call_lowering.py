@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 from pathlib import Path
 from textwrap import indent
 
@@ -32,6 +33,29 @@ def _value_name(value: object) -> object:
     if isinstance(value, MoltValue):
         return value.name
     return value
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "_molt_asyncgen_hooks_get",
+        "_molt_getargv",
+        "_molt_class_new",
+        "_molt_code_new",
+        "_molt_socket_new",
+        "molt_process_spawn",
+    ],
+)
+def test_retired_bootstrap_aliases_are_ordinary_unbound_names(name: str) -> None:
+    generator = SimpleTIRGenerator()
+    generator.visit(ast.parse(f"result = {name}\n"))
+    ops = next(
+        fn["ops"]
+        for fn in generator.to_json()["functions"]
+        if fn["name"] == "molt_main"
+    )
+    assert any(op["kind"] == "module_get_global" for op in ops)
+    assert not any(op["kind"] == "builtin_func" for op in ops)
 
 
 @pytest.mark.parametrize("annotation", ["list", "tuple"])
@@ -86,6 +110,7 @@ def test_builtin_expansion_uses_shared_call_assembly(name: str, expansion: str) 
 
 def test_frontend_builtin_func_specs_are_wasm_manifest_backed() -> None:
     for func_id, spec in BUILTIN_FUNC_SPECS.items():
+        assert hasattr(builtins, func_id), func_id
         manifest_arity = wasm_runtime_callable_arity(spec.runtime)
         assert manifest_arity is not None, func_id
         assert _builtin_func_abi_arity(spec) == manifest_arity
@@ -1251,13 +1276,16 @@ def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic(
         )
 
 
-def test_intrinsic_require_lowers_to_public_runtime_symbol() -> None:
+@pytest.mark.parametrize(
+    "runtime_name", ["molt_async_sleep", "molt_function_set_builtin", "molt_socket_new"]
+)
+def test_intrinsic_require_lowers_to_public_runtime_symbol(runtime_name: str) -> None:
     source = (
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-        "_HOOK = _require_intrinsic('molt_async_sleep')\n"
+        f"_HOOK = _require_intrinsic({runtime_name!r})\n"
     )
-    assert not _has_runtime_intrinsic_lookup_call(source, "molt_async_sleep")
-    assert _has_builtin_func(source, "molt_async_sleep")
+    assert not _has_runtime_intrinsic_lookup_call(source, runtime_name)
+    assert _has_builtin_func(source, runtime_name)
     assert _has_builtin_func(source, "molt_require_intrinsic_runtime")
 
 

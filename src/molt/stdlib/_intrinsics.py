@@ -6,7 +6,6 @@ Missing intrinsics must raise immediately; fallback is not permitted.
 # pylint: disable=all
 # ruff: noqa
 
-_REGISTRY_NAME = "_molt_intrinsics"
 _LOOKUP_HELPER_NAME = "_molt_intrinsic_lookup"
 
 # Cache the bootstrap builtins module as a fallback, but prefer the current
@@ -25,70 +24,11 @@ def _lookup_builtin_obj(builtins_obj, name):
     return getattr(builtins_obj, name, None)
 
 
-def _lookup_name_and_alias(
-    builtins_obj,
-    name,
-    _lookup_obj=_lookup_builtin_obj,
-    _is_value=_is_intrinsic_value,
-):
-    value = _lookup_obj(builtins_obj, name)
-    if _is_value(value):
-        return value
-    if name.startswith("molt_"):
-        alias = f"_molt_{name[5:]}"
-        value = _lookup_obj(builtins_obj, alias)
-        if _is_value(value):
-            return value
-    return None
-
-
-def _lookup_registry(
-    builtins_obj,
-    name,
-    _registry_name=_REGISTRY_NAME,
-    _lookup_obj=_lookup_builtin_obj,
-    _is_value=_is_intrinsic_value,
-):
-    reg = _lookup_obj(builtins_obj, _registry_name)
-    if isinstance(reg, dict):
-        value = reg.get(name)
-        if _is_value(value):
-            return value
-        resolver = reg.get("_molt_lazy_resolve")
-        if callable(resolver):
-            resolved = resolver(name)
-            if _is_value(resolved):
-                return resolved
-    return None
-
-
-def _lookup_from_builtins_obj(
-    builtins_obj,
-    name,
-    _lookup_reg=_lookup_registry,
-    _lookup_alias=_lookup_name_and_alias,
-):
-    if builtins_obj is None:
-        return None
-    value = _lookup_reg(builtins_obj, name)
-    if value is not None:
-        return value
-    return _lookup_alias(builtins_obj, name)
-
-
 def _runtime_builtins_obj(_bootstrap=_bootstrap_builtins):
     try:
         return __import__("builtins")
     except Exception:
         return _bootstrap
-
-
-def _lookup_runtime_builtins(
-    name,
-    _runtime_builtins=_runtime_builtins_obj,
-    _lookup_builtins=_lookup_from_builtins_obj,
-):
-    return _lookup_builtins(_runtime_builtins(), name)
 
 
 def runtime_active(
@@ -133,16 +73,6 @@ def require_intrinsic(name, namespace=None):
         except Exception:
             return globals().get("_bootstrap_builtins")
 
-    def lookup_name_and_alias(builtins_obj):
-        value = lookup_obj(builtins_obj, name)
-        if is_intrinsic_value(value):
-            return value
-        if name.startswith("molt_"):
-            value = lookup_obj(builtins_obj, f"_molt_{name[5:]}")
-            if is_intrinsic_value(value):
-                return value
-        return None
-
     def lookup_registry(builtins_obj):
         reg = lookup_obj(builtins_obj, registry_name)
         if isinstance(reg, dict):
@@ -163,12 +93,9 @@ def require_intrinsic(name, namespace=None):
         if value is not None:
             return value
 
-    # 2. Check the current runtime builtins registry and direct aliases.
+    # 2. Only the runtime-owned registry may supply intrinsic callables.
     builtins_obj = runtime_builtins_obj()
     value = lookup_registry(builtins_obj)
-    if value is not None:
-        return value
-    value = lookup_name_and_alias(builtins_obj)
     if value is not None:
         return value
 
