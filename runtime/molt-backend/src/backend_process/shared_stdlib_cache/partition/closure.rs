@@ -18,7 +18,6 @@ fn stdlib_partition_reference_kind(kind: &str) -> bool {
             | "gen_locals_register"
             | "task_new"
             | "generator_send"
-            | "spawn"
             | "call_func"
             | "call_method"
             | "import_from"

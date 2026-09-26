@@ -3310,10 +3310,6 @@ name = "bytes_startswith_slice"
 type = 9
 
 [[import]]
-name = "cancel_current"
-type = 0
-
-[[import]]
 name = "cancel_token_cancel"
 type = 2
 
@@ -3340,10 +3336,6 @@ type = 2
 [[import]]
 name = "cancel_token_set_current"
 type = 2
-
-[[import]]
-name = "cancelled"
-type = 0
 
 [[import]]
 name = "contextlib_async_exitstack_enter_context_poll"
@@ -6621,17 +6613,6 @@ import_name = "generator_close"
 args = ["local:0"]
 
 [[op_loop_runtime_call]]
-kind = "chan_drop"
-import_name = "chan_drop"
-discard_result = true
-args = ["local:0"]
-
-[[op_loop_runtime_call]]
-kind = "spawn"
-import_name = "spawn"
-args = ["local:0"]
-
-[[op_loop_runtime_call]]
 kind = "print_newline"
 import_name = "print_newline"
 args = []
@@ -6649,24 +6630,11 @@ required_imports = [
   "asyncgen_shutdown",
 ]
 
-[[op_loop_runtime_call]]
-kind = "thread_submit"
-import_name = "thread_submit"
-args = ["local:0", "local:1", "local:2"]
-required_imports = [
-  "thread_poll",
-  "thread_submit",
-]
-
 [[op_loop_runtime_call_group]]
 arg_count = 0
 boxed_call = true
 kinds = [
   "errno_constants",
-  "promise_new",
-  "cancel_token_get_current",
-  "cancelled",
-  "cancel_current",
   "exception_stack_clear",
   "exception_stack_enter",
   "exception_stack_depth",
@@ -6675,7 +6643,6 @@ kinds = [
   "exception_active",
   "exception_current",
   "exception_clear",
-  "asyncgen_shutdown",
 ]
 
 [[op_loop_runtime_call_group]]
@@ -6686,16 +6653,7 @@ kinds = [
   "id",
   "file_close",
   "file_flush",
-  "chan_new",
-  "cancel_token_new",
-  "cancel_token_clone",
-  "cancel_token_drop",
-  "cancel_token_cancel",
-  "future_cancel",
-  "future_cancel_clear",
   "block_on",
-  "cancel_token_is_cancelled",
-  "cancel_token_set_current",
   "is_generator",
   "is_native_awaitable",
   "is_callable",
@@ -6735,10 +6693,6 @@ kinds = [
   "file_open",
   "file_read",
   "file_write",
-  "future_cancel_msg",
-  "promise_set_result",
-  "promise_set_exception",
-  "task_register_token_owned",
   "env_get",
   "del_index",
   "list_append",
@@ -7012,12 +6966,6 @@ prefix = "block_on"
 
 [[pure_skip_prefix]]
 prefix = "cancel_token_"
-
-[[pure_skip_prefix]]
-prefix = "cancelled"
-
-[[pure_skip_prefix]]
-prefix = "cancel_current"
 
 [[pure_skip_prefix]]
 prefix = "sleep_register"

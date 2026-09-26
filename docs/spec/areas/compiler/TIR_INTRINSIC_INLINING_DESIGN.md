@@ -417,7 +417,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_context_depth` | 1 | Low | |
 | `molt_context_unwind_to` | 1 | Low | |
 
-#### Async/Concurrency (28 functions)
+#### Async/Concurrency (26 functions)
 
 | Function | Decl count | Hot? | Notes |
 |----------|-----------|------|-------|
@@ -438,8 +438,6 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_cancel_token_get_current` | 3 | Low | |
 | `molt_cancel_token_set_current` | 1 | Low | |
 | `molt_cancel_token_is_cancelled` | 1 | Low | |
-| `molt_cancelled` | 1 | Low | |
-| `molt_cancel_current` | 1 | Low | |
 | `molt_future_cancel` | 1 | Low | |
 | `molt_future_cancel_msg` | 1 | Low | |
 | `molt_future_cancel_clear` | 1 | Low | |

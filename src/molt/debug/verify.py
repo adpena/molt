@@ -40,7 +40,6 @@ ALIASES: dict[str, list[str]] = {
     "AIter": ["AITER"],
     "ANext": ["ANEXT"],
     "AllocGenerator": ["ASYNCGEN_NEW"],
-    "AllocFuture": ["PROMISE_NEW"],
 }
 
 DEFAULT_ALLOWED_MISSING: set[str] = set()
@@ -239,9 +238,9 @@ WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     ),
     SemanticAssertion(
         scope="wasm",
-        description="dec_ref/release call dec_ref_obj import and write None on out",
+        description="dec_ref/release/del_boundary call dec_ref_obj import and write None on out",
         pattern=(
-            r'"dec_ref"\s*\|\s*"release"\s*=>[\s\S]*?emit_dec_ref_like[\s\S]*?WasmRuntimeImport::DecRefObj[\s\S]*?emit_none'
+            r'"dec_ref"\s*\|\s*"release"\s*\|\s*"del_boundary"\s*=>[\s\S]*?emit_dec_ref_like[\s\S]*?WasmRuntimeImport::DecRefObj[\s\S]*?emit_none'
         ),
     ),
     SemanticAssertion(

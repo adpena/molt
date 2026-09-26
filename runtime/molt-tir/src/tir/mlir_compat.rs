@@ -299,8 +299,6 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::StateSwitch => "state_switch",
         OpCode::StateTransition => "state_transition",
         OpCode::StateYield => "state_yield",
-        OpCode::ChanSendYield => "chan_send_yield",
-        OpCode::ChanRecvYield => "chan_recv_yield",
         OpCode::ClosureLoad => "closure_load",
         OpCode::ClosureStore => "closure_store",
         OpCode::Yield => "yield",

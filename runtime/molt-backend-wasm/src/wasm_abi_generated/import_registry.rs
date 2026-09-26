@@ -2950,11 +2950,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 9,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::CancelCurrent,
-        name: "cancel_current",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::CancelTokenCancel,
         name: "cancel_token_cancel",
         type_idx: 2,
@@ -2988,11 +2983,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::CancelTokenSetCurrent,
         name: "cancel_token_set_current",
         type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::Cancelled,
-        name: "cancelled",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll,
@@ -16374,8 +16364,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_bytes_startswith" => Some(WasmRuntimeImport::BytesStartswith),
         "bytes_startswith_slice" => Some(WasmRuntimeImport::BytesStartswithSlice),
         "molt_bytes_startswith_slice" => Some(WasmRuntimeImport::BytesStartswithSlice),
-        "cancel_current" => Some(WasmRuntimeImport::CancelCurrent),
-        "molt_cancel_current" => Some(WasmRuntimeImport::CancelCurrent),
         "cancel_token_cancel" => Some(WasmRuntimeImport::CancelTokenCancel),
         "molt_cancel_token_cancel" => Some(WasmRuntimeImport::CancelTokenCancel),
         "cancel_token_clone" => Some(WasmRuntimeImport::CancelTokenClone),
@@ -16390,8 +16378,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_cancel_token_new" => Some(WasmRuntimeImport::CancelTokenNew),
         "cancel_token_set_current" => Some(WasmRuntimeImport::CancelTokenSetCurrent),
         "molt_cancel_token_set_current" => Some(WasmRuntimeImport::CancelTokenSetCurrent),
-        "cancelled" => Some(WasmRuntimeImport::Cancelled),
-        "molt_cancelled" => Some(WasmRuntimeImport::Cancelled),
         "contextlib_async_exitstack_enter_context_poll" => {
             Some(WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll)
         }

@@ -31,8 +31,6 @@ pub(crate) const PURE_PROFILE_SKIP_PREFIXES: &[&str] = &[
     "spawn",
     "block_on",
     "cancel_token_",
-    "cancelled",
-    "cancel_current",
     "sleep_register",
     "contextlib_async",
     "time_",

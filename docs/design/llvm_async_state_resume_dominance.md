@@ -25,14 +25,14 @@ plain generator).
 
 The `_poll` state machine re-enters at a saved state via the `state_switch`
 dispatch: on resume, control jumps from the entry block's `state_switch`
-*straight to the op after the suspend op* (`state_yield` / `state_transition` /
-`chan_*_yield`) that established that state. **`tir/cfg.rs` does not model this
+*straight to the op after the suspend op* (`state_yield` / `state_transition`)
+that established that state. **`tir/cfg.rs` does not model this
 re-entrant control flow at all.** `is_terminator` / `is_block_leader` /
 `is_block_ender` (cfg.rs:59-79) omit every state op, so:
 
 - `state_switch` is treated as a plain straight-line op (falls through; **no
   edges to the resume points**);
-- `state_yield` / `state_transition` / `chan_*_yield` are treated as plain
+- `state_yield` / `state_transition` are treated as plain
   straight-line ops (the resume continuation is modeled as ordinary
   fall-through, when in reality the suspend op `ret`s and the continuation is
   reached *only* via the dispatch).
@@ -86,13 +86,13 @@ folded into the augmented CFG.
 ### Part 1 — model the dispatch CFG for SSA (landed)
 
 `tir/cfg.rs`:
-- New `is_suspend_op` (`state_yield`/`state_transition`/`chan_send_yield`/
-  `chan_recv_yield`) and `is_repoll_op` (the await/channel ops — they re-poll
+- New `is_suspend_op` (`state_yield`/`state_transition`) and
+  `is_repoll_op` (await transitions re-poll
   from their *own* position on resume, so they are also block leaders).
 - `is_block_ender` ∪= `is_suspend_op` (op after a suspend op = resume-continuation
   leader). `is_block_leader` ∪= `is_repoll_op`.
 - `build_edges`: `state_yield` → no successor (it `ret`s; resume is dispatch-only);
-  `state_transition`/`chan_*_yield` → fall through to the next op only (the READY
+  `state_transition` → fall through to the next op only (the READY
   path's next-state continuation).
 - New `CFG.state_resume_edges: Vec<(state_switch_block, resume_block)>` from
   `compute_state_resume_edges`: find the single `state_switch` block; for each
@@ -149,7 +149,7 @@ continuation is a real block, the `state_switch` needs an explicit
 Landed rework:
 - `initialize_state_resume_blocks` → map each state-id to the **real** TIR block
   holding its resume op (post-yield continuation = block of op K+1; re-poll = the
-  block of the `state_transition`/`chan_*_yield` op itself), not a fresh synthetic
+  block of the `state_transition` op itself), not a fresh synthetic
   block.
 - `StateSwitch` arm → build the `switch` to those real `block_map` blocks and, for
   each, supply its block-arg incomings (values live at the `state_switch` point).

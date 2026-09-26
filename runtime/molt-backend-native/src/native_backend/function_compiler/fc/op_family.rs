@@ -80,7 +80,6 @@ pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
     UnaryLogic,
     ParseOps,
     Coroutine,
-    FuturePromise,
     Funcobj,
     ObjectConstruct,
     GpuIntrinsic,
@@ -184,10 +183,6 @@ pub(in crate::native_backend::function_compiler) const FAMILY_DISPATCH_TABLE: &[
     ),
     (NativeOpFamily::ParseOps, super::parse_ops::HANDLED_KINDS),
     (NativeOpFamily::Coroutine, super::coroutine::HANDLED_KINDS),
-    (
-        NativeOpFamily::FuturePromise,
-        super::future_promise::HANDLED_KINDS,
-    ),
     (NativeOpFamily::Funcobj, super::funcobj::HANDLED_KINDS),
     (
         NativeOpFamily::ObjectConstruct,

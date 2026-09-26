@@ -266,8 +266,7 @@ mod tests {
         for spec in super::POLL_TABLE_IMPORTS {
             assert_eq!(spec.import.return_contract(), WasmRuntimeReturn::PollResult);
         }
-        let dropped = op_loop_runtime_call("chan_drop", false).expect("effect-only channel drop");
-        assert!(dropped.discard_result);
+        assert!(op_loop_runtime_call("chan_drop", false).is_none());
         assert!(op_loop_runtime_call("alloc_class", false).is_none());
         let owned = op_loop_runtime_call("asyncgen_new", false).expect("owned async generator");
         assert!(

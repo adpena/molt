@@ -796,38 +796,6 @@ fn test_compile_checked_lowers_inplace_matmul_dunder_dispatch() {
 }
 
 #[test]
-fn test_compile_checked_rejects_spawn_scheduler_semantics() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "async_test".to_string(),
-            params: vec![],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            execution_context: ExecutionContextPolicy::None,
-            ops: vec![OpIR {
-                kind: "spawn".to_string(),
-                out: Some("v0".to_string()),
-                ..OpIR::default()
-            }],
-        }],
-        profile: None,
-    };
-    let mut backend = LuauBackend::new();
-    let err = backend
-        .compile_checked(&ir)
-        .expect_err("compile_checked must reject unsupported async operations");
-    assert!(
-        err.contains("rejected before source generation")
-            && err.contains("`spawn`")
-            && err.contains("exact async scheduler"),
-        "error should come from generated pre-source admission, got: {err}"
-    );
-}
-
-#[test]
 fn test_compile_checked_rejects_call_async_scheduler_semantics() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {

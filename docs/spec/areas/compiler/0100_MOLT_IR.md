@@ -75,13 +75,14 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
 - **Object/layout**: `Alloc`, `LoadAttr`, `StoreAttr`, `GetAttrGenericPtr`, `SetAttrGenericPtr`, `GetAttrGenericObj`, `SetAttrGenericObj`, `LoadIndex`, `StoreIndex`, `Index`, `Iter`, `Enumerate`, `IterNext`, `ListNew`, `DictNew`, `Len`, `Slice`, `SliceNew`, `BytearrayFromObj`, `IntArrayFromSeq`, `MemoryViewNew`, `MemoryViewToBytes`, `RangeNew`, `Buffer2DNew`, `Buffer2DGet`, `Buffer2DSet`, `Buffer2DMatmul`, `ClosureLoad`, `ClosureStore`.
 - **Bytes/Bytearray/String**: `BytesFind`, `BytesSplit`, `BytesReplace`, `BytearrayFind`, `BytearraySplit`, `BytearrayReplace`, `StringFind`, `StringFormat`, `StringSplit`, `StringCapitalize`, `StringStrip`, `StringReplace`, `StringStartswith`, `StringEndswith`, `StringCount`, `StringJoin`.
 - **Exceptions**: `ExceptionNew`, `ExceptionLast`, `ExceptionClear`, `ExceptionKind`, `ExceptionMessage`, `ExceptionSetCause`, `ExceptionContextSet`, `Raise` (raise sets implicit `__context__`; `ExceptionSetCause` sets explicit `__cause__` and suppresses context).
-- **Generators/async**: `AllocGenerator`, `GenSend`, `GenThrow`, `GenClose`, `IsGenerator`, `AIter`, `ANext`, `AllocFuture`, `CallAsync`, `StateSwitch`, `StateTransition`, `StateYield`, `ChanNew`, `ChanSendYield`, `ChanRecvYield`.
+- **Generators/async**: `AllocGenerator`, `GenSend`, `GenThrow`, `GenClose`, `IsGenerator`, `AIter`, `ANext`, `CallAsync`, `StateSwitch`, `StateTransition`, `StateYield`.
   - `StateSwitch` dispatches based on the state slot (`self` payload -16). `StateTransition`/`StateYield` advance the state and return `Pending` when awaiting.
   - Implementations may encode resume targets in the state slot (for example,
     bitwise NOT of the resume op index) to avoid collisions with logical state
     ids; `StateSwitch` must decode before dispatch.
-  - `ChanNew` takes a boxed capacity; `0` creates an unbounded channel.
-  - `ChanSendYield`/`ChanRecvYield` advance the state and return `Pending` when channel operations suspend, otherwise they yield the send/recv result immediately.
+  - Channel operations are runtime-bound calls. Their owning async wrappers
+    explicitly await when a runtime call returns pending; channel names do not
+    create source-level suspension or channel-specific IR opcodes.
 - **Vector**: `VecSumInt`, `VecProdInt`, `VecMinInt`, `VecMaxInt` (guarded reductions; emit `(result, ok)` tuples), plus trusted variants (`VecSumIntTrusted`, `VecProdIntTrusted`, `VecMinIntTrusted`, `VecMaxIntTrusted`) that skip per-element checks when type facts are trusted. Range-aware variants (`Vec*IntRange`, `Vec*IntRangeTrusted`) accept a start offset for `range(k, len(xs))` patterns.
 - **Guards (Tier 1)**: `GuardType`, `GuardTag`, `GuardLayout`, `GuardDictShape`.
 - **RC ops (LIR)**: `IncRef`, `DecRef`, `Borrow`, `Release`.

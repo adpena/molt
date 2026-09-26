@@ -1466,8 +1466,6 @@ fn split_nonisolated_local_entry_refuses_without_mutating_source_or_names() {
         "try_end",
         "state_transition",
         "state_yield",
-        "chan_recv_yield",
-        "chan_send_yield",
         "label",
         "state_label",
     ] {

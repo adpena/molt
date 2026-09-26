@@ -316,22 +316,6 @@ fn preanalysis_marks_every_persisted_coroutine_state_resumable() {
                 value: Some(217),
                 ..OpIR::default()
             },
-            OpIR {
-                kind: "chan_send_yield".to_string(),
-                args: Some(vec![
-                    "chan".to_string(),
-                    "value".to_string(),
-                    "pending_state".to_string(),
-                ]),
-                value: Some(301),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "chan_recv_yield".to_string(),
-                args: Some(vec!["chan".to_string(), "pending_state".to_string()]),
-                value: Some(302),
-                ..OpIR::default()
-            },
         ],
         param_types: None,
         source_file: None,
@@ -349,14 +333,6 @@ fn preanalysis_marks_every_persisted_coroutine_state_resumable() {
     assert!(
         analysis.resume_states.contains(&217),
         "state_transition ready continuations are stored in object state and must dispatch",
-    );
-    assert!(
-        analysis.resume_states.contains(&301),
-        "channel send ready continuations are stored in object state and must dispatch",
-    );
-    assert!(
-        analysis.resume_states.contains(&302),
-        "channel receive ready continuations are stored in object state and must dispatch",
     );
 }
 

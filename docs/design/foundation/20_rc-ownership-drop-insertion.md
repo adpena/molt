@@ -57,7 +57,7 @@ The following table specifies the ownership state of the **result** of each majo
 | `Import`, `ImportFrom`, `ModuleImportFrom` | Owned | Borrowed |
 | `BuildList`, `BuildDict`, `BuildTuple`, `BuildSet`, `BuildSlice` | Owned | Elements are *inc-ref'd by the container*; the builder still holds its own ref and must dec-ref |
 | `GetIter`, `IterNext`, `IterNextUnboxed`, `ForIter` | Owned (new iterator or next-value allocation) | Borrowed |
-| `AllocTask`, `StateSwitch`, `StateTransition`, `StateYield`, `ChanSendYield`, `ChanRecvYield` | Varies (see §1.3 generators) | Borrowed |
+| `AllocTask`, `StateSwitch`, `StateTransition`, `StateYield` | Varies (see §1.3 generators) | Borrowed |
 | `ClosureLoad` | Owned (runtime inc-refs before returning) | Borrowed |
 | `ClosureStore` | None | Borrowed (cell inc-refs the stored value) |
 | `Yield`, `YieldFrom` | None (sends value out) | Borrows arg — but see §1.3 |
@@ -78,7 +78,7 @@ The following table specifies the ownership state of the **result** of each majo
 
 ### 1.3 Generator and Async Suspension Points
 
-`StateYield`, `ChanSendYield`, `ChanRecvYield`, `Yield`, `YieldFrom` are suspension points. At a suspension, all SSA values that are live *across* the yield (used after the next resume) must be treated as escaping into the coroutine frame. The coroutine frame owns those references while suspended. Consequently:
+`StateYield`, `Yield`, and `YieldFrom` are suspension points. At a suspension, all SSA values that are live *across* the yield (used after the next resume) must be treated as escaping into the coroutine frame. The coroutine frame owns those references while suspended. Consequently:
 
 - Live-across-yield values must be inc-ref'd before the yield and dec-ref'd on frame teardown (gen.close()/forced drop), not at the next use.
 - Values used only *before* the yield are still dropped at their last use before the yield.
@@ -484,7 +484,7 @@ before a conformance or release claim.
 
 ### 2.9 Suspension Point Survival
 
-For each `StateYield`, `ChanSendYield`, `ChanRecvYield`, `Yield`, `YieldFrom` op:
+For each `StateYield`, `Yield`, `YieldFrom` op:
 1. Compute the set of values live-across-this-yield (used after the matching resume point or in a post-yield block).
 2. For each live-across value V that is `Owned`:
    - Insert `IncRef(V)` immediately before the yield op (the frame now holds its own reference to V while suspended).
@@ -803,7 +803,7 @@ Files to create/modify:
   - Straight-line placement: for each block, walk ops, identify last-use positions, insert `DecRef` after last use.
   - Successor-edge placement: for each block-exit edge where a value V is live-in to the predecessor but not live-in to the target successor AND V is not passed as a branch argument to that successor — insert `DecRef(V)` at the end of the current block before the terminator. When the CondBranch has two successors with different dead-value sets, use the "before-the-terminator" insertion for values that die on ALL successors (common-prefix), and for values that die only on one successor, insert after the terminator switch by placing them at the start of the successor block (this keeps the pass OpsOnly — no edge-splitting).
   - Loop-exit placement: detect loop exit edges using `LoopForest`. For phi values that are the back-edge carrier (last live use at the back-edge branch), insert `DecRef` before the loop-exit branch.
-  - Suspension handling: for each `StateYield`/`ChanSendYield`/`ChanRecvYield`/`Yield`/`YieldFrom` op, for each value that is live-across-this-yield (in `LiveIn` of the resume continuation block), insert `IncRef(V)` immediately before the yield op.
+  - Suspension handling: for each `StateYield`/`Yield`/`YieldFrom` op, for each value that is live-across-this-yield (in `LiveIn` of the resume continuation block), insert `IncRef(V)` immediately before the yield op.
   - Owned allocations: preserve root/alias/CFG final drops; reject unsupported raw and class-frame compiler operations before emission.
   - Borrow inference: if V's only remaining use after the drop candidate is as an operand to a `Call`/`CallMethod`/`CallBuiltin` where V is dead after the call, and no IncRef is needed (no heap-exposing barrier between definition and call), skip the IncRef+DecRef pair entirely.
   - Set `func.attrs.insert("drop_inserted", AttrValue::Bool(true))` for every non-bailed full-function analysis, even when no physical `DecRef`/`IncRef` is inserted; report this as `PassStats.attrs_changed` so pass-manager snapshot restore preserves metadata-only RC authority changes.
