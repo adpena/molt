@@ -1966,7 +1966,7 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv","run","--python","3.12","python","-m","pytest","-q","-m","not slow","tests/cli/test_backend_manifest_contract.py","tests/test_cargo_workspace.py","tests/test_cli_build_profile_policy.py","tests/cli/test_runtime_build_identity.py","tests/cli/test_runtime_family_authority.py","tests/cli/test_runtime_artifact_selection.py","tests/cli/test_cli_backend_binary_materialization.py","tests/cli/test_cli_artifact_format_validation.py","tests/cli/test_cli_shared_stdlib_cache.py","tests/test_ustar.py","tests/test_native_artifact_header.py","tests/cli/test_cli_native_binary_authority.py","tests/cli/test_native_artifact_contract.py","tests/cli/test_native_symbol_authority.py","tests/cli/test_native_symbol_build_errors.py","tests/cli/test_backend_artifact_contract.py","tests/cli/test_artifact_sync.py","tests/cli/test_native_link_custody.py","tests/cli/test_native_link_manifest.py","tests/cli/test_cargo_execution_failure_authority.py","tests/cli/test_runtime_wasm_generation.py","tests/cli/test_runtime_wasm_single_compile.py","tests/cli/test_cli_runtime_wasm_shared_cache.py","tests/cli/test_cli_wasm_artifact_validation.py","tests/cli/test_cli_toolchain_artifact_hydration.py","tests/test_wasm_link_runtime_generation.py","tests/test_wasm_longdouble_durable_provisioning.py","tests/tools/test_nightly_runtime_bundle.py","tests/tools/test_nightly_prepare.py","tests/tools/test_native_link_benchmark.py","tests/cli/test_runtime_c_resource_custody.py","tests/cli/test_runtime_native_failure_custody.py","tests/cli/test_static_archive_identity.py","tests/cli/test_link_fingerprints.py","tests/cli/test_runtime_wasm_build_timings.py","tests/test_wasm_link_validation.py","tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py"]
+argv = ["uv","run","--python","3.12","python","-m","pytest","-q","-m","not slow","tests/cli/test_backend_manifest_contract.py","tests/test_cargo_workspace.py","tests/test_cli_build_profile_policy.py","tests/cli/test_runtime_build_identity.py","tests/cli/test_runtime_family_authority.py","tests/cli/test_runtime_artifact_selection.py","tests/cli/test_cli_backend_binary_materialization.py","tests/cli/test_cli_artifact_format_validation.py","tests/cli/test_cli_shared_stdlib_cache.py","tests/test_ustar.py","tests/test_native_artifact_header.py","tests/cli/test_cli_native_binary_authority.py","tests/cli/test_native_artifact_contract.py","tests/cli/test_native_symbol_authority.py","tests/cli/test_native_symbol_build_errors.py","tests/cli/test_backend_artifact_contract.py","tests/cli/test_artifact_sync.py","tests/cli/test_native_link_custody.py","tests/cli/test_native_link_manifest.py","tests/cli/test_cargo_execution_failure_authority.py","tests/cli/test_runtime_wasm_generation.py","tests/cli/test_runtime_wasm_single_compile.py","tests/cli/test_cli_runtime_wasm_shared_cache.py","tests/cli/test_cli_wasm_artifact_validation.py","tests/cli/test_cli_toolchain_artifact_hydration.py","tests/test_wasm_link_runtime_generation.py","tests/test_wasm_longdouble_durable_provisioning.py","tests/tools/test_nightly_runtime_bundle.py","tests/tools/test_nightly_prepare.py","tests/tools/test_native_link_benchmark.py","tests/cli/test_runtime_c_resource_custody.py","tests/cli/test_runtime_native_failure_custody.py","tests/cli/test_static_archive_identity.py","tests/cli/test_link_fingerprints.py","tests/cli/test_runtime_wasm_build_timings.py","tests/test_wasm_link_validation.py","tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -1991,7 +1991,7 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges", "tests/cli/test_link_selection_admission.py"]
 toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm"]
 
 [[command]]
@@ -2790,6 +2790,10 @@ globs = [
   "src/molt/cli/link_pipeline.py",
   "src/molt/cli/link_fingerprints.py",
   "src/molt/link_outputs.py",
+  "src/molt/cli/link_member_selection.py",
+  "src/molt/cli/link_selection_admission.py",
+  "tests/cli/test_link_member_selection.py",
+  "tests/cli/test_link_selection_admission.py",
   "tests/cli/test_link_fingerprints.py",
   "src/molt/cli/module_graph.py",
   "src/molt/cli/native_link_command.py",

@@ -32,6 +32,7 @@ from molt.browser_asset_closure import (
     wasm_loader_asset_closure,
 )
 from molt.cli import link_fingerprints
+from molt.cli.link_selection_admission import link_selection_policy
 from molt.cli.wasm_deployment import (
     WasmDeploymentGeneration,
     WasmDeploymentPlan,
@@ -1007,6 +1008,7 @@ def _prepare_non_native_build_result_in_generation(
             try:
                 link_outputs = wasm_link_output_paths(
                     resolved_linked_output,
+                    external_selection=bool(wasm_link_requirements.items),
                     split_output_dir=output_wasm.parent if _split_runtime else None,
                     inputs=(
                         output_wasm,
@@ -1173,6 +1175,9 @@ def _prepare_non_native_build_result_in_generation(
                             "--precompile requires a matching molt-wasm-host binary "
                             "(set MOLT_WASM_HOST_BIN or build the runtime profile)"
                         )
+                selection_policy = (
+                    link_selection_policy() if wasm_link_requirements.items else None
+                )
                 deployment_closure = local_python_import_closure(
                     molt_root, (Path(__file__),)
                 )
@@ -1200,6 +1205,7 @@ def _prepare_non_native_build_result_in_generation(
                 ],
                 link_cmd=link_cmd,
                 tool_facts=(
+                    *((selection_policy,) if selection_policy is not None else ()),
                     {
                         "role": "wasm-link-source-closure",
                         "content_digest": link_tool_closure.content_digest,
@@ -1310,6 +1316,16 @@ def _prepare_non_native_build_result_in_generation(
                         if err:
                             msg = f"{msg}: {err}"
                         return None, _fail(msg, json_output, command="build")
+                    if selection_policy is not None:
+                        from molt.cli.link_selection_admission import (
+                            validate_link_selection_policy,
+                        )
+
+                        validate_link_selection_policy(
+                            deployment.outputs["selection"],
+                            selection_policy,
+                            roles={"linked", "app"} if _split_runtime else {"linked"},
+                        )
                     resolved_linked_output = deployment.outputs["linked"]
                 except (OSError, ValueError) as exc:
                     return None, _fail(

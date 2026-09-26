@@ -318,6 +318,7 @@ def _emit_backend_pipeline_outputs(
                 prepared_native_link.link_fingerprint_path,
                 prepared_native_link.link_fingerprint,
             ),
+            link_selection=prepared_native_link.link_selection,
         )
         if bolt_rc != 0:
             return return_after_build_diagnostics(
@@ -373,4 +374,5 @@ def _emit_backend_pipeline_outputs(
         json_output=json_output,
         resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
         strip_after_link=prepared_native_link.strip_after_link,
+        link_selection=prepared_native_link.link_selection,
     )

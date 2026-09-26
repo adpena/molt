@@ -611,6 +611,34 @@ requires final-link extraction evidence bound to individual member identities;
 aggregate symbol sets are not proof of extraction. These contracts do not
 establish emitted-program conformance on an unexecuted target.
 
+Checksummed final-link dependency inputs have a separate, consumer-specific
+member admission boundary. LLVM ELF/WASM extraction records and input traces,
+Mach-O input traces, and COFF full-path read/load records bind selected members
+to their archive ordinal and content digest. Ambiguous extracted-member names or
+COFF archive basenames fail explicitly; dormant ambiguities do not reject a link.
+Direct objects and explicitly eager archives retain their declared loading
+contract. Runtime-owned definitions and dynamic CPython imports are rejected
+before subtracting external providers from requirements. The existing C-API
+support surface classifies the remaining obligations. A successful linker exit
+does not itself establish C-API support.
+
+The `.molt-link-selection.json` sidecar is part of the atomic output family,
+not a separately published log. Native production, benchmark and BOLT flows
+share admission. WASM combined and split-app links each attest extraction against
+the same original checksummed input identities, not temporary rewritten paths.
+Evidence uses input order and content hashes and records extraction before dead
+stripping, not final-section liveness. Generated runtime aliases are not external
+providers. Final-link cache keys and role evidence bind the same support policy;
+missing or changed selection bytes invalidate the complete cached family.
+Native extraction currently requires the LLVM linker capability for ELF,
+COFF-MSVC or Mach-O; unmodeled linker dialects fail explicitly. Bare library,
+archive and framework providers have no checksummed selection custody and are
+rejected before linking; record resolved static inputs in the extension plan.
+The explicit toolchain thread-runtime option remains supported. The lazy
+source-partition candidate schema is not established by this evidence.
+The existing lazy-source/external gate is
+unchanged, and full cross-platform execution remains a separate release proof.
+
 ### 5.1 Known eager Python-import authority
 
 Build, set publication, and resealing derive `runtime_python_import_modules`

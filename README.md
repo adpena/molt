@@ -64,6 +64,11 @@ defines test selection, source-change checks, and the exact cross-target pass la
   package compatibility. See the [extension ABI contract](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
   for header and runtime-linkage requirements, and the [ecosystem matrix](docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md)
   for package support.
+  Final links with checksummed native dependencies publish a member-selection
+  sidecar alongside their outputs; missing or changed evidence invalidates cache
+  reuse. Unbound library providers must be resolved to checksummed static inputs.
+  See the [source-build contract](docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md)
+  for linker capability gates and the remaining lazy-source admission boundary.
 
 ## Source Checkout Quickstart
 

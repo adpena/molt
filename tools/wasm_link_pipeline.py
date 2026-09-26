@@ -16,6 +16,10 @@ from wasm_link_format import CallableTableLayout
 from molt.dx import proof_scratch_root
 from molt.link_outputs import wasm_link_output_paths
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest, publish_link_outputs
+from molt.cli.link_selection_admission import (
+    LinkSelectionAdmission,
+    write_link_selection,
+)
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkInput,
     SourceExtensionLinkRequirements,
@@ -68,6 +72,7 @@ def run_wasm_ld_with_custodied_inputs(
     try:
         link_outputs = wasm_link_output_paths(
             linked,
+            external_selection=bool(native_link_requirements.items),
             split_output_dir=(split_output_dir or linked.parent)
             if split_runtime
             else None,
@@ -576,6 +581,25 @@ def run_wasm_ld_with_custodied_inputs(
         ]
         operation_counts["split_app_data_base_bytes"] = split_app_data_base
 
+    selection_roles: dict[str, Mapping[str, object]] = {}
+    linked_selection = split_selection = None
+    linked_why = Path(temp_dir.name) / "linked.why-extract"
+    split_why = Path(temp_dir.name) / "app.why-extract"
+    try:
+        if native_link_requirements.items:
+            # Rewrites change direct objects, never lazy archives. Admission
+            # belongs to the original checksummed external namespace for both
+            # roles; generated runtime aliases are not external providers.
+            linked_selection = LinkSelectionAdmission.capture(native_link_requirements)
+            if linked_selection.lazy_archives:
+                cmd.extend(("--trace", f"--why-extract={linked_why}"))
+            if split_app_cmd is not None:
+                split_selection = linked_selection
+                if split_selection.lazy_archives:
+                    split_app_cmd.extend(("--trace", f"--why-extract={split_why}"))
+    except (OSError, ValueError) as exc:
+        print(f"Cannot capture WASM external member admission: {exc}", file=sys.stderr)
+        return 1
     res = api["_run_external_tool"](cmd, capture_output=True, text=True)
     whole_artifact_counts_token = api["_WHOLE_ARTIFACT_OPERATION_COUNTS"].set(
         operation_counts
@@ -586,6 +610,19 @@ def run_wasm_ld_with_custodied_inputs(
             if err:
                 print(err, file=sys.stderr)
             return res.returncode
+        if linked_selection is not None:
+            try:
+                selection_roles["linked"] = linked_selection.admit(
+                    dialect="wasm",
+                    stdout=res.stdout,
+                    stderr=res.stderr,
+                    why_extract=linked_why.read_text(encoding="utf-8")
+                    if linked_selection.lazy_archives
+                    else None,
+                )
+            except (OSError, ValueError) as exc:
+                print(f"WASM external member admission failed: {exc}", file=sys.stderr)
+                return 1
         signature_mismatch = api["_wasm_ld_signature_mismatch_warning"](res.stderr)
         if signature_mismatch is not None:
             print(signature_mismatch, file=sys.stderr)
@@ -868,6 +905,22 @@ def run_wasm_ld_with_custodied_inputs(
                     if err:
                         print(err, file=sys.stderr)
                     return split_app_res.returncode
+                if split_selection is not None:
+                    try:
+                        selection_roles["app"] = split_selection.admit(
+                            dialect="wasm",
+                            stdout=split_app_res.stdout,
+                            stderr=split_app_res.stderr,
+                            why_extract=split_why.read_text(encoding="utf-8")
+                            if split_selection.lazy_archives
+                            else None,
+                        )
+                    except (OSError, ValueError) as exc:
+                        print(
+                            f"WASM split-app external member admission failed: {exc}",
+                            file=sys.stderr,
+                        )
+                        return 1
                 signature_mismatch = api["_wasm_ld_signature_mismatch_warning"](
                     split_app_res.stderr
                 )
@@ -1364,6 +1417,16 @@ def run_wasm_ld_with_custodied_inputs(
             return 1
 
         publish_candidates = {"linked": (work_linked, linked)}
+        if selection_roles:
+            selection_stage = api["artifact_publish"].staged_output_path(
+                link_outputs["selection"]
+            )
+            staged_outputs.append(selection_stage)
+            write_link_selection(selection_stage, selection_roles)
+            publish_candidates["selection"] = (
+                selection_stage,
+                link_outputs["selection"],
+            )
         validation_start = time.perf_counter()
         if split_runtime:
             assert app_stage is not None

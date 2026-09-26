@@ -2112,6 +2112,23 @@ def _source_extension_object_fact(
     )
 
 
+def _wasm_relocatable_external_symbols(
+    inspection: _SourceExtensionArtifactSymbolInspection,
+) -> tuple[str, ...] | None:
+    """Project requirements from the same bytes used for closure validation."""
+    if inspection.wasm_imports is None:
+        return None
+    return tuple(
+        sorted(
+            {
+                *inspection.undefined_symbols,
+                *(item.name for item in inspection.wasm_imports if item.kind != 2),
+            }
+            - inspection.defined_symbols
+        )
+    )
+
+
 def _inspect_source_extension_artifact_symbols(
     artifact_path: Path,
     *,
@@ -2761,10 +2778,7 @@ def _source_extension_required_c_api_by_object(
             ):
                 project_generated_required.append(symbol)
                 continue
-            if status == "source_compile_only":
-                # Header tokens are compile-time vocabulary, not evidence of a
-                # provider for an actual unresolved compiled symbol.
-                status = "missing"
+            status = scan_surface.link_status_for(symbol)
             filtered_required.append(symbol)
             if status == "missing":
                 missing.add(symbol)
