@@ -188,6 +188,10 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
                 {
                     "source": source_reference,
                     "object": "0.o",
+                    "producer_unit": {
+                        "target_id": module,
+                        "object": f"{module}.so.p/0.o",
+                    },
                     "language": "c",
                     "source_sha256": source_sha256,
                     "object_sha256": artifact_sha256,
@@ -3114,6 +3118,10 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
             {
                 "source": str(source),
                 "object": "0.o",
+                "producer_unit": {
+                    "target_id": "_nd_image",
+                    "object": "_nd_image.so.p/0.o",
+                },
                 "language": "c",
                 "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 "object_sha256": "1" * 64,
@@ -3134,6 +3142,10 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
             {
                 "source": str(generated),
                 "object": "1.o",
+                "producer_unit": {
+                    "target_id": "_nd_image",
+                    "object": "_nd_image.so.p/1.o",
+                },
                 "language": "c",
                 "source_sha256": hashlib.sha256(generated.read_bytes()).hexdigest(),
                 "object_sha256": "2" * 64,

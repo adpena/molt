@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from molt import rust_source_scan
+from molt.c_api_headers import CAPIHeaderClosureError, c_api_header_closure
 from molt.cli.source_extension_toolchain import (
     _source_extension_include_dirs_for_abi_tier,
     _source_extension_python_header_for_abi_tier,
@@ -468,34 +469,10 @@ def _cpython_abi_link_header_closure() -> tuple[Path, ...]:
     header = _source_extension_python_header_for_abi_tier(
         molt_root=ROOT, abi_tier="cpython-abi"
     )
-    pending = [header]
-    visited: set[Path] = set()
-    include_re = re.compile(r'^\s*#\s*include\s*([<"])([^>"]+)[>"]', re.M)
-    while pending:
-        current = pending.pop().resolve()
-        if current in visited:
-            continue
-        visited.add(current)
-        source = current.read_text(encoding="utf-8")
-        source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
-        source = re.sub(r"//[^\n]*", "", source)
-        for match in include_re.finditer(source):
-            name = match.group(2)
-            quoted = match.group(1) == '"'
-            search_dirs = (current.parent, *include_dirs) if quoted else include_dirs
-            for directory in search_dirs:
-                dependency = directory / name
-                if dependency.is_file():
-                    pending.append(dependency)
-                    break
-            else:
-                # Quoted and Molt-private includes belong to the linked SDK;
-                # unresolved standard angle includes belong to the target C toolchain.
-                if quoted or Path(name).name.startswith("_"):
-                    raise WasmAbiManifestError(
-                        f"linked CPython ABI header {current} includes missing local header {name!r}"
-                    )
-    return tuple(sorted(visited, key=lambda path: path.as_posix()))
+    try:
+        return c_api_header_closure(header, include_dirs=include_dirs)
+    except CAPIHeaderClosureError as exc:
+        raise WasmAbiManifestError(str(exc)) from exc
 
 
 @lru_cache(maxsize=1)
@@ -2780,6 +2757,7 @@ def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
     direct = {
         path,
         Path(rust_source_scan.__file__).resolve(),
+        Path(c_api_header_closure.__code__.co_filename).resolve(),
         Path(
             _source_extension_include_dirs_for_abi_tier.__code__.co_filename
         ).resolve(),

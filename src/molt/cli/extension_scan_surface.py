@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from molt.c_api_headers import CAPIHeaderClosureError, c_api_header_closure
 from molt.c_api_symbols import C_API_TOKEN as _C_API_TOKEN
 from molt.c_api_symbols import C_API_TOKEN_RE as _C_API_TOKEN_RE
 
@@ -890,38 +891,53 @@ def _load_c_api_scan_surface(
     *,
     header_path: Path | None = None,
 ) -> tuple[_ExtensionScanSurface | None, Path, str | None]:
-    header_path = header_path or molt_root / "include" / "molt" / "Python.h"
-    header_roots: list[Path] = []
-    for root in (
-        header_path.parent,
-        header_path.parent.parent if header_path.parent.name == "molt" else None,
-    ):
-        if root is None:
-            continue
-        resolved = root.resolve()
-        if resolved not in header_roots:
-            header_roots.append(resolved)
+    # The toolchain module imports scan consumers; choose the existing tier
+    # authority lazily rather than creating another SDK root classifier.
+    from molt.cli.source_extension_toolchain import (
+        _source_extension_include_dirs_for_abi_tier,
+        _source_extension_python_header_for_abi_tier,
+    )
+
+    header_path = (
+        header_path
+        or _source_extension_python_header_for_abi_tier(
+            molt_root=molt_root, abi_tier="source-compat"
+        )
+    ).resolve()
+    include_dirs = (header_path.parent,)
+    for abi_tier in ("source-compat", "cpython-abi"):
+        canonical_header = _source_extension_python_header_for_abi_tier(
+            molt_root=molt_root, abi_tier=abi_tier
+        ).resolve()
+        if header_path == canonical_header:
+            include_dirs = _source_extension_include_dirs_for_abi_tier(
+                molt_root=molt_root, abi_tier=abi_tier
+            )
+            break
     runtime_tokens: set[str] = set()
     numpy_tokens: set[str] = set()
     fail_fast_tokens: set[str] = set()
     try:
-        header_text = header_path.read_text()
-    except OSError as exc:
-        return None, header_path, str(exc)
-    runtime_tokens.update(
-        _extract_c_api_tokens(header_text, strip_py_condition_blocks=False)
-    )
-    for datetime_header in tuple(root / "datetime.h" for root in header_roots):
-        if not datetime_header.exists():
-            continue
-        try:
-            datetime_text = datetime_header.read_text()
-        except OSError:
-            datetime_text = ""
-        if datetime_text:
+        runtime_headers = set(
+            c_api_header_closure(header_path, include_dirs=include_dirs)
+        )
+        # datetime.h is a separate public C-API entry point, not an arbitrary
+        # sibling-header scan. Follow its same owned include closure if shipped.
+        for root in include_dirs:
+            datetime_header = root / "datetime.h"
+            if datetime_header.is_file():
+                runtime_headers.update(
+                    c_api_header_closure(datetime_header, include_dirs=include_dirs)
+                )
+        for runtime_header in sorted(runtime_headers):
             runtime_tokens.update(
-                _extract_c_api_tokens(datetime_text, strip_py_condition_blocks=False)
+                _extract_c_api_tokens(
+                    runtime_header.read_text(encoding="utf-8"),
+                    strip_py_condition_blocks=False,
+                )
             )
+    except (OSError, UnicodeError, CAPIHeaderClosureError) as exc:
+        return None, header_path, str(exc)
     numpy_include_root = molt_root / "include" / "numpy"
     if numpy_include_root.exists():
         for numpy_header in sorted(numpy_include_root.rglob("*.h")):
