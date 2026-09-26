@@ -139,8 +139,6 @@ class LocalBindingMixin(GeneratorMixinBase):
             node = node.value
         if not isinstance(node, ast.Name) or self.python_binding_index is None:
             return False
-        if node.id in self.comp_shadow_locals:
-            return False
         fact = self.python_binding_index.expression_fact(node)
         return fact is not None and fact.binding_invalidated
 
@@ -529,12 +527,16 @@ class LocalBindingMixin(GeneratorMixinBase):
             self.closure_locals.add(name)
 
     def _emit_free_var_load(
-        self, name: str, *, guard_unbound: bool = True
+        self,
+        name: str,
+        *,
+        guard_unbound: bool = True,
+        binding_invalidated: bool = False,
     ) -> MoltValue | None:
         cell = self._load_free_var_cell(name)
         if cell is None:
             return None
-        hint = self.free_var_hints.get(name, "Any")
+        hint = "Any" if binding_invalidated else self.free_var_hints.get(name, "Any")
         res = self._emit_cell_get(cell, type_hint=hint)
         if guard_unbound:
             self._emit_unbound_free_guard(res, name)
@@ -745,7 +747,9 @@ class LocalBindingMixin(GeneratorMixinBase):
                 )
             )
 
-    def _class_ns_load(self, scope: "_ClassNsScope", name: str) -> MoltValue | None:
+    def _class_ns_load(
+        self, scope: "_ClassNsScope", name: str, *, binding_invalidated: bool = False
+    ) -> MoltValue | None:
         # Source binding invalidation does not change the storage owner. Probe
         # the live mapping even for never-stored names: __prepare__ or callbacks
         # may supply them. A missing class-local falls back to globals, whereas
@@ -757,6 +761,8 @@ class LocalBindingMixin(GeneratorMixinBase):
             namespace = self._emit_cell_get(
                 scope.annotation_namespace_cell, type_hint="Any"
             )
+        merge = None
+        value = None
         if namespace is not None:
             key_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
@@ -768,25 +774,37 @@ class LocalBindingMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="IS", args=[value, missing], result=absent))
             merge = self._new_condition_merge(1, ())
             self.emit(MoltOp(kind="IF", args=[absent], result=MoltValue("none")))
-            fallback = None
-            if name not in scope.local_names or name in scope.nonlocal_names:
-                # Class bodies share the enclosing function's storage during
-                # lowering, but must never consult an enclosing class mapping.
-                saved_scopes, saved_locals = self._class_ns_stack, self.locals
-                self._class_ns_stack, self.locals = [], scope.enclosing_locals
-                try:
-                    fallback = self._emit_free_var_load(name)
-                    if fallback is None and self.current_func_name != "molt_main":
-                        fallback = self._load_local_value(name)
-                finally:
-                    self._class_ns_stack, self.locals = saved_scopes, saved_locals
-            if fallback is None:
-                fallback = self._emit_global_get(name)
-            absent_values = self._store_condition_branch(merge, (fallback,))
-            self._condition_else(merge)
-            present_values = self._store_condition_branch(merge, (value,))
-            return self._finish_condition_merge(merge, absent_values, present_values)[0]
-        return scope.attr_values.get(name)
+        elif (value := scope.attr_values.get(name)) is not None:
+            return value
+        # A static namespace projection and a live mapping have the same miss
+        # law. Neither may skip the enclosing cell or consult an outer class.
+        fallback = None
+        if name not in scope.local_names or name in scope.nonlocal_names:
+            saved_scopes, saved_locals = self._class_ns_stack, self.locals
+            self._class_ns_stack, self.locals = [], scope.enclosing_locals
+            try:
+                fallback = self._emit_free_var_load(
+                    name, guard_unbound=False, binding_invalidated=binding_invalidated
+                )
+                if fallback is None and self.current_func_name != "molt_main":
+                    fallback = self._load_local_value(
+                        name,
+                        guard_unbound=False,
+                        binding_invalidated=binding_invalidated,
+                    )
+            finally:
+                self._class_ns_stack, self.locals = saved_scopes, saved_locals
+            if fallback is not None:
+                self._emit_unbound_free_guard(fallback, name)
+        if fallback is None:
+            fallback = self._emit_global_get(name)
+        if merge is None:
+            return fallback
+        assert value is not None
+        absent_values = self._store_condition_branch(merge, (fallback,))
+        self._condition_else(merge)
+        present_values = self._store_condition_branch(merge, (value,))
+        return self._finish_condition_merge(merge, absent_values, present_values)[0]
 
     def _class_ns_delete(self, scope: "_ClassNsScope", name: str) -> None:
         if name in scope.global_names:
@@ -815,17 +833,20 @@ class LocalBindingMixin(GeneratorMixinBase):
             )
 
     def _load_local_value(
-        self, name: str, *, guard_unbound: bool = True
+        self,
+        name: str,
+        *,
+        guard_unbound: bool = True,
+        binding_invalidated: bool = False,
     ) -> MoltValue | None:
-        # A class-body name resolves through the class namespace; but a name that
-        # the class body has NOT bound (e.g. a parameter of a function inlined
-        # into the body, like an inlined ``__init__``'s args, or an enclosing
-        # local) must fall through to ordinary resolution.  Only short-circuit
-        # when the active class scope actually owns ``name`` — otherwise continue
-        # below so genuine locals/cells/globals still resolve.  (P0 #50.)
+        # Class-body loads own the full mapping/lexical/global lookup chain.
+        # Comprehension and function scopes bypass the class mapping through
+        # their scope boundary, not by falling through on a missing class key.
         class_scope = self._active_class_ns_scope(name)
         if class_scope is not None:
-            value = self._class_ns_load(class_scope, name)
+            value = self._class_ns_load(
+                class_scope, name, binding_invalidated=binding_invalidated
+            )
             if value is None:
                 return None
             return MoltValue(value.name, type_hint=value.type_hint)
@@ -835,15 +856,26 @@ class LocalBindingMixin(GeneratorMixinBase):
                 value = self.locals.get(name)
                 if value is None:
                     return None
-                result = MoltValue(value.name, type_hint=value.type_hint)
-                exact_class = self._exact_class_for_name(name)
+                result = MoltValue(
+                    value.name,
+                    type_hint="Any" if binding_invalidated else value.type_hint,
+                )
+                exact_class = (
+                    None if binding_invalidated else self._exact_class_for_name(name)
+                )
                 if exact_class is not None:
                     self._stamp_exact_class(result, exact_class)
                 return result
             value = self._load_comprehension_slot(binding)
             if binding.is_cell:
-                value = self._emit_cell_get(value, type_hint=binding.type_hint)
-            exact_class = self._exact_class_for_name(name)
+                value = self._emit_cell_get(
+                    value, type_hint="Any" if binding_invalidated else binding.type_hint
+                )
+            elif binding_invalidated:
+                value = MoltValue(value.name, type_hint="Any")
+            exact_class = (
+                None if binding_invalidated else self._exact_class_for_name(name)
+            )
             if exact_class is not None:
                 self._stamp_exact_class(value, exact_class)
             if guard_unbound and not binding.definitely_bound:
@@ -853,12 +885,13 @@ class LocalBindingMixin(GeneratorMixinBase):
             return self._emit_global_get(name)
         cell = self._load_boxed_cell(name)
         if cell is not None:
-            hint = self.boxed_local_hints.get(name)
+            hint = None if binding_invalidated else self.boxed_local_hints.get(name)
             res = self._emit_cell_get(cell, type_hint=hint or "Any")
-            exact_class = self._exact_class_for_name(name)
-            if exact_class is not None:
-                self._stamp_exact_class(res, exact_class)
-            self._copy_container_hints_for_name_load(name, res.name)
+            if not binding_invalidated:
+                exact_class = self._exact_class_for_name(name)
+                if exact_class is not None:
+                    self._stamp_exact_class(res, exact_class)
+                self._copy_container_hints_for_name_load(name, res.name)
             if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
@@ -866,8 +899,11 @@ class LocalBindingMixin(GeneratorMixinBase):
             name in self.async_locals or name in self.async_internal_bindings
         ):
             offset = self._async_binding_slot(name).offset
-            res = MoltValue(self.next_var(), type_hint=self._async_binding_hint(name))
-            exact_class = self._exact_class_for_name(name)
+            hint = "Any" if binding_invalidated else self._async_binding_hint(name)
+            res = MoltValue(self.next_var(), type_hint=hint)
+            exact_class = (
+                None if binding_invalidated else self._exact_class_for_name(name)
+            )
             if exact_class is not None:
                 self._stamp_exact_class(res, exact_class)
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
@@ -885,8 +921,13 @@ class LocalBindingMixin(GeneratorMixinBase):
             and name in self.scope_assigned
             and name not in self.boxed_locals
         ):
-            exact_class = self._exact_class_for_name(name)
-            res = MoltValue(self.next_var(), type_hint=cached.type_hint)
+            exact_class = (
+                None if binding_invalidated else self._exact_class_for_name(name)
+            )
+            res = MoltValue(
+                self.next_var(),
+                type_hint="Any" if binding_invalidated else cached.type_hint,
+            )
             self.emit(
                 MoltOp(
                     kind="LOAD_VAR",
@@ -898,12 +939,15 @@ class LocalBindingMixin(GeneratorMixinBase):
             if exact_class is not None:
                 self._stamp_exact_class(res, exact_class)
                 self._publish_exact_local(name, exact_class)
-            self._copy_container_hints_for_name_load(name, res.name)
+            if not binding_invalidated:
+                self._copy_container_hints_for_name_load(name, res.name)
             if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
-        result = MoltValue(cached.name, type_hint=cached.type_hint)
-        exact_class = self._exact_class_for_name(name)
+        result = MoltValue(
+            cached.name, type_hint="Any" if binding_invalidated else cached.type_hint
+        )
+        exact_class = None if binding_invalidated else self._exact_class_for_name(name)
         if exact_class is not None:
             self._stamp_exact_class(result, exact_class)
         return result

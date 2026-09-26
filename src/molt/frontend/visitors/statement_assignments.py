@@ -259,18 +259,24 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         may_yield = self._expr_may_yield(node.value)
         if isinstance(node.target, ast.Name):
             self.exact_locals.pop(node.target.id, None)
-            load_node = ast.Name(id=node.target.id, ctx=ast.Load())
-            if may_yield and self.is_async() and node.target.id in self.async_locals:
-                value_node = self.visit(node.value)
-                current = self._load_local_value(node.target.id)
-            else:
-                current = self.visit(load_node)
-                value_node = self.visit(node.value)
+            load_node = ast.copy_location(
+                ast.Name(id=node.target.id, ctx=ast.Load()), node.target
+            )
+            current = self.visit(load_node)
             if current is None:
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE,
                     "Unsupported augmented assignment target",
                 )
+            # Capture the old target before a suspending RHS can rebind its cell.
+            current_slot = (
+                self._spill_async_value(current)
+                if may_yield and self.is_async()
+                else None
+            )
+            value_node = self.visit(node.value)
+            if current_slot is not None:
+                current = self._reload_async_value(current_slot, current.type_hint)
             if value_node is None:
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE,

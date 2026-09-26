@@ -57,6 +57,7 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
 
     def _load_name_expression(self, node: ast.Name) -> Any:
         if isinstance(node.ctx, ast.Load):
+            binding_invalidated = self._expression_has_invalidated_binding(node)
             if (
                 self.in_annotation
                 and self.python_binding_index is not None
@@ -73,25 +74,32 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 return res
             class_scope = self._active_class_ns_scope(node.id)
             if class_scope is not None:
-                local = self._class_ns_load(class_scope, node.id)
+                local = self._class_ns_load(
+                    class_scope, node.id, binding_invalidated=binding_invalidated
+                )
                 if local is not None:
                     # Class namespaces are live mappings and may be changed by
                     # metaclass callbacks; never reuse a producer-only fact here.
                     return MoltValue(local.name, type_hint=local.type_hint)
-            if self._expression_has_invalidated_binding(node):
+            if (
+                binding_invalidated
+                and self.python_binding_index is not None
+                and (fact := self.python_binding_index.expression_fact(node))
+                is not None
+                and fact.binding_global_lookup
+            ):
+                # Invalidation removes value facts, not lexical storage. Only
+                # namespace-owned names bypass cached values for a global read;
+                # cells/locals retain their live loads and unbound guards below.
                 return self._emit_global_get(node.id)
-            if node.id == "__name__":
-                if self.entry_module and self.module_name == self.entry_module:
-                    return self._emit_module_attr_get("__name__")
-                res = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[self.module_name], result=res))
-                return res
             if node.id in self.nonlocal_decls and node.id not in self.free_vars:
                 raise FrontendRejection(
                     Diagnostic.SYNTAX_FORM, "nonlocal binding not found"
                 )
             if node.id in self.free_vars:
-                free_val = self._emit_free_var_load(node.id)
+                free_val = self._emit_free_var_load(
+                    node.id, binding_invalidated=binding_invalidated
+                )
                 if free_val is not None:
                     return free_val
             if self.in_annotation and node.id in self.annotation_type_params:
@@ -99,9 +107,17 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
             # Check locals BEFORE module_global_mutations: inline
             # comprehensions bind their iterator variable in self.locals,
             # which must shadow the module-level name (CPython scoping).
-            local = self._load_local_value(node.id)
+            local = self._load_local_value(
+                node.id, binding_invalidated=binding_invalidated
+            )
             if local is not None:
                 return local
+            if node.id == "__name__":
+                if self.entry_module and self.module_name == self.entry_module:
+                    return self._emit_module_attr_get("__name__")
+                res = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[self.module_name], result=res))
+                return res
             if (
                 self.current_func_name == "molt_main"
                 and node.id in self.del_targets
