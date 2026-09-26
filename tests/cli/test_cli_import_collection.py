@@ -11614,40 +11614,41 @@ def test_split_link_fingerprint_tracks_deploy_runtime_content(tmp_path: Path) ->
     assert first["hash"] != second["hash"]
 
 
-def test_write_link_fingerprint_reports_json_warning_on_metadata_loss(
+def test_link_receipt_failure_preserves_previous_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "app"
-    output.write_bytes(b"linked output")
+    output.write_bytes(b"previous output")
+    from molt import artifact_publication
 
-    def raise_metadata_write(
-        path: Path, payload: Mapping[str, object], *, indent: int
-    ) -> None:
-        del path, payload, indent
+    candidate = artifact_publication.staged_output_path(output)
+    candidate.write_bytes(b"linked output")
+
+    def raise_metadata_write(*args, **kwargs):
         raise OSError("state volume read-only")
 
     monkeypatch.setattr(
         cli_link_fingerprints,
-        "_atomic_write_json",
+        "encode_exact",
         raise_metadata_write,
     )
 
-    warning = cli_link_fingerprints._write_link_fingerprint_if_needed(
-        link_skipped=False,
-        link_fingerprint={
+    request = cli_link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
+        tmp_path / "state" / "link.json",
+        {
             "hash": "a" * 64,
             "rustc": None,
             "inputs_digest": None,
             "meta_digest": None,
         },
-        link_fingerprint_path=tmp_path / "state" / "link.json",
-        outputs={"binary": output},
     )
-
-    assert warning is not None
-    assert "failed to write link fingerprint metadata" in warning
-    assert "state volume read-only" in warning
+    with pytest.raises(OSError, match="state volume read-only"):
+        cli_link_fingerprints.publish_link_outputs(
+            {"binary": (candidate, output)}, receipt=request
+        )
+    assert output.read_bytes() == b"previous output"
+    assert candidate.read_bytes() == b"linked output"
 
 
 def _write_shared_stdlib_test_contract(stdlib_obj: Path, cache_key: str) -> str:
@@ -12357,8 +12358,8 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
     assert "--whole-archive" in link_plan.command[start:end]
     assert "-Wl,--undefined=PyInit_extension" in link_plan.command
     assert "-Wl,--export-dynamic" not in link_plan.command
-    version_script = tmp_path / ".molt_version.ver"
-    version_text = version_script.read_text(encoding="utf-8")
+    assert not (tmp_path / ".molt_version.ver").exists()
+    version_text = link_plan.sidecars[0].content.decode("utf-8")
     assert "molt_*" not in version_text
     assert "_Py_NoneStruct; Py_None;" in version_text
 
@@ -12436,8 +12437,8 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         expected_link_arguments
     )
     assert not any("export_dynamic" in argument for argument in link_plan.command)
-    exported_symbols = tmp_path / ".molt_exports.exp"
-    assert exported_symbols.read_text(encoding="utf-8") == "_main\n"
+    assert not (tmp_path / ".molt_exports.exp").exists()
+    assert link_plan.sidecars[0].content == b"_main\n"
 
 
 def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
@@ -12567,7 +12568,8 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
     assert "-Wl,/INCLUDE:PyInit_extension" in link_plan.command
     def_path = tmp_path / ".molt_exports.def"
     assert f"/DEF:{def_path}" in link_plan.command
-    assert def_path.read_text(encoding="utf-8") == (
+    assert not def_path.exists()
+    assert link_plan.sidecars[0].content.decode("utf-8") == (
         "EXPORTS\n"
         "_Py_NoneStruct=Py_None\n"
         "_Py_NotImplementedStruct=Py_NotImplementedSentinel\n"
@@ -21824,13 +21826,24 @@ def _install_fake_wasm_link_runner(
     *,
     link_calls: list[list[str]] | None = None,
     linked_bytes: bytes = b"\0asm\x01\0\0\0",
-) -> None:
+    app_bytes: bytes | None = None,
+) -> dict[Path, SourceExtensionLinkRequirements]:
+    plans: dict[Path, SourceExtensionLinkRequirements] = {}
+
     def fake_run(
         cmd: list[str],
         **kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         command = list(cmd)
+        if "--native-link-plan" in command:
+            plan_path = Path(command[command.index("--native-link-plan") + 1])
+            plans[plan_path] = read_source_extension_link_plan(
+                plan_path,
+                expected_target_triple="wasm32-unknown-unknown"
+                if "--freestanding" in command
+                else "wasm32-wasip1",
+            )
         if "--output" not in command:
             return subprocess.CompletedProcess(command, 0, "", "")
         if link_calls is not None:
@@ -21838,15 +21851,33 @@ def _install_fake_wasm_link_runner(
         output_path = Path(command[command.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         valid_wasm = b"\0asm\x01\0\0\0"
-        output_path.write_bytes(linked_bytes)
+        from molt import artifact_publication
+
+        payloads = {"linked": (output_path, linked_bytes)}
         if "--split-runtime" in command:
             split_dir = Path(command[command.index("--split-output-dir") + 1])
             split_dir.mkdir(parents=True, exist_ok=True)
-            (split_dir / "app.wasm").write_bytes(valid_wasm)
-            (split_dir / "molt_runtime.wasm").write_bytes(valid_wasm)
-            (split_dir / "wasm_size_attestation.json").write_text(
-                "{}\n", encoding="utf-8"
+            payloads.update(
+                app=(
+                    split_dir / "app.wasm",
+                    app_bytes if app_bytes is not None else valid_wasm,
+                ),
+                runtime=(split_dir / "molt_runtime.wasm", valid_wasm),
+                size_attestation=(split_dir / "wasm_size_attestation.json", b"{}\n"),
             )
+        candidates = {}
+        for role, (final, payload) in payloads.items():
+            stage = artifact_publication.staged_output_path(final)
+            stage.write_bytes(payload)
+            candidates[role] = (stage, final)
+        request = (
+            cli_link_fingerprints.FinalLinkReceiptRequest.read(
+                Path(command[command.index("--link-receipt-request") + 1])
+            )
+            if "--link-receipt-request" in command
+            else None
+        )
+        cli_link_fingerprints.publish_link_outputs(candidates, receipt=request)
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(cli_non_native_output, "_run_completed_command", fake_run)
@@ -21865,6 +21896,7 @@ def _install_fake_wasm_link_runner(
         "read_wasm_callable_table_attestation",
         lambda _path: (),
     )
+    return plans
 
 
 def _write_split_runtime_vfs_support(molt_root: Path) -> None:
@@ -21936,12 +21968,12 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
 
     def capture_link_fingerprint(**kwargs: Any) -> dict[str, Any]:
         assert wasm_link not in kwargs["inputs"]
-        assert kwargs["tool_facts"] == (
-            {
-                "role": "wasm-link-source-closure",
-                "content_digest": closure_digest[0],
-            },
-        )
+        assert kwargs["tool_facts"][0] == {
+            "role": "wasm-link-source-closure",
+            "content_digest": closure_digest[0],
+        }
+        assert kwargs["tool_facts"][1]["role"] == "wasm-native-link-plan"
+        assert "--native-link-plan" not in kwargs["link_cmd"]
         result = real_link_fingerprint(**kwargs)
         assert result is not None
         fingerprints.append(result)
@@ -22003,11 +22035,12 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     )
     assert first_cmd[first_cmd.index("--input") + 1] == str(output_wasm)
     linked_output_arg = Path(first_cmd[first_cmd.index("--output") + 1])
-    assert linked_output_arg.parent == linked_wasm.parent
     assert linked_output_arg != linked_wasm
-    assert linked_output_arg.name.startswith(".molt-wasm-link-")
-    assert linked_output_arg.name.endswith(".tmp")
-    assert first_cmd[-4:] == [
+    assert linked_output_arg.name == linked_wasm.name
+    assert not linked_output_arg.exists()
+    assert "--link-receipt-request" not in first_cmd
+    optimize_index = first_cmd.index("--optimize")
+    assert first_cmd[optimize_index : optimize_index + 4] == [
         "--optimize",
         "--optimize-level",
         "Oz",
@@ -22025,11 +22058,11 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert "wasm_link" not in second_phase_starts
 
     fingerprint_path = cli_link_fingerprints._link_fingerprint_path(
-        tmp_path, linked_wasm, "dev", "wasm32-wasip1"
+        output_wasm.with_name("manifest.json")
     )
     receipt = cli_link_fingerprints._read_link_fingerprint(fingerprint_path)
     assert receipt is not None
-    assert set(receipt["outputs"]) == {"linked"}
+    assert set(receipt["outputs"]) == {"linked", "manifest"}
     assert receipt["outputs"]["linked"]["path"] == str(linked_wasm.resolve())
 
     # An input timestamp is a metadata hint, not a reason to discard identical bytes.
@@ -22067,11 +22100,138 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     )
     assert third_err is None and third is not None
     assert len(link_calls) == 3
-    # The native-link plan is atomically rewritten on every invocation, so its
-    # change-time metadata differs even when the semantic input bytes do not.
+    # Invocation-private transport never changes semantic input identity.
     assert fingerprints[0]["hash"] == fingerprints[-2]["hash"]
     assert fingerprints[-2]["meta_digest"] != fingerprints[-1]["meta_digest"]
     assert fingerprints[-2]["hash"] != fingerprints[-1]["hash"]
+
+
+@pytest.mark.parametrize(
+    "fail_after_rival,change_source", [(False, False), (True, False), (False, True)]
+)
+def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_after_rival: bool,
+    change_source: bool,
+) -> None:
+    output = tmp_path / "out" / "output.wasm"
+    output.parent.mkdir()
+    output.write_bytes(b"\0asm\x01\0\0\0")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    shared = runtime / "molt_runtime.wasm"
+    reloc = runtime / "molt_runtime_reloc.wasm"
+    shared.write_bytes(output.read_bytes())
+    reloc.write_bytes(output.read_bytes())
+    _write_split_runtime_vfs_support(tmp_path)
+    policy_a = CapabilityManifest().resolve()
+    policy_b = CapabilityManifest(allow=["fs.bundle.read"]).resolve(tier="safe")
+    payload_a = output.read_bytes() + b"\x00\x03\x01xA"
+    payload_b = output.read_bytes() + b"\x00\x03\x01xB"
+    _install_fake_wasm_link_runner(
+        monkeypatch, linked_bytes=payload_a, app_bytes=payload_a
+    )
+    common = dict(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        linked=True,
+        require_linked=False,
+        linked_output_path=output.with_name("output_linked.wasm"),
+        output_artifact=output,
+        json_output=True,
+        runtime_state=_prepared_runtime_pair_state(shared, reloc),
+        ensure_runtime_wasm_both=lambda _required=None: True,
+        runtime_cargo_profile="dev-fast",
+        molt_root=tmp_path,
+        split_runtime=True,
+        wasm_facts_scanner=tmp_path / "molt-backend",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
+    )
+    real_exports = cli_non_native_output._app_export_manifest
+    real_write = cli_non_native_output._atomic_write_bytes
+    rival_published = False
+    rival_bytes: dict[Path, bytes] = {}
+    receipt_path = cli_link_fingerprints._link_fingerprint_path(
+        output.with_name("manifest.json")
+    )
+
+    def derive_exports(
+        contract: dict[str, object], candidate: Path
+    ) -> dict[str, object]:
+        nonlocal rival_published
+        assert candidate != output.with_name("app.wasm")
+        if not rival_published:
+            rival_published = True
+            with monkeypatch.context() as rival:
+                _install_fake_wasm_link_runner(
+                    rival, linked_bytes=payload_b, app_bytes=payload_b
+                )
+                prepared, error = (
+                    cli_non_native_output._prepare_non_native_build_result(
+                        **common, resolved_capability_policy=policy_b
+                    )
+                )
+                assert error is None and prepared is not None
+            receipt = cli_link_fingerprints._read_link_fingerprint(receipt_path)
+            assert receipt is not None
+            rival_bytes.update(
+                {
+                    Path(item["path"]): Path(item["path"]).read_bytes()
+                    for item in receipt["outputs"].values()
+                }
+            )
+            rival_bytes[receipt_path] = receipt_path.read_bytes()
+            assert output.with_name("app.wasm").read_bytes() == payload_b
+            manifest = json.loads(output.with_name("manifest.json").read_text())
+            assert manifest["capability_policy_digest"] == policy_b.digest()
+            assert (
+                manifest["modules"]["app"]["sha256"]
+                == hashlib.sha256(payload_b).hexdigest()
+            )
+            if change_source:
+                asset = (
+                    tmp_path
+                    / "wasm"
+                    / cli_non_native_output.TARGET_FEATURE_MANIFEST_ASSET_NAME
+                )
+                asset.write_bytes(asset.read_bytes() + b"\n")
+        return real_exports(contract, candidate)
+
+    def write_asset(path: Path, payload: bytes) -> None:
+        if fail_after_rival and rival_bytes:
+            raise OSError("injected producer A loader staging failure")
+        real_write(path, payload)
+
+    monkeypatch.setattr(cli_non_native_output, "_app_export_manifest", derive_exports)
+    monkeypatch.setattr(cli_non_native_output, "_atomic_write_bytes", write_asset)
+    prepared, error = cli_non_native_output._prepare_non_native_build_result(
+        **common, resolved_capability_policy=policy_a
+    )
+    assert rival_published
+    if fail_after_rival or change_source:
+        assert prepared is None and error is not None
+        assert {path: path.read_bytes() for path in rival_bytes} == rival_bytes
+        expected_payload, expected_policy = payload_b, policy_b
+    else:
+        assert prepared is not None and error is None
+        expected_payload, expected_policy = payload_a, policy_a
+    receipt = cli_link_fingerprints._read_link_fingerprint(receipt_path)
+    assert receipt is not None
+    manifest = json.loads(output.with_name("manifest.json").read_text())
+    assert output.with_name("app.wasm").read_bytes() == expected_payload
+    assert manifest["capability_policy_digest"] == expected_policy.digest()
+    assert (
+        manifest["modules"]["app"]["sha256"]
+        == hashlib.sha256(expected_payload).hexdigest()
+    )
+    for record in receipt["outputs"].values():
+        assert (
+            cli_link_fingerprints.artifact_content_identity(Path(record["path"]))
+            == record["identity"]
+        )
+    assert not list(output.parent.glob("*.tmp"))
 
 
 def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_linked_wasm(
@@ -22264,7 +22424,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     link_calls: list[list[str]] = []
     link_fingerprint_inputs: list[Path] = []
 
-    _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    native_plans = _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
     real_link_fingerprint = cli_link_fingerprints._link_fingerprint
 
     def capture_link_fingerprint(**kwargs: Any) -> dict[str, Any]:
@@ -22350,10 +22510,9 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     link_cmd = link_calls[0]
     assert link_cmd[link_cmd.index("--deploy-runtime") + 1] == str(runtime_wasm)
     assert runtime_wasm in link_fingerprint_inputs
-    native_plan = read_source_extension_link_plan(
-        Path(link_cmd[link_cmd.index("--native-link-plan") + 1]),
-        expected_target_triple="wasm32-wasip1",
-    )
+    plan_path = Path(link_cmd[link_cmd.index("--native-link-plan") + 1])
+    native_plan = native_plans[plan_path]
+    assert not plan_path.exists()
     staged_native_input = Path(native_plan.inputs[0].path)
     assert staged_native_input.exists()
     assert staged_native_input != artifact_path
@@ -22429,6 +22588,10 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert manifest["capability_policy"] == resolved_policy.canonical_payload()
     assert manifest["capability_policy_digest"] == resolved_policy.digest()
     worker_source = (output_wasm.parent / "worker.js").read_text(encoding="utf-8")
+    assert (
+        f'"compatibility_date": "{cli_non_native_output.WASM_WORKER_COMPATIBILITY_DATE}"'
+        in (output_wasm.parent / "wrangler.jsonc").read_text(encoding="utf-8")
+    )
     expected_worker_env = [
         f"{name}={value}"
         for name, value in sorted(
@@ -22444,7 +22607,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert native_callables["symbols"] == {}
 
     receipt_path = cli_link_fingerprints._link_fingerprint_path(
-        tmp_path, linked_wasm, "dev", "wasm32-wasip1"
+        output_wasm.with_name("manifest.json")
     )
     receipt = cli_link_fingerprints._read_link_fingerprint(receipt_path)
     assert receipt is not None
@@ -22454,20 +22617,35 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         "runtime": output_wasm.parent / "molt_runtime.wasm",
         "size_attestation": output_wasm.parent / "wasm_size_attestation.json",
     }
-    assert set(receipt["outputs"]) == set(outputs)
+    assert set(outputs) < set(receipt["outputs"])
+    assert {
+        "manifest",
+        "worker_js",
+        "wrangler_config",
+        "bundle_tar",
+        "target_features",
+    } <= set(receipt["outputs"])
+    outputs.update(
+        {
+            role: Path(record["path"])
+            for role, record in receipt["outputs"].items()
+            if role
+            in {
+                "manifest",
+                "worker_js",
+                "wrangler_config",
+                "bundle_tar",
+                "target_features",
+            }
+        }
+    )
 
-    # Native and split-layout validators are separate gates; this sequence
-    # exercises the real final-link receipt decision for every output role.
-    monkeypatch.setattr(
-        cli_non_native_output,
-        "_is_reusable_static_native_link_artifact",
-        lambda *_args: True,
-    )
-    monkeypatch.setattr(
-        cli_non_native_output,
-        "_is_reusable_split_runtime_artifacts",
-        lambda *_args, **_kwargs: True,
-    )
+    # Admission checks the complete receipt under custody; no unlocked public
+    # semantic rechecks or deployment rewrites follow a cache hit.
+    before_reuse = {
+        Path(record["path"]): Path(record["path"]).stat().st_mtime_ns
+        for record in receipt["outputs"].values()
+    }
 
     def repeat_build() -> None:
         result, failure = cli_non_native_output._prepare_non_native_build_result(
@@ -22477,19 +22655,57 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
 
     repeat_build()
     assert len(link_calls) == 1
-    for index, path in enumerate(outputs.values()):
-        path.unlink()
-        repeat_build()
-        assert len(link_calls) == 2 + 2 * index
+    assert {path: path.stat().st_mtime_ns for path in before_reuse} == before_reuse
 
+    def cache_matches() -> bool:
+        return cli_link_fingerprints._link_outputs_match(
+            outputs={
+                role: Path(record["path"])
+                for role, record in receipt["outputs"].items()
+            },
+            fingerprint=receipt["fingerprint"],
+            receipt_path=receipt_path,
+        )
+
+    # Sweep every role's admission without rebuilding the entire deployment for
+    # every corrupt byte. Then prove the actual CLI repair path once below.
+    for path in outputs.values():
         original = path.read_bytes()
         stat = path.stat()
+        path.unlink()
+        assert not cache_matches()
         path.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
         os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-        repeat_build()
-        assert len(link_calls) == 3 + 2 * index
+        assert not cache_matches()
+        path.write_bytes(original)
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert cache_matches()
+    outputs["manifest"].unlink()
     repeat_build()
-    assert len(link_calls) == 9
+    assert len(link_calls) == 2 and cache_matches()
+
+
+def test_external_package_bundle_is_independent_of_absolute_source_roots(
+    tmp_path: Path,
+) -> None:
+    bundles = []
+    for name in ("first-checkout", "second-checkout"):
+        root = tmp_path / name
+        package = root / "pkg"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_bytes(b"VALUE = 1\n")
+        output = tmp_path / f"{name}.tar"
+        manifest = cli_non_native_output._write_external_static_packages_bundle(
+            (root,), output
+        )
+        assert manifest is not None and set(manifest) == {"files", "total_bytes"}
+        bundles.append(output.read_bytes())
+    assert bundles[0] == bundles[1]
+    from tools.wasm_bundle import create_bundle
+
+    standalone = tmp_path / "standalone.tar"
+    assert create_bundle(root, standalone) == manifest
+    assert standalone.read_bytes() == bundles[0]
 
 
 def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
@@ -22550,9 +22766,6 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     link_calls: list[list[str]] = []
 
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
-    monkeypatch.setattr(
-        cli_non_native_output, "_is_reusable_wasm_artifact", lambda _path: True
-    )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
         if module_name == "molt_runtime":
@@ -22623,9 +22836,8 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     assert "--native-link-plan" in link_cmd
 
 
-def test_split_runtime_static_native_reuse_rejects_hidden_active_table_slot(
+def test_split_runtime_deployment_attestation_rejects_hidden_active_table_slot(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import molt.wasm_artifact as wasm_artifact
 
@@ -22660,21 +22872,10 @@ def test_split_runtime_static_native_reuse_rejects_hidden_active_table_slot(
             ]
         )
     )
-    runtime_wasm = tmp_path / "molt_runtime.wasm"
-    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
-    monkeypatch.setattr(
-        cli_non_native_output, "_is_reusable_wasm_artifact", lambda _path: True
-    )
-    monkeypatch.setattr(
-        cli_non_native_output, "_artifact_imports_module", lambda *_args: False
-    )
-
-    assert not cli_non_native_output._is_reusable_split_runtime_artifacts(
-        app_wasm,
-        runtime_wasm,
-        static_native_inputs=True,
-        wasm_table_base=4096,
-    )
+    # Deployment generation reads the producer's private attestation before
+    # publication; cache hits admit those exact bytes, not a second classifier.
+    with pytest.raises(ValueError):
+        cli_non_native_output.read_wasm_callable_table_attestation(app_wasm)
 
 
 def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
@@ -22700,19 +22901,19 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     manifest_path.write_bytes(manifest_bytes)
     cpython_abi_provider = tmp_path / "target" / "libmolt_cpython_abi.a"
     cpython_abi_provider.parent.mkdir(parents=True)
-    cpython_abi_provider.write_bytes(b"!<arch>\nprovider")
+    cpython_abi_provider.write_bytes(static_archive_bytes(b"provider"))
     libc_provider = tmp_path / "rustlib" / "self-contained" / "libc.a"
     libc_provider.parent.mkdir(parents=True)
-    libc_provider.write_bytes(b"!<arch>\nlibc")
+    libc_provider.write_bytes(static_archive_bytes(b"libc"))
     compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
-    compiler_rt_provider.write_bytes(b"!<arch>\ncompiler-rt")
+    compiler_rt_provider.write_bytes(static_archive_bytes(b"compiler-rt"))
     libcxx_provider = tmp_path / "wasi-sysroot" / "eh" / "libc++.a"
     libcxxabi_provider = tmp_path / "wasi-sysroot" / "eh" / "libc++abi.a"
     libunwind_provider = tmp_path / "wasi-sysroot" / "eh" / "libunwind.a"
     libcxx_provider.parent.mkdir(parents=True)
-    libcxx_provider.write_bytes(b"!<arch>\nlibcxx")
-    libcxxabi_provider.write_bytes(b"!<arch>\nlibcxxabi")
-    libunwind_provider.write_bytes(b"!<arch>\nlibunwind")
+    libcxx_provider.write_bytes(static_archive_bytes(b"libcxx"))
+    libcxxabi_provider.write_bytes(static_archive_bytes(b"libcxxabi"))
+    libunwind_provider.write_bytes(static_archive_bytes(b"libunwind"))
     native_artifact_plan = _ExternalPackageNativeArtifactPlan(
         artifacts=(
             _ExternalPackageNativeArtifact(
@@ -22769,7 +22970,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     )
     link_calls: list[list[str]] = []
     pair_required: list[set[str]] = []
-    _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    native_plans = _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
     monkeypatch.setattr(
         cli_non_native_output,
         "_collect_wasm_module_import_names",
@@ -22823,10 +23024,9 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     assert prepared is not None
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
-    native_plan = read_source_extension_link_plan(
-        Path(link_cmd[link_cmd.index("--native-link-plan") + 1]),
-        expected_target_triple="wasm32-wasip1",
-    )
+    plan_path = Path(link_cmd[link_cmd.index("--native-link-plan") + 1])
+    native_plan = native_plans[plan_path]
+    assert not plan_path.exists()
     native_inputs = [Path(item.path) for item in native_plan.inputs]
     assert cpython_abi_provider not in native_inputs
     assert libc_provider in native_inputs
@@ -22866,12 +23066,12 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     manifest_path.write_bytes(manifest_bytes)
     cpython_abi_provider = tmp_path / "target" / "libmolt_cpython_abi.a"
     cpython_abi_provider.parent.mkdir(parents=True)
-    cpython_abi_provider.write_bytes(b"!<arch>\nprovider")
+    cpython_abi_provider.write_bytes(static_archive_bytes(b"provider"))
     libc_provider = tmp_path / "rustlib" / "self-contained" / "libc.a"
     libc_provider.parent.mkdir(parents=True)
-    libc_provider.write_bytes(b"!<arch>\nlibc")
+    libc_provider.write_bytes(static_archive_bytes(b"libc"))
     compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
-    compiler_rt_provider.write_bytes(b"!<arch>\ncompiler-rt")
+    compiler_rt_provider.write_bytes(static_archive_bytes(b"compiler-rt"))
     native_artifact_plan = _ExternalPackageNativeArtifactPlan(
         artifacts=(
             _ExternalPackageNativeArtifact(
@@ -22922,7 +23122,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     )
     link_calls: list[list[str]] = []
     pair_required: list[set[str]] = []
-    _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    native_plans = _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
     monkeypatch.setattr(
         cli_non_native_output,
         "_collect_wasm_module_import_names",
@@ -22971,10 +23171,9 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
     assert "--split-runtime" in link_cmd
-    native_plan = read_source_extension_link_plan(
-        Path(link_cmd[link_cmd.index("--native-link-plan") + 1]),
-        expected_target_triple="wasm32-wasip1",
-    )
+    plan_path = Path(link_cmd[link_cmd.index("--native-link-plan") + 1])
+    native_plan = native_plans[plan_path]
+    assert not plan_path.exists()
     native_inputs = [Path(item.path) for item in native_plan.inputs]
     assert cpython_abi_provider not in native_inputs
     assert libc_provider in native_inputs

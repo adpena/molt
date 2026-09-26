@@ -123,7 +123,7 @@ def test_wasm_strip_unused_copy_fallback_publishes_atomically(
     output_path = tmp_path / "output.wasm"
     wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00copy")
     monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/wasm-tools")
-    original_publish = mod.artifact_publish.publish_validated_outputs
+    original_publish = mod.artifact_publication.publish_validated_outputs
     published_sources: list[Path] = []
 
     def record_publish(pairs: list[tuple[Path, Path]]) -> None:
@@ -134,7 +134,7 @@ def test_wasm_strip_unused_copy_fallback_publishes_atomically(
         original_publish(pairs)
 
     monkeypatch.setattr(
-        mod.artifact_publish,
+        mod.artifact_publication,
         "publish_validated_outputs",
         record_publish,
     )
@@ -147,7 +147,7 @@ def test_wasm_strip_unused_copy_fallback_publishes_atomically(
     assert output_path.read_bytes() == wasm_path.read_bytes()
     assert len(published_sources) == 1
     # The staged copy is a hidden temporary beside the final output, named by
-    # the artifact_publish staging authority (never the final name itself).
+    # the shared artifact publication staging authority (never the final name itself).
     assert published_sources[0].parent == output_path.parent
     assert published_sources[0] != output_path
     assert published_sources[0].name.startswith(".")
@@ -168,7 +168,7 @@ def test_wasm_strip_unused_strip_writes_temp_before_final_publish(
     monkeypatch.setattr(
         mod.harness_memory_guard, "limits_from_env", lambda _prefix: None
     )
-    original_publish = mod.artifact_publish.publish_validated_outputs
+    original_publish = mod.artifact_publication.publish_validated_outputs
     published_sources: list[Path] = []
     seen_commands: list[list[str]] = []
 
@@ -200,7 +200,7 @@ def test_wasm_strip_unused_strip_writes_temp_before_final_publish(
         fake_guarded_completed_process,
     )
     monkeypatch.setattr(
-        mod.artifact_publish,
+        mod.artifact_publication,
         "publish_validated_outputs",
         record_publish,
     )
@@ -214,7 +214,7 @@ def test_wasm_strip_unused_strip_writes_temp_before_final_publish(
     assert output_path.read_bytes() == b"\x00asm\x01\x00\x00\x00stripped"
     assert len(published_sources) == 1
     # The staged copy is a hidden temporary beside the final output, named by
-    # the artifact_publish staging authority (never the final name itself).
+    # the shared artifact publication staging authority (never the final name itself).
     assert published_sources[0].parent == output_path.parent
     assert published_sources[0] != output_path
     assert published_sources[0].name.startswith(".")

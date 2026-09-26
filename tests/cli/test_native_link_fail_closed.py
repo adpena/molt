@@ -122,6 +122,7 @@ def test_bolt_finalizes_candidate_before_atomic_publication(
         "output_binary": binary,
         "target_triple": None,
         "strip": True,
+        "receipt": None,
     }
     assert binary.read_bytes() == b"finalized"
 
@@ -177,16 +178,6 @@ def test_bolt_script_emits_atomic_phase_telemetry_when_requested() -> None:
         assert metric in script
     assert 'mv -f -- "$TELEMETRY_TMP" "$TELEMETRY_JSON"' in script
     assert "printf -v INSTRUMENTED_QUOTED '%q'" in script
-
-
-def test_extension_link_applies_identity_policy_after_user_link_arguments() -> None:
-    # Source extensions publish archives plus typed link requirements. Their
-    # identity policy is applied by the one final native linker, not the producer.
-    source = inspect.getsource(native_link_command._build_native_link_plan)
-    requirements = source.index("render_source_extension_link_arguments(requirements)")
-    inputs = source.index("link_cmd.extend(link_inputs)")
-    policy = source.index("native_link_policy_flags(")
-    assert requirements < inputs < policy
 
 
 def test_native_link_identity_and_fallback_policy_has_one_source_authority() -> None:

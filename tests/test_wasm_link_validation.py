@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from molt import wasm_artifact
 from molt.cli import external_link_providers
+from molt.cli import link_fingerprints
 from molt.cli.app_export_contract import app_export_call_abi, build_app_export_contract
 from molt.cli.python_source_closure import LocalPythonSourceClosure
 from molt.cli.source_extension_link_requirements import (
@@ -6387,9 +6388,11 @@ def test_run_wasm_ld_preserves_old_output_if_linked_validation_fails(
     assert linked.read_bytes() == b"old-linked"
 
 
-def test_run_wasm_ld_split_runtime_publishes_only_after_staged_validation(
+@pytest.mark.parametrize("split", [False, True])
+def test_run_wasm_ld_publishes_receipt_with_validated_candidates(
     tmp_path: Path,
     monkeypatch,
+    split: bool,
 ) -> None:
     runtime_bytes = _module_with_linking_symbols([])
     output_bytes = _module_with_linking_symbols([])
@@ -6458,19 +6461,38 @@ def test_run_wasm_ld_split_runtime_publishes_only_after_staged_validation(
     )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
 
+    fingerprint = link_fingerprints._link_fingerprint(
+        project_root=tmp_path, inputs=[runtime, output], link_cmd=["fixture-wasm-ld"]
+    )
+    sidecar = tmp_path / "state" / "link.fingerprint"
     rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
         linked,
-        split_runtime=True,
+        split_runtime=split,
         split_output_dir=split_dir,
+        link_receipt=link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
+            sidecar, fingerprint
+        ),
     )
 
     assert rc == 0
     assert validate_seen
-    assert split_validate_seen
+    assert bool(split_validate_seen) == split
     assert linked.read_bytes() != b"old-linked"
+    outputs = wasm_link.wasm_link_output_paths(
+        linked, split_output_dir=split_dir if split else None
+    )
+    receipt = link_fingerprints._read_link_fingerprint(sidecar)
+    assert receipt is not None
+    assert link_fingerprints._link_outputs_match(
+        outputs=outputs, fingerprint=fingerprint, receipt_path=sidecar
+    )
+    if not split:
+        assert app_wasm.read_bytes() == b"old-app"
+        assert rt_wasm.read_bytes() == b"old-runtime"
+        return
     expected_app = wasm_link.strip_wasm_publication_sections(
         output_bytes,
         final_artifact=True,

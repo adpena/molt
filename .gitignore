@@ -20,6 +20,11 @@ tmp/
 .molt_cache_*/
 .molt-cache/
 .molt_link_args/
+# Persistent output-family custody, never source or deployable payload.
+.molt-artifact-publication.lock
+.molt-artifact-publication-*.json
+.molt-artifact-publication-*.json.stage-*.tmp
+.molt-artifact-receipt-*.json
 .sccache/
 .uv-cache/
 .uv-cache-*/

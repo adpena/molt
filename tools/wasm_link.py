@@ -25,12 +25,13 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
-import artifact_publish as artifact_publish  # noqa: E402
+from molt import artifact_publication as artifact_publish  # noqa: E402, F401
 from command_execution import CommandExecutor  # noqa: E402
 from wasm_optimize import find_wasm_opt as find_wasm_opt, optimize as optimize_wasm  # noqa: E402, F401
 from wasm_metrics import wasm_metrics as wasm_metrics  # noqa: E402
 from molt.cli import wasm_link_inputs  # noqa: E402
-from molt.link_outputs import wasm_link_output_paths  # noqa: E402
+from molt.link_outputs import validate_link_output_paths, wasm_link_output_paths  # noqa: E402
+from molt.cli.link_fingerprints import FinalLinkReceiptRequest  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
 from molt.cli.app_export_contract import (  # noqa: E402
     app_export_call_abi as app_export_call_abi,
@@ -2181,6 +2182,7 @@ def _run_wasm_ld_with_custodied_inputs(
     phase_timings_file: Path | None = None,
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
+    link_receipt: FinalLinkReceiptRequest | None = None,
 ) -> int:
     return _link_pipeline.run_wasm_ld_with_custodied_inputs(
         globals(),
@@ -2201,6 +2203,7 @@ def _run_wasm_ld_with_custodied_inputs(
         phase_timings_file=phase_timings_file,
         wasm_facts_scanner=wasm_facts_scanner,
         app_export_contract_path=app_export_contract_path,
+        link_receipt=link_receipt,
     )
 
 
@@ -2225,6 +2228,7 @@ def _run_wasm_ld(
     app_export_contract_path: Path | None = None,
     runtime_identity: StableRegularFileIdentity | None = None,
     deploy_runtime_identity: StableRegularFileIdentity | None = None,
+    link_receipt: FinalLinkReceiptRequest | None = None,
 ) -> int:
     expected_target = "wasm32-unknown-unknown" if freestanding else "wasm32-wasip1"
     try:
@@ -2241,7 +2245,7 @@ def _run_wasm_ld(
         )
         # Check original inputs before custody rewrites their paths. Otherwise
         # successful publication could overwrite an immutable runtime or app input.
-        wasm_link_output_paths(
+        publication_outputs = wasm_link_output_paths(
             linked,
             split_output_dir=(split_output_dir or linked.parent)
             if split_runtime
@@ -2254,6 +2258,17 @@ def _run_wasm_ld(
                 *((app_export_contract_path,) if app_export_contract_path else ()),
             ),
         )
+        if link_receipt is not None:
+            validate_link_output_paths(
+                {**publication_outputs, "receipt": link_receipt.path},
+                inputs=(
+                    runtime,
+                    output,
+                    *((deploy_runtime,) if deploy_runtime is not None else ()),
+                    *(Path(item.path) for item in native_link_requirements.inputs),
+                    *((app_export_contract_path,) if app_export_contract_path else ()),
+                ),
+            )
         with tempfile.TemporaryDirectory(prefix="molt-wasm-link-custody-") as tmp:
             snapshot_root = Path(tmp)
             runtime_snapshot_root = snapshot_root / "runtime-pair"
@@ -2374,6 +2389,7 @@ def _run_wasm_ld(
                 phase_timings_file=phase_timings_file,
                 wasm_facts_scanner=wasm_facts_scanner,
                 app_export_contract_path=app_export_contract_snapshot,
+                link_receipt=link_receipt,
             )
     except (OSError, ValueError) as exc:
         print(f"Failed to establish wasm linker input custody: {exc}", file=sys.stderr)
@@ -2441,11 +2457,51 @@ def main() -> int:
     parser.add_argument("--phase-timings-file", type=Path, default=None)
     parser.add_argument("--wasm-facts-scanner", type=Path, required=True)
     parser.add_argument("--app-export-contract", type=Path, required=True)
+    parser.add_argument(
+        "--link-receipt-request",
+        type=Path,
+        help="Private input fingerprint request; receipt is published with final outputs",
+    )
     args = parser.parse_args()
 
     runtime = args.runtime
     output = args.input
     linked = args.output
+    try:
+        link_receipt = (
+            FinalLinkReceiptRequest.read(args.link_receipt_request)
+            if args.link_receipt_request is not None
+            else None
+        )
+        publication_outputs = wasm_link_output_paths(
+            linked,
+            split_output_dir=(args.split_output_dir or linked.parent)
+            if args.split_runtime
+            else None,
+        )
+        if link_receipt is not None:
+            publication_outputs["receipt"] = link_receipt.path
+        validate_link_output_paths(
+            publication_outputs,
+            inputs=tuple(
+                path
+                for path in (
+                    runtime,
+                    output,
+                    args.runtime_shared,
+                    args.runtime_generation,
+                    args.runtime_expected_identity,
+                    args.native_link_plan,
+                    args.app_export_contract,
+                    args.link_receipt_request,
+                    args.wasm_facts_scanner,
+                )
+                if path is not None
+            ),
+        )
+    except (OSError, ValueError, UnicodeError) as exc:
+        print(f"Invalid final link receipt request: {exc}", file=sys.stderr)
+        return 1
 
     if not runtime.exists():
         print(f"Runtime wasm not found: {runtime}", file=sys.stderr)
@@ -2510,6 +2566,7 @@ def main() -> int:
         wasm_facts_scanner=args.wasm_facts_scanner,
         app_export_contract_path=args.app_export_contract,
         runtime_identity=generation.reloc_member_identity,
+        link_receipt=link_receipt,
         deploy_runtime_identity=(
             generation.shared_member_identity if args.split_runtime else None
         ),

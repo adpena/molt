@@ -25,6 +25,7 @@ from tests.cli.native_link_test_support import (
 from tests.runtime_build_identity_helper import native_runtime_staticlib_identity
 from tools import nightly_runtime_bundle as bundle
 from molt.exact_json import encode_exact
+from molt import artifact_publication
 
 
 IDENTITY = bundle.BundleIdentity(
@@ -536,6 +537,36 @@ def test_pack_rejects_non_executable_backend(tmp_path: Path) -> None:
             manifest_output=tmp_path / "manifest.json",
             identity=IDENTITY,
         )
+
+
+def test_failed_hydration_rolls_back_payload_but_retains_parent_lock_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _manifest, _expected = _pack(tmp_path)
+    destination = tmp_path / "hydrated"
+    replace = artifact_publication._durable_replace
+
+    def fail_manifest(stage: Path, final: Path) -> None:
+        if final == destination / bundle.MANIFEST_NAME:
+            raise OSError("manifest publication interrupted")
+        replace(stage, final)
+
+    monkeypatch.setattr(artifact_publication, "_durable_replace", fail_manifest)
+    with pytest.raises(
+        bundle.NightlyRuntimeBundleError, match="manifest publication interrupted"
+    ):
+        bundle.verify_extract_bundle(
+            archive=archive,
+            destination=destination,
+            expected_identity=IDENTITY,
+            expected_runtime_build_identity=RUNTIME_BUILD_IDENTITY,
+        )
+    retained = [path for path in destination.rglob("*") if path.is_file()]
+    assert {path.parent for path in retained} == {
+        destination,
+        destination / bundle.PROFILE,
+    }
+    assert all(artifact_publication.is_publication_lock_file(path) for path in retained)
 
 
 def test_pack_rejects_link_manifest_not_bound_to_runtime(tmp_path: Path) -> None:

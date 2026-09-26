@@ -3,21 +3,22 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
-import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Collection, TypedDict
 
 from molt.capability_manifest import ResolvedRuntimePolicy
+from molt import artifact_publication
+from molt.wasm_bundle import BundleManifest, write_wasm_bundle
 from molt.file_publication import staged_file_path
+from molt.exact_json import canonical_json_bytes
 from molt._wasm_abi_generated import (
     WASM_ESSENTIAL_EXPORTS,
     WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
@@ -31,7 +32,12 @@ from molt.browser_asset_closure import (
     wasm_loader_asset_closure,
 )
 from molt.cli import link_fingerprints
-from molt.link_outputs import wasm_link_output_paths
+from molt.cli.wasm_deployment import (
+    WasmDeploymentGeneration,
+    WasmDeploymentPlan,
+    WasmDeploymentSources,
+)
+from molt.link_outputs import validate_link_output_paths, wasm_link_output_paths
 from molt.cli.atomic_io import (
     _atomic_copy_file,
     _atomic_write_bytes,
@@ -62,7 +68,6 @@ from molt.cli.output import (
 )
 from molt.cli.python_source_closure import local_python_import_closure
 from molt.cli.runtime_wasm_validation import (
-    _is_reusable_wasm_artifact,
     _validate_wasm_structural,
 )
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary
@@ -72,6 +77,7 @@ from molt.cli.source_extension_link_requirements import (
     source_extension_link_file,
 )
 from molt.cli.wasm import (
+    WASM_WORKER_COMPATIBILITY_DATE,
     _effective_split_worker_table_base,
     _generate_split_worker_js,
     _generate_split_wrangler_jsonc,
@@ -245,17 +251,6 @@ def _app_export_manifest(
     }
 
 
-class _ExternalStaticBundleFile(TypedDict):
-    path: str
-    size: int
-
-
-class _ExternalStaticBundleManifest(TypedDict):
-    files: list[_ExternalStaticBundleFile]
-    roots: list[str]
-    total_bytes: int
-
-
 class _RuntimeImportAbiManifest(TypedDict):
     module: str
     names: list[str]
@@ -283,7 +278,7 @@ def _external_static_bundle_arcname(root: Path, path: Path) -> str | None:
 def _write_external_static_packages_bundle(
     runtime_roots: Collection[Path],
     output: Path,
-) -> _ExternalStaticBundleManifest | None:
+) -> BundleManifest | None:
     roots = tuple(
         dict.fromkeys(
             root.resolve(strict=False)
@@ -294,62 +289,14 @@ def _write_external_static_packages_bundle(
     if not roots:
         return None
 
-    files: list[_ExternalStaticBundleFile] = []
-    seen: set[str] = set()
-    tmp_output = staged_file_path(output, purpose="bundle")
-    try:
-        with tarfile.open(tmp_output, "w") as tar:
-            for root in sorted(roots, key=lambda path: str(path)):
-                for path in sorted(root.rglob("*")):
-                    arcname = _external_static_bundle_arcname(root, path)
-                    if arcname is None:
-                        continue
-                    if arcname in seen:
-                        raise ValueError(
-                            f"external static package bundle path collision: {arcname}"
-                        )
-                    seen.add(arcname)
-                    payload = path.read_bytes()
-                    info = tarfile.TarInfo(arcname)
-                    info.size = len(payload)
-                    info.mtime = 0
-                    info.mode = 0o644
-                    info.uid = 0
-                    info.gid = 0
-                    info.uname = ""
-                    info.gname = ""
-                    tar.addfile(info, io.BytesIO(payload))
-                    files.append({"path": arcname, "size": len(payload)})
-
-            if not files:
-                return None
-
-            manifest: _ExternalStaticBundleManifest = {
-                "files": files,
-                "roots": [str(root) for root in roots],
-                "total_bytes": sum(file["size"] for file in files),
-            }
-            manifest_bytes = json.dumps(
-                manifest,
-                indent=2,
-                sort_keys=True,
-            ).encode("utf-8")
-            manifest_info = tarfile.TarInfo("__manifest__.json")
-            manifest_info.size = len(manifest_bytes)
-            manifest_info.mtime = 0
-            manifest_info.mode = 0o644
-            manifest_info.uid = 0
-            manifest_info.gid = 0
-            manifest_info.uname = ""
-            manifest_info.gname = ""
-            tar.addfile(manifest_info, io.BytesIO(manifest_bytes))
-
-        output.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(tmp_output, output)
-        return manifest
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            tmp_output.unlink()
+    return write_wasm_bundle(
+        roots,
+        output,
+        include=lambda root, path: (
+            _external_static_bundle_arcname(root, path) is not None
+        ),
+        omit_empty=True,
+    )
 
 
 def _runtime_export_signatures_for_imports(
@@ -442,50 +389,6 @@ def _replace_directory_tree_from_source(
         with contextlib.suppress(OSError):
             if backup_path.exists():
                 _remove_file_or_tree(backup_path)
-
-
-def _artifact_imports_module(path: Path, module_name: str) -> bool:
-    try:
-        return bool(_collect_wasm_module_import_names(path, module_name))
-    except (OSError, ValueError):
-        return True
-
-
-def _is_reusable_static_native_link_artifact(path: Path) -> bool:
-    return _is_reusable_wasm_artifact(path) and not _artifact_imports_module(
-        path, "molt_native"
-    )
-
-
-def _is_reusable_split_runtime_artifacts(
-    app_wasm: Path,
-    runtime_wasm: Path,
-    *,
-    static_native_inputs: bool,
-    wasm_table_base: int | None = None,
-) -> bool:
-    if not _is_reusable_wasm_artifact(app_wasm):
-        return False
-    if not _is_reusable_wasm_artifact(runtime_wasm):
-        return False
-    try:
-        app_callable_table = read_wasm_callable_table_attestation(app_wasm)
-        read_wasm_callable_table_attestation(runtime_wasm)
-    except (OSError, ValueError):
-        return False
-    if static_native_inputs:
-        if _artifact_imports_module(app_wasm, "molt_native"):
-            return False
-        if wasm_table_base is None:
-            return False
-        try:
-            _effective_split_worker_table_base(
-                wasm_table_base=wasm_table_base,
-                app_callable_table_slots=(entry.slot for entry in app_callable_table),
-            )
-        except (OSError, ValueError):
-            return False
-    return True
 
 
 def _snapshot_manifest_asset_digest(
@@ -821,6 +724,74 @@ def _prepare_non_native_build_result(
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
+    with contextlib.ExitStack() as generation_custody:
+        return _prepare_non_native_build_result_in_generation(
+            generation_custody=generation_custody,
+            is_rust_transpile=is_rust_transpile,
+            is_luau_transpile=is_luau_transpile,
+            is_wasm=is_wasm,
+            is_wasm_freestanding=is_wasm_freestanding,
+            wasm_opt_enabled=wasm_opt_enabled,
+            wasm_opt_level=wasm_opt_level,
+            wasm_table_base=wasm_table_base,
+            linked=linked,
+            require_linked=require_linked,
+            linked_output_path=linked_output_path,
+            output_artifact=output_artifact,
+            json_output=json_output,
+            resolved_capability_policy=resolved_capability_policy,
+            runtime_state=runtime_state,
+            ensure_runtime_wasm_both=ensure_runtime_wasm_both,
+            runtime_cargo_profile=runtime_cargo_profile,
+            molt_root=molt_root,
+            split_runtime=split_runtime,
+            precompile=precompile,
+            project_root=project_root,
+            profile=profile,
+            warnings=warnings,
+            native_artifact_plan=native_artifact_plan,
+            artifacts_root=artifacts_root,
+            stage_timings_ms=stage_timings_ms,
+            phase_starts=phase_starts,
+            wasm_facts_scanner=wasm_facts_scanner,
+            app_export_contract_path=app_export_contract_path,
+        )
+
+
+def _prepare_non_native_build_result_in_generation(
+    *,
+    generation_custody: contextlib.ExitStack,
+    is_rust_transpile: bool,
+    is_luau_transpile: bool,
+    is_wasm: bool,
+    is_wasm_freestanding: bool = False,
+    wasm_opt_enabled: bool = True,
+    wasm_opt_level: str = "Oz",
+    wasm_table_base: int | None = None,
+    linked: bool,
+    require_linked: bool,
+    linked_output_path: Path | None,
+    output_artifact: Path,
+    json_output: bool,
+    resolved_capability_policy: ResolvedRuntimePolicy,
+    runtime_state: _RuntimeArtifactState,
+    ensure_runtime_wasm_both: (
+        Callable[[set[str] | frozenset[str] | None], bool] | None
+    ) = None,
+    runtime_cargo_profile: str,
+    molt_root: Path,
+    split_runtime: bool = False,
+    precompile: bool = False,
+    project_root: Path | None = None,
+    profile: BuildProfile = "dev",
+    warnings: list[str] | None = None,
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan | None = None,
+    artifacts_root: Path | None = None,
+    stage_timings_ms: dict[str, float] | None = None,
+    phase_starts: dict[str, float] | None = None,
+    wasm_facts_scanner: Path,
+    app_export_contract_path: Path | None = None,
+) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     if is_rust_transpile:
         return _PreparedNonNativeResult(
             primary_output=output_artifact,
@@ -843,6 +814,11 @@ def _prepare_non_native_build_result(
         ), None
     if is_wasm:
         output_wasm = output_artifact
+        deployment: WasmDeploymentGeneration | None = None
+        deployment_plan: WasmDeploymentPlan | None = None
+        deployment_sources: WasmDeploymentSources | None = None
+        link_skipped = False
+        host_binary: str | None = None
         resolved_linked_output = linked_output_path
         bundle_root: Path | None = None
         artifacts: dict[str, str] = {"wasm": str(output_wasm)}
@@ -1091,19 +1067,10 @@ def _prepare_non_native_build_result(
                 str(wasm_facts_scanner),
             ]
             link_cmd.extend(["--app-export-contract", str(app_export_contract_path)])
-            native_link_plan_path = output_wasm.with_name(
-                f".{output_wasm.name}.native-link-plan.json"
-            )
-            _atomic_write_json(
-                native_link_plan_path,
+            native_link_plan_bytes = canonical_json_bytes(
                 {
                     "link_requirements": wasm_link_requirements.manifest_payload(),
-                },
-            )
-            link_cmd.extend(["--native-link-plan", str(native_link_plan_path)])
-            external_native_fingerprint_inputs = (
-                *external_native_fingerprint_inputs,
-                native_link_plan_path,
+                }
             )
             if _split_runtime:
                 if runtime_wasm is not None:
@@ -1116,11 +1083,6 @@ def _prepare_non_native_build_result(
                         str(split_dir),
                     ]
                 )
-            link_timings_path = output_wasm.with_name(
-                f".{output_wasm.name}.link-phase-timings.json"
-            )
-            if stage_timings_ms is not None:
-                link_cmd.extend(["--phase-timings-file", str(link_timings_path)])
             if is_wasm_freestanding:
                 link_cmd.append("--freestanding")
             if wasm_opt_enabled:
@@ -1128,31 +1090,91 @@ def _prepare_non_native_build_result(
             if profile == "dev":
                 link_cmd.append("--preserve-debug-sections")
             link_project_root = project_root or molt_root
-            link_fingerprint_path = link_fingerprints._link_fingerprint_path(
-                link_project_root,
-                resolved_linked_output,
-                profile,
-                "wasm32-wasip1",
-            )
-            stored_link_fingerprint = link_fingerprints._read_link_fingerprint(
-                link_fingerprint_path
-            )
             try:
                 link_tool_closure = local_python_import_closure(molt_root, (tool,))
                 deploy_asset_root = molt_root / "wasm"
+                browser_asset_names = (
+                    wasm_loader_asset_closure(
+                        deploy_asset_root, BROWSER_WASM_ENTRY_ASSETS
+                    )
+                    if _split_runtime
+                    else ()
+                )
                 browser_deploy_sources = (
                     (
                         deploy_asset_root / "browser_asset_graph.generated.json",
+                        deploy_asset_root / TARGET_FEATURE_MANIFEST_ASSET_NAME,
                         *(
                             deploy_asset_root.joinpath(*Path(asset).parts)
-                            for asset in wasm_loader_asset_closure(
-                                deploy_asset_root,
-                                BROWSER_WASM_ENTRY_ASSETS,
-                            )
+                            for asset in browser_asset_names
                         ),
                     )
-                    if profile == "browser"
+                    if _split_runtime
                     else ()
+                )
+                package_roots = tuple(
+                    dict.fromkeys(
+                        artifact.runtime_root.resolve()
+                        for artifact in staged_external_native_artifacts
+                    )
+                )
+                with artifact_publication.publication_payload_snapshot(
+                    package_roots,
+                    include=lambda root, path: (
+                        _external_static_bundle_arcname(root, path) is not None
+                    ),
+                ) as package_snapshot:
+                    package_payload_inputs = tuple(
+                        path
+                        for root, paths in package_snapshot.items()
+                        for path in paths
+                        if _external_static_bundle_arcname(root, path) is not None
+                    )
+                    deployment_sources = WasmDeploymentSources.capture(
+                        (*package_payload_inputs, *browser_deploy_sources),
+                        package_snapshot,
+                        lambda root, path: (
+                            _external_static_bundle_arcname(root, path) is not None
+                        ),
+                    )
+                deployment_plan = WasmDeploymentPlan.create(
+                    link_outputs,
+                    output_root=output_wasm.parent,
+                    split=_split_runtime,
+                    loader_assets=tuple(browser_asset_names),
+                    target_feature_asset=TARGET_FEATURE_MANIFEST_ASSET_NAME,
+                    bundle=bool(package_payload_inputs),
+                    precompile=precompile,
+                )
+                link_fingerprint_path = link_fingerprints._link_fingerprint_path(
+                    deployment_plan.outputs["manifest"]
+                )
+                stored_link_fingerprint = link_fingerprints._read_link_fingerprint(
+                    link_fingerprint_path
+                )
+                validate_link_output_paths(
+                    deployment_plan.outputs,
+                    inputs=(
+                        output_wasm,
+                        runtime_reloc_wasm,
+                        runtime_wasm,
+                        app_export_contract_path,
+                        *external_native_fingerprint_inputs,
+                        *package_payload_inputs,
+                    ),
+                )
+                if precompile:
+                    host_binary = resolve_molt_wasm_host_binary(
+                        molt_root,
+                        cargo_profile=runtime_cargo_profile,
+                    )
+                    if host_binary is None:
+                        raise ValueError(
+                            "--precompile requires a matching molt-wasm-host binary "
+                            "(set MOLT_WASM_HOST_BIN or build the runtime profile)"
+                        )
+                deployment_closure = local_python_import_closure(
+                    molt_root, (Path(__file__),)
                 )
             except (OSError, ValueError) as exc:
                 return None, _fail(
@@ -1172,6 +1194,8 @@ def _prepare_non_native_build_result(
                     ),
                     *browser_deploy_sources,
                     *external_native_fingerprint_inputs,
+                    *package_payload_inputs,
+                    *((Path(host_binary),) if host_binary is not None else ()),
                     app_export_contract_path,
                 ],
                 link_cmd=link_cmd,
@@ -1180,6 +1204,34 @@ def _prepare_non_native_build_result(
                         "role": "wasm-link-source-closure",
                         "content_digest": link_tool_closure.content_digest,
                     },
+                    {
+                        "role": "wasm-native-link-plan",
+                        "content_digest": hashlib.sha256(
+                            native_link_plan_bytes
+                        ).hexdigest(),
+                    },
+                    {
+                        "role": "wasm-deployment",
+                        "source_digest": deployment_closure.content_digest,
+                        "capability_policy": resolved_capability_policy.canonical_payload(),
+                        "wasm_table_base": wasm_table_base,
+                        "precompile": precompile,
+                        "host_environment": {
+                            name: value
+                            for name, value in sorted(os.environ.items())
+                            if name.startswith("MOLT_WASM_")
+                            or name == "MOLT_DETERMINISTIC"
+                        }
+                        if precompile
+                        else None,
+                        "outputs": {
+                            role: str(path.resolve())
+                            for role, path in deployment_plan.outputs.items()
+                        },
+                        "compatibility_date": WASM_WORKER_COMPATIBILITY_DATE
+                        if _split_runtime
+                        else None,
+                    },
                 ),
                 stored_fingerprint=(
                     stored_link_fingerprint["fingerprint"]
@@ -1187,33 +1239,31 @@ def _prepare_non_native_build_result(
                     else None
                 ),
             )
+            if link_fingerprint is None:
+                return None, _fail(
+                    "Unable to fingerprint the complete WASM deployment inputs",
+                    json_output,
+                    command="build",
+                )
+            try:
+                assert deployment_sources is not None
+                deployment_sources.verify_files()
+            except (OSError, ValueError) as exc:
+                return None, _fail(str(exc), json_output, command="build")
             link_skipped = link_fingerprints._link_outputs_match(
-                outputs=link_outputs,
+                outputs=deployment_plan.outputs,
                 fingerprint=link_fingerprint,
-                stored_fingerprint=stored_link_fingerprint,
+                receipt_path=link_fingerprint_path,
             )
-            if link_skipped and wasm_link_requirements.inputs:
-                link_skipped = _is_reusable_static_native_link_artifact(
-                    resolved_linked_output
-                )
-            if link_skipped and _split_runtime:
-                link_skipped = _is_reusable_split_runtime_artifacts(
-                    link_outputs["app"],
-                    link_outputs["runtime"],
-                    static_native_inputs=bool(wasm_link_requirements.inputs),
-                    wasm_table_base=wasm_table_base,
-                )
             if link_skipped:
                 link_process = subprocess.CompletedProcess(link_cmd, 0, "", "")
+                artifacts.update(deployment_plan.artifacts())
+                if _split_runtime:
+                    bundle_root = deployment_plan.root
             else:
-                linked_tmp_output: Path | None = None
+                native_link_plan_path: Path | None = None
+                link_timings_path: Path | None = None
                 link_run_cmd = list(link_cmd)
-                if not _split_runtime:
-                    linked_tmp_output = staged_file_path(
-                        resolved_linked_output, purpose="wasm-link"
-                    )
-                    output_arg_index = link_run_cmd.index("--output") + 1
-                    link_run_cmd[output_arg_index] = str(linked_tmp_output)
                 # The link is its own top-level build phase: without this
                 # marker its whole wall time (wasm-ld, post-link passes,
                 # wasm-opt, split-runtime processing) was charged to the last
@@ -1221,6 +1271,32 @@ def _prepare_non_native_build_result(
                 if phase_starts is not None and "wasm_link" not in phase_starts:
                     phase_starts["wasm_link"] = time.perf_counter()
                 try:
+                    deployment = generation_custody.enter_context(
+                        WasmDeploymentGeneration.prepare(deployment_plan)
+                    )
+                    link_run_cmd[link_run_cmd.index("--output") + 1] = str(
+                        deployment.outputs["linked"]
+                    )
+                    if _split_runtime:
+                        link_run_cmd[link_run_cmd.index("--split-output-dir") + 1] = (
+                            str(deployment.root)
+                        )
+                    native_link_plan_path = staged_file_path(
+                        deployment.outputs["linked"], purpose="native-link-plan"
+                    )
+                    native_link_plan_path.write_bytes(native_link_plan_bytes)
+                    link_run_cmd.extend(
+                        ["--native-link-plan", str(native_link_plan_path)]
+                    )
+                    if stage_timings_ms is not None:
+                        link_timings_path = staged_file_path(
+                            deployment.outputs["linked"], purpose="link-timings"
+                        )
+                        link_run_cmd.extend(
+                            ["--phase-timings-file", str(link_timings_path)]
+                        )
+                    # The standalone tool retains its direct publisher, but its
+                    # destinations here are private until deployment is complete.
                     link_process = _run_completed_command(
                         link_run_cmd,
                         cwd=molt_root,
@@ -1234,30 +1310,15 @@ def _prepare_non_native_build_result(
                         if err:
                             msg = f"{msg}: {err}"
                         return None, _fail(msg, json_output, command="build")
-                    if linked_tmp_output is not None:
-                        if not _is_reusable_wasm_artifact(linked_tmp_output):
-                            return None, _fail(
-                                f"Wasm link produced invalid artifact: {linked_tmp_output}",
-                                json_output,
-                                command="build",
-                            )
-                        os.replace(linked_tmp_output, resolved_linked_output)
-                        if os.name == "posix":
-                            with contextlib.suppress(OSError):
-                                dir_fd = os.open(
-                                    resolved_linked_output.parent,
-                                    os.O_RDONLY,
-                                )
-                                try:
-                                    os.fsync(dir_fd)
-                                finally:
-                                    os.close(dir_fd)
+                    resolved_linked_output = deployment.outputs["linked"]
+                except (OSError, ValueError) as exc:
+                    return None, _fail(
+                        f"Failed to prepare WASM link publication: {exc}",
+                        json_output,
+                        command="build",
+                    )
                 finally:
-                    if linked_tmp_output is not None:
-                        with contextlib.suppress(OSError):
-                            if linked_tmp_output.exists():
-                                linked_tmp_output.unlink()
-                    if stage_timings_ms is not None:
+                    if stage_timings_ms is not None and link_timings_path is not None:
                         try:
                             link_timings = json.loads(
                                 link_timings_path.read_text(encoding="utf-8")
@@ -1271,33 +1332,15 @@ def _prepare_non_native_build_result(
                                 stage_timings_ms[name] = round(
                                     max(0.0, float(value)), 6
                                 )
-                        with contextlib.suppress(OSError):
-                            link_timings_path.unlink()
+                    for transport in (
+                        native_link_plan_path,
+                        link_timings_path,
+                    ):
+                        if transport is not None:
+                            with contextlib.suppress(OSError):
+                                transport.unlink()
                 if phase_starts is not None and "wasm_publish" not in phase_starts:
                     phase_starts["wasm_publish"] = time.perf_counter()
-                link_fingerprint_warning = (
-                    link_fingerprints._write_link_fingerprint_if_needed(
-                        link_skipped=False,
-                        link_fingerprint=link_fingerprint,
-                        link_fingerprint_path=link_fingerprint_path,
-                        outputs=link_outputs,
-                    )
-                )
-                if link_fingerprint_warning is not None:
-                    if warnings is not None:
-                        warnings.append(link_fingerprint_warning)
-                    if not json_output:
-                        print(f"Warning: {link_fingerprint_warning}", file=sys.stderr)
-            if require_linked and resolved_linked_output is not None:
-                if output_wasm != resolved_linked_output and output_wasm.exists():
-                    try:
-                        output_wasm.unlink()
-                    except OSError as exc:
-                        return None, _fail(
-                            f"Failed to remove unlinked wasm: {exc}",
-                            json_output,
-                            command="build",
-                        )
         if not is_wasm_freestanding and not _split_runtime and not linked:
             required_runtime_exports = _collect_wasm_module_import_names(
                 output_wasm, "molt_runtime"
@@ -1334,8 +1377,8 @@ def _prepare_non_native_build_result(
             artifacts["runtime_wasm"] = str(staged_runtime_wasm)
         if resolved_linked_output is not None:
             artifacts["linked_wasm"] = str(resolved_linked_output)
-        cwasm_path: str | None = None
-        runtime_cwasm_path: str | None = None
+        cwasm_path: str | None = artifacts.get("cwasm")
+        runtime_cwasm_path: str | None = artifacts.get("runtime_cwasm")
         primary_output = output_wasm
         if require_linked and resolved_linked_output is not None:
             primary_output = resolved_linked_output
@@ -1347,7 +1390,12 @@ def _prepare_non_native_build_result(
         )
         if resolved_linked_output is not None and not require_linked:
             success_messages.append(f"Successfully linked {resolved_linked_output}")
-        if linked and not _split_runtime and resolved_linked_output is not None:
+        if (
+            linked
+            and not _split_runtime
+            and resolved_linked_output is not None
+            and not link_skipped
+        ):
             assert app_export_contract is not None
             try:
                 app_exports_manifest = _app_export_manifest(
@@ -1391,7 +1439,8 @@ def _prepare_non_native_build_result(
                     json_output,
                     command="build",
                 )
-            linked_manifest = output_wasm.parent / "manifest.json"
+            assert deployment is not None
+            linked_manifest = deployment.outputs["manifest"]
             _atomic_write_json(
                 linked_manifest,
                 {
@@ -1419,9 +1468,10 @@ def _prepare_non_native_build_result(
 
         # --split-runtime: wasm_link.py produces app.wasm + molt_runtime.wasm;
         # generate manifest.json and worker.js shim here.
-        if _split_runtime and runtime_reloc_wasm is not None:
+        if _split_runtime and runtime_reloc_wasm is not None and not link_skipped:
             assert app_export_contract is not None
-            split_dir = output_wasm.parent
+            assert deployment is not None
+            split_dir = deployment.root
 
             app_wasm = split_dir / "app.wasm"
             rt_wasm = split_dir / "molt_runtime.wasm"
@@ -1550,7 +1600,7 @@ def _prepare_non_native_build_result(
                 )
             browser_embed_abi = _split_runtime_browser_abi_from_manifest()
             browser_embed_abi["native_callables"] = native_callables_manifest
-            bundle_manifest: _ExternalStaticBundleManifest | None = None
+            bundle_manifest: BundleManifest | None = None
             bundle_tar = split_dir / "bundle.tar"
             with contextlib.suppress(FileNotFoundError):
                 bundle_tar.unlink()
@@ -1609,8 +1659,7 @@ def _prepare_non_native_build_result(
             if bundle_manifest is not None:
                 bundle_size = bundle_tar.stat().st_size
                 assets["bundle"] = {
-                    "path": "bundle.tar",
-                    "size": bundle_size,
+                    **_file_asset(bundle_tar, "bundle.tar"),
                     "file_count": len(bundle_manifest["files"]),
                     "source_total_bytes": bundle_manifest["total_bytes"],
                 }
@@ -1660,7 +1709,7 @@ def _prepare_non_native_build_result(
             _atomic_write_text(
                 wrangler_jsonc,
                 _generate_split_wrangler_jsonc(
-                    dt.date.today().isoformat(),
+                    WASM_WORKER_COMPATIBILITY_DATE,
                     browser_asset_names,
                 ),
             )
@@ -1694,7 +1743,7 @@ def _prepare_non_native_build_result(
                 f"+ {rt_wasm.name} ({rt_size // 1024}KB)"
             )
 
-        if precompile:
+        if precompile and not link_skipped:
             manifest_value = artifacts.get("manifest")
             if not isinstance(manifest_value, str):
                 return None, _fail(
@@ -1702,10 +1751,6 @@ def _prepare_non_native_build_result(
                     json_output,
                     command="build",
                 )
-            host_binary = resolve_molt_wasm_host_binary(
-                molt_root,
-                cargo_profile=runtime_cargo_profile,
-            )
             if host_binary is None:
                 return None, _fail(
                     "--precompile requires a matching molt-wasm-host binary "
@@ -1717,7 +1762,9 @@ def _prepare_non_native_build_result(
                 precompile_proc = _run_completed_command(
                     [host_binary, "--precompile", manifest_value],
                     cwd=molt_root,
-                    env=None,
+                    env=deployment.precompile_environment()
+                    if deployment is not None
+                    else None,
                     capture_output=True,
                     memory_guard_prefix="MOLT_WASM_LINK",
                     timeout=60,
@@ -1735,6 +1782,33 @@ def _prepare_non_native_build_result(
                     subprocess_output_text(precompile_proc.stdout)
                 )
                 _validate_precompile_receipt_outputs(receipt_artifacts)
+                assert deployment is not None
+                expected_roles = {"main": "cwasm"}
+                if _split_runtime:
+                    expected_roles["runtime"] = "runtime_cwasm"
+                if receipt_artifacts.keys() != expected_roles.keys():
+                    raise ValueError(
+                        "Host precompile receipt does not cover the deployment modules"
+                    )
+                for role, output_role in expected_roles.items():
+                    artifact = receipt_artifacts[role]
+                    source = deployment.outputs[
+                        "runtime"
+                        if role == "runtime"
+                        else "app"
+                        if _split_runtime
+                        else "linked"
+                    ]
+                    if (
+                        Path(str(artifact["path"])).resolve()
+                        != deployment.outputs[output_role].resolve()
+                        or Path(str(artifact["source"])).resolve() != source.resolve()
+                        or artifact["source_sha256"]
+                        != _file_asset(source, source.name)["sha256"]
+                    ):
+                        raise ValueError(
+                            "Host precompile receipt escaped its private deployment generation"
+                        )
             except subprocess.TimeoutExpired as exc:
                 detail = (
                     subprocess_output_text(exc.stderr).strip()
@@ -1759,7 +1833,7 @@ def _prepare_non_native_build_result(
                 artifacts["runtime_cwasm"] = runtime_cwasm_path
             success_messages.append(f"Precompiled {cwasm_path}")
 
-        return _PreparedNonNativeResult(
+        prepared = _PreparedNonNativeResult(
             primary_output=primary_output,
             consumer_output=consumer_output,
             bundle_root=bundle_root,
@@ -1781,7 +1855,24 @@ def _prepare_non_native_build_result(
                 ),
             },
             artifacts=artifacts,
-        ), None
+        )
+        if deployment is not None:
+            try:
+                assert deployment_sources is not None
+                deployment_sources.verify()
+                deployment.publish(
+                    link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
+                        link_fingerprint_path, link_fingerprint
+                    )
+                )
+            except (OSError, ValueError, RuntimeError) as exc:
+                return None, _fail(
+                    f"Failed to publish WASM deployment: {exc}",
+                    json_output,
+                    command="build",
+                )
+            prepared = deployment.public_result(prepared)
+        return prepared, None
     return _PreparedNonNativeResult(
         primary_output=output_artifact,
         consumer_output=output_artifact,

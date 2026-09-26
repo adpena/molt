@@ -35,9 +35,11 @@
     "src/molt/file_locks.py",
     "src/molt/path_custody.py",
     "src/molt/toolchain_identity.py",
+    "src/molt/llvm_linker_roles.py",
     "src/molt/file_hashing.py",
     "src/molt/exact_json.py",
     "src/molt/file_publication.py",
+    "src/molt/artifact_publication.py",
     "src/molt/portable_paths.py",
     "src/molt/dx.py",
     "src/molt/cargo_execution_policy.py",
@@ -46,7 +48,6 @@
     "src/molt/llvm_toolchain.py",
     "src/molt/wasi_sdk_identity.py",
     "tools/provision_wasi_sdk.py",
-    "tools/artifact_publish.py",
     "tools/nightly_prepare.py",
     "tools/nightly_profile_feedback.py",
     "tools/nightly_shard_profile.py",
@@ -188,7 +189,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4476d1c3979770ea71f798ec0e0ca18c78c6a0ab1f4f64c1179729ee1dd6465b",
+  "authority_sha256": "9eae9295e60e6a2dfecbcb1fec0aca1808fdf332470f9957257ff691fc01149b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -2893,11 +2894,13 @@
         "3.12",
         "pytest",
         "-q",
+        "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts::test_repeated_build_preserves_complete_generation_and_executes",
         "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output",
         "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
         "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class",
         "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module",
-        "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype",
+        "tests/test_browser_vfs.py"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -3223,7 +3226,9 @@
         "tests/cli/test_link_fingerprints.py",
         "tests/cli/test_runtime_wasm_build_timings.py",
         "tests/test_wasm_link_validation.py",
-        "tests/test_wasm_section_spans.py"
+        "tests/test_wasm_section_spans.py",
+        "tests/tools/test_artifact_publish.py",
+        "tests/test_wasm_bundle.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",

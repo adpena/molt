@@ -20,25 +20,56 @@ class BundleFs {
     }
 
     static fromTar(tarBytes) {
-        // Minimal tar parser — header is 512 bytes, content follows
+        // The shared bundle producer emits regular-file USTAR, never PAX/GNU
+        // extension records. Admit that exact format rather than silently
+        // loading truncated names or skipping unsupported metadata.
         const files = new Map();
+        const directories = new Set();
         let offset = 0;
-        const decoder = new TextDecoder();
+        const decoder = new TextDecoder('utf-8', { fatal: true });
+        const field = (header, start, length) => {
+            const bytes = header.subarray(start, start + length);
+            const end = bytes.indexOf(0);
+            return decoder.decode(end < 0 ? bytes : bytes.subarray(0, end));
+        };
+        const octal = (header, start, length, label) => {
+            const text = field(header, start, length).trim();
+            if (!/^[0-7]+$/.test(text)) {
+                throw new Error(`bundle tar has invalid ${label}`);
+            }
+            const value = Number.parseInt(text, 8);
+            if (!Number.isSafeInteger(value)) {
+                throw new Error(`bundle tar has oversized ${label}`);
+            }
+            return value;
+        };
 
-        while (offset < tarBytes.length - 512) {
+        while (offset + 512 <= tarBytes.length) {
             // Read header
             const header = tarBytes.subarray(offset, offset + 512);
             // Check for end-of-archive (two null blocks)
-            if (header[0] === 0) break;
+            if (header.every(byte => byte === 0)) {
+                if (offset + 1024 > tarBytes.length ||
+                    !tarBytes.subarray(offset).every(byte => byte === 0)) {
+                    throw new Error('bundle tar has invalid end-of-archive');
+                }
+                return new BundleFs(files);
+            }
 
-            // Extract filename (bytes 0-99, null-terminated)
-            let nameEnd = 0;
-            while (nameEnd < 100 && header[nameEnd] !== 0) nameEnd++;
-            const name = decoder.decode(header.subarray(0, nameEnd));
+            const checksum = header.reduce((sum, byte, index) =>
+                sum + (index >= 148 && index < 156 ? 32 : byte), 0);
+            if (checksum !== octal(header, 148, 8, 'checksum')) {
+                throw new Error('bundle tar checksum mismatch');
+            }
+            if (field(header, 257, 6) !== 'ustar' || field(header, 263, 2) !== '00') {
+                throw new Error('bundle tar requires USTAR');
+            }
+            const prefix = field(header, 345, 155);
+            const leaf = field(header, 0, 100);
+            const name = prefix ? `${prefix}/${leaf}` : leaf;
 
             // Extract size (bytes 124-135, octal)
-            const sizeStr = decoder.decode(header.subarray(124, 136)).trim();
-            const size = parseInt(sizeStr, 8) || 0;
+            const size = octal(header, 124, 12, 'size');
 
             // Extract type flag (byte 156)
             const typeFlag = header[156];
@@ -54,6 +85,26 @@ class BundleFs {
             if (name.split('/').includes('..')) {
                 throw new Error(`bundle tar contains '..' component in path: ${name}`);
             }
+            if (!name || name.includes('\\') || name.includes(':') ||
+                name.split('/').some(part => part === '' || part === '.')) {
+                throw new Error(`bundle tar contains invalid relative path: ${name}`);
+            }
+            if (typeFlag !== 48 && typeFlag !== 0) {
+                throw new Error(`bundle tar contains unsupported entry: ${name}`);
+            }
+            if (offset + Math.ceil(size / 512) * 512 > tarBytes.length) {
+                throw new Error(`bundle tar contains truncated payload: ${name}`);
+            }
+            const parts = name.split('/');
+            const parents = [];
+            for (let index = 1; index < parts.length; index++) {
+                parents.push(parts.slice(0, index).join('/'));
+            }
+            if (files.has(name) || directories.has(name) ||
+                parents.some(parent => files.has(parent))) {
+                throw new Error(`bundle tar contains path collision: ${name}`);
+            }
+            for (const parent of parents) directories.add(parent);
 
             if (typeFlag === 48 || typeFlag === 0) { // regular file ('0' or null)
                 if (name) {
@@ -72,7 +123,7 @@ class BundleFs {
             offset += Math.ceil(size / 512) * 512;
         }
 
-        return new BundleFs(files);
+        throw new Error('bundle tar is missing end-of-archive');
     }
 
     read(path) {

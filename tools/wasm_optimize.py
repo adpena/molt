@@ -31,7 +31,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from tools import artifact_publish, harness_memory_guard  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
+from molt import artifact_publication  # noqa: E402
 from tools.wasm_metrics import wasm_metrics  # noqa: E402
 from molt.wasm_optimization import (  # noqa: E402
     WASM_OPT_LEVELS,
@@ -295,7 +296,7 @@ def optimize(
         apply_level=apply_level,
         preserve_debug=preserve_debug,
     )
-    staged_output = artifact_publish.staged_output_path(
+    staged_output = artifact_publication.staged_output_path(
         output_path,
         purpose="wasm-opt",
         suffix=".wasm",
@@ -462,7 +463,7 @@ def optimize(
             error=f"failed to profile optimized output: {exc}",
         )
     try:
-        artifact_publish.publish_validated_outputs([(staged_output, output_path)])
+        artifact_publication.publish_validated_outputs([(staged_output, output_path)])
     except (OSError, ValueError) as exc:
         return _optimizer_failure(
             status="publication-failed",

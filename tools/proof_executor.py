@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable, Iterable
 from typing import Any, Protocol
 
-from tools.artifact_publish import atomic_write_json
+from molt.artifact_publication import atomic_write_json
 
 
 class ProofCommand(Protocol):

@@ -343,13 +343,15 @@ def static_archive_member_identities(
     return tuple(identities)
 
 
-def artifact_content_identity(path: Path) -> dict[str, object]:
+def artifact_content_identity(
+    path: Path, *, logical_path: Path | None = None
+) -> dict[str, object]:
     """Read current artifact bytes once; metadata never authorizes cached content."""
     try:
         with open_stable_regular_file(path, label="runtime artifact") as opened:
             stream = opened.stream
             prefix = stream.read(len(_ARCHIVE_MAGIC))
-            if path.suffix.lower() in {".a", ".lib"} and prefix in {
+            if (logical_path or path).suffix.lower() in {".a", ".lib"} and prefix in {
                 _ARCHIVE_MAGIC,
                 _THIN_ARCHIVE_MAGIC,
             }:

@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 
 import pytest
+from molt import file_deletion
 
 from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli import source_extension_candidate_attestation as candidate_authority
@@ -495,11 +496,9 @@ def test_promotion_cleanup_failure_reports_committed_namespace(
 def test_promotion_real_recovery_reclaims_partially_deleted_committed_transaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from molt import file_publication
-
     attestation, receipt = _finalize_candidate_bundle(tmp_path, monkeypatch)
     destination = _promotion_registry(monkeypatch, tmp_path, receipt)
-    real_remove = file_publication.shutil.rmtree
+    real_remove = file_deletion.shutil.rmtree
     interrupted = []
 
     def partial_remove(path, *args, **kwargs):
@@ -518,7 +517,7 @@ def test_promotion_real_recovery_reclaims_partially_deleted_committed_transactio
         return real_remove(path, *args, **kwargs)
 
     with monkeypatch.context() as faults:
-        faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+        faults.setattr(file_deletion.shutil, "rmtree", partial_remove)
         assert (
             promotion.publish_source_extension_set_candidate(
                 candidate=str(attestation.root), json_output=True
@@ -572,11 +571,11 @@ def test_publication_recovery_reclaims_only_its_retirement_scope(
         retired = []
         with monkeypatch.context() as faults:
 
-            def partial_remove(path):
+            def partial_remove(path, **kwargs):
                 (path / "journal").unlink()
                 raise OSError("injected partial reclamation")
 
-            faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+            faults.setattr(file_deletion.shutil, "rmtree", partial_remove)
             for root, scope in ((source, prefix), (foreign, ".candidate.attest-")):
                 with pytest.raises(file_publication.RetirementError) as caught:
                     file_publication.durable_remove_path(root, retirement_scope=scope)
@@ -632,7 +631,7 @@ def test_producer_public_result_waits_for_real_transaction_retirement(
                 )
             else:
 
-                def partial_remove(path):
+                def partial_remove(path, **kwargs):
                     journal = next((path / "package-store" / "commits").glob("*.json"))
                     journal.unlink()
                     # Retired-generation cleanup must not reacquire the old name.
@@ -640,7 +639,7 @@ def test_producer_public_result_waits_for_real_transaction_retirement(
                     (root / "new-live").write_bytes(b"preserve")
                     raise OSError("injected after actual producer journal unlink")
 
-                faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+                faults.setattr(file_deletion.shutil, "rmtree", partial_remove)
             rc = producer._complete_producer_publication(
                 root,
                 custody=custody,
@@ -710,11 +709,11 @@ def test_producer_prior_retirement_failure_preserves_current_live_transaction(
         (prior / "residue").write_bytes(b"old residue")
         with monkeypatch.context() as faults:
 
-            def partial_prior_remove(path):
+            def partial_prior_remove(path, **kwargs):
                 (path / "journal").unlink()
                 raise OSError("injected after actual prior journal unlink")
 
-            faults.setattr(file_publication.shutil, "rmtree", partial_prior_remove)
+            faults.setattr(file_deletion.shutil, "rmtree", partial_prior_remove)
             with pytest.raises(file_publication.RetirementError) as caught:
                 file_publication.durable_remove_path(
                     prior, retirement_scope=".installed.produce-"
@@ -724,11 +723,11 @@ def test_producer_prior_retirement_failure_preserves_current_live_transaction(
         capsys.readouterr()
         with monkeypatch.context() as faults:
 
-            def fail_prior_reclamation(path):
+            def fail_prior_reclamation(path, **kwargs):
                 assert path == retired
                 raise OSError("injected prior residue reclamation failure")
 
-            faults.setattr(file_publication.shutil, "rmtree", fail_prior_reclamation)
+            faults.setattr(file_deletion.shutil, "rmtree", fail_prior_reclamation)
             rc = producer._complete_producer_publication(
                 root,
                 custody=custody,

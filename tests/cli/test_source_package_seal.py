@@ -6,7 +6,7 @@ import shutil
 import warnings
 
 import pytest
-from molt import file_publication
+from molt import file_deletion, file_publication
 from molt.cli import source_package_seal as seal_api
 
 from molt.cli.source_package_seal import (
@@ -363,7 +363,7 @@ def test_seal_commit_recovery_reclaims_partially_deleted_candidate(
     commit = prepare_source_package_seal_commit(store, seal, destination)
     # Another publisher installs the identical admitted seal before this commit.
     seal_api._copy_seal_candidate(seal.root, destination, seal.seal_sha256)
-    real_remove = file_publication.shutil.rmtree
+    real_remove = file_deletion.shutil.rmtree
     with monkeypatch.context() as faults:
 
         def partial_remove(path, *args, **kwargs):
@@ -372,7 +372,7 @@ def test_seal_commit_recovery_reclaims_partially_deleted_candidate(
                 raise OSError("injected after candidate manifest unlink")
             return real_remove(path, *args, **kwargs)
 
-        faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+        faults.setattr(file_deletion.shutil, "rmtree", partial_remove)
         with pytest.raises(file_publication.RetirementError) as caught:
             seal_api.commit_source_package_seal(commit)
     assert not commit.candidate_root.exists()
@@ -402,11 +402,11 @@ def test_private_seal_scratch_recovery_owns_retired_names(
     )
     with monkeypatch.context() as faults:
 
-        def partial_remove(path):
+        def partial_remove(path, **kwargs):
             (path / "journal").unlink()
             raise OSError("injected physical interruption")
 
-        faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+        faults.setattr(file_deletion.shutil, "rmtree", partial_remove)
         with pytest.raises(file_publication.RetirementError) as caught:
             file_publication.durable_remove_path(root, retirement_scope=scope)
     live = parent / "new-private-scratch"
@@ -429,12 +429,12 @@ def test_copy_failure_keeps_primary_and_retirement_failure_then_reclaims(
         def fail_copy(*_args, **_kwargs):
             raise primary
 
-        def partial_remove(path):
+        def partial_remove(path, **kwargs):
             (path / "files").rmdir()
             raise OSError("injected scratch removal failure")
 
         faults.setattr(seal_api, "_copy_staged_file", fail_copy)
-        faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+        faults.setattr(file_deletion.shutil, "rmtree", partial_remove)
         with pytest.raises(seal_api.SourcePackageSealCleanupError) as caught:
             seal_api._copy_seal_candidate(seal.root, candidate, seal.seal_sha256)
     assert caught.value.primary_error is primary

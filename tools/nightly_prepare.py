@@ -19,7 +19,7 @@ for import_root in (ROOT, SRC):
     if str(import_root) not in sys.path:
         sys.path.insert(0, str(import_root))
 
-from tools.artifact_publish import atomic_write_json  # noqa: E402
+from molt.artifact_publication import atomic_write_json  # noqa: E402
 from tools.command_execution import CommandExecutor, bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)

@@ -11,6 +11,7 @@ from typing import Any
 
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import _coerce_bool
+from molt.cli.link_fingerprints import FinalLinkReceiptRequest
 from molt.cli.native_link_plan import resolve_native_target_spec
 
 
@@ -49,6 +50,7 @@ def _run_bolt_post_link(
     out_dir: str | None,
     build_rc: int,
     json_output: bool,
+    receipt: FinalLinkReceiptRequest | None = None,
 ) -> int:
     """Run BOLT post-link optimization after a successful native build.
 
@@ -187,6 +189,7 @@ def _run_bolt_post_link(
         output_binary=output_path,
         target_triple=target_triple,
         strip=os.environ.get("MOLT_KEEP_SYMBOLS") != "1",
+        receipt=receipt,
     )
     if finalize_error is not None:
         if not json_output:

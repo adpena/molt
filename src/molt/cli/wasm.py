@@ -1473,6 +1473,11 @@ export default {
     )
 
 
+# A deliberate deployment contract version, not the build wall clock. Bump only
+# when adopting and verifying newer Workers compatibility behavior.
+WASM_WORKER_COMPATIBILITY_DATE = "2026-09-26"
+
+
 def _generate_split_wrangler_jsonc(
     compatibility_date: str,
     browser_asset_names: Iterable[str],
