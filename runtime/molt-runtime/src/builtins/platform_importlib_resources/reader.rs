@@ -33,21 +33,21 @@ pub(super) fn importlib_resources_module_name_from_bits(
 
     let spec_name = intern_runtime_static_name(_py, b"__spec__");
     if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
-        if let Some(spec_mod_name_bits) = getattr_optional_bits(_py, spec_bits, module_name_name)? {
+        let name_attribute = intern_runtime_static_name(_py, b"name");
+        let spec_module_name = getattr_optional_bits(_py, spec_bits, name_attribute);
+        if !obj_from_bits(spec_bits).is_none() {
+            dec_ref_bits(_py, spec_bits);
+        }
+        if let Some(spec_mod_name_bits) = spec_module_name? {
             let out = string_obj_to_owned(obj_from_bits(spec_mod_name_bits));
             if !obj_from_bits(spec_mod_name_bits).is_none() {
                 dec_ref_bits(_py, spec_mod_name_bits);
-            }
-            if !obj_from_bits(spec_bits).is_none() {
-                dec_ref_bits(_py, spec_bits);
             }
             if let Some(name) = out
                 && !name.is_empty()
             {
                 return Ok(name);
             }
-        } else if !obj_from_bits(spec_bits).is_none() {
-            dec_ref_bits(_py, spec_bits);
         }
     }
 

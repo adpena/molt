@@ -30,6 +30,7 @@ use crate::{
 
 pub(crate) mod class_construction;
 pub(crate) mod class_model;
+pub(crate) mod compiled_loader;
 pub(crate) mod concrete_types;
 pub(crate) mod dataclasses;
 pub(crate) mod descriptor_objects;
@@ -42,6 +43,7 @@ pub(crate) mod wrappers;
 pub use class_construction::*;
 pub(crate) use class_construction::{call_vararg_args, call_vararg_kwargs, call_with_kwargs};
 pub use class_model::*;
+pub use compiled_loader::*;
 pub use concrete_types::*;
 pub(crate) use concrete_types::{
     capsule_class, cell_class, mappingproxy_class, mappingproxy_class_bits, method_class,
@@ -150,6 +152,13 @@ define_types_runtime_state! {
     module_spec_init_fn,
     module_spec_repr_fn,
     module_spec_parent_fn,
+    compiled_loader_base_class,
+    compiled_loader_builtin_class,
+    compiled_loader_frozen_class,
+    compiled_loader_singleton,
+    compiled_loader_create_module_fn,
+    compiled_loader_exec_module_fn,
+    compiled_loader_load_module_fn,
 }
 
 fn types_state(_py: &PyToken<'_>) -> &'static TypesRuntimeState {

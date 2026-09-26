@@ -1551,13 +1551,13 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_frozen_external_payload",
         import: WasmRuntimeImport::ImportlibFrozenExternalPayload,
-        arity: 2,
+        arity: 1,
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_frozen_payload",
         import: WasmRuntimeImport::ImportlibFrozenPayload,
-        arity: 2,
+        arity: 0,
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
@@ -1689,7 +1689,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_reload",
         import: WasmRuntimeImport::ImportlibReload,
-        arity: 4,
+        arity: 3,
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
@@ -8295,6 +8295,18 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_module_spec_type",
         import: WasmRuntimeImport::ImportlibModuleSpecType,
+        arity: 0,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_importlib_compiled_loader",
+        import: WasmRuntimeImport::ImportlibCompiledLoader,
+        arity: 0,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_importlib_compiled_loader_types",
+        import: WasmRuntimeImport::ImportlibCompiledLoaderTypes,
         arity: 0,
         result: RuntimeCallableResult::I64,
     },
@@ -15890,6 +15902,51 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         dispatch: ReservedRuntimeCallableDispatch::Direct,
         trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
+    ReservedRuntimeCallableSpec {
+        index: 25,
+        runtime_name: "molt_importlib_compiled_loader_create_module",
+        import_name: "importlib_compiled_loader_create_module",
+        import: WasmRuntimeImport::ImportlibCompiledLoaderCreateModule,
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    ReservedRuntimeCallableSpec {
+        index: 26,
+        runtime_name: "molt_importlib_compiled_loader_exec_module",
+        import_name: "importlib_compiled_loader_exec_module",
+        import: WasmRuntimeImport::ImportlibCompiledLoaderExecModule,
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    ReservedRuntimeCallableSpec {
+        index: 27,
+        runtime_name: "molt_importlib_compiled_loader_load_module",
+        import_name: "importlib_compiled_loader_load_module",
+        import: WasmRuntimeImport::ImportlibCompiledLoaderLoadModule,
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    ReservedRuntimeCallableSpec {
+        index: 28,
+        runtime_name: "molt_importlib_module_spec_repr",
+        import_name: "importlib_module_spec_repr",
+        import: WasmRuntimeImport::ImportlibModuleSpecRepr,
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    ReservedRuntimeCallableSpec {
+        index: 29,
+        runtime_name: "molt_importlib_module_spec_parent",
+        import_name: "importlib_module_spec_parent",
+        import: WasmRuntimeImport::ImportlibModuleSpecParent,
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
+    },
 ];
 
 pub(crate) const RESERVED_RUNTIME_CALLABLE_COUNT: u32 =
@@ -17566,6 +17623,10 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
             Some(WasmRuntimeImport::ImportlibLoadModuleFromSpec)
         }
         "molt_importlib_module_spec_type" => Some(WasmRuntimeImport::ImportlibModuleSpecType),
+        "molt_importlib_compiled_loader" => Some(WasmRuntimeImport::ImportlibCompiledLoader),
+        "molt_importlib_compiled_loader_types" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderTypes)
+        }
         "molt_importlib_resources_open_resource_bytes_from_package_parts" => {
             Some(WasmRuntimeImport::ImportlibResourcesOpenResourceBytesFromPackageParts)
         }
@@ -18929,6 +18990,17 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         }
         "molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction),
         "molt_importlib_module_spec_init" => Some(WasmRuntimeImport::ImportlibModuleSpecInit),
+        "molt_importlib_compiled_loader_create_module" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderCreateModule)
+        }
+        "molt_importlib_compiled_loader_exec_module" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderExecModule)
+        }
+        "molt_importlib_compiled_loader_load_module" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderLoadModule)
+        }
+        "molt_importlib_module_spec_repr" => Some(WasmRuntimeImport::ImportlibModuleSpecRepr),
+        "molt_importlib_module_spec_parent" => Some(WasmRuntimeImport::ImportlibModuleSpecParent),
         _ => None,
     }
 }
@@ -19161,8 +19233,8 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_importlib_find_in_path_package_context" => Some(2),
         "molt_importlib_find_spec" => Some(8),
         "molt_importlib_find_spec_orchestrate" => Some(5),
-        "molt_importlib_frozen_external_payload" => Some(2),
-        "molt_importlib_frozen_payload" => Some(2),
+        "molt_importlib_frozen_external_payload" => Some(1),
+        "molt_importlib_frozen_payload" => Some(0),
         "molt_importlib_import_optional" => Some(1),
         "molt_importlib_import_or_fallback" => Some(2),
         "molt_importlib_import_required" => Some(1),
@@ -19184,7 +19256,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_importlib_path_is_archive_member" => Some(1),
         "molt_importlib_pathfinder_find_spec" => Some(3),
         "molt_importlib_read_file" => Some(1),
-        "molt_importlib_reload" => Some(4),
+        "molt_importlib_reload" => Some(3),
         "molt_importlib_resolve_name" => Some(2),
         "molt_importlib_resources_as_file_enter" => Some(2),
         "molt_importlib_resources_as_file_exit" => Some(3),
@@ -20286,6 +20358,8 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_importlib_import_module" => Some(2),
         "molt_importlib_load_module_from_spec" => Some(3),
         "molt_importlib_module_spec_type" => Some(0),
+        "molt_importlib_compiled_loader" => Some(0),
+        "molt_importlib_compiled_loader_types" => Some(0),
         "molt_importlib_resources_open_resource_bytes_from_package_parts" => Some(4),
         "molt_linecache_loader_get_source" => Some(2),
         "molt_copyreg_bootstrap" => Some(0),
@@ -21533,6 +21607,11 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_cpython_abi_cext_call_trampoline" => Some(3),
         "molt_importlib_import_transaction" => Some(5),
         "molt_importlib_module_spec_init" => Some(5),
+        "molt_importlib_compiled_loader_create_module" => Some(2),
+        "molt_importlib_compiled_loader_exec_module" => Some(2),
+        "molt_importlib_compiled_loader_load_module" => Some(2),
+        "molt_importlib_module_spec_repr" => Some(1),
+        "molt_importlib_module_spec_parent" => Some(1),
         _ => None,
     }
 }

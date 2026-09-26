@@ -74,9 +74,11 @@ Modules may be:
 Source initialization has one ordering across entry paths and targets: publish
 the module object, establish its lexical frame and captured builtin namespace,
 then construct loader metadata before publishing native providers or executing
-the source body. Generated `__spec__` construction obtains the canonical class
-directly from the runtime, never through an attribute of the machinery facade:
-machinery's dependencies need specs before its source body publishes that class.
+the source body. Generated metadata obtains the canonical `ModuleSpec` class
+and compiled-loader singleton directly from the runtime. It never imports the
+machinery facade to construct them: machinery's dependencies need metadata
+before its source body publishes these identities, and compiled modules must
+not acquire filesystem dependencies merely to describe their loader.
 Imported modules, including machinery itself and modules compiled without the
 facade, use the same class; script entry points retain `__spec__ = None`.
 Explicit and inherited builtin namespaces remain authoritative; initialization
@@ -85,6 +87,26 @@ Generated annotation callables and module chunks run after this bootstrap.
 
 Generated module metadata, the machinery facade and bootstrap-free extension
 initialization share one runtime-owned `ModuleSpec` class and its initializer.
+The runtime likewise owns `_MoltLoader`, `BuiltinImporter`, `FrozenImporter`
+and the shared compiled-loader singleton; the machinery facade publishes these
+same mutable, subclassable classes. Their load and execution methods use the
+canonical compiled-module import transaction, including name validation,
+exception propagation and failed-publication cleanup. This is not a claim of
+complete CPython builtin/frozen-loader API compatibility.
+Public `BuiltinImporter`, `FrozenImporter` and `ModuleSpec` expose their
+`_frozen_importlib` class origin. The loader classes inherit ordinary object
+representation instead of defining loader-specific `__repr__` strings.
+`ModuleSpec.__repr__` follows CPython's optional-field selection, subclass
+name, field formatting and attribute-observation order; field errors propagate.
+Frozen bootstrap payloads publish these runtime identities without reading
+the machinery facade; internal loader classification, including reload's
+compiled-loader detection, does not change when a facade alias is rebound.
+Public source/spec loader callbacks continue to use their explicit Python
+callables and objects. The frozen-external facade still requires machinery for
+its file, source and extension loader classes.
+Module-name recovery reads `ModuleSpec.name` (not `ModuleSpec.__name__`) in
+loader coercion, reload and resource lookup. Coercion propagates failure to
+publish a recovered module name; it does not clear a failed attribute write.
 Its current Python facade contract remains partial: the constructor accepts
 positional `origin` and `is_package`, coerces the name to `str`, and treats
 `cached`, `loader_state` and

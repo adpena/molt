@@ -3,55 +3,21 @@
 from __future__ import annotations
 
 
-class _MoltLoader:
-    def create_module(self, _spec: "ModuleSpec"):
-        return None
+def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):
+    from _intrinsics import require_intrinsic as _require
 
-    def exec_module(self, module) -> None:
-        _ensure_intrinsics()
-        module_name = _coerce_module_name(module, self)
-        previous = _drop_stale_sys_module(module_name, module)
-        try:
-            imported = _MOLT_MODULE_IMPORT(module_name)
-            imported_dict = getattr(imported, "__dict__", None)
-            if isinstance(imported, dict):
-                module.__dict__.update(imported)
-                return
-            if isinstance(imported_dict, dict):
-                module.__dict__.update(imported_dict)
-                return
-            raise TypeError(
-                f"import returned non-module payload: {type(imported).__name__}"
-            )
-        except BaseException:
-            _restore_sys_module(module_name, previous)
-            raise
-
-    def load_module(self, fullname: str):
-        _ensure_intrinsics()
-        previous = _drop_stale_sys_module(fullname)
-        try:
-            return _MOLT_MODULE_IMPORT(fullname)
-        except BaseException:
-            _restore_sys_module(fullname, previous)
-            raise
-
-    def __repr__(self) -> str:
-        return "<_MoltLoader>"
+    return _require(name, namespace)
 
 
-class BuiltinImporter(_MoltLoader):
-    def __repr__(self) -> str:
-        return "<BuiltinImporter>"
-
-
-class FrozenImporter(_MoltLoader):
-    def __repr__(self) -> str:
-        return "<FrozenImporter>"
+# Loader identity and behavior belong to the runtime, so generated module
+# metadata can use them before this facade (or any filesystem facade) imports.
+_MoltLoader, BuiltinImporter, FrozenImporter = _require_intrinsic(
+    "molt_importlib_compiled_loader_types"
+)()
 
 
 _LoaderBasics = _MoltLoader
-_MOLT_LOADER = BuiltinImporter()
+_MOLT_LOADER = _require_intrinsic("molt_importlib_compiled_loader")()
 
 
 SOURCE_SUFFIXES = [".py"]
@@ -59,12 +25,6 @@ BYTECODE_SUFFIXES = [".pyc"]
 DEBUG_BYTECODE_SUFFIXES = [".pyc"]
 OPTIMIZED_BYTECODE_SUFFIXES = [".pyc"]
 import sys as _sys
-
-
-def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):
-    from _intrinsics import require_intrinsic as _require
-
-    return _require(name, namespace)
 
 
 # The runtime owns the one ModuleSpec class. Runtime importlib consumers and
@@ -92,26 +52,6 @@ else:
 
 def all_suffixes() -> list[str]:
     return SOURCE_SUFFIXES + BYTECODE_SUFFIXES + EXTENSION_SUFFIXES
-
-
-def _drop_stale_sys_module(module_name: str, module=None):
-    modules = getattr(_sys, "modules", None)
-    if not isinstance(modules, dict):
-        return None
-    existing = modules.get(module_name)
-    if existing is None or existing is module:
-        return None
-    del modules[module_name]
-    return existing
-
-
-def _restore_sys_module(module_name: str, previous) -> None:
-    if previous is None:
-        return
-    modules = getattr(_sys, "modules", None)
-    if not isinstance(modules, dict) or module_name in modules:
-        return
-    modules[module_name] = previous
 
 
 class _FileLoader:
@@ -574,20 +514,7 @@ def _validate_resource_name(resource: str) -> str:
     return value
 
 
-def _coerce_module_name(
-    module,
-    loader: object | None,
-    spec: object | None = None,
-) -> str:
-    _ensure_intrinsics()
-    value = _MOLT_IMPORTLIB_COERCE_MODULE_NAME(module, loader, spec)
-    if not isinstance(value, str):
-        raise RuntimeError("invalid importlib module name payload: str expected")
-    return value
-
-
 _MOLT_IMPORTLIB_READ_FILE = None
-_MOLT_IMPORTLIB_COERCE_MODULE_NAME = None
 _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = None
 _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = None
 _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = None
@@ -606,13 +533,11 @@ _MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC = None
 _MOLT_EXCEPTION_CLEAR = None
 _MOLT_EXCEPTION_LAST_PENDING = None
 _MOLT_EXCEPTION_PENDING = None
-_MOLT_MODULE_IMPORT = None
 _MOLT_IMPORTLIB_INTRINSICS_READY = False
 
 
 def _ensure_intrinsics() -> None:
     global _MOLT_IMPORTLIB_READ_FILE
-    global _MOLT_IMPORTLIB_COERCE_MODULE_NAME
     global _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC
     global _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC
     global _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE
@@ -631,15 +556,11 @@ def _ensure_intrinsics() -> None:
     global _MOLT_EXCEPTION_CLEAR
     global _MOLT_EXCEPTION_LAST_PENDING
     global _MOLT_EXCEPTION_PENDING
-    global _MOLT_MODULE_IMPORT
     global _MOLT_IMPORTLIB_INTRINSICS_READY
     if _MOLT_IMPORTLIB_INTRINSICS_READY:
         return
     _require_intrinsic("molt_stdlib_probe")
     importlib_read_file = _require_intrinsic("molt_importlib_read_file")
-    importlib_coerce_module_name = _require_intrinsic(
-        "molt_importlib_coerce_module_name"
-    )
     importlib_pathfinder_find_spec = _require_intrinsic(
         "molt_importlib_pathfinder_find_spec"
     )
@@ -688,10 +609,8 @@ def _ensure_intrinsics() -> None:
     exception_clear = _require_intrinsic("molt_exception_clear")
     exception_last_pending = _require_intrinsic("molt_exception_last_pending")
     exception_pending = _require_intrinsic("molt_exception_pending")
-    module_import = _require_intrinsic("molt_module_import")
 
     _MOLT_IMPORTLIB_READ_FILE = importlib_read_file
-    _MOLT_IMPORTLIB_COERCE_MODULE_NAME = importlib_coerce_module_name
     _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = importlib_pathfinder_find_spec
     _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = importlib_filefinder_find_spec
     _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = importlib_filefinder_invalidate
@@ -726,7 +645,6 @@ def _ensure_intrinsics() -> None:
     _MOLT_EXCEPTION_CLEAR = exception_clear
     _MOLT_EXCEPTION_LAST_PENDING = exception_last_pending
     _MOLT_EXCEPTION_PENDING = exception_pending
-    _MOLT_MODULE_IMPORT = module_import
     _MOLT_IMPORTLIB_INTRINSICS_READY = True
 
 

@@ -8445,11 +8445,6 @@ BASE_IMPORTS = """\
       dictSetValue(dict, keyBits, nameBits);
     }
     const moduleBits = boxPtr({ type: 'module', name: name ?? '<module>', dictBits });
-    if (dict && name === 'importlib.machinery') {
-      const loaderKey = boxPtr({ type: 'str', value: '_MOLT_LOADER' });
-      const loaderBits = boxPtr({ type: 'molt_loader' });
-      dictSetValue(dict, loaderKey, loaderBits);
-    }
     if (name === 'builtins') {
       installIntrinsics(moduleBits);
     }

@@ -299,6 +299,36 @@ runtime_name = "molt_importlib_module_spec_init"
 import_name = "importlib_module_spec_init"
 callable_arity = 5
 
+[[reserved_runtime_callable]]
+index = 25
+runtime_name = "molt_importlib_compiled_loader_create_module"
+import_name = "importlib_compiled_loader_create_module"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 26
+runtime_name = "molt_importlib_compiled_loader_exec_module"
+import_name = "importlib_compiled_loader_exec_module"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 27
+runtime_name = "molt_importlib_compiled_loader_load_module"
+import_name = "importlib_compiled_loader_load_module"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 28
+runtime_name = "molt_importlib_module_spec_repr"
+import_name = "importlib_module_spec_repr"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 29
+runtime_name = "molt_importlib_module_spec_parent"
+import_name = "importlib_module_spec_parent"
+callable_arity = 1
+
 
 # Return contracts derive from boxed-call semantics, poll-table membership,
 # or an unambiguous void/non-i64 machine result. Compiler-only i64 returns
@@ -3391,11 +3421,11 @@ type = 12
 
 [[import]]
 name = "importlib_frozen_external_payload"
-type = 3
+type = 2
 
 [[import]]
 name = "importlib_frozen_payload"
-type = 3
+type = 0
 
 [[import]]
 name = "importlib_import_transaction"
@@ -3490,9 +3520,9 @@ callable_arity = 1
 
 [[import]]
 name = "importlib_reload"
-type = 7
+type = 5
 runtime_name = "molt_importlib_reload"
-callable_arity = 4
+callable_arity = 3
 
 [[import]]
 name = "importlib_resolve_name"

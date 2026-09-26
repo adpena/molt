@@ -1055,6 +1055,11 @@ impl WasmRuntimeImport {
             Self::TypesNewClass => "types_new_class",
             Self::CpythonAbiCextCallTrampoline => "cpython_abi_cext_call_trampoline",
             Self::ImportlibModuleSpecInit => "importlib_module_spec_init",
+            Self::ImportlibCompiledLoaderCreateModule => "importlib_compiled_loader_create_module",
+            Self::ImportlibCompiledLoaderExecModule => "importlib_compiled_loader_exec_module",
+            Self::ImportlibCompiledLoaderLoadModule => "importlib_compiled_loader_load_module",
+            Self::ImportlibModuleSpecRepr => "importlib_module_spec_repr",
+            Self::ImportlibModuleSpecParent => "importlib_module_spec_parent",
             Self::TkAvailable => "tk_available",
             Self::TkAppNew => "tk_app_new",
             Self::TkQuit => "tk_quit",
@@ -1878,6 +1883,8 @@ impl WasmRuntimeImport {
             Self::ImportlibImportModule => "importlib_import_module",
             Self::ImportlibLoadModuleFromSpec => "importlib_load_module_from_spec",
             Self::ImportlibModuleSpecType => "importlib_module_spec_type",
+            Self::ImportlibCompiledLoader => "importlib_compiled_loader",
+            Self::ImportlibCompiledLoaderTypes => "importlib_compiled_loader_types",
             Self::ImportlibResourcesOpenResourceBytesFromPackageParts => {
                 "importlib_resources_open_resource_bytes_from_package_parts"
             }
@@ -4148,6 +4155,13 @@ impl WasmRuntimeImport {
             Self::TypesNewClass => "molt_types_new_class",
             Self::CpythonAbiCextCallTrampoline => "molt_cpython_abi_cext_call_trampoline",
             Self::ImportlibModuleSpecInit => "molt_importlib_module_spec_init",
+            Self::ImportlibCompiledLoaderCreateModule => {
+                "molt_importlib_compiled_loader_create_module"
+            }
+            Self::ImportlibCompiledLoaderExecModule => "molt_importlib_compiled_loader_exec_module",
+            Self::ImportlibCompiledLoaderLoadModule => "molt_importlib_compiled_loader_load_module",
+            Self::ImportlibModuleSpecRepr => "molt_importlib_module_spec_repr",
+            Self::ImportlibModuleSpecParent => "molt_importlib_module_spec_parent",
             Self::TkAvailable => "molt_tk_available",
             Self::TkAppNew => "molt_tk_app_new",
             Self::TkQuit => "molt_tk_quit",
@@ -4991,6 +5005,8 @@ impl WasmRuntimeImport {
             Self::ImportlibImportModule => "molt_importlib_import_module",
             Self::ImportlibLoadModuleFromSpec => "molt_importlib_load_module_from_spec",
             Self::ImportlibModuleSpecType => "molt_importlib_module_spec_type",
+            Self::ImportlibCompiledLoader => "molt_importlib_compiled_loader",
+            Self::ImportlibCompiledLoaderTypes => "molt_importlib_compiled_loader_types",
             Self::ImportlibResourcesOpenResourceBytesFromPackageParts => {
                 "molt_importlib_resources_open_resource_bytes_from_package_parts"
             }
@@ -6834,8 +6850,8 @@ impl WasmRuntimeImport {
             Self::ImportlibFindInPathPackageContext => 3,
             Self::ImportlibFindSpec => 28,
             Self::ImportlibFindSpecOrchestrate => 12,
-            Self::ImportlibFrozenExternalPayload => 3,
-            Self::ImportlibFrozenPayload => 3,
+            Self::ImportlibFrozenExternalPayload => 2,
+            Self::ImportlibFrozenPayload => 0,
             Self::ImportlibImportTransaction => 12,
             Self::ImportlibImportOptional => 2,
             Self::ImportlibImportOrFallback => 3,
@@ -6858,7 +6874,7 @@ impl WasmRuntimeImport {
             Self::ImportlibPathIsArchiveMember => 2,
             Self::ImportlibPathfinderFindSpec => 5,
             Self::ImportlibReadFile => 2,
-            Self::ImportlibReload => 7,
+            Self::ImportlibReload => 5,
             Self::ImportlibResolveName => 3,
             Self::ImportlibResourcesAsFileEnter => 3,
             Self::ImportlibResourcesAsFileExit => 5,
@@ -7215,6 +7231,11 @@ impl WasmRuntimeImport {
             Self::TypesNewClass => 3,
             Self::CpythonAbiCextCallTrampoline => 5,
             Self::ImportlibModuleSpecInit => 12,
+            Self::ImportlibCompiledLoaderCreateModule => 3,
+            Self::ImportlibCompiledLoaderExecModule => 3,
+            Self::ImportlibCompiledLoaderLoadModule => 3,
+            Self::ImportlibModuleSpecRepr => 2,
+            Self::ImportlibModuleSpecParent => 2,
             Self::TkAvailable => 0,
             Self::TkAppNew => 2,
             Self::TkQuit => 2,
@@ -8024,6 +8045,8 @@ impl WasmRuntimeImport {
             Self::ImportlibImportModule => 3,
             Self::ImportlibLoadModuleFromSpec => 5,
             Self::ImportlibModuleSpecType => 0,
+            Self::ImportlibCompiledLoader => 0,
+            Self::ImportlibCompiledLoaderTypes => 0,
             Self::ImportlibResourcesOpenResourceBytesFromPackageParts => 7,
             Self::LinecacheLoaderGetSource => 3,
             Self::CopyregBootstrap => 0,
@@ -10244,6 +10267,11 @@ impl WasmRuntimeImport {
             Self::TypesNewClass => WasmRuntimeReturn::OwnedObject,
             Self::CpythonAbiCextCallTrampoline => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibModuleSpecInit => WasmRuntimeReturn::OwnedObject,
+            Self::ImportlibCompiledLoaderCreateModule => WasmRuntimeReturn::OwnedObject,
+            Self::ImportlibCompiledLoaderExecModule => WasmRuntimeReturn::OwnedObject,
+            Self::ImportlibCompiledLoaderLoadModule => WasmRuntimeReturn::OwnedObject,
+            Self::ImportlibModuleSpecRepr => WasmRuntimeReturn::OwnedObject,
+            Self::ImportlibModuleSpecParent => WasmRuntimeReturn::OwnedObject,
             Self::TkAvailable => WasmRuntimeReturn::OwnedObject,
             Self::TkAppNew => WasmRuntimeReturn::OwnedObject,
             Self::TkQuit => WasmRuntimeReturn::OwnedObject,
@@ -11055,6 +11083,8 @@ impl WasmRuntimeImport {
             Self::ImportlibImportModule => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibLoadModuleFromSpec => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibModuleSpecType => WasmRuntimeReturn::OwnedObject,
+            Self::ImportlibCompiledLoader => WasmRuntimeReturn::OwnedObject,
+            Self::ImportlibCompiledLoaderTypes => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibResourcesOpenResourceBytesFromPackageParts => {
                 WasmRuntimeReturn::OwnedObject
             }

@@ -6847,13 +6847,13 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_importlib_frozen_payload",
         symbol: "molt_importlib_frozen_payload",
-        arity: 2,
+        arity: 0,
         defaults: &[],
     },
     IntrinsicSpec {
         name: "molt_importlib_frozen_external_payload",
         symbol: "molt_importlib_frozen_external_payload",
-        arity: 2,
+        arity: 1,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -6877,6 +6877,18 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_importlib_module_spec_type",
         symbol: "molt_importlib_module_spec_type",
+        arity: 0,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_compiled_loader",
+        symbol: "molt_importlib_compiled_loader",
+        arity: 0,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_compiled_loader_types",
+        symbol: "molt_importlib_compiled_loader_types",
         arity: 0,
         defaults: &[],
     },
@@ -6919,7 +6931,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_importlib_reload",
         symbol: "molt_importlib_reload",
-        arity: 4,
+        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {

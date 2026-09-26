@@ -1145,6 +1145,8 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_importlib_find_in_path": "molt_importlib_find_in_path",
     "molt_importlib_find_in_path_package_context": "molt_importlib_find_in_path_package_context",
     "molt_importlib_module_spec_type": "molt_importlib_module_spec_type",
+    "molt_importlib_compiled_loader": "molt_importlib_compiled_loader",
+    "molt_importlib_compiled_loader_types": "molt_importlib_compiled_loader_types",
     "molt_importlib_find_spec": "molt_importlib_find_spec",
     "molt_importlib_find_spec_orchestrate": "molt_importlib_find_spec_orchestrate",
     "molt_importlib_pathfinder_find_spec": "molt_importlib_pathfinder_find_spec",
