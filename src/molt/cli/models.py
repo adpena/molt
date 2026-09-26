@@ -2264,6 +2264,7 @@ class _PreparedNativeLink:
     link_skipped: bool
     link_process: subprocess.CompletedProcess[str]
     strip_after_link: bool
+    link_selection: tuple[Path, Path] | None = None
 
 
 @dataclass(frozen=True)

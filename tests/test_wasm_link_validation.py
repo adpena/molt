@@ -1027,6 +1027,11 @@ def _write_wasm_ld_output(cmd: list[str], data: bytes) -> Path | None:
         return None
     output_path = Path(cmd[cmd.index("-o") + 1])
     output_path.write_bytes(data)
+    for part in cmd:
+        if part.startswith("--why-extract="):
+            Path(part.split("=", 1)[1]).write_text(
+                "reference\textracted\tsymbol\n", encoding="utf-8"
+            )
     return output_path
 
 
@@ -4081,7 +4086,7 @@ def test_run_wasm_ld_preserves_ordered_staged_native_plan(
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     native_object.parent.mkdir()
-    native_object.write_bytes(b"\x00asm\x01\x00\x00\x00native-object")
+    native_object.write_bytes(_module_with_linking_symbols([]))
     lazy_archive.write_bytes(b"!<arch>\n")
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
@@ -4131,7 +4136,11 @@ def test_run_wasm_ld_preserves_ordered_staged_native_plan(
 
     assert rc == 0
     output_index = wasm_ld_inputs.index("-o") + 2
-    typed_operands = wasm_ld_inputs[output_index + 2 :]
+    typed_operands = [
+        part
+        for part in wasm_ld_inputs[output_index + 2 :]
+        if part != "--trace" and not part.startswith("--why-extract=")
+    ]
     assert typed_operands[0] == "--undefined=ndimage_edt"
     assert [
         Path(part).name if not part.startswith("--") else part
@@ -4427,9 +4436,11 @@ def test_split_native_app_uses_unique_molt_main_restoration_alias(
     assert "--export=__molt_output_export_0" in split_cmd
 
 
+@pytest.mark.parametrize("reject_role", [None, "linked", "app"])
 def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     tmp_path: Path,
     monkeypatch,
+    reject_role,
 ) -> None:
     runtime_bytes = _module_with_linking_symbols([])
     app_data_offset = 2 * 65536
@@ -4448,7 +4459,32 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     native_object.parent.mkdir()
-    native_object.write_bytes(b"\x00asm\x01\x00\x00\x00native-object")
+    native_object.write_bytes(_module_with_linking_symbols([]))
+
+    from molt.cli.link_selection_admission import LinkSelectionAdmission
+    from molt.link_outputs import link_selection_path
+
+    split_dir.mkdir()
+    previous = (
+        linked,
+        split_dir / "app.wasm",
+        split_dir / "molt_runtime.wasm",
+        link_selection_path(linked),
+    )
+    for path in previous:
+        path.write_bytes(b"previous-generation")
+    admitted_roles = []
+    real_admit = LinkSelectionAdmission.admit
+
+    def admit(self, **kwargs):
+        role = "linked" if not admitted_roles else "app"
+        admitted_roles.append(role)
+        proof = real_admit(self, **kwargs)
+        if role == reject_role:
+            raise ValueError(f"rejected {role} selection")
+        return proof
+
+    monkeypatch.setattr(LinkSelectionAdmission, "admit", admit)
 
     def fake_run(cmd, **kwargs):
         del kwargs
@@ -4499,7 +4535,19 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
         ),
     )
 
+    if reject_role is not None:
+        assert rc == 1
+        assert admitted_roles[-1] == reject_role
+        assert all(path.read_bytes() == b"previous-generation" for path in previous)
+        return
     assert rc == 0
+    assert admitted_roles == ["linked", "app"]
+    evidence = json.loads(link_selection_path(linked).read_text(encoding="utf-8"))
+    assert evidence["roles"]["linked"] == evidence["roles"]["app"]
+    assert (
+        evidence["roles"]["app"]["inputs"][0]["sha256"]
+        == source_extension_link_file(native_object).sha256
+    )
     assert len(link_calls) == 2
     monolithic_cmd, split_app_cmd = link_calls
     assert any(Path(part).name == native_object.name for part in monolithic_cmd)
@@ -4539,7 +4587,7 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     native_object.parent.mkdir()
-    native_object.write_bytes(b"\x00asm\x01\x00\x00\x00native-object")
+    native_object.write_bytes(_module_with_linking_symbols([]))
     native_object.with_name(native_object.name + ".extension_manifest.json").write_text(
         json.dumps(
             {

@@ -6,6 +6,10 @@ from pathlib import Path
 from collections.abc import Iterable, Mapping
 
 
+def link_selection_path(output: Path) -> Path:
+    return output.with_name(output.name + ".molt-link-selection.json")
+
+
 def validate_link_output_paths(
     outputs: Mapping[str, Path], *, inputs: Iterable[Path] = ()
 ) -> None:
@@ -29,9 +33,15 @@ def validate_link_output_paths(
 
 
 def wasm_link_output_paths(
-    linked: Path, *, split_output_dir: Path | None = None, inputs: Iterable[Path] = ()
+    linked: Path,
+    *,
+    split_output_dir: Path | None = None,
+    inputs: Iterable[Path] = (),
+    external_selection: bool = False,
 ) -> dict[str, Path]:
     outputs = {"linked": linked}
+    if external_selection:
+        outputs["selection"] = link_selection_path(linked)
     if split_output_dir is not None:
         outputs.update(
             app=split_output_dir / "app.wasm",

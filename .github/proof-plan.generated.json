@@ -189,7 +189,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "9eae9295e60e6a2dfecbcb1fec0aca1808fdf332470f9957257ff691fc01149b",
+  "authority_sha256": "4b1ad8ae175fd6ce496e9c569cee3e2456ce02bbfb07cbf9f51e2f2d15874796",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3228,7 +3228,9 @@
         "tests/test_wasm_link_validation.py",
         "tests/test_wasm_section_spans.py",
         "tests/tools/test_artifact_publish.py",
-        "tests/test_wasm_bundle.py"
+        "tests/test_wasm_bundle.py",
+        "tests/cli/test_link_member_selection.py",
+        "tests/cli/test_link_selection_admission.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3304,7 +3306,8 @@
         "tests/test_runtime_build_python.py",
         "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive",
-        "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges"
+        "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges",
+        "tests/cli/test_link_selection_admission.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-native-dev",
@@ -4988,6 +4991,10 @@
           "src/molt/cli/link_pipeline.py",
           "src/molt/cli/link_fingerprints.py",
           "src/molt/link_outputs.py",
+          "src/molt/cli/link_member_selection.py",
+          "src/molt/cli/link_selection_admission.py",
+          "tests/cli/test_link_member_selection.py",
+          "tests/cli/test_link_selection_admission.py",
           "tests/cli/test_link_fingerprints.py",
           "src/molt/cli/module_graph.py",
           "src/molt/cli/native_link_command.py",
