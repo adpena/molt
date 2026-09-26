@@ -4,7 +4,6 @@ use super::*;
 pub extern "C" fn molt_importlib_reload(
     module_bits: u64,
     util_bits: u64,
-    machinery_bits: u64,
     import_module_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -18,11 +17,12 @@ pub extern "C" fn molt_importlib_reload(
             let spec_name = intern_runtime_static_name(_py, b"__spec__");
             let mut module_name_bits =
                 if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
-                    let out = getattr_optional_bits(_py, spec_bits, module_name_name)?;
+                    let name_attribute = intern_runtime_static_name(_py, b"name");
+                    let out = getattr_optional_bits(_py, spec_bits, name_attribute);
                     if !obj_from_bits(spec_bits).is_none() {
                         dec_ref_bits(_py, spec_bits);
                     }
-                    out
+                    out?
                 } else {
                     None
                 };
@@ -131,7 +131,7 @@ pub extern "C" fn molt_importlib_reload(
 
                 let mut loader_override_bits = module_loader_bits;
                 if !obj_from_bits(loader_override_bits).is_none()
-                    && importlib_loader_is_molt_loader(_py, loader_override_bits, machinery_bits)?
+                    && importlib_loader_is_molt_loader(_py, loader_override_bits)?
                 {
                     loader_override_bits = MoltObject::none().bits();
                 }

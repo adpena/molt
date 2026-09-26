@@ -24,7 +24,7 @@ _MOLT_IMPORTLIB_SPEC_FROM_FILE_LOCATION = _require_intrinsic(
 
 
 def _load_payload() -> dict[str, object]:
-    payload = _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD(_machinery, None)
+    payload = _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD(_machinery)
     if not isinstance(payload, dict):
         raise RuntimeError("invalid importlib frozen external payload: dict expected")
     return payload

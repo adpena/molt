@@ -1,57 +1,37 @@
 use super::*;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, _util_bits: u64) -> u64 {
+pub extern "C" fn molt_importlib_frozen_payload() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(3);
 
-        let builtin_importer_bits = match importlib_required_attribute(
-            _py,
-            machinery_bits,
-            runtime_static_name_slot(_py, b"BuiltinImporter"),
-            b"BuiltinImporter",
-            "importlib.machinery",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => return err,
-        };
+        let builtin_importer_bits = crate::builtins::types::compiled_loader_builtin_class(_py);
+        if builtin_importer_bits == 0 {
+            return MoltObject::none().bits();
+        }
+        inc_ref_bits(_py, builtin_importer_bits);
         owned.push(builtin_importer_bits);
         values.push((b"BuiltinImporter", builtin_importer_bits));
 
-        let frozen_importer_bits = match importlib_required_attribute(
-            _py,
-            machinery_bits,
-            runtime_static_name_slot(_py, b"FrozenImporter"),
-            b"FrozenImporter",
-            "importlib.machinery",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
+        let frozen_importer_bits = crate::builtins::types::compiled_loader_frozen_class(_py);
+        if frozen_importer_bits == 0 {
+            for bits in owned {
+                dec_ref_bits(_py, bits);
             }
-        };
+            return MoltObject::none().bits();
+        }
+        inc_ref_bits(_py, frozen_importer_bits);
         owned.push(frozen_importer_bits);
         values.push((b"FrozenImporter", frozen_importer_bits));
 
-        let module_spec_bits = match importlib_required_attribute(
-            _py,
-            machinery_bits,
-            runtime_static_name_slot(_py, b"ModuleSpec"),
-            b"ModuleSpec",
-            "importlib.machinery",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
+        let module_spec_bits = crate::molt_importlib_module_spec_type();
+        if exception_pending(_py) || obj_from_bits(module_spec_bits).is_none() {
+            for bits in owned {
+                dec_ref_bits(_py, bits);
             }
-        };
+            return MoltObject::none().bits();
+        }
         owned.push(module_spec_bits);
         values.push((b"ModuleSpec", module_spec_bits));
 
@@ -480,10 +460,7 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_frozen_external_payload(
-    machinery_bits: u64,
-    _util_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_importlib_frozen_external_payload(machinery_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(16);
@@ -736,21 +713,14 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         owned.push(sourceless_file_loader_bits);
         values.push((b"SourcelessFileLoader", sourceless_file_loader_bits));
 
-        let loader_basics_bits = match importlib_required_attribute(
-            _py,
-            machinery_bits,
-            runtime_static_name_slot(_py, b"_LoaderBasics"),
-            b"_LoaderBasics",
-            "importlib.machinery",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
+        let loader_basics_bits = crate::builtins::types::compiled_loader_base_class(_py);
+        if loader_basics_bits == 0 {
+            for bits in owned {
+                dec_ref_bits(_py, bits);
             }
-        };
+            return MoltObject::none().bits();
+        }
+        inc_ref_bits(_py, loader_basics_bits);
         owned.push(loader_basics_bits);
         values.push((b"_LoaderBasics", loader_basics_bits));
 

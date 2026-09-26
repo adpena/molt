@@ -167,6 +167,16 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_importlib_module_spec_type",
             crate::molt_importlib_module_spec_type as *const (),
         )),
+        "molt_importlib_compiled_loader" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_compiled_loader",
+            crate::molt_importlib_compiled_loader as *const (),
+        )),
+        "molt_importlib_compiled_loader_types" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_compiled_loader_types",
+                crate::molt_importlib_compiled_loader_types as *const (),
+            ))
+        }
         "molt_importlib_find_spec" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_find_spec",
             crate::molt_importlib_find_spec as *const (),

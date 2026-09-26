@@ -1535,7 +1535,7 @@ fn importlib_system_module<'a, 'py>(
     })
 }
 
-fn importlib_runtime_modules_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
+pub(crate) fn importlib_runtime_modules_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
     let sys = importlib_system_module(_py)?;
     let Some(modules_bits) = sys_modules_dict_bits(_py, sys.bits()) else {
         return Err(importlib_modules_runtime_error(_py));
@@ -2228,20 +2228,12 @@ fn importlib_required_attribute(
     }
 }
 
-fn importlib_loader_is_molt_loader(
-    _py: &PyToken<'_>,
-    loader_bits: u64,
-    machinery_bits: u64,
-) -> Result<bool, u64> {
-    let attr_name = intern_runtime_static_name(_py, b"BuiltinImporter");
-    let Some(loader_cls_bits) = getattr_optional_bits(_py, machinery_bits, attr_name)? else {
-        return Ok(false);
-    };
-    if obj_from_bits(loader_cls_bits).is_none() {
-        return Ok(false);
+fn importlib_loader_is_molt_loader(_py: &PyToken<'_>, loader_bits: u64) -> Result<bool, u64> {
+    let loader_cls_bits = crate::builtins::types::compiled_loader_builtin_class(_py);
+    if loader_cls_bits == 0 {
+        return Err(MoltObject::none().bits());
     }
     let is_instance_bits = crate::molt_isinstance(loader_bits, loader_cls_bits);
-    dec_ref_bits(_py, loader_cls_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -2292,31 +2284,10 @@ fn importlib_machinery_loader_instance(
     Ok(loader_bits)
 }
 
-fn importlib_machinery_builtin_loader(_py: &PyToken<'_>, machinery_bits: u64) -> Result<u64, u64> {
-    let cache_name = intern_runtime_static_name(_py, b"_MOLT_LOADER");
-    if let Some(loader_bits) = getattr_optional_bits(_py, machinery_bits, cache_name)?
-        && !obj_from_bits(loader_bits).is_none()
-    {
-        return Ok(loader_bits);
-    }
-    let loader_bits = importlib_machinery_loader_instance(
-        _py,
-        machinery_bits,
-        runtime_static_name_slot(_py, b"BuiltinImporter"),
-        b"BuiltinImporter",
-        &[],
-    )?;
-    if let Err(err) = importlib_set_attr(
-        _py,
-        machinery_bits,
-        runtime_static_name_slot(_py, b"_MOLT_LOADER"),
-        b"_MOLT_LOADER",
-        loader_bits,
-    ) {
-        if !obj_from_bits(loader_bits).is_none() {
-            dec_ref_bits(_py, loader_bits);
-        }
-        return Err(err);
+fn importlib_machinery_builtin_loader(_py: &PyToken<'_>) -> Result<u64, u64> {
+    let loader_bits = crate::molt_importlib_compiled_loader();
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
     }
     Ok(loader_bits)
 }
@@ -2341,7 +2312,7 @@ fn importlib_find_spec_object_bits(
         None => MoltObject::none().bits(),
     };
     let loader_bits = match payload.loader_kind.as_str() {
-        "builtin" => match importlib_machinery_builtin_loader(_py, machinery_bits) {
+        "builtin" => match importlib_machinery_builtin_loader(_py) {
             Ok(bits) => bits,
             Err(err) => {
                 if !obj_from_bits(fullname_bits).is_none() {
@@ -2919,29 +2890,15 @@ fn importlib_import_via_spec(
     modules_ptr: *mut u8,
 ) -> Result<u64, u64> {
     let util_bits = importlib_module_support_bits(_py, modules_ptr, "importlib.util")?;
-    let machinery_bits =
-        match importlib_module_support_bits(_py, modules_ptr, "importlib.machinery") {
-            Ok(bits) => bits,
-            Err(err) => {
-                if !obj_from_bits(util_bits).is_none() {
-                    dec_ref_bits(_py, util_bits);
-                }
-                return Err(err);
-            }
-        };
     let out = importlib_import_via_spec_with_support(
         _py,
         resolved,
         resolved_bits,
         modules_ptr,
         util_bits,
-        machinery_bits,
     );
     if !obj_from_bits(util_bits).is_none() {
         dec_ref_bits(_py, util_bits);
-    }
-    if !obj_from_bits(machinery_bits).is_none() {
-        dec_ref_bits(_py, machinery_bits);
     }
     out
 }
@@ -2952,7 +2909,6 @@ fn importlib_import_via_spec_with_support(
     resolved_bits: u64,
     modules_ptr: *mut u8,
     util_bits: u64,
-    machinery_bits: u64,
 ) -> Result<u64, u64> {
     if let Some(existing_bits) =
         importlib_dict_get_string_key_bits(_py, modules_ptr, resolved_bits)?
@@ -2994,8 +2950,7 @@ fn importlib_import_via_spec_with_support(
         return Err(err);
     }
 
-    let preseed_modules =
-        importlib_spec_transaction_should_preseed(_py, spec_bits, machinery_bits)?;
+    let preseed_modules = importlib_spec_transaction_should_preseed(_py, spec_bits)?;
     let out_bits = importlib_spec_execution_transaction(
         _py,
         resolved,
@@ -3050,7 +3005,6 @@ fn importlib_spec_exec_owns(module_bits: u64) -> bool {
 fn importlib_spec_transaction_should_preseed(
     _py: &PyToken<'_>,
     spec_bits: u64,
-    machinery_bits: u64,
 ) -> Result<bool, u64> {
     let loader_name = intern_runtime_static_name(_py, b"loader");
     let Some(loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)? else {
@@ -3059,7 +3013,7 @@ fn importlib_spec_transaction_should_preseed(
     let out = if obj_from_bits(loader_bits).is_none() {
         true
     } else {
-        !importlib_loader_is_molt_loader(_py, loader_bits, machinery_bits)?
+        !importlib_loader_is_molt_loader(_py, loader_bits)?
     };
     if !obj_from_bits(loader_bits).is_none() {
         dec_ref_bits(_py, loader_bits);

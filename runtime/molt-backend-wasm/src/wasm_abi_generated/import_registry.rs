@@ -3077,12 +3077,12 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFrozenExternalPayload,
         name: "importlib_frozen_external_payload",
-        type_idx: 3,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFrozenPayload,
         name: "importlib_frozen_payload",
-        type_idx: 3,
+        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibImportTransaction,
@@ -3197,7 +3197,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibReload,
         name: "importlib_reload",
-        type_idx: 7,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibResolveName,
@@ -4978,6 +4978,31 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::ImportlibModuleSpecInit,
         name: "importlib_module_spec_init",
         type_idx: 12,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibCompiledLoaderCreateModule,
+        name: "importlib_compiled_loader_create_module",
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibCompiledLoaderExecModule,
+        name: "importlib_compiled_loader_exec_module",
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibCompiledLoaderLoadModule,
+        name: "importlib_compiled_loader_load_module",
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibModuleSpecRepr,
+        name: "importlib_module_spec_repr",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibModuleSpecParent,
+        name: "importlib_module_spec_parent",
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TkAvailable,
@@ -9022,6 +9047,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibModuleSpecType,
         name: "importlib_module_spec_type",
+        type_idx: 0,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibCompiledLoader,
+        name: "importlib_compiled_loader",
+        type_idx: 0,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibCompiledLoaderTypes,
+        name: "importlib_compiled_loader_types",
         type_idx: 0,
     },
     RuntimeImportSpec {
@@ -17373,6 +17408,28 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         }
         "importlib_module_spec_init" => Some(WasmRuntimeImport::ImportlibModuleSpecInit),
         "molt_importlib_module_spec_init" => Some(WasmRuntimeImport::ImportlibModuleSpecInit),
+        "importlib_compiled_loader_create_module" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderCreateModule)
+        }
+        "molt_importlib_compiled_loader_create_module" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderCreateModule)
+        }
+        "importlib_compiled_loader_exec_module" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderExecModule)
+        }
+        "molt_importlib_compiled_loader_exec_module" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderExecModule)
+        }
+        "importlib_compiled_loader_load_module" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderLoadModule)
+        }
+        "molt_importlib_compiled_loader_load_module" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderLoadModule)
+        }
+        "importlib_module_spec_repr" => Some(WasmRuntimeImport::ImportlibModuleSpecRepr),
+        "molt_importlib_module_spec_repr" => Some(WasmRuntimeImport::ImportlibModuleSpecRepr),
+        "importlib_module_spec_parent" => Some(WasmRuntimeImport::ImportlibModuleSpecParent),
+        "molt_importlib_module_spec_parent" => Some(WasmRuntimeImport::ImportlibModuleSpecParent),
         "tk_available" => Some(WasmRuntimeImport::TkAvailable),
         "molt_tk_available" => Some(WasmRuntimeImport::TkAvailable),
         "tk_app_new" => Some(WasmRuntimeImport::TkAppNew),
@@ -19321,6 +19378,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         }
         "importlib_module_spec_type" => Some(WasmRuntimeImport::ImportlibModuleSpecType),
         "molt_importlib_module_spec_type" => Some(WasmRuntimeImport::ImportlibModuleSpecType),
+        "importlib_compiled_loader" => Some(WasmRuntimeImport::ImportlibCompiledLoader),
+        "molt_importlib_compiled_loader" => Some(WasmRuntimeImport::ImportlibCompiledLoader),
+        "importlib_compiled_loader_types" => Some(WasmRuntimeImport::ImportlibCompiledLoaderTypes),
+        "molt_importlib_compiled_loader_types" => {
+            Some(WasmRuntimeImport::ImportlibCompiledLoaderTypes)
+        }
         "importlib_resources_open_resource_bytes_from_package_parts" => {
             Some(WasmRuntimeImport::ImportlibResourcesOpenResourceBytesFromPackageParts)
         }

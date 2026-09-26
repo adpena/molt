@@ -99,7 +99,18 @@ fn format_slice(_py: &PyToken<'_>, ptr: *mut u8) -> String {
     }
 }
 
-fn format_type_name_for_alias(_py: &PyToken<'_>, type_ptr: *mut u8) -> Option<String> {
+/// Look up a string-valued attribute in a namespace with normal dict key
+/// equality. `attr_name_bits_from_bytes` returns an owned reference, including
+/// when the name is cached, so release it after the borrowed dict lookup.
+fn dict_get_attr_string(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &[u8]) -> Option<String> {
+    let key_bits = attr_name_bits_from_bytes(_py, name)?;
+    let value = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) }
+        .and_then(|bits| string_obj_to_owned(obj_from_bits(bits)));
+    dec_ref_bits(_py, key_bits);
+    value
+}
+
+fn format_qualified_type_name(_py: &PyToken<'_>, type_ptr: *mut u8) -> Option<String> {
     unsafe {
         let name =
             string_obj_to_owned(obj_from_bits(class_name_bits(type_ptr))).unwrap_or_default();
@@ -113,16 +124,10 @@ fn format_type_name_for_alias(_py: &PyToken<'_>, type_ptr: *mut u8) -> Option<St
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                 && object_type_id(dict_ptr) == TYPE_ID_DICT
             {
-                if let Some(module_key) = attr_name_bits_from_bytes(_py, b"__module__")
-                    && let Some(bits) = dict_get_in_place(_py, dict_ptr, module_key)
-                    && let Some(val) = string_obj_to_owned(obj_from_bits(bits))
-                {
+                if let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__module__") {
                     module_name = Some(val);
                 }
-                if let Some(qual_key) = attr_name_bits_from_bytes(_py, b"__qualname__")
-                    && let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_key)
-                    && let Some(val) = string_obj_to_owned(obj_from_bits(bits))
-                {
+                if let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__qualname__") {
                     qualname = val;
                 }
             }
@@ -146,7 +151,7 @@ fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
             let arg_obj = obj_from_bits(arg_bits);
             if let Some(arg_ptr) = arg_obj.as_ptr()
                 && object_type_id(arg_ptr) == TYPE_ID_TYPE
-                && let Some(name) = format_type_name_for_alias(_py, arg_ptr)
+                && let Some(name) = format_qualified_type_name(_py, arg_ptr)
             {
                 return name;
             }
@@ -154,7 +159,7 @@ fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
         };
         let origin_repr = if let Some(origin_ptr) = origin_obj.as_ptr() {
             if object_type_id(origin_ptr) == TYPE_ID_TYPE {
-                format_type_name_for_alias(_py, origin_ptr)
+                format_qualified_type_name(_py, origin_ptr)
                     .unwrap_or_else(|| format_obj(_py, origin_obj))
             } else {
                 format_obj(_py, origin_obj)
@@ -194,7 +199,7 @@ fn format_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> String {
             let arg_obj = obj_from_bits(arg_bits);
             if let Some(arg_ptr) = arg_obj.as_ptr()
                 && object_type_id(arg_ptr) == TYPE_ID_TYPE
-                && let Some(name) = format_type_name_for_alias(_py, arg_ptr)
+                && let Some(name) = format_qualified_type_name(_py, arg_ptr)
             {
                 return name;
             }
@@ -425,17 +430,12 @@ fn format_default_object_repr(_py: &PyToken<'_>, ptr: *mut u8) -> String {
                 let dict_bits = class_dict_bits(class_ptr);
                 if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                     && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    && let Some(module_key) = attr_name_bits_from_bytes(_py, b"__module__")
-                    && let Some(bits) = dict_get_in_place(_py, dict_ptr, module_key)
-                    && let Some(module) = string_obj_to_owned(obj_from_bits(bits))
+                    && let Some(module) = dict_get_attr_string(_py, dict_ptr, b"__module__")
                     && !module.is_empty()
                     && module != "builtins"
                 {
                     let mut qualname = class_name.clone();
-                    if let Some(qual_key) = attr_name_bits_from_bytes(_py, b"__qualname__")
-                        && let Some(qbits) = dict_get_in_place(_py, dict_ptr, qual_key)
-                        && let Some(val) = string_obj_to_owned(obj_from_bits(qbits))
-                    {
+                    if let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__qualname__") {
                         qualname = val;
                     }
                     return format!("<{module}.{qualname} object at 0x{:x}>", ptr as usize);
@@ -913,9 +913,7 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                     let dict_bits = module_dict_bits(ptr);
                     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                         && object_type_id(dict_ptr) == TYPE_ID_DICT
-                        && let Some(file_key) = attr_name_bits_from_bytes(_py, b"__file__")
-                        && let Some(file_bits) = dict_get_in_place(_py, dict_ptr, file_key)
-                        && let Some(file_name) = string_obj_to_owned(obj_from_bits(file_bits))
+                        && let Some(file_name) = dict_get_attr_string(_py, dict_ptr, b"__file__")
                         && !file_name.is_empty()
                     {
                         return format!("<module '{name}' from '{file_name}'>");
@@ -924,39 +922,9 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return format!("<module '{name}'>");
             }
             if type_id == TYPE_ID_TYPE {
-                let name =
-                    string_obj_to_owned(obj_from_bits(class_name_bits(ptr))).unwrap_or_default();
-                if name.is_empty() {
-                    return "<type>".to_string();
-                }
-                let mut qualname = name.clone();
-                let mut module_name: Option<String> = None;
-                if !exception_pending(_py) {
-                    let dict_bits = class_dict_bits(ptr);
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                        && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    {
-                        if let Some(module_key) = attr_name_bits_from_bytes(_py, b"__module__")
-                            && let Some(bits) = dict_get_in_place(_py, dict_ptr, module_key)
-                            && let Some(val) = string_obj_to_owned(obj_from_bits(bits))
-                        {
-                            module_name = Some(val);
-                        }
-                        if let Some(qual_key) = attr_name_bits_from_bytes(_py, b"__qualname__")
-                            && let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_key)
-                            && let Some(val) = string_obj_to_owned(obj_from_bits(bits))
-                        {
-                            qualname = val;
-                        }
-                    }
-                }
-                if let Some(module) = module_name
-                    && !module.is_empty()
-                    && module != "builtins"
-                {
-                    return format!("<class '{module}.{qualname}'>");
-                }
-                return format!("<class '{qualname}'>");
+                return format_qualified_type_name(_py, ptr)
+                    .map(|name| format!("<class '{name}'>"))
+                    .unwrap_or_else(|| "<type>".to_string());
             }
             if type_id == crate::TYPE_ID_NATIVE_DESCRIPTOR {
                 let result = crate::builtins::types::native_descriptor_repr(
@@ -1294,13 +1262,20 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        FormatSpec, assemble_number, format_obj_str, format_string_repr_bytes, zero_pad_grouped,
+        FormatSpec, assemble_number, format_default_object_repr, format_obj_str,
+        format_string_repr_bytes, zero_pad_grouped,
     };
     use crate::builtins::attr::attr_name_bits_from_bytes;
     use crate::{
-        alloc_module_obj, alloc_string, dict_set_in_place, module_dict_bits, obj_from_bits,
+        alloc_dict_with_pairs, alloc_module_obj, alloc_string, alloc_tuple, class_dict_bits,
+        dict_set_in_place, module_dict_bits, obj_from_bits,
     };
     use molt_obj_model::MoltObject;
+
+    fn refcount(bits: u64) -> u32 {
+        let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
+        unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
 
     #[test]
     fn module_repr_includes_file_when_present() {
@@ -1322,8 +1297,114 @@ mod tests {
             let file_bits = MoltObject::from_ptr(file_ptr).bits();
             unsafe { dict_set_in_place(_py, dict_ptr, file_key, file_bits) };
 
-            let rendered = format_obj_str(_py, obj_from_bits(module_bits));
-            assert_eq!(rendered, "<module 'pathlib' from '/tmp/pathlib.py'>");
+            let key_refs = refcount(file_key);
+            for _ in 0..16 {
+                let rendered = format_obj_str(_py, obj_from_bits(module_bits));
+                assert_eq!(rendered, "<module 'pathlib' from '/tmp/pathlib.py'>");
+                assert_eq!(refcount(file_key), key_refs);
+            }
+            for bits in [module_bits, name_bits, file_key, file_bits] {
+                crate::dec_ref_bits(_py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn type_alias_and_object_repr_release_namespace_lookup_keys() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let name_ptr = alloc_string(_py, b"C");
+            assert!(!name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+            assert!(!dict_ptr.is_null());
+            let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+            let module_key = attr_name_bits_from_bytes(_py, b"__module__").unwrap();
+            let qual_key = attr_name_bits_from_bytes(_py, b"__qualname__").unwrap();
+            let module_ptr = alloc_string(_py, b"pkg");
+            let qual_ptr = alloc_string(_py, b"Outer.C");
+            assert!(!module_ptr.is_null() && !qual_ptr.is_null());
+            unsafe {
+                dict_set_in_place(
+                    _py,
+                    dict_ptr,
+                    module_key,
+                    MoltObject::from_ptr(module_ptr).bits(),
+                );
+                dict_set_in_place(
+                    _py,
+                    dict_ptr,
+                    qual_key,
+                    MoltObject::from_ptr(qual_ptr).bits(),
+                );
+            }
+            let class_bits = crate::builtins::types::molt_type_new(
+                crate::builtin_classes(_py).type_obj,
+                name_bits,
+                MoltObject::none().bits(),
+                dict_bits,
+                MoltObject::none().bits(),
+            );
+            let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class");
+            assert!(!crate::exception_pending(_py));
+            // type.__new__ consumes the constructor's __qualname__ entry into
+            // class metadata. Rebind it in the runtime namespace exercised by
+            // these repr paths, as a later class attribute assignment does.
+            let class_dict_ptr = obj_from_bits(unsafe { class_dict_bits(class_ptr) })
+                .as_ptr()
+                .expect("class dict");
+            unsafe {
+                dict_set_in_place(
+                    _py,
+                    class_dict_ptr,
+                    qual_key,
+                    MoltObject::from_ptr(qual_ptr).bits(),
+                );
+            }
+            assert!(!crate::exception_pending(_py));
+            let instance_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+            let instance_ptr = obj_from_bits(instance_bits)
+                .as_ptr()
+                .expect("class instance");
+            let args_ptr = alloc_tuple(_py, &[class_bits]);
+            assert!(!args_ptr.is_null());
+            let alias_ptr =
+                crate::alloc_generic_alias(_py, class_bits, MoltObject::from_ptr(args_ptr).bits());
+            assert!(!alias_ptr.is_null());
+
+            let module_refs = refcount(module_key);
+            let qual_refs = refcount(qual_key);
+            for _ in 0..16 {
+                assert_eq!(
+                    format_obj_str(_py, obj_from_bits(class_bits)),
+                    "<class 'pkg.Outer.C'>"
+                );
+                assert_eq!(
+                    format_obj_str(_py, MoltObject::from_ptr(alias_ptr)),
+                    "pkg.Outer.C[pkg.Outer.C]"
+                );
+                assert!(
+                    format_default_object_repr(_py, instance_ptr)
+                        .starts_with("<pkg.Outer.C object at 0x")
+                );
+                assert_eq!(refcount(module_key), module_refs);
+                assert_eq!(refcount(qual_key), qual_refs);
+            }
+            for bits in [
+                MoltObject::from_ptr(alias_ptr).bits(),
+                MoltObject::from_ptr(args_ptr).bits(),
+                instance_bits,
+                class_bits,
+                name_bits,
+                dict_bits,
+                module_key,
+                qual_key,
+                MoltObject::from_ptr(module_ptr).bits(),
+                MoltObject::from_ptr(qual_ptr).bits(),
+            ] {
+                crate::dec_ref_bits(_py, bits);
+            }
         });
     }
 

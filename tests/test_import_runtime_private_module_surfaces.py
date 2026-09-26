@@ -17,8 +17,8 @@ import sys
 import types
 
 
-def _frozen_payload(machinery, util):
-    assert util is None
+def _frozen_payload():
+    machinery = importlib.machinery
     return {{
         "BuiltinImporter": machinery.BuiltinImporter,
         "FrozenImporter": machinery.FrozenImporter,
@@ -26,8 +26,7 @@ def _frozen_payload(machinery, util):
     }}
 
 
-def _frozen_external_payload(machinery, util):
-    assert util is None
+def _frozen_external_payload(machinery):
     _file_loader = getattr(machinery, "FileLoader", machinery.SourceFileLoader)
     _source_loader = getattr(machinery, "SourceLoader", machinery.SourceFileLoader)
     return {{

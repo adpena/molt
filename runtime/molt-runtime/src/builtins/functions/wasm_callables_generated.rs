@@ -59,7 +59,7 @@ pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 32;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 1 + 32;
 #[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 25;
+pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 30;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
     RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
@@ -285,6 +285,41 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
         arity: 5,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
+    ReservedRuntimeCallableInfo {
+        index: 25,
+        runtime_name: "molt_importlib_compiled_loader_create_module",
+        import_name: "importlib_compiled_loader_create_module",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 26,
+        runtime_name: "molt_importlib_compiled_loader_exec_module",
+        import_name: "importlib_compiled_loader_exec_module",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 27,
+        runtime_name: "molt_importlib_compiled_loader_load_module",
+        import_name: "importlib_compiled_loader_load_module",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 28,
+        runtime_name: "molt_importlib_module_spec_repr",
+        import_name: "importlib_module_spec_repr",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 29,
+        runtime_name: "molt_importlib_module_spec_parent",
+        import_name: "importlib_module_spec_parent",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
 ];
 
 #[rustfmt::skip]
@@ -428,6 +463,11 @@ fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         22 => Some(molt_cpython_abi_cext_call_trampoline as *const ()),
         23 => Some(molt_importlib_import_transaction as *const ()),
         24 => Some(molt_importlib_module_spec_init as *const ()),
+        25 => Some(molt_importlib_compiled_loader_create_module as *const ()),
+        26 => Some(molt_importlib_compiled_loader_exec_module as *const ()),
+        27 => Some(molt_importlib_compiled_loader_load_module as *const ()),
+        28 => Some(molt_importlib_module_spec_repr as *const ()),
+        29 => Some(molt_importlib_module_spec_parent as *const ()),
         _ => None,
     }
 }
@@ -1252,4 +1292,9 @@ pub(crate) fn assert_reserved_runtime_symbols_resolve() {
     let _ = molt_cpython_abi_cext_call_trampoline as *const ();
     let _ = molt_importlib_import_transaction as *const ();
     let _ = molt_importlib_module_spec_init as *const ();
+    let _ = molt_importlib_compiled_loader_create_module as *const ();
+    let _ = molt_importlib_compiled_loader_exec_module as *const ();
+    let _ = molt_importlib_compiled_loader_load_module as *const ();
+    let _ = molt_importlib_module_spec_repr as *const ();
+    let _ = molt_importlib_module_spec_parent as *const ();
 }
