@@ -321,6 +321,18 @@ Receipt-owned tool selection uses the same tree/access/link semantics, including
 Unicode host-name resolution.
 Requirement versions, console entry points and Meson/Ninja/pkg-config discovery
 come from the realized distribution inventory, not ambient metadata rescans.
+One executable selector uses a distribution's declared console launcher when
+present, otherwise its unique platform-named installed payload. Native commands
+may live in the scripts directory without console-entry-point metadata. Missing
+or ambiguous ownership and changed content fail closed; no PATH search or module
+wrapper chooses a different executable. Ninja invokes the exact verified command
+whose hash it records, while retaining the locked distribution version separately
+from the executable's reported version.
+Meson receives that same Ninja path explicitly, overriding ambient selection;
+native executable config tools and Python console entry points share discovery
+and cross-file projection. Version probes use the shared stable-executable fence.
+Subsequent Ninja dispatch and final Ninja/config-tool manifests revalidate the
+captured file generation instead of blessing a replacement with a new hash.
 Selection and provisioning share one recipe computation per request; requirement
 resolution and tool lookup retain one validated inventory instance.
 

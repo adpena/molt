@@ -16,7 +16,8 @@ from typing import Any
 import pytest
 
 from molt import python_environment_identity
-from molt.python_file_node_custody import _semantic_access
+from molt.python_file_node_custody import VerifiedTreeFile, _semantic_access
+from molt.toolchain_identity import stable_regular_file_identity
 from molt.exact_json import canonical_json_sha256
 from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli import source_build_environment as build_environment
@@ -73,6 +74,16 @@ _MODULES = (
     "scipy.ndimage._rank_filter_1d",
     "scipy._lib._ccallback_c",
 )
+
+
+def _tool_image(path: Path) -> VerifiedTreeFile:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"owned build tool")
+    path.chmod(0o755)
+    return VerifiedTreeFile(
+        path=path,
+        content=stable_regular_file_identity(path, label="test build tool"),
+    )
 
 
 @contextmanager
@@ -336,39 +347,45 @@ def _write_meson_metadata(
     }
 
 
-def test_ninja_driver_uses_locked_distribution_version_not_binary_self_report(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("layout", ["scripts", "embedded", "console-with-payload"])
+def test_ninja_driver_executes_attested_distribution_command(
+    layout: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    payload = _build_environment_manifest()
     filename = "ninja.exe" if os.name == "nt" else "ninja"
-    binary = tmp_path / "lib" / filename
-    binary.parent.mkdir()
-    binary.write_bytes(b"locked ninja image")
-    inventory = SimpleNamespace(
-        identity={
-            "operating_system": "windows" if os.name == "nt" else "linux",
-            "scripts_root": "Scripts" if os.name == "nt" else "bin",
-        },
-        distribution=lambda name: (
-            {
-                "name": "ninja",
-                "version": "1.13.0",
-                "installed_files": [{"path": f"lib/{filename}"}],
-            }
-            if name == "ninja"
-            else None
-        ),
-        file=lambda _relative, *, distribution: binary,
+    site_root = payload["custody"]["realized_environment"]["site_roots"][0]
+    if layout == "console-with-payload":
+        _install_realized_tool(
+            payload,
+            tmp_path,
+            "ninja",
+            distribution="ninja",
+            relative=f"{site_root}/ninja/data/bin/{filename}",
+            console_script=False,
+        )
+    binary = _install_realized_tool(
+        payload,
+        tmp_path,
+        "ninja",
+        distribution="ninja",
+        relative=f"{site_root}/ninja/data/bin/{filename}"
+        if layout == "embedded"
+        else None,
+        console_script=layout == "console-with-payload",
     )
-    monkeypatch.setattr(
-        producer,
-        "_run_process",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 0, stdout="1.13.0.git.kitware.jobserver-pipe-1\n", stderr=""
-        ),
-    )
-    driver = producer._source_ninja_driver(
-        tmp_path, SimpleNamespace(inventory=inventory)
-    )
+    calls = []
+
+    def run(argv, *, cwd):
+        calls.append((tuple(argv), cwd))
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="1.13.0.git.kitware.jobserver-pipe-1\n", stderr=""
+        )
+
+    monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(producer, "_run_process", run)
+    driver = producer._source_ninja_driver(tmp_path, _source_environment(payload))
+    assert calls == [((str(binary), "--version"), tmp_path)]
+    assert driver.command == (str(binary),)
     assert driver.manifest_payload() == {
         "distribution": "ninja",
         "version": "1.13.0",
@@ -376,6 +393,37 @@ def test_ninja_driver_uses_locked_distribution_version_not_binary_self_report(
         "path": filename,
         "sha256": producer._sha256_file(binary),
     }
+
+
+@pytest.mark.parametrize("stage", ["version", "command", "manifest"])
+def test_ninja_rejects_image_replacement_after_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    payload = _build_environment_manifest()
+    binary = _install_realized_tool(
+        payload,
+        tmp_path,
+        "ninja",
+        distribution="ninja",
+        console_script=False,
+    )
+    monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
+
+    def run(argv, *, cwd):
+        if stage == "version":
+            binary.write_bytes(b"replaced image")
+        return subprocess.CompletedProcess(argv, 0, stdout="1.13.0\n", stderr="")
+
+    monkeypatch.setattr(producer, "_run_process", run)
+    with pytest.raises(ValueError, match="changed"):
+        driver = producer._source_ninja_driver(tmp_path, _source_environment(payload))
+        binary.write_bytes(b"replaced image")
+        if stage == "command":
+            _ = driver.command
+        else:
+            driver.manifest_payload()
 
 
 def _source_environment(
@@ -395,18 +443,38 @@ def _source_environment(
     )
 
 
-def _install_realized_console_script(
-    payload: dict[str, Any], root: Path, name: str, *, distribution: str
+def _install_realized_tool(
+    payload: dict[str, Any],
+    root: Path,
+    name: str,
+    *,
+    distribution: str,
+    relative: str | None = None,
+    console_script: bool = True,
 ) -> Path:
     """Add actual tool bytes and ownership to the shared synthetic environment."""
     realized = payload["custody"]["realized_environment"]
     filename = name + ".exe" if realized["operating_system"] == "windows" else name
-    relative = f"{realized['scripts_root']}/{filename}"
+    relative = relative or f"{realized['scripts_root']}/{filename}"
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     data = b"realized-tool-fixture"
     path.write_bytes(data)
+    path.chmod(0o755)
     tree = realized["tree"]
+    known_paths = {entry["path"] for entry in tree["entries"]}
+    for parent in path.parents:
+        if parent == root:
+            break
+        parent_relative = parent.relative_to(root).as_posix()
+        if parent_relative not in known_paths:
+            tree["entries"].append(
+                {
+                    "path": parent_relative,
+                    "kind": "directory",
+                    "access": _semantic_access(parent.lstat()),
+                }
+            )
     for entry in tree["entries"]:
         directory = root / entry["path"]
         if entry["kind"] == "directory" and path.is_relative_to(directory):
@@ -434,15 +502,16 @@ def _install_realized_console_script(
     owner["installed_files"].sort(key=lambda row: (row["path"].casefold(), row["path"]))
     owner["installed_file_count"] += 1
     owner["file_manifest_sha256"] = canonical_json_sha256(owner["installed_files"])
-    owner["entry_points"].append(
-        {"group": "console_scripts", "name": name, "value": f"{distribution}:main"}
-    )
-    owner["entry_points"].sort(
-        key=lambda row: (row["group"], row["name"], row["value"])
-    )
-    owner["entry_points_sha256"] = canonical_json_sha256(owner["entry_points"])
-    owner["console_scripts"][name] = [relative]
-    realized["console_scripts"][name] = [relative]
+    if console_script:
+        owner["entry_points"].append(
+            {"group": "console_scripts", "name": name, "value": f"{distribution}:main"}
+        )
+        owner["entry_points"].sort(
+            key=lambda row: (row["group"], row["name"], row["value"])
+        )
+        owner["entry_points_sha256"] = canonical_json_sha256(owner["entry_points"])
+        owner["console_scripts"][name] = [relative]
+        realized["console_scripts"][name] = [relative]
     realized["distribution_inventory_sha256"] = canonical_json_sha256(
         realized["distributions"]
     )
@@ -455,6 +524,55 @@ def _install_realized_console_script(
     )
     python_environment_identity.validate_python_environment_identity(realized)
     return path.resolve()
+
+
+@pytest.mark.parametrize(
+    "defect", ["missing", "ambiguous", "unowned", "tampered", "removed"]
+)
+def test_inventory_rejects_unattested_executable(
+    tmp_path: Path,
+    defect: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _build_environment_manifest()
+    filename = "ninja.exe" if os.name == "nt" else "ninja"
+    site_root = payload["custody"]["realized_environment"]["site_roots"][0]
+    if defect != "missing":
+        binary = _install_realized_tool(
+            payload,
+            tmp_path,
+            "ninja",
+            distribution="meson" if defect == "unowned" else "ninja",
+            console_script=False,
+        )
+        if defect == "ambiguous":
+            _install_realized_tool(
+                payload,
+                tmp_path,
+                "ninja",
+                distribution="ninja",
+                relative=f"{site_root}/ninja/{filename}",
+                console_script=False,
+            )
+        elif defect == "tampered":
+            binary.write_bytes(b"unattested replacement")
+        elif defect == "removed":
+            binary.unlink()
+    monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(
+        producer,
+        "_run_process",
+        lambda *_a, **_kw: pytest.fail("unattested tool must not execute"),
+    )
+    message = {
+        "missing": "0 executable candidates",
+        "ambiguous": "2 executable candidates",
+        "unowned": "0 executable candidates",
+        "tampered": "content differs",
+        "removed": None,
+    }[defect]
+    with pytest.raises((ValueError, FileNotFoundError), match=message):
+        producer._source_ninja_driver(tmp_path, _source_environment(payload))
 
 
 def test_produce_set_parser_has_no_partial_or_nondeterministic_lane() -> None:
@@ -805,7 +923,7 @@ def test_build_extension_routes_real_meson_authority_deterministically(
     calls: list[dict[str, object]] = []
     expected = object()
     backend = producer._SourceNinjaDriver(
-        command=(sys.executable, "-m", "ninja"),
+        image=_tool_image(tmp_path / "ninja"),
         manifest={"distribution": "ninja"},
     )
     monkeypatch.setattr(
@@ -2172,8 +2290,15 @@ def test_meson_setup_uses_typed_driver(
 ) -> None:
     calls: list[tuple[str, ...]] = []
 
-    def run_process(argv, *, cwd):
+    backend = producer._SourceNinjaDriver(
+        image=_tool_image(tmp_path / "embedded tools" / "ninja"),
+        manifest={},
+    )
+    monkeypatch.setenv("NINJA", "unattested-ambient-ninja")
+
+    def run_process(argv, *, cwd, env):
         assert cwd == tmp_path / "source"
+        assert env["NINJA"] == str(backend.image.path)
         calls.append(tuple(argv))
         return subprocess.CompletedProcess(
             args=list(argv), returncode=0, stdout="", stderr=""
@@ -2189,6 +2314,7 @@ def test_meson_setup_uses_typed_driver(
             tmp_path / "metadata/build-tools.cross",
         ),
         setup_args=("-Dblas=none",),
+        backend=backend,
         driver=producer._SourceMesonDriver(
             command=(sys.executable, "-m", "mesonbuild.mesonmain"),
             manifest={"kind": "build-environment"},
@@ -2265,7 +2391,7 @@ def test_generated_input_materialization_uses_one_upstream_meson_command(
 
     monkeypatch.setattr(producer, "_run_process", run_process)
     backend = producer._SourceNinjaDriver(
-        command=("ninja",),
+        image=_tool_image(tmp_path / "ninja"),
         manifest={"distribution": "ninja"},
     )
 
@@ -2293,7 +2419,7 @@ def test_generated_input_materialization_uses_one_upstream_meson_command(
     assert materialized == (generated_c, version)
     assert calls == [
         (
-            "ninja",
+            str(backend.image.path),
             "-C",
             str(build),
             "numpy/_core/loops.c",
@@ -2337,7 +2463,7 @@ def test_cython_generated_input_uses_standalone_regeneration_authority(
         lambda _root: {generated_c.resolve(): (pyx.resolve(),)},
     )
     backend = producer._SourceNinjaDriver(
-        command=(sys.executable, "-m", "ninja"),
+        image=_tool_image(tmp_path / "ninja"),
         manifest={"distribution": "ninja"},
     )
 
@@ -2382,12 +2508,17 @@ def test_cython_generated_input_uses_standalone_regeneration_authority(
     assert missing == set()
 
 
+@pytest.mark.parametrize("console_script", [False, True])
 def test_meson_pkg_config_is_pinned_and_attested(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    console_script: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     payload = _build_environment_manifest([producer.MOLT_PKGCONF_REQUIREMENT])
-    tool = _install_realized_console_script(
-        payload, tmp_path, "pkg-config", distribution="pkgconf"
+    tool = _install_realized_tool(
+        payload,
+        tmp_path,
+        "pkg-config",
+        distribution="pkgconf",
+        console_script=console_script,
     )
     monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
     monkeypatch.setattr(
@@ -2401,9 +2532,14 @@ def test_meson_pkg_config_is_pinned_and_attested(
 
     config_tool = producer._ensure_meson_pkg_config(tmp_path, environment)
 
-    assert config_tool == producer._SourceBuildConfigTool(
-        name="pkg-config", path=tool, distribution="pkgconf", version="3.0.1.post0"
-    )
+    assert config_tool.path == tool
+    assert config_tool.manifest_payload() == {
+        "name": "pkg-config",
+        "path": tool.name,
+        "distribution": "pkgconf",
+        "version": "3.0.1.post0",
+        "sha256": hashlib.sha256(tool.read_bytes()).hexdigest(),
+    }
     assert producer._source_build_config_tools(environment) == (config_tool,)
 
 
@@ -2411,7 +2547,7 @@ def test_meson_pkg_config_rejects_mutated_realized_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     payload = _build_environment_manifest([producer.MOLT_PKGCONF_REQUIREMENT])
-    tool = _install_realized_console_script(
+    tool = _install_realized_tool(
         payload, tmp_path, "pkg-config", distribution="pkgconf"
     )
     monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
@@ -2427,9 +2563,7 @@ def test_meson_pkg_config_rejects_mutated_realized_tool(
 
 def test_realized_inventory_public_projections_are_immutable(tmp_path: Path) -> None:
     payload = _build_environment_manifest([producer.MOLT_PKGCONF_REQUIREMENT])
-    _install_realized_console_script(
-        payload, tmp_path, "pkg-config", distribution="pkgconf"
-    )
+    _install_realized_tool(payload, tmp_path, "pkg-config", distribution="pkgconf")
     inventory = producer.SourceBuildInventory(payload["custody"], tmp_path)
     owner = inventory.distribution("PkgConf")
     assert owner is not None
@@ -2451,7 +2585,7 @@ def test_realized_inventory_detaches_caller_owned_receipt_before_tool_checks(
     tmp_path: Path,
 ) -> None:
     payload = _build_environment_manifest([producer.MOLT_PKGCONF_REQUIREMENT])
-    tool = _install_realized_console_script(
+    tool = _install_realized_tool(
         payload, tmp_path, "pkg-config", distribution="pkgconf"
     )
     realized = payload["custody"]["realized_environment"]
@@ -2465,13 +2599,13 @@ def test_realized_inventory_detaches_caller_owned_receipt_before_tool_checks(
     realized["distributions"][0]["console_scripts"]["pkg-config"].clear()
     realized["distributions"][0]["installed_files"].clear()
     entry["access"]["writable"] = not entry["access"]["writable"]
-    assert inventory.console_script("pkg-config", distribution="pkgconf") == tool
+    assert inventory.executable("pkg-config", distribution="pkgconf").path == tool
     changed = b"replaced-tool-with-rewritten-unsealed-expectations"
     tool.write_bytes(changed)
     node["size"] = len(changed)
     node["sha256"] = hashlib.sha256(changed).hexdigest()
     with pytest.raises(ValueError, match="content differs"):
-        inventory.console_script("pkg-config", distribution="pkgconf")
+        inventory.executable("pkg-config", distribution="pkgconf")
 
 
 @pytest.mark.parametrize("version", ["3.15.0a1", "3.15.0b2", "3.15.0rc1"])
@@ -2507,13 +2641,13 @@ def test_meson_config_tool_cross_is_generic_and_deterministic(tmp_path: Path) ->
     tools = (
         producer._SourceBuildConfigTool(
             name="pybind11-config",
-            path=tmp_path / "Scripts/pybind11-config.exe",
+            image=_tool_image(tmp_path / "Scripts/pybind11-config.exe"),
             distribution="pybind11",
             version="3.0.4",
         ),
         producer._SourceBuildConfigTool(
             name="numpy-config",
-            path=tmp_path / "Scripts/numpy-config.exe",
+            image=_tool_image(tmp_path / "Scripts/numpy-config.exe"),
             distribution="numpy",
             version="2.5.1",
         ),
