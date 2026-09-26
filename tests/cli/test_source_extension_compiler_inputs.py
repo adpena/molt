@@ -7,7 +7,24 @@ from molt.cli.source_extension_compiler_inputs import (
     compiler_sysroot_arguments,
     validate_source_extension_compiler_command,
     validate_source_extension_tool_command,
+    source_extension_compiler_environment,
 )
+
+
+def test_compiler_environment_removes_hidden_command_overrides_not_sdk_inputs():
+    sdk = {"INCLUDE": "sdk/include", "LIB": "sdk/lib", "PATH": "owned/bin"}
+    overrides = {
+        "CL": "/DUNRECORDED=1",
+        "_cl_": "/Foother.obj",
+        "CCC_OVERRIDE_OPTIONS": "+-target;wasm32-wasip1",
+        "CC_LD": "unowned-linker",
+        "cxx_ld": "another-linker",
+        "CC_LD_FOR_BUILD": "build-linker",
+        "CXX_LD_FOR_BUILD": "build-cpp-linker",
+    }
+    captured = {**sdk, **overrides}
+    assert source_extension_compiler_environment(captured) == sdk
+    assert captured == {**sdk, **overrides}
 
 
 def test_compiler_grammar_admits_matching_target_sysroot_and_codegen_flags() -> None:

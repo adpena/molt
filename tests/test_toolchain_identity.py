@@ -246,6 +246,52 @@ def test_tool_command_relative_search_roots_use_captured_not_ambient_cwd(
     assert command == (str(tool), "-c")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows executable name contract")
+@pytest.mark.parametrize("consumer", ["search", "explicit", "identity"])
+def test_executable_entrypoint_spelling_is_canonical_across_selectors(
+    tmp_path, consumer
+):
+    tool = tmp_path / "clang-cl.exe"
+    tool.write_bytes(b"selected compiler")
+    environment = {"PATH": str(tmp_path), "PATHEXT": ".EXE"}
+    if consumer == "search":
+        selected = identity.find_executable("clang-cl", environment=environment)
+    elif consumer == "explicit":
+        selected = Path(
+            identity.resolve_explicit_tool_command(
+                str(tool.with_name("Clang-CL.EXE")),
+                label="compiler",
+                environment=environment,
+            )[0]
+        )
+    else:
+        selected = identity.resolve_executable(
+            str(tool.with_suffix(".EXE")), label="compiler", environment=environment
+        )
+    assert selected is not None
+    # Path equality on Windows would conceal the regression in argv spelling.
+    assert selected.name == "clang-cl.exe"
+    assert selected.samefile(tool)
+
+
+def test_executable_entrypoint_keeps_lexical_alias(tmp_path):
+    content = tmp_path / "driver.exe"
+    content.write_bytes(b"one driver, multiple entrypoints")
+    alias = tmp_path / "clang-cl.exe"
+    try:
+        alias.symlink_to(content)
+    except OSError:
+        pytest.skip("host cannot create executable symlinks")
+    selected = identity.resolve_executable(
+        str(alias.with_suffix(".EXE") if os.name == "nt" else alias),
+        label="compiler",
+        environment={},
+    )
+    assert selected.name == "clang-cl.exe"
+    assert selected.is_symlink()
+    assert identity.executable_content_path(selected, label="compiler") == content
+
+
 @pytest.mark.parametrize("value", ["", '"', "bad\x00command"])
 def test_tool_command_rejects_malformed_input(tmp_path, value):
     with pytest.raises(ValueError, match="compiler"):

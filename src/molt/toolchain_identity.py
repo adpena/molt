@@ -18,6 +18,7 @@ from typing import BinaryIO
 
 from molt.file_hashing import content_change_time_ns, content_change_time_ns_from_fd
 from molt.file_publication import metadata_is_link_like
+from molt.llvm_linker_roles import lexical_executable_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +156,7 @@ def _unlink_stable_file_identity(identity: StableRegularFileIdentity) -> None:
 def _executable_paths(path: Path, *, label: str) -> tuple[Path, Path]:
     """Return the lexical entrypoint and its resolved regular-file content."""
 
-    lexical = path.expanduser().absolute()
+    lexical = lexical_executable_path(path)
     try:
         metadata = lexical.lstat()
     except OSError as exc:
@@ -319,7 +320,7 @@ def executable_candidates(
         for name in names:
             candidate = directory / name
             if candidate.is_file() and os.access(candidate, os.F_OK | os.X_OK):
-                yield candidate.absolute()
+                yield lexical_executable_path(candidate)
 
 
 def find_executable(
@@ -373,7 +374,7 @@ def resolve_explicit_tool_command(
 
     def absolute(value: str) -> Path:
         path = expand_user_path(value, environment=environment)
-        return Path(os.path.abspath(path if path.is_absolute() else cwd / path))
+        return lexical_executable_path(path if path.is_absolute() else cwd / path)
 
     if path_like(raw_command):
         direct_path = absolute(raw_command)

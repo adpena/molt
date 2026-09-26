@@ -3,9 +3,67 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from pathlib import Path
+from enum import StrEnum
 
 from molt.cli.native_link_plan import _normalize_arch
 from molt.llvm_linker_roles import executable_entrypoint_name
+
+
+class SourceExtensionCompilerDialect(StrEnum):
+    GNU = "gnu"
+    CLANG_CL = "clang-cl"
+
+    def forward(self, argument: str) -> str:
+        return f"/clang:{argument}" if self is self.CLANG_CL else argument
+
+
+def source_extension_compiler_dialect(
+    command: Sequence[str],
+) -> SourceExtensionCompilerDialect:
+    if not command:
+        raise ValueError("source-extension compiler command is empty")
+    name = executable_entrypoint_name(Path(command[0]))
+    if name == "cl":
+        raise ValueError(
+            "source-extension requires clang-cl for canonical Make depfiles"
+        )
+    selected = (
+        SourceExtensionCompilerDialect.CLANG_CL
+        if name == "clang-cl"
+        else SourceExtensionCompilerDialect.GNU
+    )
+    for argument in command[1:]:
+        if argument.startswith("--driver-mode="):
+            mode = argument.partition("=")[2]
+            if mode not in {"cl", "gcc", "g++"}:
+                raise ValueError(
+                    f"unsupported source-extension compiler driver mode: {mode}"
+                )
+            selected = (
+                SourceExtensionCompilerDialect.CLANG_CL
+                if mode == "cl"
+                else SourceExtensionCompilerDialect.GNU
+            )
+    return selected
+
+
+def validate_source_extension_compiler_dialect(
+    command: Sequence[str],
+    target_triple: str,
+) -> SourceExtensionCompilerDialect:
+    dialect = source_extension_compiler_dialect(command)
+    msvc = target_triple.lower().endswith("-windows-msvc")
+    if msvc != (dialect is SourceExtensionCompilerDialect.CLANG_CL):
+        raise ValueError(
+            f"source-extension compiler dialect {dialect.value} is incompatible with "
+            f"{target_triple}; Windows MSVC requires clang-cl and other targets require GNU"
+        )
+    return dialect
+
+
+def compiler_frontend_arguments(command: Sequence[str]) -> tuple[str, ...]:
+    """Expose clang-cl forwarding to the same target/sysroot/flag grammar."""
+    return tuple(argument.removeprefix("/clang:") for argument in command)
 
 
 def _zig_target_query(target_triple: str) -> str:
@@ -169,11 +227,14 @@ def compiler_target_triple(command: Sequence[str], canonical_target: str) -> str
 
 
 def _compiler_target_values(command: Sequence[str]) -> tuple[str, ...]:
+    command = tuple(
+        token for token in compiler_frontend_arguments(command) if token != "-Xclang"
+    )
     targets: list[str] = []
     index = 0
     while index < len(command):
         argument = command[index]
-        if argument in {"-target", "--target"}:
+        if argument in {"-target", "--target", "-triple"}:
             if index + 1 >= len(command) or command[index + 1].startswith("-"):
                 raise ValueError(
                     f"compiler command has {argument} without a target value"
@@ -181,7 +242,7 @@ def _compiler_target_values(command: Sequence[str]) -> tuple[str, ...]:
             targets.append(command[index + 1])
             index += 2
             continue
-        for prefix in ("-target=", "--target="):
+        for prefix in ("-target=", "--target=", "-triple="):
             if argument.startswith(prefix):
                 value = argument.removeprefix(prefix)
                 if not value:
@@ -201,6 +262,7 @@ def validate_compiler_target(command: Sequence[str], target_triple: str) -> bool
     target plan (including Zig target-query conversion). Native requests also
     have an exact effective target, even without an appended target selector.
     """
+    command = compiler_frontend_arguments(command)
     expected = target_triple.lower()
     configured_targets = _compiler_target_values(command)
     mismatched = sorted(

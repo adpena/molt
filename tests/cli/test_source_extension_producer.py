@@ -58,6 +58,15 @@ from molt.cli.source_extension_set_registry import (
     SourceExtensionSpec,
     SourceExtensionVariant,
 )
+from molt.cli.source_extension_target import (
+    SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION,
+    resolve_source_extension_target_plan,
+)
+from molt.cli.source_extension_toolchain import (
+    _meson_cross_text,
+    _meson_native_text,
+    _source_extension_meson_cross_properties,
+)
 from molt.target_python import TargetPythonVersion
 from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
 from tests.python_environment_test_support import (
@@ -236,9 +245,9 @@ def _write_target_metadata(root: Path) -> dict[str, object]:
     target_root = root / "provenance/metadata/target"
     python_pc = target_root / "pkgconfig/python3.pc"
     meson_cross = target_root / "meson.cross"
+    meson_native = target_root / "meson.native"
     python_pc.parent.mkdir(parents=True, exist_ok=True)
     python_pc.write_text("prefix=@molt\n", encoding="utf-8")
-    meson_cross.write_text("[binaries]\n", encoding="utf-8")
     tool_names = {
         "cc": "clang",
         "cxx": "clang++",
@@ -266,8 +275,27 @@ def _write_target_metadata(root: Path) -> dict[str, object]:
         "nm": ["llvm-nm"],
         "strip": ["llvm-strip"],
     }
+    build_commands = {role: argv for role, argv in commands.items() if role != "ld"}
+    target_plan = resolve_source_extension_target_plan("wasm")
+    compiler_builtins = "@toolchain/compiler-builtins.a"
+    pkg_config_dir = "@target/pkgconfig"
+    include_dirs = ["@molt/include"]
+    meson_cross.write_bytes(
+        _meson_cross_text(
+            target_plan=target_plan,
+            pkg_config_dir=pkg_config_dir,
+            commands={role: tuple(argv) for role, argv in commands.items()},
+            compiler_builtins=compiler_builtins,
+            include_dirs=tuple(include_dirs),
+        ).encode("utf-8"),
+    )
+    meson_native.write_bytes(
+        _meson_native_text(
+            commands={role: tuple(argv) for role, argv in build_commands.items()}
+        ).encode("utf-8"),
+    )
     metadata: dict[str, object] = {
-        "schema_version": 3,
+        "schema_version": SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION,
         "kind": "molt-source-extension-target-metadata",
         "target_triple": "wasm32-wasip1",
         "target": {
@@ -278,18 +306,31 @@ def _write_target_metadata(root: Path) -> dict[str, object]:
         "python": {"implementation": "cpython", "version": "3.12"},
         "abi": {
             "tier": "cpython-abi",
-            "include_dirs": ["@molt/include"],
+            "include_dirs": include_dirs,
             "python_header": "@molt/include/Python.h",
             "python_header_sha256": "b" * 64,
             "include_surface": {"sha256": "c" * 64},
         },
-        "toolchain": {"tools": tools, "commands": commands},
-        "meson_cross_properties": {},
-        "paths": {},
+        "toolchain": {
+            "tools": tools,
+            "commands": commands,
+            "link_probe_archives": {
+                "compiler_builtins": {"path": compiler_builtins, "sha256": "d" * 64}
+            },
+        },
+        "build_toolchain": {
+            "target_triple": "x86_64-unknown-linux-gnu",
+            "compiler_kind": "host",
+            "tools": tools,
+            "commands": build_commands,
+        },
+        "meson_cross_properties": _source_extension_meson_cross_properties(target_plan),
+        "paths": {"pkg_config_dir": pkg_config_dir},
         "env": {},
         "digests": {
             "python_pc_sha256": producer._sha256_file(python_pc),
             "meson_cross_sha256": producer._sha256_file(meson_cross),
+            "meson_native_sha256": producer._sha256_file(meson_native),
         },
     }
     encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()
@@ -344,6 +385,39 @@ def _write_meson_metadata(
         ],
         "pkg_config_requirement": "pkgconf==3.0.1.post0",
         "generated_inputs": [],
+    }
+
+
+def test_producer_process_environment_preserves_sdk_but_removes_compiler_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, Any] = {}
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        observed["argv"] = argv
+        observed["environment"] = kwargs["env"]
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(producer.process_guard, "run_completed_command", run)
+    selected = {
+        "CL": "/DUNBOUND",
+        "_cl_": "/link unbound.lib",
+        "CCC_OVERRIDE_OPTIONS": "-funbound",
+        "CC_LD": "other-ld",
+        "CXX_LD_FOR_BUILD": "other-build-ld",
+        "CC": "owned-clang",
+        "CXX": "owned-clang++",
+        "INCLUDE": "C:/SDK/include",
+        "LIB": "C:/SDK/lib",
+    }
+    producer._run_process(["meson"], cwd=tmp_path, env=selected)
+
+    assert observed["argv"] == ["meson"]
+    assert observed["environment"] == {
+        "CC": "owned-clang",
+        "CXX": "owned-clang++",
+        "INCLUDE": "C:/SDK/include",
+        "LIB": "C:/SDK/lib",
     }
 
 
@@ -997,7 +1071,9 @@ def test_transactional_wheel_bytes_must_match_manifest(
 
 
 def test_producer_audit_enforces_exact_consumer_contract() -> None:
-    current_abi = producer._default_molt_c_api_version(producer._REPO_ROOT)
+    current_abi = producer._default_molt_c_api_version(
+        Path(__file__).resolve().parents[2]
+    )
     manifest = {
         "deterministic": True,
         "loader_kind": "libmolt_source",
@@ -1849,7 +1925,7 @@ def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
     child_environment = observed["env"]
     assert isinstance(child_environment, dict)
     assert child_environment["PYTHONPATH"] == str(
-        (producer._REPO_ROOT / "src").resolve()
+        Path(__file__).resolve().parents[2] / "src"
     )
     assert "PYTHONHOME" not in child_environment
     assert child_environment["PYTHONNOUSERSITE"] == "1"
@@ -2313,6 +2389,7 @@ def test_meson_setup_uses_typed_driver(
             tmp_path / "metadata/meson.cross",
             tmp_path / "metadata/build-tools.cross",
         ),
+        meson_native=tmp_path / "metadata/meson.native",
         setup_args=("-Dblas=none",),
         backend=backend,
         driver=producer._SourceMesonDriver(
@@ -2333,6 +2410,8 @@ def test_meson_setup_uses_typed_driver(
             str(tmp_path / "metadata/meson.cross"),
             "--cross-file",
             str(tmp_path / "metadata/build-tools.cross"),
+            "--native-file",
+            str(tmp_path / "metadata/meson.native"),
             f"--prefix={producer.MESON_INSTALL_PREFIX}",
             "-Dblas=none",
         )
@@ -2910,7 +2989,7 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
             variant=variant,
             set_manifest=set_manifest,
         )
-    target_metadata["schema_version"] = 3
+    target_metadata["schema_version"] = SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION
     target_facts = target_metadata["target"]
     assert isinstance(target_facts, dict)
     target_facts["artifact_kind"] = "static_archive"
@@ -3276,6 +3355,31 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
             )
 
 
+@pytest.mark.parametrize("shared_tools", [False, True])
+def test_machine_tool_roots_are_canonicalized_without_duplicating_shared_tools(
+    tmp_path: Path,
+    shared_tools: bool,
+) -> None:
+    target_bin = tmp_path / "target-sdk/bin"
+    build_bin = target_bin if shared_tools else tmp_path / "native-sdk/bin"
+    metadata = {
+        "toolchain": {"tools": {"cc": {"path": str(target_bin / "clang")}}},
+        "build_toolchain": {"tools": {"cc": {"path": str(build_bin / "clang")}}},
+    }
+    roots = producer._producer_location_roots(
+        source_root=tmp_path / "source",
+        build_root=tmp_path / "build",
+        transaction_root=tmp_path / "transaction",
+        metadata_payload=metadata,
+        config_tools=(),
+    )
+    canonical = producer._canonicalize_locations(metadata, roots)
+    assert canonical["toolchain"]["tools"]["cc"]["path"] == "@llvm-bin/clang"
+    expected_build = "@llvm-bin/clang" if shared_tools else "@build-llvm-bin/clang"
+    assert canonical["build_toolchain"]["tools"]["cc"]["path"] == expected_build
+    assert len([path for path, _token in roots if path == target_bin]) == 1
+
+
 def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
     tmp_path: Path,
 ) -> None:
@@ -3286,7 +3390,10 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
     pkgconfig.mkdir(parents=True)
     (pkgconfig / "python3.pc").write_text(f"prefix={transaction}\n", encoding="utf-8")
     (metadata_root / "meson.cross").write_text(
-        f"sys_root = '{transaction}'\n", encoding="utf-8"
+        f"[properties]\nsys_root = '{transaction}'\n", encoding="utf-8"
+    )
+    (metadata_root / "meson.native").write_text(
+        f"[binaries]\nc = '{transaction}/clang'\n", encoding="utf-8"
     )
     (metadata_root / "source-extension-target-metadata.json").write_text(
         "{}\n", encoding="utf-8"
@@ -3300,7 +3407,7 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
     commands.write_text("[]\n", encoding="utf-8")
     installed.write_text("{}\n", encoding="utf-8")
     raw_payload = {
-        "schema_version": 3,
+        "schema_version": SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION,
         "kind": "molt-source-extension-target-metadata",
         "target_triple": "wasm32-wasip1",
         "target": {
@@ -3313,6 +3420,7 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
         "digests": {
             "python_pc_sha256": "stale",
             "meson_cross_sha256": "stale",
+            "meson_native_sha256": "stale",
         },
         "digest": "stale",
     }
@@ -3333,6 +3441,7 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
             staged["target/pkgconfig/python3.pc"]
         ),
         "meson_cross_sha256": producer._sha256_file(staged["target/meson.cross"]),
+        "meson_native_sha256": producer._sha256_file(staged["target/meson.native"]),
     }
     identity = dict(canonical)
     digest = identity.pop("digest")

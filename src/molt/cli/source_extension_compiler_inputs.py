@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -13,12 +13,44 @@ from molt.cli.compiler_target import (
     compiler_target_triple,
     is_zig_compiler_command,
     validate_compiler_target,
+    compiler_frontend_arguments,
+    validate_source_extension_compiler_dialect,
+    SourceExtensionCompilerDialect,
 )
 from molt.llvm_linker_roles import executable_entrypoint_name
 
 
 _COMPILER_ROLES = frozenset({"c", "cpp"})
 _TOOL_ROLES = frozenset({"c", "cpp", "ar", "nm", "ld", "ranlib", "strip"})
+_IMPLICIT_COMPILER_OVERRIDES = frozenset(
+    {
+        "CL",
+        "_CL_",
+        "CCC_OVERRIDE_OPTIONS",
+        "CC_LD",
+        "CXX_LD",
+        "CC_LD_FOR_BUILD",
+        "CXX_LD_FOR_BUILD",
+    }
+)
+
+
+def source_extension_compiler_environment(
+    environment: Mapping[str, str],
+) -> dict[str, str]:
+    """Keep SDK/search inputs, but never let ambient flags replace owned argv.
+
+    Applies to configuration, generators, probes and direct object replay. SDK
+    INCLUDE/LIB inputs remain available; this is not a hermetic SDK declaration.
+    Treat key spelling uniformly so captured Windows environments replay safely.
+    """
+    return {
+        key: value
+        for key, value in environment.items()
+        if key.upper() not in _IMPLICIT_COMPILER_OVERRIDES
+    }
+
+
 _SYSROOT_POLICY = Literal["forbidden", "optional", "required"]
 _CODEGEN_FLAGS = frozenset(
     {
@@ -40,6 +72,7 @@ _CODEGEN_FLAGS = frozenset(
         "-Qunused-arguments",
         "--driver-mode=gcc",
         "--driver-mode=g++",
+        "--driver-mode=cl",
         "-w",
     }
 )
@@ -120,7 +153,7 @@ def compiler_sysroot_arguments(
     materialize selected-home paths without re-parsing the command.
     """
 
-    argv = tuple(command)
+    argv = compiler_frontend_arguments(command)
     values: list[tuple[int, str, str]] = []
     index = 0
     while index < len(argv):
@@ -132,7 +165,8 @@ def compiler_sysroot_arguments(
                 or argv[index + 1].startswith("-")
             ):
                 raise ValueError(f"compiler command has {option} missing value")
-            values.append((index + 1, "", argv[index + 1]))
+            prefix = "/clang:" if command[index + 1].startswith("/clang:") else ""
+            values.append((index + 1, prefix, argv[index + 1]))
             index += 2
             continue
         for prefix in ("--sysroot=", "-isysroot="):
@@ -140,7 +174,8 @@ def compiler_sysroot_arguments(
                 value = option.removeprefix(prefix)
                 if not value or value.startswith("-"):
                     raise ValueError(f"compiler command has {prefix} missing value")
-                values.append((index, prefix, value))
+                forwarding = "/clang:" if command[index].startswith("/clang:") else ""
+                values.append((index, forwarding + prefix, value))
                 break
         index += 1
     return tuple(values)
@@ -211,6 +246,7 @@ def validate_source_extension_compiler_command(
     if expected_sysroot is not None and sysroot_policy == "forbidden":
         raise ValueError("source-extension compiler has an impossible sysroot policy")
     argv = _exact_argv(command, role=role)
+    dialect = validate_source_extension_compiler_dialect(argv, target_triple)
     start = _compiler_argument_start(argv, role=role)
     target = compiler_target_triple(argv, target_triple)
     explicit_target = validate_compiler_target(argv, target)
@@ -235,11 +271,12 @@ def validate_source_extension_compiler_command(
             f"source-extension {role} compiler sysroot differs from captured root"
         )
 
+    frontend_argv = compiler_frontend_arguments(argv)
     index = start
     while index < len(argv):
-        option = argv[index]
+        option = frontend_argv[index]
         if option in {"-target", "--target", "-arch", "--sysroot", "-isysroot"}:
-            _value, index = _option_value(argv, index, option, role=role)
+            _value, index = _option_value(frontend_argv, index, option, role=role)
             continue
         if option.startswith(
             ("-target=", "--target=", "-arch=", "--sysroot=", "-isysroot=")
@@ -252,6 +289,12 @@ def validate_source_extension_compiler_command(
             "-mx32",
             "--no-default-config",
         } or _safe_codegen_flag(option):
+            index += 1
+            continue
+        if dialect is SourceExtensionCompilerDialect.CLANG_CL and re.fullmatch(
+            r"/(?:O[012dsxtb]+|W[0-4]|WX-?|MDd?|MTd?|EH[a-z-]+|Z[7iI]|Brepro|nologo|D[A-Za-z_][A-Za-z0-9_]*(?:=[A-Za-z0-9_+.,()'\" -]*)?|U[A-Za-z_][A-Za-z0-9_]*)",
+            option,
+        ):
             index += 1
             continue
         _reject_external_selector(option, role=role)

@@ -17,7 +17,12 @@ from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_impo
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.python_module_names import encode_python_module_names
-from molt.cli.compiler_target import compiler_target_triple, validate_compiler_target
+from molt.cli.compiler_target import (
+    compiler_target_triple,
+    validate_compiler_target,
+    source_extension_compiler_dialect,
+    compiler_frontend_arguments,
+)
 from molt.cli.source_extension_target import (
     SourceExtensionLinkDialect,
     source_extension_link_dialect,
@@ -677,6 +682,67 @@ def _split_windows_command_line(command: str) -> list[str] | None:
     return argv
 
 
+_COMPILE_OUTPUT_OPTIONS = (
+    "-o",
+    "-MF",
+    "-MT",
+    "-MQ",
+    "-MJ",
+    "/Fo",
+    "/Fd",
+    "/Fa",
+    "/Fe",
+    "/Fi",
+    "/FR",
+    "/sourceDependencies",
+    "/scanDependencies",
+)
+
+
+def _compile_output_width(args: Sequence[str], index: int) -> int:
+    argument = args[index].removeprefix("/clang:")
+    if (
+        argument in _COMPILE_OUTPUT_OPTIONS
+        or argument == "/sourceDependencies:directives"
+    ):
+        if index + 1 == len(args):
+            raise ValueError(
+                f"source-extension compiler output {argument} has no operand"
+            )
+        return 2
+    if any(argument.startswith(option) for option in _COMPILE_OUTPUT_OPTIONS):
+        return 1
+    if argument in {
+        "-MD",
+        "-MMD",
+        "-MP",
+        "/showIncludes",
+        "/nologo",
+        "/FS",
+    } or re.fullmatch(r"/(?:MP[0-9]*|FA[cs]*)", argument):
+        return 1
+    return 0
+
+
+def _reject_unowned_precompiled_input(token: str) -> None:
+    if token.startswith(
+        (
+            "/Fp",
+            "/Yu",
+            "/Yc",
+            "/FU",
+            "-include-pch",
+            "-include-pth",
+            "-fmodule-file=",
+            "-fprebuilt-module-path=",
+        )
+    ):
+        raise ValueError(
+            f"source-extension compiler option {token!r} requires explicit "
+            "precompiled-header/module input custody"
+        )
+
+
 def _compile_command_semantic_args(
     arguments: Sequence[str],
     *,
@@ -688,13 +754,21 @@ def _compile_command_semantic_args(
     _compiler, args = _compile_command_compiler_and_args(arguments)
     semantic_args: list[str] = []
     source_seen = False
+    per_file_language: str | None = None
     idx = 0
     while idx < len(args):
-        arg = args[idx]
+        arg = args[idx].removeprefix("/clang:")
+        _reject_unowned_precompiled_input(arg)
+        output_width = _compile_output_width(args, idx)
+        if output_width:
+            idx += output_width
+            continue
         if arg == "-x" or (arg.startswith("-x") and len(arg) > 2):
             width = 2 if arg == "-x" else 1
             if not source_seen:
-                semantic_args.extend(args[idx : idx + width])
+                semantic_args.extend(
+                    compiler_frontend_arguments(args[idx : idx + width])
+                )
             idx += width
             continue
         if arg.startswith(("/Tc", "/Tp")):
@@ -708,26 +782,11 @@ def _compile_command_semantic_args(
                 and _resolve_compile_command_path(raw_source, directory=directory)
                 == source_path
             ):
-                semantic_args.extend(["-x", "c" if arg.startswith("/Tc") else "c++"])
+                per_file_language = "c" if arg.startswith("/Tc") else "c++"
                 source_seen = True
-                idx += 1 if len(arg) > 3 else 2
-                continue
+            idx += 1 if len(arg) > 3 else 2
+            continue
         if arg in {"-c", "/c"}:
-            idx += 1
-            continue
-        if arg in {"-o", "/Fo", "-MF", "-MT", "-MQ"}:
-            idx += 2
-            continue
-        if (
-            arg.startswith("-o")
-            or arg.startswith("/Fo")
-            or arg.startswith("-MF")
-            or arg.startswith("-MT")
-            or arg.startswith("-MQ")
-        ) and len(arg) > 2:
-            idx += 1
-            continue
-        if arg in {"-MD", "-MMD", "-MP"}:
             idx += 1
             continue
         try:
@@ -737,8 +796,11 @@ def _compile_command_semantic_args(
                 continue
         except OSError:
             pass
-        semantic_args.append(arg)
+        semantic_args.append(args[idx])
         idx += 1
+    if per_file_language is not None:
+        # /Tc and /Tp override global /TC and /TP regardless of order.
+        semantic_args.extend(("-x", per_file_language))
     return semantic_args
 
 
@@ -778,7 +840,7 @@ def _compile_command_args_and_include_dirs(
 ) -> tuple[tuple[str, ...], tuple[Path, ...]]:
     compile_args: list[str] = []
     include_dirs: list[Path] = []
-    items = [str(item) for item in arguments]
+    items = list(compiler_frontend_arguments(arguments))
     idx = 0
     while idx < len(items):
         item = items[idx]
@@ -806,12 +868,28 @@ def _compile_command_args_and_include_dirs(
             )
             idx += 1
             continue
-        if item in {"-isystem", "-iquote"} and idx + 1 < len(items):
+        if item in {
+            "-isystem",
+            "-iquote",
+            "-include",
+            "-imacros",
+            "-idirafter",
+            "/FI",
+        } and idx + 1 < len(items):
             compile_args.append(item)
             compile_args.append(
                 str(_resolve_compile_command_path(items[idx + 1], directory=directory))
             )
             idx += 2
+            continue
+        if item.startswith("/FI") and len(item) > 3:
+            compile_args.extend(
+                (
+                    "/FI",
+                    str(_resolve_compile_command_path(item[3:], directory=directory)),
+                )
+            )
+            idx += 1
             continue
         compile_args.append(item)
         idx += 1
@@ -889,15 +967,19 @@ def _load_compile_command_units(
                 _path_is_within(output_path, root) for root in preferred_output_roots
             )
         )
-        semantic_args = _compile_command_semantic_args(
-            arguments,
-            source_path=source_path,
-            directory=directory,
-        )
-        compile_args, include_dirs = _compile_command_args_and_include_dirs(
-            semantic_args,
-            directory=directory,
-        )
+        try:
+            semantic_args = _compile_command_semantic_args(
+                arguments,
+                source_path=source_path,
+                directory=directory,
+            )
+            compile_args, include_dirs = _compile_command_args_and_include_dirs(
+                semantic_args,
+                directory=directory,
+            )
+        except ValueError as exc:
+            errors.append(f"compile command for {source_path}: {exc}")
+            continue
         unit = (compiler, compile_args, include_dirs)
         candidates_by_source.setdefault(source_path, []).append((unit, target_owned))
 
@@ -1922,6 +2004,7 @@ def _source_extension_replay_compile_args(
     unit_compile_args: Sequence[str],
     *,
     compiler_target: str,
+    compiler_command: Sequence[str] = (),
 ) -> list[str]:
     """Replay semantic unit flags without duplicating target authority.
 
@@ -1931,18 +2014,77 @@ def _source_extension_replay_compile_args(
     materialized.
     """
     validate_compiler_target(unit_compile_args, compiler_target)
+    dialect = source_extension_compiler_dialect(compiler_command or ("clang",))
     out: list[str] = []
-    skip_next = False
-    for token in unit_compile_args:
-        if skip_next:
-            skip_next = False
+    args = compiler_frontend_arguments(unit_compile_args)
+    pair_options = {
+        "-target",
+        "--target",
+        "-triple",
+        "--sysroot",
+        "-isysroot",
+        "/winsysroot",
+        "-arch",
+    }
+    joined_options = tuple(option + "=" for option in pair_options) + (
+        "/winsysroot:",
+        "--driver-mode=",
+        "-ffile-prefix-map=",
+        "-fdebug-prefix-map=",
+        "-fmacro-prefix-map=",
+        "/pathmap:",
+    )
+    index = 0
+    while index < len(args):
+        token = args[index]
+        cc1 = token == "-Xclang"
+        if cc1:
+            index += 1
+            if index == len(args):
+                raise ValueError("source-extension -Xclang has no frontend operand")
+            token = args[index]
+        _reject_unowned_precompiled_input(token)
+        if token in pair_options:
+            index += 1
+            if cc1 and index < len(args) and args[index] == "-Xclang":
+                index += 1
+            if index == len(args) or args[index].startswith("-"):
+                raise ValueError(f"source-extension compiler {token} has no operand")
+            index += 1
             continue
-        if token in {"-target", "--target", "--sysroot", "-isysroot"}:
-            skip_next = True
+        if token.startswith(joined_options) or token in {"-m32", "-m64", "-mx32"}:
+            index += 1
             continue
-        if token.startswith(("-target=", "--target=", "--sysroot=", "-isysroot=")):
-            continue
-        out.append(token)
+        if cc1:
+            out.extend((dialect.forward("-Xclang"), dialect.forward(token)))
+        else:
+            width = _compile_output_width(args, index)
+            if width:
+                index += width
+                continue
+            out.append(dialect.forward(token) if token.startswith("-") else token)
+            if token in {
+                "-D",
+                "-U",
+                "-I",
+                "-isystem",
+                "-iquote",
+                "-include",
+                "-imacros",
+                "-idirafter",
+                "/FI",
+            }:
+                index += 1
+                if index == len(args):
+                    raise ValueError(
+                        f"source-extension compiler {token} has no operand"
+                    )
+                out.append(
+                    dialect.forward(args[index])
+                    if token.startswith("-")
+                    else args[index]
+                )
+        index += 1
     return out
 
 
@@ -1988,8 +2130,17 @@ def _source_extension_object_fact(
             and Path(token).expanduser().parent.resolve() == object_root
         ):
             canonical = f"@object-root/{Path(token).name}"
-        elif token.startswith(
-            ("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map=")
+        elif token.startswith(("/Fo", "/clang:-MF", "-MF", "-o")):
+            canonical = token.replace(str(object_root), "@object-root").replace(
+                object_root.as_posix(), "@object-root"
+            )
+        elif token.removeprefix("/clang:").startswith(
+            (
+                "-ffile-prefix-map=",
+                "-fdebug-prefix-map=",
+                "-fmacro-prefix-map=",
+                "/pathmap:",
+            )
         ):
             canonical = token.replace(str(object_root), "@object-root").replace(
                 object_root.as_posix(), "@object-root"

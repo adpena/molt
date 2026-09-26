@@ -572,6 +572,7 @@ def llvm_tool_candidates(
     include_rust_toolchain: bool = False,
     environment: Mapping[str, str] | None = None,
     target_family: LlvmTargetFamily = "native",
+    target_triple: str | None = None,
 ) -> tuple[Path, ...]:
     """Return one deterministic candidate ladder for every LLVM/WASI consumer."""
     if role == "wasm_ld":
@@ -584,8 +585,15 @@ def llvm_tool_candidates(
             environment=environment,
             target_family=target_family,
         )
+    names = (
+        ("clang-cl",)
+        if role in {"cc", "cxx"}
+        and target_triple is not None
+        and target_triple.endswith("-windows-msvc")
+        else _LLVM_TOOL_NAMES[role]
+    )
     return llvm_named_tool_candidates(
-        *_LLVM_TOOL_NAMES[role],
+        *names,
         explicit_commands=explicit_commands,
         sibling_directories=sibling_directories,
         target_root=target_root,

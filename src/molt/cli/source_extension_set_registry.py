@@ -6,7 +6,7 @@ import keyword
 import os
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -18,6 +18,39 @@ from molt.process_guard import run_completed_command
 
 CONFIG_ENV = "MOLT_SOURCE_EXTENSION_SET_REGISTRY_CONFIG"
 SOURCE_EXTENSION_EXEC_CAPABILITY = "module.extension.exec"
+
+
+def validate_source_extension_meson_setup_args(
+    arguments: Sequence[str],
+) -> tuple[str, ...]:
+    """Package options cannot replace the producer's machine/input authority."""
+    owned_options = {
+        "prefix",
+        "backend",
+        "c_args",
+        "cpp_args",
+        "c_link_args",
+        "cpp_link_args",
+        "pkg_config_path",
+        "cmake_prefix_path",
+    }
+    for argument in arguments:
+        option = re.fullmatch(r"-D([A-Za-z0-9_.:+-]+)=(.*)", argument)
+        if option is not None:
+            name = option[1].rsplit(":", 1)[-1].removeprefix("build.")
+            if name not in owned_options and "\0" not in option[2]:
+                continue
+        elif re.fullmatch(
+            r"--buildtype=(?:plain|debug|debugoptimized|release|minsize|custom)",
+            argument,
+        ):
+            continue
+        raise ValueError(
+            f"Meson setup argument {argument!r} is outside package-option authority; "
+            "machine files, compiler/linker flags and search paths are producer-owned"
+        )
+    return tuple(arguments)
+
 
 _PUBLIC_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
 _CUSTODY_COMPONENT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -94,6 +127,9 @@ class SourceExtensionSet:
     required_installed_files: tuple[str, ...]
     extensions: tuple[SourceExtensionSpec, ...]
     required_config_tools: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        validate_source_extension_meson_setup_args(self.meson_setup_args)
 
     @property
     def coordinate(self) -> tuple[str, str, str]:

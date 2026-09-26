@@ -9,8 +9,12 @@ from molt.cli.source_extension_language import (
     require_source_extension_language,
     resolve_source_extension_compile_language,
     validate_source_extension_language_command,
+    source_extension_compile_io_args,
 )
-from molt.cli.source_extensions import _compile_command_semantic_args
+from molt.cli.source_extensions import (
+    _compile_command_semantic_args,
+    _compile_command_args_and_include_dirs,
+)
 
 
 @pytest.mark.parametrize(
@@ -124,6 +128,73 @@ def test_compile_database_per_file_language_selectors(
     assert remaining == ("/O2",)
 
 
+def test_msvc_side_outputs_do_not_replace_forced_header_or_runtime_flags(tmp_path):
+    source = tmp_path / "unit.cpp"
+    args = _compile_command_semantic_args(
+        [
+            "clang-cl",
+            "/c",
+            str(source),
+            "/Fddebug.pdb",
+            "/Fa",
+            "listing.asm",
+            "/Feprogram.exe",
+            "/Fiout.i",
+            "/FRbrowse.sbr",
+            "/sourceDependencies",
+            "deps.json",
+            "/scanDependencies",
+            "scan.json",
+            "/MP8",
+            "/FS",
+            "/FAcs",
+            "/MD",
+            "/MTd",
+            "/FIconfig.h",
+            "-include",
+            "other.h",
+            "/utf-8",
+            "/std:c++17",
+        ],
+        source_path=source,
+        directory=tmp_path,
+    )
+    compile_args, includes = _compile_command_args_and_include_dirs(
+        args, directory=tmp_path
+    )
+    assert includes == ()
+    assert compile_args == (
+        "/MD",
+        "/MTd",
+        "/FI",
+        str(tmp_path / "config.h"),
+        "-include",
+        str(tmp_path / "other.h"),
+        "/utf-8",
+        "/std:c++17",
+    )
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "/Yuprefix.h",
+        "/Ycprefix.h",
+        "/Fpprefix.pch",
+        "-include-pch",
+        "-fmodule-file=module.pcm",
+    ],
+)
+def test_compile_database_rejects_unowned_precompiled_inputs(tmp_path, selector):
+    source = tmp_path / "unit.c"
+    with pytest.raises(ValueError, match="precompiled-header/module input custody"):
+        _compile_command_semantic_args(
+            ["clang-cl", "/c", str(source), selector],
+            source_path=source,
+            directory=tmp_path,
+        )
+
+
 def test_command_cannot_contradict_persisted_language() -> None:
     with pytest.raises(ValueError, match="differs from declared language"):
         validate_source_extension_language_command(
@@ -172,3 +243,59 @@ def test_noncanonical_command_cannot_borrow_declared_language(
 ) -> None:
     with pytest.raises(ValueError, match="source-extension compile command"):
         validate_source_extension_language_command(SourceExtensionLanguage.CPP, command)
+
+
+@pytest.mark.parametrize(
+    "language, selector",
+    [(SourceExtensionLanguage.C, "/TC"), (SourceExtensionLanguage.CPP, "/TP")],
+)
+def test_clang_cl_emission_and_recorded_language_share_one_contract(language, selector):
+    args = source_extension_compile_io_args(
+        language, ("clang-cl",), Path("digest"), Path("out.obj")
+    )
+    assert args == (selector, "/c", "digest", "/Foout.obj")
+    validate_source_extension_language_command(language, ("clang-cl", *args))
+    with pytest.raises(ValueError, match="differs from declared language"):
+        validate_source_extension_language_command(
+            language, ("clang-cl", "/TP" if selector == "/TC" else "/TC", *args[1:])
+        )
+    with pytest.raises(ValueError, match="source-extension compile command"):
+        validate_source_extension_language_command(
+            language, ("clang-cl", *args, "/clang:-xc++")
+        )
+
+
+@pytest.mark.parametrize(
+    "language", [SourceExtensionLanguage.OBJC, SourceExtensionLanguage.OBJCPP]
+)
+def test_clang_cl_rejects_unadmitted_objc_language(language):
+    with pytest.raises(ValueError, match="language capability"):
+        source_extension_compile_io_args(
+            language, ("clang-cl",), Path("unit"), Path("out.obj")
+        )
+
+
+def test_per_file_msvc_language_dominates_global_selectors_and_discards_dependencies(
+    tmp_path,
+):
+    source = (tmp_path / "unit.c").resolve()
+    args = _compile_command_semantic_args(
+        [
+            "clang-cl",
+            "/Tp" + str(source),
+            "/TC",
+            "/Tcother.c",
+            "/clang:-MD",
+            "/clang:-MFout.d",
+            "/Foout.obj",
+            "/showIncludes",
+            "/O2",
+        ],
+        source_path=source,
+        directory=tmp_path,
+    )
+    language, remaining = resolve_source_extension_compile_language(
+        source_path=source, language=None, compile_args=args
+    )
+    assert language is SourceExtensionLanguage.CPP
+    assert remaining == ("/O2",)
