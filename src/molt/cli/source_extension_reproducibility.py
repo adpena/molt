@@ -17,6 +17,10 @@ from molt.cli.compiler_target import (
     SourceExtensionCompilerDialect,
     source_extension_compiler_dialect,
 )
+from molt.cli.source_extension_target import (
+    SourceExtensionLinkDialect,
+    source_extension_link_dialect,
+)
 from molt.llvm_linker_roles import (
     executable_entrypoint_name,
     executable_selects_linker_role,
@@ -103,7 +107,14 @@ _COMMAND_ROLES = frozenset(
     {"c", "cpp", "cc", "cxx", "ar", "ranlib", "ld", "wasm_ld", "nm", "strip"}
 )
 _OPTION_FIELDS = frozenset(
-    {"parameters", "compile_args", "extra_compile_args", "link_args"}
+    {
+        "parameters",
+        "compile_args",
+        "extra_compile_args",
+        "link_args",
+        "producer_link_args",
+        "consumed_forced_link_args",
+    }
 )
 
 
@@ -256,6 +267,7 @@ def _residual_producer_paths(value: Any, *, location: str = "$") -> list[str]:
         *,
         msvc_options: bool = False,
         command_field: bool = False,
+        source_plan_msvc_linker: bool = False,
     ) -> None:
         if isinstance(item, str):
             if command_field and _command_uses_msvc_options(item):
@@ -281,10 +293,26 @@ def _residual_producer_paths(value: Any, *, location: str = "$") -> list[str]:
             for raw_key, child in item.items():
                 key = str(raw_key)
                 inspect(key, f"{item_location}.<key>")
+                child_is_msvc_plan = False
+                if (
+                    key == "source_plan"
+                    and isinstance(child, Mapping)
+                    and child.get("kind") == "meson-intro-targets"
+                    and isinstance(item.get("target_triple"), str)
+                ):
+                    child_is_msvc_plan = (
+                        source_extension_link_dialect(item["target_triple"])
+                        is SourceExtensionLinkDialect.COFF_MSVC
+                    )
                 walk(
                     child,
                     f"{item_location}.{key}",
-                    msvc_options=key in _OPTION_FIELDS and owner_uses_msvc,
+                    msvc_options=(key in _OPTION_FIELDS and owner_uses_msvc)
+                    or (
+                        source_plan_msvc_linker
+                        and key in {"producer_link_args", "consumed_forced_link_args"}
+                    ),
+                    source_plan_msvc_linker=child_is_msvc_plan,
                     command_field=key in _COMMAND_FIELDS
                     or key == "compile_commands"
                     or (command_field and key in _COMMAND_ROLES),

@@ -85,6 +85,71 @@ _MODULES = (
 )
 
 
+def _fixture_meson_targets(modules: tuple[str, ...] = _MODULES) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": module,
+            "name": module.rsplit(".", 1)[-1],
+            "type": "shared module",
+            "filename": [f"{module.rsplit('.', 1)[-1]}.wasm"],
+            "target_sources": [
+                {
+                    "linker": ["wasm-ld"],
+                    "parameters": [
+                        "--no-entry",
+                        "-o",
+                        f"@build/{module.rsplit('.', 1)[-1]}.wasm",
+                        "--gc-sections",
+                        "--gc-sections",
+                    ],
+                }
+            ],
+        }
+        for module in modules
+    ]
+
+
+def _fixture_intro_targets_bytes(modules: tuple[str, ...] = _MODULES) -> bytes:
+    return (
+        json.dumps(_fixture_meson_targets(modules), sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+
+
+def _fixture_source_plan(
+    root: Path,
+    artifact: Path,
+    module: str,
+    *,
+    modules: tuple[str, ...] = _MODULES,
+) -> dict[str, Any]:
+    target = next(
+        target for target in _fixture_meson_targets(modules) if target["id"] == module
+    )
+    source_plan = {
+        "schema_version": 1,
+        "kind": "meson-intro-targets",
+        "target_id": module,
+        "target_name": target["name"],
+        "target_selector": target["name"],
+        "target_type": target["type"],
+        "producer_link_args": target["target_sources"][0]["parameters"],
+        "plan": os.path.relpath(
+            root / "provenance/metadata/meson/intro-targets.json", artifact.parent
+        ).replace(os.sep, "/"),
+        "plan_sha256": hashlib.sha256(
+            _fixture_intro_targets_bytes(modules)
+        ).hexdigest(),
+        "compile_commands": os.path.relpath(
+            root / "provenance/metadata/meson/compile-commands.json", artifact.parent
+        ).replace(os.sep, "/"),
+        "compile_commands_sha256": hashlib.sha256(b"[]\n").hexdigest(),
+    }
+    source_plan["digest"] = hashlib.sha256(
+        json.dumps(source_plan, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return source_plan
+
+
 def _tool_image(path: Path) -> VerifiedTreeFile:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"owned build tool")
@@ -211,6 +276,7 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
         )
         wheel_path.parent.mkdir(parents=True, exist_ok=True)
         wheel_path.write_text(f"wheel:{module}", encoding="utf-8")
+        source_plan = _fixture_source_plan(root, path, module)
         manifest = {
             "name": "scipy",
             "version": "1.18.0",
@@ -222,7 +288,7 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
             "target_triple": "wasm32-wasip1",
             "artifact_kind": "wasm_relocatable_object",
             "deterministic": True,
-            "source_plan": {"target_selector": module.rsplit(".", 1)[-1]},
+            "source_plan": source_plan,
             "python_exports": [module],
             "capabilities": [],
             "provided_capsules": [],
@@ -235,7 +301,7 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
             "extension_sha256": artifact_sha256,
             "wheel_sha256": wheel_sha256,
             "object_closure": object_closure,
-            "build": {},
+            "build": {"source_plan_digest": source_plan["digest"]},
         }
         finalize_source_extension_object_closure(manifest)
         producer._compact_source_extension_manifest(manifest)
@@ -354,7 +420,11 @@ def _write_meson_metadata(
     compile_commands = metadata_root / "compile-commands.json"
     intro_installed = metadata_root / "intro-installed.json"
     config_tool_cross = metadata_root / "build-config-tools.cross"
-    intro_targets.write_text("[]\n", encoding="utf-8")
+    intro_targets.write_bytes(
+        _fixture_intro_targets_bytes(
+            tuple(spec.module for spec in extension_set.extensions)
+        )
+    )
     compile_commands.write_text("[]\n", encoding="utf-8")
     intro_installed.write_text("{}\n", encoding="utf-8")
     config_tool_cross.write_text("[binaries]\n", encoding="utf-8")
@@ -2980,6 +3050,31 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
         variant=variant,
         set_manifest=set_manifest,
     )
+    first_sidecar = publish.joinpath(*_MODULES[0].split(".")).with_suffix(
+        ".molt.wasm.extension_manifest.json"
+    )
+    original_sidecar = first_sidecar.read_bytes()
+    tampered = json.loads(original_sidecar)
+    tampered_plan = tampered["source_plan"]
+    tampered_plan["producer_link_args"].pop()
+    plan_identity = dict(tampered_plan)
+    plan_identity.pop("digest")
+    tampered_plan["digest"] = hashlib.sha256(
+        json.dumps(plan_identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    tampered["build"]["source_plan_digest"] = tampered_plan["digest"]
+    first_sidecar.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(
+        set_validation.SourceExtensionSetValidationError,
+        match="producer_link_args differs from Meson target",
+    ):
+        set_validation.validate_source_extension_set_publish_root(
+            publish_root=publish,
+            extension_set=extension_set,
+            variant=variant,
+            set_manifest=set_manifest,
+        )
+    first_sidecar.write_bytes(original_sidecar)
     target_metadata = set_manifest["target_metadata"]
     assert isinstance(target_metadata, dict)
     target_metadata["schema_version"] = 2
@@ -3186,6 +3281,12 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
                 {"source": str(generated)},
             ],
             "digest": "stale-location-dependent-digest",
+            "kind": "meson-intro-targets",
+            "producer_link_args": [
+                "--no-entry",
+                "-o",
+                str(build_root / "_nd_image.wasm"),
+            ],
         },
         "build": {"source_plan_digest": "stale"},
         "object_closure": closure,
@@ -3232,6 +3333,11 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     assert "build_root" not in staged_manifest["source_plan"]
     assert "compile_units" not in staged_manifest["source_plan"]
     assert "generated_sources" not in staged_manifest["source_plan"]
+    assert staged_manifest["source_plan"]["producer_link_args"] == [
+        "--no-entry",
+        "-o",
+        "@build/_nd_image.wasm",
+    ]
     assert staged_manifest["sources"] == [
         item["source"] for item in staged_manifest["object_closure"]["objects"]
     ]

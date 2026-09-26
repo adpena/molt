@@ -23,10 +23,162 @@ from molt.cli.source_extension_target import (
     source_extension_link_dialect,
 )
 from molt.cli.native_link_plan import whole_archive_link_arguments
+from molt.cli.source_extension_link_arguments import source_extension_link_arguments
+from molt.cli.source_extensions import _meson_static_library_projection
 
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "triple,product,dependency",
+    [
+        (
+            "x86_64-pc-windows-msvc",
+            (
+                "/nologo",
+                "/OPT:REF",
+                "/DLL",
+                "/IMPLIB:extension.lib",
+                "/OUT:extension.pyd",
+                "/PDB:extension.pdb",
+            ),
+            ("/DEFAULTLIB:kernel32.lib",),
+        ),
+        (
+            "x86_64-unknown-linux-gnu",
+            ("-shared", "-Wl,--gc-sections,-soname,extension.so", "-o", "extension.so"),
+            ("-lm",),
+        ),
+        (
+            "aarch64-apple-darwin",
+            ("-bundle", "-Wl,-dead_strip", "-o", "extension.so"),
+            ("-framework", "Accelerate"),
+        ),
+        (
+            "x86_64-pc-windows-gnu",
+            ("-shared", "-Wl,--gc-sections", "--output=extension.dll"),
+            ("-lkernel32",),
+        ),
+        (
+            "wasm32-wasip1",
+            ("--no-entry", "--gc-sections", "-o", "extension.wasm"),
+            ("-lm",),
+        ),
+    ],
+)
+def test_meson_image_policy_is_recorded_but_never_becomes_link_dependency(
+    tmp_path: Path, triple: str, product: tuple[str, ...], dependency: tuple[str, ...]
+) -> None:
+    primary = {
+        "id": "extension",
+        "type": "shared module",
+        "filename": ["extension.so"],
+        "target_sources": [
+            {"linker": ["linker"], "parameters": [*product, *dependency]}
+        ],
+    }
+    projection = _meson_static_library_projection(
+        primary_target=primary,
+        payload=[
+            primary,
+            {"id": "decoy", "type": "static library", "filename": ["extension.lib"]},
+        ],
+        build_root=tmp_path,
+    )
+    assert projection.targets == ()
+    assert projection.producer_link_args == (*product, *dependency)
+    dialect = source_extension_link_dialect(triple)
+    for span in source_extension_link_arguments(projection.producer_link_args):
+        span.validate_dialect(dialect)
+    assert source_extension_link_requirements(
+        projection.link_args, target_triple=triple
+    ) == (source_extension_link_requirements(dependency, target_triple=triple))
+    # Explicit final-link configuration cannot seize output custody, even when
+    # the same option is meaningful in captured upstream producer metadata.
+    with pytest.raises(ValueError, match="output/image policy"):
+        source_extension_link_requirements(product, target_triple=triple)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("/OPT:garbage",),
+        ("/OPT:NOREF",),
+        ("/OPT:NOICF",),
+        ("/OPT:REF,ICF",),
+        ("--no-gc-sections",),
+        ("/NODEFAULTLIB:kernel32.lib",),
+        ("/MACHINE:ARM64",),
+        ("/DEF:exports.def",),
+        ("/LIBPATH:unsealed",),
+        ("@unsealed.rsp",),
+        ("-Wl,--version-script,unsealed.map",),
+        ("-Wl,--export=secret",),
+    ],
+)
+def test_meson_projection_does_not_discard_unmodeled_semantic_or_resource_flags(
+    tmp_path: Path, arguments: tuple[str, ...]
+) -> None:
+    primary = {
+        "id": "extension",
+        "type": "shared module",
+        "filename": ["extension.so"],
+        "link_args": list(arguments),
+    }
+    projection = _meson_static_library_projection(
+        primary_target=primary, payload=[primary], build_root=tmp_path
+    )
+    assert projection.link_args
+    for triple in ("x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"):
+        with pytest.raises(ValueError):
+            source_extension_link_requirements(
+                projection.link_args, target_triple=triple
+            )
+
+
+@pytest.mark.parametrize(
+    "arguments", [("-o",), ("/OUT:",), ("/IMPLIB:",), ("-Wl,-soname",), ("-Xlinker",)]
+)
+def test_meson_product_options_require_their_complete_operand(arguments) -> None:
+    with pytest.raises(ValueError):
+        source_extension_link_arguments(arguments)
+
+
+def test_linker_transport_preserves_literal_comma_paths_through_projection(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "dep, with space.a"
+    archive.write_bytes(b"real dependency bytes")
+    arguments = ("-Xlinker", "-force_load", "-Xlinker", str(archive))
+    primary = {
+        "id": "extension",
+        "type": "shared module",
+        "filename": ["extension.so"],
+        "link_args": ["-bundle", *arguments],
+    }
+    projection = _meson_static_library_projection(
+        primary_target=primary, payload=[primary], build_root=tmp_path
+    )
+    requirements = source_extension_link_requirements(
+        projection.link_args,
+        target_triple="aarch64-apple-darwin",
+        path_roots=(tmp_path,),
+        publish_root=tmp_path / "published",
+    )
+    assert requirements.inputs[0].sha256 == _sha256(b"real dependency bytes")
+    assert (
+        requirements.inputs[0].loading is SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+    )
+
+
+def test_consumed_upstream_policy_cannot_cross_target_dialects() -> None:
+    for span in source_extension_link_arguments(
+        ("/nologo", "/DLL", "/IMPLIB:output.lib")
+    ):
+        with pytest.raises(ValueError, match="elf-gnu"):
+            span.validate_dialect(SourceExtensionLinkDialect.ELF_GNU)
 
 
 @pytest.mark.parametrize(

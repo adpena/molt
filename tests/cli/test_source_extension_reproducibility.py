@@ -177,6 +177,35 @@ def test_windows_command_string_and_linker_fields_share_option_context():
     )
 
 
+def test_staged_producer_link_options_keep_target_context_without_compile_units():
+    payload = {
+        "target_triple": "x86_64-pc-windows-msvc",
+        "source_plan": {
+            "kind": "meson-intro-targets",
+            "producer_link_args": [
+                "/nologo",
+                "/OPT:REF",
+                "/DLL",
+                "/IMPLIB:@build/extension.lib",
+            ],
+        },
+    }
+    _require_location_neutral(payload, authority="staged producer")
+    payload["source_plan"]["producer_link_args"].append(
+        "/IMPLIB:C:/producer/output.lib"
+    )
+    with pytest.raises(ValueError, match="producer filesystem paths"):
+        _require_location_neutral(payload, authority="raw producer")
+    payload["source_plan"]["producer_link_args"].pop()
+    payload["source_plan"]["unrelated"] = "/private/data"
+    with pytest.raises(ValueError, match="producer filesystem paths"):
+        _require_location_neutral(payload, authority="unowned field")
+    del payload["source_plan"]["unrelated"]
+    payload["target_triple"] = "x86_64-unknown-linux-gnu"
+    with pytest.raises(ValueError, match="producer filesystem paths"):
+        _require_location_neutral(payload, authority="foreign target")
+
+
 @pytest.mark.parametrize(
     "raw",
     [

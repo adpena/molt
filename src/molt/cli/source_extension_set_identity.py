@@ -183,6 +183,7 @@ def _extension_content_projection(
             "target_name",
             "target_selector",
             "target_type",
+            "producer_link_args",
         )
         if isinstance(source_plan, Mapping) and key in source_plan
     }
