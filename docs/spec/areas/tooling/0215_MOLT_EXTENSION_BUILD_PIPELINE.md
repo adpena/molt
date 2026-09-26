@@ -564,11 +564,30 @@ require external member dependency facts. The existing typed link-requirements
 authority rejects that combination before compilation when those facts are
 absent; archive paths, search-name libraries, and default-library syntax cannot
 create separate admission rules.
-Forced folding into ELF extension archives is also rejected: its lazy final
-archive group cannot preserve arbitrary forced members without a per-artifact
-loading policy. COFF and Mach-O use their existing forced archive loading;
-WASM consumes the selected relocatable object directly. These admission contracts
-do not establish emitted-program conformance on an unexecuted target.
+Final linking consumes one ordered `SourceExtensionLinkRequirements` projection
+on native and WASM targets. Each primary artifact contains the already-admitted
+eager object closure: archives use explicit `all-members` loading on ELF, COFF
+and Mach-O, and WASM relocatable objects are direct inputs. This preserves
+constructor-only forced members on ELF as well. Dependency archives keep their
+declared loading, order, repeats and cyclic groups; eager primary loading is not
+applied to lazy dependencies. ELF places the complete stream with the runtime
+inside its rescan group, so references introduced by dependencies can resolve
+against the runtime.
+
+Support files are runtime data, not implicit link inputs selected by suffix.
+An archive or object must be declared as a checksummed typed input to be linked.
+WASM serializes the complete local projection as `--native-link-plan`, including
+primary inputs, dependencies and runtime providers. Snapshotting and import
+rewriting transform those typed inputs without splitting them from loading
+policies. Combined and split links use the same ordering authority. Native link
+profiling consumes this same schema through `--external-link-plan`.
+
+This removes the split file/option command lanes, not the early-selection
+admission boundary. Publication still requires the exact selected-object C-API
+and ABI closure. Admitting lazy source partitions with external providers
+requires final-link extraction evidence bound to individual member identities;
+aggregate symbol sets are not proof of extraction. These contracts do not
+establish emitted-program conformance on an unexecuted target.
 
 ### 5.1 Known eager Python-import authority
 

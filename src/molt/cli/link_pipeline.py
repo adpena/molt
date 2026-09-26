@@ -22,7 +22,10 @@ from molt.cli.command_runtime import (
     _load_cli_harness_memory_guard,
     _run_completed_command,
 )
-from molt.cli.external_native import _stage_external_package_native_artifacts_for_build
+from molt.cli.external_native import (
+    _external_native_link_requirements,
+    _stage_external_package_native_artifacts_for_build,
+)
 from molt.cli.models import (
     BuildProfile,
     _ExternalPackageNativeArtifactPlan,
@@ -37,6 +40,7 @@ from molt.cli.native_link_command import (
     _build_native_link_plan,
 )
 from molt.cli.native_link_plan import (
+    _host_target_triple,
     NativeArtifactKind,
     resolve_native_target_spec,
     validate_native_object_artifact,
@@ -264,12 +268,6 @@ def _prepare_native_link(
             )
         ),
     )
-    external_static_archives = tuple(
-        artifact.staged_path for artifact in staged_external_native_artifacts
-    )
-    external_link_requirements = tuple(
-        artifact.link_requirements for artifact in staged_external_native_artifacts
-    )
     stub_path = artifacts_root / "main_stub.c"
     _write_text_if_changed(stub_path, main_c_content)
 
@@ -298,11 +296,15 @@ def _prepare_native_link(
             profile=profile,
             runtime_build_identity=runtime_build_identity,
             stdlib_obj_path=link_stdlib_obj,
-            external_static_archives=external_static_archives,
-            external_link_requirements=external_link_requirements,
+            external_link_requirements=(
+                _external_native_link_requirements(
+                    staged_external_native_artifacts,
+                    target_triple=target_triple or _host_target_triple(),
+                ),
+            ),
             bolt_requested=bolt_requested,
         )
-    except RuntimeError as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return None, _fail(str(exc), json_output, command="build")
     if os.environ.get("MOLT_TRACE_NATIVE_LINK") == "1":
         stdlib_exists = (

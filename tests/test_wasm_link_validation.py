@@ -9,8 +9,16 @@ from pathlib import Path
 
 import pytest
 from molt import wasm_artifact
+from molt.cli import external_link_providers
 from molt.cli.app_export_contract import app_export_call_abi, build_app_export_contract
 from molt.cli.python_source_closure import LocalPythonSourceClosure
+from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkCyclicGroup,
+    SourceExtensionLinkInput,
+    SourceExtensionLinkLoadingPolicy,
+    SourceExtensionLinkRequirements,
+    source_extension_link_file,
+)
 from molt.frontend import SimpleTIRGenerator
 from molt.toolchain_identity import stable_regular_file_identity
 from molt.wasm_artifact import parse_wasm_exports, parse_wasm_imports
@@ -30,6 +38,17 @@ def _load_wasm_link():
 
 wasm_link = _load_wasm_link()
 _REAL_MAKE_RUST_WASM_FACTS_PROVIDER = wasm_link._make_rust_wasm_facts_provider
+
+
+def _native_link_requirements(
+    *paths: Path,
+    retained_symbols: tuple[str, ...] = (),
+) -> SourceExtensionLinkRequirements:
+    return SourceExtensionLinkRequirements(
+        "wasm32-wasip1",
+        tuple(source_extension_link_file(path) for path in paths),
+        retained_symbols,
+    )
 
 
 def _build_compiler_rt_provider_archive() -> bytes:
@@ -269,6 +288,13 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
 
 @pytest.fixture(autouse=True)
 def _rust_facts_authority_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These synthetic linker tests do not attest a host SDK. Keep ambient
+    # provider discovery out of both the facade and import-rewrite consumers;
+    # provider-specific cases supply their own inventory at the same boundary.
+    monkeypatch.setattr(
+        external_link_providers, "_resolved_provider_archives", lambda _target: ()
+    )
+
     def facts_provider(_scanner, _scratch_root, metrics=None, *, evidence_root=None):  # type: ignore[no-untyped-def]
         if metrics is not None:
             metrics.update(
@@ -3996,7 +4022,7 @@ def test_run_wasm_ld_honors_explicit_reloc_role_for_immutable_generation_member(
     assert any(Path(part).name == runtime.name for part in wasm_ld_inputs)
 
 
-def test_run_wasm_ld_links_staged_native_objects(
+def test_run_wasm_ld_preserves_ordered_staged_native_plan(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -4006,12 +4032,14 @@ def test_run_wasm_ld_links_staged_native_objects(
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     native_object = tmp_path / "external_static_packages" / "ndimage_edt.o"
+    lazy_archive = tmp_path / "external_static_packages" / "support.a"
     wasm_ld_inputs: list[str] = []
 
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     native_object.parent.mkdir()
     native_object.write_bytes(b"\x00asm\x01\x00\x00\x00native-object")
+    lazy_archive.write_bytes(b"!<arch>\n")
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
@@ -4033,19 +4061,48 @@ def test_run_wasm_ld_links_staged_native_objects(
     monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
 
+    requirements = SourceExtensionLinkRequirements(
+        "wasm32-wasip1",
+        (
+            source_extension_link_file(native_object),
+            SourceExtensionLinkCyclicGroup(
+                (
+                    source_extension_link_file(
+                        lazy_archive,
+                        loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS,
+                    ),
+                    source_extension_link_file(native_object),
+                )
+            ),
+            source_extension_link_file(lazy_archive),
+        ),
+        ("ndimage_edt",),
+    )
     rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
         linked,
-        native_objects=(native_object,),
-        native_link_arguments=("--undefined=ndimage_edt",),
+        native_link_requirements=requirements,
     )
 
     assert rc == 0
     output_index = wasm_ld_inputs.index("-o") + 2
-    assert Path(wasm_ld_inputs[output_index + 2]).name == native_object.name
-    assert "--undefined=ndimage_edt" in wasm_ld_inputs
+    typed_operands = wasm_ld_inputs[output_index + 2 :]
+    assert typed_operands[0] == "--undefined=ndimage_edt"
+    assert [
+        Path(part).name if not part.startswith("--") else part
+        for part in typed_operands[1:]
+    ] == [
+        native_object.name,
+        "--whole-archive",
+        lazy_archive.name,
+        "--no-whole-archive",
+        native_object.name,
+        lazy_archive.name,
+    ]
+    assert typed_operands[1] == typed_operands[5]
+    assert typed_operands[3] == typed_operands[6]
 
 
 def test_run_wasm_ld_rejects_signature_mismatch_warning(
@@ -4133,7 +4190,7 @@ def test_run_wasm_ld_links_rewritten_native_runtime_imports(
         runtime,
         output,
         linked,
-        native_objects=(native_object,),
+        native_link_requirements=_native_link_requirements(native_object),
     )
 
     assert rc == 0
@@ -4171,13 +4228,96 @@ def test_run_wasm_ld_rejects_missing_native_object(
         runtime,
         output,
         linked,
-        native_objects=(missing_native_object,),
+        native_link_requirements=SourceExtensionLinkRequirements(
+            "wasm32-wasip1",
+            (SourceExtensionLinkInput(str(missing_native_object), "0" * 64),),
+        ),
     )
 
     assert rc == 1
     captured = capsys.readouterr()
-    assert "Native WASM link input not found" in captured.err
+    assert "Failed to establish wasm linker input custody" in captured.err
     assert str(missing_native_object) in captured.err
+
+
+def test_run_wasm_ld_rejects_native_plan_for_wrong_wasm_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    runtime.write_bytes(_build_exported_runtime_module("molt_exception_pending"))
+    output.write_bytes(_build_minimal_module(b""))
+    monkeypatch.setattr(
+        wasm_link,
+        "_run_external_tool",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("wasm-ld must not run with a cross-target plan")
+        ),
+    )
+
+    rc = _run_wasm_ld_with_rust_facts(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        native_link_requirements=SourceExtensionLinkRequirements(
+            "wasm32-unknown-unknown"
+        ),
+    )
+
+    assert rc == 1
+    assert "native WASM link requirements target mismatch" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("changed_input", [False, True])
+def test_run_wasm_ld_rejects_conflicting_repeated_input_digests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    changed_input: bool,
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    native = tmp_path / "native.o"
+    runtime.write_bytes(_build_exported_runtime_module("molt_exception_pending"))
+    output.write_bytes(_build_minimal_module(b""))
+    native.write_bytes(b"\0asm\x01\0\0\0native")
+    admitted = source_extension_link_file(native)
+    conflicting = SourceExtensionLinkInput(
+        admitted.path,
+        "0" * 64 if admitted.sha256 != "0" * 64 else "1" * 64,
+    )
+    if changed_input:
+        native.write_bytes(b"\0asm\x01\0\0\0changed")
+    monkeypatch.setattr(
+        wasm_link,
+        "_run_external_tool",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("wasm-ld must not run with contradictory digests")
+        ),
+    )
+
+    rc = _run_wasm_ld_with_rust_facts(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        native_link_requirements=SourceExtensionLinkRequirements(
+            "wasm32-wasip1", (admitted,) if changed_input else (admitted, conflicting)
+        ),
+    )
+
+    assert rc == 1
+    diagnostic = (
+        "link requirement checksum mismatch"
+        if changed_input
+        else "conflicting link requirement checksum claims"
+    )
+    assert diagnostic in capsys.readouterr().err
 
 
 def test_split_native_app_uses_unique_molt_main_restoration_alias(
@@ -4235,7 +4375,7 @@ def test_split_native_app_uses_unique_molt_main_restoration_alias(
             linked,
             split_runtime=True,
             split_output_dir=tmp_path / "split",
-            native_objects=(native_object,),
+            native_link_requirements=_native_link_requirements(native_object),
         )
         == 0
     )
@@ -4311,8 +4451,9 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
         linked,
         split_runtime=True,
         split_output_dir=split_dir,
-        native_objects=(native_object,),
-        native_link_arguments=("--undefined=ndimage_edt",),
+        native_link_requirements=_native_link_requirements(
+            native_object, retained_symbols=("ndimage_edt",)
+        ),
     )
 
     assert rc == 0
@@ -4413,7 +4554,7 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
         linked,
         split_runtime=True,
         split_output_dir=split_dir,
-        native_objects=(native_object,),
+        native_link_requirements=_native_link_requirements(native_object),
     )
 
     assert rc == 0
@@ -4706,7 +4847,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
         linked,
         split_runtime=True,
         split_output_dir=split_dir,
-        native_objects=(native_object,),
+        native_link_requirements=_native_link_requirements(native_object),
         runtime_role="reloc",
     )
 
@@ -4714,10 +4855,10 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     assert len(link_calls) == 2
     monolithic_cmd, split_app_cmd = link_calls
     assert any(Path(part).name == native_object.name for part in monolithic_cmd)
-    assert str(compiler_rt_provider) in monolithic_cmd
+    assert any(Path(part).name == compiler_rt_provider.name for part in monolithic_cmd)
     assert any(Path(part).name == runtime.name for part in monolithic_cmd)
     assert not any(Path(part).name == native_object.name for part in split_app_cmd)
-    assert str(compiler_rt_provider) in split_app_cmd
+    assert any(Path(part).name == compiler_rt_provider.name for part in split_app_cmd)
     assert "--import-memory" not in monolithic_cmd
     assert "--import-memory" in split_app_cmd
     assert "--stack-first" in monolithic_cmd
@@ -4774,7 +4915,7 @@ def test_split_runtime_native_allowlist_is_the_split_runtime_export_surface(
     try:
         composed = wasm_link._compose_split_runtime_native_allowlist(
             base_allowlist=base,
-            native_objects=(native_object,),
+            native_link_requirements=_native_link_requirements(native_object),
             split_runtime_exports={"molt_PyType_Ready", "molt_err_pending"},
             temp_dir=temp_dir,
         )
@@ -4786,7 +4927,7 @@ def test_split_runtime_native_allowlist_is_the_split_runtime_export_surface(
     assert (
         wasm_link._compose_split_runtime_native_allowlist(
             base_allowlist=base,
-            native_objects=(),
+            native_link_requirements=_native_link_requirements(),
             split_runtime_exports={"molt_PyType_Ready"},
             temp_dir=tempfile.TemporaryDirectory(),
         )
@@ -6674,7 +6815,14 @@ def test_allowlist_file_exists():
     )
 
 
-def test_native_object_link_allowlist_includes_generated_external_imports(tmp_path):
+def test_native_object_link_allowlist_includes_generated_external_imports(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        wasm_link,
+        "wasm_external_link_provider_symbols",
+        lambda **_kwargs: frozenset({"malloc"}),
+    )
     base = tmp_path / "base_allowlist.txt"
     base.write_text("fd_write\n", encoding="utf-8")
     native = tmp_path / "extension.molt.wasm"
@@ -6685,7 +6833,7 @@ def test_native_object_link_allowlist_includes_generated_external_imports(tmp_pa
         assert (
             wasm_link._compose_wasm_ld_allowlist(
                 base_allowlist=base,
-                native_objects=(),
+                native_link_requirements=_native_link_requirements(),
                 temp_dir=temp_dir,
             )
             == base
@@ -6693,7 +6841,7 @@ def test_native_object_link_allowlist_includes_generated_external_imports(tmp_pa
 
         composed = wasm_link._compose_wasm_ld_allowlist(
             base_allowlist=base,
-            native_objects=(native,),
+            native_link_requirements=_native_link_requirements(native),
             temp_dir=temp_dir,
         )
 
@@ -6728,9 +6876,12 @@ def test_resolve_native_link_inputs_adds_compiler_rt_provider(
         raising=True,
     )
 
-    inputs = wasm_link._resolve_native_link_inputs((native,))
+    requirements = wasm_link._resolve_native_link_requirements(
+        _native_link_requirements(native)
+    )
 
-    assert inputs == (native, provider)
+    assert tuple(Path(item.path) for item in requirements.inputs) == (native, provider)
+    assert requirements.inputs[1].sha256 == source_extension_link_file(provider).sha256
 
 
 def test_resolve_native_link_inputs_rejects_missing_compiler_rt_provider(
@@ -6754,7 +6905,7 @@ def test_resolve_native_link_inputs_rejects_missing_compiler_rt_provider(
     )
 
     with pytest.raises(ValueError, match="wasm_compiler_rt_link_import"):
-        wasm_link._resolve_native_link_inputs((native,))
+        wasm_link._resolve_native_link_requirements(_native_link_requirements(native))
 
 
 # --- Split-runtime CPython-ABI data-symbol aliasing ------------------------

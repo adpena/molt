@@ -11,7 +11,11 @@ import molt.cli as cli
 from molt.cli import build_results, native_link_command, native_link_plan
 from molt.cli.native_link_plan import NativeArtifactKind, NativeObjectFormat
 from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
-from molt.cli.source_extension_link_requirements import SourceExtensionLinkRequirements
+from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkRequirements,
+    SourceExtensionLinkLoadingPolicy,
+    source_extension_link_file,
+)
 
 
 def _managed_tool(directory: Path, name: str) -> Path:
@@ -129,6 +133,123 @@ def test_missing_shared_stdlib_fails_before_link(monkeypatch, tmp_path) -> None:
             host_platform="linux",
             stdlib_path=tmp_path / "missing.a",
         )
+
+
+@pytest.mark.slow
+def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from molt.cli.llvm_wasi_tools import llvm_tool_candidates, llvm_linker_candidates
+
+    target = "x86_64-unknown-linux-gnu"
+    candidates = {kind: llvm_tool_candidates(kind) for kind in ("cc", "ar", "nm")}
+    linkers = llvm_linker_candidates("ld.lld")
+    if any(not paths for paths in candidates.values()) or not linkers:
+        pytest.skip("canonical LLVM clang/ar/nm/ld.lld tool family is unavailable")
+    cc, ar, nm = (str(candidates[kind][0]) for kind in ("cc", "ar", "nm"))
+
+    def run(command):
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    def archive(name, sources):
+        objects = []
+        for index, content in enumerate(sources):
+            source = tmp_path / f"{name}-{index}.c"
+            source.write_text(content, encoding="utf-8")
+            obj = source.with_suffix(".o")
+            run([cc, f"--target={target}", "-c", str(source), "-o", str(obj)])
+            objects.append(str(obj))
+        path = tmp_path / f"lib{name}.a"
+        run([ar, "rcsD", str(path), *objects])
+        return path
+
+    primary = archive(
+        "extension",
+        (
+            "extern int dependency(void); int PyInit_demo(void) { return dependency(); }",
+            "extern void eager_hook(void); __attribute__((constructor)) "
+            "void eager_ctor(void) { eager_hook(); }",
+        ),
+    )
+    dependency = archive(
+        "dependency",
+        (
+            "extern int runtime_value(void); int dependency(void) { return runtime_value(); }",
+            "extern int must_not_link(void); int dormant(void) { return must_not_link(); }",
+        ),
+    )
+    runtime = archive(
+        "runtime",
+        (
+            "int runtime_value(void) { return 42; } void eager_hook(void) {} "
+            "int Py_None, Py_NotImplementedSentinel, Py_EllipsisObject;",
+        ),
+    )
+    app = archive("app", ())
+    # This freestanding object-format proof has no host sysroot/CRT dependency.
+    # Empty language/math archives satisfy the production driver's search flags.
+    archive("stdc++", ())
+    archive("m", ())
+    stub = tmp_path / "entry.c"
+    stub.write_text(
+        "extern int PyInit_demo(void); int main(void) { return PyInit_demo(); }",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        native_link_command,
+        "_build_native_link_driver_command",
+        lambda **kwargs: (
+            [
+                cc,
+                f"--target={target}",
+                f"-fuse-ld={linkers[0]}",
+                "-nostdlib",
+                f"-L{tmp_path}",
+                "-Wl,-e,main",
+            ],
+            "lld",
+            target,
+        ),
+    )
+    monkeypatch.setattr(
+        native_link_command,
+        "_collect_cargo_native_link_deps",
+        lambda *args, **kwargs: [],
+    )
+    plan = native_link_command._build_native_link_plan(
+        output_obj=app,
+        stub_path=stub,
+        runtime_lib=runtime,
+        output_binary=tmp_path / "app.elf",
+        target_triple=target,
+        sysroot_path=None,
+        profile="dev",
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
+        external_link_requirements=(
+            SourceExtensionLinkRequirements(
+                target,
+                (
+                    source_extension_link_file(
+                        primary, loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+                    ),
+                    source_extension_link_file(dependency),
+                ),
+            ),
+        ),
+    )
+    run(list(plan.command))
+    symbols = {
+        line.split()[0]
+        for line in run(
+            [nm, "--format=posix", "--defined-only", str(tmp_path / "app.elf")]
+        ).splitlines()
+        if line.strip()
+    }
+    assert {"eager_ctor", "dependency", "runtime_value"} <= symbols
+    assert "dormant" not in symbols
 
 
 def test_link_plan_is_immutable_and_preserves_elf_function_identity(

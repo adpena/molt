@@ -61,12 +61,19 @@ from molt.cli.source_extensions import (
     validate_source_extension_artifact_object_closure,
 )
 from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkInput,
+    SourceExtensionLinkLoadingPolicy,
     SourceExtensionLinkRequirements,
+    merge_source_extension_link_requirements,
     parse_source_extension_link_requirements,
     relocate_source_extension_link_inputs,
     resolve_source_extension_link_requirements,
 )
-from molt.cli.source_extension_target import resolve_source_extension_target_plan
+from molt.cli.source_extension_target import (
+    SourceExtensionLinkDialect,
+    source_extension_link_dialect,
+    resolve_source_extension_target_plan,
+)
 from molt.cli.native_link_plan import _host_target_triple
 from molt.cli.source_extension_object_closure import (
     SourceExtensionObjectClosureError,
@@ -2505,6 +2512,61 @@ def _stage_external_native_support_files(
         )
         _remove_staged_external_candidate(staged_path)
     return tuple(staged_paths)
+
+
+def _external_native_link_requirements(
+    artifacts: Sequence[_StagedExternalPackageNativeArtifact],
+    *,
+    target_triple: str,
+) -> SourceExtensionLinkRequirements:
+    """Project admitted artifacts and dependencies into one ordered link stream.
+
+    A primary archive contains the already-admitted eager object closure, not
+    a lazy source library. Its members must survive on every target, including
+    ELF constructor-only units. Dependency loading/group policies remain exact.
+    Support files are runtime data; only declared link inputs reach the linker.
+    """
+    plans: list[SourceExtensionLinkRequirements] = []
+    for artifact in artifacts:
+        if artifact.runtime_linkage != "static_link" or artifact.artifact_kind not in {
+            "static_archive",
+            "wasm_relocatable_object",
+        }:
+            raise ValueError(
+                "External native link requires admitted static artifacts: "
+                f"{artifact.module}={artifact.runtime_linkage}/{artifact.artifact_kind}"
+            )
+        roots = {
+            export.symbol
+            for export in artifact.callable_exports
+            if export.binding == "direct_symbol" and export.symbol
+        }
+        if artifact.init_symbol:
+            roots.add(artifact.init_symbol)
+        # Manifest callable names are C names; typed retained symbols are raw
+        # linker names, including Mach-O's ABI-leading underscore.
+        if (
+            source_extension_link_dialect(artifact.target_triple)
+            is SourceExtensionLinkDialect.MACHO
+        ):
+            roots = {"_" + symbol for symbol in roots}
+        plans.append(
+            SourceExtensionLinkRequirements(
+                artifact.target_triple,
+                (
+                    SourceExtensionLinkInput(
+                        str(artifact.staged_path.resolve(strict=True)),
+                        artifact.extension_sha256,
+                        SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+                        if artifact.artifact_kind == "static_archive"
+                        else SourceExtensionLinkLoadingPolicy.DEFAULT,
+                    ),
+                ),
+                tuple(sorted(roots)),
+            )
+        )
+        plans.append(artifact.link_requirements)
+    return merge_source_extension_link_requirements(plans, target_triple=target_triple)
 
 
 def _stage_external_native_link_inputs(

@@ -21,6 +21,11 @@ from molt.cli.native_link_plan import (
     resolve_native_target_spec,
 )
 from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
+from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkRequirements,
+    SourceExtensionLinkLoadingPolicy,
+    source_extension_link_file,
+)
 
 
 @pytest.mark.parametrize(
@@ -140,7 +145,16 @@ def test_final_gnu_coff_link_has_no_msvc_archive_policy_or_definition_options(
         sysroot_path=None,
         profile="dev",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
-        external_static_archives=(extension,),
+        external_link_requirements=(
+            SourceExtensionLinkRequirements(
+                triple,
+                (
+                    source_extension_link_file(
+                        extension, loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+                    ),
+                ),
+            ),
+        ),
     )
     assert plan.command.count("--whole-archive") == 2
     assert str(extension.resolve()) in plan.command

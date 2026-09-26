@@ -980,7 +980,6 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         output_kind: NativeArtifactKind,
         stdlib_kind: NativeArtifactKind,
         stdlib_obj_path: Path | None = None,
-        external_static_archives: tuple[Path, ...] = (),
         external_link_requirements: tuple[SourceExtensionLinkRequirements, ...] = (),
         bolt_requested: bool = False,
     ) -> SimpleNamespace:
@@ -990,8 +989,10 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         assert runtime_build_identity is TEST_RUNTIME_BUILD_IDENTITY
         assert output_kind is NativeArtifactKind.ARCHIVE
         assert stdlib_kind is NativeArtifactKind.ARCHIVE
-        assert not external_static_archives
-        assert not external_link_requirements
+        assert all(
+            not item.items and not item.retained_symbols
+            for item in external_link_requirements
+        )
         captured_runtime_libs.append(runtime_lib)
         return SimpleNamespace(
             command=("clang", str(runtime_lib), "-o", str(output_binary)),
