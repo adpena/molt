@@ -9,8 +9,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from molt.cli.compiler_target import compiler_argument_spans
-from molt.cli.source_extension_link_arguments import source_extension_link_arguments
-from molt.cli.source_extension_target import source_extension_link_dialect
+from molt.cli.source_extension_link_projection import SourceExtensionLinkProjection
 from molt.cli.source_extension_python_provider import (
     validate_static_python_provider_requirements,
 )
@@ -394,13 +393,10 @@ def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> 
         isinstance(source_plan, Mapping)
         and source_plan.get("kind") == "meson-intro-targets"
     ):
-        producer_args = source_plan.get("producer_link_args")
-        if not isinstance(producer_args, list) or any(
-            not isinstance(argument, str) for argument in producer_args
-        ):
-            raise ValueError("source-plan receipt requires producer_link_args")
-        for span in source_extension_link_arguments(producer_args):
-            span.validate_dialect(source_extension_link_dialect(target_triple))
+        projection = SourceExtensionLinkProjection.from_manifest(
+            source_plan.get("link_projection")
+        )
+        projection.validate_dialect(target_triple)
     link_requirements, link_requirement_errors = (
         parse_source_extension_link_requirements(
             manifest,

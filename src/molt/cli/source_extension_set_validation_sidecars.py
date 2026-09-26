@@ -16,6 +16,7 @@ from molt.cli.source_extension_object_closure import (
     validate_source_extension_object_closure_sources,
 )
 from molt.cli.source_extensions import (
+    _MesonOutputIdentity,
     _meson_extension_targets_by_selector,
     _meson_link_args,
     validate_source_extension_artifact_object_closure,
@@ -43,6 +44,11 @@ from molt.cli.source_extension_set_validation_target import (
     ValidatedSourceExtensionTarget,
 )
 from molt.cli.source_extension_target import source_extension_artifact_suffix
+from molt.cli.source_extension_link_projection import (
+    SourceExtensionLinkProjection,
+    SourceExtensionSourceArchiveOperand,
+)
+from molt.cli.source_extension_link_arguments import source_extension_link_arguments
 from molt.cli.source_extension_language import require_source_extension_language
 from molt.exact_json import canonical_json_bytes, loads_exact
 from molt.file_hashing import _sha256_bytes, _sha256_file
@@ -57,7 +63,11 @@ def _load_meson_link_producer_index(
     set_manifest: Mapping[str, Any],
     variant: SourceExtensionVariant,
 ) -> tuple[
-    Path, str, dict[str, tuple[Mapping[str, Any], ...]], SourceExtensionPythonProvider
+    Path,
+    str,
+    dict[str, tuple[Mapping[str, Any], ...]],
+    SourceExtensionPythonProvider,
+    _MesonOutputIdentity,
 ]:
     meson = set_manifest.get("meson")
     expected_intro_sha256 = (
@@ -82,6 +92,27 @@ def _load_meson_link_producer_index(
         )
     try:
         targets = _meson_extension_targets_by_selector(intro_targets)
+        # Reuse the live output-ownership index. Location-neutral @build paths
+        # are interpreted in a private virtual root; no producer tree is read.
+        portable_targets = [
+            {
+                **row,
+                "filename": [
+                    name.removeprefix("@build/")
+                    for name in (
+                        row["filename"]
+                        if isinstance(row.get("filename"), list)
+                        else [row.get("filename", "")]
+                    )
+                    if isinstance(name, str)
+                ],
+            }
+            for row in intro_targets
+            if isinstance(row, Mapping)
+        ]
+        outputs = _MesonOutputIdentity(
+            portable_targets, build_root=intro_path.parent / "virtual-build"
+        )
         provider = source_extension_python_provider(
             dependencies_path=intro_path.with_name("intro-dependencies.json"),
             runtime=set_manifest["build_environment"]["custody"]["python_runtime"],
@@ -92,7 +123,62 @@ def _load_meson_link_producer_index(
             raise ValueError("Meson intro-dependencies checksum differs from custody")
     except (OSError, ValueError) as exc:
         raise SourceExtensionSetValidationError(str(exc)) from exc
-    return intro_path.resolve(), intro_sha256, targets, provider
+    return intro_path.resolve(), intro_sha256, targets, provider, outputs
+
+
+def _validate_projection_ownership(
+    projection: SourceExtensionLinkProjection,
+    *,
+    outputs: _MesonOutputIdentity,
+    exclusions: tuple[str, ...],
+    python_provider: SourceExtensionPythonProvider,
+) -> None:
+    excluded_ids: set[str] = set()
+    for exclusion in exclusions:
+        owner = outputs.resolve(exclusion.removeprefix("@build/"), exclusion=True)
+        if owner is None or owner.get("type") != "static library":
+            raise ValueError(f"source exclusion lacks Meson ownership: {exclusion}")
+        excluded_ids.add(str(owner["id"]))
+    for item in projection.items:
+        span = item.span
+        owner = (
+            outputs.resolve(span.value.removeprefix("@build/"))
+            if span is not None
+            and (span.kind in {"input", "forced"} or span.value.startswith("@build/"))
+            else None
+        )
+        source_owner = (
+            owner
+            if owner is not None and owner.get("type") == "static library"
+            else None
+        )
+        if isinstance(item, SourceExtensionSourceArchiveOperand):
+            recorded = outputs.outputs.get(
+                (outputs.build_root / item.archive_output).resolve()
+            )
+            if (
+                recorded is None
+                or recorded.get("type") != "static library"
+                or recorded.get("id") != item.target_id
+                or (span is not None and source_owner is not recorded)
+                or (item.disposition == "excluded") != (item.target_id in excluded_ids)
+            ):
+                raise ValueError("source ownership differs from Meson custody")
+            if (
+                outputs.archive_output(recorded)
+                != (outputs.build_root / item.archive_output).resolve()
+            ):
+                raise ValueError("source archive output differs from Meson custody")
+            continue
+        if source_owner is not None:
+            raise ValueError("projection erases a Meson source partition")
+        is_provider = python_provider.argument is not None and item.span.arguments == (
+            python_provider.argument,
+        )
+        if (item.disposition == "python-provider") != is_provider:
+            raise ValueError(
+                "Python-provider disposition differs from interpreter/Meson custody"
+            )
 
 
 def _producer_link_plan_errors(
@@ -105,6 +191,8 @@ def _producer_link_plan_errors(
     targets: Mapping[str, tuple[Mapping[str, Any], ...]],
     build: Any,
     python_provider: SourceExtensionPythonProvider,
+    outputs: _MesonOutputIdentity,
+    exclusions: tuple[str, ...],
 ) -> list[str]:
     errors: list[str] = []
     matches = targets.get(selector, ())
@@ -127,8 +215,25 @@ def _producer_link_plan_errors(
             raise SourceExtensionSetValidationError(
                 f"Meson target {selector!r} linker metadata is invalid: {exc}"
             ) from exc
-        if source_plan.get("producer_link_args") != list(expected_args):
-            errors.append("source_plan.producer_link_args differs from Meson target")
+        try:
+            projection = SourceExtensionLinkProjection.from_manifest(
+                source_plan.get("link_projection")
+            )
+            expected_operands = tuple(
+                argument
+                for span in source_extension_link_arguments(expected_args)
+                for argument in span.arguments
+            )
+            if projection.producer_arguments() != expected_operands:
+                errors.append("source_plan.link_projection differs from Meson target")
+            _validate_projection_ownership(
+                projection,
+                outputs=outputs,
+                exclusions=exclusions,
+                python_provider=python_provider,
+            )
+        except ValueError as exc:
+            errors.append(f"source_plan.link_projection is invalid: {exc}")
         _remaining, provider_receipt = python_provider.project(expected_args)
         if source_plan.get("python_provider") != provider_receipt:
             errors.append(
@@ -187,7 +292,7 @@ def validate_source_extension_sidecars(
         raise SourceExtensionSetValidationError(
             "extension-set manifest has no target-triple authority"
         )
-    intro_path, intro_sha256, targets, python_provider = (
+    intro_path, intro_sha256, targets, python_provider, outputs = (
         _load_meson_link_producer_index(publish_root, set_manifest, variant)
     )
     artifact_suffix = source_extension_artifact_suffix(target_triple)
@@ -284,6 +389,8 @@ def validate_source_extension_sidecars(
                     intro_sha256=intro_sha256,
                     targets=targets,
                     python_provider=python_provider,
+                    outputs=outputs,
+                    exclusions=spec.exclude_linked_static_libraries,
                     build=sidecar.get("build"),
                 )
             )

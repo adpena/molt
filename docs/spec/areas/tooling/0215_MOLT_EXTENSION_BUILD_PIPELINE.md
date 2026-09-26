@@ -507,8 +507,22 @@ Captured upstream image commands are not final-link requirements. The shared
 shared-image mode, diagnostics and image optimization controls from dependencies.
 Meson projection consumes only that closed, target-dialect-checked policy class;
 Molt owns its static artifact and the consuming executable's link profile. The
-complete original `producer_link_args` remains in the source-plan digest and
-receipt, including consumed controls. Publication validation indexes the sealed
+ordered `source_plan.link_projection` is the sole producer-link receipt. It
+retains canonical spans, including consumed image controls and Python-provider
+operands, explicit exclusions, repeated archive occurrences and group boundaries.
+Source-archive operands name their exact producer object members and loading
+policy; all primary-target objects are eager, including constructor-only units.
+An aggregate archive selects its recorded members, not every object belonging
+to one of their source targets. A present Ninja archive edge must consist entirely
+of explicitly owned object members; unsupported nested archives or other inputs
+fail instead of disappearing from the projection. Without an explicit edge, all
+target-owned translation units are required. Missing files cannot shrink that
+inventory; only unselected siblings of an exact edge may be omitted. Declared
+compile-database outputs scope row validation before interpreting unrelated
+commands, while ambiguous rows for selected sources still fail closed. Live and
+sealed metadata use the same single-output rule for each source archive.
+There are no separate raw-argument, forced-unit,
+or lazy-target lists to reconcile. Publication validation indexes the sealed
 Meson targets once using the live planner's selector authority, then requires
 the receipt's target identity and ordered producer arguments to match that
 checksummed target exactly. Rehashing an incomplete or reordered receipt cannot
@@ -519,6 +533,14 @@ retention overrides (`/OPT:NOREF`, `--no-gc-sections`) and folding controls
 remain unrepresentable until a typed closure/loading policy can preserve them.
 Driver `-Wl,` lists and paired `-Xlinker` operands use the same grammar for projection
 and dependency admission; literal comma-bearing paths require `-Xlinker`.
+ELF `--as-needed` and `--no-as-needed` are persistent, idempotent dependency
+policy changes, not balanced scopes; groups and whole-archive scopes must close.
+
+The selected-object closure must contain every eager member of this projection
+and cannot introduce objects outside its source partitions. Lazy source members
+combined with external providers remain gated until the final linker supplies
+content-bound extraction evidence. A producer candidate inventory or aggregate
+symbol table is not a receipt of consumer-specific archive extraction.
 
 The host interpreter's Python link provider is a separate, attested role—not an
 external target dependency. Extension-set schema 7 stages and checksums Meson's

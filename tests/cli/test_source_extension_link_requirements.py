@@ -159,12 +159,26 @@ def test_meson_image_policy_is_recorded_but_never_becomes_link_dependency(
         build_root=tmp_path,
     )
     assert projection.targets == ()
-    assert projection.producer_link_args == (*product, *dependency)
+    assert tuple(
+        argument
+        for item in projection.ordered_items
+        for argument in item.span.arguments
+    ) == tuple(
+        argument
+        for span in source_extension_link_arguments((*product, *dependency))
+        for argument in span.arguments
+    )
     dialect = source_extension_link_dialect(triple)
-    for span in source_extension_link_arguments(projection.producer_link_args):
-        span.validate_dialect(dialect)
+    for item in projection.ordered_items:
+        item.span.validate_dialect(dialect)
     assert source_extension_link_requirements(
-        projection.link_args, target_triple=triple
+        tuple(
+            argument
+            for item in projection.ordered_items
+            if item.disposition == "external"
+            for argument in item.span.arguments
+        ),
+        target_triple=triple,
     ) == (source_extension_link_requirements(dependency, target_triple=triple))
     # Explicit final-link configuration cannot seize output custody, even when
     # the same option is meaningful in captured upstream producer metadata.
@@ -201,12 +215,16 @@ def test_meson_projection_does_not_discard_unmodeled_semantic_or_resource_flags(
     projection = _meson_static_library_projection(
         primary_target=primary, payload=[primary], build_root=tmp_path
     )
-    assert projection.link_args
+    external = tuple(
+        argument
+        for item in projection.ordered_items
+        if item.disposition == "external"
+        for argument in item.span.arguments
+    )
+    assert external
     for triple in ("x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"):
         with pytest.raises(ValueError):
-            source_extension_link_requirements(
-                projection.link_args, target_triple=triple
-            )
+            source_extension_link_requirements(external, target_triple=triple)
 
 
 @pytest.mark.parametrize(
@@ -233,7 +251,12 @@ def test_linker_transport_preserves_literal_comma_paths_through_projection(
         primary_target=primary, payload=[primary], build_root=tmp_path
     )
     requirements = source_extension_link_requirements(
-        projection.link_args,
+        tuple(
+            argument
+            for item in projection.ordered_items
+            if item.disposition == "external"
+            for argument in item.span.arguments
+        ),
         target_triple="aarch64-apple-darwin",
         path_roots=(tmp_path,),
         publish_root=tmp_path / "published",
@@ -378,6 +401,35 @@ def test_link_requirements_publish_typed_checksummed_inputs_and_render_late(
     )
     assert (publish_root / relative).read_bytes() == b"dependency"
     assert "arguments" not in requirements.manifest_payload()
+
+
+def test_elf_dependency_policy_is_idempotent_and_persistent() -> None:
+    requirements = source_extension_link_requirements(
+        (
+            "-Wl,--no-as-needed",
+            "-Wl,--no-as-needed",
+            "-lm",
+            "-Wl,--as-needed",
+            "-Wl,--as-needed",
+            "-ldl",
+        ),
+        target_triple="x86_64-unknown-linux-gnu",
+    )
+    assert requirements.items == (
+        SourceExtensionLinkProvider(SourceExtensionLinkProviderKind.LIBRARY, "m"),
+        SourceExtensionLinkProvider(
+            SourceExtensionLinkProviderKind.LIBRARY,
+            "dl",
+            SourceExtensionLinkLoadingPolicy.AS_NEEDED,
+        ),
+    )
+    assert (
+        source_extension_link_requirements(
+            render_source_extension_link_arguments(requirements),
+            target_triple=requirements.target_triple,
+        )
+        == requirements
+    )
 
 
 @pytest.mark.parametrize(

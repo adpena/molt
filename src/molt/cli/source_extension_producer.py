@@ -1548,7 +1548,7 @@ def _stage_extension(
                 "target_name",
                 "target_selector",
                 "target_type",
-                "producer_link_args",
+                "link_projection",
                 "python_provider",
             )
             if key in raw_source_plan

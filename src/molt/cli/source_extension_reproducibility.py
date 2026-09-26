@@ -112,8 +112,6 @@ _OPTION_FIELDS = frozenset(
         "compile_args",
         "extra_compile_args",
         "link_args",
-        "producer_link_args",
-        "consumed_forced_link_args",
     }
 )
 
@@ -287,6 +285,7 @@ def _residual_producer_paths(value: Any, *, location: str = "$") -> list[str]:
                     f"{item_location}[{index}]",
                     msvc_options=msvc_options or (is_command and index > 0),
                     command_field=command_field and not is_command,
+                    source_plan_msvc_linker=source_plan_msvc_linker,
                 )
         elif isinstance(item, Mapping):
             owner_uses_msvc = _mapping_uses_msvc_options(item)
@@ -308,11 +307,9 @@ def _residual_producer_paths(value: Any, *, location: str = "$") -> list[str]:
                     child,
                     f"{item_location}.{key}",
                     msvc_options=(key in _OPTION_FIELDS and owner_uses_msvc)
-                    or (
-                        source_plan_msvc_linker
-                        and key in {"producer_link_args", "consumed_forced_link_args"}
-                    ),
-                    source_plan_msvc_linker=child_is_msvc_plan,
+                    or (source_plan_msvc_linker and key == "arguments"),
+                    source_plan_msvc_linker=child_is_msvc_plan
+                    or source_plan_msvc_linker,
                     command_field=key in _COMMAND_FIELDS
                     or key == "compile_commands"
                     or (command_field and key in _COMMAND_ROLES),
