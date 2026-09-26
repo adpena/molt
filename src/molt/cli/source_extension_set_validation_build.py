@@ -34,6 +34,7 @@ def validate_source_extension_build_custody(
         "intro_targets_sha256",
         "compile_commands_sha256",
         "intro_installed_sha256",
+        "intro_dependencies_sha256",
         "config_tool_cross_sha256",
         "config_tools",
         "pkg_config_requirement",
@@ -195,6 +196,7 @@ def validate_source_extension_build_custody(
         "intro_targets_sha256": "intro-targets.json",
         "compile_commands_sha256": "compile-commands.json",
         "intro_installed_sha256": "intro-installed.json",
+        "intro_dependencies_sha256": "intro-dependencies.json",
     }
     meson_root = publish_root / "provenance" / "metadata" / "meson"
     for digest_name, filename in meson_files.items():

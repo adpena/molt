@@ -11,6 +11,9 @@ from typing import Any, cast
 from molt.cli.compiler_target import compiler_argument_spans
 from molt.cli.source_extension_link_arguments import source_extension_link_arguments
 from molt.cli.source_extension_target import source_extension_link_dialect
+from molt.cli.source_extension_python_provider import (
+    validate_static_python_provider_requirements,
+)
 from molt.cli.source_extension_link_requirements import (
     parse_source_extension_link_requirements,
 )
@@ -410,6 +413,10 @@ def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> 
             + "; ".join(link_requirement_errors)
         )
     assert link_requirements is not None
+    if isinstance(source_plan, Mapping):
+        validate_static_python_provider_requirements(
+            source_plan.get("python_provider"), link_requirements
+        )
     if manifest.get("link_requirements") != link_requirements.manifest_payload():
         raise ValueError(
             "compact extension manifest link requirements are not canonical"

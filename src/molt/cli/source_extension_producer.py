@@ -20,6 +20,10 @@ from packaging.requirements import Requirement
 from packaging.version import InvalidVersion
 from molt.source_root import compiler_source_root
 from molt.cli.source_build_inventory import SourceBuildInventory
+from molt.cli.source_extension_python_provider import (
+    SourceExtensionPythonProvider,
+    source_extension_python_provider,
+)
 from molt.python_file_node_custody import VerifiedTreeFile
 from molt.toolchain_identity import stable_executable_probe
 
@@ -902,11 +906,12 @@ def _source_ninja_driver(
     )
 
 
-def _require_real_meson_metadata(build_root: Path) -> tuple[Path, Path, Path]:
+def _require_real_meson_metadata(build_root: Path) -> tuple[Path, Path, Path, Path]:
     paths = (
         build_root / "meson-info" / "intro-targets.json",
         build_root / "compile_commands.json",
         build_root / "meson-info" / "intro-installed.json",
+        build_root / "meson-info" / "intro-dependencies.json",
     )
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
@@ -1344,6 +1349,7 @@ def _build_extension(
     abi_tier: str,
     tool_commands: Mapping[str, Sequence[str]],
     backend: _SourceNinjaDriver,
+    python_provider: SourceExtensionPythonProvider | None = None,
 ) -> _ProducedExtension:
     target_plan = resolve_source_extension_target_plan(
         target,
@@ -1374,6 +1380,7 @@ def _build_extension(
             abi_tier=abi_tier,
             tool_commands=tool_commands,
             source_plan_ninja_command=backend.command,
+            source_plan_python_provider=python_provider,
             json_output=False,
             verbose=False,
         )
@@ -1402,6 +1409,7 @@ def _preflight_extension_set_plans(
     intro_targets: Path,
     compile_commands: Path,
     extension_set: SourceExtensionSet,
+    python_provider: SourceExtensionPythonProvider | None = None,
 ) -> None:
     failures: list[str] = []
     for spec in extension_set.extensions:
@@ -1414,6 +1422,7 @@ def _preflight_extension_set_plans(
             build_root=build_root,
             compile_commands=compile_commands,
             exclude_linked_static_libraries=(spec.exclude_linked_static_libraries),
+            python_provider=python_provider,
         )
         if plan is None or errors:
             detail = "; ".join(errors) if errors else "no source plan"
@@ -1585,6 +1594,7 @@ def _stage_extension(
                 "target_selector",
                 "target_type",
                 "producer_link_args",
+                "python_provider",
             )
             if key in raw_source_plan
         }
@@ -1598,6 +1608,12 @@ def _stage_extension(
         source_plan["plan_sha256"] = _sha256_file(plan_metadata["intro_targets"])
         source_plan["compile_commands_sha256"] = _sha256_file(
             plan_metadata["compile_commands"]
+        )
+        source_plan["dependencies"] = _relative_manifest_path(
+            plan_metadata["intro_dependencies"], sidecar_path.parent
+        )
+        source_plan["dependencies_sha256"] = _sha256_file(
+            plan_metadata["intro_dependencies"]
         )
         source_plan_identity = dict(source_plan)
         source_plan["digest"] = hashlib.sha256(
@@ -1751,6 +1767,7 @@ def _stage_build_metadata(
     intro_targets: Path,
     compile_commands: Path,
     intro_installed: Path,
+    intro_dependencies: Path,
     config_tool_cross: Path | None,
     target_metadata_payload: Mapping[str, Any],
     location_roots: Sequence[tuple[PurePath, str]],
@@ -1772,6 +1789,12 @@ def _stage_build_metadata(
             intro_installed,
             metadata_publish_root / "meson" / "intro-installed.json",
             location_roots=location_roots,
+        ),
+        "intro_dependencies": _stage_canonical_metadata_file(
+            intro_dependencies,
+            metadata_publish_root / "meson" / "intro-dependencies.json",
+            location_roots=location_roots,
+            normalize_meson_dependency_ids=True,
         ),
     }
     if config_tool_cross is not None:
@@ -2513,8 +2536,15 @@ def _build_source_extension_set(
             driver=meson_driver,
             backend=ninja_driver,
         )
-        intro_targets, compile_commands, intro_installed = _require_real_meson_metadata(
-            resolved_build_root
+        intro_targets, compile_commands, intro_installed, intro_dependencies = (
+            _require_real_meson_metadata(resolved_build_root)
+        )
+        python_provider = source_extension_python_provider(
+            dependencies_path=intro_dependencies,
+            runtime=build_environment.custody["python_runtime"],
+            variant=variant,
+            python_base=sys.base_prefix,
+            verify_live=True,
         )
         generated_inputs = _materialize_generated_inputs(
             backend=ninja_driver,
@@ -2537,6 +2567,7 @@ def _build_source_extension_set(
             intro_targets=intro_targets,
             compile_commands=compile_commands,
             intro_installed=intro_installed,
+            intro_dependencies=intro_dependencies,
             config_tool_cross=config_tool_cross,
             target_metadata_payload=metadata.payload,
             location_roots=location_roots,
@@ -2556,6 +2587,7 @@ def _build_source_extension_set(
             intro_targets=intro_targets,
             compile_commands=compile_commands,
             extension_set=extension_set,
+            python_provider=python_provider,
         )
 
         produced: list[_ProducedExtension] = []
@@ -2579,6 +2611,7 @@ def _build_source_extension_set(
                 abi_tier=abi_tier,
                 tool_commands=tool_commands,
                 backend=ninja_driver,
+                python_provider=python_provider,
             )
             result = _stage_extension(
                 result,
@@ -2612,6 +2645,9 @@ def _build_source_extension_set(
                 ),
                 "intro_installed_sha256": _sha256_file(
                     staged_metadata["intro_installed"]
+                ),
+                "intro_dependencies_sha256": _sha256_file(
+                    staged_metadata["intro_dependencies"]
                 ),
                 "config_tool_cross_sha256": (
                     _sha256_file(staged_metadata["config_tool_cross"])
