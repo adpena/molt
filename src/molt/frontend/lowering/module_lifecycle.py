@@ -201,29 +201,30 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="LIST_NEW", args=[path_val], result=list_val))
             self._emit_module_attr_set_on(self.module_obj, "__path__", list_val)
             path_list_val = list_val
-        if (
-            self.module_name == "importlib.machinery"
-            or "importlib.machinery" not in self.known_modules
-        ):
-            spec_none = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=spec_none))
-            self._emit_module_attr_set_on(self.module_obj, "__spec__", spec_none)
-            return
         spec_name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(
             MoltOp(kind="CONST_STR", args=[self.module_spec_name], result=spec_name_val)
         )
         loader_default = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=loader_default))
-        loader_val = self._emit_module_attr_get_default_on(
-            "importlib.machinery", "_MOLT_LOADER", loader_default
+        loader_val = (
+            self._emit_module_attr_get_default_on(
+                "importlib.machinery", "_MOLT_LOADER", loader_default
+            )
+            if "importlib.machinery" in self.known_modules
+            else loader_default
         )
         if origin_val is None:
             origin_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=origin_val))
         is_package_val = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="CONST_BOOL", args=[is_package], result=is_package_val))
-        spec_cls = self._emit_module_attr_get_on("importlib.machinery", "ModuleSpec")
+        # Generated metadata uses the same runtime-owned class as extension
+        # initialization and the Python facade. It must not read the facade:
+        # machinery's dependencies need specs before its body publishes it.
+        spec_cls = self._emit_runtime_call(
+            "molt_importlib_module_spec_type", [], type_hint="type"
+        )
         spec_val = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(

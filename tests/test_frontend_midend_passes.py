@@ -3072,6 +3072,7 @@ def test_module_chunks_share_the_enclosing_python_execution_frame() -> None:
 
 
 @pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("with_machinery", [False, True])
 @pytest.mark.parametrize(
     "module_name",
     [
@@ -3086,7 +3087,7 @@ def test_module_chunks_share_the_enclosing_python_execution_frame() -> None:
     ],
 )
 def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
-    module_name: str, chunked: bool
+    module_name: str, chunked: bool, with_machinery: bool
 ) -> None:
     gen = SimpleTIRGenerator(
         module_name=module_name,
@@ -3099,7 +3100,11 @@ def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
         ),
         module_is_namespace=module_name == "namespace",
         module_execution_kind="script" if module_name == "__main__" else "imported",
-        known_modules={"sys", "builtins", "importlib", "importlib.machinery", "app"},
+        known_modules=(
+            {"sys", "builtins", "importlib", "importlib.machinery", "app"}
+            if with_machinery
+            else {module_name}
+        ),
         module_chunking=chunked,
         module_chunk_max_ops=1,
     )
@@ -3121,6 +3126,22 @@ def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
     assert len(spec_stores) == 1
     assert enter < spec_stores[0] < locals_set
     assert ops[locals_set].metadata == {"source_module_publication_boundary": True}
+    # Metadata must exist before any facade executes its source body. A public
+    # ModuleSpec lookup can recurse into a partially initialized machinery.
+    assert not any(
+        op.kind == "MODULE_GET_ATTR" and strings.get(op.args[1].name) == "ModuleSpec"
+        for op in ops
+    )
+    spec_value = ops[spec_stores[0]].args[2]
+    producer = next(op for op in ops if op.result == spec_value)
+    if module_name == "__main__":
+        assert producer.kind == "CONST_NONE"
+    else:
+        assert producer.kind == "CALL_FUNC"
+        cls_value = producer.args[0]
+        cls_call = next(op for op in ops if op.result == cls_value)
+        assert cls_call.kind == "CALL"
+        assert cls_call.args == ["molt_importlib_module_spec_type"]
 
     pre_frame_label = gen.module_pre_frame_exception_label
     attempt_label = gen.function_exception_label
