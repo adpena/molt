@@ -5,6 +5,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import types
 import zipfile
 
 
@@ -23,6 +24,34 @@ def run_source_loader(root: str) -> None:
     print(module is not None and module.__loader__ is spec.loader)
     print(module is not None and module.__file__ == path)
     print(module is not None and module.__package__ == "")
+
+
+def run_create_module_identity_and_error() -> None:
+    created = types.ModuleType("txcreated")
+
+    class ReturningLoader:
+        def create_module(self, _spec):
+            return created
+
+        def exec_module(self, _module):
+            raise AssertionError("module_from_spec must not execute the module")
+
+    class FailingLoader:
+        def create_module(self, _spec):
+            raise ValueError("create-phase-marker")
+
+        def exec_module(self, _module):
+            raise AssertionError("failed creation must not execute the module")
+
+    created_spec = importlib.machinery.ModuleSpec("txcreated", ReturningLoader())
+    failed_spec = importlib.machinery.ModuleSpec("txfailed", FailingLoader())
+    print(importlib.util.module_from_spec(created_spec) is created)
+    try:
+        importlib.util.module_from_spec(failed_spec)
+    except ValueError as exc:
+        print(str(exc) == "create-phase-marker")
+    else:
+        print(False)
 
 
 def run_source_loader_mutation(root: str) -> None:
@@ -83,6 +112,7 @@ def run_extension_loader(root: str) -> None:
     loader = importlib.machinery.ExtensionFileLoader("txext", ext_path)
     spec = importlib.util.spec_from_file_location("txext", ext_path, loader=loader)
 
+    module = None
     loaded = False
     state_good = False
     error_name = "none"
@@ -138,6 +168,7 @@ def run_sourceless_loader(root: str) -> None:
 
 
 with tempfile.TemporaryDirectory(prefix="molt_loader_exec_tx_") as tmp:
+    run_create_module_identity_and_error()
     run_source_loader(tmp)
     run_source_loader_mutation(tmp)
     run_zip_source_loader(tmp)

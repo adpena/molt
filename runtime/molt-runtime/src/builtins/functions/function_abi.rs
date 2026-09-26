@@ -1014,33 +1014,40 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_function_set_builtin(func_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
+    crate::with_gil_entry_nopanic!(_py, { function_set_builtin_class(_py, func_bits, false) })
+}
+
+/// Assign the native callable class before publication. The defining-class
+/// calling convention is a distinct subtype, not a second function layout.
+pub(crate) fn function_set_builtin_class(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    has_defining_class: bool,
+) -> u64 {
+    let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
+        return raise_exception::<_>(_py, "TypeError", "expected function");
+    };
+    unsafe {
+        if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "expected function");
-        };
-        unsafe {
-            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return raise_exception::<_>(_py, "TypeError", "expected function");
-            }
-            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-            let old_bits = object_class_bits(func_ptr);
-            if old_bits != builtin_bits
-                && !object_replace_class_edge(
-                    _py,
-                    func_ptr,
-                    builtin_bits,
-                    ClassEdgeOwnership::Owned,
-                )
-            {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "function class metadata is immutable after publication",
-                );
-            }
         }
-        MoltObject::none().bits()
-    })
+        let builtins = builtin_classes(_py);
+        let class_bits = if has_defining_class {
+            builtins.builtin_method
+        } else {
+            builtins.builtin_function_or_method
+        };
+        if object_class_bits(func_ptr) != class_bits
+            && !object_replace_class_edge(_py, func_ptr, class_bits, ClassEdgeOwnership::Owned)
+        {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "function class metadata is immutable after publication",
+            );
+        }
+    }
+    MoltObject::none().bits()
 }
 
 /// Preflight is repeated after attribute writes because dictionary replacement
@@ -1675,7 +1682,7 @@ pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
         } else {
             let method_bits = {
                 let func_class_bits = unsafe { object_class_bits(func_ptr) };
-                if func_class_bits == builtin_classes(_py).builtin_function_or_method {
+                if builtin_classes(_py).is_builtin_callable_class(func_class_bits) {
                     func_class_bits
                 } else {
                     crate::builtins::types::method_class(_py)

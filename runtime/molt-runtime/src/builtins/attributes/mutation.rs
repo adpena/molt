@@ -575,13 +575,24 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 return attr_error(_py, "cell", attr_name);
             }
             if type_id == TYPE_ID_FUNCTION {
+                if attr_name == "__module__"
+                    && let Some(ok) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .set_cfunction_module(MoltObject::from_ptr(obj_ptr).bits(), Some(val_bits))
+                {
+                    if !ok {
+                        crate::cpython_abi_hooks::transfer_pending_cpython_exception();
+                    }
+                    return MoltObject::none().bits();
+                }
                 if attr_name == "__code__" {
-                    if object_class_bits(obj_ptr) == builtin_classes(_py).builtin_function_or_method
-                    {
+                    if builtin_classes(_py).is_builtin_callable_class(object_class_bits(obj_ptr)) {
                         return raise_exception::<_>(
                             _py,
                             "AttributeError",
-                            "'builtin_function_or_method' object has no attribute '__code__'",
+                            &format!(
+                                "'{}' object has no attribute '__code__'",
+                                type_name(_py, MoltObject::from_ptr(obj_ptr)),
+                            ),
                         );
                     }
                     let val_obj = obj_from_bits(val_bits);
@@ -1168,6 +1179,25 @@ pub(crate) unsafe fn del_attr_ptr(
                 if pep649_enabled(_py) {
                     function_set_annotate_bits(_py, obj_ptr, MoltObject::none().bits());
                 }
+                return MoltObject::none().bits();
+            }
+            if attr_name == "__module__" {
+                if let Some(ok) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .set_cfunction_module(MoltObject::from_ptr(obj_ptr).bits(), None)
+                {
+                    if !ok {
+                        crate::cpython_abi_hooks::transfer_pending_cpython_exception();
+                    }
+                    return MoltObject::none().bits();
+                }
+                // CPython function metadata retains an explicit None after
+                // deletion; falling through to the type descriptor is wrong.
+                let _ = crate::call::class_init::function_set_attr_bits(
+                    _py,
+                    obj_ptr,
+                    attr_bits,
+                    MoltObject::none().bits(),
+                );
                 return MoltObject::none().bits();
             }
             let dict_bits = function_dict_bits(obj_ptr);

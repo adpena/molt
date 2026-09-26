@@ -98,8 +98,8 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
         if let Some(function) = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             let plain_function = obj_from_bits(function).as_ptr().is_some_and(|ptr| unsafe {
                 object_type_id(ptr) == TYPE_ID_FUNCTION
-                    && crate::object_class_bits(ptr)
-                        != builtin_classes(_py).builtin_function_or_method
+                    && !builtin_classes(_py)
+                        .is_builtin_callable_class(crate::object_class_bits(ptr))
             });
             if plain_function {
                 let descriptor = if static_method {

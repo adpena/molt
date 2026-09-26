@@ -2782,7 +2782,7 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
         && unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(handle.bits()) }
             == MoltTypeTag::Exception as u8
     {
-        match unsafe { (crate::hooks::hooks_or_stubs().exception_class_borrowed)(handle.bits()) }
+        match unsafe { (crate::hooks::hooks_or_stubs().runtime_class_borrowed)(handle.bits()) }
             .decode()
         {
             crate::hooks::DecodedHandleResult::Ok(class_bits) => unsafe {

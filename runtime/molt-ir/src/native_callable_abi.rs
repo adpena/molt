@@ -104,7 +104,7 @@ impl NativeCallableAbi {
             Self::ObjectCallV1 => None,
             Self::ObjectCallargsV1 => Some(1),
             Self::ForwardF32V1 => Some(1),
-            Self::PyinitModuleV1 => Some(0),
+            Self::PyinitModuleV1 => Some(1),
         }
     }
 

@@ -39,11 +39,13 @@ native_params = ["pointer", "u64", "pointer"]
 native_results = ["i32"]
 
 [[abi]]
+# The IR payload is the boxed module name consumed by the runtime extension-init
+# transaction; the raw PyInit symbol keeps its payload-free C signature below.
 name = "pyinit_module_v1"
 token = "molt.pyinit_module_v1"
 lowering = "pyinit_module"
 python_callable = false
-fixed_arity = 0
+fixed_arity = 1
 browser_params = []
 browser_result = "molt.pyobject_ptr"
 wasm_params = []

@@ -1,6 +1,5 @@
 use super::super::result_sink::{
-    finish_owned_local_result, store_owned_result_or_release, store_result_or_drop,
-    store_runtime_result,
+    finish_owned_local_result, store_owned_result_or_release, store_runtime_result,
 };
 use super::site::{
     build_positional_callargs, collect_live_object_locals_for_call, emit_call_site_id,
@@ -354,9 +353,32 @@ pub(super) fn emit_dynamic_call_op(
                         finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
                     }
                     NativeCallableLowering::PyinitModule => {
-                        emit_call(func, reloc_enabled, native_import.function_index);
-                        func.instruction(&Instruction::I64ExtendI32U);
-                        store_result_or_drop(func, op, locals);
+                        // The initializer's table address, not a direct call,
+                        // crosses into the runtime extension-init transaction,
+                        // which transfers one owned module.
+                        let initializer =
+                            call_site_abi.native_initializer_target(&native_import.symbol);
+                        call_ctx.table_relocations.emit_i64(
+                            reloc_enabled,
+                            call_ctx.func_import_count,
+                            call_ctx.func_index,
+                            func,
+                            &initializer,
+                        );
+                        func.instruction(&Instruction::LocalGet(locals[&args_names[0]]));
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids[WasmRuntimeImport::CpythonAbiRunStaticExtensionInit],
+                        );
+                        store_runtime_result(
+                            func,
+                            op,
+                            locals,
+                            import_ids,
+                            reloc_enabled,
+                            WasmRuntimeImport::CpythonAbiRunStaticExtensionInit,
+                        );
                     }
                     NativeCallableLowering::ObjectValues
                     | NativeCallableLowering::ObjectCallargs => {

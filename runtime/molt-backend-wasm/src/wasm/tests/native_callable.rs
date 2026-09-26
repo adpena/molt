@@ -94,6 +94,46 @@ fn wasm_native_callable_provider_object(symbol: &str, sentinel: i64) -> Vec<u8> 
     module.finish()
 }
 
+const PYINIT_SYMBOL: &str = "PyInit__nd_image";
+
+fn wasm_pyinit_ir() -> SimpleIR {
+    let mut ir = wasm_native_callable_ir_with_args("molt.pyinit_module_v1", vec!["module_name"]);
+    let init = &mut ir.functions[0].ops[0];
+    init.native_callable_export = Some("__molt_static_pyinit__.nativepkg._nd_image".to_string());
+    init.native_callable_symbol = Some(PYINIT_SYMBOL.to_string());
+    ir
+}
+
+/// A provider exporting a raw `PyObject *PyInit_x(void)` for the wasm32 C ABI.
+fn wasm_pyinit_provider_object(symbol: &str, raw_module_pointer: i32) -> Vec<u8> {
+    let mut types = TypeSection::new();
+    types.ty().function([], [ValType::I32]);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    let mut exports = ExportSection::new();
+    exports.export(symbol, ExportKind::Func, 0);
+    let mut body = Function::new([]);
+    body.instruction(&Instruction::I32Const(raw_module_pointer));
+    body.instruction(&Instruction::End);
+    let mut code = CodeSection::new();
+    code.function(&body);
+    let mut symbols = SymbolTable::new();
+    symbols.function(
+        SymbolTable::WASM_SYM_EXPORTED | SymbolTable::WASM_SYM_NO_STRIP,
+        0,
+        Some(symbol),
+    );
+    let mut linking = LinkingSection::new();
+    linking.symbol_table(&symbols);
+    let mut module = Module::new();
+    module.section(&types);
+    module.section(&functions);
+    module.section(&exports);
+    module.section(&code);
+    module.section(&linking);
+    module.finish()
+}
+
 #[test]
 fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
     assert!(is_production_lir_wasm_fast_path_name(
@@ -580,50 +620,176 @@ fn native_callable_forward_f32_imports_and_directly_calls_typed_payload_symbol()
 }
 
 #[test]
-fn native_callable_pyinit_imports_wasm32_pointer_and_extends_to_value_lane() {
+fn native_callable_pyinit_passes_app_owned_table_address_to_runtime_transaction() {
+    const APP_TABLE_BASE: u32 = 2320;
     let wasm = WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled: false,
         reloc_enabled: false,
+        table_base: 1,
+        split_runtime_app_table_base: Some(APP_TABLE_BASE),
         wasm_profile: WasmProfile::Auto,
         ..WasmCompileOptions::default()
     })
-    .compile(wasm_native_callable_ir_with_args(
-        "molt.pyinit_module_v1",
-        vec![],
-    ));
+    .compile(wasm_pyinit_ir());
 
-    wasmparser::Validator::new().validate_all(&wasm).expect(
-        "PyInit native callable dispatch must extend wasm32 PyObject* into the i64 value lane",
-    );
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("PyInit runtime-transaction lowering must emit valid WASM");
 
-    let native_symbol = "molt_nativepkg_ndimage_distance_transform_edt";
     let import_modules = wasm_function_import_modules(&wasm);
     assert_eq!(
-        import_modules.get(native_symbol).map(String::as_str),
+        import_modules.get(PYINIT_SYMBOL).map(String::as_str),
         Some("molt_native"),
         "PyInit native callable symbols must be imported through the native callable namespace"
     );
 
     let import_type_indices = wasm_function_import_type_indices(&wasm);
-    let native_type_index = *import_type_indices.get(native_symbol).unwrap_or_else(|| {
-        panic!("{native_symbol} type index missing; imports={import_type_indices:?}")
+    let native_type_index = *import_type_indices.get(PYINIT_SYMBOL).unwrap_or_else(|| {
+        panic!("{PYINIT_SYMBOL} type index missing; imports={import_type_indices:?}")
     });
     let type_signatures = wasm_type_section_value_signatures(&wasm);
     assert_eq!(
         type_signatures
             .get(native_type_index as usize)
             .unwrap_or_else(|| panic!("missing type signature for index {native_type_index}")),
-        &(Vec::<String>::new(), vec!["I32".to_string()])
+        &(Vec::<String>::new(), vec!["I32".to_string()]),
+        "the raw PyInit import keeps its payload-free wasm32 C signature"
     );
 
     let import_indices = wasm_function_import_indices(&wasm);
-    let native_import_index = *import_indices
-        .get(native_symbol)
-        .unwrap_or_else(|| panic!("{native_symbol} import missing; imports={import_indices:?}"));
+    let initializer = import_indices[PYINIT_SYMBOL];
+    let run_init = *import_indices
+        .get(WasmRuntimeImport::CpythonAbiRunStaticExtensionInit.name())
+        .unwrap_or_else(|| {
+            panic!("runtime transaction import missing; imports={import_indices:?}")
+        });
     let call_indices = wasm_direct_call_indices_for_export(&wasm, "molt_main");
     assert!(
-        call_indices.contains(&native_import_index),
-        "PyInit invoke_ffi must become a direct WASM call to {native_symbol}; calls={call_indices:?}"
+        !call_indices.contains(&initializer),
+        "compiled code must never call {PYINIT_SYMBOL} outside the runtime transaction; calls={call_indices:?}"
+    );
+
+    let initializer_slots = wasm_active_function_elements(&wasm)
+        .into_iter()
+        .filter_map(|(slot, function_index)| (function_index == initializer).then_some(slot))
+        .collect::<Vec<_>>();
+    let &[slot] = initializer_slots.as_slice() else {
+        panic!("exactly one table slot must publish {PYINIT_SYMBOL}; slots={initializer_slots:?}");
+    };
+    assert!(
+        slot >= APP_TABLE_BASE,
+        "initializer slot {slot} must be app-owned, at or above finalized app base {APP_TABLE_BASE}"
+    );
+    let operators = wasm_operator_debug_for_export(&wasm, "molt_main");
+    let address = format!("I32Const {{ value: {slot} }}");
+    let site = operators
+        .iter()
+        .position(|operator| *operator == address)
+        .unwrap_or_else(|| {
+            panic!("molt_main must materialize table address {slot}: {operators:?}")
+        });
+    assert_eq!(operators[site + 1], "I64ExtendI32U", "{operators:?}");
+    assert!(
+        operators[site + 2].starts_with("LocalGet"),
+        "the boxed module name must follow the initializer address: {operators:?}"
+    );
+    assert_eq!(
+        operators[site + 3],
+        format!("Call {{ function_index: {run_init} }}"),
+        "the address and module name must feed the runtime transaction: {operators:?}"
+    );
+}
+
+#[test]
+fn relocatable_pyinit_links_provider_initializer_into_runtime_transaction_table_slot() {
+    const RAW_MODULE_POINTER: i32 = 0x5EED_0040;
+    const OWNED_MODULE: i64 = 0x45A1_7E57_D15C_A11E;
+    let Some(wasm_ld) = real_execution_tool(
+        wasm_ld_path(),
+        "MOLT_REQUIRE_REAL_WASM_LD_TESTS",
+        "wasm-ld PyInit table-address final-link proof",
+    ) else {
+        return;
+    };
+    let Some(node) = real_execution_tool(
+        PathBuf::from("node"),
+        "MOLT_REQUIRE_REAL_NODE_TESTS",
+        "Node PyInit runtime-transaction execution proof",
+    ) else {
+        return;
+    };
+    let mut execution_ir = wasm_pyinit_ir();
+    execution_ir.functions[0].params.clear();
+    let mut payload = wasm_test_op("const", Some("module_name"), vec![]);
+    payload.value = Some(7);
+    execution_ir.functions[0].ops.insert(0, payload);
+    let module_name_bits = molt_codegen_abi::box_int_bits(7) as u64;
+    let app_object = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: true,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(execution_ir);
+    let provider_object = wasm_pyinit_provider_object(PYINIT_SYMBOL, RAW_MODULE_POINTER);
+    let (temp, _remove_temp) = wasm_test_temp_dir();
+    let app_path = temp.join("pyinit_app.o.wasm");
+    let provider_path = temp.join("pyinit_provider.o.wasm");
+    let linked_path = temp.join("pyinit_linked.wasm");
+    fs::write(&app_path, app_object).expect("write relocatable PyInit app");
+    fs::write(&provider_path, provider_object).expect("write relocatable PyInit provider");
+    run_execution_command(
+        Command::new(&wasm_ld)
+            .arg("--no-entry")
+            .arg("--import-memory")
+            .arg("--import-table")
+            .arg("--export=molt_main")
+            .arg("-o")
+            .arg(&linked_path)
+            .arg(&app_path)
+            .arg(&provider_path),
+        "final-link relocatable PyInit app and provider with wasm-ld",
+    );
+    let linked = fs::read(&linked_path).expect("read final-linked PyInit WASM");
+    wasmparser::Validator::new()
+        .validate_all(&linked)
+        .expect("final-linked PyInit WASM must validate");
+    let run_init = WasmRuntimeImport::CpythonAbiRunStaticExtensionInit;
+    run_node_test_script(
+        &node,
+        &format!(
+            r#"const fs = require('fs');
+const bytes = fs.readFileSync(process.argv[1]);
+const table = new WebAssembly.Table({{initial: 8192, element: 'anyfunc'}});
+const env = {{memory: new WebAssembly.Memory({{initial: 256}}), __indirect_function_table: table}};
+const wasmModule = new WebAssembly.Module(bytes);
+const runInitNames = new Set(['{import_name}', '{export_name}']);
+let transactions = 0;
+const runStaticExtensionInit = (initAddr, moduleNameBits) => {{
+  transactions += 1;
+  const init = table.get(Number(initAddr));
+  if (typeof init !== 'function') throw new Error('table slot ' + initAddr + ' holds no initializer');
+  const raw = init();
+  if (raw !== {RAW_MODULE_POINTER}) throw new Error('table slot ' + initAddr + ' returned ' + raw);
+  if (BigInt.asUintN(64, moduleNameBits) !== {module_name_bits}n) throw new Error('module name bits ' + moduleNameBits);
+  return {OWNED_MODULE}n;
+}};
+const imports = {{env}};
+for (const entry of WebAssembly.Module.imports(wasmModule)) {{
+  if (entry.module === 'env') continue;
+  imports[entry.module] ??= {{}};
+  imports[entry.module][entry.name] = runInitNames.has(entry.name) ? runStaticExtensionInit : () => 0n;
+}}
+const instance = new WebAssembly.Instance(wasmModule, imports);
+const actual = instance.exports.molt_main();
+if (transactions !== 1) throw new Error('runtime transaction ran ' + transactions + ' times');
+if (actual !== {OWNED_MODULE}n) throw new Error('molt_main returned ' + actual + ', not the owned module');
+"#,
+            import_name = run_init.name(),
+            export_name = run_init.runtime_export_name(),
+        ),
+        &[&linked_path],
+        "execute final-linked PyInit runtime transaction in Node",
     );
 }
 

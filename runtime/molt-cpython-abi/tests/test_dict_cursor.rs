@@ -132,6 +132,119 @@ fn handle_of(p: *mut PyObject) -> u64 {
 }
 
 #[test]
+fn setdefaultref_optional_sink_preserves_status_and_reference_ownership() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    install();
+    PRESENT.lock().unwrap().clear();
+    SETS.lock().unwrap().clear();
+    let dict = register(fake_dict_handle(0x8500));
+    let key = register(MoltObject::from_int(0x8511).bits());
+    let default_value = register(MoltObject::from_int(0x8522).bits());
+    let key_bits = handle_of(key);
+    let default_bits = handle_of(default_value);
+    let dict_bits = handle_of(dict);
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let key_refs = unsafe { (*key).ob_refcnt };
+    let default_refs = unsafe { (*default_value).ob_refcnt };
+
+    // CPython 3.13+: NULL means the caller wants only the status. The insert
+    // still happens, but no result reference is created for the caller.
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::mapping::PyDict_SetDefaultRef(
+                dict,
+                key,
+                default_value,
+                ptr::null_mut(),
+            )
+        },
+        0
+    );
+    assert_eq!(
+        &*SETS.lock().unwrap(),
+        &[(dict_bits, key_bits, default_bits)]
+    );
+    assert_eq!(unsafe { (*key).ob_refcnt }, key_refs);
+    assert_eq!(unsafe { (*default_value).ob_refcnt }, default_refs);
+    assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+
+    // The fake lookup reports the key itself as its borrowed existing value.
+    // That makes a found result distinguishable from the unused default.
+    *PRESENT.lock().unwrap() = vec![key_bits];
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::mapping::PyDict_SetDefaultRef(
+                dict,
+                key,
+                default_value,
+                ptr::null_mut(),
+            )
+        },
+        1
+    );
+    assert_eq!(SETS.lock().unwrap().len(), 1, "found must not insert again");
+    assert_eq!(unsafe { (*key).ob_refcnt }, key_refs);
+    assert_eq!(unsafe { (*default_value).ob_refcnt }, default_refs);
+
+    let mut found = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::mapping::PyDict_SetDefaultRef(
+                dict,
+                key,
+                default_value,
+                &raw mut found,
+            )
+        },
+        1
+    );
+    assert_eq!(found, key);
+    assert_eq!(unsafe { (*key).ob_refcnt }, key_refs + 1);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(found) };
+
+    PRESENT.lock().unwrap().clear();
+    let mut inserted = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::mapping::PyDict_SetDefaultRef(
+                dict,
+                key,
+                default_value,
+                &raw mut inserted,
+            )
+        },
+        0
+    );
+    assert_eq!(inserted, default_value);
+    assert_eq!(unsafe { (*default_value).ob_refcnt }, default_refs + 1);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(inserted) };
+
+    let mut on_error = default_value;
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::mapping::PyDict_SetDefaultRef(
+                ptr::null_mut(),
+                key,
+                default_value,
+                &raw mut on_error,
+            )
+        },
+        -1
+    );
+    assert!(
+        on_error.is_null(),
+        "errors must clear a supplied result sink"
+    );
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_Clear();
+        molt_cpython_abi::api::refcount::Py_DECREF(default_value);
+        molt_cpython_abi::api::refcount::Py_DECREF(key);
+        molt_cpython_abi::api::refcount::Py_DECREF(dict);
+    }
+}
+
+#[test]
 fn next_yields_all_entries_no_exception() {
     let _guard = TEST_LOCK.lock().unwrap();
     install();

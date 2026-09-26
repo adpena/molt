@@ -81,6 +81,13 @@ Explicit and inherited builtin namespaces remain authoritative; initialization
 does not re-import `builtins` unconditionally or refill a mutated namespace.
 Generated annotation callables and module chunks run after this bootstrap.
 
+The machinery facade and bootstrap-free extension initialization share one
+runtime-owned `ModuleSpec` class and its initializer. Its current Python facade
+contract remains partial: the constructor accepts positional `origin` and
+`is_package`, coerces the name to `str`, and treats `cached`, `loader_state` and
+`has_location` as mutable fields. This authority consolidation does not claim
+complete CPython `ModuleSpec` signature, property or equality conformance.
+
 Cache publication borrows its name and module arguments and returns `None` on
 every successful path, including first-init-wins duplicate initialization.
 It never hands a borrowed cache entry to a caller as an owned result. Each

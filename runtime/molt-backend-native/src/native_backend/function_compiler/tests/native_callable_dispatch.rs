@@ -12,8 +12,10 @@
 //! Cranelift object bytes) and prove:
 //!   1. module_attr object_call / object_callargs exports compile and emit a
 //!      `molt_invoke_ffi_ic` relocation (the executable dispatch symbol);
-//!   2. direct-symbol object, memory, and PyInit ABIs emit relocations to the
-//!      manifest-owned symbols with the same ABI contracts as WASM;
+//!   2. direct-symbol object and memory ABIs emit relocations to the
+//!      manifest-owned symbols with the same ABI contracts as WASM, while
+//!      PyInit passes the initializer address and boxed module name to the
+//!      runtime extension-init transaction and receives one owned module;
 //!   3. malformed arity and missing-symbol inputs still fail closed;
 //!   4. structured-data parsers ignore stale raw-literal metadata, release raw
 //!      input boxes, preserve boxing failures, and consume every owned result.
@@ -2677,18 +2679,118 @@ fn native_direct_symbol_forward_f32_emits_relocation_and_bytes_bridge() {
 }
 
 #[test]
-fn native_direct_symbol_pyinit_emits_relocation() {
+fn native_direct_symbol_pyinit_emits_address_relocation_and_runtime_transaction() {
     let symbol = "PyInit__native_probe";
     let ir = native_callable_program(
         "native_probe._native_probe",
         "direct_symbol",
         "molt.pyinit_module_v1",
         Some(symbol),
-        &[],
+        &["module_name"],
     );
 
     let output = SimpleBackend::new().compile(ir);
-    assert!(object_contains(&output.bytes, symbol.as_bytes()));
+    for expected in [
+        symbol.as_bytes(),
+        b"molt_cpython_abi_run_static_extension_init".as_slice(),
+    ] {
+        assert!(
+            object_contains(&output.bytes, expected),
+            "native PyInit object is missing relocation {}",
+            String::from_utf8_lossy(expected)
+        );
+    }
+}
+
+#[test]
+fn native_pyinit_transfers_initializer_address_and_module_name_to_runtime_transaction() {
+    const SYMBOL: &str = "PyInit__native_execution_probe";
+    const RAW_MODULE_POINTER: usize = 0x5EED_0040;
+    const OWNED_MODULE: u64 = 0x45A1_7E57_D15C_A11E;
+    let Some(rustc) = real_rustc() else {
+        return;
+    };
+    let ir = native_callable_program(
+        "native_probe._native_execution_probe",
+        "direct_symbol",
+        "molt.pyinit_module_v1",
+        Some(SYMBOL),
+        &["module_name"],
+    );
+    let output = SimpleBackend::new().compile(ir);
+    // `native_callable_program` binds the payload to the boxed integer 1.
+    let module_name_bits = molt_codegen_abi::box_int_bits(1) as u64;
+    let provider_source = format!(
+        r#"#![no_std]
+use core::sync::atomic::{{AtomicU64, Ordering}};
+#[export_name = "{generated_object_abi_symbol}"]
+pub static GENERATED_OBJECT_ABI: u8 = 0;
+static EXCEPTION_PENDING: u8 = 0;
+static INIT_CALLS: AtomicU64 = AtomicU64::new(0);
+static TRANSACTIONS: AtomicU64 = AtomicU64::new(0);
+static MODULE_RELEASES: AtomicU64 = AtomicU64::new(0);
+static FAILURE: AtomicU64 = AtomicU64::new(0);
+#[no_mangle]
+pub extern "C" fn molt_dec_ref(bits: u64) {{ molt_dec_ref_obj(bits) }}
+#[no_mangle]
+pub extern "C" fn molt_dec_ref_obj(bits: u64) {{
+    if bits == {OWNED_MODULE}u64 {{ MODULE_RELEASES.fetch_add(1, Ordering::SeqCst); }}
+}}
+#[no_mangle]
+pub extern "C" fn molt_inc_ref_obj(_: u64) {{}}
+#[no_mangle]
+pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
+#[no_mangle]
+pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {{
+    core::ptr::addr_of!(EXCEPTION_PENDING) as u64
+}}
+#[no_mangle]
+pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
+#[no_mangle]
+pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
+#[no_mangle]
+pub extern "C" fn {SYMBOL}() -> *mut u8 {{
+    INIT_CALLS.fetch_add(1, Ordering::SeqCst);
+    {RAW_MODULE_POINTER}usize as *mut u8
+}}
+#[no_mangle]
+pub extern "C" fn molt_cpython_abi_run_static_extension_init(init_addr: u64, module_name_bits: u64) -> u64 {{
+    TRANSACTIONS.fetch_add(1, Ordering::SeqCst);
+    if init_addr != {SYMBOL} as usize as u64 {{ FAILURE.store(1, Ordering::SeqCst); return 0; }}
+    if module_name_bits != {module_name_bits}u64 {{ FAILURE.store(2, Ordering::SeqCst); return 0; }}
+    let init: extern "C" fn() -> *mut u8 = unsafe {{ core::mem::transmute(init_addr as usize) }};
+    if init() as usize != {RAW_MODULE_POINTER}usize {{ FAILURE.store(3, Ordering::SeqCst); return 0; }}
+    {OWNED_MODULE}u64
+}}
+#[no_mangle]
+pub extern "C" fn pyinit_probe_count(index: u64) -> u64 {{
+    match index {{
+        0 => INIT_CALLS.load(Ordering::SeqCst),
+        1 => TRANSACTIONS.load(Ordering::SeqCst),
+        2 => MODULE_RELEASES.load(Ordering::SeqCst),
+        _ => FAILURE.load(Ordering::SeqCst),
+    }}
+}}
+"#,
+        generated_object_abi_symbol = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
+    );
+    let harness_source = format!(
+        "extern \"C\" {{ fn native_callable_dispatch() -> u64; fn pyinit_probe_count(index: u64) -> u64; }}\n\
+             fn main() {{ let actual = unsafe {{ native_callable_dispatch() }}; \
+             let [init_calls, transactions, module_releases, failure] = [0, 1, 2, 3].map(|index| unsafe {{ pyinit_probe_count(index) }}); \
+             assert_eq!(failure, 0, \"runtime transaction received the wrong initializer address or payload\"); \
+             assert_eq!((init_calls, transactions), (1, 1), \"PyInit must run exactly once, inside the runtime transaction\"); \
+             assert_eq!(actual, {OWNED_MODULE}u64, \"compiled code must return the transaction's owned module, not the raw pointer\"); \
+             assert_eq!(module_releases, 0, \"a bound owned module must transfer to the caller without release\"); }}\n"
+    );
+    link_and_run_native_object(
+        &rustc,
+        "native-pyinit-transaction-link",
+        output.bytes,
+        &provider_source,
+        &harness_source,
+        "native PyInit runtime transaction",
+    );
 }
 
 #[test]
@@ -2712,7 +2814,7 @@ fn native_direct_symbol_rejects_missing_symbol() {
         "direct_symbol",
         "molt.pyinit_module_v1",
         None,
-        &[],
+        &["module_name"],
     );
     let _ = SimpleBackend::new().compile(ir);
 }
@@ -2725,7 +2827,7 @@ fn native_direct_symbol_rejects_empty_symbol() {
         "direct_symbol",
         "molt.pyinit_module_v1",
         Some(""),
-        &[],
+        &["module_name"],
     );
     let _ = SimpleBackend::new().compile(ir);
 }

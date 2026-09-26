@@ -1646,7 +1646,7 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
             };
             if let Some(new_bits) = new_bits {
                 let new_type_bits = type_of_bits(_py, new_bits);
-                if new_type_bits == builtins.builtin_function_or_method {
+                if builtins.is_builtin_callable_class(new_type_bits) {
                     let self_obj_bits = match copyreg_attr_optional(_py, new_bits, b"__self__") {
                         Ok(bits) => bits,
                         Err(err_bits) => return err_bits,

@@ -54,40 +54,6 @@ _LoaderBasics = _MoltLoader
 _MOLT_LOADER = BuiltinImporter()
 
 
-class ModuleSpec:
-    def __init__(
-        self,
-        name: str,
-        loader: object | None = None,
-        origin: str | None = None,
-        is_package: bool | None = None,
-    ) -> None:
-        self.name = str(name)
-        self.loader = loader
-        self.origin = origin
-        self.loader_state = None
-        self.cached = None
-        if is_package:
-            self.submodule_search_locations = []
-        else:
-            self.submodule_search_locations = None
-        self.has_location = origin is not None
-
-    @property
-    def parent(self) -> str:
-        if self.submodule_search_locations is None:
-            return self.name.rpartition(".")[0]
-        return self.name
-
-    def __repr__(self) -> str:
-        return (
-            "ModuleSpec("
-            f"name={self.name!r}, "
-            f"loader={self.loader!r}, "
-            f"origin={self.origin!r})"
-        )
-
-
 SOURCE_SUFFIXES = [".py"]
 BYTECODE_SUFFIXES = [".pyc"]
 DEBUG_BYTECODE_SUFFIXES = [".pyc"]
@@ -99,6 +65,11 @@ def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):
     from _intrinsics import require_intrinsic as _require
 
     return _require(name, namespace)
+
+
+# The runtime owns the one ModuleSpec class. Runtime importlib consumers and
+# extension initialization construct this same type without this facade.
+ModuleSpec = _require_intrinsic("molt_importlib_module_spec_type")()
 
 
 def _resolve_platform() -> str:
@@ -287,8 +258,24 @@ class ExtensionFileLoader(_FileLoader):
     def get_filename(self, _fullname: str | None = None) -> str:
         return self.path
 
-    def create_module(self, _spec: ModuleSpec):
-        return None
+    def create_module(self, spec: ModuleSpec):
+        module_name = spec.name
+        modules = getattr(_sys, "modules", None)
+        previous = (
+            modules.get(module_name, _MISSING_SYS_MODULE)
+            if isinstance(modules, dict)
+            else _MISSING_SYS_MODULE
+        )
+        try:
+            _ensure_intrinsics()
+            _restore_sys_modules_entry(modules, module_name, previous)
+            module = _MOLT_IMPORTLIB_EXTENSION_LOADER_CREATE_MODULE(
+                module_name, self.path, spec
+            )
+            _raise_loader_pending_exception()
+            return module
+        finally:
+            _restore_sys_modules_entry(modules, module_name, previous)
 
     def exec_module(self, module) -> None:
         _run_compiled_loader_exec(
@@ -447,6 +434,14 @@ def _run_compiled_loader_exec(
 
 
 def _check_loader_exec_result(result) -> None:
+    _raise_loader_pending_exception()
+    if result is not None:
+        raise RuntimeError(
+            "invalid importlib loader execution intrinsic result: expected None"
+        )
+
+
+def _raise_loader_pending_exception() -> None:
     if _MOLT_EXCEPTION_PENDING():
         exc = _MOLT_EXCEPTION_LAST_PENDING()
         cleared = _MOLT_EXCEPTION_CLEAR()
@@ -457,10 +452,6 @@ def _check_loader_exec_result(result) -> None:
         if isinstance(exc, BaseException):
             raise exc
         raise RuntimeError("importlib loader execution failed")
-    if result is not None:
-        raise RuntimeError(
-            "invalid importlib loader execution intrinsic result: expected None"
-        )
 
 
 class PathFinder:
@@ -602,6 +593,7 @@ _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = None
 _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = None
 _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE = None
 _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE = None
+_MOLT_IMPORTLIB_EXTENSION_LOADER_CREATE_MODULE = None
 _MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE = None
 _MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE = None
 _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS = None
@@ -626,6 +618,7 @@ def _ensure_intrinsics() -> None:
     global _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE
     global _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE
     global _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE
+    global _MOLT_IMPORTLIB_EXTENSION_LOADER_CREATE_MODULE
     global _MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE
     global _MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE
     global _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS
@@ -661,6 +654,9 @@ def _ensure_intrinsics() -> None:
     )
     importlib_zip_source_loader_exec_module = _require_intrinsic(
         "molt_importlib_zip_source_loader_exec_module"
+    )
+    importlib_extension_loader_create_module = _require_intrinsic(
+        "molt_importlib_extension_loader_create_module"
     )
     importlib_extension_loader_exec_module = _require_intrinsic(
         "molt_importlib_extension_loader_exec_module"
@@ -704,6 +700,9 @@ def _ensure_intrinsics() -> None:
     )
     _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE = (
         importlib_zip_source_loader_exec_module
+    )
+    _MOLT_IMPORTLIB_EXTENSION_LOADER_CREATE_MODULE = (
+        importlib_extension_loader_create_module
     )
     _MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE = importlib_extension_loader_exec_module
     _MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE = (

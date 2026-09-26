@@ -836,8 +836,7 @@ mod bootstrap_failure_tests {
     #[test]
     fn isolated_runtime_rejects_process_static_cpython_ownership() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        let prepared = crate::molt_cpython_abi_prepare_static_extension();
-        assert_eq!(prepared, MoltObject::from_bool(true).bits());
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         let primary_bindings = primary_exception_bindings();
         let retained_before = molt_cpython_abi::api::object::runtime_retained_thread_state_count();
 
@@ -856,7 +855,12 @@ mod bootstrap_failure_tests {
                             crate::state::runtime_state::owns_process_cpython_state(
                                 crate::runtime_state(_py),
                             );
-                        let prepare_result = crate::molt_cpython_abi_prepare_static_extension();
+                        // Admission must reject the isolate before touching a
+                        // callback address or allocating initializer state.
+                        let prepare_result = crate::molt_cpython_abi_run_static_extension_init(
+                            0,
+                            MoltObject::none().bits(),
+                        );
                         let (prepare_runtime_error, prepare_message) = pending_runtime_error(_py);
                         let _ = molt_exception_clear();
 
@@ -952,9 +956,8 @@ mod bootstrap_failure_tests {
             retained_before,
             "rejected isolate admission leaked retained CPython thread state"
         );
-        assert_eq!(
-            crate::molt_cpython_abi_prepare_static_extension(),
-            MoltObject::from_bool(true).bits(),
+        assert!(
+            crate::cpython_abi_hooks::register_cpython_hooks(),
             "primary C-extension admission must remain ready after isolate teardown"
         );
     }

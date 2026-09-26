@@ -806,12 +806,12 @@ fn dynamic_calls_release_discarded_owned_results() {
 }
 
 #[test]
-fn native_symbol_results_preserve_owned_and_raw_abis() {
+fn native_symbol_results_release_only_discarded_owned_results() {
     for (abi, argc, owns_result) in [
         ("molt.object_call_v1", 1, true),
         ("molt.object_callargs_v1", 1, true),
         ("molt.forward_f32_v1", 1, true),
-        ("molt.pyinit_module_v1", 0, false),
+        ("molt.pyinit_module_v1", 1, true),
     ] {
         for result in [None, Some("none"), Some("result")] {
             let bound = result == Some("result");

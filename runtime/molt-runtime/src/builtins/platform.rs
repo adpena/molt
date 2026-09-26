@@ -964,55 +964,6 @@ fn source_extension_loader_dlopen(
     Ok(())
 }
 
-/// Load a native C extension (.so/.dylib/.pyd) via dlopen and inject its
-/// module dict entries into the caller's namespace.
-#[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
-fn cext_loader_dlopen(
-    _py: &PyToken<'_>,
-    namespace_ptr: *mut u8,
-    module_name: &str,
-    path: &str,
-) -> Result<(), String> {
-    // Initialize the CPython ABI bridge and register runtime hooks (idempotent).
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
-    if !crate::cpython_abi_hooks::register_cpython_hooks() {
-        return Err("process-static C extensions require the primary runtime".into());
-    }
-
-    // For "pkg.mod", use "mod" as the init function suffix.
-    let init_name = module_name.rsplit('.').next().unwrap_or(module_name);
-
-    let ext_path = std::path::Path::new(path);
-    let module_bits =
-        unsafe { molt_cpython_abi::loader::load_cpython_extension(ext_path, init_name) }
-            .map_err(|e| format!("{e}"))?;
-
-    if module_bits == 0 || module_bits == MoltObject::none().bits() {
-        return Err("PyInit returned a null/None module".into());
-    }
-
-    // Copy the loaded module's __dict__ entries into the namespace dict.
-    let module_obj = obj_from_bits(module_bits);
-    if let Some(module_ptr) = module_obj.as_ptr() {
-        let module_dict_bits = unsafe { crate::object::layout::module_dict_bits(module_ptr) };
-        let module_dict = obj_from_bits(module_dict_bits);
-        if let Some(dict_ptr) = module_dict.as_ptr()
-            && unsafe { object_type_id(dict_ptr) == TYPE_ID_DICT }
-        {
-            unsafe {
-                crate::object::ops_dict::dict_update_apply(
-                    _py,
-                    MoltObject::from_ptr(namespace_ptr).bits(),
-                    crate::object::ops_dict::dict_update_set_in_place,
-                    module_dict_bits,
-                );
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn importlib_exec_compiled_module(
     _py: &PyToken<'_>,
     target_module_bits: u64,
@@ -3070,6 +3021,32 @@ struct ImportlibSpecExecutionOptions {
     allow_load_module_fallback: bool,
 }
 
+thread_local! {
+    // Only the spec transaction may add its exact module to the runtime cache.
+    // A direct Loader.exec_module call owns neither sys.modules nor cache
+    // publication, even if the caller supplied a valid physical C module.
+    static IMPORTLIB_SPEC_EXEC_TARGET: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+struct ImportlibSpecExecTargetGuard(Option<u64>);
+
+impl ImportlibSpecExecTargetGuard {
+    fn enter(module_bits: u64) -> Self {
+        let previous = IMPORTLIB_SPEC_EXEC_TARGET.with(|target| target.replace(Some(module_bits)));
+        Self(previous)
+    }
+}
+
+impl Drop for ImportlibSpecExecTargetGuard {
+    fn drop(&mut self) {
+        IMPORTLIB_SPEC_EXEC_TARGET.with(|target| target.set(self.0));
+    }
+}
+
+fn importlib_spec_exec_owns(module_bits: u64) -> bool {
+    IMPORTLIB_SPEC_EXEC_TARGET.with(|target| target.get() == Some(module_bits))
+}
+
 fn importlib_spec_transaction_should_preseed(
     _py: &PyToken<'_>,
     spec_bits: u64,
@@ -3185,7 +3162,10 @@ fn importlib_spec_execution_transaction(
             }
         };
         if let Some(exec_bits) = exec_lookup {
-            let out_bits = unsafe { call_callable1(_py, exec_bits, module_bits) };
+            let out_bits = {
+                let _exec_target = ImportlibSpecExecTargetGuard::enter(module_bits);
+                unsafe { call_callable1(_py, exec_bits, module_bits) }
+            };
             dec_ref_bits(_py, exec_bits);
             if exception_pending(_py) {
                 if !obj_from_bits(out_bits).is_none() {
@@ -3366,7 +3346,7 @@ fn importlib_import_with_fallback(
     // native C extension (.so / .dylib) from sys.path before giving up.
     #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
     if result.is_err() && importlib_exception_should_fallback(_py, resolved) {
-        if let Some(module_bits) = importlib_try_cext_on_sys_path(_py, resolved, modules_ptr) {
+        if let Some(module_bits) = importlib_try_cext_on_sys_path(_py, resolved)? {
             return Ok(module_bits);
         }
         // Extension search failed too – restore the original error.
@@ -3426,16 +3406,18 @@ fn importlib_import_with_fallback_inner(
 fn importlib_try_cext_on_sys_path(
     _py: &PyToken<'_>,
     module_name: &str,
-    modules_ptr: *mut u8,
-) -> Option<u64> {
+) -> Result<Option<u64>, u64> {
     // Retrieve sys.path as a Vec<String>.
-    let sys = importlib_system_module(_py).ok()?;
+    let sys = importlib_system_module(_py)?;
     let path_name = intern_runtime_static_name(_py, b"path");
-    let path_attr = getattr_optional_bits(_py, sys.bits(), path_name).ok()??;
-    let search_paths = string_sequence_arg_from_bits(_py, path_attr, "sys.path").ok()?;
+    let Some(path_attr) = getattr_optional_bits(_py, sys.bits(), path_name)? else {
+        return Ok(None);
+    };
+    let search_paths = string_sequence_arg_from_bits(_py, path_attr, "sys.path");
     if !obj_from_bits(path_attr).is_none() {
         dec_ref_bits(_py, path_attr);
     }
+    let search_paths = search_paths?;
 
     // Search each directory for a matching .so / .dylib file.
     for dir in &search_paths {
@@ -3443,31 +3425,27 @@ fn importlib_try_cext_on_sys_path(
             // Found a candidate – attempt dlopen.
             molt_cpython_abi::bridge::molt_cpython_abi_init();
             if !crate::cpython_abi_hooks::register_cpython_hooks() {
-                return None;
+                return Err(MoltObject::none().bits());
             }
 
-            let init_name = module_name.rsplit('.').next().unwrap_or(module_name);
             let path_obj = std::path::Path::new(&ext_path);
             let module_bits = match unsafe {
-                molt_cpython_abi::loader::load_cpython_extension(path_obj, init_name)
+                molt_cpython_abi::loader::load_cpython_extension(path_obj, module_name)
             } {
                 Ok(bits) => bits,
-                Err(_) => continue,
+                Err(error) => {
+                    if crate::cpython_abi_hooks::transfer_pending_cpython_exception()
+                        || exception_pending(_py)
+                    {
+                        return Err(MoltObject::none().bits());
+                    }
+                    return Err(raise_exception::<_>(_py, "ImportError", &error.to_string()));
+                }
             };
-            if module_bits == 0 || module_bits == MoltObject::none().bits() {
-                continue;
-            }
-
-            // Register in sys.modules so subsequent imports hit the cache.
-            if let Ok(key_bits) = alloc_str_bits(_py, module_name) {
-                let _ = importlib_dict_set_string_key(_py, modules_ptr, key_bits, module_bits);
-                dec_ref_bits(_py, key_bits);
-            }
-
-            return Some(module_bits);
+            return Ok(Some(module_bits));
         }
     }
-    None
+    Ok(None)
 }
 
 fn importlib_bind_submodule_on_parent(

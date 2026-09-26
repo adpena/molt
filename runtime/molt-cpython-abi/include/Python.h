@@ -7,17 +7,16 @@
  *   cc -I include myext.c          (uses include/Python.h -> include/molt/Python.h)
  *
  * This header provides the linked declaration surface. Object and numeric
- * scalar layout is shared with include/molt/Python.h through the single
- * include/molt/shared/_numeric_scalar_abi.h authority; the headers differ only in
- * how non-scalar operations are transported.
+ * scalar, module-definition, and C-callable layouts and entry points are
+ * shared with include/molt/Python.h through include/molt/shared; the headers
+ * differ only in how the remaining operations are transported.
  *
  * If you are unsure which to use, use the top-level one:
  *   cc -O2 -shared -fPIC -I include myext.c -o _myext.so
  *
- * Extensions compiled against THIS header link against:
- *   libmolt_cpython_abi.dylib  (macOS)
- *   libmolt_cpython_abi.so     (Linux)
- *   molt_cpython_abi.dll       (Windows)
+ * Extensions compiled against THIS header link to the image that owns both
+ * the Molt runtime and CPython ABI. On Windows, define
+ * MOLT_CPYTHON_ABI_SHARED=1 when importing C-API data from that DLL.
  *
  * Add include/molt/shared as a second include root (source or installed).
  * ABI note: CPython 3.12 traditional layouts are checked against the Rust
@@ -46,14 +45,11 @@
 #include <string.h>
 #include <sys/types.h>
 #include <_c_data_model.h>
+#include <_c_api_linkage.h>
 
 #ifndef PyAPI_FUNC
 #define PyAPI_FUNC(RTYPE) extern RTYPE
 #endif
-#ifndef PyAPI_DATA
-#define PyAPI_DATA(RTYPE) extern RTYPE
-#endif
-
 #define MOLT_CPYTHON_ABI 1
 /*
  * Source-recompiled extensions sometimes vendor pythoncapi-compat to emulate
@@ -567,47 +563,8 @@ typedef struct _heaptypeobject {
 #define Py_AUDIT_READ           2
 #define _Py_WRITE_RESTRICTED    4
 
-/* ── PyMethodDef ──────────────────────────────────────────────────────────── */
-
-typedef PyObject *(*PyCFunction)(PyObject *, PyObject *);
-typedef PyObject *(*PyCFunctionWithKeywords)(PyObject *, PyObject *, PyObject *);
-typedef PyObject *(*_PyCFunctionFast)(PyObject *, PyObject *const *, Py_ssize_t);
-typedef PyObject *(*_PyCFunctionFastWithKeywords)(PyObject *, PyObject *const *, Py_ssize_t, PyObject *);
-typedef PyObject *(*PyCMethod)(PyObject *, PyTypeObject *, PyObject *const *, size_t, PyObject *);
-
-#define METH_VARARGS    0x0001
-#define METH_KEYWORDS   0x0002
-#define METH_NOARGS     0x0004
-#define METH_O          0x0008
-#define METH_CLASS      0x0010
-#define METH_STATIC     0x0020
-#define METH_COEXIST    0x0040
-#define METH_FASTCALL   0x0080
-#define METH_METHOD     0x0200
-
-typedef struct PyMethodDef {
-    const char  *ml_name;
-    PyCFunction  ml_meth;
-    int          ml_flags;
-    const char  *ml_doc;
-} PyMethodDef;
-
-/* Sentinel that terminates a PyMethodDef array. */
-#define PY_METHODDEF_SENTINEL   { NULL, NULL, 0, NULL }
-
-typedef struct {
-    PyObject_HEAD
-    PyMethodDef *m_ml;
-    PyObject *m_self;
-    PyObject *m_module;
-    PyObject *m_weakreflist;
-    vectorcallfunc vectorcall;
-} PyCFunctionObject;
-
-typedef struct {
-    PyCFunctionObject func;
-    PyTypeObject *mm_class;
-} PyCMethodObject;
+/* PyMethodDef, call conventions, and concrete callable layouts are shared. */
+#include <_cfunction_abi.h>
 
 typedef struct {
     PyObject_HEAD
@@ -804,33 +761,10 @@ typedef struct PyType_Spec {
 
 #include "_molt_typeslots.generated.h"
 
-typedef struct PyModuleDef_Slot {
-    int slot;
-    void *value;
-} PyModuleDef_Slot;
+/* PyModuleDef and its initializer are shared with the source header. */
+#include <_module_definition_abi.h>
 
-/* ── PyModuleDef ──────────────────────────────────────────────────────────── */
-
-typedef struct PyModuleDef_Base {
-    PyObject_HEAD
-    PyObject *(*m_init)(void);
-    Py_ssize_t m_index;
-    PyObject *m_copy;
-} PyModuleDef_Base;
-
-#define PyModuleDef_HEAD_INIT   { 1, NULL, NULL, 0, NULL }
-
-typedef struct PyModuleDef {
-    PyModuleDef_Base    m_base;
-    const char         *m_name;
-    const char         *m_doc;
-    Py_ssize_t          m_size;
-    PyMethodDef        *m_methods;
-    PyModuleDef_Slot   *m_slots;
-    traverseproc        m_traverse;
-    inquiry             m_clear;
-    freefunc            m_free;
-} PyModuleDef;
+#include <_module_callable_exports.h>
 
 /* Slot IDs (PyModuleDef_Slot.slot, an int) match CPython 3.12 Include/moduleobject.h. */
 #define Py_mod_create 1
@@ -866,54 +800,45 @@ typedef struct PyGetSetDef {
 
 /* ── PyMODINIT_FUNC ───────────────────────────────────────────────────────── */
 
-/* CPython parity: module init functions defined in C++ translation units
- * must keep C linkage and an unmangled symbol name; the macro carries the
- * extern "C" itself because the definition site sits outside this header's
- * extern "C" block. */
-#ifdef __cplusplus
-#define PyMODINIT_FUNC  extern "C" __attribute__((visibility("default"))) PyObject *
-#else
-#define PyMODINIT_FUNC  __attribute__((visibility("default"))) PyObject *
-#endif
+/* The source and linked ABI headers share one platform export contract. */
+#include <_module_init_export.h>
+#define PyMODINIT_FUNC MOLT_PYMODINIT_FUNC
 
 /* ── Singleton singletons ─────────────────────────────────────────────────── */
 
-extern PyObject Py_None;
-extern PyLongObject _Py_TrueStruct;
-extern PyLongObject _Py_FalseStruct;
-extern PyObject Py_NotImplementedSentinel;
-extern PyObject Py_EllipsisObject;
+PyAPI_DATA(PyObject) Py_None;
+PyAPI_DATA(PyLongObject) _Py_TrueStruct;
+PyAPI_DATA(PyLongObject) _Py_FalseStruct;
+PyAPI_DATA(PyObject) Py_NotImplementedSentinel;
+PyAPI_DATA(PyObject) Py_EllipsisObject;
 
-extern PyTypeObject PyLong_Type;
-extern PyTypeObject PyFloat_Type;
-extern PyTypeObject PyComplex_Type;
-extern PyTypeObject PyUnicode_Type;
-extern PyTypeObject PyBytes_Type;
-extern PyTypeObject PyByteArray_Type;
-extern PyTypeObject PyBool_Type;
-extern PyTypeObject PyList_Type;
-extern PyTypeObject PyTuple_Type;
-extern PyTypeObject PyDict_Type;
-extern PyTypeObject PyDictProxy_Type;
-extern PyTypeObject Py_GenericAliasType;
-extern PyTypeObject PyContextVar_Type;
-extern PyTypeObject PySet_Type;
-extern PyTypeObject PyFrozenSet_Type;
-extern PyTypeObject PyMemoryView_Type;
-extern PyTypeObject PyModule_Type;
-extern PyTypeObject PyType_Type;
-extern PyTypeObject PyBaseObject_Type;
-extern PyTypeObject PyNone_Type;
-extern PyTypeObject PyNotImplemented_Type;
-extern PyTypeObject PyCFunction_Type;
-extern PyTypeObject PyCMethod_Type;
-extern PyTypeObject PyMethod_Type;
-extern PyTypeObject PyMethodDescr_Type;
-extern PyTypeObject PyMemberDescr_Type;
-extern PyTypeObject PyGetSetDescr_Type;
-extern PyTypeObject PyCapsule_Type;
-extern PyTypeObject PySlice_Type;
-extern PyTypeObject PyTraceBack_Type;
+PyAPI_DATA(PyTypeObject) PyLong_Type;
+PyAPI_DATA(PyTypeObject) PyFloat_Type;
+PyAPI_DATA(PyTypeObject) PyComplex_Type;
+PyAPI_DATA(PyTypeObject) PyUnicode_Type;
+PyAPI_DATA(PyTypeObject) PyBytes_Type;
+PyAPI_DATA(PyTypeObject) PyByteArray_Type;
+PyAPI_DATA(PyTypeObject) PyBool_Type;
+PyAPI_DATA(PyTypeObject) PyList_Type;
+PyAPI_DATA(PyTypeObject) PyTuple_Type;
+PyAPI_DATA(PyTypeObject) PyDict_Type;
+PyAPI_DATA(PyTypeObject) PyDictProxy_Type;
+PyAPI_DATA(PyTypeObject) Py_GenericAliasType;
+PyAPI_DATA(PyTypeObject) PyContextVar_Type;
+PyAPI_DATA(PyTypeObject) PySet_Type;
+PyAPI_DATA(PyTypeObject) PyFrozenSet_Type;
+PyAPI_DATA(PyTypeObject) PyMemoryView_Type;
+PyAPI_DATA(PyTypeObject) PyType_Type;
+PyAPI_DATA(PyTypeObject) PyBaseObject_Type;
+PyAPI_DATA(PyTypeObject) PyNone_Type;
+PyAPI_DATA(PyTypeObject) PyNotImplemented_Type;
+PyAPI_DATA(PyTypeObject) PyMethod_Type;
+PyAPI_DATA(PyTypeObject) PyMethodDescr_Type;
+PyAPI_DATA(PyTypeObject) PyMemberDescr_Type;
+PyAPI_DATA(PyTypeObject) PyGetSetDescr_Type;
+PyAPI_DATA(PyTypeObject) PyCapsule_Type;
+PyAPI_DATA(PyTypeObject) PySlice_Type;
+PyAPI_DATA(PyTypeObject) PyTraceBack_Type;
 
 static inline PyTypeObject *_molt_builtin_type_object_borrowed(const char *name) {
     if (name == NULL) return &PyBaseObject_Type;
@@ -1487,25 +1412,7 @@ extern PyObject   *PyDict_Values        (PyObject *op);
 
 #define PyDict_GET_SIZE(op) PyDict_Size((PyObject *)(op))
 
-/* Module */
-extern PyObject *PyModule_New          (const char *name);
-extern PyObject *PyModule_GetDict      (PyObject *module);
-extern int       PyModule_AddObject    (PyObject *module, const char *name, PyObject *value);
-extern int       PyModule_AddIntConstant   (PyObject *module, const char *name, long value);
-extern int       PyModule_AddStringConstant(PyObject *module, const char *name, const char *value);
-extern int       PyModule_AddObjectRef     (PyObject *module, const char *name, PyObject *value);
-extern PyObject *PyModuleDef_Init      (PyModuleDef *def);
-extern PyObject *PyModule_Create2      (PyModuleDef *def, int module_api_version);
-extern PyObject *PyModule_NewObject    (PyObject *name);
-extern int       PyModule_Check        (PyObject *module);
-extern int PyModule_CheckExact(PyObject *module);
-extern const char *PyModule_GetName    (PyObject *module);
-extern void     *PyModule_GetState     (PyObject *module);
-extern int       PyState_AddModule     (PyObject *module, PyModuleDef *def);
-extern PyObject *PyState_FindModule    (PyModuleDef *def);
-extern int       PyState_RemoveModule  (PyModuleDef *def);
-
-#define PyModule_Create(def) PyModule_Create2(def, 1013)
+/* Module and state entry points come from _module_callable_exports.h. */
 
 /* Errors */
 extern void      PyErr_SetString  (PyObject *exc_type, const char *message);
@@ -1630,20 +1537,10 @@ extern int       PyContextVar_Get      (PyObject *var, PyObject *default_value, 
 extern PyObject *PyContextVar_Set      (PyObject *var, PyObject *value);
 
 /* Function objects */
-extern int PyCFunction_Check(PyObject *op);
-extern PyCFunction PyCFunction_GetFunction(PyObject *op);
-extern PyObject *PyCFunction_GetSelf(PyObject *op);
-extern int PyCFunction_GetFlags(PyObject *op);
-extern PyObject *PyCFunction_New(PyMethodDef *ml, PyObject *self);
-extern PyObject *PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module);
 extern PyObject *PyMethod_New(PyObject *func, PyObject *self);
 extern int PyMethod_Check(PyObject *op);
 extern PyObject *PyMethod_GET_FUNCTION(PyObject *op);
 extern PyObject *PyMethod_GET_SELF(PyObject *op);
-
-#define PyCFunction_GET_FUNCTION(op) PyCFunction_GetFunction((PyObject *)(op))
-#define PyCFunction_GET_SELF(op)     PyCFunction_GetSelf((PyObject *)(op))
-#define PyCFunction_GET_FLAGS(op)    PyCFunction_GetFlags((PyObject *)(op))
 
 /* Capsules */
 typedef void (*PyCapsule_Destructor)(PyObject *);
@@ -1713,72 +1610,72 @@ extern int PyArg_UnpackTuple            (PyObject *args, const char *name,
                                          Py_ssize_t min, Py_ssize_t max, ...);
 
 /* Complete CPython 3.12 public exception type-symbol surface. */
-extern PyObject PyExc_BaseException;
-extern PyObject PyExc_Exception;
-extern PyObject PyExc_BaseExceptionGroup;
-extern PyObject PyExc_StopAsyncIteration;
-extern PyObject PyExc_StopIteration;
-extern PyObject PyExc_GeneratorExit;
-extern PyObject PyExc_ArithmeticError;
-extern PyObject PyExc_LookupError;
-extern PyObject PyExc_AssertionError;
-extern PyObject PyExc_AttributeError;
-extern PyObject PyExc_BufferError;
-extern PyObject PyExc_EOFError;
-extern PyObject PyExc_FloatingPointError;
-extern PyObject PyExc_OSError;
-extern PyObject PyExc_ImportError;
-extern PyObject PyExc_ModuleNotFoundError;
-extern PyObject PyExc_IndexError;
-extern PyObject PyExc_KeyError;
-extern PyObject PyExc_KeyboardInterrupt;
-extern PyObject PyExc_MemoryError;
-extern PyObject PyExc_NameError;
-extern PyObject PyExc_OverflowError;
-extern PyObject PyExc_RuntimeError;
-extern PyObject PyExc_RecursionError;
-extern PyObject PyExc_NotImplementedError;
-extern PyObject PyExc_SyntaxError;
-extern PyObject PyExc_IndentationError;
-extern PyObject PyExc_TabError;
-extern PyObject PyExc_ReferenceError;
-extern PyObject PyExc_SystemError;
-extern PyObject PyExc_SystemExit;
-extern PyObject PyExc_TypeError;
-extern PyObject PyExc_UnboundLocalError;
-extern PyObject PyExc_UnicodeError;
-extern PyObject PyExc_UnicodeEncodeError;
-extern PyObject PyExc_UnicodeDecodeError;
-extern PyObject PyExc_UnicodeTranslateError;
-extern PyObject PyExc_ValueError;
-extern PyObject PyExc_ZeroDivisionError;
-extern PyObject PyExc_BlockingIOError;
-extern PyObject PyExc_BrokenPipeError;
-extern PyObject PyExc_ChildProcessError;
-extern PyObject PyExc_ConnectionError;
-extern PyObject PyExc_ConnectionAbortedError;
-extern PyObject PyExc_ConnectionRefusedError;
-extern PyObject PyExc_ConnectionResetError;
-extern PyObject PyExc_FileExistsError;
-extern PyObject PyExc_FileNotFoundError;
-extern PyObject PyExc_InterruptedError;
-extern PyObject PyExc_IsADirectoryError;
-extern PyObject PyExc_NotADirectoryError;
-extern PyObject PyExc_PermissionError;
-extern PyObject PyExc_ProcessLookupError;
-extern PyObject PyExc_TimeoutError;
-extern PyObject PyExc_Warning;
-extern PyObject PyExc_UserWarning;
-extern PyObject PyExc_DeprecationWarning;
-extern PyObject PyExc_PendingDeprecationWarning;
-extern PyObject PyExc_SyntaxWarning;
-extern PyObject PyExc_RuntimeWarning;
-extern PyObject PyExc_FutureWarning;
-extern PyObject PyExc_ImportWarning;
-extern PyObject PyExc_UnicodeWarning;
-extern PyObject PyExc_BytesWarning;
-extern PyObject PyExc_EncodingWarning;
-extern PyObject PyExc_ResourceWarning;
+PyAPI_DATA(PyObject) PyExc_BaseException;
+PyAPI_DATA(PyObject) PyExc_Exception;
+PyAPI_DATA(PyObject) PyExc_BaseExceptionGroup;
+PyAPI_DATA(PyObject) PyExc_StopAsyncIteration;
+PyAPI_DATA(PyObject) PyExc_StopIteration;
+PyAPI_DATA(PyObject) PyExc_GeneratorExit;
+PyAPI_DATA(PyObject) PyExc_ArithmeticError;
+PyAPI_DATA(PyObject) PyExc_LookupError;
+PyAPI_DATA(PyObject) PyExc_AssertionError;
+PyAPI_DATA(PyObject) PyExc_AttributeError;
+PyAPI_DATA(PyObject) PyExc_BufferError;
+PyAPI_DATA(PyObject) PyExc_EOFError;
+PyAPI_DATA(PyObject) PyExc_FloatingPointError;
+PyAPI_DATA(PyObject) PyExc_OSError;
+PyAPI_DATA(PyObject) PyExc_ImportError;
+PyAPI_DATA(PyObject) PyExc_ModuleNotFoundError;
+PyAPI_DATA(PyObject) PyExc_IndexError;
+PyAPI_DATA(PyObject) PyExc_KeyError;
+PyAPI_DATA(PyObject) PyExc_KeyboardInterrupt;
+PyAPI_DATA(PyObject) PyExc_MemoryError;
+PyAPI_DATA(PyObject) PyExc_NameError;
+PyAPI_DATA(PyObject) PyExc_OverflowError;
+PyAPI_DATA(PyObject) PyExc_RuntimeError;
+PyAPI_DATA(PyObject) PyExc_RecursionError;
+PyAPI_DATA(PyObject) PyExc_NotImplementedError;
+PyAPI_DATA(PyObject) PyExc_SyntaxError;
+PyAPI_DATA(PyObject) PyExc_IndentationError;
+PyAPI_DATA(PyObject) PyExc_TabError;
+PyAPI_DATA(PyObject) PyExc_ReferenceError;
+PyAPI_DATA(PyObject) PyExc_SystemError;
+PyAPI_DATA(PyObject) PyExc_SystemExit;
+PyAPI_DATA(PyObject) PyExc_TypeError;
+PyAPI_DATA(PyObject) PyExc_UnboundLocalError;
+PyAPI_DATA(PyObject) PyExc_UnicodeError;
+PyAPI_DATA(PyObject) PyExc_UnicodeEncodeError;
+PyAPI_DATA(PyObject) PyExc_UnicodeDecodeError;
+PyAPI_DATA(PyObject) PyExc_UnicodeTranslateError;
+PyAPI_DATA(PyObject) PyExc_ValueError;
+PyAPI_DATA(PyObject) PyExc_ZeroDivisionError;
+PyAPI_DATA(PyObject) PyExc_BlockingIOError;
+PyAPI_DATA(PyObject) PyExc_BrokenPipeError;
+PyAPI_DATA(PyObject) PyExc_ChildProcessError;
+PyAPI_DATA(PyObject) PyExc_ConnectionError;
+PyAPI_DATA(PyObject) PyExc_ConnectionAbortedError;
+PyAPI_DATA(PyObject) PyExc_ConnectionRefusedError;
+PyAPI_DATA(PyObject) PyExc_ConnectionResetError;
+PyAPI_DATA(PyObject) PyExc_FileExistsError;
+PyAPI_DATA(PyObject) PyExc_FileNotFoundError;
+PyAPI_DATA(PyObject) PyExc_InterruptedError;
+PyAPI_DATA(PyObject) PyExc_IsADirectoryError;
+PyAPI_DATA(PyObject) PyExc_NotADirectoryError;
+PyAPI_DATA(PyObject) PyExc_PermissionError;
+PyAPI_DATA(PyObject) PyExc_ProcessLookupError;
+PyAPI_DATA(PyObject) PyExc_TimeoutError;
+PyAPI_DATA(PyObject) PyExc_Warning;
+PyAPI_DATA(PyObject) PyExc_UserWarning;
+PyAPI_DATA(PyObject) PyExc_DeprecationWarning;
+PyAPI_DATA(PyObject) PyExc_PendingDeprecationWarning;
+PyAPI_DATA(PyObject) PyExc_SyntaxWarning;
+PyAPI_DATA(PyObject) PyExc_RuntimeWarning;
+PyAPI_DATA(PyObject) PyExc_FutureWarning;
+PyAPI_DATA(PyObject) PyExc_ImportWarning;
+PyAPI_DATA(PyObject) PyExc_UnicodeWarning;
+PyAPI_DATA(PyObject) PyExc_BytesWarning;
+PyAPI_DATA(PyObject) PyExc_EncodingWarning;
+PyAPI_DATA(PyObject) PyExc_ResourceWarning;
 
 #define PyExc_BaseException        (&PyExc_BaseException)
 #define PyExc_Exception            (&PyExc_Exception)
@@ -1856,7 +1753,7 @@ extern PyObject PyExc_ResourceWarning;
 
 extern PyTypeObject *molt_capi_semantic_type(PyObject *obj);
 extern int molt_capi_set_semantic_type(PyObject *obj, PyTypeObject *type_obj);
-extern PyTypeObject MoltManaged_Type;
+PyAPI_DATA(PyTypeObject) MoltManaged_Type;
 static inline PyTypeObject *_molt_py_typeof(PyObject *obj) {
     if (obj == NULL) {
         return NULL;
@@ -1960,14 +1857,13 @@ extern int PyNumber_Check(PyObject *op);
 #define PyType_FastSubclass(type, flag) ((((PyTypeObject *)(type))->tp_flags & (flag)) != 0)
 #define PyExceptionClass_Check(x) (PyType_Check((PyObject *)(x)) && PyType_FastSubclass((PyTypeObject *)(x), Py_TPFLAGS_BASE_EXC_SUBCLASS))
 
-extern const unsigned long Py_Version;
-extern int Py_OptimizeFlag;
+PyAPI_DATA(const unsigned long) Py_Version;
+PyAPI_DATA(int) Py_OptimizeFlag;
 extern int PyUnstable_Object_IsUniqueReferencedTemporary(PyObject *obj);
 extern int PyUnstable_Object_IsUniquelyReferenced(PyObject *obj);
 extern void PyUnstable_Object_EnableDeferredRefcount(PyObject *obj);
 extern void PyUnstable_SetImmortal(PyObject *obj);
 extern int _Py_IsOwnedByCurrentThread(PyObject *obj);
-extern int PyUnstable_Module_SetGIL(PyObject *module, void *gil);
 extern int PyOS_snprintf(char *str, size_t size, const char *format, ...);
 extern int PyOS_vsnprintf(char *str, size_t size, const char *format, va_list va);
 extern double PyOS_string_to_double(const char *str, char **endptr, PyObject *overflow_exception);
@@ -2050,7 +1946,6 @@ static inline PyObject *_PyDict_Pop(PyObject *dict, PyObject *key, PyObject *def
 /* sys.modules[name], new ref, or NULL (without error) when absent. */
 extern PyObject *PyErr_NewException(const char *name, PyObject *base, PyObject *dict);
 extern PyObject *PyErr_NewExceptionWithDoc(const char *name, const char *doc, PyObject *base, PyObject *dict);
-extern PyObject *PyCMethod_New(PyMethodDef *ml, PyObject *self, PyObject *module, PyTypeObject *cls);
 extern PyObject *_PyList_Extend(PyListObject *self, PyObject *iterable);
 extern int _PyArg_ParseTuple_SizeT(PyObject *args, const char *format, ...);
 extern int _PyArg_ParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs, const char *format, char **kwlist, ...);

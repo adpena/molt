@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-use molt_cpython_abi::hooks::RuntimeHooks;
+use molt_cpython_abi::hooks::{OwnedHandleResult, RuntimeHooks};
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::ptr;
@@ -47,19 +47,44 @@ pub unsafe extern "C" fn str_data(bits: u64, out_len: *mut usize) -> *const u8 {
     value.bytes.as_ptr()
 }
 
-pub unsafe extern "C" fn float_repr(value: f64, out: *mut u8, cap: usize) -> usize {
-    let rendered = value.to_string();
-    let bytes = rendered.as_bytes();
-    if bytes.len() <= cap && !out.is_null() {
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
-    }
-    bytes.len()
+// This deliberately small fake supplies scalar fixtures, not a second Python
+// formatting oracle. Runtime-backed tests own formatting conformance.
+unsafe fn stringify(bits: u64, repr: bool) -> OwnedHandleResult {
+    let value = MoltObject::from_bits(bits);
+    let text = if value.is_none() {
+        "None".to_owned()
+    } else if let Some(value) = value.as_bool() {
+        if value { "True" } else { "False" }.to_owned()
+    } else if let Some(value) = value.as_int() {
+        value.to_string()
+    } else if let Some(value) = value.as_float() {
+        value.to_string()
+    } else {
+        let strings = STRINGS.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(value) = strings.get(&bits) else {
+            return OwnedHandleResult::error();
+        };
+        if !repr {
+            return OwnedHandleResult::ok(bits);
+        }
+        format!("'{}'", String::from_utf8_lossy(&value.bytes))
+    };
+    OwnedHandleResult::ok(unsafe { alloc_str(text.as_ptr(), text.len()) })
+}
+
+pub unsafe extern "C" fn object_str(bits: u64) -> OwnedHandleResult {
+    unsafe { stringify(bits, false) }
+}
+
+pub unsafe extern "C" fn object_repr(bits: u64) -> OwnedHandleResult {
+    unsafe { stringify(bits, true) }
 }
 
 pub fn wire(hooks: &mut RuntimeHooks) {
     hooks.alloc_str = alloc_str;
     hooks.str_data = str_data;
-    hooks.float_repr = float_repr;
+    hooks.object_str = object_str;
+    hooks.object_repr = object_repr;
 }
 
 pub fn contains(bits: u64) -> bool {

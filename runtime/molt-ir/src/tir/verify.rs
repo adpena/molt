@@ -1066,10 +1066,10 @@ mod tests {
     }
 
     #[test]
-    fn direct_symbol_native_callable_without_operands_verifies() {
+    fn direct_symbol_pyinit_with_module_name_verifies() {
         let mut func = TirFunction::new(
             "f".into(),
-            vec![],
+            vec![TirType::DynBox],
             TirType::DynBox,
             crate::FunctionReturnAbi::Value,
         );
@@ -1097,7 +1097,7 @@ mod tests {
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
-            operands: vec![],
+            operands: vec![ValueId(0)],
             results: vec![result],
             attrs,
             source_span: None,
