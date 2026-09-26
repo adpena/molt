@@ -370,6 +370,34 @@ captured file generation instead of blessing a replacement with a new hash.
 Selection and provisioning share one recipe computation per request; requirement
 resolution and tool lookup retain one validated inventory instance.
 
+Cython regeneration consumes that same inventory, selected interpreter and marker
+environment. One shared requirement-admission primitive checks complete PEP 440
+constraints and canonical extra activation for producer setup, generation and
+publication replay. Every active upstream Cython requirement applies, including
+upper bounds, exclusions and marker-selected constraints. Requested extras must
+already be activated in the frozen lock's package graph; an installed base
+distribution alone is insufficient. Regeneration never invokes an installer or
+upgrader. Missing requirements produce explicit uv/environment-setup guidance.
+Locked execution verifies the selected interpreter and all RECORD-owned Cython
+files once per regeneration plan, then fences those identities across the import
+probe and generation loop. Batch verification shares alias and directory indexes;
+it does not recapture the entire environment for each compiled unit. Import
+origins must match the verified distribution. Runtime and site startup remain
+under the owning environment contract, not a new Cython-specific sandbox.
+
+Direct source-plan builds without a locked inventory inspect the current compiler
+interpreter's installed metadata read-only, including transitive extra dependencies
+and Requires-Python. An isolated import check binds Cython's reported version and
+module origins to the interpreter-owned distribution before generation. This is
+installed-dependency validation, not frozen-lock or RECORD-integrity attestation.
+The generator uses that interpreter with `-B -I` and an absent caller-owned
+`pycache_prefix`, excluding ambient PYTHONPATH and both existing source-bytecode
+caches and bytecode writes. A preexisting or newly created cache prefix is an
+error, not permission to remove it. Each output directory owns generation cwd
+and depfile resolution, including cross-volume Windows source/output layouts;
+upstream working-directory overrides are rejected. These host dependency markers are independent of the compilation
+target's Python-version, OS and architecture policy.
+
 Environment v6 owns exact declared external import regions, including Git-ignored
 source and data. Runtime and external imports share one minimal-root forest;
 overlapping regions are captured once. Owned absolute-directory `.pth` declarations

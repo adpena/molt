@@ -111,6 +111,8 @@ dependency environment. `molt setup --install-cli-dependencies` explicitly
 authorizes dependency installation; normal launches do not install or repair it.
 Compilation and readiness checks do not install Rust targets either; missing
 toolchains produce actionable setup diagnostics for you to review and run.
+Cython regeneration also checks the selected build environment without installing
+or upgrading packages; missing or incompatible dependencies require explicit setup.
 `molt doctor` identifies the active installation and competing PATH entries
 without changing them. See [binary installation](packaging/INSTALL.md).
 

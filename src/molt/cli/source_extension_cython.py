@@ -16,11 +16,10 @@ code and imports no shared-utility module. This is R73.2's bounded bypass:
 one custody path, no host fallback, no fake module — the regenerated C is the
 package's own source recompiled.
 
-Cython itself is auto-provisioned (R73.2): the required version is derived from
-the package's build metadata (``build-system.requires``) and validated against
-the interpreter that will run Cython, installing it into that interpreter's
-environment when missing, failing closed with a precise, actionable diagnostic
-when it cannot be provisioned.
+Cython admission consumes the same installed-requirement authority as the
+source producer. Locked builds reuse their inventory and marker environment;
+direct builds inspect the current interpreter's metadata read-only. Generation
+never installs or upgrades a dependency.
 """
 
 from __future__ import annotations
@@ -37,6 +36,8 @@ from pathlib import Path
 from molt.cli.source_extension_language import SourceExtensionLanguage
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from molt.cli.source_build_inventory import SourceBuildInventory
+from molt.cli.source_extension_cython_tool import CythonTool, cython_execution
 from molt.cli.dependency_files import parse_make_depfile
 from molt.file_hashing import _sha256_file
 from molt import process_guard
@@ -70,36 +71,6 @@ CYTHON_CPYTHON_ABI_COMPILE_ARGS: tuple[str, ...] = (
     "-DCYTHON_AVOID_BORROWED_REFS=1",
     "-DCYTHON_AVOID_THREAD_UNSAFE_BORROWED_REFS=1",
 )
-
-# ``build-system.requires`` entries look like ``Cython>=3.0.6`` /
-# ``cython==3.1.*``; the requirement string is the version authority.
-_CYTHON_REQUIREMENT_RE = re.compile(
-    r"^\s*cython\b\s*(?P<spec>.*)$",
-    re.IGNORECASE,
-)
-_VERSION_CLAUSE_RE = re.compile(
-    r"(?P<op><=|>=|==|~=|!=|<|>)\s*(?P<version>[0-9][0-9A-Za-z_.*+-]*)"
-)
-
-
-@dataclass(frozen=True)
-class _CythonRequirement:
-    """A parsed ``build-system.requires`` Cython constraint."""
-
-    raw: str
-    clauses: tuple[tuple[str, str], ...]
-
-    def minimum_major(self) -> int | None:
-        best: int | None = None
-        for op, version in self.clauses:
-            if op not in {">=", "==", "~=", ">"}:
-                continue
-            major = _leading_int(version)
-            if major is None:
-                continue
-            if best is None or major > best:
-                best = major
-        return best
 
 
 @dataclass(frozen=True)
@@ -152,152 +123,6 @@ class CythonRegeneration:
                 else None
             ),
         }
-
-
-def _leading_int(version: str) -> int | None:
-    match = re.match(r"(\d+)", version)
-    return int(match.group(1)) if match else None
-
-
-def parse_cython_build_requirement(
-    build_system_requires: Sequence[Any] | None,
-) -> _CythonRequirement | None:
-    """Return the Cython constraint from ``build-system.requires`` if present."""
-    if not build_system_requires:
-        return None
-    for raw_entry in build_system_requires:
-        if not isinstance(raw_entry, str):
-            continue
-        # Strip environment markers (``; python_version < "3.13"``) and extras.
-        requirement = raw_entry.split(";", 1)[0].strip()
-        requirement = requirement.split("[", 1)[0].strip()
-        match = _CYTHON_REQUIREMENT_RE.match(requirement)
-        if match is None:
-            continue
-        spec = match.group("spec")
-        clauses = tuple(
-            (clause.group("op"), clause.group("version"))
-            for clause in _VERSION_CLAUSE_RE.finditer(spec)
-        )
-        return _CythonRequirement(raw=raw_entry.strip(), clauses=clauses)
-    return None
-
-
-def cython_build_requirement_from_pyproject(
-    pyproject: Mapping[str, Any] | None,
-) -> _CythonRequirement | None:
-    if not isinstance(pyproject, Mapping):
-        return None
-    build_system = pyproject.get("build-system")
-    if not isinstance(build_system, Mapping):
-        return None
-    requires = build_system.get("requires")
-    if not isinstance(requires, Sequence):
-        return None
-    return parse_cython_build_requirement(requires)
-
-
-def _installed_cython_version(python_exe: str) -> str | None:
-    try:
-        result = process_guard.run_completed_command(
-            [
-                python_exe,
-                "-c",
-                "import Cython; print(Cython.__version__)",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    version = result.stdout.strip().splitlines()
-    return version[0].strip() if version else None
-
-
-def _pip_specifier(requirement: _CythonRequirement | None) -> str:
-    if requirement is None:
-        return "Cython"
-    if requirement.clauses:
-        spec = ",".join(f"{op}{version}" for op, version in requirement.clauses)
-        return f"Cython{spec}"
-    # A bare ``Cython`` requirement with no version clause: pin the major the
-    # build metadata implies (scipy needs Cython 3.x); default to >=3.0.
-    return "Cython>=3.0"
-
-
-def provision_cython(
-    *,
-    python_exe: str,
-    requirement: _CythonRequirement | None,
-) -> tuple[str | None, str | None]:
-    """Ensure Cython is importable by ``python_exe``; return (version, error).
-
-    Fail-closed: if Cython is absent and cannot be pip-installed into the
-    interpreter's environment, return a precise, actionable diagnostic.
-    """
-    version = _installed_cython_version(python_exe)
-    required_major = requirement.minimum_major() if requirement is not None else None
-    if version is not None:
-        installed_major = _leading_int(version)
-        if (
-            required_major is not None
-            and installed_major is not None
-            and installed_major < required_major
-        ):
-            # Upgrade to satisfy the build's stated floor.
-            version = None
-        else:
-            return version, None
-
-    specifier = _pip_specifier(requirement)
-    try:
-        install = process_guard.run_completed_command(
-            [
-                python_exe,
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                specifier,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=900,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return None, (
-            "Molt could not auto-provision Cython for the source-recompiled "
-            f"extension build. Install {specifier!r} into {python_exe!r}: {exc}"
-        )
-    if install.returncode != 0:
-        detail = (install.stderr or install.stdout or "").strip().splitlines()
-        tail = detail[-1] if detail else f"exit code {install.returncode}"
-        return None, (
-            "Molt could not auto-provision Cython for the source-recompiled "
-            f"extension build. `pip install {specifier}` into {python_exe!r} "
-            f"failed: {tail}. Install a compatible Cython manually, or make the "
-            "interpreter's environment writable."
-        )
-    version = _installed_cython_version(python_exe)
-    if version is None:
-        return None, (
-            "Molt auto-provisioned Cython but it is still not importable by "
-            f"{python_exe!r}. Install {specifier!r} manually."
-        )
-    if required_major is not None and requirement is not None:
-        installed_major = _leading_int(version)
-        if installed_major is not None and installed_major < required_major:
-            return None, (
-                f"Molt provisioned Cython {version} but the extension build "
-                f"metadata requires Cython {requirement.raw!r} "
-                f"(major >= {required_major}). Install a compatible Cython."
-            )
-    return version, None
 
 
 # Cython's bundled cimport namespaces (shipped in ``Cython/Includes``) resolve
@@ -781,6 +606,15 @@ def _standalone_cython_generator_args(
     idx = 0
     while idx < len(args):
         arg = args[idx]
+        if (
+            arg in {"-w", "--working"}
+            or arg.startswith("--working=")
+            or (arg.startswith("-w") and len(arg) > 2)
+        ):
+            return (
+                None,
+                "Cython working-directory overrides conflict with the owned generation directory",
+            )
         if arg in {"--shared", "-o", "--output-file", "-I", "--include-dir"}:
             idx += 2
             continue
@@ -1003,6 +837,7 @@ def source_plan_cython_regenerations(
     pyproject: Mapping[str, Any],
     ninja_command: Sequence[str],
     abi_tier: str,
+    inventory: SourceBuildInventory | None = None,
 ) -> tuple[tuple[CythonRegeneration | None, ...] | None, str | None]:
     """Project immutable generation results onto every compiled unit.
 
@@ -1056,46 +891,45 @@ def source_plan_cython_regenerations(
         return (None,) * len(requests), None
     if abi_tier != "cpython-abi":
         return None, "Standalone Cython extensions require --abi-tier cpython-abi"
-    interpreter = sys.executable
-    version, error = provision_cython(
-        python_exe=interpreter,
-        requirement=cython_build_requirement_from_pyproject(pyproject),
-    )
-    if error is not None:
-        return None, error
-    assert version is not None
     generation_root = (
         plan.build_root
         / "molt_cython_standalone"
         / hashlib.sha256(plan.target_id.encode("utf-8")).hexdigest()
     )
-    generated: dict[_CythonGenerationInput, CythonRegeneration] = {}
-    results: list[CythonRegeneration | None] = []
-    for request in requests:
-        if request is None:
-            results.append(None)
-            continue
-        regeneration = generated.get(request)
-        if regeneration is None:
-            regeneration, error = regenerate_cython_c_standalone(
-                pyx_path=request.pyx_path,
-                original_c=request.original_c,
-                language=request.language,
-                # Stable plan order, independent of the producer's absolute root.
-                # Input custody later content-addresses the generated bytes.
-                out_dir=generation_root / str(len(generated)),
-                include_dirs=request.include_dirs,
-                cython_version=version,
-                python_exe=interpreter,
-                package_roots=(plan.source_root, plan.build_root),
-                ninja_command=ninja_command,
-            )
-            if error is not None:
-                return None, error
-            assert regeneration is not None
-            generated[request] = regeneration
-        results.append(regeneration)
-    return tuple(results), None
+    try:
+        with cython_execution(
+            pyproject=pyproject,
+            working_directory=generation_root,
+            inventory=inventory,
+        ) as tool:
+            generated: dict[_CythonGenerationInput, CythonRegeneration] = {}
+            results: list[CythonRegeneration | None] = []
+            for request in requests:
+                if request is None:
+                    results.append(None)
+                    continue
+                regeneration = generated.get(request)
+                if regeneration is None:
+                    regeneration, error = regenerate_cython_c_standalone(
+                        pyx_path=request.pyx_path,
+                        original_c=request.original_c,
+                        language=request.language,
+                        # Stable plan order, independent of the producer's absolute root.
+                        # Input custody later content-addresses the generated bytes.
+                        out_dir=generation_root / str(len(generated)),
+                        include_dirs=request.include_dirs,
+                        tool=tool,
+                        package_roots=(plan.source_root, plan.build_root),
+                        ninja_command=ninja_command,
+                    )
+                    if error is not None:
+                        return None, error
+                    assert regeneration is not None
+                    generated[request] = regeneration
+                results.append(regeneration)
+            return tuple(results), None
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return None, f"Cython execution custody failed: {exc}"
 
 
 def regenerate_cython_c_standalone(
@@ -1105,8 +939,7 @@ def regenerate_cython_c_standalone(
     language: SourceExtensionLanguage,
     out_dir: Path,
     include_dirs: Sequence[Path],
-    cython_version: str,
-    python_exe: str | None = None,
+    tool: CythonTool,
     package_roots: Sequence[Path] = (),
     ninja_command: Sequence[str] = (),
 ) -> tuple[CythonRegeneration | None, str | None]:
@@ -1117,13 +950,18 @@ def regenerate_cython_c_standalone(
     emitted C, so the module carries no ``scipy._cyutility`` /
     ``__Pyx_modinit_shared_function_import`` shared-utility import.
     """
-    interpreter = python_exe or sys.executable
+    interpreter = tool.python_executable
     if language not in {SourceExtensionLanguage.C, SourceExtensionLanguage.CPP}:
         return (
             None,
             f"Cython cannot generate source-extension language {language.value}",
         )
     is_cpp = language == SourceExtensionLanguage.CPP
+    pyx_path = pyx_path.resolve()
+    original_c = original_c.resolve()
+    out_dir = out_dir.resolve()
+    include_dirs = tuple(Path(path).resolve() for path in include_dirs)
+    package_roots = tuple(Path(path).resolve() for path in package_roots)
     out_dir.mkdir(parents=True, exist_ok=True)
     regenerated_c = out_dir / f"{pyx_path.stem}{'.cpp' if is_cpp else '.c'}"
     cimport_packages = _parse_cimported_packages(pyx_path)
@@ -1159,7 +997,7 @@ def regenerate_cython_c_standalone(
             f"Molt could not recover the upstream Cython generator contract for "
             f"{pyx_path.name}: {generator_error}"
         )
-    argv: list[str] = [interpreter, "-m", "cython"]
+    argv: list[str] = ["-m", "cython"]
     if generator_args is None:
         # Direct callers without a Meson graph retain the standalone default.
         # Producer builds pass their unchanged build_root, whose Ninja command
@@ -1176,9 +1014,12 @@ def regenerate_cython_c_standalone(
     for include_dir in resolved_includes:
         argv.extend(["-I", str(include_dir)])
     argv.extend([str(pyx_path), "-o", str(regenerated_c)])
-    working_directory = Path.cwd().resolve()
+    command = (*tool.command, *argv)
+    # Cython relativizes the depfile target against cwd. The generated output
+    # owns that context on every host, including cross-volume Windows builds.
+    working_directory = out_dir
     try:
-        result = process_guard.run_completed_command(
+        result = tool.run(
             argv,
             cwd=working_directory,
             capture_output=True,
@@ -1186,7 +1027,7 @@ def regenerate_cython_c_standalone(
             timeout=600,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return None, (
             f"Molt could not regenerate the Cython extension {pyx_path.name} "
             f"standalone: {exc}"
@@ -1204,7 +1045,7 @@ def regenerate_cython_c_standalone(
             detail = detail[:4000] + "\n...[truncated]...\n" + detail[-4000:]
         return None, (
             f"Standalone `cython -3` regeneration of {pyx_path.name} failed "
-            f"(argv: {' '.join(argv)}):\n{detail}"
+            f"(argv: {' '.join(command)}):\n{detail}"
         )
     dependency_file = regenerated_c.with_name(regenerated_c.name + ".dep")
     dependency_paths, dependency_error = parse_make_depfile(
@@ -1229,8 +1070,8 @@ def regenerate_cython_c_standalone(
             pyx_path=pyx_path.resolve(),
             original_c=original_c.resolve(),
             regenerated_c=regenerated_c.resolve(),
-            cython_version=cython_version,
-            cython_argv=tuple(argv),
+            cython_version=tool.version,
+            cython_argv=command,
             cimport_packages=cimport_packages,
             cimport_pxd_roots=cimport_pxd_roots,
             cimport_header_include_dirs=cimport_header_include_dirs,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
@@ -123,7 +124,7 @@ def test_cython_generation_shares_only_equivalent_unit_inputs(
         ), None
 
     monkeypatch.setattr(
-        source_extension_cython, "provision_cython", lambda **kw: ("test", None)
+        source_extension_cython, "cython_execution", lambda **kw: nullcontext(None)
     )
     monkeypatch.setattr(
         source_extension_cython, "regenerate_cython_c_standalone", generate
@@ -227,7 +228,7 @@ def test_generated_unit_uses_own_ninja_command_not_file_presence_or_stem(
         source_extension_cython.process_guard, "run_completed_command", query
     )
     monkeypatch.setattr(
-        source_extension_cython, "provision_cython", lambda **kw: ("test", None)
+        source_extension_cython, "cython_execution", lambda **kw: nullcontext(None)
     )
     monkeypatch.setattr(
         source_extension_cython, "regenerate_cython_c_standalone", generate
