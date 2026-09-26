@@ -17,6 +17,7 @@ from molt.cli.source_extension_manifest_codec import (
     _BUILD_SEQUENCE_FIELDS,
     _OBJECT_SEQUENCE_FIELDS,
     _compact_source_extension_manifest,
+    _expand_source_extension_manifest_authorities,
     _manifest_dependencies,
     _manifest_sequence,
     _validate_compact_source_extension_manifest,
@@ -259,10 +260,10 @@ def _manifest(object_count: int = 132) -> dict[str, object]:
                     f"@object-root/{index}.d",
                     "-MT",
                     f"{index}.o",
-                    "-Xclang",
-                    "-fsemantic-order-matters",
-                    "-Xclang",
-                    "-fsemantic-order-matters",
+                    "-mllvm",
+                    "-inline-threshold=0",
+                    "-mllvm",
+                    "-inline-threshold=0",
                 ],
                 "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                 "dependencies": copy.deepcopy(shared_dependencies),
@@ -329,6 +330,61 @@ def test_object_units_can_share_retained_source_content() -> None:
     assert source_extension_object_closure_digest(
         compact["object_closure"], manifest=compact
     )
+
+
+def test_producer_unit_identity_survives_compaction_and_binds_closure() -> None:
+    manifest = _manifest(2)
+    manifest["source_plan"] = {"target_selector": "native"}
+    objects = manifest["object_closure"]["objects"]
+    for index, item in enumerate(objects):
+        item["producer_unit"] = {
+            "target_id": f"variant{index}",
+            "object": f"variant{index}.a.p/unit.o",
+        }
+    finalize_source_extension_object_closure(manifest)
+    compact = _compact_source_extension_manifest(manifest)
+    restored = _expand_source_extension_manifest_authorities(compact)
+    assert [
+        item["producer_unit"] for item in restored["object_closure"]["objects"]
+    ] == [item["producer_unit"] for item in objects]
+    original = source_extension_object_closure_digest(
+        manifest["object_closure"], manifest=manifest
+    )
+    objects[0]["producer_unit"]["target_id"] = "different_owner"
+    assert (
+        source_extension_object_closure_digest(
+            manifest["object_closure"], manifest=manifest
+        )
+        != original
+    )
+    objects[1]["producer_unit"]["object"] = objects[0]["producer_unit"]["object"]
+    with pytest.raises(
+        SourceExtensionObjectClosureError, match="duplicate producer object"
+    ):
+        finalize_source_extension_object_closure(manifest)
+
+
+@pytest.mark.parametrize(
+    "output",
+    ["../unit.o", "/unit.o", "C:/unit.o", "a\\unit.o", "a/./unit.o", "a//unit.o"],
+)
+def test_producer_object_paths_are_canonical_build_relative(output: str) -> None:
+    manifest = _manifest(1)
+    manifest["object_closure"]["objects"][0]["producer_unit"] = {
+        "target_id": "variant",
+        "object": output,
+    }
+    with pytest.raises(SourceExtensionObjectClosureError, match="build-root-relative"):
+        finalize_source_extension_object_closure(manifest)
+
+
+def test_source_plan_requires_per_object_producer_custody() -> None:
+    manifest = _manifest(1)
+    manifest["source_plan"] = {"target_selector": "native"}
+    with pytest.raises(
+        SourceExtensionObjectClosureError, match="missing producer_unit"
+    ):
+        finalize_source_extension_object_closure(manifest)
 
 
 @pytest.mark.parametrize("conflict", ["object", "source_sha256"])
@@ -487,9 +543,14 @@ def test_command_template_roundtrip_preserves_literal_placeholder_tokens() -> No
     manifest = _manifest(object_count=1)
     command = manifest["object_closure"]["objects"][0]["compile_command"]
     command.extend(["-DPLACEHOLDER=%{operand}", "/Fo%{source}"])
+    opaque_start = len(command)
+    command.extend(["-mllvm", "-opt-bisect-limit=0", "-Xassembler", "/Foopaque"])
     original = list(command)
     compact = _compact_source_extension_manifest(manifest)
     item = compact["object_closure"]["objects"][0]
+    assert all(
+        operand["index"] < opaque_start for operand in item["compile_command_operands"]
+    )
     assert _manifest_sequence(compact, item, "compile_command") == original
     _validate_compact_source_extension_manifest(compact)
 
@@ -807,6 +868,10 @@ def _write_identity_fixture(
                 {
                     "source": source_reference,
                     "object": "0.o",
+                    "producer_unit": {
+                        "target_id": "_native",
+                        "object": "_native.so.p/0.o",
+                    },
                     "language": "c",
                     "source_sha256": source_sha256,
                     "object_sha256": artifact_sha256,

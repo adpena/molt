@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from enum import StrEnum
+from typing import Literal
 
 from molt.cli.native_link_plan import _normalize_arch
 from molt.llvm_linker_roles import executable_entrypoint_name
@@ -32,8 +34,9 @@ def source_extension_compiler_dialect(
         if name == "clang-cl"
         else SourceExtensionCompilerDialect.GNU
     )
-    for argument in command[1:]:
-        if argument.startswith("--driver-mode="):
+    for span in compiler_argument_spans(command[1:]):
+        argument = span.option
+        if span.context == "driver" and argument.startswith("--driver-mode="):
             mode = argument.partition("=")[2]
             if mode not in {"cl", "gcc", "g++"}:
                 raise ValueError(
@@ -64,6 +67,200 @@ def validate_source_extension_compiler_dialect(
 def compiler_frontend_arguments(command: Sequence[str]) -> tuple[str, ...]:
     """Expose clang-cl forwarding to the same target/sysroot/flag grammar."""
     return tuple(argument.removeprefix("/clang:") for argument in command)
+
+
+# This is an operand-boundary grammar, not the positive admission grammar for
+# preconfigured tools. Upstream compile units retain arbitrary semantic flags.
+COMPILER_OUTPUT_OPTIONS = (
+    "-o",
+    "-MF",
+    "-MT",
+    "-MQ",
+    "-MJ",
+    "/Fo",
+    "/Fd",
+    "/Fa",
+    "/Fe",
+    "/Fi",
+    "/FR",
+    "/sourceDependencies",
+    "/scanDependencies",
+)
+COMPILER_TARGET_OPTIONS = frozenset({"-target", "--target", "-triple"})
+COMPILER_OWNED_OPTIONS = COMPILER_TARGET_OPTIONS | {
+    "--sysroot",
+    "-isysroot",
+    "/winsysroot",
+    "-arch",
+}
+_COMPILER_VALUE_OPTIONS = (
+    frozenset(COMPILER_OUTPUT_OPTIONS)
+    | COMPILER_OWNED_OPTIONS
+    | {
+        "-I",
+        "-D",
+        "-U",
+        "-isystem",
+        "-iquote",
+        "-idirafter",
+        "-include",
+        "-imacros",
+        "-x",
+        "/I",
+        "/D",
+        "/U",
+        "/FI",
+        "/Tc",
+        "/Tp",
+        "/external:I",
+        "/sourceDependencies:directives",
+        "-F",
+        "-iframework",
+        "-iprefix",
+        "-iwithprefix",
+        "-iwithprefixbefore",
+        "-isystem-after",
+        "-iframeworkwithsysroot",
+        "-resource-dir",
+        "--resource-dir",
+        "-B",
+        "--gcc-toolchain",
+        "-gcc-toolchain",
+        "-working-directory",
+        "-stdlib",
+        "-Xlinker",
+        "-Xcuda-ptxas",
+        "-Xcuda-fatbinary",
+        "-Xopenmp-target",
+    }
+)
+_COMPILER_OPAQUE_OPTIONS = frozenset(
+    {
+        "-mllvm",
+        "-Xassembler",
+        "-Xpreprocessor",
+        "-Xlinker",
+        "-Xcuda-ptxas",
+        "-Xcuda-fatbinary",
+        "-Xopenmp-target",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CompilerArgumentSpan:
+    """An option and its operands, retaining transport bytes and argv offsets."""
+
+    index: int
+    raw: tuple[str, ...]
+    arguments: tuple[str, ...]
+    context: Literal["driver", "opaque", "cc1", "positional"]
+
+    @property
+    def option(self) -> str:
+        return self.arguments[0]
+
+    @property
+    def is_output(self) -> bool:
+        if self.context != "driver":
+            return False
+        return (
+            self.output_option is not None
+            or self.option in {"-MD", "-MMD", "-MP", "/showIncludes", "/nologo", "/FS"}
+            or re.fullmatch(r"/(?:MP[0-9]*|FA[cs]*)", self.option) is not None
+        )
+
+    @property
+    def output_option(self) -> str | None:
+        if self.context != "driver":
+            return None
+        # Clang's longest matching option wins over Joined -o. These are
+        # driver option families, not output paths or backend payloads.
+        if self.option.startswith(("-objc", "-object-file-name=", "-offload")):
+            return None
+        return next(
+            (
+                option
+                for option in COMPILER_OUTPUT_OPTIONS
+                if self.option.startswith(option)
+            ),
+            None,
+        )
+
+
+def compiler_argument_spans(
+    arguments: Sequence[str],
+) -> tuple[CompilerArgumentSpan, ...]:
+    """Parse driver operands once; forwarded backend values are never options.
+
+    cc1 is a different language, not a driver flag alias. Only the canonical
+    target/sysroot selectors have admitted cc1 custody. Other cc1 commands may
+    replace inputs, outputs, language or dependency production, so fail closed.
+    """
+    raw = tuple(arguments)
+    normalized = compiler_frontend_arguments(raw)
+    spans: list[CompilerArgumentSpan] = []
+    index = 0
+    positional = False
+    while index < len(raw):
+        start = index
+        option = normalized[index]
+        context: Literal["driver", "opaque", "cc1", "positional"] = (
+            "positional" if positional else "driver"
+        )
+        values = (option,)
+        width = 1
+        if not positional and option == "--":
+            positional = True
+        elif not positional and option == "-Xclang":
+            if index + 1 >= len(raw) or not normalized[index + 1]:
+                raise ValueError("source-extension -Xclang has no frontend operand")
+            cc1 = normalized[index + 1]
+            context = "cc1"
+            width = 2
+            values = (cc1,)
+            if cc1 in COMPILER_OWNED_OPTIONS:
+                if (
+                    index + 3 >= len(raw)
+                    or normalized[index + 2] != "-Xclang"
+                    or not normalized[index + 3]
+                    or normalized[index + 3].startswith("-")
+                ):
+                    raise ValueError(
+                        f"source-extension cc1 {cc1} requires a forwarded operand"
+                    )
+                width = 4
+                values = (cc1, normalized[index + 3])
+            else:
+                prefix = next(
+                    (
+                        option + "="
+                        for option in COMPILER_OWNED_OPTIONS
+                        if cc1.startswith(option + "=")
+                    ),
+                    None,
+                )
+                if prefix is None:
+                    raise ValueError(
+                        f"source-extension -Xclang {cc1!r} requires unsupported frontend input/output/language custody"
+                    )
+                if not cc1[len(prefix) :]:
+                    raise ValueError(f"source-extension cc1 {cc1} has no operand")
+        elif not positional and option in (
+            _COMPILER_VALUE_OPTIONS | _COMPILER_OPAQUE_OPTIONS
+        ):
+            if index + 1 >= len(raw) or not normalized[index + 1]:
+                label = "language" if option == "-x" else "operand"
+                raise ValueError(f"source-extension compiler {option} has no {label}")
+            width = 2
+            values = normalized[index : index + width]
+            if option in _COMPILER_OPAQUE_OPTIONS:
+                context = "opaque"
+        spans.append(
+            CompilerArgumentSpan(start, raw[start : start + width], values, context)
+        )
+        index += width
+    return tuple(spans)
 
 
 def _zig_target_query(target_triple: str) -> str:
@@ -227,31 +424,28 @@ def compiler_target_triple(command: Sequence[str], canonical_target: str) -> str
 
 
 def _compiler_target_values(command: Sequence[str]) -> tuple[str, ...]:
-    command = tuple(
-        token for token in compiler_frontend_arguments(command) if token != "-Xclang"
-    )
     targets: list[str] = []
-    index = 0
-    while index < len(command):
-        argument = command[index]
-        if argument in {"-target", "--target", "-triple"}:
-            if index + 1 >= len(command) or command[index + 1].startswith("-"):
+    for span in compiler_argument_spans(command):
+        if span.context not in {"driver", "cc1"}:
+            continue
+        argument = span.option
+        if argument in COMPILER_TARGET_OPTIONS:
+            value = span.arguments[1]
+            if value.startswith("-"):
                 raise ValueError(
                     f"compiler command has {argument} without a target value"
                 )
-            targets.append(command[index + 1])
-            index += 2
-            continue
-        for prefix in ("-target=", "--target=", "-triple="):
-            if argument.startswith(prefix):
-                value = argument.removeprefix(prefix)
-                if not value:
-                    raise ValueError(
-                        f"compiler command has {prefix} without a target value"
-                    )
-                targets.append(value)
-                break
-        index += 1
+            targets.append(value)
+        else:
+            for prefix in ("-target=", "--target=", "-triple="):
+                if argument.startswith(prefix):
+                    value = argument.removeprefix(prefix)
+                    if not value:
+                        raise ValueError(
+                            f"compiler command has {prefix} without a target value"
+                        )
+                    targets.append(value)
+                    break
     return tuple(targets)
 
 
@@ -262,7 +456,6 @@ def validate_compiler_target(command: Sequence[str], target_triple: str) -> bool
     target plan (including Zig target-query conversion). Native requests also
     have an exact effective target, even without an appended target selector.
     """
-    command = compiler_frontend_arguments(command)
     expected = target_triple.lower()
     configured_targets = _compiler_target_values(command)
     mismatched = sorted(
@@ -277,17 +470,17 @@ def validate_compiler_target(command: Sequence[str], target_triple: str) -> bool
         expected_arch = _normalize_arch(expected.split("-", 1)[0])
     except RuntimeError as exc:
         raise ValueError(str(exc)) from exc
-    index = 0
-    while index < len(command):
-        argument = command[index]
+    for span in compiler_argument_spans(command):
+        if span.context not in {"driver", "cc1"}:
+            continue
+        argument = span.option
         if argument == "-arch" or argument.startswith("-arch="):
             if argument == "-arch":
-                index += 1
-                if index >= len(command) or command[index].startswith("-"):
+                if span.arguments[1].startswith("-"):
                     raise ValueError(
                         "compiler command has -arch without an architecture"
                     )
-                architecture = command[index]
+                architecture = span.arguments[1]
             else:
                 architecture = argument.removeprefix("-arch=")
             try:
@@ -316,5 +509,4 @@ def validate_compiler_target(command: Sequence[str], target_triple: str) -> bool
                     f"compiler command {argument} conflicts with or has no "
                     f"verified width policy for requested target {target_triple}"
                 )
-        index += 1
     return bool(configured_targets)

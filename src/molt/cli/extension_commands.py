@@ -21,7 +21,6 @@ from molt.cli.compiler_target import (
     SourceExtensionCompilerDialect,
 )
 from molt.cli.source_extension_language import (
-    SourceExtensionLanguage,
     resolve_source_extension_compile_language,
     source_extension_compile_io_args,
 )
@@ -41,7 +40,6 @@ from molt.cli.atomic_io import (
     _atomic_write_json,
 )
 from molt.capability_policy import CapabilityInput, parse_capability_input
-from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli.command_runtime import (
     _run_completed_command,
 )
@@ -707,9 +705,6 @@ def extension_build(
             command="extension-build",
         )
 
-    source_c_api_requirements: (
-        _source_extensions._SourceExtensionCAPIRequirements | None
-    ) = None
     if loaded_source_plan is None:
         try:
             source_text_by_path = _extension_source_text_by_path(source_paths)
@@ -762,27 +757,6 @@ def extension_build(
         molt_root=molt_root,
         abi_tier=normalized_abi_tier,
     )
-    if loaded_source_plan is None:
-        source_c_api_requirements, capi_error = (
-            _source_extensions._source_extension_required_c_api_by_source(
-                molt_root=molt_root,
-                source_paths=source_paths,
-                python_header=python_header,
-                definition_header_roots=[
-                    *include_paths,
-                    project_root,
-                    *(source_path.parent for source_path in source_paths),
-                ],
-                compile_args_by_source={
-                    source_path: compile_args for source_path in source_paths
-                },
-                preprocessor_defined_symbols=list(target_plan.preprocessor_symbols),
-            )
-        )
-        if capi_error is not None:
-            return _fail(capi_error, json_output, command="extension-build")
-        assert source_c_api_requirements is not None
-
     effective_tool_commands: Mapping[str, Sequence[str]] = tool_commands or {}
     wasi_sysroot: Path | None = None
     if not effective_tool_commands:
@@ -916,104 +890,24 @@ def extension_build(
         build_tmp = Path(td)
         object_paths: list[Path] = []
         object_facts: list[_source_extensions._SourceExtensionObjectFact] = []
-        # R73.2: a Cython extension's shipped C may have been emitted with
-        # ``--shared scipy._cyutility`` (an unsatisfiable shared-utility import).
-        # Molt owns how it gets a Cython extension's C: regenerate it STANDALONE
-        # from the package's own ``.pyx`` so the module embeds its utilities and
-        # imports no shared-utility module. One custody path, no host fallback.
-        cython_regenerations: dict[Path, _source_extension_cython.CythonRegeneration]
-        cython_regenerations = {}
+        cython_regenerations: tuple[
+            _source_extension_cython.CythonRegeneration | None, ...
+        ] = (None,) * len(source_paths)
         if loaded_source_plan is not None:
-            pyx_candidates = [
-                path
-                for path in (
-                    *loaded_source_plan.non_compiled_inputs,
-                    *loaded_source_plan.sources,
-                    *loaded_source_plan.generated_sources,
+            regenerations, regen_error = (
+                _source_extension_cython.source_plan_cython_regenerations(
+                    plan=loaded_source_plan,
+                    pyproject=pyproject,
+                    ninja_command=tuple(source_plan_ninja_command or ()),
+                    abi_tier=normalized_abi_tier,
                 )
-                if path.suffix.lower() == ".pyx"
-            ]
-            cython_targets: list[tuple[Path, Path, SourceExtensionLanguage]] = []
-            for unit in loaded_source_plan.compile_units:
-                pyx_path = _source_extension_cython.pair_generated_c_with_pyx(
-                    generated_c=unit.source_path,
-                    pyx_candidates=pyx_candidates,
-                )
-                if pyx_path is not None and pyx_path.is_file():
-                    cython_targets.append(
-                        (unit.source_path.resolve(), pyx_path, unit.language)
-                    )
-            if cython_targets:
-                cython_requirement = (
-                    _source_extension_cython.cython_build_requirement_from_pyproject(
-                        pyproject
-                    )
-                )
-                cython_python_exe = sys.executable
-                cython_version, provision_error = (
-                    _source_extension_cython.provision_cython(
-                        python_exe=cython_python_exe,
-                        requirement=cython_requirement,
-                    )
-                )
-                if provision_error is not None:
-                    return _fail(
-                        provision_error,
-                        json_output,
-                        command="extension-build",
-                    )
-                assert cython_version is not None
-                # Keep generated C under the source plan's build root until the
-                # package producer content-addresses every compiled input and
-                # rewrites the final sidecar to its sealed relative path.
-                cython_out_dir = (
-                    loaded_source_plan.build_root / "molt_cython_standalone"
-                )
-                for original_c, pyx_path, language in cython_targets:
-                    plan_include_dirs = [
-                        unit.include_dirs
-                        for unit in loaded_source_plan.compile_units
-                        if unit.source_path.resolve() == original_c
-                    ]
-                    flat_includes = [
-                        include_dir
-                        for includes in plan_include_dirs
-                        for include_dir in includes
-                    ]
-                    regeneration, regen_error = (
-                        _source_extension_cython.regenerate_cython_c_standalone(
-                            pyx_path=pyx_path,
-                            original_c=original_c,
-                            language=language,
-                            out_dir=cython_out_dir,
-                            include_dirs=flat_includes,
-                            cython_version=cython_version,
-                            python_exe=cython_python_exe,
-                            package_roots=(
-                                loaded_source_plan.source_root,
-                                loaded_source_plan.build_root,
-                            ),
-                            ninja_command=tuple(source_plan_ninja_command or ()),
-                        )
-                    )
-                    if regen_error is not None:
-                        return _fail(
-                            regen_error,
-                            json_output,
-                            command="extension-build",
-                        )
-                    assert regeneration is not None
-                    if normalized_abi_tier != "cpython-abi":
-                        return _fail(
-                            "Standalone Cython extensions require --abi-tier "
-                            "cpython-abi; the legacy source-compat/limited-API "
-                            "Cython lane has been removed",
-                            json_output,
-                            command="extension-build",
-                        )
-                    cython_regenerations[original_c] = regeneration
+            )
+            if regen_error is not None:
+                return _fail(regen_error, json_output, command="extension-build")
+            assert regenerations is not None
+            cython_regenerations = regenerations
         for idx, source_path in enumerate(source_paths):
-            regeneration = cython_regenerations.get(source_path.resolve())
+            regeneration = cython_regenerations[idx]
             if regeneration is not None:
                 source_path = regeneration.regenerated_c
             plan_unit = (
@@ -1060,26 +954,16 @@ def extension_build(
             except ValueError as exc:
                 return _fail(str(exc), json_output, command="extension-build")
             include_flag = "/I" if cl else "-I"
-            dependency_file: Path | None = None
-            if loaded_source_plan is not None:
-                driver = Path(unit_cc_cmd[0]).name.lower() if unit_cc_cmd else ""
-                if not any(name in driver for name in ("clang", "gcc", "zig")):
-                    return _fail(
-                        "Source-plan compilation requires a compiler that emits "
-                        f"canonical Make depfiles; unsupported driver: {driver}",
-                        json_output,
-                        command="extension-build",
-                    )
-                dependency_file = build_tmp / f"{idx}_{source_path.stem}.d"
-                cmd.extend(
-                    [
-                        dialect.forward("-MD"),
-                        dialect.forward(f"-MF{dependency_file}"),
-                        dialect.forward(f"-MT{object_path.name}"),
-                    ]
-                    if cl
-                    else ["-MD", "-MF", str(dependency_file), "-MT", object_path.name]
-                )
+            dependency_file = build_tmp / f"{idx}_{source_path.stem}.d"
+            cmd.extend(
+                [
+                    dialect.forward("-MD"),
+                    dialect.forward(f"-MF{dependency_file}"),
+                    dialect.forward(f"-MT{object_path.name}"),
+                ]
+                if cl
+                else ["-MD", "-MF", str(dependency_file), "-MT", object_path.name]
+            )
             cmd.extend(
                 dialect.forward(f"-D{symbol}=1")
                 for symbol in target_plan.preprocessor_symbols
@@ -1202,71 +1086,47 @@ def extension_build(
                 )
             compile_commands.append(cmd)
             object_paths.append(object_path)
+            producer_unit = None
+            dependency_paths, dependency_error = _dependency_files.parse_make_depfile(
+                dependency_file, cwd=project_root, producer="compiler"
+            )
+            if dependency_error is not None:
+                return _fail(dependency_error, json_output, command="extension-build")
+            assert dependency_paths is not None
             if loaded_source_plan is not None:
-                assert dependency_file is not None
-                dependency_paths, dependency_error = (
-                    _dependency_files.parse_make_depfile(
-                        dependency_file,
-                        cwd=project_root,
-                        producer="compiler",
-                    )
+                assert plan_unit is not None
+                producer_unit = _source_extensions._SourceExtensionCompileUnitIdentity(
+                    owner_target_id=plan_unit.owner_target_id,
+                    producer_object_path=plan_unit.producer_object_path.relative_to(
+                        loaded_source_plan.build_root
+                    ),
                 )
-                if dependency_error is not None:
-                    return _fail(
-                        dependency_error,
-                        json_output,
-                        command="extension-build",
-                    )
-                assert dependency_paths is not None
-                object_fact, object_fact_error = (
-                    _source_extensions._source_extension_object_fact(
-                        source_path=source_path,
-                        object_path=object_path,
-                        language=unit_language,
-                        compile_command=cmd,
-                        dependency_paths=(
-                            *dependency_paths,
-                            *(
-                                tuple(
-                                    dependency.path
-                                    for dependency in regeneration.dependencies
-                                )
-                                if regeneration is not None
-                                else ()
-                            ),
+            object_fact, object_fact_error = (
+                _source_extensions._source_extension_object_fact(
+                    source_path=source_path,
+                    object_path=object_path,
+                    language=unit_language,
+                    compile_command=cmd,
+                    dependency_paths=(
+                        *dependency_paths,
+                        *(
+                            tuple(
+                                dependency.path
+                                for dependency in regeneration.dependencies
+                            )
+                            if regeneration is not None
+                            else ()
                         ),
-                        nm_command=effective_tool_commands.get("nm"),
-                        target_triple=target_triple,
-                    )
+                    ),
+                    nm_command=effective_tool_commands.get("nm"),
+                    target_triple=target_triple,
+                    producer_unit=producer_unit,
                 )
-                if object_fact_error is not None:
-                    return _fail(
-                        object_fact_error,
-                        json_output,
-                        command="extension-build",
-                    )
-                assert object_fact is not None
-                object_facts.append(object_fact)
-            else:
-                object_fact, object_fact_error = (
-                    _source_extensions._source_extension_object_fact(
-                        source_path=source_path,
-                        object_path=object_path,
-                        language=unit_language,
-                        compile_command=cmd,
-                        dependency_paths=(source_path,),
-                        nm_command=effective_tool_commands.get("nm"),
-                        target_triple=target_triple,
-                    )
-                )
-                if object_fact_error is not None:
-                    return _fail(
-                        object_fact_error,
-                        json_output,
-                        command="extension-build",
-                    )
-                assert object_fact is not None
-                object_facts.append(object_fact)
+            )
+            if object_fact_error is not None:
+                return _fail(object_fact_error, json_output, command="extension-build")
+            assert object_fact is not None
+            object_facts.append(object_fact)
 
         direct_symbols = sorted(
             {
@@ -1305,35 +1165,16 @@ def extension_build(
             )
         assert source_plan_object_closure is not None
         object_paths = [fact.object_path for fact in source_plan_object_closure.objects]
-        if loaded_source_plan is not None:
-            (
-                source_c_api_requirements,
-                capi_error,
-            ) = _source_extensions._source_extension_required_c_api_by_source(
+        source_c_api_requirements, capi_error = (
+            _source_extensions._source_extension_required_c_api_by_object(
                 molt_root=molt_root,
-                source_paths=[
-                    fact.source_path for fact in source_plan_object_closure.objects
-                ],
+                object_facts=source_plan_object_closure.objects,
                 python_header=python_header,
-                definition_header_roots=[
-                    *loaded_source_plan.include_dirs,
-                    *(
-                        fact.source_path.parent
-                        for fact in source_plan_object_closure.objects
-                    ),
-                ],
-                compile_args_by_source={
-                    unit.source_path: unit.compile_args
-                    for unit in loaded_source_plan.compile_units
-                },
-                preprocessor_defined_symbols=list(target_plan.preprocessor_symbols),
             )
-            if capi_error is not None:
-                return _fail(capi_error, json_output, command="extension-build")
-        assert source_c_api_requirements is not None
-        source_c_api_requirements = source_c_api_requirements.restrict_to_link_closure(
-            source_plan_object_closure.undefined_symbols
         )
+        if capi_error is not None:
+            return _fail(capi_error, json_output, command="extension-build")
+        assert source_c_api_requirements is not None
         missing_c_api = list(source_c_api_requirements.missing_symbols)
         fail_fast_c_api = list(source_c_api_requirements.fail_fast_symbols)
         if missing_c_api or fail_fast_c_api:
@@ -1548,30 +1389,18 @@ def extension_build(
             build_payload["source_plan_skipped_generated_source_count"] = len(
                 loaded_source_plan.skipped_generated_sources
             )
-            if cython_regenerations:
+            unique_regenerations = {
+                regeneration.regenerated_c: regeneration
+                for regeneration in cython_regenerations
+                if regeneration is not None
+            }
+            if unique_regenerations:
                 manifest_payload["cython_standalone"] = [
-                    cython_regenerations[key].manifest_payload()
-                    for key in sorted(cython_regenerations)
+                    regeneration.manifest_payload()
+                    for regeneration in unique_regenerations.values()
                 ]
         build_payload["object_count"] = len(object_facts)
         build_payload["linked_object_count"] = len(object_paths)
-        required_c_api_by_source = {
-            fact.source_path.resolve(): tuple(
-                sorted(
-                    set(
-                        source_c_api_requirements.required_by_source.get(
-                            fact.source_path.resolve(), ()
-                        )
-                    )
-                    | {
-                        symbol
-                        for symbol in fact.undefined_symbols
-                        if is_c_api_external_requirement(symbol)
-                    }
-                )
-            )
-            for fact in source_plan_object_closure.objects
-        }
         runtime_requirement_symbols = artifact_undefined_symbols
         runtime_symbols: tuple[str, ...] = ()
         if wasm_static_link:
@@ -1593,12 +1422,12 @@ def extension_build(
             undefined_symbols=artifact_undefined_symbols,
             wasm_imports=wasm_import_receipts,
             runtime_symbols=runtime_symbols,
-            required_c_api_by_source=required_c_api_by_source,
-            required_capsules_by_source=(
-                source_c_api_requirements.required_capsules_by_source
+            required_c_api_by_object=source_c_api_requirements.required_by_object,
+            required_capsules_by_object=(
+                source_c_api_requirements.required_capsules_by_object
             ),
-            project_generated_c_api_by_source=(
-                source_c_api_requirements.project_generated_c_api_by_source
+            project_generated_c_api_by_object=(
+                source_c_api_requirements.project_generated_c_api_by_object
             ),
             project_generated_c_api_prefixes=(
                 source_c_api_requirements.project_generated_c_api_prefixes

@@ -190,7 +190,14 @@ def test_recorded_target_rejects_alias_and_artifact_drift(requested, triple):
 def source_plan():
     source = Path("input.c")
     unit = _SourceExtensionCompileUnit(
-        source, False, SourceExtensionLanguage.C, ("clang",), (), ()
+        source_path=source,
+        owner_target_id="unit",
+        producer_object_path=Path("build/unit.p/input.o"),
+        generated=False,
+        language=SourceExtensionLanguage.C,
+        compiler=("clang",),
+        include_dirs=(),
+        compile_args=(),
     )
     return _SourceExtensionBuildPlan(
         kind="meson-intro-targets",

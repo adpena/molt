@@ -9,6 +9,7 @@ from typing import Literal
 
 from molt.cli.compiler_target import (
     SourceExtensionCompilerDialect,
+    compiler_argument_spans,
     source_extension_compiler_dialect,
 )
 
@@ -88,15 +89,14 @@ def resolve_source_extension_compile_language(
     declared = _input_language(language) if language is not None else None
     selected = declared
     args: list[str] = []
-    index = 0
-    while index < len(compile_args):
-        argument = compile_args[index].removeprefix("/clang:")
+    for span in compiler_argument_spans(compile_args):
+        if span.context != "driver":
+            args.extend(span.raw)
+            continue
+        argument = span.option
         value: str | None = None
         if argument == "-x":
-            index += 1
-            if index == len(compile_args):
-                raise ValueError("source-extension -x requires a language")
-            value = compile_args[index].removeprefix("/clang:")
+            value = span.arguments[1]
         elif argument.startswith("-x") and len(argument) > 2:
             value = argument[2:]
         elif argument in {"/TC", "/TP"}:
@@ -106,10 +106,9 @@ def resolve_source_extension_compile_language(
                 "source-extension per-file /Tc or /Tp must be normalized by the compile database"
             )
         if value is None:
-            args.append(compile_args[index])
+            args.extend(span.raw)
         else:
             selected = declared if value == "none" else _input_language(value)
-        index += 1
     if selected is None:
         selected = _source_path_language(source_path)
     return selected, tuple(args)
@@ -149,10 +148,11 @@ def validate_source_extension_language_command(
     """
     dialect = source_extension_compiler_dialect(command)
     cl = dialect is SourceExtensionCompilerDialect.CLANG_CL
+    spans = compiler_argument_spans(command)
     compile_indexes = [
-        index
-        for index, token in enumerate(command)
-        if token.removeprefix("/clang:") in {"-c", "/c"}
+        span.index
+        for span in spans
+        if span.context == "driver" and span.option in {"-c", "/c"}
     ]
     if len(compile_indexes) != 1:
         raise ValueError(
@@ -169,20 +169,20 @@ def validate_source_extension_language_command(
             "source-extension compile command has no canonical source operand"
         )
     selector_indexes = [
-        index
-        for index, token in enumerate(command)
-        if index != compile_index + 1
+        span.index
+        for span in spans
+        if span.context == "driver"
+        and span.index != compile_index + 1
         and (
-            token.removeprefix("/clang:").startswith("-x")
-            or token.removeprefix("/clang:") in {"/TC", "/TP"}
-            or token.removeprefix("/clang:").startswith(("/Tc", "/Tp"))
+            span.option.startswith("-x")
+            or span.option in {"/TC", "/TP"}
+            or span.option.startswith(("/Tc", "/Tp"))
         )
     ]
     if cl:
         if (
             language not in {SourceExtensionLanguage.C, SourceExtensionLanguage.CPP}
             or compile_index < 2
-            or "--" in command[: compile_index + 1]
             or selector_indexes != [compile_index - 1]
         ):
             raise ValueError(
@@ -196,7 +196,6 @@ def validate_source_extension_language_command(
         return
     if (
         compile_index < 3
-        or "--" in command[: compile_index + 1]
         or selector_indexes != [compile_index - 2]
         or command[compile_index - 2] != "-x"
     ):

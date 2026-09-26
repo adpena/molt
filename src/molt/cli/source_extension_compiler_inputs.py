@@ -14,6 +14,7 @@ from molt.cli.compiler_target import (
     is_zig_compiler_command,
     validate_compiler_target,
     compiler_frontend_arguments,
+    compiler_argument_spans,
     validate_source_extension_compiler_dialect,
     SourceExtensionCompilerDialect,
 )
@@ -153,21 +154,18 @@ def compiler_sysroot_arguments(
     materialize selected-home paths without re-parsing the command.
     """
 
-    argv = compiler_frontend_arguments(command)
     values: list[tuple[int, str, str]] = []
-    index = 0
-    while index < len(argv):
-        option = argv[index]
+    for span in compiler_argument_spans(command):
+        if span.context not in {"driver", "cc1"}:
+            continue
+        option = span.option
+        index = span.index + len(span.raw) - 1
         if option in {"--sysroot", "-isysroot"}:
-            if (
-                index + 1 >= len(argv)
-                or not argv[index + 1]
-                or argv[index + 1].startswith("-")
-            ):
+            value = span.arguments[1]
+            if not value or value.startswith("-"):
                 raise ValueError(f"compiler command has {option} missing value")
-            prefix = "/clang:" if command[index + 1].startswith("/clang:") else ""
-            values.append((index + 1, prefix, argv[index + 1]))
-            index += 2
+            prefix = "/clang:" if command[index].startswith("/clang:") else ""
+            values.append((index, prefix, value))
             continue
         for prefix in ("--sysroot=", "-isysroot="):
             if option.startswith(prefix):
@@ -177,7 +175,6 @@ def compiler_sysroot_arguments(
                 forwarding = "/clang:" if command[index].startswith("/clang:") else ""
                 values.append((index, forwarding + prefix, value))
                 break
-        index += 1
     return tuple(values)
 
 

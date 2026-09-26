@@ -76,6 +76,37 @@ def test_explicit_language_normalizes_before_replay(
     assert remaining == ("-O3",)
 
 
+@pytest.mark.parametrize("forwarder", ["-mllvm", "-Xassembler", "-Xpreprocessor"])
+@pytest.mark.parametrize("operand", ["-xc++", "-c", "/TP", "--", "--driver-mode=cl"])
+@pytest.mark.parametrize("clang_cl", [False, True])
+def test_opaque_operands_cannot_select_language_or_corrupt_receipt_validation(
+    forwarder, operand, clang_cl
+):
+    transport = (lambda value: "/clang:" + value) if clang_cl else (lambda value: value)
+    opaque = (transport(forwarder), transport(operand))
+    language, remaining = resolve_source_extension_compile_language(
+        source_path=Path("unit.c"), language="c", compile_args=opaque
+    )
+    assert language is SourceExtensionLanguage.C and remaining == opaque
+    compiler = ("clang-cl" if clang_cl else "clang",)
+    canonical = source_extension_compile_io_args(
+        language, compiler, Path("unit.c"), Path("unit.o")
+    )
+    validate_source_extension_language_command(
+        language, (*compiler, *opaque, *canonical)
+    )
+
+
+def test_ordinary_driver_operands_are_not_language_selectors():
+    language, remaining = resolve_source_extension_compile_language(
+        source_path=Path("unit.c"),
+        language="c",
+        compile_args=("-D", "-xc++", "-I", "/TP"),
+    )
+    assert language is SourceExtensionLanguage.C
+    assert remaining == ("-D", "-xc++", "-I", "/TP")
+
+
 @pytest.mark.parametrize("value", [None, False, 0, {}, [], "", "c++", "cuda"])
 def test_persisted_language_requires_canonical_fact(value: object) -> None:
     with pytest.raises(ValueError, match="language"):

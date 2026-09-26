@@ -646,7 +646,7 @@ source search.
   artifacts:
   `wasm_relocatable_object` artifacts must export the declared function symbol,
   and `static_archive` artifacts must list it in
-  `object_closure.defined_symbols`. Sidecar object-closure schema v3 carries
+  `object_closure.defined_symbols`. Sidecar object-closure schema v4 carries
   each translation unit's canonical `language` (`c`, `cpp`, `objc`, or `objcpp`).
   The existing Meson language fact and explicit language switches are normalized
   once at the producer boundary; direct sources infer language only from their
@@ -657,9 +657,33 @@ source search.
   operand remains in the command when source custody relocates its retained
   bytes. Digest-addressed paths and declared language values never supply missing
   command evidence.
-  Language is required in object and compact-unit identities; v2 manifests must
-  be rebuilt from original build metadata, not restamped from retained filenames.
-  Schema v3 also carries
+  Source-plan units are identified by their owning Meson target and producer
+  object output, not their source filename. Schema v4 requires `producer_unit`
+  (`target_id`, canonical build-root-relative `object`) on every source-plan
+  object, and binds it into both closure and compact-unit content identities.
+  Repeated source bytes may back distinct SIMD/language/flag variants; duplicate
+  producer outputs, conflicting commands, and command/JSON output disagreements
+  fail admission. A shared operand-span grammar preserves forwarded compiler
+  arguments across output/target/language selection, replay and receipt
+  compaction; a backend operand is not a driver selector. Unsupported frontend
+  input/output overrides fail explicitly rather than changing object custody.
+  A source group can consume only its own target's object roots,
+  never another target's same-source command. Forced versus lazy membership is
+  target-owned. Actual retained-object undefined/defined symbols are the sole
+  C-API reachability authority; source text never simulates preprocessing or
+  overrides compiled facts. Supported declarations are projected through the
+  selected ABI tier's owned header closure, shared with ABI generation; missing
+  local SDK includes fail closed and system headers remain target-toolchain owned.
+  Capsule/generated-name metadata is derived from each
+  object's checksummed source/dependency closure, with a shared byte cache.
+  Direct and source-plan builds both record compiler depfiles. Cython regeneration
+  shares equivalent original/language/ordered-input
+  requests, while distinct requests own separate outputs. Ninja ownership is
+  queried from the output's own generator command, without transitive commands;
+  whether an upstream generated C file already exists cannot bypass standalone
+  regeneration. Non-Cython generators remain unchanged. Earlier schemas must
+  be rebuilt from original producer metadata, not restamped.
+  The closure also carries
   separate canonical linker and import boards. `defined_symbols` and
   `undefined_symbols` are the exact reachable linking-section facts.
   `wasm_imports` is the exact sorted set of `{module, name, kind}` receipts from

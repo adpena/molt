@@ -1,6 +1,6 @@
 """Schema constants for source-extension object-closure custody."""
 
-SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION = 3
+SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION = 4
 SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY = "native_nm_command_v1"
 SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY = "wasm_linking_section_v2"
 
@@ -26,6 +26,7 @@ SOURCE_EXTENSION_OBJECT_FIELDS = frozenset(
         "source",
         "language",
         "object",
+        "producer_unit",
         "source_sha256",
         "object_sha256",
         "compile_command",

@@ -79,7 +79,12 @@ def test_compiler_grammar_admits_matching_target_sysroot_and_codegen_flags() -> 
     ],
 )
 def test_compiler_grammar_rejects_external_selectors(option: str) -> None:
-    with pytest.raises(ValueError, match="external input or helper custody"):
+    diagnostic = (
+        "has no .*operand"
+        if option in {"-Xclang", "-Xassembler", "-Xlinker"}
+        else "external input or helper custody"
+    )
+    with pytest.raises(ValueError, match=diagnostic):
         validate_source_extension_compiler_command(
             ("/tools/clang", option), role="c", target_triple="wasm32-wasip1"
         )
@@ -131,9 +136,35 @@ def test_shared_sysroot_parser_preserves_materialization_indices() -> None:
     assert compiler_sysroot_arg_value(command) == "/sdk/wasi"
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            ("clang", "-mllvm", "--sysroot=/opaque", "--sysroot", "/sdk"),
+            (4, "", "/sdk"),
+        ),
+        (
+            (
+                "clang-cl",
+                "/clang:-mllvm",
+                "/clang:--sysroot=/opaque",
+                "/clang:--sysroot",
+                "/clang:/sdk",
+            ),
+            (4, "/clang:", "/sdk"),
+        ),
+        (("clang", "-Xclang", "-isysroot", "-Xclang", "/sdk"), (4, "", "/sdk")),
+        (("clang", "-Xclang", "-isysroot=/sdk"), (2, "-isysroot=", "/sdk")),
+    ],
+)
+def test_sysroot_materialization_respects_forwarded_operand_context(command, expected):
+    assert compiler_sysroot_arguments(command) == (expected,)
+    assert compiler_sysroot_arg_value(command) == "/sdk"
+
+
 @pytest.mark.parametrize("command", [("clang", "--sysroot"), ("clang", "--sysroot=")])
 def test_shared_sysroot_parser_rejects_missing_values(command: tuple[str, ...]) -> None:
-    with pytest.raises(ValueError, match="missing value"):
+    with pytest.raises(ValueError, match="missing value|has no operand"):
         compiler_sysroot_arg_value(command)
 
 
