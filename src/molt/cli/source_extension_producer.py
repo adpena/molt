@@ -14,12 +14,14 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePath, PurePosixPath
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from packaging.requirements import Requirement
 from packaging.version import InvalidVersion
 from molt.source_root import compiler_source_root
 from molt.cli.source_build_inventory import SourceBuildInventory
+from molt.python_file_node_custody import VerifiedTreeFile
+from molt.toolchain_identity import stable_executable_probe
 
 from molt.cli import extension_commands
 from molt.cli import source_extension_cython as _source_extension_cython
@@ -234,18 +236,25 @@ class _SourceBuildEnvironment:
 @dataclass(frozen=True)
 class _SourceBuildConfigTool:
     name: str
-    path: Path
+    image: VerifiedTreeFile
     distribution: str
     version: str
 
+    @property
+    def path(self) -> Path:
+        return self.image.path
+
     def manifest_payload(self) -> dict[str, str]:
-        return {
-            "name": self.name,
-            "path": self.path.name,
-            "distribution": self.distribution,
-            "version": self.version,
-            "sha256": _sha256_file(self.path),
-        }
+        with stable_executable_probe(
+            self.path, label=self.name, identity=self.image.content
+        ):
+            return {
+                "name": self.name,
+                "path": self.path.name,
+                "distribution": self.distribution,
+                "version": self.version,
+                "sha256": self.image.content.sha256,
+            }
 
 
 @dataclass(frozen=True)
@@ -259,11 +268,21 @@ class _SourceMesonDriver:
 
 @dataclass(frozen=True)
 class _SourceNinjaDriver:
-    command: tuple[str, ...]
+    image: VerifiedTreeFile
     manifest: Mapping[str, str]
 
+    @property
+    def command(self) -> tuple[str, ...]:
+        with stable_executable_probe(
+            self.image.path, label="Ninja", identity=self.image.content
+        ):
+            return (str(self.image.path),)
+
     def manifest_payload(self) -> dict[str, str]:
-        return dict(self.manifest)
+        with stable_executable_probe(
+            self.image.path, label="Ninja", identity=self.image.content
+        ):
+            return dict(self.manifest)
 
 
 @dataclass(frozen=True)
@@ -275,10 +294,13 @@ class _SourceSubmoduleIdentity:
         return {"path": self.path, "commit": self.commit}
 
 
-def _run_process(argv: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_process(
+    argv: Sequence[str], *, cwd: Path, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return process_guard.run_completed_command(
         list(argv),
         cwd=cwd,
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -674,19 +696,13 @@ def _source_build_config_tools(
     for resolved in environment.resolved:
         distribution = inventory.distribution(resolved.distribution)
         assert distribution is not None
-        for entry_point in cast(
-            Sequence[Mapping[str, str]], distribution["entry_points"]
-        ):
-            if entry_point["group"] != "console_scripts" or not entry_point[
-                "name"
-            ].endswith("-config"):
+        for name in inventory.executable_names(distribution=resolved.distribution):
+            if not name.endswith("-config"):
                 continue
-            path = inventory.console_script(
-                entry_point["name"], distribution=resolved.distribution
-            )
+            image = inventory.executable(name, distribution=resolved.distribution)
             tool = _SourceBuildConfigTool(
-                name=entry_point["name"],
-                path=path,
+                name=name,
+                image=image,
                 distribution=resolved.distribution,
                 version=resolved.version,
             )
@@ -714,8 +730,10 @@ def _ensure_meson_pkg_config(
             f"requirement {MOLT_PKGCONF_REQUIREMENT}; the producer never installs "
             "into its active interpreter"
         )
-    path = inventory.console_script("pkg-config", distribution=resolved.distribution)
-    version = _run_process((str(path), "--version"), cwd=source_root)
+    image = inventory.executable("pkg-config", distribution=resolved.distribution)
+    path = image.path
+    with stable_executable_probe(path, label="pkg-config", identity=image.content):
+        version = _run_process((str(path), "--version"), cwd=source_root)
     if (
         version.returncode != 0
         or version.stdout.strip() != resolved.version.removesuffix(".post0")
@@ -727,7 +745,7 @@ def _ensure_meson_pkg_config(
         )
     return _SourceBuildConfigTool(
         name="pkg-config",
-        path=path,
+        image=image,
         distribution=resolved.distribution,
         version=resolved.version,
     )
@@ -761,6 +779,7 @@ def _run_meson_setup(
     meson_cross_files: Sequence[Path],
     setup_args: Sequence[str],
     driver: _SourceMesonDriver,
+    backend: _SourceNinjaDriver,
 ) -> None:
     argv: list[str] = [
         *driver.command,
@@ -776,7 +795,8 @@ def _run_meson_setup(
     # one fixed POSIX-absolute location that names no machine at all.
     argv.append(f"--prefix={MESON_INSTALL_PREFIX}")
     argv.extend(setup_args)
-    result = _run_process(argv, cwd=source_root)
+    environment = {**os.environ, "NINJA": backend.command[0]}
+    result = _run_process(argv, cwd=source_root, env=environment)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise SourceExtensionProducerError(
@@ -848,22 +868,11 @@ def _source_ninja_driver(
         raise SourceExtensionProducerError(
             "source build environment has no Ninja backend distribution"
         )
-    filename = (
-        "ninja.exe" if inventory.identity["operating_system"] == "windows" else "ninja"
-    )
-    binaries = tuple(
-        inventory.file(item["path"], distribution="ninja")
-        for item in cast(Sequence[Mapping[str, str]], distribution["installed_files"])
-        if Path(item["path"]).name == filename
-        and Path(item["path"]).parent.as_posix() != inventory.identity["scripts_root"]
-    )
-    if len(binaries) != 1:
-        raise SourceExtensionProducerError(
-            f"Ninja distribution owns {len(binaries)} executable payloads"
-        )
-    path = binaries[0]
-    command = (sys.executable, "-m", "ninja")
-    result = _run_process((*command, "--version"), cwd=source_root)
+    image = inventory.executable("ninja", distribution="ninja")
+    path = image.path
+    command = (str(path),)
+    with stable_executable_probe(path, label="Ninja", identity=image.content):
+        result = _run_process((*command, "--version"), cwd=source_root)
     reported_version = result.stdout.strip()
     if result.returncode != 0 or not reported_version:
         detail = (result.stderr or result.stdout).strip()
@@ -871,13 +880,13 @@ def _source_ninja_driver(
             f"Ninja backend cannot attest its version: {detail}"
         )
     return _SourceNinjaDriver(
-        command=command,
+        image=image,
         manifest={
             "distribution": str(distribution["name"]),
             "version": str(distribution["version"]),
             "reported_version": reported_version,
             "path": path.name,
-            "sha256": _sha256_file(path),
+            "sha256": image.content.sha256,
         },
     )
 
@@ -2475,6 +2484,7 @@ def _build_source_extension_set(
             meson_cross_files=meson_cross_files,
             setup_args=extension_set.meson_setup_args,
             driver=meson_driver,
+            backend=ninja_driver,
         )
         intro_targets, compile_commands, intro_installed = _require_real_meson_metadata(
             resolved_build_root

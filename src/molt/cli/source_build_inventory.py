@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import cast
 
 from packaging.utils import canonicalize_name
 
 from molt.python_environment_custody import validate_python_environment_identity
-from molt.python_file_node_custody import verify_tree_file
+from molt.python_file_node_custody import VerifiedTreeFile, verify_tree_file
 
 
 class SourceBuildInventory:
@@ -79,7 +79,7 @@ class SourceBuildInventory:
     def distribution(self, name: str) -> Mapping[str, object] | None:
         return self.distributions.get(canonicalize_name(name))
 
-    def file(self, relative: str, *, distribution: str) -> Path:
+    def file(self, relative: str, *, distribution: str) -> VerifiedTreeFile:
         owner = self.distribution(distribution)
         if owner is None or relative not in {
             str(row["path"])
@@ -90,21 +90,61 @@ class SourceBuildInventory:
             )
         return verify_tree_file(
             self.root, relative, entries=self._entries, nodes=self._nodes
-        ).path
+        )
 
-    def console_script(self, name: str, *, distribution: str) -> Path:
+    def executable_names(self, *, distribution: str) -> tuple[str, ...]:
+        """Project command names from entry points and executable owned files."""
+        owner = self.distribution(distribution)
+        if owner is None:
+            return ()
+        names = set(cast(Mapping[str, Sequence[str]], owner["console_scripts"]))
+        for row in cast(Sequence[Mapping[str, object]], owner["installed_files"]):
+            relative = str(row["path"])
+            filename = PurePosixPath(relative).name
+            if self.identity["operating_system"] == "windows":
+                if not filename.endswith(".exe"):
+                    continue
+                names.add(filename.removesuffix(".exe"))
+            elif cast(Mapping[str, bool], self._entries[relative]["access"])[
+                "executable"
+            ]:
+                names.add(filename)
+        return tuple(sorted(names))
+
+    def executable(self, name: str, *, distribution: str) -> VerifiedTreeFile:
+        """Resolve a declared launcher or a unique distribution-owned payload.
+
+        Entry-point metadata owns launcher selection when present. Wheels may
+        instead install native commands directly, including in the scripts
+        directory, without declaring a Python entry point. Never discover these
+        through PATH or infer their role from their installation directory.
+        """
         owner = self.distribution(distribution)
         scripts = (
             cast(Mapping[str, Sequence[str]], owner["console_scripts"]) if owner else {}
         )
-        paths = scripts.get(name, [])
+        if name in scripts:
+            paths = scripts[name]
+        else:
+            paths = (
+                [
+                    str(row["path"])
+                    for row in cast(
+                        Sequence[Mapping[str, object]], owner["installed_files"]
+                    )
+                ]
+                if owner
+                else []
+            )
         operating_system = self.identity["operating_system"]
         # A Windows entry point may also own its Python companion. Only the
         # platform's executable launcher is a command; companions stay in custody.
         expected_name = name + ".exe" if operating_system == "windows" else name
-        candidates = [path for path in paths if Path(path).name == expected_name]
+        candidates = [
+            path for path in paths if PurePosixPath(path).name == expected_name
+        ]
         if len(candidates) != 1:
             raise ValueError(
-                f"build distribution {distribution!r} has {len(candidates)} executable launchers for {name!r}"
+                f"build distribution {distribution!r} has {len(candidates)} executable candidates for {name!r}"
             )
         return self.file(candidates[0], distribution=distribution)
