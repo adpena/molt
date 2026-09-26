@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
-import json
 import os
 import subprocess
 import sys
@@ -10,10 +8,10 @@ import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, Collection, Mapping, Sequence, cast
+from typing import Collection, Sequence
 
 from molt.capability_manifest import ResolvedRuntimePolicy
-from molt.cli.artifact_state import _artifact_state_path
+from molt.cli import link_fingerprints
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _stage_shared_stdlib_object_for_link,
@@ -49,38 +47,10 @@ from molt.cli.native_link_tool_identity import native_link_cache_tool_facts
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
-from molt.file_hashing import (
-    _hash_source_tree_metadata,
-    _iter_source_fingerprint_files,
-)
-from molt.cli.runtime_fingerprints import (
-    _artifact_needs_rebuild,
-    _read_runtime_fingerprint,
-    _stored_fingerprint_matches_source_metadata,
-)
+from molt.link_outputs import validate_link_output_paths
 from molt.cli.runtime_paths import _runtime_lib_path
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
-from molt.cli.static_archive_identity import (
-    StaticArchiveIdentityError,
-    artifact_content_identity,
-)
 from molt.cli.atomic_io import _write_text_if_changed
-
-
-def _link_fingerprint_path(
-    project_root: Path,
-    artifact: Path,
-    profile: BuildProfile,
-    target_triple: str | None,
-) -> Path:
-    target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
-    return _artifact_state_path(
-        project_root,
-        artifact,
-        subdir="link_fingerprints",
-        stem_suffix=f"{profile}.{target}",
-        extension="fingerprint",
-    )
 
 
 def _run_native_link_command(
@@ -197,7 +167,6 @@ def _validate_darwin_link_output(
 def _prepare_native_link(
     *,
     output_artifact: Path,
-    backend_bin: Path,
     resolved_capability_policy: ResolvedRuntimePolicy,
     artifacts_root: Path,
     json_output: bool,
@@ -332,10 +301,12 @@ def _prepare_native_link(
             f"Zig target normalized to {normalized_target} from {target_triple}."
         )
 
-    link_fingerprint_path = _link_fingerprint_path(
+    link_fingerprint_path = link_fingerprints._link_fingerprint_path(
         project_root, output_binary, profile, target_triple
     )
-    stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
+    stored_link_fingerprint = link_fingerprints._read_link_fingerprint(
+        link_fingerprint_path
+    )
     external_native_fingerprint_inputs = [
         path
         for artifact in staged_external_native_artifacts
@@ -346,59 +317,48 @@ def _prepare_native_link(
             *artifact.staged_link_input_paths,
         )
     ]
-    link_tool_facts = native_link_cache_tool_facts(link_plan)
-    link_fingerprint = _link_fingerprint(
-        project_root=project_root,
-        inputs=[
-            stub_path,
-            output_obj,
-            resolved_runtime_lib,
-            *(
-                [link_stdlib_obj]
-                if link_stdlib_obj is not None and link_stdlib_obj.exists()
-                else []
+    link_inputs = [
+        stub_path,
+        output_obj,
+        resolved_runtime_lib,
+        *([link_stdlib_obj] if link_stdlib_obj is not None else []),
+        *external_native_fingerprint_inputs,
+    ]
+    try:
+        validate_link_output_paths(
+            {"binary": output_binary},
+            inputs=(
+                *link_inputs,
+                *((stdlib_obj_path,) if stdlib_obj_path is not None else ()),
+                *(
+                    path
+                    for artifact in staged_external_native_artifacts
+                    for path in (artifact.source_path, artifact.source_manifest_path)
+                ),
             ),
-            *external_native_fingerprint_inputs,
-        ],
+        )
+    except (OSError, ValueError) as exc:
+        return None, _fail(str(exc), json_output, command="build")
+    link_tool_facts = native_link_cache_tool_facts(link_plan)
+    link_fingerprint = link_fingerprints._link_fingerprint(
+        project_root=project_root,
+        inputs=link_inputs,
         link_cmd=link_cmd,
         tool_facts=link_tool_facts,
-        stored_fingerprint=stored_link_fingerprint,
+        stored_fingerprint=(
+            stored_link_fingerprint["fingerprint"] if stored_link_fingerprint else None
+        ),
     )
-    link_skipped = not _artifact_needs_rebuild(
-        output_binary,
-        link_fingerprint,
-        stored_link_fingerprint,
+    link_skipped = link_fingerprints._link_outputs_match(
+        outputs={"binary": output_binary},
+        fingerprint=link_fingerprint,
+        stored_fingerprint=stored_link_fingerprint,
     )
     # BOLT replaces the linked image with a post-link transformed artifact.
     # Always recreate the unoptimized, relocation-bearing input before another
     # BOLT run; a link fingerprint describes link inputs, not BOLT profile data.
     if link_plan.policy.bolt_requested:
         link_skipped = False
-    # Staleness guard: even when the fingerprint matches, the cached binary
-    # may be stale if ANY link input was rebuilt after the binary was linked.
-    # This catches backend changes that produce identical .o files (from TIR
-    # cache) but changed runtime internals. Comparing mtimes is O(1) and
-    # eliminates the entire class of stale-binary bugs.
-    if link_skipped and output_binary.exists():
-        try:
-            binary_mtime = output_binary.stat().st_mtime
-            # Include the backend binary: when function_compiler.rs changes,
-            # the backend is rebuilt, which changes how .o files are generated.
-            # Even if the .o content is identical (TIR cache), the binary must
-            # be relinked because the runtime library was also rebuilt.
-            deps = [
-                resolved_runtime_lib,
-                output_obj,
-                stub_path,
-                backend_bin,
-                *external_native_fingerprint_inputs,
-            ]
-            for dep in deps:
-                if dep.exists() and dep.stat().st_mtime > binary_mtime:
-                    link_skipped = False
-                    break
-        except OSError:
-            pass
     link_output = output_binary
     if link_skipped:
         link_process = subprocess.CompletedProcess(
@@ -483,59 +443,3 @@ def _prepare_native_link(
         link_process=link_process,
         strip_after_link=link_plan.policy.strip_after_link,
     ), None
-
-
-def _link_fingerprint(
-    *,
-    project_root: Path,
-    inputs: list[Path],
-    link_cmd: list[str],
-    tool_facts: Sequence[Mapping[str, object]] = (),
-    stored_fingerprint: dict[str, Any] | None = None,
-) -> dict[str, str | None] | None:
-    inputs_meta = _hash_source_tree_metadata(inputs, project_root)
-    inputs_digest = inputs_meta[0] if inputs_meta is not None else None
-    tool_identity = json.dumps(list(tool_facts), sort_keys=True, separators=(",", ":"))
-    meta = "\0".join((*link_cmd, tool_identity))
-    meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
-    if _stored_fingerprint_matches_source_metadata(
-        stored_fingerprint,
-        inputs_digest=inputs_digest,
-        rustc=None,
-        meta_digest=meta_digest,
-    ):
-        assert stored_fingerprint is not None
-        return {
-            "hash": cast(str, stored_fingerprint.get("hash")),
-            "rustc": None,
-            "inputs_digest": inputs_digest,
-            "meta_digest": meta_digest,
-        }
-    hasher = hashlib.sha256()
-    hasher.update(meta.encode("utf-8"))
-    hasher.update(b"\0")
-    try:
-        for path in sorted(inputs, key=lambda item: str(item)):
-            for item in _iter_source_fingerprint_files(path):
-                try:
-                    identity_path = item.relative_to(project_root)
-                except ValueError:
-                    identity_path = item
-                hasher.update(str(identity_path).encode("utf-8"))
-                hasher.update(b"\0")
-                hasher.update(
-                    json.dumps(
-                        artifact_content_identity(item),
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                )
-                hasher.update(b"\0")
-    except (OSError, StaticArchiveIdentityError):
-        return None
-    return {
-        "hash": hasher.hexdigest(),
-        "rustc": None,
-        "inputs_digest": inputs_digest,
-        "meta_digest": meta_digest,
-    }

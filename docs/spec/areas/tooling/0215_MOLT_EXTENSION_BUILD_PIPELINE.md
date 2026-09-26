@@ -888,6 +888,19 @@ source search.
   without a runtime-custody consumer fail closed when external native artifacts
   are admitted.
 
+  Final-link cache receipts bind the input/command/tool fingerprint to the exact
+  published output roles, resolved paths, and content identities. Native receipts
+  identify the final executable after strip, optimization, and signing. Combined
+  WASM identifies the linked module; split WASM additionally identifies `app.wasm`,
+  `molt_runtime.wasm`, and `wasm_size_attestation.json` as one reusable family.
+  A receipt is written only after successful publication. Missing, malformed,
+  older, relocated, or content-changed outputs force relinking; timestamps alone
+  neither authorize reuse nor invalidate byte-identical rebuilt inputs. Output
+  roles cannot alias each other or consumed inputs, including original paths
+  before snapshotting. Deployment manifests/assets are regenerated downstream,
+  not treated as linker outputs. This byte custody does not establish selected
+  archive-member extraction or expand the admitted source-extension subset.
+
   Artifact closure is not permission policy. Capability requests and host grants
   continue to resolve through the canonical capability-manifest and runtime
   authorities. A target or binary-interface fact may prove that an operation

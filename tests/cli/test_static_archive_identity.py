@@ -18,7 +18,7 @@ from molt.cli.native_link_manifest import (
     read_native_link_dependency_manifest,
     write_native_link_dependency_manifest,
 )
-from molt.cli.link_pipeline import _link_fingerprint
+from molt.cli.link_fingerprints import _link_fingerprint
 from molt.cli.runtime_fingerprints import (
     _runtime_artifact_fingerprint_matches,
     _write_runtime_fingerprint,

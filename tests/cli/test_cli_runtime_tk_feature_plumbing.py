@@ -22,6 +22,7 @@ from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import quality_commands as cli_commands
 from molt.cli import link_pipeline as cli_link_pipeline
+from molt.cli import link_fingerprints as cli_link_fingerprints
 from molt.cli.native_link_plan import NativeArtifactKind
 from tests.cli.native_link_test_support import (
     RUNTIME_BUILD_IDENTITY as TEST_RUNTIME_BUILD_IDENTITY,
@@ -1008,7 +1009,7 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         raising=True,
     )
     monkeypatch.setattr(
-        cli_link_pipeline,
+        cli_link_fingerprints,
         "_link_fingerprint",
         lambda *args, **kwargs: {
             "hash": "link",
@@ -1017,9 +1018,8 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         },
         raising=True,
     )
-    monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
     monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
+        cli_link_fingerprints, "_read_link_fingerprint", lambda path: None
     )
     monkeypatch.setattr(
         cli_link_pipeline,
@@ -1028,7 +1028,6 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
-        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
