@@ -72,7 +72,7 @@ fn configure_module_spec_class(
     state: &TypesRuntimeState,
     dict_ptr: *mut u8,
 ) -> bool {
-    let module_ptr = alloc_string(py, b"importlib.machinery");
+    let module_ptr = alloc_string(py, b"_frozen_importlib");
     if module_ptr.is_null() {
         if !exception_pending(py) {
             let _ = raise_exception::<u64>(py, "MemoryError", "class module allocation failed");
@@ -92,7 +92,10 @@ fn configure_module_spec_class(
     let repr_bits = builtin_func_bits(
         py,
         &state.module_spec_repr_fn,
-        molt_importlib_module_spec_repr as *const () as usize as u64,
+        crate::builtins::functions::runtime_fn_addr(
+            "molt_importlib_module_spec_repr",
+            molt_importlib_module_spec_repr as *const (),
+        ),
         1,
     );
     if !set_class_method(py, dict_ptr, "__repr__", repr_bits) {
@@ -101,7 +104,10 @@ fn configure_module_spec_class(
     let parent_bits = builtin_func_bits(
         py,
         &state.module_spec_parent_fn,
-        molt_importlib_module_spec_parent as *const () as usize as u64,
+        crate::builtins::functions::runtime_fn_addr(
+            "molt_importlib_module_spec_parent",
+            molt_importlib_module_spec_parent as *const (),
+        ),
         1,
     );
     if parent_bits == 0 || exception_pending(py) {
@@ -340,43 +346,52 @@ pub extern "C" fn molt_importlib_module_spec_parent(self_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_module_spec_repr(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let mut out = b"ModuleSpec(".to_vec();
-        for (index, (attr, label)) in [
-            (b"name".as_slice(), b"name=".as_slice()),
-            (b"loader".as_slice(), b"loader=".as_slice()),
-            (b"origin".as_slice(), b"origin=".as_slice()),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if index > 0 {
-                out.extend_from_slice(b", ");
+        // CPython's field order is observable through attribute getters and
+        // __repr__/__format__: read each optional field for the condition,
+        // then read it again only when the field is included.
+        let mut fields = Vec::new();
+        for (attr, optional, use_repr) in [
+            (b"name".as_slice(), false, true),
+            (b"loader".as_slice(), false, true),
+            (b"origin".as_slice(), true, true),
+            (b"submodule_search_locations".as_slice(), true, false),
+        ] {
+            if optional {
+                let Some(probe) = get_spec_attr(py, self_bits, attr) else {
+                    return MoltObject::none().bits();
+                };
+                let include = !obj_from_bits(probe).is_none();
+                dec_ref_bits(py, probe);
+                if !include {
+                    continue;
+                }
             }
-            out.extend_from_slice(label);
-            let Some(value_bits) = get_spec_attr(py, self_bits, attr) else {
+            if !fields.is_empty() {
+                fields.extend_from_slice(b", ");
+            }
+            fields.extend_from_slice(attr);
+            fields.push(b'=');
+            let Some(value) = get_spec_attr(py, self_bits, attr) else {
                 return MoltObject::none().bits();
             };
-            let repr_bits = molt_repr_from_obj(value_bits);
-            dec_ref_bits(py, value_bits);
-            if exception_pending(py) {
-                dec_ref_bits(py, repr_bits);
+            if !append_spec_formatted_value(py, value, use_repr, &mut fields) {
                 return MoltObject::none().bits();
             }
-            let Some(repr_ptr) = obj_from_bits(repr_bits)
-                .as_ptr()
-                .filter(|&ptr| unsafe { object_type_id(ptr) } == TYPE_ID_STRING)
-            else {
-                dec_ref_bits(py, repr_bits);
-                return raise_exception::<_>(py, "TypeError", "__repr__ returned non-string");
-            };
-            out.extend_from_slice(unsafe {
-                std::slice::from_raw_parts(
-                    crate::string_bytes(repr_ptr),
-                    crate::string_len(repr_ptr),
-                )
-            });
-            dec_ref_bits(py, repr_bits);
         }
+        let Some(class_bits) = get_spec_attr(py, self_bits, b"__class__") else {
+            return MoltObject::none().bits();
+        };
+        let class_name = get_spec_attr(py, class_bits, b"__name__");
+        dec_ref_bits(py, class_bits);
+        let Some(class_name) = class_name else {
+            return MoltObject::none().bits();
+        };
+        let mut out = Vec::new();
+        if !append_spec_formatted_value(py, class_name, false, &mut out) {
+            return MoltObject::none().bits();
+        }
+        out.push(b'(');
+        out.extend_from_slice(&fields);
         out.push(b')');
         let out_ptr = alloc_string(py, &out);
         if out_ptr.is_null() {
@@ -387,6 +402,56 @@ pub extern "C" fn molt_importlib_module_spec_repr(self_bits: u64) -> u64 {
         }
         MoltObject::from_ptr(out_ptr).bits()
     })
+}
+
+fn append_spec_formatted_value(
+    py: &PyToken<'_>,
+    value_bits: u64,
+    use_repr: bool,
+    out: &mut Vec<u8>,
+) -> bool {
+    let formatted = if use_repr {
+        molt_repr_from_obj(value_bits)
+    } else {
+        let empty_ptr = alloc_string(py, b"");
+        if empty_ptr.is_null() {
+            dec_ref_bits(py, value_bits);
+            if !exception_pending(py) {
+                let _ = raise_exception::<u64>(py, "MemoryError", "format spec allocation failed");
+            }
+            return false;
+        }
+        let empty = MoltObject::from_ptr(empty_ptr).bits();
+        let formatted = crate::molt_format_builtin(value_bits, empty);
+        dec_ref_bits(py, empty);
+        formatted
+    };
+    dec_ref_bits(py, value_bits);
+    if exception_pending(py) {
+        dec_ref_bits(py, formatted);
+        return false;
+    }
+    let Some(ptr) = obj_from_bits(formatted)
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) } == TYPE_ID_STRING)
+    else {
+        let message = if use_repr {
+            "__repr__ returned non-string".to_string()
+        } else {
+            format!(
+                "__format__ must return a str, not {}",
+                type_name(py, obj_from_bits(formatted))
+            )
+        };
+        dec_ref_bits(py, formatted);
+        let _ = raise_exception::<u64>(py, "TypeError", &message);
+        return false;
+    };
+    out.extend_from_slice(unsafe {
+        std::slice::from_raw_parts(crate::string_bytes(ptr), crate::string_len(ptr))
+    });
+    dec_ref_bits(py, formatted);
+    true
 }
 
 /// The canonical class for the `importlib.machinery` facade (owned).
@@ -481,6 +546,10 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             let class_bits = module_spec_class(py);
             assert_ne!(class_bits, 0);
+            assert_eq!(
+                attr_text(py, class_bits, b"__module__"),
+                "_frozen_importlib"
+            );
             let facade_bits = molt_importlib_module_spec_type();
             assert_eq!(facade_bits, class_bits);
             dec_ref_bits(py, facade_bits);
@@ -517,6 +586,13 @@ mod tests {
             let package =
                 alloc_module_spec(py, name, none, none, is_package).expect("package spec");
             assert_eq!(attr_text(py, package, b"parent"), "pkg.leaf");
+            let package_repr = molt_repr_from_obj(package);
+            assert!(!exception_pending(py));
+            assert_eq!(
+                string_obj_to_owned(obj_from_bits(package_repr)).as_deref(),
+                Some("ModuleSpec(name='pkg.leaf', loader=None, submodule_search_locations=[])")
+            );
+            dec_ref_bits(py, package_repr);
             assert_eq!(
                 attr(py, package, b"has_location"),
                 MoltObject::from_bool(false).bits()

@@ -55,3 +55,25 @@ try:
 finally:
     setattr(builtins, name, saved)
 print(getattr(builtins, name) is saved)
+
+# Public bootstrap loaders inherit the object repr/str protocol. Their
+# runtime origin, subclass dispatch and class metadata are CPython-visible.
+for loader_type in (
+    importlib.machinery.BuiltinImporter,
+    importlib.machinery.FrozenImporter,
+):
+    loader = loader_type()
+    print(loader_type.__name__, loader_type.__module__)
+    print(repr(loader) == object.__repr__(loader), str(loader) == repr(loader))
+    assert repr(loader).startswith(
+        "<_frozen_importlib." + loader_type.__name__ + " object at 0x"
+    )
+    assert repr(loader).endswith(">")
+
+
+class CustomLoader(importlib.machinery.BuiltinImporter):
+    def __repr__(self):
+        return "custom-loader"
+
+
+print(repr(CustomLoader()), str(CustomLoader()))

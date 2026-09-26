@@ -6,6 +6,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "src" / "molt" / "stdlib" / "importlib" / "machinery.py"
@@ -13,7 +15,6 @@ SCRIPT_PATH = REPO_ROOT / "src" / "molt" / "stdlib" / "importlib" / "machinery.p
 _MACHINERY_INTRINSICS = [
     "molt_stdlib_probe",
     "molt_importlib_read_file",
-    "molt_importlib_coerce_module_name",
     "molt_importlib_pathfinder_find_spec",
     "molt_importlib_filefinder_find_spec",
     "molt_importlib_filefinder_invalidate",
@@ -33,31 +34,32 @@ _MACHINERY_INTRINSICS = [
     "molt_exception_last",
     "molt_exception_last_pending",
     "molt_exception_pending",
-    "molt_module_import",
     "molt_sys_platform",
     "molt_importlib_module_spec_type",
+    "molt_importlib_compiled_loader",
+    "molt_importlib_compiled_loader_types",
 ]
 
 # Stands in for the runtime-owned class the facade must bind, not define.
 _RUNTIME_MODULE_SPEC = type("ModuleSpec", (), {})
+_RUNTIME_LOADER_BASE = type("_MoltLoader", (), {})
+_RUNTIME_BUILTIN_IMPORTER = type("BuiltinImporter", (_RUNTIME_LOADER_BASE,), {})
+_RUNTIME_FROZEN_IMPORTER = type("FrozenImporter", (_RUNTIME_LOADER_BASE,), {})
+_RUNTIME_LOADER_TYPES = (
+    _RUNTIME_LOADER_BASE,
+    _RUNTIME_BUILTIN_IMPORTER,
+    _RUNTIME_FROZEN_IMPORTER,
+)
+_RUNTIME_LOADER = _RUNTIME_BUILTIN_IMPORTER()
 
 
-def _coerce_stub(module, loader, spec=None):
-    """Pure-Python fallback matching the runtime _coerce_module_name intrinsic."""
-    name = getattr(module, "__name__", None)
-    if isinstance(name, str):
-        return name
-    if spec is None:
-        spec = getattr(module, "__spec__", None)
-    if spec is not None:
-        sname = getattr(spec, "name", None)
-        if isinstance(sname, str):
-            return sname
-    if loader is not None:
-        lname = getattr(loader, "name", None)
-        if isinstance(lname, str):
-            return lname
-    raise TypeError("module name must be str")
+def _bootstrap_intrinsics():
+    # Identity sentinels only: behavior is tested against the real Rust owner.
+    return {
+        "molt_importlib_module_spec_type": lambda: _RUNTIME_MODULE_SPEC,
+        "molt_importlib_compiled_loader": lambda: _RUNTIME_LOADER,
+        "molt_importlib_compiled_loader_types": lambda: _RUNTIME_LOADER_TYPES,
+    }
 
 
 def _load_machinery_module(missing_intrinsics=frozenset()):
@@ -70,10 +72,12 @@ def _load_machinery_module(missing_intrinsics=frozenset()):
     for name in _MACHINERY_INTRINSICS:
         if name not in missing_intrinsics:
             registry[name] = _noop
-    registry["molt_importlib_coerce_module_name"] = _coerce_stub
     registry["molt_sys_platform"] = lambda: sys.platform
-    if "molt_importlib_module_spec_type" not in missing_intrinsics:
-        registry["molt_importlib_module_spec_type"] = lambda: _RUNTIME_MODULE_SPEC
+    registry.update(
+        (name, value)
+        for name, value in _bootstrap_intrinsics().items()
+        if name not in missing_intrinsics
+    )
 
     def _lookup(intrinsic_name):
         return registry.get(intrinsic_name)
@@ -101,60 +105,23 @@ def test_module_spec_is_the_runtime_type_authority() -> None:
     assert machinery.ModuleSpec is _RUNTIME_MODULE_SPEC
 
 
-def test_module_spec_fails_closed_without_runtime_type() -> None:
+@pytest.mark.parametrize("missing", tuple(_bootstrap_intrinsics()))
+def test_bootstrap_fails_closed_without_runtime_authority(missing: str) -> None:
     try:
-        _load_machinery_module(missing_intrinsics={"molt_importlib_module_spec_type"})
+        _load_machinery_module(missing_intrinsics={missing})
     except RuntimeError as exc:
-        assert str(exc) == "intrinsic unavailable: molt_importlib_module_spec_type"
+        assert str(exc) == f"intrinsic unavailable: {missing}"
     else:
-        raise AssertionError("expected missing ModuleSpec type to fail closed")
+        raise AssertionError("expected missing bootstrap authority to fail closed")
 
 
-def test_coerce_module_name_prefers_spec_name_when_module_name_invalid() -> None:
+def test_loader_classes_and_singleton_are_runtime_authorities() -> None:
     machinery = _load_machinery_module()
-
-    class _Module:
-        __name__ = 123
-        __spec__ = type("Spec", (), {"name": "resolved.from.spec"})()
-
-    resolved = machinery._coerce_module_name(_Module(), loader=None)  # noqa: SLF001
-    assert resolved == "resolved.from.spec"
-
-
-def test_coerce_module_name_prefers_loader_name_when_spec_missing() -> None:
-    machinery = _load_machinery_module()
-
-    class _Loader:
-        name = "resolved.from.loader"
-
-    class _Module:
-        __name__ = 123
-        __spec__ = None
-
-    resolved = machinery._coerce_module_name(  # noqa: SLF001
-        _Module(), loader=_Loader()
-    )
-    assert resolved == "resolved.from.loader"
-
-
-def test_coerce_module_name_raises_without_any_string_source() -> None:
-    machinery = _load_machinery_module()
-
-    class _Loader:
-        name = 42
-
-    class _Module:
-        __name__ = None
-        __spec__ = type("Spec", (), {"name": 99})()
-
-    try:
-        machinery._coerce_module_name(  # noqa: SLF001
-            _Module(), loader=_Loader()
-        )
-    except TypeError as exc:
-        assert str(exc) == "module name must be str"
-    else:
-        raise AssertionError("expected TypeError")
+    assert machinery._MoltLoader is _RUNTIME_LOADER_BASE
+    assert machinery._LoaderBasics is _RUNTIME_LOADER_BASE
+    assert machinery.BuiltinImporter is _RUNTIME_BUILTIN_IMPORTER
+    assert machinery.FrozenImporter is _RUNTIME_FROZEN_IMPORTER
+    assert machinery._MOLT_LOADER is _RUNTIME_LOADER
 
 
 def test_platform_suffixes_resolve_when_sys_is_partially_initialized() -> None:
@@ -163,7 +130,7 @@ def test_platform_suffixes_resolve_when_sys_is_partially_initialized() -> None:
         registry = {}
         builtins._molt_intrinsics = registry
     registry["molt_sys_platform"] = lambda: "darwin"
-    registry["molt_importlib_module_spec_type"] = lambda: _RUNTIME_MODULE_SPEC
+    registry.update(_bootstrap_intrinsics())
 
     spec = importlib.util.spec_from_file_location(
         "molt_stdlib_importlib_machinery_partial_sys", SCRIPT_PATH
@@ -183,13 +150,13 @@ def test_platform_suffixes_resolve_when_sys_is_partially_initialized() -> None:
 
 
 def test_ensure_intrinsics_does_not_publish_partial_registry() -> None:
-    machinery = _load_machinery_module(missing_intrinsics={"molt_module_import"})
+    machinery = _load_machinery_module(missing_intrinsics={"molt_exception_pending"})
 
     for _ in range(2):
         try:
             machinery._ensure_intrinsics()  # noqa: SLF001
         except RuntimeError as exc:
-            assert str(exc) == "intrinsic unavailable: molt_module_import"
+            assert str(exc) == "intrinsic unavailable: molt_exception_pending"
         else:
             raise AssertionError("expected missing intrinsic to fail closed")
 
@@ -197,4 +164,4 @@ def test_ensure_intrinsics_does_not_publish_partial_registry() -> None:
         assert (  # noqa: SLF001
             machinery._MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE is None
         )
-        assert machinery._MOLT_MODULE_IMPORT is None  # noqa: SLF001
+        assert machinery._MOLT_EXCEPTION_PENDING is None  # noqa: SLF001

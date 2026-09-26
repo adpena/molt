@@ -12,9 +12,11 @@ use crate::builtins::exceptions::{
 use crate::builtins::functions_re::this_build_rot13_text;
 use crate::builtins::platform::molt_importlib_import_transaction;
 use crate::builtins::types::{
-    molt_importlib_module_spec_init, molt_object_new_bound, molt_type_init, molt_type_new,
-    molt_types_capsule_new, molt_types_cell_new, molt_types_coroutine,
-    molt_types_dynamic_class_attr_init, molt_types_get_original_bases,
+    molt_importlib_compiled_loader_create_module, molt_importlib_compiled_loader_exec_module,
+    molt_importlib_compiled_loader_load_module, molt_importlib_module_spec_init,
+    molt_importlib_module_spec_parent, molt_importlib_module_spec_repr, molt_object_new_bound,
+    molt_type_init, molt_type_new, molt_types_capsule_new, molt_types_cell_new,
+    molt_types_coroutine, molt_types_dynamic_class_attr_init, molt_types_get_original_bases,
     molt_types_mappingproxy_init, molt_types_mappingproxy_new, molt_types_method_init,
     molt_types_method_new, molt_types_new_class, molt_types_prepare_class,
     molt_types_resolve_bases, molt_types_simplenamespace_init,

@@ -28,12 +28,18 @@ with tempfile.TemporaryDirectory(prefix="molt_importlib_reload_") as root:
         with open(module_path, "w", encoding="utf-8") as handle:
             handle.write("VALUE = 2\n")
         importlib.invalidate_caches()
+        # Reload resolves the canonical ModuleSpec.name, not a stale module
+        # __name__ or a nonexistent ModuleSpec.__name__ attribute.
+        module.__name__ = module_name + "_stale"
         reloaded = importlib.reload(module)
         reload_identity = reloaded is module
+        reload_spec_name = reloaded.__name__ == module_name
         reloaded_value_is_int = isinstance(getattr(reloaded, "VALUE", None), int)
         print("reload_identity", reload_identity)
+        print("reload_spec_name", reload_spec_name)
         print("reloaded_value_is_int", reloaded_value_is_int)
         assert reload_identity
+        assert reload_spec_name
         assert reloaded_value_is_int
     finally:
         if root in sys.path:

@@ -1013,6 +1013,16 @@ pub(super) fn importlib_coerce_module_name_bits(
     spec_bits: u64,
 ) -> Result<u64, u64> {
     let module_name_name = intern_runtime_static_name(_py, b"__name__");
+    let publish_name = |name_bits| {
+        let result = crate::molt_object_setattr(module_bits, module_name_name, name_bits);
+        dec_ref_bits(_py, result);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, name_bits);
+            Err(MoltObject::none().bits())
+        } else {
+            Ok(name_bits)
+        }
+    };
     if let Some(module_name_bits) = getattr_optional_bits(_py, module_bits, module_name_name)? {
         if string_obj_to_owned(obj_from_bits(module_name_bits)).is_some() {
             return Ok(module_name_bits);
@@ -1032,9 +1042,10 @@ pub(super) fn importlib_coerce_module_name_bits(
         }
     }
 
+    let name_attribute = intern_runtime_static_name(_py, b"name");
     if !obj_from_bits(module_spec_bits).is_none()
         && let Some(spec_name_bits) =
-            match getattr_optional_bits(_py, module_spec_bits, module_name_name) {
+            match getattr_optional_bits(_py, module_spec_bits, name_attribute) {
                 Ok(value) => value,
                 Err(bits) => {
                     if module_spec_owned {
@@ -1045,18 +1056,10 @@ pub(super) fn importlib_coerce_module_name_bits(
             }
     {
         if string_obj_to_owned(obj_from_bits(spec_name_bits)).is_some() {
-            let set_bits =
-                crate::molt_object_setattr(module_bits, module_name_name, spec_name_bits);
-            if !obj_from_bits(set_bits).is_none() {
-                dec_ref_bits(_py, set_bits);
-            }
-            if exception_pending(_py) {
-                clear_exception(_py);
-            }
             if module_spec_owned {
                 dec_ref_bits(_py, module_spec_bits);
             }
-            return Ok(spec_name_bits);
+            return publish_name(spec_name_bits);
         }
         if !obj_from_bits(spec_name_bits).is_none() {
             dec_ref_bits(_py, spec_name_bits);
@@ -1067,18 +1070,9 @@ pub(super) fn importlib_coerce_module_name_bits(
         dec_ref_bits(_py, module_spec_bits);
     }
 
-    let loader_name = intern_runtime_static_name(_py, b"name");
-    if let Some(loader_name_bits) = getattr_optional_bits(_py, loader_bits, loader_name)? {
+    if let Some(loader_name_bits) = getattr_optional_bits(_py, loader_bits, name_attribute)? {
         if string_obj_to_owned(obj_from_bits(loader_name_bits)).is_some() {
-            let set_bits =
-                crate::molt_object_setattr(module_bits, module_name_name, loader_name_bits);
-            if !obj_from_bits(set_bits).is_none() {
-                dec_ref_bits(_py, set_bits);
-            }
-            if exception_pending(_py) {
-                clear_exception(_py);
-            }
-            return Ok(loader_name_bits);
+            return publish_name(loader_name_bits);
         }
         if !obj_from_bits(loader_name_bits).is_none() {
             dec_ref_bits(_py, loader_name_bits);

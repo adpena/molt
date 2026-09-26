@@ -205,14 +205,8 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         self.emit(
             MoltOp(kind="CONST_STR", args=[self.module_spec_name], result=spec_name_val)
         )
-        loader_default = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=loader_default))
-        loader_val = (
-            self._emit_module_attr_get_default_on(
-                "importlib.machinery", "_MOLT_LOADER", loader_default
-            )
-            if "importlib.machinery" in self.known_modules
-            else loader_default
+        loader_val = self._emit_runtime_call(
+            "molt_importlib_compiled_loader", [], type_hint="Any"
         )
         if origin_val is None:
             origin_val = MoltValue(self.next_var(), type_hint="None")

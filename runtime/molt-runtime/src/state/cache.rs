@@ -642,7 +642,6 @@ macro_rules! define_runtime_static_names {
 
 define_runtime_static_names! {
     any_name => b"Any",
-    builtin_importer_name => b"BuiltinImporter",
     bytecode_suffixes_name => b"BYTECODE_SUFFIXES",
     cached_name => b"cached",
     cache_from_source_name => b"cache_from_source",
@@ -670,7 +669,6 @@ define_runtime_static_names! {
     file_finder_name => b"FileFinder",
     files_name => b"files",
     find_spec_name => b"find_spec",
-    frozen_importer_name => b"FrozenImporter",
     generic_name => b"Generic",
     get_resource_reader_name => b"get_resource_reader",
     get_source_name => b"get_source",
@@ -686,7 +684,6 @@ define_runtime_static_names! {
     joinpath_name => b"joinpath",
     keyfile_name => b"keyfile",
     list_name => b"List",
-    loader_basics_name => b"_LoaderBasics",
     loader_name => b"loader",
     load_module_name => b"load_module",
     load_module_shim_name => b"_load_module_shim",
@@ -696,7 +693,6 @@ define_runtime_static_names! {
     modules_name => b"modules",
     module_from_spec_name => b"module_from_spec",
     module_spec_name => b"ModuleSpec",
-    molt_loader_name => b"_MOLT_LOADER",
     molt_roots_name => b"molt_roots",
     name_name => b"name",
     namespace_loader_name => b"NamespaceLoader",

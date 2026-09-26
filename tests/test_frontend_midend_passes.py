@@ -3132,6 +3132,7 @@ def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
         op.kind == "MODULE_GET_ATTR" and strings.get(op.args[1].name) == "ModuleSpec"
         for op in ops
     )
+    assert not any(op.kind == "MODULE_IMPORT" for op in ops[enter:locals_set])
     spec_value = ops[spec_stores[0]].args[2]
     producer = next(op for op in ops if op.result == spec_value)
     if module_name == "__main__":
@@ -3142,6 +3143,9 @@ def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
         cls_call = next(op for op in ops if op.result == cls_value)
         assert cls_call.kind == "CALL"
         assert cls_call.args == ["molt_importlib_module_spec_type"]
+        loader_call = next(op for op in ops if op.result == producer.args[2])
+        assert loader_call.kind == "CALL"
+        assert loader_call.args == ["molt_importlib_compiled_loader"]
 
     pre_frame_label = gen.module_pre_frame_exception_label
     attempt_label = gen.function_exception_label
