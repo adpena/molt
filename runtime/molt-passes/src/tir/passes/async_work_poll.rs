@@ -206,13 +206,8 @@ fn dump_lexical_custody_failure(func: &TirFunction, position: ExceptionOpPositio
             }
         }
         for (index, op) in block.ops.iter().enumerate() {
-            if !matches!(
-                op.opcode,
-                OpCode::StateTransition
-                    | OpCode::StateYield
-                    | OpCode::ChanSendYield
-                    | OpCode::ChanRecvYield
-            ) || suspend_count >= 16
+            if !matches!(op.opcode, OpCode::StateTransition | OpCode::StateYield)
+                || suspend_count >= 16
             {
                 continue;
             }

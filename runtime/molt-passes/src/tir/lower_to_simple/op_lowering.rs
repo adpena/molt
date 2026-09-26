@@ -526,20 +526,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             value: attr_int(&op.attrs, "value"),
             ..OpIR::default()
         }),
-        OpCode::ChanSendYield => Some(OpIR {
-            kind: "chan_send_yield".to_string(),
-            args: Some(operand_args(op)),
-            out: out_var,
-            value: attr_int(&op.attrs, "value"),
-            ..OpIR::default()
-        }),
-        OpCode::ChanRecvYield => Some(OpIR {
-            kind: "chan_recv_yield".to_string(),
-            args: Some(operand_args(op)),
-            out: out_var,
-            value: attr_int(&op.attrs, "value"),
-            ..OpIR::default()
-        }),
         OpCode::ClosureLoad => Some(OpIR {
             kind: "closure_load".to_string(),
             args: Some(operand_args(op)),

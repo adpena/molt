@@ -107,7 +107,7 @@ The 38,510-line file is split into sub-modules within `runtime/molt-backend-nati
 - Dependencies: `scan_loop_hoistable_lists` (moves here from function_compiler.rs).
 
 **`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/fc_async.rs`**
-- Responsibility: async/generator state-machine codegen — `StateLabelStart`/`StateLabelEnd`, `StateBlockStart`/`StateBlockEnd`, `ChanSendYield`/`ChanRecvYield`, coroutine frame ops.
+- Responsibility: async/generator state-machine codegen — `StateLabelStart`/`StateLabelEnd`, `StateBlockStart`/`StateBlockEnd`, coroutine frame ops.
 - Estimated size: ~4,000 lines.
 - Dependencies: `TrampolineSpec`, `function_requires_value_return`.
 

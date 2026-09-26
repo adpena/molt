@@ -272,8 +272,6 @@ SIMPLEIR_STRUCTURAL_KINDS: frozenset[str] = frozenset(
 
 FRONTEND_REPOLL_KINDS: frozenset[str] = frozenset(
     {
-        "CHAN_RECV_YIELD",
-        "CHAN_SEND_YIELD",
         "STATE_TRANSITION",
     }
 )
@@ -546,8 +544,6 @@ CANONICAL_KIND: dict[str, str] = {
     "state_switch": "state_switch",
     "state_transition": "state_transition",
     "state_yield": "state_yield",
-    "chan_send_yield": "chan_send_yield",
-    "chan_recv_yield": "chan_recv_yield",
     "closure_load": "closure_load",
     "closure_store": "closure_store",
     "alloc_task": "alloc_task",
@@ -665,8 +661,6 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "state_switch",
         "state_transition",
         "state_yield",
-        "chan_send_yield",
-        "chan_recv_yield",
         "closure_load",
         "closure_store",
         "alloc_task",
@@ -981,8 +975,6 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "CALL_METHOD_IC": "writes_heap",
     "CALL_SUPER_METHOD_IC": "writes_heap",
     "CAST_BOOL": "writes_heap",
-    "CHAN_RECV_YIELD": "control",
-    "CHAN_SEND_YIELD": "control",
     "CHECKED_ADD": "reads_heap",
     "CHECKED_MUL": "reads_heap",
     "CHECK_EXCEPTION": "control",
@@ -1253,8 +1245,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "CALL_METHOD_IC": True,
     "CALL_SUPER_METHOD_IC": True,
     "CAST_BOOL": True,
-    "CHAN_RECV_YIELD": True,
-    "CHAN_SEND_YIELD": True,
     "CHECKED_ADD": False,
     "CHECKED_MUL": False,
     "CHECK_EXCEPTION": False,
@@ -1500,7 +1490,6 @@ SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[str] = frozenset(
         "generator_send",
         "import_from",
         "import_name",
-        "spawn",
         "super_call",
         "task_new",
         "yield_from",
@@ -1862,8 +1851,6 @@ FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
 FRONTEND_EFFECT_CONTROL_KINDS: frozenset[str] = frozenset(
     {
         "BR_IF",
-        "CHAN_RECV_YIELD",
-        "CHAN_SEND_YIELD",
         "CHECK_EXCEPTION",
         "ELSE",
         "END_IF",

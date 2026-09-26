@@ -378,16 +378,12 @@ async def main():
         for op in ops
         if op["kind"] == "module_get_global" and op["args"][1] in names
     }
-    calls = [op for op in ops if op["kind"] == "call_bind" and op["args"][0] in callees]
+    calls = [op for op in ops if op["kind"] == "call_func" and op["args"][0] in callees]
     assert len(calls) == 1
     call = calls[0]
-    assert len(call["args"]) == 2
+    assert len(call["args"]) == 3
     function_ops = next(fn["ops"] for fn in ir["functions"] if call in fn["ops"])
-    argument_values = [
-        op["args"][1]
-        for op in function_ops
-        if op["kind"] == "callargs_push_pos" and op["args"][0] == call["args"][1]
-    ]
+    argument_values = call["args"][1:]
     assert len(argument_values) == 2
     definitions = {op["out"]: op for op in function_ops if "out" in op}
     assert definitions[argument_values[0]]["kind"] == "const"

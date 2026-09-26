@@ -525,30 +525,3 @@ pub unsafe extern "C" fn molt_cancel_token_get_current() -> u64 {
         MoltObject::from_int(current_token_id() as i64).bits()
     })
 }
-
-/// # Safety
-/// Requires the cancel token tables to be initialized by the runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_cancelled() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        cancel_tokens(_py);
-        MoltObject::from_bool(token_is_cancelled(_py, current_token_id())).bits()
-    })
-}
-
-/// # Safety
-/// Requires the cancel token tables to be initialized by the runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_cancel_current() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        cancel_tokens(_py);
-        let id = current_token_id();
-        let mut map = cancel_tokens(_py).lock().unwrap();
-        if let Some(entry) = map.get_mut(&id) {
-            entry.cancelled = true;
-        }
-        drop(map);
-        wake_tasks_for_cancelled_tokens(_py);
-        MoltObject::none().bits()
-    })
-}

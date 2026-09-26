@@ -479,8 +479,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::ClosureStore => self.emit_closure_store(op),
             OpCode::StateYield => self.emit_state_yield(op),
             OpCode::StateTransition => self.emit_state_transition(op),
-            OpCode::ChanSendYield => self.emit_chan_send_yield(op),
-            OpCode::ChanRecvYield => self.emit_chan_recv_yield(op),
             OpCode::Yield => self.emit_yield(op),
             OpCode::YieldFrom => self.emit_yield_from(op),
             OpCode::Raise => {

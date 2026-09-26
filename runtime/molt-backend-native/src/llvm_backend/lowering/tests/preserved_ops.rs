@@ -448,7 +448,7 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
                 "borrowed",
             ),
             ("list_append", "molt_list_append", 2, "owned"),
-            ("spawn", "molt_spawn", 1, "void"),
+            ("print_newline", "molt_print_newline", 0, "void"),
         ] {
             for with_result in [false, true] {
                 let ctx = Context::create();
@@ -819,7 +819,6 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
         ("print_newline", 0, "molt_print_newline"),
         ("set_update", 2, "molt_set_update"),
         ("dict_str_int_inc", 3, "molt_dict_str_int_inc"),
-        ("spawn", 1, "molt_spawn"),
         ("math_sin", 1, "molt_math_sin"),
         (
             "string_split_field_len_from_bounds",
@@ -852,33 +851,16 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
 }
 
 #[test]
-fn lower_preserved_chan_new_uses_dedicated_handle_lowering() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
-    let ir = lower_preserved_kind_ir(&backend, "chan_new", 1, true, None).unwrap_or_else(|e| {
-        panic!(
-            "chan_new returns an opaque channel handle and must lower through \
-             its dedicated LLVM arm, got error: {:?}",
-            e.diagnostics()
-        )
-    });
-    assert!(
-        ir.contains("call i64 @molt_chan_new(i64"),
-        "chan_new must call the centrally declared handle constructor; IR:\n{ir}"
-    );
-}
-
-#[test]
 fn lower_preserved_void_runtime_result_shape_fails_loud() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
     backend
         .runtime_callable_symbols
-        .insert("molt_spawn".to_string());
-    let err = lower_preserved_kind_ir(&backend, "spawn", 1, true, None)
+        .insert("molt_print_newline".to_string());
+    let err = lower_preserved_kind_ir(&backend, "print_newline", 0, true, None)
         .expect_err("void preserved runtime ops must not bind a boxed result");
     assert_lowering_error_contains(&err, "call to void runtime symbol");
-    assert_lowering_error_contains(&err, "spawn");
+    assert_lowering_error_contains(&err, "print_newline");
 }
 
 #[test]

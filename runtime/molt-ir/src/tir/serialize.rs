@@ -310,6 +310,20 @@ mod tests {
         assert_eq!(restored.entry_block, func.entry_block);
     }
 
+    #[test]
+    fn cached_opcodes_use_names_and_reject_retired_variants() {
+        let live = rmp_serde::to_vec(&OpCode::StateYield).unwrap();
+        assert_eq!(live.as_slice(), b"\xaaStateYield");
+        assert_eq!(
+            rmp_serde::from_slice::<OpCode>(&live).unwrap(),
+            OpCode::StateYield
+        );
+        for retired in ["ChanSendYield", "ChanRecvYield"] {
+            let encoded = rmp_serde::to_vec(retired).unwrap();
+            assert!(rmp_serde::from_slice::<OpCode>(&encoded).is_err());
+        }
+    }
+
     fn function_with_map_order(reverse: bool) -> TirFunction {
         fn ordered<T>(mut values: Vec<T>, reverse: bool) -> Vec<T> {
             if reverse {

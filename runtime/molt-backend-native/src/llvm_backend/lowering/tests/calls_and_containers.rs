@@ -101,55 +101,54 @@ fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
 
 #[test]
 fn boxed_runtime_calls_require_selected_runtime_before_materialization() {
-    for opcode in [OpCode::Call, OpCode::Copy] {
-        for kind in ["cell_new", "spawn"] {
-            for bound in [false, true] {
-                let ctx = Context::create();
-                let mut backend = make_backend(&ctx);
-                let symbol = format!("molt_{kind}");
-                backend.runtime_callable_symbols.remove(&symbol);
-                let mut func = TirFunction::new(
-                    "unavailable_runtime".into(),
-                    vec![],
-                    TirType::DynBox,
-                    molt_ir::FunctionReturnAbi::Value,
-                );
-                let arg = func.fresh_value();
-                let none = func.fresh_value();
-                let result = func.fresh_value();
-                let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-                entry.ops.push(const_int_def(arg, i64::MAX));
-                entry.ops.push(const_none_def(none));
-                entry.ops.push(TirOp {
-                    dialect: Dialect::Molt,
-                    opcode,
-                    operands: vec![arg],
-                    results: if bound { vec![result] } else { vec![] },
-                    attrs: AttrDict::from([
-                        (
-                            "_original_kind".into(),
-                            AttrValue::Str(
-                                if opcode == OpCode::Call { "call" } else { kind }.into(),
-                            ),
-                        ),
-                        ("s_value".into(), AttrValue::Str(symbol.clone())),
-                    ]),
-                    source_span: None,
-                });
-                entry.terminator = Terminator::Return { values: vec![none] };
-                let error = try_lower_tir_to_llvm(&func, &backend)
-                    .expect_err("runtime availability must precede materialization");
-                assert_lowering_error_contains(
-                    &error,
-                    &format!(
-                        "boxed runtime symbol `{symbol}` is unavailable in the selected runtime"
+    // The runtime callable stays live after its spelling-only Copy lane retires.
+    for (opcode, kind) in [
+        (OpCode::Call, "cell_new"),
+        (OpCode::Copy, "cell_new"),
+        (OpCode::Call, "spawn"),
+    ] {
+        for bound in [false, true] {
+            let ctx = Context::create();
+            let mut backend = make_backend(&ctx);
+            let symbol = format!("molt_{kind}");
+            backend.runtime_callable_symbols.remove(&symbol);
+            let mut func = TirFunction::new(
+                "unavailable_runtime".into(),
+                vec![],
+                TirType::DynBox,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let arg = func.fresh_value();
+            let none = func.fresh_value();
+            let result = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(const_int_def(arg, i64::MAX));
+            entry.ops.push(const_none_def(none));
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: vec![arg],
+                results: if bound { vec![result] } else { vec![] },
+                attrs: AttrDict::from([
+                    (
+                        "_original_kind".into(),
+                        AttrValue::Str(if opcode == OpCode::Call { "call" } else { kind }.into()),
                     ),
-                );
-                assert!(backend.module.get_function(&symbol).is_none());
-                let ir = backend.module.print_to_string().to_string();
-                assert!(!ir.contains("call i64 @molt_int_from_i64("), "{ir}");
-                assert!(!ir.contains("call void @molt_dec_ref_obj("), "{ir}");
-            }
+                    ("s_value".into(), AttrValue::Str(symbol.clone())),
+                ]),
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return { values: vec![none] };
+            let error = try_lower_tir_to_llvm(&func, &backend)
+                .expect_err("runtime availability must precede materialization");
+            assert_lowering_error_contains(
+                &error,
+                &format!("boxed runtime symbol `{symbol}` is unavailable in the selected runtime"),
+            );
+            assert!(backend.module.get_function(&symbol).is_none());
+            let ir = backend.module.print_to_string().to_string();
+            assert!(!ir.contains("call i64 @molt_int_from_i64("), "{ir}");
+            assert!(!ir.contains("call void @molt_dec_ref_obj("), "{ir}");
         }
     }
 }
@@ -245,85 +244,86 @@ fn boxed_runtime_calls_retire_unbound_owned_results() {
 
 #[test]
 fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results() {
-    for opcode in [OpCode::Call, OpCode::Copy] {
-        for (kind, returns_value) in [("cell_new", true), ("spawn", false)] {
-            for (value, inline_proven) in
-                [(7, false), (7, true), (i64::MAX, false), (i64::MIN, false)]
-            {
-                for bound in [false, true] {
-                    if bound && !returns_value {
-                        continue;
-                    }
-                    let ctx = Context::create();
-                    let mut backend = make_backend(&ctx);
-                    let symbol = format!("molt_{kind}");
-                    backend.runtime_callable_symbols.insert(symbol.clone());
-                    let mut func = TirFunction::new(
-                        "boxed_argument_owner".into(),
-                        vec![],
-                        TirType::DynBox,
-                        molt_ir::FunctionReturnAbi::Value,
-                    );
-                    let arg = func.fresh_value();
-                    let none = func.fresh_value();
-                    let result = func.fresh_value();
-                    if inline_proven {
-                        let mut facts = crate::representation_plan::LlvmReprFacts::default();
-                        facts.repr_by_value.insert(arg, crate::Repr::RawI64Safe);
-                        backend.function_repr_facts.insert(func.name.clone(), facts);
-                    }
-                    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-                    entry.ops.push(const_int_def(arg, value));
-                    entry.ops.push(const_none_def(none));
-                    entry.ops.push(TirOp {
-                        dialect: Dialect::Molt,
-                        opcode,
-                        operands: vec![arg],
-                        results: if bound { vec![result] } else { vec![] },
-                        attrs: AttrDict::from([
-                            (
-                                "_original_kind".into(),
-                                AttrValue::Str(
-                                    if opcode == OpCode::Call { "call" } else { kind }.into(),
-                                ),
+    for (opcode, kind, returns_value) in [
+        (OpCode::Call, "cell_new", true),
+        (OpCode::Copy, "cell_new", true),
+        (OpCode::Call, "spawn", false),
+    ] {
+        for (value, inline_proven) in [(7, false), (7, true), (i64::MAX, false), (i64::MIN, false)]
+        {
+            for bound in [false, true] {
+                if bound && !returns_value {
+                    continue;
+                }
+                let ctx = Context::create();
+                let mut backend = make_backend(&ctx);
+                let symbol = format!("molt_{kind}");
+                backend.runtime_callable_symbols.insert(symbol.clone());
+                let mut func = TirFunction::new(
+                    "boxed_argument_owner".into(),
+                    vec![],
+                    TirType::DynBox,
+                    molt_ir::FunctionReturnAbi::Value,
+                );
+                let arg = func.fresh_value();
+                let none = func.fresh_value();
+                let result = func.fresh_value();
+                if inline_proven {
+                    let mut facts = crate::representation_plan::LlvmReprFacts::default();
+                    facts.repr_by_value.insert(arg, crate::Repr::RawI64Safe);
+                    backend.function_repr_facts.insert(func.name.clone(), facts);
+                }
+                let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+                entry.ops.push(const_int_def(arg, value));
+                entry.ops.push(const_none_def(none));
+                entry.ops.push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: vec![arg],
+                    results: if bound { vec![result] } else { vec![] },
+                    attrs: AttrDict::from([
+                        (
+                            "_original_kind".into(),
+                            AttrValue::Str(
+                                if opcode == OpCode::Call { "call" } else { kind }.into(),
                             ),
-                            ("s_value".into(), AttrValue::Str(symbol.clone())),
-                        ]),
-                        source_span: None,
-                    });
-                    entry.terminator = Terminator::Return {
-                        values: vec![if bound { result } else { none }],
-                    };
-                    let ir = try_lower_tir_to_llvm(&func, &backend)
-                        .unwrap_or_else(|error| panic!("{kind}: {:?}", error.diagnostics()))
-                        .print_to_string()
-                        .to_string();
-                    backend
-                        .module
-                        .verify()
-                        .expect("boxed argument owner lifetime");
-                    assert!(
-                        ir.contains(&format!("call i64 @molt_int_from_i64(i64 {value})")),
-                        "{ir}"
-                    );
-                    let release = "call void @molt_dec_ref_obj(i64 %boxed_int)";
-                    assert_eq!(
-                        ir.matches(release).count(),
-                        usize::from(!inline_proven),
-                        "{ir}"
-                    );
-                    assert_eq!(
-                        ir.matches("call void @molt_dec_ref_obj(").count(),
-                        usize::from(!inline_proven) + usize::from(returns_value && !bound),
-                        "{ir}"
-                    );
-                    let call = format!(
-                        "call {} @{symbol}(",
-                        if returns_value { "i64" } else { "void" }
-                    );
-                    if !inline_proven {
-                        assert!(ir.find(&call).unwrap() < ir.find(release).unwrap(), "{ir}");
-                    }
+                        ),
+                        ("s_value".into(), AttrValue::Str(symbol.clone())),
+                    ]),
+                    source_span: None,
+                });
+                entry.terminator = Terminator::Return {
+                    values: vec![if bound { result } else { none }],
+                };
+                let ir = try_lower_tir_to_llvm(&func, &backend)
+                    .unwrap_or_else(|error| panic!("{kind}: {:?}", error.diagnostics()))
+                    .print_to_string()
+                    .to_string();
+                backend
+                    .module
+                    .verify()
+                    .expect("boxed argument owner lifetime");
+                assert!(
+                    ir.contains(&format!("call i64 @molt_int_from_i64(i64 {value})")),
+                    "{ir}"
+                );
+                let release = "call void @molt_dec_ref_obj(i64 %boxed_int)";
+                assert_eq!(
+                    ir.matches(release).count(),
+                    usize::from(!inline_proven),
+                    "{ir}"
+                );
+                assert_eq!(
+                    ir.matches("call void @molt_dec_ref_obj(").count(),
+                    usize::from(!inline_proven) + usize::from(returns_value && !bound),
+                    "{ir}"
+                );
+                let call = format!(
+                    "call {} @{symbol}(",
+                    if returns_value { "i64" } else { "void" }
+                );
+                if !inline_proven {
+                    assert!(ir.find(&call).unwrap() < ir.find(release).unwrap(), "{ir}");
                 }
             }
         }

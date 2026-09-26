@@ -35,8 +35,8 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             "call_async" => {
                 self.emit_line("local out = poll_target(payload)");
             }
-            "spawn" => {
-                self.emit_line("local out = nil -- [async: spawn]");
+            "state_transition" => {
+                self.emit_line("local out = nil -- [async: state_transition]");
             }
             "br_if" => {
                 self.emit_line("if cond then goto label_1 end");
@@ -113,7 +113,7 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["inplace_add"].status == "implemented-target-limited"
     assert rows["unsupported_fixture_op"].status == "not-admitted"
     assert rows["call_async"].status == "not-admitted"
-    assert rows["spawn"].status == "not-admitted"
+    assert rows["state_transition"].status == "not-admitted"
     assert rows["br_if"].status == "compile-error"
     assert "Checked Luau emission rejects" in rows["br_if"].note
     assert rows["bridge_unavailable"].status == "not-admitted"

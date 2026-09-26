@@ -79,7 +79,7 @@
 //!
 //! ## Suspension points (design 20 §2.9)
 //!
-//! For each `StateYield` / `ChanSendYield` / `ChanRecvYield` / `Yield` /
+//! For each `StateYield` / `Yield` /
 //! `YieldFrom`, every heap-carrying value live ACROSS the yield (live-out of the
 //! block at the yield, used after a resume) is `IncRef`'d immediately before the
 //! yield: the suspended coroutine frame now owns its own reference, which the

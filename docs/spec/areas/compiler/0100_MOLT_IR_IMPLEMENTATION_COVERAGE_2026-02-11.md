@@ -142,8 +142,6 @@ Scope: `docs/spec/areas/compiler/0100_MOLT_IR.md` instruction list vs repository
 | Generators/Async | StateTransition | implemented | `STATE_TRANSITION` | `src/molt/frontend/__init__.py:25366` |  |
 | Generators/Async | StateYield | implemented | `STATE_YIELD` | `src/molt/frontend/__init__.py:25552` |  |
 | Generators/Async | ChanNew | implemented | `CHAN_NEW` | `src/molt/frontend/__init__.py:15987` |  |
-| Generators/Async | ChanSendYield | implemented | `CHAN_SEND_YIELD` | `src/molt/frontend/__init__.py:16057` |  |
-| Generators/Async | ChanRecvYield | implemented | `CHAN_RECV_YIELD` | `src/molt/frontend/__init__.py:16132` |  |
 | Vector | VecSumInt | implemented | `VEC_SUM_INT` | `src/molt/frontend/__init__.py:27943` |  |
 | Vector | VecProdInt | implemented | `VEC_PROD_INT` | `src/molt/frontend/__init__.py:28039` |  |
 | Vector | VecMinInt | implemented | `VEC_MIN_INT` | `src/molt/frontend/__init__.py:28071` |  |

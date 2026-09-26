@@ -59,8 +59,6 @@ pub fn compute_rc_coalesce_skips(
         "state_label",
         "exception_push",
         "exception_pop",
-        "chan_send_yield",
-        "chan_recv_yield",
         "ret",
         "ret_void",
         "loop_start",

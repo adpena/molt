@@ -201,8 +201,6 @@ pub enum OpCode {
     StateSwitch,
     StateTransition,
     StateYield,
-    ChanSendYield,
-    ChanRecvYield,
     ClosureLoad,
     ClosureStore,
     Yield,

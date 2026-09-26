@@ -1022,73 +1022,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=result))
         return result
 
-    def _emit_asyncio_sleep(
-        self, args: list[ast.expr], keywords: list[ast.keyword]
-    ) -> MoltValue:
-        delay_expr: ast.expr | None = None
-        result_expr: ast.expr | None = None
-        if len(args) > 2:
-            raise FrontendRejection(
-                Diagnostic.CALL_SIGNATURE, "asyncio.sleep expects 0-2 arguments"
-            )
-        if args:
-            delay_expr = args[0]
-            if len(args) == 2:
-                result_expr = args[1]
-        for keyword in keywords:
-            if keyword.arg is None:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE,
-                    "asyncio.sleep does not support **kwargs",
-                )
-            if keyword.arg == "delay":
-                if delay_expr is not None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE,
-                        "asyncio.sleep got multiple values for delay",
-                    )
-                delay_expr = keyword.value
-            elif keyword.arg == "result":
-                if result_expr is not None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE,
-                        "asyncio.sleep got multiple values for result",
-                    )
-                result_expr = keyword.value
-            else:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE,
-                    f"asyncio.sleep got unexpected keyword {keyword.arg}",
-                )
-        if delay_expr is None:
-            delay_val = MoltValue(self.next_var(), type_hint="float")
-            self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=delay_val))
-        else:
-            delay_val = self.visit(delay_expr)
-            if delay_val is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE,
-                    "Unsupported delay in asyncio.sleep",
-                )
-        call_args = [delay_val]
-        if result_expr is not None:
-            result_val = self.visit(result_expr)
-            if result_val is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE,
-                    "Unsupported result in asyncio.sleep",
-                )
-            call_args.append(result_val)
-        res = MoltValue(self.next_var(), type_hint="Future")
-        self.emit(
-            MoltOp(
-                kind="CALL_ASYNC",
-                args=["molt_async_sleep_poll", *call_args],
-                result=res,
-            )
-        )
-        return res
-
     def is_async(self) -> bool:
         return (
             self.funcs_map[self.current_func_name].get("stateful_frame_plan")
@@ -1184,37 +1117,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             )
 
     def _expr_may_yield(self, node: ast.AST) -> bool:
-        if not self.is_async():
-            return False
-
-        class YieldVisitor(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.may_yield = False
-
-            def visit_Await(self, node: ast.Await) -> None:
-                self.may_yield = True
-
-            def visit_Call(self, node: ast.Call) -> None:
-                if isinstance(node.func, ast.Name) and node.func.id in {
-                    "molt_chan_send",
-                    "molt_chan_recv",
-                }:
-                    self.may_yield = True
-                    return
-                self.generic_visit(node)
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-        visitor = YieldVisitor()
-        visitor.visit(node)
-        return visitor.may_yield
+        return self.is_async() and self._expr_needs_async(node)
 
     def _expr_needs_async(self, node: ast.AST) -> bool:
         class AsyncVisitor(ast.NodeVisitor):
@@ -1223,15 +1126,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
 
             def visit_Await(self, node: ast.Await) -> None:
                 self.needs_async = True
-
-            def visit_Call(self, node: ast.Call) -> None:
-                if isinstance(node.func, ast.Name) and node.func.id in {
-                    "molt_chan_send",
-                    "molt_chan_recv",
-                }:
-                    self.needs_async = True
-                    return
-                self.generic_visit(node)
 
             def visit_Lambda(self, node: ast.Lambda) -> None:
                 return

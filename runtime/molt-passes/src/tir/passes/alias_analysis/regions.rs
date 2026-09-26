@@ -100,8 +100,8 @@ pub(super) fn typed_slot_obj_offset(op: &TirOp) -> Option<(ValueId, i64)> {
 ///
 /// Superset obligation vs the old `refcount_elim::is_barrier`: every opcode in
 /// that list ({Call, CallMethod, CallBuiltin, StoreAttr, StoreIndex, StateSwitch,
-/// StateTransition, StateYield, ClosureLoad, ClosureStore, ChanSendYield,
-/// ChanRecvYield}) is present here. Exception-control transfer is also a
+/// StateTransition, StateYield, ClosureLoad, ClosureStore}) is present here.
+/// Exception-control transfer is also a
 /// barrier: `Raise` does not fall through, and `CheckException` / `TryStart`
 /// carry implicit handler edges whose payload retains are consumed only on that
 /// exceptional path. Verified in `tests::rc_barrier_is_superset_*`.

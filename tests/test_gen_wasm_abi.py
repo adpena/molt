@@ -1840,7 +1840,7 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
         }
     assert "sink" not in op_loop_calls["asyncgen_new"]
     assert "dec_ref_obj" not in op_loop_calls["asyncgen_new"]["required_imports"]
-    assert op_loop_calls["chan_drop"]["discard_result"] is True
+    assert "chan_drop" not in op_loop_calls
     finally_observer = op_loop_calls["exception_finally_pending_observer"]
     assert finally_observer["import_name"] == "exception_last_pending"
     assert (
@@ -2268,10 +2268,7 @@ def test_wasm_abi_deletes_pre_emission_import_dependency_table() -> None:
         "context_unwind",
         "context_unwind_to",
     ]
-    assert op_loop_calls["thread_submit"]["required_imports"] == [
-        "thread_poll",
-        "thread_submit",
-    ]
+    assert "thread_submit" not in op_loop_calls
     assert op_loop_calls["gpu_thread_id"]["required_imports"] == ["gpu_thread_id"]
     assert op_loop_calls["gpu_barrier"]["required_imports"] == ["gpu_barrier"]
     assert not (

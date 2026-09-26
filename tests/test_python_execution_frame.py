@@ -599,108 +599,21 @@ def test_every_source_resume_entry_republishes_live_task_storage_before_continui
     assert_resume_frame_ownership(super_consumer_ops(generator), required_boundaries)
 
 
-@pytest.mark.parametrize(
-    ("expression", "kind", "source_arguments"),
-    [
-        ("molt_chan_send(values, receiver)", "CHAN_SEND_YIELD", ("values", "receiver")),
-        ("molt_chan_recv(values)", "CHAN_RECV_YIELD", ("values",)),
-    ],
-)
-def test_admitted_channel_resume_republishes_before_releasing_payload(
-    expression, kind, source_arguments
-):
-    from molt.frontend._types import GEN_CONTROL_SIZE
-    from molt.frontend.sema.funcmeta import FunctionKind, stateful_function_frame_plan
-
-    generator = SimpleTIRGenerator()
-    plan = stateful_function_frame_plan(
-        kind=FunctionKind.ASYNC,
-        poll_symbol="admitted_channel_body",
-        param_count=2,
-        has_closure=True,
-        gen_control_size=GEN_CONTROL_SIZE,
-    )
-    generator.start_function(
-        plan.poll_symbol,
-        params=["self"],
-        compiler_params={"self"},
-        python_first_arg="receiver",
-        stateful_frame_plan=plan,
-    )
-    generator.async_context = True
-    generator.async_locals_base = plan.async_locals_base
-    generator.async_closure_offset = plan.async_closure_offset
-    generator.free_vars = {"__class__": 0}
-    source_slots = {
-        name: generator._async_local_offset(name) for name in ("receiver", "values")
-    }
-    generator.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
-    generator._publish_python_frame_context()
-
-    # Enter the canonical lowering stage after callable admission, as a unit
-    # fixture. No source binding fact or dispatch guard is replaced or mocked.
-    result = generator._try_emit_named_call(
-        ast.parse(expression, mode="eval").body, needs_bind=False
-    )
-    generator._emit_runtime_call("molt_super_from_frame", [])
-    ops = generator.current_ops
-    ((control_index, control),) = [
-        (index, op) for index, op in enumerate(ops) if op.kind == kind
-    ]
-    assert control.result == result
-    assert len(control.args) == len(source_arguments) + 2
-    assert_resume_frame_ownership(ops, {"STATE_LABEL", kind})
-    for value, source_name in zip(
-        control.args[: len(source_arguments)], source_arguments, strict=True
-    ):
-        payload_owner = storage_owner(ops, value)
-        assert payload_owner[0] == "task"
-        (initializer,) = [
-            op
-            for op in ops[:control_index]
-            if op.kind == "STORE_CLOSURE" and tuple(op.args[:2]) == payload_owner[1:]
-        ]
-        assert storage_owner(ops, initializer.args[2]) == (
-            "task",
-            "self",
-            source_slots[source_name],
-        )
-        ((clear_index, clear),) = [
-            (index, op)
-            for index, op in enumerate(ops)
-            if index > control_index
-            and op.kind == "STORE_CLOSURE"
-            and tuple(op.args[:2]) == payload_owner[1:]
-        ]
-        cleared_value = next(
-            op for op in ops[:clear_index] if op.result == clear.args[2]
-        )
-        assert cleared_value.kind == "CONST_NONE"
-        assert control_index < frame_before(ops, clear_index).index < clear_index
-    (consumer,) = runtime_calls(ops, "molt_super_from_frame")
-    assert storage_owner(ops, frame_before(ops, consumer).argument) == (
-        "task",
-        "self",
-        source_slots["receiver"],
-    )
-    for frame in publications(ops):
-        cell = next(op for op in ops[: frame.index] if op.result == frame.class_cell)
-        assert cell.kind == "INDEX" and cell.result.type_hint == "cell"
-        closure = next(op for op in ops[: frame.index] if op.result == cell.args[0])
-        assert closure.kind == "LOAD_CLOSURE"
-        assert closure.args == ["self", plan.async_closure_offset]
-        slot = next(op for op in ops[: frame.index] if op.result == cell.args[1])
-        assert slot.kind == "CONST" and slot.args == [0]
-
-
 @pytest.mark.parametrize("send_first", [False, True])
-def test_unadmitted_channel_names_retain_live_calls_without_suspension(send_first):
+@pytest.mark.parametrize("bound", [False, True])
+def test_channel_names_retain_live_calls_without_implicit_suspension(send_first, bound):
     body = "molt_chan_recv(values)\nreturn super()"
     if send_first:
         body = "molt_chan_send(values, receiver)\n" + body
     source = "class Subject:\n    async def method(receiver, values):\n" + "".join(
         f"        {line}\n" for line in body.splitlines()
     )
+    if bound:
+        source = (
+            "from _intrinsics import require_intrinsic\n"
+            "molt_chan_send = require_intrinsic('molt_chan_send', globals())\n"
+            "molt_chan_recv = require_intrinsic('molt_chan_recv', globals())\n"
+        ) + source
     generator, ir = compile_source(source)
     ((function_name, function),) = [
         (name, function)

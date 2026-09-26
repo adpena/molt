@@ -58,10 +58,7 @@ pub fn simpleir_kind_is_terminator(kind: &str) -> bool {
 /// SSA, pre-SSA lowering, and the op-kind audit share one authority.
 #[inline]
 pub fn simpleir_kind_is_suspend(kind: &str) -> bool {
-    matches!(
-        kind,
-        "state_yield" | "state_transition" | "chan_send_yield" | "chan_recv_yield"
-    )
+    matches!(kind, "state_yield" | "state_transition")
 }
 
 /// Whether resume dispatch re-enters at the suspend op itself.
@@ -69,10 +66,7 @@ pub fn simpleir_kind_is_suspend(kind: &str) -> bool {
 /// SSA, pre-SSA lowering, and the op-kind audit share one authority.
 #[inline]
 pub fn simpleir_kind_is_repoll(kind: &str) -> bool {
-    matches!(
-        kind,
-        "state_transition" | "chan_send_yield" | "chan_recv_yield"
-    )
+    matches!(kind, "state_transition")
 }
 
 /// Whether a SimpleIR kind starts a CFG basic block.
@@ -90,8 +84,6 @@ pub fn simpleir_kind_is_block_leader(kind: &str) -> bool {
             | "loop_start"
             | "loop_end"
             | "state_transition"
-            | "chan_send_yield"
-            | "chan_recv_yield"
     )
 }
 
@@ -102,13 +94,7 @@ pub fn simpleir_kind_is_block_leader(kind: &str) -> bool {
 pub fn simpleir_kind_is_block_ender(kind: &str) -> bool {
     matches!(
         kind,
-        "loop_start"
-            | "loop_end"
-            | "state_switch"
-            | "state_yield"
-            | "state_transition"
-            | "chan_send_yield"
-            | "chan_recv_yield"
+        "loop_start" | "loop_end" | "state_switch" | "state_yield" | "state_transition"
     )
 }
 
@@ -166,8 +152,6 @@ pub fn simpleir_kind_is_wasm_split_barrier(kind: &str) -> bool {
             | "state_switch"
             | "state_yield"
             | "state_transition"
-            | "chan_send_yield"
-            | "chan_recv_yield"
             | "loop_index_start"
             | "loop_index_end"
             | "for_iter_start"
@@ -220,8 +204,6 @@ pub fn simpleir_kind_is_wasm_dispatch_block_terminator(kind: &str) -> bool {
             | "state_switch"
             | "state_yield"
             | "state_transition"
-            | "chan_send_yield"
-            | "chan_recv_yield"
             | "loop_index_start"
             | "try_start"
             | "try_end"
@@ -235,10 +217,7 @@ pub fn simpleir_kind_is_wasm_dispatch_block_terminator(kind: &str) -> bool {
 /// SSA, pre-SSA lowering, and the op-kind audit share one authority.
 #[inline]
 pub fn simpleir_kind_is_wasm_stateful_dispatch(kind: &str) -> bool {
-    matches!(
-        kind,
-        "state_switch" | "state_yield" | "state_transition" | "chan_send_yield" | "chan_recv_yield"
-    )
+    matches!(kind, "state_switch" | "state_yield" | "state_transition")
 }
 
 /// Whether this SimpleIR kind maps its state id to the following WASM resume op.
@@ -246,10 +225,7 @@ pub fn simpleir_kind_is_wasm_stateful_dispatch(kind: &str) -> bool {
 /// SSA, pre-SSA lowering, and the op-kind audit share one authority.
 #[inline]
 pub fn simpleir_kind_is_wasm_state_resume_after(kind: &str) -> bool {
-    matches!(
-        kind,
-        "state_yield" | "state_transition" | "chan_send_yield" | "chan_recv_yield"
-    )
+    matches!(kind, "state_yield" | "state_transition")
 }
 
 /// Whether this SimpleIR kind maps its label id to the current WASM resume op.
@@ -311,8 +287,6 @@ pub fn simpleir_kind_uses_function_label_id(kind: &str) -> bool {
         kind,
         "async_work_poll"
             | "br_if"
-            | "chan_recv_yield"
-            | "chan_send_yield"
             | "check_exception"
             | "goto"
             | "jump"
@@ -1182,34 +1156,12 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "asyncgen_locals_register"
         | "block_on"
         | "call_async"
-        | "cancel_current"
-        | "cancel_token_cancel"
-        | "cancel_token_clone"
-        | "cancel_token_drop"
-        | "cancel_token_get_current"
-        | "cancel_token_is_cancelled"
-        | "cancel_token_new"
-        | "cancel_token_set_current"
-        | "cancelled"
-        | "chan_drop"
-        | "chan_new"
-        | "chan_recv_yield"
-        | "chan_send_yield"
-        | "future_cancel"
-        | "future_cancel_clear"
-        | "future_cancel_msg"
         | "gen_locals_register"
         | "is_native_awaitable"
-        | "promise_new"
-        | "promise_set_exception"
-        | "promise_set_result"
-        | "spawn"
         | "state_label"
         | "state_switch"
         | "state_transition"
-        | "state_yield"
-        | "task_register_token_owned"
-        | "thread_submit" => Some(SimpleIrRuntimeRequirements(1024)),
+        | "state_yield" => Some(SimpleIrRuntimeRequirements(1024)),
         "goto" | "jump" | "label" => Some(SimpleIrRuntimeRequirements(2048)),
         "file_close" | "file_flush" | "file_open" | "file_read" | "file_write" | "invoke_ffi" => {
             Some(SimpleIrRuntimeRequirements(4096))
@@ -1365,7 +1317,6 @@ pub const SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: &[&str] = &[
     "generator_send",
     "import_from",
     "import_name",
-    "spawn",
     "super_call",
     "task_new",
     "yield_from",
@@ -1396,7 +1347,6 @@ pub fn simpleir_kind_references_defined_function(kind: &str) -> bool {
             | "generator_send"
             | "import_from"
             | "import_name"
-            | "spawn"
             | "super_call"
             | "task_new"
             | "yield_from"
@@ -1499,8 +1449,6 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "state_switch" => Some(OpCode::StateSwitch),
         "state_transition" => Some(OpCode::StateTransition),
         "state_yield" => Some(OpCode::StateYield),
-        "chan_send_yield" => Some(OpCode::ChanSendYield),
-        "chan_recv_yield" => Some(OpCode::ChanRecvYield),
         "closure_load" => Some(OpCode::ClosureLoad),
         "closure_store" => Some(OpCode::ClosureStore),
         "alloc_task" => Some(OpCode::AllocTask),
@@ -1619,8 +1567,6 @@ pub fn opcode_canonical_kind_table(opcode: OpCode) -> &'static str {
         OpCode::StateSwitch => "state_switch",
         OpCode::StateTransition => "state_transition",
         OpCode::StateYield => "state_yield",
-        OpCode::ChanSendYield => "chan_send_yield",
-        OpCode::ChanRecvYield => "chan_recv_yield",
         OpCode::ClosureLoad => "closure_load",
         OpCode::ClosureStore => "closure_store",
         OpCode::Yield => "yield",
@@ -1738,8 +1684,6 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
         OpCode::StateYield => None,
-        OpCode::ChanSendYield => None,
-        OpCode::ChanRecvYield => None,
         OpCode::ClosureLoad => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
@@ -1956,7 +1900,6 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "anext"
             | "asyncgen_locals_register"
             | "asyncgen_new"
-            | "asyncgen_shutdown"
             | "bound_method_new"
             | "block_on"
             | "bridge_unavailable"
@@ -1997,17 +1940,6 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "callargs_new"
             | "callargs_push_kw"
             | "callargs_push_pos"
-            | "cancel_current"
-            | "cancel_token_cancel"
-            | "cancel_token_clone"
-            | "cancel_token_drop"
-            | "cancel_token_get_current"
-            | "cancel_token_is_cancelled"
-            | "cancel_token_new"
-            | "cancel_token_set_current"
-            | "cancelled"
-            | "chan_drop"
-            | "chan_new"
             | "chr"
             | "class_apply_set_name"
             | "class_layout_version"
@@ -2072,9 +2004,6 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "func_new"
             | "func_new_closure"
             | "function_closure_bits"
-            | "future_cancel"
-            | "future_cancel_clear"
-            | "future_cancel_msg"
             | "gen_locals_register"
             | "get_attr_name_default"
             | "has_attr_name"
@@ -2106,9 +2035,6 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "ord"
             | "pow_mod"
             | "print_newline"
-            | "promise_set_exception"
-            | "promise_set_result"
-            | "promise_new"
             | "property_new"
             | "round"
             | "set_add"
@@ -2120,7 +2046,6 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "set_remove"
             | "set_symdiff_update"
             | "set_update"
-            | "spawn"
             | "staticmethod_new"
             | "statistics_mean_slice"
             | "statistics_stdev_slice"
@@ -2149,8 +2074,6 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "string_upper"
             | "super_new"
             | "taq_ingest_line"
-            | "task_register_token_owned"
-            | "thread_submit"
             | "trunc"
             | "tuple_count"
             | "tuple_index"
@@ -2251,8 +2174,6 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::StateSwitch,
     OpCode::StateTransition,
     OpCode::StateYield,
-    OpCode::ChanSendYield,
-    OpCode::ChanRecvYield,
     OpCode::ClosureLoad,
     OpCode::ClosureStore,
     OpCode::Yield,
@@ -2369,8 +2290,6 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => true,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => true,
-        OpCode::ChanRecvYield => true,
         OpCode::ClosureLoad => true,
         OpCode::ClosureStore => true,
         OpCode::Yield => false,
@@ -2487,8 +2406,6 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
         OpCode::StateYield => true,
-        OpCode::ChanSendYield => true,
-        OpCode::ChanRecvYield => true,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => true,
         OpCode::Yield => true,
@@ -2641,8 +2558,6 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::StateSwitch => OPCODE_EFFECTS_IMPURE,
         OpCode::StateTransition => OPCODE_EFFECTS_IMPURE,
         OpCode::StateYield => OPCODE_EFFECTS_IMPURE,
-        OpCode::ChanSendYield => OPCODE_EFFECTS_IMPURE,
-        OpCode::ChanRecvYield => OPCODE_EFFECTS_IMPURE,
         OpCode::ClosureLoad => OPCODE_EFFECTS_IMPURE,
         OpCode::ClosureStore => OPCODE_EFFECTS_IMPURE,
         OpCode::Yield => OPCODE_EFFECTS_IMPURE,
@@ -2772,8 +2687,6 @@ pub fn opcode_call_role_table(opcode: OpCode) -> CallOpcodeRole {
         OpCode::StateSwitch => CallOpcodeRole::NotCall,
         OpCode::StateTransition => CallOpcodeRole::NotCall,
         OpCode::StateYield => CallOpcodeRole::NotCall,
-        OpCode::ChanSendYield => CallOpcodeRole::NotCall,
-        OpCode::ChanRecvYield => CallOpcodeRole::NotCall,
         OpCode::ClosureLoad => CallOpcodeRole::NotCall,
         OpCode::ClosureStore => CallOpcodeRole::NotCall,
         OpCode::Yield => CallOpcodeRole::NotCall,
@@ -2937,8 +2850,6 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -3057,8 +2968,6 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::StateSwitch => Some(0),
         OpCode::StateTransition => Some(1),
         OpCode::StateYield => Some(0),
-        OpCode::ChanSendYield => Some(1),
-        OpCode::ChanRecvYield => Some(1),
         OpCode::ClosureLoad => Some(1),
         OpCode::ClosureStore => Some(0),
         OpCode::Yield => Some(0),
@@ -3287,8 +3196,6 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
         OpCode::StateYield => None,
-        OpCode::ChanSendYield => None,
-        OpCode::ChanRecvYield => None,
         OpCode::ClosureLoad => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
@@ -3405,8 +3312,6 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::StateSwitch => FuzzTirAttrPayloadRule::None,
         OpCode::StateTransition => FuzzTirAttrPayloadRule::None,
         OpCode::StateYield => FuzzTirAttrPayloadRule::None,
-        OpCode::ChanSendYield => FuzzTirAttrPayloadRule::None,
-        OpCode::ChanRecvYield => FuzzTirAttrPayloadRule::None,
         OpCode::ClosureLoad => FuzzTirAttrPayloadRule::None,
         OpCode::ClosureStore => FuzzTirAttrPayloadRule::None,
         OpCode::Yield => FuzzTirAttrPayloadRule::None,
@@ -3530,8 +3435,6 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
         OpCode::StateYield => None,
-        OpCode::ChanSendYield => None,
-        OpCode::ChanRecvYield => None,
         OpCode::ClosureLoad => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
@@ -3847,8 +3750,6 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
         OpCode::StateYield => true,
-        OpCode::ChanSendYield => true,
-        OpCode::ChanRecvYield => true,
         OpCode::ClosureLoad => true,
         OpCode::ClosureStore => true,
         OpCode::Yield => true,
@@ -4028,8 +3929,6 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::StateSwitch => &[],
         OpCode::StateTransition => &[],
         OpCode::StateYield => &[],
-        OpCode::ChanSendYield => &[],
-        OpCode::ChanRecvYield => &[],
         OpCode::ClosureLoad => &[],
         OpCode::ClosureStore => &[],
         OpCode::Yield => &[],
@@ -4171,8 +4070,6 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::StateSwitch => TypeRefineAttrResultTypeRule::None,
         OpCode::StateTransition => TypeRefineAttrResultTypeRule::None,
         OpCode::StateYield => TypeRefineAttrResultTypeRule::None,
-        OpCode::ChanSendYield => TypeRefineAttrResultTypeRule::None,
-        OpCode::ChanRecvYield => TypeRefineAttrResultTypeRule::None,
         OpCode::ClosureLoad => TypeRefineAttrResultTypeRule::None,
         OpCode::ClosureStore => TypeRefineAttrResultTypeRule::None,
         OpCode::Yield => TypeRefineAttrResultTypeRule::None,
@@ -4314,8 +4211,6 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::StateSwitch => TypeRefineOperandTypeRule::None,
         OpCode::StateTransition => TypeRefineOperandTypeRule::None,
         OpCode::StateYield => TypeRefineOperandTypeRule::None,
-        OpCode::ChanSendYield => TypeRefineOperandTypeRule::None,
-        OpCode::ChanRecvYield => TypeRefineOperandTypeRule::None,
         OpCode::ClosureLoad => TypeRefineOperandTypeRule::None,
         OpCode::ClosureStore => TypeRefineOperandTypeRule::None,
         OpCode::Yield => TypeRefineOperandTypeRule::None,
@@ -4445,8 +4340,6 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::StateSwitch => SccpConstantSeedRule::None,
         OpCode::StateTransition => SccpConstantSeedRule::None,
         OpCode::StateYield => SccpConstantSeedRule::None,
-        OpCode::ChanSendYield => SccpConstantSeedRule::None,
-        OpCode::ChanRecvYield => SccpConstantSeedRule::None,
         OpCode::ClosureLoad => SccpConstantSeedRule::None,
         OpCode::ClosureStore => SccpConstantSeedRule::None,
         OpCode::Yield => SccpConstantSeedRule::None,
@@ -4588,8 +4481,6 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::StateSwitch => SccpConstantEvalRule::None,
         OpCode::StateTransition => SccpConstantEvalRule::None,
         OpCode::StateYield => SccpConstantEvalRule::None,
-        OpCode::ChanSendYield => SccpConstantEvalRule::None,
-        OpCode::ChanRecvYield => SccpConstantEvalRule::None,
         OpCode::ClosureLoad => SccpConstantEvalRule::None,
         OpCode::ClosureStore => SccpConstantEvalRule::None,
         OpCode::Yield => SccpConstantEvalRule::None,
@@ -4725,8 +4616,6 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::StateSwitch => ValueRangeTransferRule::None,
         OpCode::StateTransition => ValueRangeTransferRule::None,
         OpCode::StateYield => ValueRangeTransferRule::None,
-        OpCode::ChanSendYield => ValueRangeTransferRule::None,
-        OpCode::ChanRecvYield => ValueRangeTransferRule::None,
         OpCode::ClosureLoad => ValueRangeTransferRule::None,
         OpCode::ClosureStore => ValueRangeTransferRule::None,
         OpCode::Yield => ValueRangeTransferRule::None,
@@ -4859,8 +4748,6 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::StateSwitch => ValueRangeConstFoldRule::None,
         OpCode::StateTransition => ValueRangeConstFoldRule::None,
         OpCode::StateYield => ValueRangeConstFoldRule::None,
-        OpCode::ChanSendYield => ValueRangeConstFoldRule::None,
-        OpCode::ChanRecvYield => ValueRangeConstFoldRule::None,
         OpCode::ClosureLoad => ValueRangeConstFoldRule::None,
         OpCode::ClosureStore => ValueRangeConstFoldRule::None,
         OpCode::Yield => ValueRangeConstFoldRule::None,
@@ -4987,8 +4874,6 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::StateSwitch => ValueRangeCondNarrowRule::None,
         OpCode::StateTransition => ValueRangeCondNarrowRule::None,
         OpCode::StateYield => ValueRangeCondNarrowRule::None,
-        OpCode::ChanSendYield => ValueRangeCondNarrowRule::None,
-        OpCode::ChanRecvYield => ValueRangeCondNarrowRule::None,
         OpCode::ClosureLoad => ValueRangeCondNarrowRule::None,
         OpCode::ClosureStore => ValueRangeCondNarrowRule::None,
         OpCode::Yield => ValueRangeCondNarrowRule::None,
@@ -5119,8 +5004,6 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::StateSwitch => ValueRangeContainerLengthRule::None,
         OpCode::StateTransition => ValueRangeContainerLengthRule::None,
         OpCode::StateYield => ValueRangeContainerLengthRule::None,
-        OpCode::ChanSendYield => ValueRangeContainerLengthRule::None,
-        OpCode::ChanRecvYield => ValueRangeContainerLengthRule::None,
         OpCode::ClosureLoad => ValueRangeContainerLengthRule::None,
         OpCode::ClosureStore => ValueRangeContainerLengthRule::None,
         OpCode::Yield => ValueRangeContainerLengthRule::None,
@@ -5248,8 +5131,6 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::StateSwitch => RangeDevirtRole::None,
         OpCode::StateTransition => RangeDevirtRole::None,
         OpCode::StateYield => RangeDevirtRole::None,
-        OpCode::ChanSendYield => RangeDevirtRole::None,
-        OpCode::ChanRecvYield => RangeDevirtRole::None,
         OpCode::ClosureLoad => RangeDevirtRole::None,
         OpCode::ClosureStore => RangeDevirtRole::None,
         OpCode::Yield => RangeDevirtRole::None,
@@ -5685,16 +5566,6 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
         },
-        OpCode::ChanSendYield => VectorizeOpcodeFacts {
-            body_action: VectorizeBodyAction::Reject,
-            reduction_rule: VectorReductionRule::None,
-            annotation_target: false,
-        },
-        OpCode::ChanRecvYield => VectorizeOpcodeFacts {
-            body_action: VectorizeBodyAction::Reject,
-            reduction_rule: VectorReductionRule::None,
-            annotation_target: false,
-        },
         OpCode::ClosureLoad => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
@@ -5971,8 +5842,6 @@ pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {
         OpCode::StateSwitch => LirVerifyRule::None,
         OpCode::StateTransition => LirVerifyRule::None,
         OpCode::StateYield => LirVerifyRule::None,
-        OpCode::ChanSendYield => LirVerifyRule::None,
-        OpCode::ChanRecvYield => LirVerifyRule::None,
         OpCode::ClosureLoad => LirVerifyRule::None,
         OpCode::ClosureStore => LirVerifyRule::None,
         OpCode::Yield => LirVerifyRule::None,
@@ -6102,8 +5971,6 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::StateSwitch => ReprRawI64FullDeoptSeedRule::None,
         OpCode::StateTransition => ReprRawI64FullDeoptSeedRule::None,
         OpCode::StateYield => ReprRawI64FullDeoptSeedRule::None,
-        OpCode::ChanSendYield => ReprRawI64FullDeoptSeedRule::None,
-        OpCode::ChanRecvYield => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ClosureLoad => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ClosureStore => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Yield => ReprRawI64FullDeoptSeedRule::None,
@@ -6237,8 +6104,6 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::StateSwitch => ReprProjectableBoolResultRule::None,
         OpCode::StateTransition => ReprProjectableBoolResultRule::None,
         OpCode::StateYield => ReprProjectableBoolResultRule::None,
-        OpCode::ChanSendYield => ReprProjectableBoolResultRule::None,
-        OpCode::ChanRecvYield => ReprProjectableBoolResultRule::None,
         OpCode::ClosureLoad => ReprProjectableBoolResultRule::None,
         OpCode::ClosureStore => ReprProjectableBoolResultRule::None,
         OpCode::Yield => ReprProjectableBoolResultRule::None,
@@ -6370,8 +6235,6 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::StateSwitch => ReprProjectableFloatResultRule::None,
         OpCode::StateTransition => ReprProjectableFloatResultRule::None,
         OpCode::StateYield => ReprProjectableFloatResultRule::None,
-        OpCode::ChanSendYield => ReprProjectableFloatResultRule::None,
-        OpCode::ChanRecvYield => ReprProjectableFloatResultRule::None,
         OpCode::ClosureLoad => ReprProjectableFloatResultRule::None,
         OpCode::ClosureStore => ReprProjectableFloatResultRule::None,
         OpCode::Yield => ReprProjectableFloatResultRule::None,
@@ -6526,8 +6389,6 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::StateSwitch => CountedLoopComparisonRole::None,
         OpCode::StateTransition => CountedLoopComparisonRole::None,
         OpCode::StateYield => CountedLoopComparisonRole::None,
-        OpCode::ChanSendYield => CountedLoopComparisonRole::None,
-        OpCode::ChanRecvYield => CountedLoopComparisonRole::None,
         OpCode::ClosureLoad => CountedLoopComparisonRole::None,
         OpCode::ClosureStore => CountedLoopComparisonRole::None,
         OpCode::Yield => CountedLoopComparisonRole::None,
@@ -6644,8 +6505,6 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
         OpCode::StateYield => None,
-        OpCode::ChanSendYield => None,
-        OpCode::ChanRecvYield => None,
         OpCode::ClosureLoad => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
@@ -6782,8 +6641,6 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::StateSwitch => GvnNumberingRole::Never,
         OpCode::StateTransition => GvnNumberingRole::Never,
         OpCode::StateYield => GvnNumberingRole::Never,
-        OpCode::ChanSendYield => GvnNumberingRole::Never,
-        OpCode::ChanRecvYield => GvnNumberingRole::Never,
         OpCode::ClosureLoad => GvnNumberingRole::Never,
         OpCode::ClosureStore => GvnNumberingRole::Never,
         OpCode::Yield => GvnNumberingRole::Never,
@@ -6933,8 +6790,6 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
         OpCode::StateYield => None,
-        OpCode::ChanSendYield => None,
-        OpCode::ChanRecvYield => None,
         OpCode::ClosureLoad => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
@@ -7074,8 +6929,6 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -7194,8 +7047,6 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -7312,8 +7163,6 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
         OpCode::StateYield => true,
-        OpCode::ChanSendYield => true,
-        OpCode::ChanRecvYield => true,
         OpCode::ClosureLoad => true,
         OpCode::ClosureStore => true,
         OpCode::Yield => false,
@@ -7431,8 +7280,6 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -7550,8 +7397,6 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -7669,8 +7514,6 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -7822,8 +7665,6 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::StateSwitch => RefcountBalanceRole::NotRefcountBalance,
         OpCode::StateTransition => RefcountBalanceRole::NotRefcountBalance,
         OpCode::StateYield => RefcountBalanceRole::NotRefcountBalance,
-        OpCode::ChanSendYield => RefcountBalanceRole::NotRefcountBalance,
-        OpCode::ChanRecvYield => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ClosureLoad => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ClosureStore => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Yield => RefcountBalanceRole::NotRefcountBalance,
@@ -7942,8 +7783,6 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
         OpCode::StateYield => true,
-        OpCode::ChanSendYield => true,
-        OpCode::ChanRecvYield => true,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -8061,8 +7900,6 @@ pub fn opcode_is_drop_insertion_suspension_point_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => true,
-        OpCode::ChanSendYield => true,
-        OpCode::ChanRecvYield => true,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => true,
@@ -8180,8 +8017,6 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -8321,8 +8156,6 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::StateSwitch => GeneratorFusionPollRole::Neutral,
         OpCode::StateTransition => GeneratorFusionPollRole::Reject,
         OpCode::StateYield => GeneratorFusionPollRole::RequiredYield,
-        OpCode::ChanSendYield => GeneratorFusionPollRole::Reject,
-        OpCode::ChanRecvYield => GeneratorFusionPollRole::Reject,
         OpCode::ClosureLoad => GeneratorFusionPollRole::Neutral,
         OpCode::ClosureStore => GeneratorFusionPollRole::Neutral,
         OpCode::Yield => GeneratorFusionPollRole::Reject,
@@ -8450,8 +8283,6 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::StateSwitch => GeneratorFusionIterUseRole::None,
         OpCode::StateTransition => GeneratorFusionIterUseRole::None,
         OpCode::StateYield => GeneratorFusionIterUseRole::None,
-        OpCode::ChanSendYield => GeneratorFusionIterUseRole::None,
-        OpCode::ChanRecvYield => GeneratorFusionIterUseRole::None,
         OpCode::ClosureLoad => GeneratorFusionIterUseRole::None,
         OpCode::ClosureStore => GeneratorFusionIterUseRole::None,
         OpCode::Yield => GeneratorFusionIterUseRole::None,
@@ -8571,8 +8402,6 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
         OpCode::StateYield => true,
-        OpCode::ChanSendYield => true,
-        OpCode::ChanRecvYield => true,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => true,
@@ -8724,8 +8553,6 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::StateSwitch => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StateTransition => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StateYield => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
-        OpCode::ChanSendYield => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
-        OpCode::ChanRecvYield => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ClosureLoad => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ClosureStore => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::Yield => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -8859,8 +8686,6 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::StateSwitch => ModuleSlotAccessRole::None,
         OpCode::StateTransition => ModuleSlotAccessRole::None,
         OpCode::StateYield => ModuleSlotAccessRole::None,
-        OpCode::ChanSendYield => ModuleSlotAccessRole::None,
-        OpCode::ChanRecvYield => ModuleSlotAccessRole::None,
         OpCode::ClosureLoad => ModuleSlotAccessRole::None,
         OpCode::ClosureStore => ModuleSlotAccessRole::None,
         OpCode::Yield => ModuleSlotAccessRole::None,
@@ -8988,8 +8813,6 @@ pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocat
         OpCode::StateSwitch => BoxedAllocationLayoutRule::None,
         OpCode::StateTransition => BoxedAllocationLayoutRule::None,
         OpCode::StateYield => BoxedAllocationLayoutRule::None,
-        OpCode::ChanSendYield => BoxedAllocationLayoutRule::None,
-        OpCode::ChanRecvYield => BoxedAllocationLayoutRule::None,
         OpCode::ClosureLoad => BoxedAllocationLayoutRule::None,
         OpCode::ClosureStore => BoxedAllocationLayoutRule::None,
         OpCode::Yield => BoxedAllocationLayoutRule::None,
@@ -9118,8 +8941,6 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::StateSwitch => TirVerifyAttrRule::None,
         OpCode::StateTransition => TirVerifyAttrRule::None,
         OpCode::StateYield => TirVerifyAttrRule::None,
-        OpCode::ChanSendYield => TirVerifyAttrRule::None,
-        OpCode::ChanRecvYield => TirVerifyAttrRule::None,
         OpCode::ClosureLoad => TirVerifyAttrRule::None,
         OpCode::ClosureStore => TirVerifyAttrRule::None,
         OpCode::Yield => TirVerifyAttrRule::None,
@@ -9249,8 +9070,6 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::StateSwitch => StrengthReductionRule::None,
         OpCode::StateTransition => StrengthReductionRule::None,
         OpCode::StateYield => StrengthReductionRule::None,
-        OpCode::ChanSendYield => StrengthReductionRule::None,
-        OpCode::ChanRecvYield => StrengthReductionRule::None,
         OpCode::ClosureLoad => StrengthReductionRule::None,
         OpCode::ClosureStore => StrengthReductionRule::None,
         OpCode::Yield => StrengthReductionRule::None,
@@ -9379,8 +9198,6 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::StateSwitch => ScevExprRule::None,
         OpCode::StateTransition => ScevExprRule::None,
         OpCode::StateYield => ScevExprRule::None,
-        OpCode::ChanSendYield => ScevExprRule::None,
-        OpCode::ChanRecvYield => ScevExprRule::None,
         OpCode::ClosureLoad => ScevExprRule::None,
         OpCode::ClosureStore => ScevExprRule::None,
         OpCode::Yield => ScevExprRule::None,
@@ -9501,8 +9318,6 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -9622,8 +9437,6 @@ pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -9744,8 +9557,6 @@ pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -9864,8 +9675,6 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -9983,8 +9792,6 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -10102,8 +9909,6 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -10223,8 +10028,6 @@ pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -10342,8 +10145,6 @@ pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -10464,8 +10265,6 @@ pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool 
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -10585,8 +10384,6 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -10704,8 +10501,6 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -10823,8 +10618,6 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -10942,8 +10735,6 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -11068,8 +10859,6 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::StateSwitch => ExceptionRegionNestingRole::None,
         OpCode::StateTransition => ExceptionRegionNestingRole::None,
         OpCode::StateYield => ExceptionRegionNestingRole::None,
-        OpCode::ChanSendYield => ExceptionRegionNestingRole::None,
-        OpCode::ChanRecvYield => ExceptionRegionNestingRole::None,
         OpCode::ClosureLoad => ExceptionRegionNestingRole::None,
         OpCode::ClosureStore => ExceptionRegionNestingRole::None,
         OpCode::Yield => ExceptionRegionNestingRole::None,
@@ -11194,8 +10983,6 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::StateSwitch => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::StateTransition => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::StateYield => AliasTransparentAliasRole::NotTransparentAlias,
-        OpCode::ChanSendYield => AliasTransparentAliasRole::NotTransparentAlias,
-        OpCode::ChanRecvYield => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ClosureLoad => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ClosureStore => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Yield => AliasTransparentAliasRole::NotTransparentAlias,
@@ -11325,8 +11112,6 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::StateSwitch => AliasMemoryRegionClass::GenericHeap,
         OpCode::StateTransition => AliasMemoryRegionClass::GenericHeap,
         OpCode::StateYield => AliasMemoryRegionClass::GenericHeap,
-        OpCode::ChanSendYield => AliasMemoryRegionClass::GenericHeap,
-        OpCode::ChanRecvYield => AliasMemoryRegionClass::GenericHeap,
         OpCode::ClosureLoad => AliasMemoryRegionClass::GenericHeap,
         OpCode::ClosureStore => AliasMemoryRegionClass::GenericHeap,
         OpCode::Yield => AliasMemoryRegionClass::GenericHeap,
@@ -11455,8 +11240,6 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::StateSwitch => AliasSlotObservation::ConservativeObserver,
         OpCode::StateTransition => AliasSlotObservation::ConservativeObserver,
         OpCode::StateYield => AliasSlotObservation::ConservativeObserver,
-        OpCode::ChanSendYield => AliasSlotObservation::ConservativeObserver,
-        OpCode::ChanRecvYield => AliasSlotObservation::ConservativeObserver,
         OpCode::ClosureLoad => AliasSlotObservation::ConservativeObserver,
         OpCode::ClosureStore => AliasSlotObservation::ConservativeObserver,
         OpCode::Yield => AliasSlotObservation::DirectObserver,
@@ -11656,8 +11439,6 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
         OpCode::StateSwitch => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::StateTransition => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::StateYield => PASS_DELTA_OPCODE_FACTS_NONE,
-        OpCode::ChanSendYield => PASS_DELTA_OPCODE_FACTS_NONE,
-        OpCode::ChanRecvYield => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ClosureLoad => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ClosureStore => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::Yield => PASS_DELTA_OPCODE_FACTS_NONE,
@@ -11802,8 +11583,6 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
         OpCode::StateYield => None,
-        OpCode::ChanSendYield => None,
-        OpCode::ChanRecvYield => None,
         OpCode::ClosureLoad => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
@@ -11932,8 +11711,6 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
         OpCode::StateYield => None,
-        OpCode::ChanSendYield => None,
-        OpCode::ChanRecvYield => None,
         OpCode::ClosureLoad => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
@@ -12050,8 +11827,6 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
         OpCode::StateYield => None,
-        OpCode::ChanSendYield => None,
-        OpCode::ChanRecvYield => None,
         OpCode::ClosureLoad => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
@@ -12460,8 +12235,6 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::StateSwitch => &[],
         OpCode::StateTransition => &[],
         OpCode::StateYield => &[],
-        OpCode::ChanSendYield => &[],
-        OpCode::ChanRecvYield => &[],
         OpCode::ClosureLoad => &[],
         OpCode::ClosureStore => &[],
         OpCode::Yield => &[],
@@ -12703,8 +12476,6 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::StateSwitch => OperandOwnership::Borrowed,
         OpCode::StateTransition => OperandOwnership::Borrowed,
         OpCode::StateYield => OperandOwnership::Borrowed,
-        OpCode::ChanSendYield => OperandOwnership::Borrowed,
-        OpCode::ChanRecvYield => OperandOwnership::Borrowed,
         OpCode::ClosureLoad => OperandOwnership::Borrowed,
         OpCode::ClosureStore => OperandOwnership::Borrowed,
         OpCode::Yield => OperandOwnership::Borrowed,
@@ -12895,8 +12666,6 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
         OpCode::StateYield => false,
-        OpCode::ChanSendYield => false,
-        OpCode::ChanRecvYield => false,
         OpCode::ClosureLoad => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
@@ -13071,8 +12840,6 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::StateSwitch => ResultValidity::AlwaysValid,
         OpCode::StateTransition => ResultValidity::AlwaysValid,
         OpCode::StateYield => ResultValidity::AlwaysValid,
-        OpCode::ChanSendYield => ResultValidity::AlwaysValid,
-        OpCode::ChanRecvYield => ResultValidity::AlwaysValid,
         OpCode::ClosureLoad => ResultValidity::AlwaysValid,
         OpCode::ClosureStore => ResultValidity::AlwaysValid,
         OpCode::Yield => ResultValidity::AlwaysValid,
@@ -13214,8 +12981,6 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::StateSwitch => ExplicitReleaseOperands::None,
         OpCode::StateTransition => ExplicitReleaseOperands::None,
         OpCode::StateYield => ExplicitReleaseOperands::None,
-        OpCode::ChanSendYield => ExplicitReleaseOperands::None,
-        OpCode::ChanRecvYield => ExplicitReleaseOperands::None,
         OpCode::ClosureLoad => ExplicitReleaseOperands::None,
         OpCode::ClosureStore => ExplicitReleaseOperands::None,
         OpCode::Yield => ExplicitReleaseOperands::None,

@@ -72,6 +72,13 @@ unrelated capabilities, and retired helper spellings are ordinary Python names,
 not frontend-created builtins. Stdlib consumers bind their own dependencies
 through the runtime resolver and canonical intrinsic signatures.
 
+Source calls dispatch through the live callable binding, never through a
+`molt_*` spelling. User functions and callable objects with intrinsic-like
+names retain ordinary Python argument binding, `__call__`, and exception
+semantics. Runtime-bound channel operations return their result or the pending
+sentinel; they do not implicitly suspend an async function. Explicit `await`
+in the owning concurrency wrapper governs suspension and frame restoration.
+
 Only the current ModuleTable initializer before its first publication can seed
 the namespace. A standalone same-named module or a repeated cache publication
 cannot refill it. Runtime synthesis is allowed with no builtins module or in

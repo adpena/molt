@@ -125,8 +125,6 @@ def _build_basic_blocks(
         "STATE_SWITCH",
         "STATE_YIELD",
         "STATE_TRANSITION",
-        "CHAN_SEND_YIELD",
-        "CHAN_RECV_YIELD",
         "CHECK_EXCEPTION",
     }
     split_after_kinds = leader_kinds

@@ -1035,18 +1035,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::GeneratorClose],
             discard_result: false,
         }),
-        "chan_drop" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ChanDrop,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::ChanDrop],
-            discard_result: true,
-        }),
-        "spawn" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::Spawn,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::Spawn],
-            discard_result: false,
-        }),
         "print_newline" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::PrintNewline,
             args: &[],
@@ -1066,47 +1054,10 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             ],
             discard_result: false,
         }),
-        "thread_submit" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ThreadSubmit,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-            ],
-            required_imports: &[
-                WasmRuntimeImport::ThreadPoll,
-                WasmRuntimeImport::ThreadSubmit,
-            ],
-            discard_result: false,
-        }),
         "errno_constants" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ErrnoConstants,
             args: &[],
             required_imports: &[WasmRuntimeImport::ErrnoConstants],
-            discard_result: false,
-        }),
-        "promise_new" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::PromiseNew,
-            args: &[],
-            required_imports: &[WasmRuntimeImport::PromiseNew],
-            discard_result: false,
-        }),
-        "cancel_token_get_current" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::CancelTokenGetCurrent,
-            args: &[],
-            required_imports: &[WasmRuntimeImport::CancelTokenGetCurrent],
-            discard_result: false,
-        }),
-        "cancelled" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::Cancelled,
-            args: &[],
-            required_imports: &[WasmRuntimeImport::Cancelled],
-            discard_result: false,
-        }),
-        "cancel_current" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::CancelCurrent,
-            args: &[],
-            required_imports: &[WasmRuntimeImport::CancelCurrent],
             discard_result: false,
         }),
         "exception_stack_clear" => Some(OpLoopRuntimeCallSpec {
@@ -1157,12 +1108,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ExceptionClear],
             discard_result: false,
         }),
-        "asyncgen_shutdown" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::AsyncgenShutdown,
-            args: &[],
-            required_imports: &[WasmRuntimeImport::AsyncgenShutdown],
-            discard_result: false,
-        }),
         "not" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Not,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
@@ -1187,64 +1132,10 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::FileFlush],
             discard_result: false,
         }),
-        "chan_new" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ChanNew,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::ChanNew],
-            discard_result: false,
-        }),
-        "cancel_token_new" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::CancelTokenNew,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::CancelTokenNew],
-            discard_result: false,
-        }),
-        "cancel_token_clone" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::CancelTokenClone,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::CancelTokenClone],
-            discard_result: false,
-        }),
-        "cancel_token_drop" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::CancelTokenDrop,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::CancelTokenDrop],
-            discard_result: false,
-        }),
-        "cancel_token_cancel" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::CancelTokenCancel,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::CancelTokenCancel],
-            discard_result: false,
-        }),
-        "future_cancel" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::FutureCancel,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::FutureCancel],
-            discard_result: false,
-        }),
-        "future_cancel_clear" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::FutureCancelClear,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::FutureCancelClear],
-            discard_result: false,
-        }),
         "block_on" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BlockOn,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::BlockOn],
-            discard_result: false,
-        }),
-        "cancel_token_is_cancelled" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::CancelTokenIsCancelled,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::CancelTokenIsCancelled],
-            discard_result: false,
-        }),
-        "cancel_token_set_current" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::CancelTokenSetCurrent,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::CancelTokenSetCurrent],
             discard_result: false,
         }),
         "is_generator" => Some(OpLoopRuntimeCallSpec {
@@ -1455,42 +1346,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 OpLoopRuntimeArgSpec::Local(1),
             ],
             required_imports: &[WasmRuntimeImport::FileWrite],
-            discard_result: false,
-        }),
-        "future_cancel_msg" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::FutureCancelMsg,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::FutureCancelMsg],
-            discard_result: false,
-        }),
-        "promise_set_result" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::PromiseSetResult,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::PromiseSetResult],
-            discard_result: false,
-        }),
-        "promise_set_exception" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::PromiseSetException,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::PromiseSetException],
-            discard_result: false,
-        }),
-        "task_register_token_owned" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::TaskRegisterTokenOwned,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::TaskRegisterTokenOwned],
             discard_result: false,
         }),
         "env_get" => Some(OpLoopRuntimeCallSpec {

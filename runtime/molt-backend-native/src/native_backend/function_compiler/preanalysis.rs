@@ -274,8 +274,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     for (idx, op) in func_ir.ops.iter().enumerate() {
         match op.kind.as_str() {
             "drop_inserted" => drop_inserted = true,
-            "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
-            | "chan_recv_yield" => stateful = true,
+            "state_switch" | "state_transition" | "state_yield" => stateful = true,
             "store" => {}
             _ => {}
         }
@@ -328,8 +327,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                     }
                 }
             }
-            "state_transition" | "state_yield" | "chan_send_yield" | "chan_recv_yield"
-            | "label" | "state_label" => {
+            "state_transition" | "state_yield" | "label" | "state_label" => {
                 if let Some(state_id) = op.value {
                     if seen_state_ids.insert(state_id) {
                         state_ids.push(state_id);
@@ -341,11 +339,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                     }
                     if matches!(
                         op.kind.as_str(),
-                        "state_transition"
-                            | "state_yield"
-                            | "chan_send_yield"
-                            | "chan_recv_yield"
-                            | "state_label"
+                        "state_transition" | "state_yield" | "state_label"
                     ) {
                         resume_states.insert(state_id);
                     }
@@ -496,12 +490,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
             .ops
             .iter()
             .enumerate()
-            .filter(|(_, op)| {
-                matches!(
-                    op.kind.as_str(),
-                    "state_yield" | "state_transition" | "chan_send_yield" | "chan_recv_yield"
-                )
-            })
+            .filter(|(_, op)| matches!(op.kind.as_str(), "state_yield" | "state_transition"))
             .map(|(idx, _)| idx)
             .collect();
 
@@ -833,8 +822,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                     _ => None,
                 }
             }
-            "chan_send_yield" => op.args.as_ref().and_then(|args| args.get(2)),
-            "chan_recv_yield" => op.args.as_ref().and_then(|args| args.get(1)),
             _ => None,
         };
         let Some(pending_arg) = pending_arg else {

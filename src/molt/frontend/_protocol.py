@@ -767,10 +767,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, target: ast.AST, value_node: MoltValue | None, source_expr: ast.AST | None
     ) -> None: ...
 
-    def _emit_asyncio_sleep(
-        self, args: list[ast.expr], keywords: list[ast.keyword]
-    ) -> MoltValue: ...
-
     def _emit_attach_type_params(
         self, owner: MoltValue, type_params: list[MoltValue]
     ) -> None: ...

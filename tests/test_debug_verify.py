@@ -59,7 +59,7 @@ def test_debug_verify_json_exposes_ir_inventory_and_probe_checks(
 
     payload = json.loads(res.stdout)
     assert payload["subcommand"] == "verify"
-    assert payload["status"] == "ok"
+    assert payload["status"] == "ok", payload["data"]["checks"]
 
     check_names = [entry["name"] for entry in payload["data"]["checks"]]
     assert "ir-inventory" in check_names
@@ -148,6 +148,33 @@ def test_scan_backend_kinds_parses_alternating_match_arms() -> None:
         """
     )
     assert {"call_bind", "call_indirect", "guard_type", "guard_tag"} <= kinds
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [
+        '"dec_ref"',
+        '"release"',
+        '"del_boundary"',
+        "emit_dec_ref_like",
+        "WasmRuntimeImport::DecRefObj",
+        "emit_none",
+    ],
+)
+def test_semantic_assertions_detect_each_release_contract_regression(
+    removed: str,
+) -> None:
+    module = _load_verify_module()
+    source = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/refcount_ops.rs"
+    ).read_text(encoding="utf-8")
+    assert removed in source
+    failures = module.check_semantic_assertions(
+        frontend_text="",
+        native_backend_text="",
+        wasm_backend_text=source.replace(removed, "broken_contract"),
+    )
+    assert any("dec_ref/release/del_boundary" in failure for failure in failures)
 
 
 def test_required_diff_probes_exist_in_repo() -> None:

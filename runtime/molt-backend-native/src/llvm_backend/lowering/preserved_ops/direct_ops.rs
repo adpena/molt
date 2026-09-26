@@ -7,7 +7,6 @@ use super::*;
 pub(super) const HANDLED_KINDS: &[&str] = &[
     "call_async",
     "alloc_class",
-    "chan_new",
     "cast",
     "widen",
     "store_var",
@@ -118,25 +117,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let i64_ty = self.backend.context.i64_type();
         match kind {
             "call_async" => self.lower_preserved_call_async_op(op),
-            "chan_new" => {
-                if op.operands.len() != 1 {
-                    return false;
-                }
-                let func = self.ensure_runtime_i64_fn("molt_chan_new", 1);
-                let capacity_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(func, &[capacity_bits.into()], "chan_new")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-                true
-            }
             // Repr-identity SimpleIR ops. Native and WASM lower these as
             // operand-0 passthroughs over the same NaN-boxed value format; LLVM
             // must claim the exact same identity fact explicitly so the terminal
