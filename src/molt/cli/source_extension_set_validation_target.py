@@ -6,14 +6,25 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+from molt.cli.compiler_target import (
+    compiler_target_triple,
+    validate_compiler_target,
+    validate_source_extension_compiler_dialect,
+)
 from molt.cli.source_extension_set_registry import SourceExtensionVariant
 from molt.cli.source_extension_set_validation_schema import (
     SourceExtensionSetValidationError,
 )
 from molt.cli.source_extension_target import (
+    SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION,
     SourceExtensionTargetPlan,
     source_extension_recorded_target_plan,
     source_extension_target_is_wasm,
+)
+from molt.cli.source_extension_toolchain import (
+    _meson_cross_text,
+    _meson_native_text,
+    _source_extension_meson_cross_properties,
 )
 from molt.exact_json import loads_exact
 from molt.file_hashing import _sha256_file
@@ -37,7 +48,7 @@ def _source_extension_tool_role_contract(
         "ranlib": "ranlib",
         "strip": "strip",
     }
-    required_commands = {"ar", "c", "nm"}
+    required_commands = {"ar", "c", "cpp", "nm"}
     if source_extension_target_is_wasm(target_triple):
         required_commands.add("ld")
     return identity_role_by_command, frozenset(required_commands)
@@ -81,6 +92,7 @@ def validate_source_extension_target_metadata(
         "python",
         "abi",
         "toolchain",
+        "build_toolchain",
         "meson_cross_properties",
         "paths",
         "env",
@@ -97,7 +109,7 @@ def validate_source_extension_target_metadata(
         target_metadata.get("target_triple"),
     )
     expected_metadata_contract = (
-        3,
+        SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION,
         "molt-source-extension-target-metadata",
         variant.target_triple,
     )
@@ -198,7 +210,14 @@ def validate_source_extension_target_metadata(
             publish_root / "provenance/metadata/target/pkgconfig/python3.pc"
         ),
         "meson_cross_sha256": (publish_root / "provenance/metadata/target/meson.cross"),
+        "meson_native_sha256": (
+            publish_root / "provenance/metadata/target/meson.native"
+        ),
     }
+    if set(target_digests) != set(target_files):
+        raise SourceExtensionSetValidationError(
+            "extension-set target_metadata digest family differs from schema"
+        )
     for digest_name, target_file in target_files.items():
         if not target_file.is_file() or target_digests.get(digest_name) != _sha256_file(
             target_file
@@ -206,13 +225,133 @@ def validate_source_extension_target_metadata(
             raise SourceExtensionSetValidationError(
                 f"extension-set target_metadata {digest_name} is false"
             )
-    toolchain = target_metadata.get("toolchain")
+    commands = _validated_toolchain_commands(
+        target_metadata.get("toolchain"), target_triple=variant.target_triple
+    )
+    build_toolchain = target_metadata.get("build_toolchain")
+    if not isinstance(build_toolchain, Mapping) or set(build_toolchain) != {
+        "target_triple",
+        "compiler_kind",
+        "tools",
+        "commands",
+    }:
+        raise SourceExtensionSetValidationError(
+            "extension-set target metadata has an invalid build-machine toolchain"
+        )
+    build_triple = build_toolchain.get("target_triple")
+    compiler_kind = build_toolchain.get("compiler_kind")
+    if (
+        not isinstance(build_triple, str)
+        or not isinstance(compiler_kind, str)
+        or not compiler_kind
+    ):
+        raise SourceExtensionSetValidationError(
+            "extension-set target metadata has invalid build-machine coordinates"
+        )
+    try:
+        source_extension_recorded_target_plan("native", target_triple=build_triple)
+        build_commands = _validated_toolchain_commands(
+            build_toolchain, target_triple=build_triple
+        )
+    except ValueError as exc:
+        raise SourceExtensionSetValidationError(
+            f"extension-set build-machine toolchain is invalid: {exc}"
+        ) from exc
+    if target_plan.requested == "native" and (
+        build_triple != target_plan.target_triple
+        or build_toolchain["tools"] != target_metadata["toolchain"]["tools"]
+        or build_toolchain["commands"] != target_metadata["toolchain"]["commands"]
+    ):
+        raise SourceExtensionSetValidationError(
+            "extension-set native target and build-machine toolchains differ"
+        )
+    _validate_meson_machine_files(
+        target_metadata=target_metadata,
+        target_plan=target_plan,
+        commands=dict(commands),
+        build_commands=dict(build_commands),
+        cross_file=target_files["meson_cross_sha256"],
+        native_file=target_files["meson_native_sha256"],
+    )
+    return ValidatedSourceExtensionTarget(plan=target_plan, commands=commands)
+
+
+def _validate_meson_machine_files(
+    *,
+    target_metadata: Mapping[str, Any],
+    target_plan: SourceExtensionTargetPlan,
+    commands: Mapping[str, tuple[str, ...]],
+    build_commands: Mapping[str, tuple[str, ...]],
+    cross_file: Path,
+    native_file: Path,
+) -> None:
+    if target_metadata.get("meson_cross_properties") != (
+        _source_extension_meson_cross_properties(target_plan)
+    ):
+        raise SourceExtensionSetValidationError(
+            "extension-set target metadata Meson cross properties differ from target plan"
+        )
+    paths = target_metadata.get("paths")
+    pkg_config_dir = paths.get("pkg_config_dir") if isinstance(paths, Mapping) else None
+    abi = target_metadata.get("abi")
+    include_dirs = abi.get("include_dirs") if isinstance(abi, Mapping) else None
+    if not isinstance(pkg_config_dir, str) or not pkg_config_dir:
+        raise SourceExtensionSetValidationError(
+            "extension-set target metadata has no Meson pkg-config path"
+        )
+    if (
+        not isinstance(include_dirs, list)
+        or not include_dirs
+        or any(not isinstance(path, str) or not path for path in include_dirs)
+    ):
+        raise SourceExtensionSetValidationError(
+            "extension-set target metadata has invalid Meson include paths"
+        )
+    compiler_builtins: str | None = None
+    if target_plan.target_triple == "wasm32-wasip1":
+        toolchain = target_metadata.get("toolchain")
+        archives = (
+            toolchain.get("link_probe_archives")
+            if isinstance(toolchain, Mapping)
+            else None
+        )
+        builtins = (
+            archives.get("compiler_builtins") if isinstance(archives, Mapping) else None
+        )
+        compiler_builtins = (
+            builtins.get("path") if isinstance(builtins, Mapping) else None
+        )
+        if not isinstance(compiler_builtins, str) or not compiler_builtins:
+            raise SourceExtensionSetValidationError(
+                "extension-set target metadata has no Meson compiler-builtins path"
+            )
+    expected_cross = _meson_cross_text(
+        target_plan=target_plan,
+        pkg_config_dir=pkg_config_dir,
+        commands=commands,
+        compiler_builtins=compiler_builtins,
+        include_dirs=tuple(include_dirs),
+    )
+    expected_native = _meson_native_text(commands=build_commands)
+    if cross_file.read_bytes() != expected_cross.encode("utf-8"):
+        raise SourceExtensionSetValidationError(
+            "extension-set Meson cross file differs from bound target commands and paths"
+        )
+    if native_file.read_bytes() != expected_native.encode("utf-8"):
+        raise SourceExtensionSetValidationError(
+            "extension-set Meson native file differs from bound build commands"
+        )
+
+
+def _validated_toolchain_commands(
+    toolchain: object, *, target_triple: str
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
     tools = toolchain.get("tools") if isinstance(toolchain, Mapping) else None
     target_commands = (
         toolchain.get("commands") if isinstance(toolchain, Mapping) else None
     )
     tool_roles, required_command_roles = _source_extension_tool_role_contract(
-        variant.target_triple
+        target_triple
     )
     if not isinstance(tools, Mapping) or set(tools) != set(tool_roles.values()):
         raise SourceExtensionSetValidationError(
@@ -254,9 +393,16 @@ def validate_source_extension_target_metadata(
             raise SourceExtensionSetValidationError(
                 f"extension-set target metadata {command_role} identity is invalid"
             )
+        if command_role in {"c", "cpp"}:
+            try:
+                validate_source_extension_compiler_dialect(arguments, target_triple)
+                validate_compiler_target(
+                    arguments, compiler_target_triple(arguments, target_triple)
+                )
+            except ValueError as exc:
+                raise SourceExtensionSetValidationError(
+                    f"extension-set target metadata {command_role} command is invalid: {exc}"
+                ) from exc
         validated_commands.append((command_role, arguments))
 
-    return ValidatedSourceExtensionTarget(
-        plan=target_plan,
-        commands=tuple(sorted(validated_commands)),
-    )
+    return tuple(sorted(validated_commands))

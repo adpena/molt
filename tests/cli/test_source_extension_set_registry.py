@@ -20,6 +20,26 @@ from tests.process_guard_common import run_guarded_test_process
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "--native-file=other.ini",
+        "--cross-file",
+        "--prefix=/tmp/install",
+        "-Dprefix=/tmp/install",
+        "-Dbackend=vs",
+        "-Dc_args=-m32",
+        "-Dbuild.cpp_link_args=-L/unowned",
+        "-Dsub:c_args=-I/unowned",
+        "-Dpkg_config_path=/unowned",
+        "source-directory",
+    ],
+)
+def test_meson_package_options_cannot_override_machine_authority(argument):
+    with pytest.raises(ValueError, match="producer-owned"):
+        registry_module.validate_source_extension_meson_setup_args((argument,))
+
+
 def _registry_text(*, commit: str = "a" * 40) -> str:
     return f'''schema_version = 1
 

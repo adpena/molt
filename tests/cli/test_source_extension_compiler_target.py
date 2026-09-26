@@ -218,7 +218,10 @@ def test_native_toolchain_preserves_each_matching_compiler_projection(
         ("MOLT_CROSS_CC", "MOLT_CROSS_CXX") if explicit_request else ("CC", "CXX")
     )
     selector = (f"--target={triple}",) if configured_selector else ()
-    for name, compiler in ((cc_name, "clang"), (cpp_name, "clang++")):
+    c, cpp = (
+        ("clang-cl", "clang-cl") if host_platform == "win32" else ("clang", "clang++")
+    )
+    for name, compiler in ((cc_name, c), (cpp_name, cpp)):
         monkeypatch.setenv(name, " ".join((compiler, *selector)))
     plan = source_extension_target.resolve_source_extension_target_plan(
         triple if explicit_request else "native",
@@ -228,9 +231,12 @@ def test_native_toolchain_preserves_each_matching_compiler_projection(
     resolved = source_extension_toolchain._resolve_source_extension_native_toolchain(
         plan
     )
-    expected_args = selector or (("-target", triple) if explicit_request else ())
-    assert resolved.commands["c"] == ("clang", *expected_args)
-    assert resolved.commands["cpp"] == ("clang++", *expected_args)
+    injected = (
+        (f"--target={triple}",) if host_platform == "win32" else ("-target", triple)
+    )
+    expected_args = selector or (injected if explicit_request else ())
+    assert resolved.commands["c"] == (c, *expected_args)
+    assert resolved.commands["cpp"] == (cpp, *expected_args)
 
 
 @pytest.mark.parametrize(
@@ -303,3 +309,120 @@ def test_configured_zig_native_compilers_use_per_driver_target_spelling(
         if cpp_driver == "clang"
         else ("zig", "c++", "--target=x86_64-linux-gnu")
     )
+
+
+def test_windows_default_uses_one_clang_cl_driver_for_both_languages(monkeypatch):
+    _mock_native_tools(monkeypatch)
+    observed = []
+
+    def candidates(role, **kwargs):
+        observed.append((role, kwargs["target_triple"]))
+        return (Path("clang-cl"),)
+
+    monkeypatch.setattr(source_extension_toolchain, "llvm_tool_candidates", candidates)
+    plan = source_extension_target.resolve_source_extension_target_plan(
+        "native", host_platform="win32", host_arch="AMD64"
+    )
+    resolved = source_extension_toolchain._resolve_source_extension_native_toolchain(
+        plan
+    )
+    assert observed == [("cc", "x86_64-pc-windows-msvc")]
+    assert resolved.commands["c"] == resolved.commands["cpp"] == ("clang-cl",)
+    assert resolved.tools.cc.command == resolved.tools.cxx.command
+
+
+@pytest.mark.parametrize(
+    "compiler, target",
+    [
+        (("clang",), "x86_64-pc-windows-msvc"),
+        (("clang-cl", "--driver-mode=gcc"), "x86_64-pc-windows-msvc"),
+        (("clang-cl",), "wasm32-wasip1"),
+        (("clang-cl",), "x86_64-unknown-linux-gnu"),
+    ],
+)
+def test_source_compiler_admission_rejects_incompatible_dialects(compiler, target):
+    from molt.cli.source_extension_compiler_inputs import (
+        validate_source_extension_compiler_command,
+    )
+
+    with pytest.raises(ValueError, match="incompatible"):
+        validate_source_extension_compiler_command(
+            compiler, role="c", target_triple=target
+        )
+
+
+def test_clang_cl_target_passthrough_is_admitted_and_cannot_override_target():
+    from molt.cli.source_extension_compiler_inputs import (
+        validate_source_extension_compiler_command,
+    )
+
+    target = "x86_64-pc-windows-msvc"
+    command = ("clang-cl", "/clang:-target", "/clang:" + target)
+    assert (
+        validate_source_extension_compiler_command(
+            command, role="cpp", target_triple=target
+        ).argv
+        == command
+    )
+    with pytest.raises(ValueError, match="target conflicts"):
+        validate_source_extension_compiler_command(
+            command, role="c", target_triple="aarch64-pc-windows-msvc"
+        )
+
+
+def test_clang_cl_replay_removes_all_owned_selectors_and_forwards_semantics():
+    from molt.cli.source_extensions import _source_extension_replay_compile_args
+
+    args = _source_extension_replay_compile_args(
+        (
+            "/clang:--target=x86_64-pc-windows-msvc",
+            "/clang:--sysroot",
+            "/clang:C:/sdk",
+            "--driver-mode=cl",
+            "-m64",
+            "-ffile-prefix-map=C:/old=.",
+            "-fno-exceptions",
+            "-include",
+            "C:/owned/config.h",
+            "/O2",
+        ),
+        compiler_target="x86_64-pc-windows-msvc",
+        compiler_command=("clang-cl",),
+    )
+    assert args == [
+        "/clang:-fno-exceptions",
+        "/clang:-include",
+        "/clang:C:/owned/config.h",
+        "/O2",
+    ]
+
+
+@pytest.mark.parametrize(
+    "selectors",
+    [
+        ("/winsysroot", "C:/old"),
+        ("/winsysroot:C:/old",),
+        ("/winsysroot=C:/old",),
+        ("-Xclang", "-isysroot", "-Xclang", "C:/old"),
+        ("/clang:-Xclang", "/clang:-isysroot", "/clang:-Xclang", "/clang:C:/old"),
+    ],
+)
+def test_replay_owns_all_driver_and_frontend_sysroot_spellings(selectors):
+    from molt.cli.source_extensions import _source_extension_replay_compile_args
+
+    assert _source_extension_replay_compile_args(
+        (*selectors, "/MD", "/FI", "C:/owned/config.h"),
+        compiler_target="x86_64-pc-windows-msvc",
+        compiler_command=("clang-cl",),
+    ) == ["/MD", "/FI", "C:/owned/config.h"]
+
+
+def test_forwarded_frontend_target_cannot_bypass_replay_target_validation():
+    from molt.cli.source_extensions import _source_extension_replay_compile_args
+
+    with pytest.raises(ValueError, match="target conflicts"):
+        _source_extension_replay_compile_args(
+            ("-Xclang", "-triple", "-Xclang", "aarch64-pc-windows-msvc"),
+            compiler_target="x86_64-pc-windows-msvc",
+            compiler_command=("clang-cl",),
+        )

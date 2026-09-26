@@ -10,6 +10,8 @@ from molt.cli.source_extension_reproducibility import (
     _canonicalize_locations,
     _canonicalize_meson_metadata,
     _source_extension_deterministic_path_args,
+    _require_location_neutral,
+    require_source_extension_machine_file_location_neutral,
 )
 from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
@@ -99,6 +101,208 @@ def test_equal_root_alias_uses_first_declared_semantic_role(tmp_path: Path) -> N
     )
 
     assert _flag_replacements(arguments) == [".molt/source"]
+
+
+def test_clang_cl_maps_and_transient_operands_are_location_neutral(tmp_path: Path):
+    from molt.cli.source_extension_reproducibility import _require_location_neutral
+
+    root = tmp_path / "objects"
+    args = _source_extension_deterministic_path_args(
+        compiler_command=("clang-cl",), roots=((root, ".molt/objects"),)
+    )
+    assert len(args) == 3
+    assert all(arg.startswith("/clang:-f") for arg in args)
+    assert any("-fmacro-prefix-map=" in arg for arg in args)
+    command = [
+        "clang-cl",
+        "/TC",
+        "/c",
+        "@source/unit.c",
+        f"/Fo{root}/unit.obj",
+        f"/clang:-MF{root}/unit.d",
+        *args,
+    ]
+    canonical = _canonicalize_locations(command, ((root, "@object-root"),))
+    assert canonical[4] == "/Fo@object-root/unit.obj"
+    assert canonical[5] == "/clang:-MF@object-root/unit.d"
+    _require_location_neutral(canonical, authority="test clang-cl command")
+
+
+@pytest.mark.parametrize(
+    "compiler", [["@llvm/clang-cl.exe"], ["@llvm/clang", "--driver-mode=cl"]]
+)
+def test_msvc_semantic_options_follow_explicit_command_and_mapping_context(compiler):
+    args = [
+        "/utf-8",
+        "/GR-",
+        "/std:c++17",
+        "/Zc:__cplusplus",
+        "/permissive-",
+        "/MD",
+        "/MTd",
+        '/DHEADER="@source/include/a.h"',
+        "/FI@source/config.h",
+        "/clang:-include",
+        "/clang:@source/config.h",
+    ]
+    payload = {
+        "commands": {"c": [*compiler, "/O2"]},
+        "target_sources": [{"compiler": compiler, "parameters": args}],
+        "source_plan": {
+            "compile_units": [{"compiler": compiler, "compile_args": args}],
+            "compile_args": args,
+        },
+        "object_closure": {"objects": [{"compile_command": [*compiler, *args]}]},
+    }
+    _require_location_neutral(payload, authority="MSVC metadata")
+
+
+def test_windows_command_string_and_linker_fields_share_option_context():
+    _require_location_neutral(
+        {
+            "command": '"@llvm/clang-cl.exe" /utf-8 /DHEADER="@source/include/a.h" /Fo@build/obj.obj',
+            "target_sources": [
+                {
+                    "linker": ["@llvm/lld-link"],
+                    "parameters": [
+                        "/DLL",
+                        "/OUT:@build/a.dll",
+                        "/PDB:@build/a.pdb",
+                        "/LIBPATH:@sdk/lib",
+                    ],
+                }
+            ],
+        },
+        authority="Windows commands",
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "/utf-8",
+        "/GR-",
+        "/std:c++17",
+        "/usr/include/a.h",
+        "/Fo/producer/obj.obj",
+        "C:/producer/a.h",
+        r"C:\producer\a.h",
+        "~/private/a.h",
+        "file:///producer/a.h",
+        "/clang:-O2",
+    ],
+)
+def test_driver_metadata_does_not_bless_unrelated_raw_paths(raw):
+    with pytest.raises(ValueError, match="producer filesystem paths"):
+        _require_location_neutral(
+            {"compiler": ["clang-cl"], "unrelated": raw}, authority="raw field"
+        )
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        "/FI/usr/include/a.h",
+        "/I~/include",
+        "/FoC:/producer/a.obj",
+        "/LIBPATH:/producer/lib",
+        "/clang:-I/producer/include",
+        "/clang:-ffile-prefix-map=/producer=@source",
+        "/DHEADER=/producer/header.h",
+        '/DHEADER="/producer/header.h"',
+        "/DHEADER=file:///producer/header.h",
+        "/clang:@C:/producer/args.rsp",
+    ],
+)
+def test_msvc_command_context_never_hides_nested_producer_paths(arg):
+    with pytest.raises(ValueError, match="producer filesystem paths"):
+        _require_location_neutral(
+            {"arguments": ["clang-cl", arg]}, authority="nested flag"
+        )
+
+
+def test_mixed_source_plan_compilers_cannot_bless_unowned_slash_options():
+    payload = {
+        "compile_units": [{"compiler": ["clang-cl"]}, {"compiler": ["clang"]}],
+        "compile_args": ["/utf-8"],
+    }
+    with pytest.raises(ValueError, match="producer filesystem paths"):
+        _require_location_neutral(payload, authority="mixed source plan")
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["/FI", "/Fa", "/Fd", "/Fp", "/FR", "/OUT:", "/PDB:", "/PDBALTPATH:", "/LIBPATH:"],
+)
+def test_joined_msvc_path_family_canonicalizes_without_blessing_raw_paths(
+    tmp_path, prefix
+):
+    root = tmp_path / "producer"
+    raw = f"{prefix}{root}/nested/file"
+    canonical = _canonicalize_locations(raw, ((root, "@build"),))
+    assert canonical == prefix + "@build/nested/file"
+    _require_location_neutral(canonical, authority="canonical operand")
+    with pytest.raises(ValueError, match="producer filesystem paths"):
+        _require_location_neutral(raw, authority="raw operand")
+
+
+def test_machine_file_options_use_their_own_bound_compiler():
+    text = """[binaries]
+c = ['@llvm/clang-cl', '/O2']
+cpp = ['@llvm/clang', '--driver-mode=cl']
+[built-in options]
+c_args = ['/utf-8', '/I@repo/include']
+cpp_args = ['/std:c++17', '/GR-', '/DHEADER=@source/config.h']
+cpp_link_args = ['/link', '/LIBPATH:@sdk/lib']
+[host_machine]
+system = 'windows'
+[properties]
+needs_exe_wrapper = false
+"""
+    require_source_extension_machine_file_location_neutral(
+        text, authority="machine file"
+    )
+    for raw_property in (
+        "'/usr/include'",
+        "'/utf-8'",
+        "['clang-cl', '/usr']",
+        "'C:/producer'",
+        "'file:///producer'",
+    ):
+        with pytest.raises(ValueError, match="producer filesystem paths"):
+            require_source_extension_machine_file_location_neutral(
+                text + f"unowned = {raw_property}\n", authority="machine property"
+            )
+    with pytest.raises(ValueError, match="producer filesystem paths"):
+        require_source_extension_machine_file_location_neutral(
+            text.replace("['@llvm/clang-cl', '/O2']", "['@llvm/clang']"),
+            authority="GNU machine",
+        )
+    with pytest.raises(ValueError, match="producer filesystem paths"):
+        require_source_extension_machine_file_location_neutral(
+            text.replace("/I@repo/include", "/I/producer/include"),
+            authority="raw machine include",
+        )
+
+
+def test_arbitrary_text_cannot_invent_machine_or_command_context():
+    with pytest.raises(ValueError, match="producer filesystem paths"):
+        _require_location_neutral(
+            "clang-cl /utf-8\nproperty='/usr/include'", authority="ordinary text"
+        )
+    with pytest.raises(ValueError, match="literal argv"):
+        require_source_extension_machine_file_location_neutral(
+            "[binaries]\nc = __import__('os').getcwd()\n",
+            authority="nonliteral machine",
+        )
+    for text in (
+        "# from /producer/path\n[binaries]\nc = ['clang-cl']\n",
+        "[binaries]\nc = ['clang-cl'] # from /producer/path\n",
+    ):
+        with pytest.raises(ValueError, match="producer filesystem paths"):
+            require_source_extension_machine_file_location_neutral(
+                text, authority="machine comment"
+            )
 
 
 def test_location_canonicalization_covers_mapping_keys_and_values(

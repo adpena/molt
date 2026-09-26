@@ -15,10 +15,15 @@ from typing import Any, Mapping, Sequence
 from molt.cli import source_extensions as _source_extensions
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.python_module_names import encode_python_module_names
-from molt.cli.compiler_target import compiler_target_triple
+from molt.cli.compiler_target import (
+    compiler_target_triple,
+    source_extension_compiler_dialect,
+    SourceExtensionCompilerDialect,
+)
 from molt.cli.source_extension_language import (
     SourceExtensionLanguage,
     resolve_source_extension_compile_language,
+    source_extension_compile_io_args,
 )
 from molt.cli.source_extension_input_custody import (
     SourceExtensionInputCustodyError,
@@ -77,7 +82,10 @@ from molt.cli.project_roots import (
 from molt.target_python import (
     _resolve_target_python_version,
 )
-from molt.cli.source_extension_compiler_inputs import compiler_sysroot_arg_value
+from molt.cli.source_extension_compiler_inputs import (
+    compiler_sysroot_arg_value,
+    source_extension_compiler_environment,
+)
 from molt.cli.source_extension_toolchain import (
     _materialize_source_extension_target_metadata,
     _normalize_source_extension_abi_tier,
@@ -162,6 +170,7 @@ def extension_metadata(
     data["paths"]["pkg_config_dir"] = str(metadata.pkg_config_dir)
     data["paths"]["python_pc"] = str(metadata.python_pc)
     data["paths"]["meson_cross"] = str(metadata.meson_cross)
+    data["paths"]["meson_native"] = str(metadata.meson_native)
     data["paths"]["sidecar"] = str(metadata.sidecar)
     data["digest"] = metadata.digest
     if json_output:
@@ -169,6 +178,7 @@ def extension_metadata(
     else:
         print(f"Wrote source-extension target metadata: {metadata.sidecar}")
         print(f"Meson cross file: {metadata.meson_cross}")
+        print(f"Meson native file: {metadata.meson_native}")
         print(f"Python pkg-config: {metadata.python_pc}")
     return 0
 
@@ -889,7 +899,7 @@ def extension_build(
             command="extension-build",
         )
 
-    build_env = os.environ.copy()
+    build_env = source_extension_compiler_environment(os.environ)
     # Reproducibility is a build input, never ambient policy.
     if deterministic or profile == "release":
         build_env["SOURCE_DATE_EPOCH"] = "315532800"
@@ -1035,16 +1045,21 @@ def extension_build(
                     json_output,
                     command="extension-build",
                 )
-            object_path = build_tmp / f"{idx}_{source_path.stem}.o"
-            cmd = [
-                *unit_cc_cmd,
-                "-x",
-                unit_language.driver_language,
-                "-c",
-                str(source_path),
-                "-o",
-                str(object_path),
-            ]
+            dialect = source_extension_compiler_dialect(unit_cc_cmd)
+            cl = dialect is SourceExtensionCompilerDialect.CLANG_CL
+            object_path = (
+                build_tmp / f"{idx}_{source_path.stem}{'.obj' if cl else '.o'}"
+            )
+            try:
+                cmd = [
+                    *unit_cc_cmd,
+                    *source_extension_compile_io_args(
+                        unit_language, unit_cc_cmd, source_path, object_path
+                    ),
+                ]
+            except ValueError as exc:
+                return _fail(str(exc), json_output, command="extension-build")
+            include_flag = "/I" if cl else "-I"
             dependency_file: Path | None = None
             if loaded_source_plan is not None:
                 driver = Path(unit_cc_cmd[0]).name.lower() if unit_cc_cmd else ""
@@ -1058,14 +1073,17 @@ def extension_build(
                 dependency_file = build_tmp / f"{idx}_{source_path.stem}.d"
                 cmd.extend(
                     [
-                        "-MD",
-                        "-MF",
-                        str(dependency_file),
-                        "-MT",
-                        object_path.name,
+                        dialect.forward("-MD"),
+                        dialect.forward(f"-MF{dependency_file}"),
+                        dialect.forward(f"-MT{object_path.name}"),
                     ]
+                    if cl
+                    else ["-MD", "-MF", str(dependency_file), "-MT", object_path.name]
                 )
-            cmd.extend(f"-D{symbol}=1" for symbol in target_plan.preprocessor_symbols)
+            cmd.extend(
+                dialect.forward(f"-D{symbol}=1")
+                for symbol in target_plan.preprocessor_symbols
+            )
             if plan_unit is not None:
                 python_include_root, fallback_abi_include_roots = (
                     _source_plan_abi_include_order(
@@ -1073,18 +1091,18 @@ def extension_build(
                         python_header=python_header,
                     )
                 )
-                cmd.extend(["-I", str(python_include_root)])
-                cmd.extend(["-I", str(project_root)])
+                cmd.extend([include_flag, str(python_include_root)])
+                cmd.extend([include_flag, str(project_root)])
                 for include_path in unit_include_paths:
-                    cmd.extend(["-I", str(include_path)])
+                    cmd.extend([include_flag, str(include_path)])
                 for include_path in fallback_abi_include_roots:
-                    cmd.extend(["-I", str(include_path)])
+                    cmd.extend([include_flag, str(include_path)])
             else:
                 for include_path in abi_include_roots:
-                    cmd.extend(["-I", str(include_path)])
-                cmd.extend(["-I", str(project_root)])
+                    cmd.extend([include_flag, str(include_path)])
+                cmd.extend([include_flag, str(project_root)])
                 for include_path in unit_include_paths:
-                    cmd.extend(["-I", str(include_path)])
+                    cmd.extend([include_flag, str(include_path)])
             if target_plan.requires_position_independent_code:
                 cmd.append("-fPIC")
             if deterministic:
@@ -1118,7 +1136,8 @@ def extension_build(
                 )
             if plan_unit is not None:
                 cmd.extend(
-                    _source_extensions._source_extension_gc_compile_args(
+                    dialect.forward(argument)
+                    for argument in _source_extensions._source_extension_gc_compile_args(
                         target_triple=runtime_target_triple,
                     )
                 )
@@ -1149,11 +1168,15 @@ def extension_build(
             # successful standalone regeneration on cpython-abi receives these
             # selectors, immediately before the source-plan unit authority.
             if regeneration is not None:
-                cmd.extend(_source_extension_cython.CYTHON_CPYTHON_ABI_COMPILE_ARGS)
+                cmd.extend(
+                    dialect.forward(argument)
+                    for argument in _source_extension_cython.CYTHON_CPYTHON_ABI_COMPILE_ARGS
+                )
             try:
                 cmd.extend(
                     _source_extensions._source_extension_replay_compile_args(
                         unit_compile_args,
+                        compiler_command=unit_cc_cmd,
                         compiler_target=compiler_target_triple(
                             unit_cc_cmd, target_plan.target_triple
                         ),

@@ -15,6 +15,7 @@ from molt.cli.native_link_plan import (
 
 SourceExtensionLinkDialect = LinkDialect
 source_extension_link_dialect = resolve_link_dialect
+SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)

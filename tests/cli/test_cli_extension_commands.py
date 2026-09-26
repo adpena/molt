@@ -80,7 +80,70 @@ def _resolved_llvm_tool(
     )
 
 
+def _stub_metadata_build_machine(monkeypatch: pytest.MonkeyPatch):
+    host_plan = _source_extension_target_plan("native")
+    commands = {
+        "c": ("/host/clang",),
+        "cpp": ("/host/clang++",),
+        "ar": ("/host/llvm-ar",),
+        "nm": ("/host/llvm-nm",),
+    }
+    tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
+        cc=_resolved_llvm_tool("cc", commands["c"]),
+        cxx=_resolved_llvm_tool("cxx", commands["cpp"]),
+        ar=_resolved_llvm_tool("ar", commands["ar"]),
+        nm=_resolved_llvm_tool("nm", commands["nm"]),
+        wasm_ld=None,
+        ranlib=None,
+        strip=None,
+    )
+    host = cli_source_extension_toolchain._ResolvedSourceExtensionToolchain(
+        target_plan=host_plan,
+        compiler_kind="host",
+        tools=tools,
+        commands=commands,
+        wasi_sysroot=None,
+        link_inputs=SourceExtensionLinkInputs(
+            host_plan.target_triple, None, None, None
+        ),
+        detail="attested test build machine",
+    )
+    monkeypatch.setattr(
+        cli_source_extension_toolchain,
+        "resolve_source_extension_target_plan",
+        lambda requested: (
+            host_plan
+            if requested == "native"
+            else pytest.fail("unexpected host request")
+        ),
+    )
+
+    def resolve(plan, *, environment):
+        assert plan == host_plan
+        assert not (
+            {"CC", "CXX", "MOLT_CROSS_CC", "MOLT_CROSS_CXX", "MOLT_WASM_CC"}
+            & environment.keys()
+        )
+        return host
+
+    monkeypatch.setattr(
+        cli_source_extension_toolchain,
+        "_resolve_source_extension_native_toolchain",
+        resolve,
+    )
+    return host
+
+
 def _write_fake_compiler_depfile(cmd: list[str]) -> None:
+    forwarded_depfile = next(
+        (arg.removeprefix("/clang:-MF") for arg in cmd if arg.startswith("/clang:-MF")),
+        None,
+    )
+    if forwarded_depfile is not None:
+        Path(forwarded_depfile).write_text(
+            f"object.obj: {cmd[cmd.index('/c') + 1]}\n", encoding="utf-8"
+        )
+        return
     if "-MF" not in cmd:
         return
     dependency_file = Path(cmd[cmd.index("-MF") + 1])
@@ -91,7 +154,11 @@ def _write_fake_compiler_depfile(cmd: list[str]) -> None:
 
 
 def _materialize_fake_extension_command(cmd: list[str]) -> Path:
-    if "-o" in cmd:
+    cl_output = next((arg[3:] for arg in cmd if arg.startswith("/Fo")), None)
+    if cl_output is not None:
+        output = Path(cl_output)
+        payload = b"object"
+    elif "-o" in cmd:
         output = Path(cmd[cmd.index("-o") + 1])
         payload = b"object" if "-c" in cmd else b"wasm-object"
     else:
@@ -121,12 +188,11 @@ def test_resolve_wasm_linker_prefers_matching_wasi_sdk_linker(
     monkeypatch.setattr(
         wasm_link_inputs, "resolve_wasi_sysroot", lambda **_kwargs: sysroot
     )
-    monkeypatch.setattr(cli_wasm_toolchain.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
         cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "22.1.7"
     )
 
-    identity = cli_wasm_toolchain.resolve_wasm_linker()
+    identity = cli_wasm_toolchain.resolve_wasm_linker(env={})
 
     assert identity is not None
     assert identity.path == linker.resolve()
@@ -353,7 +419,7 @@ def _install_extension_object_symbol_facts(
                 undefined = set(undefined) - set(defined)
             return inspection(set(defined), set(undefined))
         return inspection(
-            {default_init_symbol}, {"PyModule_Create", "molt_c_api_version"}
+            {default_init_symbol}, {"PyModule_Create2", "molt_c_api_version"}
         )
 
     monkeypatch.setattr(
@@ -1774,7 +1840,9 @@ def test_extension_build_emits_wheel_and_manifest(
     assert manifest["artifact_kind"] == "static_archive"
     assert manifest["target_python"] == "py313"
     assert manifest["extension"].endswith(".molt.a")
-    compile_command = next(command for command in commands if "-c" in command)
+    compile_command = next(
+        command for command in commands if "-c" in command or "/c" in command
+    )
     archive_command = next(command for command in commands if "rcsD" in command)
     compiler_command = manifest["build"]["compiler"]
     assert compile_command[: len(compiler_command)] == compiler_command
@@ -1885,7 +1953,7 @@ def test_extension_build_emits_public_exports_in_manifest(
                     "PyInit_demoext",
                     "molt_demoext_ndimage_distance_transform_edt",
                 },
-                {"PyModule_Create", "molt_c_api_version"},
+                {"PyModule_Create2", "molt_c_api_version"},
             )
         },
     )
@@ -2020,9 +2088,18 @@ def test_extension_build_infers_module_attr_callable_exports_from_pymethoddef(
 @pytest.mark.slow
 def test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mock(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if shutil.which("clang") is None:
-        pytest.skip("clang is required for real libmolt extension build smoke")
+    plan = cli_source_extension_target.resolve_source_extension_target_plan("native")
+    if not cli_llvm_wasi_tools.llvm_tool_candidates(
+        "cc", target_triple=plan.target_triple
+    ):
+        pytest.skip(
+            f"native LLVM compiler for {plan.target_triple} is required for real extension smoke"
+        )
+    monkeypatch.setenv("CL", "/DUNRECORDED=1 /FIunowned-missing-header.h")
+    monkeypatch.setenv("_CL_", "/Fo" + str(tmp_path / "unowned.obj"))
+    monkeypatch.setenv("CCC_OVERRIDE_OPTIONS", "+-include;unowned-missing-header.h")
     project_root = tmp_path / "iter_mapping_ext"
     project_root.mkdir()
     _write_extension_iterator_mapping_project(project_root)
@@ -2150,7 +2227,7 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
         by_stem={
             "demoext": (
                 {"PyInit_demoext"},
-                {"PyModule_Create", "PyTuple_New", "helper_generated"},
+                {"PyModule_Create2", "PyTuple_New", "helper_generated"},
             ),
             "helper_generated": (
                 {"helper_generated"},
@@ -2171,12 +2248,12 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     compile_cmd = next(
         cmd
         for cmd in commands
-        if "-c" in cmd and any("demoext.c" in part for part in cmd)
+        if ("-c" in cmd or "/c" in cmd) and any("demoext.c" in part for part in cmd)
     )
     include_dirs = [
         Path(compile_cmd[idx + 1]).resolve()
         for idx, token in enumerate(compile_cmd[:-1])
-        if token == "-I"
+        if token in {"-I", "/I"}
     ]
     assert include_dirs.index(
         (ROOT / "include" / "molt").resolve()
@@ -2189,8 +2266,11 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     ) < include_dirs.index((ROOT / "include").resolve())
     archive_cmd = next(cmd for cmd in commands if "rcsD" in cmd)
     assert Path(archive_cmd[archive_cmd.index("rcsD") + 1]).name == "demoext.molt.a"
-    assert any("0_demoext.o" in part for part in archive_cmd)
-    assert any("1_helper_generated.o" in part for part in archive_cmd)
+    object_suffix = ".obj" if cli_commands.sys.platform == "win32" else ".o"
+    assert any(part.endswith("0_demoext" + object_suffix) for part in archive_cmd)
+    assert any(
+        part.endswith("1_helper_generated" + object_suffix) for part in archive_cmd
+    )
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["source_plan"]["kind"] == "meson-intro-targets"
     assert manifest["source_plan"]["plan"] == str(intro_path.resolve())
@@ -2207,9 +2287,12 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
         assert obj["language"] == "c"
         assert Path(obj["source"]).suffix == ""
         command = obj["compile_command"]
-        language_index = command.index("-x")
-        assert command[language_index + 1] == "c"
-        assert language_index < command.index("-c")
+        if cli_commands.sys.platform == "win32":
+            assert command[command.index("/c") - 1] == "/TC"
+        else:
+            language_index = command.index("-x")
+            assert command[language_index + 1] == "c"
+            assert language_index < command.index("-c")
     assert manifest["build"]["source_c_api_scan"][
         "project_generated_c_api_prefixes"
     ] == ["npy_generated_"]
@@ -2217,7 +2300,9 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
         "project_generated_c_api_symbols"
     ] == ["npy_generated_int8"]
     assert manifest["object_closure"]["root_symbol"] == "PyInit_demoext"
-    assert manifest["object_closure"]["init_symbol_owner"] == "0_demoext.o"
+    assert (
+        manifest["object_closure"]["init_symbol_owner"] == "0_demoext" + object_suffix
+    )
     assert manifest["object_closure"]["closure_sha256"]
     assert manifest["object_closure"]["required_capsules"] == []
     assert manifest["object_closure"]["project_generated_c_api_prefixes"] == [
@@ -2323,13 +2408,19 @@ def test_direct_build_audits_and_reseals_extracted_wheel(
     # Bind the same typed tool family the real producer consumes, then retain
     # the real target command construction and mocked compiler byte outputs.
     tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
-        cc=_resolved_llvm_tool("cc", ("fixture-clang",)),
-        cxx=_resolved_llvm_tool("cxx", ("fixture-clang++",)),
-        wasm_ld=_resolved_llvm_tool("wasm_ld", ("wasm-ld",)),
-        ar=_resolved_llvm_tool("ar", ("llvm-ar",)),
-        ranlib=_resolved_llvm_tool("ranlib", ("llvm-ranlib",)),
-        nm=_resolved_llvm_tool("nm", ("llvm-nm",)),
-        strip=_resolved_llvm_tool("strip", ("llvm-strip",)),
+        cc=_resolved_llvm_tool("cc", (str(tmp_path / "toolchain/bin/clang"),)),
+        cxx=_resolved_llvm_tool("cxx", (str(tmp_path / "toolchain/bin/clang++"),)),
+        wasm_ld=_resolved_llvm_tool(
+            "wasm_ld", (str(tmp_path / "toolchain/bin/wasm-ld"),)
+        ),
+        ar=_resolved_llvm_tool("ar", (str(tmp_path / "toolchain/bin/llvm-ar"),)),
+        ranlib=_resolved_llvm_tool(
+            "ranlib", (str(tmp_path / "toolchain/bin/llvm-ranlib"),)
+        ),
+        nm=_resolved_llvm_tool("nm", (str(tmp_path / "toolchain/bin/llvm-nm"),)),
+        strip=_resolved_llvm_tool(
+            "strip", (str(tmp_path / "toolchain/bin/llvm-strip"),)
+        ),
     )
     monkeypatch.setattr(
         cli_source_extension_toolchain,
@@ -2565,7 +2656,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     _install_extension_object_symbol_facts(
         monkeypatch,
         default_init_symbol="PyInit__cyext",
-        by_stem={"_cyext": ({"PyInit__cyext"}, {"PyModule_Create"})},
+        by_stem={"_cyext": ({"PyInit__cyext"}, {"PyModule_Create2"})},
     )
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
@@ -2582,15 +2673,18 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     regenerated_compile_command = next(
         cmd
         for cmd in commands
-        if "-c" in cmd
+        if ("-c" in cmd or "/c" in cmd)
         and any("molt_cython_standalone" in part and "_cyext.c" in part for part in cmd)
     )
     profile_args = cli_commands._source_extension_cython.CYTHON_CPYTHON_ABI_COMPILE_ARGS
-    assert all(arg in regenerated_compile_command for arg in profile_args)
-    assert regenerated_compile_command.index(profile_args[0]) < (
-        regenerated_compile_command.index("-DPLAN_UNIT=1")
+    frontend_args = [arg.removeprefix("/clang:") for arg in regenerated_compile_command]
+    assert all(arg in frontend_args for arg in profile_args)
+    assert frontend_args.index(profile_args[0]) < (frontend_args.index("-DPLAN_UNIT=1"))
+    assert all(
+        sum(arg in [token.removeprefix("/clang:") for token in cmd] for cmd in commands)
+        == 1
+        for arg in profile_args
     )
-    assert all(sum(arg in cmd for cmd in commands) == 1 for arg in profile_args)
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["cython_standalone"][0]["cimport_pxd_roots"] == [
         str(project_root.resolve())
@@ -2762,10 +2856,12 @@ def test_extension_build_follows_linked_static_library_source_closure(
     )
     assert str(skipped_generated_source) in captured.err
     assert any(
-        "-c" in cmd and any("unique.cpp" in part for part in cmd) for cmd in commands
+        ("-c" in cmd or "/c" in cmd) and any("unique.cpp" in part for part in cmd)
+        for cmd in commands
     )
     archive_cmd = next(cmd for cmd in commands if "rcsD" in cmd)
-    assert any("2_unique.o" in part for part in archive_cmd)
+    object_suffix = ".obj" if cli_commands.sys.platform == "win32" else ".o"
+    assert any(part.endswith("2_unique" + object_suffix) for part in archive_cmd)
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["build"]["object_count"] == 3
     assert manifest["build"]["linked_object_count"] == 3
@@ -2855,7 +2951,8 @@ def test_extension_build_excludes_linked_static_library(
 
     # The excluded archive's translation unit is neither compiled nor linked.
     assert not any(
-        "-c" in cmd and any("unique.cpp" in part for part in cmd) for cmd in commands
+        ("-c" in cmd or "/c" in cmd) and any("unique.cpp" in part for part in cmd)
+        for cmd in commands
     )
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     object_sources = {
@@ -2931,11 +3028,12 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
 
     assert rc == 0
     assert any(
-        "-c" in cmd and any("loops_arithmetic.dispatch.c" in part for part in cmd)
+        ("-c" in cmd or "/c" in cmd)
+        and any("loops_arithmetic.dispatch.c" in part for part in cmd)
         for cmd in commands
     )
     assert not any(
-        "-c" in cmd and any("simd.dispatch.c" in part for part in cmd)
+        ("-c" in cmd or "/c" in cmd) and any("simd.dispatch.c" in part for part in cmd)
         for cmd in commands
     )
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
@@ -3093,6 +3191,8 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
 ) -> None:
+    host = _stub_metadata_build_machine(monkeypatch)
+
     def tool(
         role: cli_llvm_wasi_tools.LlvmToolRole,
         command: tuple[str, ...],
@@ -3157,7 +3257,15 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
         "implementation": "cpython",
         "version": "3.12",
     }
-    assert payload["data"]["schema_version"] == 3
+    assert payload["data"]["schema_version"] == 4
+    assert payload["data"]["build_toolchain"]["commands"] == {
+        role: list(command) for role, command in host.commands.items()
+    }
+    assert payload["data"]["paths"]["meson_native"] == str(out_dir / "meson.native")
+    native_text = (out_dir / "meson.native").read_text(encoding="utf-8")
+    assert "'/host/clang'" in native_text
+    for option in ("c_args", "cpp_args", "c_link_args", "cpp_link_args"):
+        assert f"{option} = []" in native_text
     assert payload["data"]["toolchain"]["tools"]["nm"] == {
         "command": ["/usr/bin/llvm-nm"],
         "path": str(Path("/usr/bin/llvm-nm")),
@@ -3190,10 +3298,11 @@ def test_source_extension_metadata_materializes_host_native_tool_family(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _stub_metadata_build_machine(monkeypatch)
     target_plan = _source_extension_target_plan("native")
     tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
         cc=_resolved_llvm_tool("cc", ("/tools/clang",)),
-        cxx=None,
+        cxx=_resolved_llvm_tool("cxx", ("/tools/clang++",)),
         wasm_ld=None,
         ar=_resolved_llvm_tool("ar", ("/tools/llvm-ar",)),
         ranlib=None,
@@ -3206,6 +3315,7 @@ def test_source_extension_metadata_materializes_host_native_tool_family(
         tools=tools,
         commands={
             "c": ("/tools/clang",),
+            "cpp": ("/tools/clang++",),
             "ar": ("/tools/llvm-ar",),
             "nm": ("/tools/llvm-nm",),
         },
@@ -3219,6 +3329,8 @@ def test_source_extension_metadata_materializes_host_native_tool_family(
 
     def resolve(
         plan: cli_source_extension_target.SourceExtensionTargetPlan,
+        *,
+        environment: object,
     ) -> cli_source_extension_toolchain._ResolvedSourceExtensionToolchain:
         seen_plans.append(plan)
         return resolved
@@ -3242,6 +3354,14 @@ def test_source_extension_metadata_materializes_host_native_tool_family(
     assert errors == []
     assert metadata is not None
     assert seen_plans == [target_plan]
+    assert (
+        metadata.payload["build_toolchain"]["commands"]
+        == metadata.payload["toolchain"]["commands"]
+    )
+    assert (
+        metadata.payload["build_toolchain"]["tools"]
+        == metadata.payload["toolchain"]["tools"]
+    )
     assert metadata.payload["target"] == {
         "requested": "native",
         "compiler_target_triple": None,
@@ -3250,6 +3370,7 @@ def test_source_extension_metadata_materializes_host_native_tool_family(
     assert metadata.payload["toolchain"]["commands"] == {
         "ar": ["/tools/llvm-ar"],
         "c": ["/tools/clang"],
+        "cpp": ["/tools/clang++"],
         "nm": ["/tools/llvm-nm"],
     }
     assert metadata.payload["toolchain"]["link_probe_archives"] == {}
@@ -3260,7 +3381,8 @@ def test_source_extension_metadata_materializes_host_native_tool_family(
     meson_cross = metadata.meson_cross.read_text(encoding="utf-8")
     assert "system = 'linux'" in meson_cross
     assert "cpu_family = 'x86_64'" in meson_cross
-    assert "c_link_args" not in meson_cross
+    assert "c_link_args = []" in meson_cross
+    assert "cpp_link_args = []" in meson_cross
 
     invalid_metadata, invalid_errors = (
         cli_source_extension_toolchain._materialize_source_extension_target_metadata(
@@ -3286,9 +3408,15 @@ def test_native_target_metadata_commands_drive_real_extension_build(
         host_platform=cli_commands.sys.platform,
         host_arch=cli_commands.platform.machine(),
     )
+    compiler = (
+        "/tools/clang-cl"
+        if target_plan.target_triple.endswith("-windows-msvc")
+        else "/tools/clang"
+    )
+    cxx = compiler if compiler.endswith("clang-cl") else "/tools/clang++"
     tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
-        cc=_resolved_llvm_tool("cc", ("/tools/clang",)),
-        cxx=None,
+        cc=_resolved_llvm_tool("cc", (compiler,)),
+        cxx=_resolved_llvm_tool("cxx", (cxx,)),
         wasm_ld=None,
         ar=_resolved_llvm_tool("ar", ("/tools/llvm-ar",)),
         ranlib=None,
@@ -3300,7 +3428,8 @@ def test_native_target_metadata_commands_drive_real_extension_build(
         compiler_kind="host",
         tools=tools,
         commands={
-            "c": ("/tools/clang",),
+            "c": (compiler,),
+            "cpp": (cxx,),
             "ar": ("/tools/llvm-ar",),
             "nm": ("/tools/llvm-nm",),
         },
@@ -3313,7 +3442,9 @@ def test_native_target_metadata_commands_drive_real_extension_build(
     monkeypatch.setattr(
         cli_source_extension_toolchain,
         "_resolve_source_extension_toolchain",
-        lambda plan: resolved if plan == target_plan else pytest.fail("target drift"),
+        lambda plan, **kwargs: (
+            resolved if plan == target_plan else pytest.fail("target drift")
+        ),
     )
     metadata, errors = (
         cli_source_extension_toolchain._materialize_source_extension_target_metadata(
@@ -3359,7 +3490,9 @@ def test_native_target_metadata_commands_drive_real_extension_build(
     )
 
     assert rc == 0
-    compile_command = next(command for command in executed if "-c" in command)
+    compile_command = next(
+        command for command in executed if "-c" in command or "/c" in command
+    )
     archive_command = next(command for command in executed if "rcsD" in command)
     assert compile_command[: len(tool_commands["c"])] == list(tool_commands["c"])
     assert archive_command[: len(tool_commands["ar"])] == list(tool_commands["ar"])
@@ -3436,6 +3569,7 @@ def test_source_extension_freestanding_metadata_needs_no_wasi_or_libc(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _stub_metadata_build_machine(monkeypatch)
     target_plan = _source_extension_target_plan("wasm-freestanding")
     tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
         cc=_resolved_llvm_tool("cc", ("/tools/clang",)),
@@ -3479,7 +3613,9 @@ def test_source_extension_freestanding_metadata_needs_no_wasi_or_libc(
     monkeypatch.setattr(
         cli_source_extension_toolchain,
         "_resolve_source_extension_toolchain",
-        lambda plan: resolved if plan == target_plan else pytest.fail("target drift"),
+        lambda plan, **kwargs: (
+            resolved if plan == target_plan else pytest.fail("target drift")
+        ),
     )
     monkeypatch.setattr(
         cli_source_extension_link_inputs.wasm_link_inputs,
@@ -3524,6 +3660,7 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _stub_metadata_build_machine(monkeypatch)
     target_plan = _source_extension_target_plan("wasm-freestanding")
     tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
         cc=_resolved_llvm_tool("cc", ("/tools/clang",)),
@@ -3556,7 +3693,9 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
     monkeypatch.setattr(
         cli_source_extension_toolchain,
         "_resolve_source_extension_toolchain",
-        lambda plan: resolved if plan == target_plan else pytest.fail("target drift"),
+        lambda plan, **kwargs: (
+            resolved if plan == target_plan else pytest.fail("target drift")
+        ),
     )
     monkeypatch.setattr(
         cli_source_extension_link_inputs.wasm_link_inputs,
@@ -3724,6 +3863,8 @@ def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
     }
     for path in tool_paths.values():
         path.write_bytes(b"tool")
+        path.chmod(0o755)
+    monkeypatch.setenv("MOLT_WASM_CC", '"' + str(tool_paths["clang-wasm"]) + '"')
     monkeypatch.setattr(
         cli_llvm_wasi_tools,
         "find_executable",
@@ -3913,6 +4054,11 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         "malloc",
     )
     raw_data_relocations = ("PyExc_RuntimeError", "Py_None")
+    monkeypatch.setattr(
+        cli_source_extensions,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target: {"malloc": "wasm_libc_link_import"},
+    )
     wasm_bytes = _wasm_exporting_i64_unary_symbols(
         ("PyInit_demoext", native_symbol),
         imports=wasm_function_imports,
@@ -4395,7 +4541,7 @@ def test_extension_numpy_build_uses_compiled_link_closure_matrix(
         for item in manifest["object_closure"]["objects"]
         for symbol in item["required_c_api_symbols"]
     }
-    assert required_symbols == {"PyModule_Create"}
+    assert required_symbols == {"PyModule_Create2"}
     assert "PyArray_NDIM" not in required_symbols
     assert "NPY_ARRAY_BEHAVED_NS" not in required_symbols
 

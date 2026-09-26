@@ -581,7 +581,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     extension_metadata_parser.add_argument(
         "--out-dir",
         required=True,
-        help="Output directory for python3.pc, meson.cross, and metadata sidecar.",
+        help="Output directory for python3.pc, meson.cross, meson.native, and metadata sidecar.",
     )
     extension_metadata_parser.add_argument(
         "--python-version",

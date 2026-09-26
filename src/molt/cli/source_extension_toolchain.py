@@ -19,6 +19,8 @@ from molt.cli.compiler_target import (
     compiler_target_triple,
     is_zig_compiler_command,
     validate_compiler_target,
+    source_extension_compiler_dialect,
+    SourceExtensionCompilerDialect,
 )
 from molt.cli.llvm_wasi_tools import (
     LlvmToolRole,
@@ -32,9 +34,14 @@ from molt.toolchain_identity import (
     expand_user_path,
     resolve_explicit_tool_command,
 )
-from molt.cli.source_extension_target import SourceExtensionTargetPlan
+from molt.cli.source_extension_target import (
+    SourceExtensionTargetPlan,
+    resolve_source_extension_target_plan,
+    SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION,
+)
 from molt.cli.source_extension_compiler_inputs import (
     compiler_sysroot_arguments,
+    source_extension_compiler_environment,
     validate_source_extension_compiler_command,
 )
 from molt.cli.source_extension_link_inputs import (
@@ -90,6 +97,7 @@ class _SourceExtensionTargetMetadata:
     pkg_config_dir: Path
     python_pc: Path
     meson_cross: Path
+    meson_native: Path
     sidecar: Path
     digest: str
     payload: dict[str, Any]
@@ -140,6 +148,9 @@ def _probe_wasm_source_extension_compiler(
     target_plan: SourceExtensionTargetPlan,
     environment: Mapping[str, str] | None = None,
 ) -> str | None:
+    environment = source_extension_compiler_environment(
+        os.environ if environment is None else environment
+    )
     validate_source_extension_compiler_command(
         compiler_cmd,
         role="c",
@@ -179,7 +190,7 @@ def _probe_wasm_source_extension_compiler(
                 text=True,
                 timeout=20,
                 check=False,
-                env=None if environment is None else dict(environment),
+                env=environment,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return str(exc)
@@ -330,7 +341,9 @@ def _resolve_source_extension_wasm_toolchain(
 ) -> _SourceExtensionWasmToolchain:
     if not target_plan.is_wasm:
         raise ValueError("WASM toolchain resolution requires a WASM target plan")
-    environment = os.environ if environment is None else environment
+    environment = source_extension_compiler_environment(
+        os.environ if environment is None else environment
+    )
     raw_wasm_cc = executable_environment_value(environment, "MOLT_WASM_CC").strip()
     if raw_wasm_cc:
         return _resolve_env_wasm_compiler(
@@ -594,6 +607,11 @@ def _compiler_command_with_target(
     target = compiler_target_triple(command, target)
     if validate_compiler_target(command, target) or not explicit_target:
         return command
+    if (
+        source_extension_compiler_dialect(command)
+        is SourceExtensionCompilerDialect.CLANG_CL
+    ):
+        return (*command, f"--target={target}")
     return (*command, "-target", target)
 
 
@@ -646,8 +664,11 @@ def _resolve_source_extension_native_toolchain(
 ) -> _ResolvedSourceExtensionToolchain:
     if target_plan.is_wasm or target_plan.native_target is None:
         raise ValueError("native toolchain resolution requires a native target plan")
-    environment = os.environ if environment is None else environment
+    environment = source_extension_compiler_environment(
+        os.environ if environment is None else environment
+    )
     cross_target = target_plan.compiler_target_triple
+    msvc = target_plan.target_triple.endswith("-windows-msvc")
     compiler_kind: str
     if cross_target is not None:
         raw_cross_cc = executable_environment_value(
@@ -660,6 +681,16 @@ def _resolve_source_extension_native_toolchain(
                 environment=environment,
             )
             compiler_kind = "molt_cross_cc"
+        elif msvc:
+            candidates = llvm_tool_candidates(
+                "cc", environment=environment, target_triple=target_plan.target_triple
+            )
+            if not candidates:
+                raise ValueError(
+                    "Windows MSVC source-extension builds require clang-cl"
+                )
+            c_base = (str(candidates[0]),)
+            compiler_kind = "clang-cl"
         else:
             try:
                 zig = resolve_explicit_tool_command(
@@ -679,13 +710,15 @@ def _resolve_source_extension_native_toolchain(
                 configured_cc, label="CC", environment=environment
             )
         else:
-            candidates = llvm_tool_candidates("cc", environment=environment)
+            candidates = llvm_tool_candidates(
+                "cc", environment=environment, target_triple=target_plan.target_triple
+            )
             if not candidates:
                 raise ValueError(
                     "native source-extension builds require a native Clang or explicit CC"
                 )
             c_base = (str(candidates[0]),)
-        compiler_kind = "host"
+        compiler_kind = "host-clang-cl" if msvc else "host"
 
     c_command = _compiler_command_with_target(
         c_base,
@@ -718,6 +751,11 @@ def _resolve_source_extension_native_toolchain(
             target_triple=target_plan.target_triple,
             require_explicit_target=cross_target is not None,
         )
+    elif (
+        source_extension_compiler_dialect(c_command)
+        is SourceExtensionCompilerDialect.CLANG_CL
+    ):
+        explicit_tools["cxx"] = c_command
     elif is_zig_compiler_command(c_command):
         explicit_tools["cxx"] = (
             c_command[0],
@@ -762,6 +800,14 @@ def _resolve_source_extension_native_toolchain(
             "native source-extension tool family is incomplete; missing: "
             + ", ".join(missing)
         )
+    for role in ("c", "cpp"):
+        if role in commands:
+            validate_source_extension_compiler_command(
+                commands[role],
+                role=role,
+                target_triple=target_plan.target_triple,
+                require_explicit_target=cross_target is not None,
+            )
     return _ResolvedSourceExtensionToolchain(
         target_plan=target_plan,
         compiler_kind=compiler_kind,
@@ -781,7 +827,9 @@ def _resolve_source_extension_toolchain(
     environment: Mapping[str, str] | None = None,
 ) -> _ResolvedSourceExtensionToolchain:
     """Resolve every tool and probe under the same selected environment."""
-    environment = dict(os.environ if environment is None else environment)
+    environment = source_extension_compiler_environment(
+        os.environ if environment is None else environment
+    )
     if not target_plan.is_wasm:
         return _resolve_source_extension_native_toolchain(
             target_plan, environment=environment
@@ -907,12 +955,13 @@ def _python_pc_text(
 def _meson_cross_text(
     *,
     target_plan: SourceExtensionTargetPlan,
-    pkg_config_dir: Path,
-    toolchain: _ResolvedSourceExtensionToolchain,
-    compiler_builtins: Path | None,
-    include_dirs: tuple[Path, ...],
+    pkg_config_dir: str | Path,
+    commands: Mapping[str, tuple[str, ...]],
+    compiler_builtins: str | Path | None,
+    include_dirs: tuple[str | Path, ...],
 ) -> str:
-    commands = toolchain.commands
+    # These paths are serialized producer facts. Receipt verification may run
+    # on another host, where Path.resolve() would change their meaning.
     binaries = "\n".join(
         f"{name} = {_meson_array(command)}"
         for name, command in sorted(commands.items())
@@ -921,17 +970,33 @@ def _meson_cross_text(
     property_lines = "\n".join(
         f"{name} = {_meson_value(value)}" for name, value in sorted(properties.items())
     )
+    include_flags = {
+        role: "/I"
+        if source_extension_compiler_dialect(commands[role])
+        is SourceExtensionCompilerDialect.CLANG_CL
+        else "-I"
+        for role in ("c", "cpp")
+        if role in commands
+    }
     built_in_options = [
-        f"pkg_config_path = {_meson_array([_pc_path(pkg_config_dir)])}",
-        f"c_args = {_meson_array(tuple(f'-I{_pc_path(path)}' for path in include_dirs))}",
-        f"cpp_args = {_meson_array(tuple(f'-I{_pc_path(path)}' for path in include_dirs))}",
+        f"pkg_config_path = {_meson_array([_meson_serialized_path(pkg_config_dir)])}",
+        *(
+            f"{role}_args = "
+            + _meson_array(
+                tuple(f"{flag}{_meson_serialized_path(path)}" for path in include_dirs)
+            )
+            for role, flag in include_flags.items()
+        ),
     ]
     if target_plan.target_triple == "wasm32-wasip1":
-        assert compiler_builtins is not None
+        if compiler_builtins is None:
+            raise ValueError("WASI Meson cross file requires compiler-builtins")
         built_in_options.extend(
             (
                 "c_link_args = "
-                + _meson_array(("-nodefaultlibs", "-lc", _pc_path(compiler_builtins))),
+                + _meson_array(
+                    ("-nodefaultlibs", "-lc", _meson_serialized_path(compiler_builtins))
+                ),
                 "cpp_link_args = "
                 + _meson_array(
                     (
@@ -939,7 +1004,7 @@ def _meson_cross_text(
                         "-lc",
                         "-lc++",
                         "-lc++abi",
-                        _pc_path(compiler_builtins),
+                        _meson_serialized_path(compiler_builtins),
                     )
                 ),
             )
@@ -951,6 +1016,8 @@ def _meson_cross_text(
                 f"cpp_link_args = {_meson_array(('-nostdlib',))}",
             )
         )
+    else:
+        built_in_options.extend(("c_link_args = []", "cpp_link_args = []"))
     host_machine = _source_extension_meson_host_machine(target_plan)
     host_lines = "\n".join(
         f"{name} = {_meson_quote(value)}" for name, value in host_machine.items()
@@ -964,6 +1031,22 @@ def _meson_cross_text(
     )
 
 
+def _meson_serialized_path(path: str | Path) -> str:
+    return str(path).replace("\\", "/")
+
+
+def _meson_native_text(*, commands: Mapping[str, tuple[str, ...]]) -> str:
+    return (
+        "[binaries]\n"
+        + "\n".join(
+            f"{role} = {_meson_array(command)}"
+            for role, command in sorted(commands.items())
+        )
+        + "\n\n[built-in options]\nc_args = []\ncpp_args = []\n"
+        "c_link_args = []\ncpp_link_args = []\n"
+    )
+
+
 def _materialize_source_extension_target_metadata(
     *,
     molt_root: Path,
@@ -972,6 +1055,7 @@ def _materialize_source_extension_target_metadata(
     python_version: str,
     abi_tier: str = "source-compat",
 ) -> tuple[_SourceExtensionTargetMetadata | None, list[str]]:
+    environment = dict(os.environ)
     try:
         normalized_python_version = _normalize_source_extension_python_version(
             python_version
@@ -979,7 +1063,9 @@ def _materialize_source_extension_target_metadata(
     except ValueError as exc:
         return None, [str(exc)]
     try:
-        toolchain = _resolve_source_extension_toolchain(target_plan)
+        toolchain = _resolve_source_extension_toolchain(
+            target_plan, environment=environment
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         return None, [
             "source-extension target metadata requires a valid canonical "
@@ -993,6 +1079,7 @@ def _materialize_source_extension_target_metadata(
             python_version=normalized_python_version,
             abi_tier=abi_tier,
             toolchain=toolchain,
+            environment=environment,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         return None, [
@@ -1009,6 +1096,7 @@ def _materialize_source_extension_target_metadata_with_toolchain(
     python_version: str,
     abi_tier: str,
     toolchain: _ResolvedSourceExtensionToolchain,
+    environment: Mapping[str, str] | None = None,
 ) -> tuple[_SourceExtensionTargetMetadata | None, list[str]]:
     if toolchain.target_plan != target_plan:
         raise ValueError(
@@ -1034,6 +1122,7 @@ def _materialize_source_extension_target_metadata_with_toolchain(
     pkg_config_dir = resolved_out / "pkgconfig"
     python_pc = pkg_config_dir / "python3.pc"
     meson_cross = resolved_out / "meson.cross"
+    meson_native = resolved_out / "meson.native"
     sidecar = resolved_out / "source-extension-target-metadata.json"
     python_header = _source_extension_python_header_for_abi_tier(
         molt_root=molt_root,
@@ -1050,6 +1139,30 @@ def _materialize_source_extension_target_metadata_with_toolchain(
             "WASI source-extension target metadata requires the target Rust "
             "compiler-builtins archive for Meson configure links"
         ]
+    host_plan = resolve_source_extension_target_plan("native")
+    if host_plan.target_triple == target_plan.target_triple:
+        build_toolchain = toolchain
+    else:
+        # Build-machine generators cannot inherit the cross compiler or an
+        # ambient CC/CXX (Meson otherwise discovers arbitrary GCC/cache tools).
+        build_environment = {
+            key: value
+            for key, value in (
+                os.environ if environment is None else environment
+            ).items()
+            if key.upper()
+            not in {"CC", "CXX", "MOLT_CROSS_CC", "MOLT_CROSS_CXX", "MOLT_WASM_CC"}
+        }
+        build_toolchain = _resolve_source_extension_native_toolchain(
+            host_plan, environment=build_environment
+        )
+    for machine, resolved in (("target", toolchain), ("build", build_toolchain)):
+        missing = sorted({"c", "cpp", "ar", "nm"} - resolved.commands.keys())
+        if missing:
+            raise ValueError(
+                f"Meson {machine}-machine metadata requires explicit tool roles: "
+                + ", ".join(missing)
+            )
     pkg_config_dir.mkdir(parents=True, exist_ok=True)
     python_pc.write_text(
         _python_pc_text(
@@ -1059,18 +1172,22 @@ def _materialize_source_extension_target_metadata_with_toolchain(
         ),
         encoding="utf-8",
     )
-    meson_cross.write_text(
+    meson_cross.write_bytes(
         _meson_cross_text(
             target_plan=target_plan,
             pkg_config_dir=pkg_config_dir,
-            toolchain=toolchain,
-            compiler_builtins=compiler_builtins,
+            commands=toolchain.commands,
+            compiler_builtins=(
+                compiler_builtins.resolve() if compiler_builtins is not None else None
+            ),
             include_dirs=include_dirs,
-        ),
-        encoding="utf-8",
+        ).encode("utf-8"),
+    )
+    meson_native.write_bytes(
+        _meson_native_text(commands=build_toolchain.commands).encode("utf-8")
     )
     payload: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION,
         "kind": "molt-source-extension-target-metadata",
         "target_triple": resolved_target,
         "target": {
@@ -1111,12 +1228,22 @@ def _materialize_source_extension_target_metadata_with_toolchain(
                 else {}
             ),
         },
+        "build_toolchain": {
+            "target_triple": host_plan.target_triple,
+            "compiler_kind": build_toolchain.compiler_kind,
+            "tools": build_toolchain.tools.metadata(),
+            "commands": {
+                role: list(command)
+                for role, command in sorted(build_toolchain.commands.items())
+            },
+        },
         "meson_cross_properties": meson_cross_properties,
         "paths": {
             "out_dir": str(resolved_out),
             "pkg_config_dir": str(pkg_config_dir),
             "python_pc": str(python_pc),
             "meson_cross": str(meson_cross),
+            "meson_native": str(meson_native),
             "sidecar": str(sidecar),
         },
         "env": {
@@ -1126,6 +1253,7 @@ def _materialize_source_extension_target_metadata_with_toolchain(
         "digests": {
             "python_pc_sha256": _sha256_file(python_pc),
             "meson_cross_sha256": _sha256_file(meson_cross),
+            "meson_native_sha256": _sha256_file(meson_native),
         },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1141,6 +1269,7 @@ def _materialize_source_extension_target_metadata_with_toolchain(
             pkg_config_dir=pkg_config_dir,
             python_pc=python_pc,
             meson_cross=meson_cross,
+            meson_native=meson_native,
             sidecar=sidecar,
             digest=payload["digest"],
             payload=payload,

@@ -75,6 +75,10 @@ from molt.cli.source_extension_reproducibility import (
     _canonicalize_locations,
     _canonicalize_meson_metadata,
     _require_location_neutral,
+    require_source_extension_machine_file_location_neutral,
+)
+from molt.cli.source_extension_compiler_inputs import (
+    source_extension_compiler_environment,
 )
 from molt.cli.source_extension_manifest_codec import (
     _compact_source_extension_manifest,
@@ -109,6 +113,7 @@ from molt.cli.source_extension_set_registry import (
     source_extension_set_root,
     verify_source_extension_abi_headers,
     verify_source_extension_checkout,
+    validate_source_extension_meson_setup_args,
 )
 from molt.cli.source_extension_set_validation_target import (
     _source_extension_tool_role_contract,
@@ -300,7 +305,7 @@ def _run_process(
     return process_guard.run_completed_command(
         list(argv),
         cwd=cwd,
-        env=env,
+        env=source_extension_compiler_environment(os.environ if env is None else env),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -777,10 +782,15 @@ def _run_meson_setup(
     source_root: Path,
     build_root: Path,
     meson_cross_files: Sequence[Path],
+    meson_native: Path,
     setup_args: Sequence[str],
     driver: _SourceMesonDriver,
     backend: _SourceNinjaDriver,
 ) -> None:
+    try:
+        setup_args = validate_source_extension_meson_setup_args(setup_args)
+    except ValueError as exc:
+        raise SourceExtensionProducerError(str(exc)) from exc
     argv: list[str] = [
         *driver.command,
         "setup",
@@ -789,6 +799,7 @@ def _run_meson_setup(
     ]
     for meson_cross in meson_cross_files:
         argv.extend(("--cross-file", str(meson_cross)))
+    argv.extend(("--native-file", str(meson_native)))
     # Meson's default install prefix is a producer host path (`c:/` on
     # Windows, `/usr/local` elsewhere) that leaks into every install_filename
     # of the build metadata. The seal targets a POSIX host, so the prefix is
@@ -1708,7 +1719,12 @@ def _stage_canonical_metadata_file(
         payload = json.loads(text)
     except json.JSONDecodeError:
         canonical = _canonicalize_location_string(text, location_roots)
-        _require_location_neutral(
+        validate_locations = (
+            require_source_extension_machine_file_location_neutral
+            if source.suffix in {".cross", ".native"}
+            else _require_location_neutral
+        )
+        validate_locations(
             canonical,
             authority=f"canonical build metadata {source}",
         )
@@ -1782,13 +1798,15 @@ def _stage_build_metadata(
         raise SourceExtensionProducerError("canonical target metadata is not an object")
     python_pc = staged.get("target/pkgconfig/python3.pc")
     meson_cross = staged.get("target/meson.cross")
-    if python_pc is None or meson_cross is None:
+    meson_native = staged.get("target/meson.native")
+    if python_pc is None or meson_cross is None or meson_native is None:
         raise SourceExtensionProducerError(
-            "canonical target metadata lost python3.pc or meson.cross"
+            "canonical target metadata lost python3.pc, meson.cross or meson.native"
         )
     canonical_target_metadata["digests"] = {
         "python_pc_sha256": _sha256_file(python_pc),
         "meson_cross_sha256": _sha256_file(meson_cross),
+        "meson_native_sha256": _sha256_file(meson_native),
     }
     canonical_target_metadata.pop("digest", None)
     encoded = json.dumps(
@@ -1934,8 +1952,13 @@ def _producer_location_roots(
         )
     )
     toolchain_prefixes: list[tuple[PurePath, str]] = []
-    toolchain = metadata_payload.get("toolchain")
-    if isinstance(toolchain, Mapping):
+    for family, namespace in (
+        ("toolchain", "@llvm"),
+        ("build_toolchain", "@build-llvm"),
+    ):
+        toolchain = metadata_payload.get(family)
+        if not isinstance(toolchain, Mapping):
+            continue
         tools = toolchain.get("tools")
         if isinstance(tools, Mapping):
             tool_paths: dict[str, Path] = {}
@@ -1948,12 +1971,14 @@ def _producer_location_roots(
             tool_parents = set(tool_paths.values())
             if len(tool_parents) == 1:
                 parent = next(iter(tool_parents))
-                roots.append((parent, "@llvm-bin"))
-                toolchain_prefixes.append((parent.parent, "@llvm-prefix"))
+                roots.append((parent, f"{namespace}-bin"))
+                toolchain_prefixes.append((parent.parent, f"{namespace}-prefix"))
             else:
                 for role, parent in tool_paths.items():
-                    roots.append((parent, f"@llvm-{role}-bin"))
-                    toolchain_prefixes.append((parent.parent, f"@llvm-{role}-prefix"))
+                    roots.append((parent, f"{namespace}-{role}-bin"))
+                    toolchain_prefixes.append(
+                        (parent.parent, f"{namespace}-{role}-prefix")
+                    )
         archives = toolchain.get("link_probe_archives")
         compiler_builtins = (
             archives.get("compiler_builtins") if isinstance(archives, Mapping) else None
@@ -2482,6 +2507,7 @@ def _build_source_extension_set(
             source_root=source_root,
             build_root=resolved_build_root,
             meson_cross_files=meson_cross_files,
+            meson_native=metadata.meson_native,
             setup_args=extension_set.meson_setup_args,
             driver=meson_driver,
             backend=ninja_driver,
