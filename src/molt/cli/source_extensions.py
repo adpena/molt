@@ -8,7 +8,7 @@ import shlex
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES,
@@ -28,10 +28,19 @@ from molt.cli.compiler_target import (
     COMPILER_OWNED_OPTIONS,
 )
 from molt.cli.source_extension_target import (
-    source_extension_link_dialect,
     source_extension_target_is_wasm,
 )
-from molt.cli.source_extension_link_arguments import source_extension_link_arguments
+from molt.cli.source_extension_link_arguments import (
+    SourceExtensionLinkArgument,
+    SourceExtensionLinkScope,
+    source_extension_link_arguments,
+)
+from molt.cli.source_extension_link_projection import (
+    SourceExtensionLinkProjection,
+    SourceExtensionLinkSpan,
+    SourceExtensionSourceArchiveOperand,
+)
+from molt.cli.source_extension_link_requirements import SourceExtensionLinkLoadingPolicy
 from molt.cli.source_extension_python_provider import SourceExtensionPythonProvider
 from molt.cli.source_extension_language import (
     SourceExtensionLanguage,
@@ -324,7 +333,6 @@ class _SourceExtensionCompileUnit:
     compiler: tuple[str, ...]
     include_dirs: tuple[Path, ...]
     compile_args: tuple[str, ...]
-    force_include: bool = False
 
     def manifest_payload(self, *, build_root: Path) -> dict[str, Any]:
         return {
@@ -333,7 +341,6 @@ class _SourceExtensionCompileUnit:
             "producer_object_path": self.producer_object_path.resolve()
             .relative_to(build_root.resolve())
             .as_posix(),
-            "force_include": self.force_include,
             "generated": self.generated,
             "language": self.language,
             "compiler": list(self.compiler),
@@ -362,11 +369,8 @@ class _SourceExtensionBuildPlan:
     compile_units: tuple[_SourceExtensionCompileUnit, ...]
     include_dirs: tuple[Path, ...]
     compile_args: tuple[str, ...]
-    link_args: tuple[str, ...]
+    link_projection: SourceExtensionLinkProjection
     digest: str
-    consumed_forced_link_args: tuple[str, ...] = ()
-    producer_link_args: tuple[str, ...] = ()
-    lazy_static_target_ids: tuple[str, ...] = ()
     dependencies_path: Path | None = None
     dependencies_sha256: str | None = None
     python_provider: Mapping[str, Any] | None = None
@@ -401,10 +405,9 @@ class _SourceExtensionBuildPlan:
             ],
             "include_dirs": [str(path) for path in self.include_dirs],
             "compile_args": list(self.compile_args),
-            "link_args": list(self.link_args),
-            "consumed_forced_link_args": list(self.consumed_forced_link_args),
-            "producer_link_args": list(self.producer_link_args),
-            "lazy_static_target_ids": list(self.lazy_static_target_ids),
+            "link_projection": self.link_projection.manifest_payload(
+                build_root=self.build_root
+            ),
             "dependencies": str(self.dependencies_path)
             if self.dependencies_path
             else None,
@@ -605,10 +608,9 @@ def _source_extension_build_plan_digest(plan: _SourceExtensionBuildPlan) -> str:
         ],
         "include_dirs": [str(path) for path in plan.include_dirs],
         "compile_args": list(plan.compile_args),
-        "link_args": list(plan.link_args),
-        "consumed_forced_link_args": list(plan.consumed_forced_link_args),
-        "producer_link_args": list(plan.producer_link_args),
-        "lazy_static_target_ids": list(plan.lazy_static_target_ids),
+        "link_projection": plan.link_projection.manifest_payload(
+            build_root=plan.build_root
+        ),
         "dependencies_sha256": plan.dependencies_sha256,
         "python_provider": plan.python_provider,
     }
@@ -884,6 +886,7 @@ def _load_compile_command_units(
     *,
     required_sources: set[Path] | None = None,
     target_output_roots: Sequence[Path] = (),
+    object_outputs: Collection[Path] | None = None,
 ) -> tuple[
     dict[Path, _CompileCommandUnit] | None,
     list[str],
@@ -910,6 +913,19 @@ def _load_compile_command_units(
         else None
     )
     owned_output_roots = _dedupe_paths([root.resolve() for root in target_output_roots])
+    exact_outputs = (
+        {path.resolve() for path in object_outputs}
+        if object_outputs is not None
+        else set()
+    )
+
+    def owns_output(path: Path) -> bool:
+        return (
+            not (owned_output_roots or object_outputs is not None)
+            or path in exact_outputs
+            or any(_path_is_within(path, root) for root in owned_output_roots)
+        )
+
     commands_by_output: dict[Path, _CompileCommandUnit] = {}
     errors: list[str] = []
     for entry in payload:
@@ -921,30 +937,40 @@ def _load_compile_command_units(
             if isinstance(raw_directory, str) and raw_directory.strip()
             else compile_commands_path.parent.resolve()
         )
-        raw_file = entry.get("file")
-        if not isinstance(raw_file, str) or not raw_file.strip():
-            if required_source_paths is None:
-                errors.append("compile_commands.json entry is missing non-empty 'file'")
-            continue
-        source_path = _resolve_compile_command_path(raw_file, directory=directory)
-        arguments = _compile_command_arguments(entry)
-        if arguments is None:
-            errors.append(f"compile command for {source_path} lacks arguments/command")
-            continue
-        compiler, _compiler_args = _compile_command_compiler_and_args(arguments)
-        try:
-            command_output_path = _compile_command_output_path(
-                arguments, directory=directory
-            )
-        except ValueError as exc:
-            errors.append(f"compile command for {source_path}: {exc}")
-            continue
         raw_output = entry.get("output")
         declared_output_path = (
             _resolve_compile_command_path(raw_output, directory=directory)
             if isinstance(raw_output, str) and raw_output.strip()
             else None
         )
+        # A declared output is the database row identity. Do not interpret an
+        # unrelated variant's command, even when it compiles the same source.
+        if declared_output_path is not None and not owns_output(declared_output_path):
+            continue
+        raw_file = entry.get("file")
+        if not isinstance(raw_file, str) or not raw_file.strip():
+            if declared_output_path is not None or required_source_paths is None:
+                errors.append("compile_commands.json entry is missing non-empty 'file'")
+            continue
+        source_path = _resolve_compile_command_path(raw_file, directory=directory)
+        # Without an output identity, errors remain relevant for any source
+        # that may produce a selected unit; repeated variants must not vanish.
+        possibly_selected = (
+            declared_output_path is not None
+            or required_source_paths is None
+            or source_path in required_source_paths
+        )
+        try:
+            arguments = _compile_command_arguments(entry)
+            if not arguments:
+                raise ValueError("lacks arguments/command")
+            command_output_path = _compile_command_output_path(
+                arguments, directory=directory
+            )
+        except ValueError as exc:
+            if possibly_selected:
+                errors.append(f"compile command for {source_path}: {exc}")
+            continue
         if (
             command_output_path is not None
             and declared_output_path is not None
@@ -957,14 +983,14 @@ def _load_compile_command_units(
             continue
         output_path = declared_output_path or command_output_path
         if output_path is None:
-            errors.append(
-                f"compile_commands.json entry has no object output for {source_path}"
-            )
+            if possibly_selected:
+                errors.append(
+                    f"compile_commands.json entry has no object output for {source_path}"
+                )
             continue
-        if owned_output_roots and not any(
-            _path_is_within(output_path, root) for root in owned_output_roots
-        ):
+        if not owns_output(output_path):
             continue
+        compiler, _compiler_args = _compile_command_compiler_and_args(arguments)
         try:
             semantic_args = _compile_command_semantic_args(
                 arguments,
@@ -1122,11 +1148,17 @@ def _load_ninja_build_all_inputs(
 class _MesonStaticLibraryProjection:
     targets: tuple[Mapping[str, Any], ...]
     excluded_targets: tuple[Mapping[str, Any], ...]
-    forced_target_ids: frozenset[str]
-    link_args: tuple[str, ...]
-    consumed_forced_args: tuple[str, ...]
-    producer_link_args: tuple[str, ...]
-    lazy_static_target_ids: tuple[str, ...]
+    ordered_items: tuple[_MesonLinkTemplateItem, ...]
+    archive_edges: Mapping[Path, tuple[Path, ...]]
+
+
+@dataclass(frozen=True)
+class _MesonLinkTemplateItem:
+    span: SourceExtensionLinkArgument
+    disposition: Literal["external", "product", "source", "excluded"]
+    target_id: str | None = None
+    archive_output: Path | None = None
+    loading: SourceExtensionLinkLoadingPolicy | None = None
 
 
 class _MesonOutputIdentity:
@@ -1205,6 +1237,16 @@ class _MesonOutputIdentity:
         )
         return self._unique(matches, operand=operand)
 
+    def archive_output(self, target: Mapping[str, Any]) -> Path:
+        outputs = _meson_target_output_paths(
+            target.get("filename"), build_root=self.build_root
+        )
+        if len(outputs) != 1:
+            raise ValueError(
+                f"Meson static target {target.get('id')!r} must have one archive output"
+            )
+        return outputs[0]
+
 
 def _meson_static_library_projection(
     *,
@@ -1213,15 +1255,13 @@ def _meson_static_library_projection(
     build_root: Path,
     exclude_linked_static_libraries: Sequence[str] = (),
 ) -> _MesonStaticLibraryProjection:
-    """Fold only metadata-owned outputs and preserve ordered external operands.
+    """Resolve metadata-owned outputs without losing producer operand order.
 
-    Forced archives become explicit source-object roots. Lazy target identities
-    remain as provenance for the canonical typed final-link admission gate.
+    Object membership is bound later, after compile-command ownership is known.
     """
     identity = _MesonOutputIdentity(payload, build_root=build_root)
     linked: list[Mapping[str, Any]] = []
     linked_ids: set[int] = set()
-    forced_ids: set[int] = set()
     excluded_ids: set[int] = set()
     for exclusion in exclude_linked_static_libraries:
         if not isinstance(exclusion, str) or not exclusion.strip():
@@ -1239,46 +1279,42 @@ def _meson_static_library_projection(
             )
         excluded_ids.add(id(excluded))
 
-    def append_target(target: Mapping[str, Any], *, forced: bool) -> None:
+    def append_target(target: Mapping[str, Any]) -> None:
         if id(target) not in linked_ids:
             linked_ids.add(id(target))
             linked.append(target)
-        if forced:
-            forced_ids.add(id(target))
 
-    retained: list[str] = []
-    consumed_forced_args: list[str] = []
-    whole_archive = False
+    ordered_items: list[_MesonLinkTemplateItem] = []
+    scope = SourceExtensionLinkScope()
     producer_link_args = _meson_link_args(primary_target)
     for span in source_extension_link_arguments(producer_link_args):
+        scope.advance(span)
         if span.kind == "product":
+            ordered_items.append(_MesonLinkTemplateItem(span, "product"))
             continue
         if span.kind == "framework":
-            retained.extend(span.arguments)
-            continue
-        if span.kind == "scope" and span.value == "--whole-archive":
-            if whole_archive:
-                raise ValueError("Meson whole-archive scopes cannot be nested")
-            whole_archive = True
-            retained.extend(span.arguments)
-            continue
-        if span.kind == "scope" and span.value == "--no-whole-archive":
-            if not whole_archive:
-                raise ValueError("Meson whole-archive end has no start")
-            whole_archive = False
-            retained.extend(span.arguments)
+            ordered_items.append(_MesonLinkTemplateItem(span, "external"))
             continue
         # Search directives and linker flags are not positive output custody.
         explicit_input = span.kind in {"forced", "input"}
         owner = identity.resolve(span.value) if explicit_input else None
         if owner is not None and str(owner.get("type", "")).strip() == "static library":
-            append_target(owner, forced=whole_archive or span.kind == "forced")
-            if span.kind == "forced":
-                consumed_forced_args.extend(span.arguments)
+            append_target(owner)
+            archive_output = identity.archive_output(owner)
+            ordered_items.append(
+                _MesonLinkTemplateItem(
+                    span,
+                    "excluded" if id(owner) in excluded_ids else "source",
+                    str(owner["id"]),
+                    archive_output,
+                    SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+                    if scope.whole_archive or span.kind == "forced"
+                    else SourceExtensionLinkLoadingPolicy.DEFAULT,
+                )
+            )
             continue
-        retained.extend(span.arguments)
-    if whole_archive:
-        raise ValueError("Meson whole-archive start has no end")
+        ordered_items.append(_MesonLinkTemplateItem(span, "external"))
+    scope.finish()
 
     # Aggregate archives carry object ownership in Ninja, not intro source lists.
     static_targets = [
@@ -1287,7 +1323,20 @@ def _meson_static_library_projection(
         if isinstance(target, Mapping)
         and str(target.get("type", "")).strip() == "static library"
     ]
-    archive_edges = _load_ninja_build_explicit_inputs(build_root)
+    ninja_edges = _load_ninja_build_explicit_inputs(build_root)
+    archive_edges: dict[Path, tuple[Path, ...]] = {}
+    for item in ordered_items:
+        if item.disposition != "source" or item.archive_output not in ninja_edges:
+            continue
+        assert item.archive_output is not None
+        members = ninja_edges[item.archive_output]
+        for member in members:
+            if member.suffix.lower() not in _NINJA_OBJECT_SUFFIXES:
+                raise ValueError(
+                    f"Meson source archive {item.archive_output} has unsupported "
+                    f"explicit non-object member: {member}"
+                )
+        archive_edges[item.archive_output] = members
     object_roots = [
         (root, target)
         for target in static_targets
@@ -1296,45 +1345,20 @@ def _meson_static_library_projection(
         )
     ]
     queue = list(linked)
-    expanded: set[tuple[int, bool]] = set()
+    expanded: set[int] = set()
     for target in queue:
-        forced = id(target) in forced_ids
-        state = (id(target), forced)
-        if state in expanded or id(target) in excluded_ids:
+        if id(target) in expanded or id(target) in excluded_ids:
             continue
-        expanded.add(state)
+        expanded.add(id(target))
         outputs = _meson_target_output_paths(
             target.get("filename"), build_root=build_root
         )
         own_roots = _meson_target_object_roots(
             target.get("filename"), build_root=build_root
         )
-        declared_sources = any(
-            _is_compilable_source_path(Path(str(source)))
-            for group in target.get("target_sources") or ()
-            if isinstance(group, Mapping)
-            for field in ("sources", "generated_sources")
-            for source in group.get(field) or ()
-        )
-        if (
-            forced
-            and not declared_sources
-            and not any(archive_edges.get(output) for output in outputs)
-        ):
-            raise ValueError(
-                "Meson forced aggregate has neither declared source members nor "
-                "Ninja member custody: " + ", ".join(str(output) for output in outputs)
-            )
         for output in outputs:
             for member in archive_edges.get(output, ()):
-                if member.suffix.lower() not in _NINJA_OBJECT_SUFFIXES:
-                    continue
                 if any(_path_is_within(member, root) for root in own_roots):
-                    if forced and not declared_sources:
-                        raise ValueError(
-                            "Meson forced member lacks declared source custody: "
-                            + str(member)
-                        )
                     continue
                 owners: list[Mapping[str, Any]] = []
                 for root, candidate in object_roots:
@@ -1344,13 +1368,8 @@ def _meson_static_library_projection(
                         owners.append(candidate)
                 owner = identity._unique(owners, operand=str(member))
                 if owner is None:
-                    if forced:
-                        raise ValueError(
-                            "Meson forced member has no declared source owner: "
-                            + str(member)
-                        )
                     continue
-                append_target(owner, forced=forced)
+                append_target(owner)
                 queue.append(owner)
 
     targets = tuple(target for target in linked if id(target) not in excluded_ids)
@@ -1359,54 +1378,9 @@ def _meson_static_library_projection(
         excluded_targets=tuple(
             target for target in linked if id(target) in excluded_ids
         ),
-        forced_target_ids=frozenset(
-            str(target["id"]) for target in targets if id(target) in forced_ids
-        ),
-        link_args=tuple(retained),
-        consumed_forced_args=tuple(consumed_forced_args),
-        producer_link_args=producer_link_args,
-        lazy_static_target_ids=tuple(
-            str(target["id"]) for target in targets if id(target) not in forced_ids
-        ),
+        ordered_items=tuple(ordered_items),
+        archive_edges=archive_edges,
     )
-
-
-def _filter_meson_source_group_to_existing(
-    group: Mapping[str, Any],
-    *,
-    source_root: Path,
-    build_root: Path,
-) -> tuple[dict[str, Any], tuple[Path, ...]]:
-    """Copy a linked static-lib source group keeping only on-disk source files.
-
-    Generated sources of a linked static library may be transient build
-    artifacts already cleaned from the build dir; those are dropped so a linked
-    lib contributes exactly the translation units still present on disk. Non
-    source-file keys (language/compiler/parameters/linker) are preserved so the
-    compile-unit metadata for the surviving sources stays intact. Dropped
-    generated sources are returned as source-plan diagnostics so a cleaned unit
-    is explicit manifest evidence, never a silent producer-side skip.
-    """
-    filtered: dict[str, Any] = dict(group)
-    skipped_generated_sources: list[Path] = []
-    for key, prefer_build_root in (("sources", False), ("generated_sources", True)):
-        raw_values = group.get(key)
-        if not isinstance(raw_values, (list, tuple)):
-            continue
-        kept: list[Any] = []
-        for raw_source in raw_values:
-            source_path = _resolve_meson_plan_artifact_path(
-                raw_source,
-                source_root=source_root,
-                build_root=build_root,
-                prefer_build_root=prefer_build_root,
-            )
-            if source_path.exists():
-                kept.append(raw_source)
-            elif key == "generated_sources":
-                skipped_generated_sources.append(source_path.resolve())
-        filtered[key] = kept
-    return filtered, _dedupe_paths(skipped_generated_sources)
 
 
 def _load_meson_intro_targets_source_extension_plan(
@@ -1498,33 +1472,16 @@ def _load_meson_intro_targets_source_extension_plan(
     except ValueError as exc:
         return None, [str(exc)]
     linked_static_targets = projection.targets
-    link_args = projection.link_args
     provider_receipt = None
     if python_provider is not None:
-        link_args, provider_receipt = python_provider.project(link_args)
-    for linked_target in linked_static_targets:
-        if str(linked_target["id"]) not in projection.forced_target_ids:
-            continue
-        for group in linked_target.get("target_sources") or ():
-            if not isinstance(group, Mapping):
-                continue
-            for field, prefer_build in (
-                ("sources", False),
-                ("generated_sources", True),
-            ):
-                for raw_source in group.get(field) or ():
-                    source_path = _resolve_meson_plan_artifact_path(
-                        raw_source,
-                        source_root=resolved_source_root,
-                        build_root=resolved_build_root,
-                        prefer_build_root=prefer_build,
-                    )
-                    if _is_compilable_source_path(source_path):
-                        if not source_path.is_file():
-                            errors.append(
-                                "Meson forced static-library member source is missing: "
-                                + str(source_path)
-                            )
+        _, provider_receipt = python_provider.project(
+            tuple(
+                argument
+                for item in projection.ordered_items
+                if item.disposition == "external"
+                for argument in item.span.arguments
+            )
+        )
     owned_source_groups: list[tuple[str, Mapping[str, Any]]] = [
         (target_id, group) for group in target_sources if isinstance(group, Mapping)
     ]
@@ -1536,21 +1493,7 @@ def _load_meson_intro_targets_source_extension_plan(
         for group in linked_sources:
             if not isinstance(group, Mapping):
                 continue
-            # Static-library groups can list generated sources whose on-disk
-            # ``.c`` was a transient build artifact that has since been cleaned
-            # (numpy's tempita ``.c.src`` templates). The primary target already
-            # links what it needs; a linked-lib source is admitted ONLY when its
-            # file still resolves, so a cleaned generated unit is skipped rather
-            # than hard-failing the whole plan. Sources present on disk (the
-            # linked-in symbols the reachability demands, e.g. unique.cpp) are
-            # included.
-            filtered_group, skipped = _filter_meson_source_group_to_existing(
-                group,
-                source_root=resolved_source_root,
-                build_root=resolved_build_root,
-            )
-            owned_source_groups.append((str(linked_target["id"]), filtered_group))
-            skipped_generated_sources.extend(skipped)
+            owned_source_groups.append((str(linked_target["id"]), group))
 
     object_roots_by_owner = {
         str(owner["id"]): _meson_target_object_roots(
@@ -1565,8 +1508,18 @@ def _load_meson_intro_targets_source_extension_plan(
             errors.append(f"Meson target {owner_id!r} has no build-owned object roots")
     if errors:
         return None, errors
+    complete_owners = {target_id}
+    exact_outputs: set[Path] = set()
+    for item in projection.ordered_items:
+        if item.disposition != "source":
+            continue
+        assert item.archive_output is not None and item.target_id is not None
+        if item.archive_output in projection.archive_edges:
+            exact_outputs.update(projection.archive_edges[item.archive_output])
+        else:
+            complete_owners.add(item.target_id)
     target_output_roots = _dedupe_paths(
-        [root for roots in object_roots_by_owner.values() for root in roots]
+        [root for owner in complete_owners for root in object_roots_by_owner[owner]]
     )
 
     target_compile_command_sources: list[Path] = []
@@ -1593,6 +1546,7 @@ def _load_meson_intro_targets_source_extension_plan(
         compile_commands_path,
         required_sources=set(_dedupe_paths(target_compile_command_sources)),
         target_output_roots=target_output_roots,
+        object_outputs=exact_outputs,
     )
     errors.extend(compile_command_errors)
     if compile_command_units is None:
@@ -1650,7 +1604,6 @@ def _load_meson_intro_targets_source_extension_plan(
             compiler=command_unit.compiler,
             include_dirs=command_unit.include_dirs,
             compile_args=unit_args,
-            force_include=owner_id in projection.forced_target_ids,
         )
         existing = compile_units_by_object.get(command_unit.object_path)
         if existing is not None:
@@ -1686,10 +1639,17 @@ def _load_meson_intro_targets_source_extension_plan(
                 if not _is_compilable_source_path(source_path):
                     non_compiled_inputs.append(source_path)
                     continue
-                destination.append(source_path)
                 command_units = commands_by_owner_source.get(
                     (owner_id, source_path.resolve()), ()
                 )
+                # An aggregate edge owns exact outputs, not every variant or
+                # source belonging to a leaf target. Absent selected outputs
+                # are diagnosed once when the partition is bound below.
+                if not command_units and owner_id not in complete_owners:
+                    if generated and not source_path.exists():
+                        skipped_generated_sources.append(source_path.resolve())
+                    continue
+                destination.append(source_path)
                 if not command_units:
                     errors.append(
                         "compile_commands.json has no owned entry for Meson target "
@@ -1771,6 +1731,70 @@ def _load_meson_intro_targets_source_extension_plan(
         if not source_path.exists() or not source_path.is_file():
             errors.append(f"Meson target input does not exist: {source_path}")
 
+    # Binding cannot improve diagnostics for an already invalid compile unit;
+    # avoid also reporting its absent archive member as a second root cause.
+    if errors:
+        return None, errors
+
+    primary_members = tuple(
+        unit.producer_object_path
+        for unit in compile_units
+        if unit.owner_target_id == target_id
+    )
+    link_items: list[SourceExtensionLinkSpan | SourceExtensionSourceArchiveOperand] = []
+    for item in projection.ordered_items:
+        if item.disposition in {"external", "product"}:
+            disposition = (
+                "python-provider"
+                if item.disposition == "external"
+                and python_provider is not None
+                and item.span.arguments == (python_provider.argument,)
+                else item.disposition
+            )
+            link_items.append(SourceExtensionLinkSpan(item.span, disposition))
+            continue
+        assert item.target_id is not None and item.archive_output is not None
+        if item.disposition == "excluded":
+            link_items.append(
+                SourceExtensionSourceArchiveOperand(
+                    target_id=item.target_id,
+                    archive_output=item.archive_output,
+                    member_object_paths=(),
+                    span=item.span,
+                    disposition="excluded",
+                )
+            )
+            continue
+        if item.archive_output in projection.archive_edges:
+            members = projection.archive_edges[item.archive_output]
+        else:
+            members = tuple(
+                unit.producer_object_path
+                for unit in compile_units
+                if unit.owner_target_id == item.target_id
+            )
+        if not members:
+            errors.append(
+                "Meson source archive has no explicit or target-owned object members: "
+                + str(item.archive_output)
+            )
+            continue
+        for member in members:
+            if member not in compile_units_by_object:
+                errors.append(
+                    "Meson source archive member has no owned compile command: "
+                    + str(member)
+                )
+        link_items.append(
+            SourceExtensionSourceArchiveOperand(
+                target_id=item.target_id,
+                archive_output=item.archive_output,
+                member_object_paths=members,
+                span=item.span,
+                loading=item.loading,
+            )
+        )
+
     if errors:
         if deduped_non_compiled_inputs:
             errors.append(
@@ -1778,6 +1802,15 @@ def _load_meson_intro_targets_source_extension_plan(
                 + ", ".join(str(path) for path in deduped_non_compiled_inputs[:8])
             )
         return None, errors
+
+    try:
+        link_projection = SourceExtensionLinkProjection(
+            primary_target_id=target_id,
+            primary_member_objects=primary_members,
+            items=tuple(link_items),
+        )
+    except ValueError as exc:
+        return None, [str(exc)]
 
     plan = _SourceExtensionBuildPlan(
         kind="meson-intro-targets",
@@ -1798,10 +1831,7 @@ def _load_meson_intro_targets_source_extension_plan(
         compile_units=tuple(compile_units),
         include_dirs=_dedupe_paths(include_dirs),
         compile_args=tuple(compile_args),
-        link_args=link_args,
-        consumed_forced_link_args=projection.consumed_forced_args,
-        producer_link_args=projection.producer_link_args,
-        lazy_static_target_ids=projection.lazy_static_target_ids,
+        link_projection=link_projection,
         dependencies_path=python_provider.dependencies_path
         if python_provider
         else None,
@@ -1890,16 +1920,8 @@ def _validate_source_extension_build_plan_target(
 ) -> list[str]:
     require_explicit = source_extension_target_is_wasm(target_triple)
     errors: list[str] = []
-    dialect = source_extension_link_dialect(target_triple)
     try:
-        for span in source_extension_link_arguments(plan.producer_link_args):
-            span.validate_dialect(dialect)
-        for span in source_extension_link_arguments(plan.consumed_forced_link_args):
-            span.validate_dialect(dialect)
-            if span.kind != "forced":
-                raise ValueError(
-                    f"invalid consumed forced loading operand: {span.arguments!r}"
-                )
+        plan.link_projection.validate_dialect(target_triple)
     except ValueError as exc:
         errors.append(f"Source-plan linker custody: {exc}")
     for unit in plan.compile_units:

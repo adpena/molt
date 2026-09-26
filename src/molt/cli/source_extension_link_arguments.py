@@ -91,6 +91,52 @@ class SourceExtensionLinkArgument:
             )
 
 
+@dataclass(slots=True)
+class SourceExtensionLinkScope:
+    """Shared scope transitions for producer projection and final-link parsing."""
+
+    whole_archive: bool = False
+    group: bool = False
+    as_needed: bool = False
+
+    def advance(self, span: SourceExtensionLinkArgument) -> None:
+        if span.kind != "scope":
+            return
+        value = span.value
+        if value in {"--start-group", "--end-group"}:
+            if self.whole_archive:
+                raise ValueError(
+                    "source-extension whole-archive scope must close before a group boundary"
+                )
+            start = value == "--start-group"
+            if start == self.group:
+                raise ValueError(
+                    "source-extension cyclic groups cannot be nested"
+                    if start
+                    else "source-extension cyclic group end has no start"
+                )
+            self.group = start
+        elif value in {"--whole-archive", "--no-whole-archive"}:
+            start = value == "--whole-archive"
+            if start == self.whole_archive:
+                raise ValueError(
+                    "source-extension whole-archive scopes cannot be nested"
+                    if start
+                    else "source-extension whole-archive end has no start"
+                )
+            self.whole_archive = start
+        elif value in {"--as-needed", "--no-as-needed"}:
+            # ELF dependency policy is a persistent, idempotent state toggle,
+            # including a leading override of the compiler driver's default.
+            self.as_needed = value == "--as-needed"
+
+    def finish(self) -> None:
+        if self.group:
+            raise ValueError("source-extension cyclic group start has no end")
+        if self.whole_archive:
+            raise ValueError("source-extension whole-archive start has no end")
+
+
 def _linker_tokens(arguments: Sequence[str]) -> tuple[str, ...]:
     tokens: list[str] = []
     iterator = iter(arguments)

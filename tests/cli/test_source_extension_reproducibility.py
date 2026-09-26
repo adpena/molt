@@ -182,21 +182,27 @@ def test_staged_producer_link_options_keep_target_context_without_compile_units(
         "target_triple": "x86_64-pc-windows-msvc",
         "source_plan": {
             "kind": "meson-intro-targets",
-            "producer_link_args": [
-                "/nologo",
-                "/OPT:REF",
-                "/DLL",
-                "/IMPLIB:@build/extension.lib",
-            ],
+            "link_projection": {
+                "items": [
+                    {"disposition": "product", "arguments": [argument]}
+                    for argument in (
+                        "/nologo",
+                        "/OPT:REF",
+                        "/DLL",
+                        "/IMPLIB:@build/extension.lib",
+                    )
+                ],
+            },
         },
     }
     _require_location_neutral(payload, authority="staged producer")
-    payload["source_plan"]["producer_link_args"].append(
-        "/IMPLIB:C:/producer/output.lib"
+    items = payload["source_plan"]["link_projection"]["items"]
+    items.append(
+        {"disposition": "product", "arguments": ["/IMPLIB:C:/producer/output.lib"]}
     )
     with pytest.raises(ValueError, match="producer filesystem paths"):
         _require_location_neutral(payload, authority="raw producer")
-    payload["source_plan"]["producer_link_args"].pop()
+    items.pop()
     payload["source_plan"]["unrelated"] = "/private/data"
     with pytest.raises(ValueError, match="producer filesystem paths"):
         _require_location_neutral(payload, authority="unowned field")
@@ -470,6 +476,13 @@ def test_wheel_manifest_core_is_invariant_to_all_operational_roots(
             "source_plan": {
                 "kind": "meson-intro-targets",
                 "plan": str(plan),
+                "target_id": "module",
+                "link_projection": {
+                    "schema_version": 1,
+                    "primary_target_id": "module",
+                    "primary_member_objects": ["module.so.p/module.o"],
+                    "items": [],
+                },
                 "plan_sha256": "stale",
                 "compile_commands": str(commands),
                 "compile_commands_sha256": "stale",
