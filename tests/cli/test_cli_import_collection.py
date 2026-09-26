@@ -21448,258 +21448,6 @@ def test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_d
     assert captured == [frozenset({"builtins", "sys"})]
 
 
-def test_prepare_backend_dispatch_ensures_both_and_uses_shared_runtime_layout(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_wasm = tmp_path / "molt_runtime.wasm"
-    runtime_reloc_wasm = tmp_path / "molt_runtime_reloc.wasm"
-    runtime_wasm.write_bytes(b"stale-shared")
-    backend_bin = tmp_path / "molt-backend"
-    backend_bin.write_text("")
-
-    calls: list[tuple[str, object | None]] = []
-
-    monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", raising=False)
-    monkeypatch.setattr(
-        cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
-    )
-    monkeypatch.setattr(
-        cli_backend_binary, "_ensure_backend_binary", _fake_backend_ensure_success
-    )
-    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_read_wasm_data_end",
-        lambda path: 4096 if path == runtime_wasm else None,
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_read_wasm_memory_min_bytes",
-        lambda path: 8192 if path == runtime_wasm else None,
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_read_wasm_table_min",
-        lambda path: 1234 if path == runtime_wasm else None,
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "read_wasm_split_runtime_callable_layout",
-        lambda path: types.SimpleNamespace(
-            runtime_callable_base=1,
-            runtime_table_min=2345,
-        ),
-    )
-
-    def ensure_both(required=None):
-        calls.append(("both", frozenset(required) if required else None))
-        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-shared")
-        runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-reloc")
-        runtime_state.runtime_wasm_selected = runtime_wasm
-        runtime_state.runtime_reloc_wasm_selected = runtime_reloc_wasm
-        return True
-
-    runtime_state = cli._RuntimeArtifactState(
-        runtime_wasm=runtime_wasm,
-        runtime_reloc_wasm=runtime_reloc_wasm,
-    )
-    prepared, err = cli_backend_compile._prepare_backend_dispatch(
-        is_rust_transpile=False,
-        is_luau_transpile=False,
-        is_wasm=True,
-        split_runtime=True,
-        linked=True,
-        deterministic=False,
-        profile="dev",
-        runtime_state=runtime_state,
-        runtime_cargo_profile="dev-fast",
-        cargo_timeout=1.0,
-        molt_root=tmp_path,
-        target_triple=None,
-        backend_cargo_profile="dev-fast",
-        diagnostics_enabled=False,
-        phase_starts={},
-        json_output=True,
-        backend_daemon_config_digest=None,
-        ensure_runtime_wasm_both=ensure_both,
-        resolved_modules=frozenset(),
-        ir={"functions": []},
-        warnings=[],
-    )
-
-    assert err is None
-    assert prepared is not None
-    assert calls == [("both", None)]
-    assert prepared.backend_env is not None
-    assert prepared.backend_env["MOLT_WASM_DATA_BASE"] == str(64 * 1024 * 1024 + 8192)
-    assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1"
-    assert prepared.backend_env["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] == "2345"
-
-
-def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_wasm = tmp_path / "molt_runtime.wasm"
-    runtime_reloc_wasm = tmp_path / "molt_runtime_reloc.wasm"
-    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0")
-    backend_bin = tmp_path / "molt-backend"
-    backend_bin.write_text("")
-
-    calls: list[tuple[str, object | None]] = []
-
-    monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", raising=False)
-    monkeypatch.setattr(
-        cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
-    )
-    monkeypatch.setattr(
-        cli_backend_binary, "_ensure_backend_binary", _fake_backend_ensure_success
-    )
-    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli_backend_compile, "_read_wasm_data_end", lambda _path: 4096)
-    monkeypatch.setattr(
-        cli_backend_compile, "_read_wasm_memory_min_bytes", lambda _path: 8192
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_read_wasm_table_min",
-        lambda path: 3074 if path == runtime_reloc_wasm else 3867,
-    )
-
-    def ensure_both(required=None):
-        calls.append(("both", frozenset(required) if required else None))
-        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
-        runtime_state.runtime_wasm_selected = runtime_wasm
-        runtime_state.runtime_reloc_wasm_selected = runtime_reloc_wasm
-        return True
-
-    runtime_state = cli._RuntimeArtifactState(
-        runtime_wasm=runtime_wasm,
-        runtime_reloc_wasm=runtime_reloc_wasm,
-    )
-    prepared, err = cli_backend_compile._prepare_backend_dispatch(
-        is_rust_transpile=False,
-        is_luau_transpile=False,
-        is_wasm=True,
-        split_runtime=False,
-        linked=True,
-        deterministic=False,
-        profile="dev",
-        runtime_state=runtime_state,
-        runtime_cargo_profile="dev-fast",
-        cargo_timeout=1.0,
-        molt_root=tmp_path,
-        target_triple=None,
-        backend_cargo_profile="dev-fast",
-        diagnostics_enabled=False,
-        phase_starts={},
-        json_output=True,
-        backend_daemon_config_digest=None,
-        ensure_runtime_wasm_both=ensure_both,
-        resolved_modules=frozenset(),
-        ir={"functions": []},
-        warnings=[],
-    )
-
-    assert err is None
-    assert prepared is not None
-    assert calls == [("both", None)]
-    assert prepared.backend_env is not None
-    assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "3867"
-
-
-def test_prepare_backend_dispatch_refreshes_existing_shared_runtime_before_layout(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_wasm = tmp_path / "molt_runtime.wasm"
-    runtime_reloc_wasm = tmp_path / "molt_runtime_reloc.wasm"
-    runtime_wasm.write_bytes(b"stale-shared")
-    runtime_reloc_wasm.write_bytes(b"stale-reloc")
-    backend_bin = tmp_path / "molt-backend"
-    backend_bin.write_text("")
-
-    calls: list[tuple[str, object | None]] = []
-
-    monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", raising=False)
-    monkeypatch.setattr(
-        cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
-    )
-    monkeypatch.setattr(
-        cli_backend_binary, "_ensure_backend_binary", _fake_backend_ensure_success
-    )
-    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli_backend_compile, "_read_wasm_data_end", lambda path: None)
-    monkeypatch.setattr(
-        cli_backend_compile, "_read_wasm_memory_min_bytes", lambda path: None
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_read_wasm_table_min",
-        lambda path: 1234 if path == runtime_reloc_wasm else None,
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "read_wasm_split_runtime_callable_layout",
-        lambda path: types.SimpleNamespace(
-            runtime_callable_base=1,
-            runtime_table_min=4321,
-        ),
-    )
-
-    def ensure_both(required=None):
-        calls.append(("both", frozenset(required) if required else None))
-        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-shared")
-        runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-reloc")
-        runtime_state.runtime_wasm_selected = runtime_wasm
-        runtime_state.runtime_reloc_wasm_selected = runtime_reloc_wasm
-        return True
-
-    runtime_state = cli._RuntimeArtifactState(
-        runtime_wasm=runtime_wasm,
-        runtime_reloc_wasm=runtime_reloc_wasm,
-    )
-    prepared, err = cli_backend_compile._prepare_backend_dispatch(
-        is_rust_transpile=False,
-        is_luau_transpile=False,
-        is_wasm=True,
-        split_runtime=True,
-        linked=True,
-        deterministic=False,
-        profile="dev",
-        runtime_state=runtime_state,
-        runtime_cargo_profile="dev-fast",
-        cargo_timeout=1.0,
-        molt_root=tmp_path,
-        target_triple=None,
-        backend_cargo_profile="dev-fast",
-        diagnostics_enabled=False,
-        phase_starts={},
-        json_output=True,
-        backend_daemon_config_digest=None,
-        ensure_runtime_wasm_both=ensure_both,
-        resolved_modules=frozenset(),
-        ir={"functions": []},
-        warnings=[],
-    )
-
-    assert err is None
-    assert prepared is not None
-    # File existence is never freshness authority: the combined ensure must
-    # replace the stale artifact before any executable layout is read.
-    assert calls == [("both", None)]
-    assert prepared.backend_env is not None
-    assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1"
-    assert prepared.backend_env["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] == "4321"
-
-
 def test_runtime_compile_key_is_stable_across_user_import_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -24220,15 +23968,9 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=False,
-        split_runtime=False,
-        linked=False,
+        wasm_layout=None,
         deterministic=False,
         profile="dev",
-        runtime_state=cli._RuntimeArtifactState(
-            runtime_wasm=None,
-            runtime_reloc_wasm=None,
-        ),
-        runtime_cargo_profile="dev-fast",
         cargo_timeout=1.0,
         molt_root=tmp_path,
         target_triple=None,
@@ -24237,9 +23979,6 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
         phase_starts={},
         json_output=True,
         backend_daemon_config_digest=None,
-        ensure_runtime_wasm_both=lambda required=None: True,
-        resolved_modules=frozenset(),
-        ir={"functions": []},
         warnings=[],
     )
 
@@ -31498,11 +31237,9 @@ def test_concurrent_backend_dispatches_pin_fingerprint_in_each_daemon_env(
             is_rust_transpile=False,
             is_luau_transpile=False,
             is_wasm=False,
-            linked=False,
+            wasm_layout=None,
             deterministic=True,
             profile="release-size",
-            runtime_state=cli._RuntimeArtifactState(),
-            runtime_cargo_profile="release-fast",
             cargo_timeout=1.0,
             molt_root=tmp_path,
             target_triple=None,
@@ -31511,9 +31248,6 @@ def test_concurrent_backend_dispatches_pin_fingerprint_in_each_daemon_env(
             phase_starts={},
             json_output=True,
             backend_daemon_config_digest=None,
-            ensure_runtime_wasm_both=lambda required=None: True,
-            resolved_modules=frozenset(),
-            ir={"functions": []},
             warnings=[],
             backend_bin=backend_bin,
             backend_compiler_fingerprint=fingerprint,

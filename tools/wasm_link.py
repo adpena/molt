@@ -581,7 +581,7 @@ def _wasm_link_cache_root() -> Path:
 
 
 _TREE_SHAKE_RUNTIME_CACHE_SCHEMA = "runtime-tree-shake-v5"
-_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA = "split-app-optimize-v3"
+_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA = "split-app-optimize-v4"
 _WASM_LINK_CACHE_METRIC_SUFFIXES = (
     "requests",
     "hits",
@@ -596,6 +596,7 @@ _WASM_LINK_CACHE_METRIC_SUFFIXES = (
     "publish_errors",
 )
 _WASM_OPT_CACHE_METRIC_SUFFIXES = (
+    "optimizer_cache_hits",
     "optimizer_wall_ms",
     "optimizer_peak_rss_kb",
     "optimizer_peak_total_rss_kb",
@@ -640,22 +641,24 @@ def _cache_metric_max(
     metrics[name] = max(float(metrics.get(name, 0)), float(value))
 
 
-def _record_wasm_opt_attestation_cache_metrics(
+def _record_wasm_opt_execution_metrics(
     metrics: dict[str, int | float] | None,
     prefix: str,
-    attestation: Mapping[str, object],
+    execution: Mapping[str, object],
 ) -> None:
-    wall_ms = attestation.get("wasm_opt_wall_ms")
+    if execution.get("wasm_opt_cache_hit") is True:
+        _cache_metric_add(metrics, f"{prefix}_optimizer_cache_hits", 1)
+    wall_ms = execution.get("wasm_opt_wall_ms")
     if isinstance(wall_ms, (int, float)):
         _cache_metric_add(metrics, f"{prefix}_optimizer_wall_ms", wall_ms)
     for suffix in ("peak_rss_kb", "peak_total_rss_kb"):
-        value = attestation.get(f"wasm_opt_{suffix}")
+        value = execution.get(f"wasm_opt_{suffix}")
         if isinstance(value, (int, float)):
             _cache_metric_max(metrics, f"{prefix}_optimizer_{suffix}", value)
-    status = attestation.get("status")
+    status = execution.get("status")
     if status == "timeout":
         _cache_metric_add(metrics, f"{prefix}_timeouts", 1)
-    elif attestation.get("ok") is False:
+    elif execution.get("ok") is False:
         _cache_metric_add(metrics, f"{prefix}_failures", 1)
         if status == "identity-error":
             _cache_metric_add(metrics, f"{prefix}_identity_errors", 1)

@@ -256,6 +256,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         runtime_context=SimpleNamespace(
             runtime_state=object(),
             ensure_runtime_wasm_both=lambda _modules: True,
+            backend_compiler_fingerprint=None,
         ),
         build_config=SimpleNamespace(
             runtime_cargo_profile="release",
@@ -270,8 +271,6 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
             backend_daemon_config_digest=None,
             warnings=[],
         ),
-        ir={"functions": []},
-        resolved_modules=frozenset(),
         json_output=True,
         verbose=False,
         target="native",
