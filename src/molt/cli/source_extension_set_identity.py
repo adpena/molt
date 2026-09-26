@@ -22,10 +22,9 @@ from molt.cli.source_package_seal import (
 )
 from molt.exact_json import loads_exact
 
-# Version 6 binds the locked Ninja distribution to the backend identity and
-# records the binary's self-report separately. Version-5 seals remain evidence,
-# but are not interpreted under this changed identity projection.
-SOURCE_EXTENSION_SET_SCHEMA_VERSION = 6
+# Version 7 binds consumed Python providers to interpreter custody and Meson
+# dependency introspection. Older seals remain evidence, not current receipts.
+SOURCE_EXTENSION_SET_SCHEMA_VERSION = 7
 
 
 def _digest_payload(payload: Any) -> str:
@@ -184,6 +183,7 @@ def _extension_content_projection(
             "target_selector",
             "target_type",
             "producer_link_args",
+            "python_provider",
         )
         if isinstance(source_plan, Mapping) and key in source_plan
     }

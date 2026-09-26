@@ -99,6 +99,7 @@ from molt.cli.source_extension_target import (
 from molt.cli.source_extension_link_requirements import (
     source_extension_link_requirements,
 )
+from molt.cli.source_extension_python_provider import SourceExtensionPythonProvider
 from molt.cli.source_extension_object_closure import (
     finalize_source_extension_object_closure,
     source_extension_wasm_import_receipts,
@@ -309,6 +310,7 @@ def extension_build(
     source_plan_compile_commands: str | None = None,
     source_plan_exclude_linked_static_libraries: list[str] | None = None,
     source_plan_ninja_command: Sequence[str] | None = None,
+    source_plan_python_provider: SourceExtensionPythonProvider | None = None,
     abi_tier: str | None = None,
     tool_commands: Mapping[str, Sequence[str]] | None = None,
     json_output: bool = False,
@@ -546,6 +548,7 @@ def extension_build(
                     project_root=project_root,
                     module_name=module_name,
                     plan_config=source_plan_config,
+                    python_provider=source_plan_python_provider,
                 )
             )
             errors.extend(source_plan_errors)
@@ -614,6 +617,18 @@ def extension_build(
     runtime_target_triple = target_plan.compiler_target_triple
     wasm_static_link = target_plan.is_wasm
     if loaded_source_plan is not None:
+        provider = loaded_source_plan.python_provider
+        if provider is not None and any(
+            provider.get(field) != expected
+            for field, expected in (
+                ("target_python", extension_target_python.tag),
+                ("target_triple", target_plan.target_triple),
+                ("abi_tier", normalized_abi_tier),
+            )
+        ):
+            errors.append(
+                "source-plan Python provider differs from selected target/version/ABI"
+            )
         errors.extend(
             _source_extensions._validate_source_extension_build_plan_target(
                 loaded_source_plan,

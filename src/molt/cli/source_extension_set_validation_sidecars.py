@@ -31,6 +31,10 @@ from molt.cli.source_extension_set_identity import (
     validate_source_extension_execution_metadata,
 )
 from molt.cli.source_extension_set_registry import SourceExtensionVariant
+from molt.cli.source_extension_python_provider import (
+    SourceExtensionPythonProvider,
+    source_extension_python_provider,
+)
 from molt.cli.source_extension_set_validation_schema import (
     RecordedSourceExtensionSet,
     SourceExtensionSetValidationError,
@@ -51,7 +55,10 @@ from molt.toolchain_identity import (
 def _load_meson_link_producer_index(
     publish_root: Path,
     set_manifest: Mapping[str, Any],
-) -> tuple[Path, str, dict[str, tuple[Mapping[str, Any], ...]]]:
+    variant: SourceExtensionVariant,
+) -> tuple[
+    Path, str, dict[str, tuple[Mapping[str, Any], ...]], SourceExtensionPythonProvider
+]:
     meson = set_manifest.get("meson")
     expected_intro_sha256 = (
         meson.get("intro_targets_sha256") if isinstance(meson, Mapping) else None
@@ -65,15 +72,27 @@ def _load_meson_link_producer_index(
         raise SourceExtensionSetValidationError(
             f"failed to read checksum-pinned Meson intro-targets: {exc}"
         ) from exc
-    if expected_intro_sha256 != intro_sha256 or not isinstance(intro_targets, list):
+    if (
+        not isinstance(meson, Mapping)
+        or expected_intro_sha256 != intro_sha256
+        or not isinstance(intro_targets, list)
+    ):
         raise SourceExtensionSetValidationError(
             "extension-set Meson intro-targets checksum or structure differs from custody"
         )
     try:
         targets = _meson_extension_targets_by_selector(intro_targets)
-    except ValueError as exc:
+        provider = source_extension_python_provider(
+            dependencies_path=intro_path.with_name("intro-dependencies.json"),
+            runtime=set_manifest["build_environment"]["custody"]["python_runtime"],
+            variant=variant,
+            python_base="@python-base",
+        )
+        if provider.dependencies_sha256 != meson.get("intro_dependencies_sha256"):
+            raise ValueError("Meson intro-dependencies checksum differs from custody")
+    except (OSError, ValueError) as exc:
         raise SourceExtensionSetValidationError(str(exc)) from exc
-    return intro_path.resolve(), intro_sha256, targets
+    return intro_path.resolve(), intro_sha256, targets, provider
 
 
 def _producer_link_plan_errors(
@@ -85,6 +104,7 @@ def _producer_link_plan_errors(
     intro_sha256: str,
     targets: Mapping[str, tuple[Mapping[str, Any], ...]],
     build: Any,
+    python_provider: SourceExtensionPythonProvider,
 ) -> list[str]:
     errors: list[str] = []
     matches = targets.get(selector, ())
@@ -109,6 +129,21 @@ def _producer_link_plan_errors(
             ) from exc
         if source_plan.get("producer_link_args") != list(expected_args):
             errors.append("source_plan.producer_link_args differs from Meson target")
+        _remaining, provider_receipt = python_provider.project(expected_args)
+        if source_plan.get("python_provider") != provider_receipt:
+            errors.append(
+                "source_plan.python_provider differs from interpreter/Meson custody"
+            )
+    raw_dependencies = source_plan.get("dependencies")
+    if (
+        not isinstance(raw_dependencies, str)
+        or "\\" in raw_dependencies
+        or Path(raw_dependencies).is_absolute()
+        or (sidecar_path.parent / raw_dependencies).resolve()
+        != python_provider.dependencies_path.resolve()
+        or source_plan.get("dependencies_sha256") != python_provider.dependencies_sha256
+    ):
+        errors.append("source_plan Meson dependency metadata custody is false")
     raw_plan_path = source_plan.get("plan")
     if (
         type(source_plan.get("schema_version")) is not int
@@ -152,8 +187,8 @@ def validate_source_extension_sidecars(
         raise SourceExtensionSetValidationError(
             "extension-set manifest has no target-triple authority"
         )
-    intro_path, intro_sha256, targets = _load_meson_link_producer_index(
-        publish_root, set_manifest
+    intro_path, intro_sha256, targets, python_provider = (
+        _load_meson_link_producer_index(publish_root, set_manifest, variant)
     )
     artifact_suffix = source_extension_artifact_suffix(target_triple)
     expected_artifacts = {
@@ -248,6 +283,7 @@ def validate_source_extension_sidecars(
                     intro_path=intro_path,
                     intro_sha256=intro_sha256,
                     targets=targets,
+                    python_provider=python_provider,
                     build=sidecar.get("build"),
                 )
             )

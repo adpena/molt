@@ -167,3 +167,13 @@ def is_cpython_abi_link_symbol(symbol: str) -> bool:
         is_c_api_external_requirement(symbol)
         and c_api_primitive_class(symbol) not in _NON_CPYTHON_ABI_PRIMITIVE_CLASSES
     )
+
+
+def is_cpython_abi_dynamic_import_symbol(symbol: str) -> bool:
+    """COFF import-address references cannot be satisfied by static ABI symbols."""
+    if not symbol.startswith("__imp_"):
+        return False
+    imported = symbol[6:]
+    return is_cpython_abi_link_symbol(imported) or (
+        imported.startswith("_") and is_cpython_abi_link_symbol(imported[1:])
+    )

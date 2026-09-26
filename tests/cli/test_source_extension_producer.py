@@ -143,6 +143,11 @@ def _fixture_source_plan(
             root / "provenance/metadata/meson/compile-commands.json", artifact.parent
         ).replace(os.sep, "/"),
         "compile_commands_sha256": hashlib.sha256(b"[]\n").hexdigest(),
+        "dependencies": os.path.relpath(
+            root / "provenance/metadata/meson/intro-dependencies.json", artifact.parent
+        ).replace(os.sep, "/"),
+        "dependencies_sha256": hashlib.sha256(b"[]\n").hexdigest(),
+        "python_provider": None,
     }
     source_plan["digest"] = hashlib.sha256(
         json.dumps(source_plan, sort_keys=True, separators=(",", ":")).encode()
@@ -419,14 +424,16 @@ def _write_meson_metadata(
     intro_targets = metadata_root / "intro-targets.json"
     compile_commands = metadata_root / "compile-commands.json"
     intro_installed = metadata_root / "intro-installed.json"
+    intro_dependencies = metadata_root / "intro-dependencies.json"
     config_tool_cross = metadata_root / "build-config-tools.cross"
     intro_targets.write_bytes(
         _fixture_intro_targets_bytes(
             tuple(spec.module for spec in extension_set.extensions)
         )
     )
-    compile_commands.write_text("[]\n", encoding="utf-8")
-    intro_installed.write_text("{}\n", encoding="utf-8")
+    compile_commands.write_bytes(b"[]\n")
+    intro_installed.write_bytes(b"{}\n")
+    intro_dependencies.write_bytes(b"[]\n")
     config_tool_cross.write_text("[binaries]\n", encoding="utf-8")
     return {
         "driver": {
@@ -447,6 +454,7 @@ def _write_meson_metadata(
         "intro_targets_sha256": producer._sha256_file(intro_targets),
         "compile_commands_sha256": producer._sha256_file(compile_commands),
         "intro_installed_sha256": producer._sha256_file(intro_installed),
+        "intro_dependencies_sha256": producer._sha256_file(intro_dependencies),
         "config_tool_cross_sha256": producer._sha256_file(config_tool_cross),
         "config_tools": [
             {
@@ -3054,26 +3062,34 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
         ".molt.wasm.extension_manifest.json"
     )
     original_sidecar = first_sidecar.read_bytes()
-    tampered = json.loads(original_sidecar)
-    tampered_plan = tampered["source_plan"]
-    tampered_plan["producer_link_args"].pop()
-    plan_identity = dict(tampered_plan)
-    plan_identity.pop("digest")
-    tampered_plan["digest"] = hashlib.sha256(
-        json.dumps(plan_identity, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    tampered["build"]["source_plan_digest"] = tampered_plan["digest"]
-    first_sidecar.write_text(json.dumps(tampered), encoding="utf-8")
-    with pytest.raises(
-        set_validation.SourceExtensionSetValidationError,
-        match="producer_link_args differs from Meson target",
+    for field, value, diagnostic in (
+        ("producer_link_args", [], "producer_link_args differs from Meson target"),
+        (
+            "python_provider",
+            {"forged": True},
+            "python_provider differs from interpreter/Meson custody",
+        ),
+        ("dependencies_sha256", "f" * 64, "dependency metadata custody is false"),
     ):
-        set_validation.validate_source_extension_set_publish_root(
-            publish_root=publish,
-            extension_set=extension_set,
-            variant=variant,
-            set_manifest=set_manifest,
-        )
+        tampered = json.loads(original_sidecar)
+        tampered_plan = tampered["source_plan"]
+        tampered_plan[field] = value
+        plan_identity = dict(tampered_plan)
+        plan_identity.pop("digest")
+        tampered_plan["digest"] = hashlib.sha256(
+            json.dumps(plan_identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        tampered["build"]["source_plan_digest"] = tampered_plan["digest"]
+        first_sidecar.write_text(json.dumps(tampered), encoding="utf-8")
+        with pytest.raises(
+            set_validation.SourceExtensionSetValidationError, match=diagnostic
+        ):
+            set_validation.validate_source_extension_set_publish_root(
+                publish_root=publish,
+                extension_set=extension_set,
+                variant=variant,
+                set_manifest=set_manifest,
+            )
     first_sidecar.write_bytes(original_sidecar)
     target_metadata = set_manifest["target_metadata"]
     assert isinstance(target_metadata, dict)
@@ -3298,9 +3314,11 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     sidecar.write_text(json.dumps(manifest), encoding="utf-8")
     intro = publish / "provenance/metadata/meson/intro-targets.json"
     commands = publish / "provenance/metadata/meson/compile-commands.json"
+    dependencies = publish / "provenance/metadata/meson/intro-dependencies.json"
     intro.parent.mkdir(parents=True)
     intro.write_text("{}\n", encoding="utf-8")
     commands.write_text("[]\n", encoding="utf-8")
+    dependencies.write_text("[]\n", encoding="utf-8")
     produced = producer._ProducedExtension(
         module=module,
         target="_nd_image",
@@ -3323,7 +3341,11 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
             (build_root, "@build"),
             (transaction, "@transaction"),
         ),
-        plan_metadata={"intro_targets": intro, "compile_commands": commands},
+        plan_metadata={
+            "intro_targets": intro,
+            "compile_commands": commands,
+            "intro_dependencies": dependencies,
+        },
     )
 
     staged_manifest = json.loads(staged.artifact_manifest_path.read_text())
@@ -3521,9 +3543,11 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
     intro = meson / "intro-targets.json"
     commands = meson / "compile_commands.json"
     installed = meson / "intro-installed.json"
+    dependencies = meson / "intro-dependencies.json"
     intro.write_text("[]\n", encoding="utf-8")
     commands.write_text("[]\n", encoding="utf-8")
     installed.write_text("{}\n", encoding="utf-8")
+    dependencies.write_text("[]\n", encoding="utf-8")
     raw_payload = {
         "schema_version": SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION,
         "kind": "molt-source-extension-target-metadata",
@@ -3549,6 +3573,7 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
         intro_targets=intro,
         compile_commands=commands,
         intro_installed=installed,
+        intro_dependencies=dependencies,
         config_tool_cross=None,
         target_metadata_payload=raw_payload,
         location_roots=((transaction, "@transaction"),),

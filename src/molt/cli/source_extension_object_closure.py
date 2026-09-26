@@ -30,6 +30,7 @@ from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
 from molt.file_hashing import _sha256_file
+from molt.c_api_symbols import is_cpython_abi_dynamic_import_symbol
 from molt.wasm_artifact import (
     WASM_EXTERN_KIND_FUNCTION,
     WASM_EXTERN_KIND_GLOBAL,
@@ -465,6 +466,16 @@ def source_extension_object_closure_identity_payload(
         object_undefined_symbols = _object_sequence(
             authority, item, "undefined_symbols", canonical=True
         )
+        dynamic_python_imports = [
+            symbol
+            for symbol in object_undefined_symbols
+            if is_cpython_abi_dynamic_import_symbol(symbol)
+        ]
+        if dynamic_python_imports:
+            raise SourceExtensionObjectClosureError(
+                "static extension retains dynamic CPython import-address requirements: "
+                + ", ".join(dynamic_python_imports)
+            )
         object_defined_union.update(object_defined_symbols)
         object_undefined_union.update(object_undefined_symbols)
         if root_symbol in object_defined_symbols:
