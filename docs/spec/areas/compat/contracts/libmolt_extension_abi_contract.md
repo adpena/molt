@@ -82,6 +82,12 @@ source-compat `include/` root to resolve linked-tier dependencies. For the sourc
 tier, install `include/` with its nested shared directory intact. Neither header
 uses a source-checkout-relative path to reach another tier.
 
+Extensions linking a shared runtime/ABI image define
+`MOLT_CPYTHON_ABI_SHARED=1`. Both transports use the same `PyAPI_DATA` policy:
+Windows imports data through the image's import library; static linking and WASM
+retain plain external declarations. This option does not select a different
+object model, load libraries, or search for an ambient Python installation.
+
 `runtime/molt-cpython-abi/src/abi_types.rs` remains the Rust `repr(C)` authority.
 `tools/gen_cpython_abi_layout.py` projects struct sizes, offsets, and integer
 field widths for the target data models; the linked header and runtime C build
@@ -134,6 +140,89 @@ and preserves aliased operand identity.
 
 These contracts require behavioral proof at the actual runtime/ABI boundary;
 host unit tests alone do not certify native/WASM or package compatibility.
+
+### Extension initialization and callable ownership
+
+Static native/WASM and the explicitly enabled dynamic bridge loader invoke
+`PyInit` inside one runtime-owned initialization transaction. The caller's qualified
+module name owns the import identity; a shared library's initializer symbol
+uses only its final component. `create_module` receives the actual import spec
+and returns the real C module without executing its slots. A normal import
+publishes that same object before `Py_mod_exec`; a direct `exec_module` call
+preserves the caller's cache and `sys.modules` state. Failure unwinds only the
+transaction's own publication and references. Extension-raised exceptions keep
+their type and identity; result/error contract violations produce `SystemError`
+with the original exception as context. Frontend module bodies must not publish
+extensions a second time. Reentrant or repeated loader execution does not replay
+slots; direct C calls to `PyModule_ExecDef` may deliberately execute them again.
+Multi-phase module state is allocated at first execution, not creation, and is
+preserved across direct executions. Single-phase module construction does not
+register an interpreter-owned state root; successful import commit owns it.
+Slotted definitions cannot enter the single-phase `PyState` registry. Module
+construction installs the definition's documentation through the shared module
+API in both initialization modes.
+
+`importlib.machinery.ModuleSpec` and extension initialization share one ordinary
+runtime-owned class. Bootstrap-free initialization constructs that class, not
+a module-shaped surrogate. A supplied spec retains its identity, and its
+`parent` owns package metadata rather than a second name-splitting rule.
+
+The runtime scopes and restores the initializer's package-name context even on
+failure or nested imports. Only a matching single-phase definition's leaf name
+consumes that context. The IR carries an owned module result, never a raw C
+pointer across an exception edge. Native addresses and WASM table relocations
+both call the same runtime initializer boundary.
+
+Both public header transports share module-definition/C-callable layouts and
+route module lifecycle and callable construction to the same linked ABI entry
+points. `PyModuleDef_Init` establishes the canonical definition type; matching a
+type name or guessing a struct from trailing memory is not initialization.
+The WASM ABI generator reads the linked header's local include closure and
+fingerprints those dependencies, so moving declarations into shared headers does
+not remove their signature authority or leave cached projections stale.
+Native embedding must link runtime and ABI into one image. Copying a hook table
+between an ABI DLL and a statically linked runtime does not merge their object
+identity, type singletons, exception state or finalization authority.
+Managed semantic type queries use the runtime's actual class edge, shared with
+exception projection. Builtin bindings and heap-class projections retain their
+canonical identity; a generic physical carrier is not a second Python class.
+The carrier's physical `ob_type` remains an honest layout discriminator, and a
+failed class lookup stops dispatch while preserving the original exception.
+Managed Python calls use the runtime call authority; semantic class identity
+does not authorize invoking a native layout constructor on a managed view.
+Concrete C callable layouts retain their C calling convention, and native
+extension types retain their native slots. Dynamic-load diagnostics describe
+the shared initialization transaction, not an inferred raw PyInit return;
+the pending C exception retains the actual failure.
+
+Managed `str` and `repr` also use the runtime protocol through owned-result
+hooks, preserving subclass behavior, result identity and exceptions without
+an ABI-local scalar/string formatter. Native objects retain native slots.
+
+`builtin_function_or_method` and its `builtin_method` subclass have canonical
+ABI type bindings. Runtime-defined builtins carry real vectorcall storage;
+they do not fabricate a native `PyMethodDef` or receiver. Semantic type checks
+and vectorcall work across both representations. `PyCFunction_Check` and raw
+`PyCFunction_Get*` implementation extraction admit concrete C-defined callables
+only; requesting raw C metadata from a runtime-defined builtin raises `TypeError`.
+That extraction is not part of the verified runtime-builtin surface.
+
+Module method tables use the same `PyCFunction` construction and managed-view
+lifetime as directly constructed C callables. Runtime container ownership must
+retain the concrete C layout and its receiver/class/module edges; dropping a
+temporary C reference cannot turn it into an opaque object or leave dangling
+member pointers. The physical `m_module` member is the sole `__module__`
+authority for managed C functions; runtime attribute reads, assignment,
+deletion and cycle GC consume that same owned edge. Ordinary Python function
+metadata retains its runtime protocol, not a second name registry.
+
+Attribute mutation has an explicit deletion flag at the internal hook boundary;
+the C API's NULL deletion sentinel never aliases the Python value `0.0`.
+Successful runtime mutation returns Python `None`, while its C adapter returns
+status zero. Foreign-call failures transfer the original C exception after
+error-preserving temporary-owner cleanup. `PyDict_SetDefaultRef` permits a NULL
+result sink without acquiring an unused result reference; this source API
+contract does not expand the declared CPython binary-layout version.
 
 ---
 

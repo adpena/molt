@@ -30,6 +30,8 @@ pub(in crate::wasm) struct WasmCallableTablePlan {
     func_to_table_idx: BTreeMap<String, u32>,
     func_to_index: BTreeMap<String, u32>,
     func_to_trampoline_idx: BTreeMap<String, u32>,
+    /// Table slots of address-taken native initializers, keyed by symbol.
+    native_initializer_to_table_idx: BTreeMap<String, u32>,
     app_callable_resolver: Option<WasmAppCallableResolverPlan>,
     positional_call_shapes: BTreeMap<String, (usize, bool)>,
     function_abi_returns_value: BTreeMap<String, bool>,
@@ -526,6 +528,7 @@ mod tests {
             func_to_table_idx,
             func_to_index,
             func_to_trampoline_idx,
+            native_initializer_to_table_idx: BTreeMap::new(),
             app_callable_resolver: None,
             positional_call_shapes: BTreeMap::new(),
             function_abi_returns_value,

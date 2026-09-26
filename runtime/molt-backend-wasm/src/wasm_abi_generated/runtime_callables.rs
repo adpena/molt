@@ -8257,6 +8257,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_importlib_extension_loader_create_module",
+        import: WasmRuntimeImport::ImportlibExtensionLoaderCreateModule,
+        arity: 3,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_extension_loader_exec_module",
         import: WasmRuntimeImport::ImportlibExtensionLoaderExecModule,
         arity: 4,
@@ -8284,6 +8290,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_importlib_load_module_from_spec",
         import: WasmRuntimeImport::ImportlibLoadModuleFromSpec,
         arity: 3,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_importlib_module_spec_type",
+        import: WasmRuntimeImport::ImportlibModuleSpecType,
+        arity: 0,
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
@@ -8389,15 +8401,9 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_cpython_abi_prepare_static_extension",
-        import: WasmRuntimeImport::CpythonAbiPrepareStaticExtension,
-        arity: 0,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_cpython_abi_pyinit_module_to_bits",
-        import: WasmRuntimeImport::CpythonAbiPyinitModuleToBits,
-        arity: 1,
+        runtime_name: "molt_cpython_abi_run_static_extension_init",
+        import: WasmRuntimeImport::CpythonAbiRunStaticExtensionInit,
+        arity: 2,
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
@@ -15875,6 +15881,15 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         dispatch: ReservedRuntimeCallableDispatch::Trampoline,
         trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
+    ReservedRuntimeCallableSpec {
+        index: 24,
+        runtime_name: "molt_importlib_module_spec_init",
+        import_name: "importlib_module_spec_init",
+        import: WasmRuntimeImport::ImportlibModuleSpecInit,
+        arity: 5,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
+    },
 ];
 
 pub(crate) const RESERVED_RUNTIME_CALLABLE_COUNT: u32 =
@@ -17534,6 +17549,9 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_importlib_zip_source_loader_exec_module" => {
             Some(WasmRuntimeImport::ImportlibZipSourceLoaderExecModule)
         }
+        "molt_importlib_extension_loader_create_module" => {
+            Some(WasmRuntimeImport::ImportlibExtensionLoaderCreateModule)
+        }
         "molt_importlib_extension_loader_exec_module" => {
             Some(WasmRuntimeImport::ImportlibExtensionLoaderExecModule)
         }
@@ -17547,6 +17565,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_importlib_load_module_from_spec" => {
             Some(WasmRuntimeImport::ImportlibLoadModuleFromSpec)
         }
+        "molt_importlib_module_spec_type" => Some(WasmRuntimeImport::ImportlibModuleSpecType),
         "molt_importlib_resources_open_resource_bytes_from_package_parts" => {
             Some(WasmRuntimeImport::ImportlibResourcesOpenResourceBytesFromPackageParts)
         }
@@ -17566,11 +17585,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_copyreg_add_extension" => Some(WasmRuntimeImport::CopyregAddExtension),
         "molt_copyreg_remove_extension" => Some(WasmRuntimeImport::CopyregRemoveExtension),
         "molt_copyreg_clear_extension_cache" => Some(WasmRuntimeImport::CopyregClearExtensionCache),
-        "molt_cpython_abi_prepare_static_extension" => {
-            Some(WasmRuntimeImport::CpythonAbiPrepareStaticExtension)
-        }
-        "molt_cpython_abi_pyinit_module_to_bits" => {
-            Some(WasmRuntimeImport::CpythonAbiPyinitModuleToBits)
+        "molt_cpython_abi_run_static_extension_init" => {
+            Some(WasmRuntimeImport::CpythonAbiRunStaticExtensionInit)
         }
         "molt_unraisable_hook_args_is_exact" => Some(WasmRuntimeImport::UnraisableHookArgsIsExact),
         "molt_gc_collect" => Some(WasmRuntimeImport::GcCollect),
@@ -18912,6 +18928,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
             Some(WasmRuntimeImport::CpythonAbiCextCallTrampoline)
         }
         "molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction),
+        "molt_importlib_module_spec_init" => Some(WasmRuntimeImport::ImportlibModuleSpecInit),
         _ => None,
     }
 }
@@ -20262,11 +20279,13 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_uuid_uuid5_bytes" => Some(2),
         "molt_importlib_sourcefileloader_exec_module" => Some(4),
         "molt_importlib_zip_source_loader_exec_module" => Some(5),
+        "molt_importlib_extension_loader_create_module" => Some(3),
         "molt_importlib_extension_loader_exec_module" => Some(4),
         "molt_importlib_sourceless_loader_exec_module" => Some(4),
         "molt_importlib_resources_reader_open_resource_bytes_from_roots" => Some(2),
         "molt_importlib_import_module" => Some(2),
         "molt_importlib_load_module_from_spec" => Some(3),
+        "molt_importlib_module_spec_type" => Some(0),
         "molt_importlib_resources_open_resource_bytes_from_package_parts" => Some(4),
         "molt_linecache_loader_get_source" => Some(2),
         "molt_copyreg_bootstrap" => Some(0),
@@ -20284,8 +20303,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_copyreg_add_extension" => Some(3),
         "molt_copyreg_remove_extension" => Some(3),
         "molt_copyreg_clear_extension_cache" => Some(0),
-        "molt_cpython_abi_prepare_static_extension" => Some(0),
-        "molt_cpython_abi_pyinit_module_to_bits" => Some(1),
+        "molt_cpython_abi_run_static_extension_init" => Some(2),
         "molt_unraisable_hook_args_is_exact" => Some(1),
         "molt_gc_collect" => Some(1),
         "molt_gc_enable" => Some(0),
@@ -21514,6 +21532,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_types_new_class" => Some(2),
         "molt_cpython_abi_cext_call_trampoline" => Some(3),
         "molt_importlib_import_transaction" => Some(5),
+        "molt_importlib_module_spec_init" => Some(5),
         _ => None,
     }
 }

@@ -64,6 +64,12 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     assert (
         manifest.CPYTHON_ABI_SOURCE_ROOT.parent / "include" / "Python.h"
     ).resolve() in input_files
+    assert (
+        ROOT / "include/molt/shared/_module_callable_exports.h"
+    ).resolve() in input_files
+    assert (
+        ROOT / "runtime/molt-cpython-abi/include/traceback.h"
+    ).resolve() not in input_files
     assert {
         path.resolve() for path in manifest.CPYTHON_ABI_SOURCE_ROOT.rglob("*.rs")
     } <= input_files
@@ -775,6 +781,80 @@ def test_cpython_abi_link_import_discovery_covers_the_complete_crate() -> None:
     }
 
 
+def test_linked_shared_header_declaration_changes_signatures_and_cache_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_header = (ROOT / "include/molt/shared/_module_callable_exports.h").resolve()
+    assert shared_header in {
+        path.resolve() for path in manifest.generator_input_files()
+    }
+    gen = _load_gen_wasm_abi()
+    monkeypatch.setattr(gen, "generator_runtime_export_signature_rows", lambda: ())
+    monkeypatch.setattr(gen, "generator_cpython_abi_link_import_kinds", lambda: ())
+    original_read_bytes = Path.read_bytes
+    original_read_text = Path.read_text
+    original = shared_header.read_bytes()
+    changed = original.replace(
+        b"extern PyObject *PyModule_New(",
+        b"extern double PyModule_New(",
+        1,
+    )
+    assert changed != original
+    manifest.generator_cpython_abi_link_import_signatures.cache_clear()
+    try:
+        baseline = dict(
+            (name, (params, results))
+            for name, params, results in (
+                manifest.generator_cpython_abi_link_import_signatures()
+            )
+        )
+        assert baseline["PyModule_New"] == (("i32",), ("i32",))
+        baseline_key = gen._render_cache_key("test-rustfmt")
+
+        def changed_read_bytes(path: Path) -> bytes:
+            if path.resolve() == shared_header:
+                return changed
+            return original_read_bytes(path)
+
+        def changed_read_text(path: Path, *args: object, **kwargs: object) -> str:
+            if path.resolve() == shared_header:
+                return changed.decode("utf-8")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_bytes", changed_read_bytes)
+        monkeypatch.setattr(Path, "read_text", changed_read_text)
+        manifest.generator_cpython_abi_link_import_signatures.cache_clear()
+        changed_signatures = dict(
+            (name, (params, results))
+            for name, params, results in (
+                manifest.generator_cpython_abi_link_import_signatures()
+            )
+        )
+        assert changed_signatures["PyModule_New"] == (("i32",), ("f64",))
+        assert gen._render_cache_key("test-rustfmt") != baseline_key
+    finally:
+        manifest.generator_cpython_abi_link_import_signatures.cache_clear()
+
+
+def test_linked_header_closure_rejects_missing_local_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_header = (ROOT / "include/molt/shared/_module_callable_exports.h").resolve()
+    original_is_file = Path.is_file
+
+    def missing_shared_header(path: Path) -> bool:
+        if path.resolve() == shared_header:
+            return False
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", missing_shared_header)
+    with pytest.raises(
+        manifest.WasmAbiManifestError,
+        match="missing local header '_module_callable_exports.h'",
+    ):
+        manifest.generator_input_files()
+
+
 def test_external_native_function_signature_authority_is_complete() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
@@ -1132,8 +1212,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         for entry in reserved_callables
     ]
     assert len(shared_callables) == len(reserved_callables)
-    assert shared_callables[-1] == {
-        "index": len(reserved_callables) - 1,
+    assert shared_callables[23] == {
+        "index": 23,
         "runtime_name": "molt_importlib_import_transaction",
         "import_name": "importlib_import_transaction",
         "callable_arity": 5,
@@ -1142,6 +1222,17 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "trampoline_abi": "unpack_args",
         "runtime_feature": None,
         "symbol_path": "molt_importlib_import_transaction",
+    }
+    assert shared_callables[24] == {
+        "index": 24,
+        "runtime_name": "molt_importlib_module_spec_init",
+        "import_name": "importlib_module_spec_init",
+        "callable_arity": 5,
+        "callable_result": None,
+        "callable_dispatch": "direct",
+        "trampoline_abi": "unpack_args",
+        "runtime_feature": None,
+        "symbol_path": "molt_importlib_module_spec_init",
     }
     assert all(
         entry["runtime_name"] != "molt_types_bootstrap" for entry in shared_callables
@@ -1152,8 +1243,12 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "molt_cpython_abi_cext_call_trampoline" in rendered_runtime
     assert "molt_types_bootstrap" not in rendered_runtime
     assert (
-        f'({len(reserved_callables) - 1}, "molt_importlib_import_transaction", '
+        '(23, "molt_importlib_import_transaction", '
         '"importlib_import_transaction", 5, "trampoline")' in gen.render_py(data)
+    )
+    assert (
+        '(24, "molt_importlib_module_spec_init", '
+        '"importlib_module_spec_init", 5, "direct")' in gen.render_py(data)
     )
 
     broken_marker = copy.deepcopy(data)
@@ -2337,19 +2432,25 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
         "import_name": "type_call",
         "callable_arity": 1,
     }
-    assert reserved[-2] == {
+    assert reserved[22] == {
         "index": 22,
         "runtime_name": "molt_cpython_abi_cext_call_trampoline",
         "import_name": "cpython_abi_cext_call_trampoline",
         "callable_arity": 3,
         "trampoline_abi": "call_frame",
     }
-    assert reserved[-1] == {
+    assert reserved[23] == {
         "index": 23,
         "runtime_name": "molt_importlib_import_transaction",
         "import_name": "importlib_import_transaction",
         "callable_arity": 5,
         "callable_dispatch": "trampoline",
+    }
+    assert reserved[24] == {
+        "index": 24,
+        "runtime_name": "molt_importlib_module_spec_init",
+        "import_name": "importlib_module_spec_init",
+        "callable_arity": 5,
     }
     assert [entry["index"] for entry in reserved] == list(range(len(reserved)))
 

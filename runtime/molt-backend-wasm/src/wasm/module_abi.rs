@@ -90,6 +90,7 @@ impl WasmBackend {
             &task_closure_sizes,
             &function_abi_returns_value,
             &user_function_imports,
+            &native_callable_imports,
             type_layout.user_type_map(),
             reloc_enabled,
             sentinel_func_idx,

@@ -49,6 +49,23 @@ fn platform_test_path(parts: &[&str]) -> String {
 }
 
 #[test]
+fn importlib_spec_exec_publication_custody_is_exact_and_scoped() {
+    assert!(!importlib_spec_exec_owns(0x11));
+    {
+        let _outer = ImportlibSpecExecTargetGuard::enter(0x11);
+        assert!(importlib_spec_exec_owns(0x11));
+        assert!(!importlib_spec_exec_owns(0x22));
+        {
+            let _inner = ImportlibSpecExecTargetGuard::enter(0x22);
+            assert!(!importlib_spec_exec_owns(0x11));
+            assert!(importlib_spec_exec_owns(0x22));
+        }
+        assert!(importlib_spec_exec_owns(0x11));
+    }
+    assert!(!importlib_spec_exec_owns(0x11));
+}
+
+#[test]
 fn importlib_system_module_authority_returns_and_releases_one_owner() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
@@ -355,15 +372,10 @@ fn call_extension_exec_boundary(_py: &PyToken<'_>, module_name: &str, path: &str
     let module_name_bits = alloc_test_string_bits(_py, module_name);
     let path_bits = alloc_test_string_bits(_py, path);
     let module_bits = crate::molt_module_new(module_name_bits);
-    let namespace_ptr = obj_from_bits(module_bits)
-        .as_ptr()
-        .map(|ptr| unsafe { crate::object::layout::module_dict_bits(ptr) })
-        .and_then(|bits| obj_from_bits(bits).as_ptr())
-        .expect("test module namespace");
     let out = match importlib_ffi::bootstrap_loader::importlib_exec_extension_impl(
         _py,
         module_bits,
-        namespace_ptr,
+        module_name_bits,
         module_name,
         path,
     ) {

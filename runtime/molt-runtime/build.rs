@@ -14,6 +14,12 @@ mod variadic_exports;
 mod wasi_sysroot;
 
 fn main() {
+    // Native C fixtures use this image's Cargo identities, never an ambient
+    // rustc host (which may differ during cross-target or emulated testing).
+    for key in ["HOST", "TARGET"] {
+        let value = env::var(key).unwrap_or_else(|_| panic!("Cargo {key} missing"));
+        println!("cargo:rustc-env=MOLT_CARGO_{key}={value}");
+    }
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();

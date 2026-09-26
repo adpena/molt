@@ -20,6 +20,7 @@ _MACHINERY_INTRINSICS = [
     "molt_importlib_sourcefileloader_exec_module",
     "molt_importlib_zip_source_loader_exec_module",
     "molt_importlib_extension_loader_exec_module",
+    "molt_importlib_extension_loader_create_module",
     "molt_importlib_sourceless_loader_exec_module",
     "molt_importlib_resources_reader_resource_path_from_roots",
     "molt_importlib_resources_reader_open_resource_bytes_from_roots",
@@ -34,7 +35,11 @@ _MACHINERY_INTRINSICS = [
     "molt_exception_pending",
     "molt_module_import",
     "molt_sys_platform",
+    "molt_importlib_module_spec_type",
 ]
+
+# Stands in for the runtime-owned class the facade must bind, not define.
+_RUNTIME_MODULE_SPEC = type("ModuleSpec", (), {})
 
 
 def _coerce_stub(module, loader, spec=None):
@@ -67,6 +72,8 @@ def _load_machinery_module(missing_intrinsics=frozenset()):
             registry[name] = _noop
     registry["molt_importlib_coerce_module_name"] = _coerce_stub
     registry["molt_sys_platform"] = lambda: sys.platform
+    if "molt_importlib_module_spec_type" not in missing_intrinsics:
+        registry["molt_importlib_module_spec_type"] = lambda: _RUNTIME_MODULE_SPEC
 
     def _lookup(intrinsic_name):
         return registry.get(intrinsic_name)
@@ -86,6 +93,21 @@ def _load_machinery_module(missing_intrinsics=frozenset()):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_module_spec_is_the_runtime_type_authority() -> None:
+    machinery = _load_machinery_module()
+
+    assert machinery.ModuleSpec is _RUNTIME_MODULE_SPEC
+
+
+def test_module_spec_fails_closed_without_runtime_type() -> None:
+    try:
+        _load_machinery_module(missing_intrinsics={"molt_importlib_module_spec_type"})
+    except RuntimeError as exc:
+        assert str(exc) == "intrinsic unavailable: molt_importlib_module_spec_type"
+    else:
+        raise AssertionError("expected missing ModuleSpec type to fail closed")
 
 
 def test_coerce_module_name_prefers_spec_name_when_module_name_invalid() -> None:
@@ -141,6 +163,7 @@ def test_platform_suffixes_resolve_when_sys_is_partially_initialized() -> None:
         registry = {}
         builtins._molt_intrinsics = registry
     registry["molt_sys_platform"] = lambda: "darwin"
+    registry["molt_importlib_module_spec_type"] = lambda: _RUNTIME_MODULE_SPEC
 
     spec = importlib.util.spec_from_file_location(
         "molt_stdlib_importlib_machinery_partial_sys", SCRIPT_PATH

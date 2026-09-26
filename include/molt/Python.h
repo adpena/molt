@@ -5,9 +5,9 @@
  *
  *   cc -O2 -shared -fPIC -I include myext.c -o _myext.so
  *
- * CPython-layout object and numeric scalar representation is shared with the
- * linked ABI header. This file adds source-transport helpers only; it does not
- * define a second scalar/header representation.
+ * CPython-layout objects, numeric scalars, module definitions, and C-callable
+ * entry points are shared with the linked ABI header. This file adds
+ * source-transport helpers only; it does not define a second representation.
  */
 #ifndef MOLT_C_API_PYTHON_H
 #define MOLT_C_API_PYTHON_H
@@ -25,6 +25,7 @@
 
 #include <molt/molt.h>
 #include "shared/_c_data_model.h"
+#include "shared/_c_api_linkage.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -240,8 +241,6 @@ typedef struct _molt_pythreadstate {
 
 typedef void (*PyCapsule_Destructor)(PyObject *);
 
-typedef PyObject *(*PyCFunction)(PyObject *, PyObject *);
-typedef PyObject *(*PyCFunctionWithKeywords)(PyObject *, PyObject *, PyObject *);
 typedef PyObject *(*getter)(PyObject *, void *);
 typedef int (*setter)(PyObject *, PyObject *, void *);
 typedef Py_ssize_t (*lenfunc)(PyObject *);
@@ -250,6 +249,7 @@ typedef int (*objobjargproc)(PyObject *, PyObject *, PyObject *);
 typedef int (*objobjproc)(PyObject *, PyObject *);
 typedef PyObject *(*vectorcallfunc)(PyObject *callable, PyObject *const *args,
                                     size_t nargsf, PyObject *kwnames);
+#include "shared/_cfunction_abi.h"
 
 typedef struct PyMappingMethods {
     lenfunc mp_length;
@@ -283,7 +283,6 @@ typedef struct PyBufferProcs {
 
 typedef PyObject PyBytesObject;
 typedef PyObject PyTupleObject;
-typedef PyObject PyCFunctionObject;
 typedef PyObject PyGetSetDescrObject;
 typedef PyObject PyMemberDescrObject;
 typedef PyObject PyMethodDescrObject;
@@ -299,36 +298,55 @@ typedef struct PyCriticalSection {
     PyObject *object;
 } PyCriticalSection;
 
-typedef struct PyMethodDef {
-    const char *ml_name;
-    void *ml_meth;
-    int ml_flags;
-    const char *ml_doc;
-} PyMethodDef;
+#include "shared/_module_definition_abi.h"
 
-typedef struct PyModuleDef_Base {
-    PyObject ob_base;
-    PyObject *(*m_init)(void);
-    Py_ssize_t m_index;
-    PyObject *m_copy;
-} PyModuleDef_Base;
+#include "shared/_module_callable_exports.h"
 
-typedef struct PyModuleDef {
-    PyModuleDef_Base m_base;
-    const char *m_name;
-    const char *m_doc;
-    Py_ssize_t m_size;
-    PyMethodDef *m_methods;
-    struct PyModuleDef_Slot *m_slots;
-    int (*m_traverse)(PyObject *, int (*)(PyObject *, void *), void *);
-    int (*m_clear)(PyObject *);
-    void (*m_free)(void *);
-} PyModuleDef;
-
-typedef struct PyModuleDef_Slot {
-    int slot;
-    void *value;
-} PyModuleDef_Slot;
+/* Host-loaded source extensions resolve the same linkable CPython ABI image
+ * that owns the bridge. Missing symbols fail closed in _molt_host_abi_symbol;
+ * no inline module or callable implementation is a fallback. */
+#ifdef MOLT_EXTENSION_HOST_ABI
+#define PyModule_Type (*(PyTypeObject *)_molt_host_abi_symbol("PyModule_Type"))
+#define PyModuleDef_Type (*(PyTypeObject *)_molt_host_abi_symbol("PyModuleDef_Type"))
+#define PyCFunction_Type (*(PyTypeObject *)_molt_host_abi_symbol("PyCFunction_Type"))
+#define PyCMethod_Type (*(PyTypeObject *)_molt_host_abi_symbol("PyCMethod_Type"))
+#define PyModule_New ((PyObject *(*)(const char *))_molt_host_abi_symbol("PyModule_New"))
+#define PyModule_NewObject ((PyObject *(*)(PyObject *))_molt_host_abi_symbol("PyModule_NewObject"))
+#define PyModule_Create2 ((PyObject *(*)(PyModuleDef *, int))_molt_host_abi_symbol("PyModule_Create2"))
+#define PyModuleDef_Init ((PyObject *(*)(PyModuleDef *))_molt_host_abi_symbol("PyModuleDef_Init"))
+#define PyModule_FromDefAndSpec2 ((PyObject *(*)(PyModuleDef *, PyObject *, int))_molt_host_abi_symbol("PyModule_FromDefAndSpec2"))
+#define PyModule_FromDefAndSpec ((PyObject *(*)(PyModuleDef *, PyObject *))_molt_host_abi_symbol("PyModule_FromDefAndSpec"))
+#define PyModule_ExecDef ((int (*)(PyObject *, PyModuleDef *))_molt_host_abi_symbol("PyModule_ExecDef"))
+#define PyUnstable_Module_SetGIL ((int (*)(PyObject *, void *))_molt_host_abi_symbol("PyUnstable_Module_SetGIL"))
+#define PyModule_Check ((int (*)(PyObject *))_molt_host_abi_symbol("PyModule_Check"))
+#define PyModule_CheckExact ((int (*)(PyObject *))_molt_host_abi_symbol("PyModule_CheckExact"))
+#define PyModule_GetDict ((PyObject *(*)(PyObject *))_molt_host_abi_symbol("PyModule_GetDict"))
+#define PyModule_GetDef ((PyModuleDef *(*)(PyObject *))_molt_host_abi_symbol("PyModule_GetDef"))
+#define PyModule_GetState ((void *(*)(PyObject *))_molt_host_abi_symbol("PyModule_GetState"))
+#define PyModule_GetName ((const char *(*)(PyObject *))_molt_host_abi_symbol("PyModule_GetName"))
+#define PyModule_GetNameObject ((PyObject *(*)(PyObject *))_molt_host_abi_symbol("PyModule_GetNameObject"))
+#define PyModule_GetFilename ((const char *(*)(PyObject *))_molt_host_abi_symbol("PyModule_GetFilename"))
+#define PyModule_GetFilenameObject ((PyObject *(*)(PyObject *))_molt_host_abi_symbol("PyModule_GetFilenameObject"))
+#define PyModule_SetDocString ((int (*)(PyObject *, const char *))_molt_host_abi_symbol("PyModule_SetDocString"))
+#define PyModule_GetObject ((PyObject *(*)(PyObject *, const char *))_molt_host_abi_symbol("PyModule_GetObject"))
+#define PyModule_AddFunctions ((int (*)(PyObject *, PyMethodDef *))_molt_host_abi_symbol("PyModule_AddFunctions"))
+#define PyModule_AddObjectRef ((int (*)(PyObject *, const char *, PyObject *))_molt_host_abi_symbol("PyModule_AddObjectRef"))
+#define PyModule_AddObject ((int (*)(PyObject *, const char *, PyObject *))_molt_host_abi_symbol("PyModule_AddObject"))
+#define PyModule_Add ((int (*)(PyObject *, const char *, PyObject *))_molt_host_abi_symbol("PyModule_Add"))
+#define PyModule_AddType ((int (*)(PyObject *, PyTypeObject *))_molt_host_abi_symbol("PyModule_AddType"))
+#define PyModule_AddIntConstant ((int (*)(PyObject *, const char *, long))_molt_host_abi_symbol("PyModule_AddIntConstant"))
+#define PyModule_AddStringConstant ((int (*)(PyObject *, const char *, const char *))_molt_host_abi_symbol("PyModule_AddStringConstant"))
+#define PyState_AddModule ((int (*)(PyObject *, PyModuleDef *))_molt_host_abi_symbol("PyState_AddModule"))
+#define PyState_FindModule ((PyObject *(*)(PyModuleDef *))_molt_host_abi_symbol("PyState_FindModule"))
+#define PyState_RemoveModule ((int (*)(PyModuleDef *))_molt_host_abi_symbol("PyState_RemoveModule"))
+#define PyCFunction_New ((PyObject *(*)(PyMethodDef *, PyObject *))_molt_host_abi_symbol("PyCFunction_New"))
+#define PyCFunction_NewEx ((PyObject *(*)(PyMethodDef *, PyObject *, PyObject *))_molt_host_abi_symbol("PyCFunction_NewEx"))
+#define PyCMethod_New ((PyObject *(*)(PyMethodDef *, PyObject *, PyObject *, PyTypeObject *))_molt_host_abi_symbol("PyCMethod_New"))
+#define PyCFunction_Check ((int (*)(PyObject *))_molt_host_abi_symbol("PyCFunction_Check"))
+#define PyCFunction_GetFunction ((PyCFunction (*)(PyObject *))_molt_host_abi_symbol("PyCFunction_GetFunction"))
+#define PyCFunction_GetSelf ((PyObject *(*)(PyObject *))_molt_host_abi_symbol("PyCFunction_GetSelf"))
+#define PyCFunction_GetFlags ((int (*)(PyObject *))_molt_host_abi_symbol("PyCFunction_GetFlags"))
+#endif
 
 typedef struct PyType_Slot {
     int slot;
@@ -370,10 +388,6 @@ static inline PyObject *PyType_FromModuleAndSpec(
 static inline PyObject *PyType_GetModule(PyTypeObject *type);
 static inline void *PyType_GetModuleState(PyTypeObject *type);
 static inline PyObject *PyType_GetModuleByDef(PyTypeObject *type, PyModuleDef *def);
-static inline PyModuleDef *PyModule_GetDef(PyObject *module);
-static inline void *PyModule_GetState(PyObject *module);
-static inline int PyModule_AddFunctions(PyObject *module, PyMethodDef *functions);
-static inline int PyState_AddModule(PyObject *module, PyModuleDef *def);
 static inline PyObject *_molt_builtin_class_lookup_utf8(const char *name);
 static inline PyTypeObject *_molt_builtin_type_object_borrowed(const char *name);
 static inline void PyErr_Clear(void);
@@ -464,16 +478,8 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 #define PYTHON_API_VERSION 1013
 #endif
 
-#define METH_VARARGS 0x0001
-#define METH_KEYWORDS 0x0002
-#define METH_NOARGS 0x0004
-#define METH_O 0x0008
-#define METH_CLASS 0x0010
-#define METH_STATIC 0x0020
-#define METH_COEXIST 0x0040
 #define _MOLT_METH_CALL_MASK (METH_VARARGS | METH_KEYWORDS | METH_NOARGS | METH_O)
 #define _MOLT_METH_MODIFIER_MASK (METH_CLASS | METH_STATIC | METH_COEXIST)
-#define PY_METHODDEF_SENTINEL   { NULL, NULL, 0, NULL }
 #define _MOLT_TYPE_MODULE_ATTR "__molt_type_module__"
 
 /* Type slot IDs (CPython Include/typeslots.h) */
@@ -576,8 +582,6 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 #define Py_TPFLAGS_LONG_SUBCLASS (1UL << 24)
 #define Py_TPFLAGS_READY (1UL << 12)
 
-#define PyModuleDef_HEAD_INIT { { 1, NULL }, NULL, 0, NULL }
-
 #define Py_SUCCESS 0
 #define Py_FAILURE -1
 
@@ -618,26 +622,9 @@ static int Py_OptimizeFlag = 0;
 #define PyAPI_FUNC(RTYPE) RTYPE
 #endif
 
-#ifndef PyAPI_DATA
-#define PyAPI_DATA(RTYPE) extern RTYPE
-#endif
-
 #ifndef PyMODINIT_FUNC
-/* CPython parity: keep C linkage for module init functions defined in C++
- * translation units so the PyInit_* symbol stays unmangled. */
-#ifdef __cplusplus
-#if defined(_WIN32)
-#define PyMODINIT_FUNC extern "C" __declspec(dllexport) PyObject *
-#else
-#define PyMODINIT_FUNC extern "C" PyObject *
-#endif
-#else
-#if defined(_WIN32)
-#define PyMODINIT_FUNC __declspec(dllexport) PyObject *
-#else
-#define PyMODINIT_FUNC PyObject *
-#endif
-#endif
+#include "shared/_module_init_export.h"
+#define PyMODINIT_FUNC MOLT_PYMODINIT_FUNC
 #endif
 
 #if SIZEOF_VOID_P > 4
@@ -774,7 +761,7 @@ extern void molt_capi_any_incref(PyObject *obj);
 extern void molt_capi_any_decref(PyObject *obj);
 extern PyTypeObject *molt_capi_semantic_type(PyObject *obj);
 extern int molt_capi_set_semantic_type(PyObject *obj, PyTypeObject *type_obj);
-extern PyTypeObject MoltManaged_Type;
+PyAPI_DATA(PyTypeObject) MoltManaged_Type;
 extern void _Py_Dealloc(PyObject *obj);
 
 static inline MoltHandle _molt_py_handle(const PyObject *obj) {
@@ -1186,13 +1173,13 @@ static inline void Py_DecRef(PyObject *obj) {
     } while (0)
 
 #define Py_None _molt_pyobject_from_borrowed_handle(molt_none())
-extern PyLongObject _Py_TrueStruct;
-extern PyLongObject _Py_FalseStruct;
+PyAPI_DATA(PyLongObject) _Py_TrueStruct;
+PyAPI_DATA(PyLongObject) _Py_FalseStruct;
 #define Py_True ((PyObject *)&_Py_TrueStruct)
 #define Py_False ((PyObject *)&_Py_FalseStruct)
 
-extern PyObject Py_NotImplementedSentinel;
-extern PyObject Py_EllipsisObject;
+PyAPI_DATA(PyObject) Py_NotImplementedSentinel;
+PyAPI_DATA(PyObject) Py_EllipsisObject;
 #define Py_NotImplemented (&Py_NotImplementedSentinel)
 #define Py_Ellipsis (&Py_EllipsisObject)
 
@@ -3771,433 +3758,7 @@ static inline PyObject *PyType_GetModuleByDef(PyTypeObject *type, PyModuleDef *d
     return NULL;
 }
 
-static inline int _molt_module_attach_definition(PyObject *module, PyModuleDef *def) {
-    uint64_t state_size = 0;
-    if (def == NULL) {
-        return 0;
-    }
-    if (def->m_size > 0) {
-        state_size = (uint64_t)def->m_size;
-    }
-    if (molt_module_capi_register(_molt_py_handle(module), (uintptr_t)def, state_size) < 0) {
-        return -1;
-    }
-    if (def->m_doc != NULL) {
-        MoltHandle doc_bits = _molt_string_from_utf8(def->m_doc);
-        if (doc_bits == 0 || molt_err_pending() != 0) {
-            return -1;
-        }
-        if (molt_object_setattr_bytes(
-                _molt_py_handle(module),
-                (const uint8_t *)"__doc__",
-                (uint64_t)7,
-                doc_bits)
-            < 0) {
-            molt_handle_decref(doc_bits);
-            return -1;
-        }
-        molt_handle_decref(doc_bits);
-    }
-    return 0;
-}
-
-static inline PyObject *PyModule_NewObject(PyObject *name) {
-    if (name == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module name object must not be NULL");
-        return NULL;
-    }
-    return _molt_pyobject_from_result(molt_module_create(_molt_py_handle(name)));
-}
-
-static inline PyObject *PyModule_New(const char *name) {
-    MoltHandle name_bits;
-    MoltHandle module_bits;
-    if (name == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module name must not be NULL");
-        return NULL;
-    }
-    name_bits = _molt_string_from_utf8(name);
-    if (name_bits == 0 || molt_err_pending() != 0) {
-        return NULL;
-    }
-    module_bits = molt_module_create(name_bits);
-    molt_handle_decref(name_bits);
-    return _molt_pyobject_from_result(module_bits);
-}
-
-static inline PyObject *PyModule_Create2(PyModuleDef *def, int api_version) {
-    MoltHandle name_bits;
-    MoltHandle module_bits;
-    PyObject *module;
-    (void)api_version;
-    if (def == NULL || def->m_name == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module definition name must not be NULL");
-        return NULL;
-    }
-    name_bits = _molt_string_from_utf8(def->m_name);
-    if (name_bits == 0 || molt_err_pending() != 0) {
-        return NULL;
-    }
-    module_bits = molt_module_create(name_bits);
-    molt_handle_decref(name_bits);
-    module = _molt_pyobject_from_result(module_bits);
-    if (module == NULL) {
-        return NULL;
-    }
-    if (_molt_module_attach_definition(module, def) < 0) {
-        Py_DECREF(module);
-        return NULL;
-    }
-    if (PyModule_AddFunctions(module, def->m_methods) < 0) {
-        Py_DECREF(module);
-        return NULL;
-    }
-    if (PyState_AddModule(module, def) < 0) {
-        Py_DECREF(module);
-        return NULL;
-    }
-    return module;
-}
-
-#define PyModule_Create(def) PyModule_Create2((def), PYTHON_API_VERSION)
-
-static inline PyObject *PyModuleDef_Init(PyModuleDef *def) {
-    if (def == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module definition must not be NULL");
-        return NULL;
-    }
-    return (PyObject *)def;
-}
-
-static inline PyObject *PyModule_GetDict(PyObject *module) {
-    return _molt_pyobject_from_result(molt_module_get_dict(_molt_py_handle(module)));
-}
-
-static inline int PyModule_AddObjectRef(PyObject *module, const char *name, PyObject *value) {
-    if (name == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module attribute name must not be NULL");
-        return -1;
-    }
-    return molt_module_add_object_bytes(
-        _molt_py_handle(module), (const uint8_t *)name, (uint64_t)strlen(name), _molt_py_handle(value));
-}
-
-static inline int PyModule_AddObject(PyObject *module, const char *name, PyObject *value) {
-    int rc = PyModule_AddObjectRef(module, name, value);
-    if (rc == 0 && value != NULL) {
-        Py_DECREF(value);
-    }
-    return rc;
-}
-
-static inline int PyModule_Add(PyObject *module, const char *name, PyObject *value) {
-    return PyModule_AddObject(module, name, value);
-}
-
-static inline int PyModule_AddType(PyObject *module, PyTypeObject *type) {
-    if (type == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module type must not be NULL");
-        return -1;
-    }
-    return molt_module_add_type(
-        _molt_py_handle(module), _molt_py_handle((PyObject *)type));
-}
-
-static inline PyObject *PyModule_GetObject(PyObject *module, const char *name) {
-    if (name == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module attribute name must not be NULL");
-        return NULL;
-    }
-    return _molt_pyobject_from_result(molt_module_get_object_bytes(
-        _molt_py_handle(module), (const uint8_t *)name, (uint64_t)strlen(name)));
-}
-
-static inline PyObject *PyModule_GetNameObject(PyObject *module) {
-    return PyModule_GetObject(module, "__name__");
-}
-
-static inline PyModuleDef *PyModule_GetDef(PyObject *module) {
-    if (module == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module must not be NULL");
-        return NULL;
-    }
-    return (PyModuleDef *)molt_module_capi_get_def(_molt_py_handle(module));
-}
-
-static inline void *PyModule_GetState(PyObject *module) {
-    if (module == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module must not be NULL");
-        return NULL;
-    }
-    return (void *)molt_module_capi_get_state(_molt_py_handle(module));
-}
-
-static inline int PyModule_SetDocString(PyObject *module, const char *docstring) {
-    MoltHandle doc_bits;
-    if (module == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module must not be NULL");
-        return -1;
-    }
-    if (docstring == NULL) {
-        return molt_object_setattr_bytes(
-            _molt_py_handle(module), (const uint8_t *)"__doc__", (uint64_t)7, molt_none());
-    }
-    doc_bits = _molt_string_from_utf8(docstring);
-    if (doc_bits == 0 || molt_err_pending() != 0) {
-        return -1;
-    }
-    if (molt_object_setattr_bytes(
-            _molt_py_handle(module), (const uint8_t *)"__doc__", (uint64_t)7, doc_bits)
-        < 0) {
-        molt_handle_decref(doc_bits);
-        return -1;
-    }
-    molt_handle_decref(doc_bits);
-    return 0;
-}
-
-static inline PyObject *PyModule_GetFilenameObject(PyObject *module) {
-    PyObject *filename_obj = PyModule_GetObject(module, "__file__");
-    if (filename_obj == NULL) {
-        if (molt_err_pending() != 0) {
-            (void)molt_err_clear();
-        }
-        PyErr_SetString(PyExc_RuntimeError, "module has no valid __file__");
-        return NULL;
-    }
-    if (PyUnicode_AsUTF8AndSize(filename_obj, NULL) == NULL) {
-        if (molt_err_pending() != 0) {
-            (void)molt_err_clear();
-        }
-        Py_DECREF(filename_obj);
-        PyErr_SetString(PyExc_RuntimeError, "module __file__ must be str");
-        return NULL;
-    }
-    return filename_obj;
-}
-
-static inline const char *PyModule_GetName(PyObject *module) {
-    static _Thread_local char *name_buf = NULL;
-    static _Thread_local size_t name_cap = 0;
-    PyObject *name_obj = PyModule_GetNameObject(module);
-    const char *raw;
-    Py_ssize_t len = 0;
-    if (name_obj == NULL) {
-        return NULL;
-    }
-    raw = PyUnicode_AsUTF8AndSize(name_obj, &len);
-    if (raw == NULL) {
-        Py_DECREF(name_obj);
-        return NULL;
-    }
-    if ((size_t)len + 1 > name_cap) {
-        char *next = (char *)realloc(name_buf, (size_t)len + 1);
-        if (next == NULL) {
-            Py_DECREF(name_obj);
-            PyErr_SetString(PyExc_RuntimeError, "out of memory");
-            return NULL;
-        }
-        name_buf = next;
-        name_cap = (size_t)len + 1;
-    }
-    memcpy(name_buf, raw, (size_t)len);
-    name_buf[(size_t)len] = '\0';
-    Py_DECREF(name_obj);
-    return name_buf;
-}
-
-static inline const char *PyModule_GetFilename(PyObject *module) {
-    static _Thread_local char *filename_buf = NULL;
-    static _Thread_local size_t filename_cap = 0;
-    PyObject *filename_obj = PyModule_GetFilenameObject(module);
-    const char *raw;
-    Py_ssize_t len = 0;
-    if (filename_obj == NULL) {
-        return NULL;
-    }
-    raw = PyUnicode_AsUTF8AndSize(filename_obj, &len);
-    if (raw == NULL) {
-        Py_DECREF(filename_obj);
-        return NULL;
-    }
-    if ((size_t)len + 1 > filename_cap) {
-        char *next = (char *)realloc(filename_buf, (size_t)len + 1);
-        if (next == NULL) {
-            Py_DECREF(filename_obj);
-            PyErr_SetString(PyExc_RuntimeError, "out of memory");
-            return NULL;
-        }
-        filename_buf = next;
-        filename_cap = (size_t)len + 1;
-    }
-    memcpy(filename_buf, raw, (size_t)len);
-    filename_buf[(size_t)len] = '\0';
-    Py_DECREF(filename_obj);
-    return filename_buf;
-}
-
-static inline int PyModule_AddFunctions(PyObject *module, PyMethodDef *functions) {
-    PyMethodDef *entry;
-    if (module == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module must not be NULL");
-        return -1;
-    }
-    if (functions == NULL) {
-        return 0;
-    }
-    for (entry = functions; entry->ml_name != NULL; entry++) {
-        if (entry->ml_meth == NULL) {
-            PyErr_Format(PyExc_TypeError, "method '%s' has NULL function pointer", entry->ml_name);
-            return -1;
-        }
-        if (molt_module_add_py_cfunction_bytes(
-                _molt_py_handle(module),
-                (const uint8_t *)entry->ml_name,
-                (uint64_t)strlen(entry->ml_name),
-                (uintptr_t)entry->ml_meth,
-                (uint32_t)entry->ml_flags,
-                (const uint8_t *)entry->ml_doc,
-                entry->ml_doc != NULL ? (uint64_t)strlen(entry->ml_doc) : 0)
-            < 0) {
-            return -1;
-        }
-    }
-    return 0;
-}
-
-static inline int PyState_AddModule(PyObject *module, PyModuleDef *def) {
-    if (module == NULL || def == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module/definition must not be NULL");
-        return -1;
-    }
-    return molt_module_state_add(_molt_py_handle(module), (uintptr_t)def);
-}
-
-static inline PyObject *PyState_FindModule(PyModuleDef *def) {
-    MoltHandle bits;
-    if (def == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module definition must not be NULL");
-        return NULL;
-    }
-    bits = molt_module_state_find((uintptr_t)def);
-    if (bits == 0 || molt_err_pending() != 0) {
-        return NULL;
-    }
-    return _molt_pyobject_from_borrowed_handle(bits);
-}
-
-static inline int PyState_RemoveModule(PyModuleDef *def) {
-    if (def == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module definition must not be NULL");
-        return -1;
-    }
-    if (molt_module_state_remove((uintptr_t)def) < 0) {
-        if (molt_err_pending() == 0) {
-            PyErr_SetString(PyExc_RuntimeError, "module definition was not registered");
-        }
-        return -1;
-    }
-    return 0;
-}
-
-static inline PyObject *PyModule_FromDefAndSpec2(PyModuleDef *def, PyObject *spec, int module_api_version) {
-    PyObject *module;
-    PyObject *name_obj;
-    (void)module_api_version;
-    if (def == NULL || spec == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module definition/spec must not be NULL");
-        return NULL;
-    }
-    name_obj = PyObject_GetAttrString(spec, "name");
-    if (name_obj == NULL) {
-        if (molt_err_pending() != 0) {
-            (void)molt_err_clear();
-        }
-        if (def->m_name == NULL) {
-            PyErr_SetString(PyExc_TypeError, "module spec missing name and definition has no name");
-            return NULL;
-        }
-        module = PyModule_New(def->m_name);
-    } else {
-        module = PyModule_NewObject(name_obj);
-        Py_DECREF(name_obj);
-    }
-    if (module == NULL) {
-        return NULL;
-    }
-    if (_molt_module_attach_definition(module, def) < 0) {
-        Py_DECREF(module);
-        return NULL;
-    }
-    if (PyObject_SetAttrString(module, "__spec__", spec) < 0) {
-        Py_DECREF(module);
-        return NULL;
-    }
-    return module;
-}
-
-static inline PyObject *PyModule_FromDefAndSpec(PyModuleDef *def, PyObject *spec) {
-    return PyModule_FromDefAndSpec2(def, spec, PYTHON_API_VERSION);
-}
-
-static inline int PyModule_ExecDef(PyObject *module, PyModuleDef *def) {
-    if (module == NULL || def == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module/definition must not be NULL");
-        return -1;
-    }
-    if (_molt_module_attach_definition(module, def) < 0) {
-        return -1;
-    }
-    if (def->m_doc != NULL && PyModule_SetDocString(module, def->m_doc) < 0) {
-        return -1;
-    }
-    if (PyModule_AddFunctions(module, def->m_methods) < 0) {
-        return -1;
-    }
-    return PyState_AddModule(module, def);
-}
-
-static inline int PyModule_AddIntConstant(PyObject *module, const char *name, long value) {
-    MoltHandle name_bits;
-    int rc;
-    if (name == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module attribute name must not be NULL");
-        return -1;
-    }
-    name_bits = _molt_string_from_utf8(name);
-    if (name_bits == 0 || molt_err_pending() != 0) {
-        return -1;
-    }
-    rc = molt_module_add_int_constant(_molt_py_handle(module), name_bits, (int64_t)value);
-    molt_handle_decref(name_bits);
-    return rc;
-}
-
-static inline int PyModule_AddStringConstant(PyObject *module, const char *name, const char *value) {
-    MoltHandle name_bits;
-    int rc;
-    if (name == NULL || value == NULL) {
-        PyErr_SetString(PyExc_TypeError, "module constant name/value must not be NULL");
-        return -1;
-    }
-    name_bits = _molt_string_from_utf8(name);
-    if (name_bits == 0 || molt_err_pending() != 0) {
-        return -1;
-    }
-    rc = molt_module_add_string_constant(
-        _molt_py_handle(module),
-        name_bits,
-        (const uint8_t *)value,
-        (uint64_t)strlen(value));
-    molt_handle_decref(name_bits);
-    return rc;
-}
-
-static inline int PyUnstable_Module_SetGIL(PyObject *module, int gil_mode) {
-    (void)module;
-    (void)gil_mode;
-    return 0;
-}
+/* Module lifecycle, state, and publication live in the linked CPython ABI. */
 
 static inline int PyUnstable_Object_IsUniqueReferencedTemporary(PyObject *obj) {
     (void)obj;
@@ -5299,10 +4860,10 @@ static inline PyTypeObject *_molt_builtin_type_object_borrowed(const char *name)
     return (PyTypeObject *)_molt_pyobject_from_borrowed_handle(bits);
 }
 
-extern PyTypeObject PyLong_Type;
-extern PyTypeObject PyFloat_Type;
-extern PyTypeObject PyBool_Type;
-extern PyTypeObject PyComplex_Type;
+PyAPI_DATA(PyTypeObject) PyLong_Type;
+PyAPI_DATA(PyTypeObject) PyFloat_Type;
+PyAPI_DATA(PyTypeObject) PyBool_Type;
+PyAPI_DATA(PyTypeObject) PyComplex_Type;
 #define PyBytes_Type (*_molt_builtin_type_object_borrowed("bytes"))
 #define PyUnicode_Type (*_molt_builtin_type_object_borrowed("str"))
 #define PySet_Type (*_molt_builtin_type_object_borrowed("set"))
@@ -5314,9 +4875,7 @@ extern PyTypeObject PyComplex_Type;
 #define PyByteArray_Type (*_molt_builtin_type_object_borrowed("bytearray"))
 #define PyMemoryView_Type (*_molt_builtin_type_object_borrowed("memoryview"))
 #define PyBaseObject_Type (*_molt_builtin_type_object_borrowed("object"))
-#define PyModule_Type (*_molt_builtin_type_object_borrowed("module"))
 #define PyRange_Type (*_molt_builtin_type_object_borrowed("range"))
-#define PyCFunction_Type (*_molt_builtin_type_object_borrowed("builtin_function_or_method"))
 #define PyFloat_AS_DOUBLE(op) PyFloat_AsDouble((PyObject *)(op))
 
 static inline int PyObject_TypeCheck(PyObject *ob, PyTypeObject *type) {
@@ -5416,8 +4975,6 @@ static inline int PyType_CheckExact(PyObject *obj) {
     return _molt_py_handle((PyObject *)Py_TYPE(obj)) == type_bits;
 }
 
-extern int PyModule_Check(PyObject *obj);
-extern int PyModule_CheckExact(PyObject *obj);
 
 #define PyNone_Type (*_molt_builtin_type_object_borrowed("NoneType"))
 
@@ -10219,7 +9776,7 @@ static inline int PyTraceBack_Print(PyObject *tb, PyObject *f) {
     return 0;
 }
 
-extern PyTypeObject PyTraceBack_Type;
+PyAPI_DATA(PyTypeObject) PyTraceBack_Type;
 
 static inline int PyTraceBack_Check(PyObject *ob) {
     return ob != NULL && Py_TYPE(ob) == &PyTraceBack_Type;
@@ -10279,43 +9836,7 @@ static inline PyTypeObject *PyStructSequence_NewType(PyStructSequence_Desc *desc
     return (PyTypeObject *)_molt_builtin_type_object_borrowed("tuple");
 }
 
-/* ========================================================================
- * PyCFunction / Method completions
- * ======================================================================== */
-
-static inline PyObject *PyCFunction_New(PyMethodDef *ml, PyObject *self) {
-    (void)ml; (void)self;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "PyCFunction_New: use molt's native function binding");
-    return NULL;
-}
-
-static inline PyObject *PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module) {
-    (void)ml; (void)self; (void)module;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "PyCFunction_NewEx: use molt's native function binding");
-    return NULL;
-}
-
-static inline int PyCFunction_Check(PyObject *op) {
-    (void)op;
-    return 0;
-}
-
-static inline PyCFunction PyCFunction_GetFunction(PyObject *op) {
-    (void)op;
-    return NULL;
-}
-
-static inline PyObject *PyCFunction_GetSelf(PyObject *op) {
-    (void)op;
-    Py_RETURN_NONE;
-}
-
-static inline int PyCFunction_GetFlags(PyObject *op) {
-    (void)op;
-    return 0;
-}
+/* PyCFunction/PyCMethod constructors and inspection are linkable ABI calls. */
 
 static inline PyObject *PyInstanceMethod_New(PyObject *func) {
     Py_INCREF(func);
@@ -11400,19 +10921,7 @@ static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
 #define Py_UNBLOCK_THREADS
 #endif
 
-/* ========================================================================
- * METH_FASTCALL / METH_METHOD (supplement existing defs)
- * ======================================================================== */
-
-#ifndef METH_FASTCALL
-#define METH_FASTCALL 0x0080
-#endif
-
-#ifndef METH_METHOD
-#define METH_METHOD 0x0200
-#endif
-
-/* (All type slot IDs are defined at the top of this file.) */
+/* All C-method conventions and type slot IDs are defined above. */
 
 /* ========================================================================
  * PyLong additional conversions

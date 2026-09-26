@@ -1054,6 +1054,7 @@ impl WasmRuntimeImport {
             Self::TypesResolveBases => "types_resolve_bases",
             Self::TypesNewClass => "types_new_class",
             Self::CpythonAbiCextCallTrampoline => "cpython_abi_cext_call_trampoline",
+            Self::ImportlibModuleSpecInit => "importlib_module_spec_init",
             Self::TkAvailable => "tk_available",
             Self::TkAppNew => "tk_app_new",
             Self::TkQuit => "tk_quit",
@@ -1866,6 +1867,9 @@ impl WasmRuntimeImport {
             Self::UuidUuid5Bytes => "uuid_uuid5_bytes",
             Self::ImportlibSourcefileloaderExecModule => "importlib_sourcefileloader_exec_module",
             Self::ImportlibZipSourceLoaderExecModule => "importlib_zip_source_loader_exec_module",
+            Self::ImportlibExtensionLoaderCreateModule => {
+                "importlib_extension_loader_create_module"
+            }
             Self::ImportlibExtensionLoaderExecModule => "importlib_extension_loader_exec_module",
             Self::ImportlibSourcelessLoaderExecModule => "importlib_sourceless_loader_exec_module",
             Self::ImportlibResourcesReaderOpenResourceBytesFromRoots => {
@@ -1873,6 +1877,7 @@ impl WasmRuntimeImport {
             }
             Self::ImportlibImportModule => "importlib_import_module",
             Self::ImportlibLoadModuleFromSpec => "importlib_load_module_from_spec",
+            Self::ImportlibModuleSpecType => "importlib_module_spec_type",
             Self::ImportlibResourcesOpenResourceBytesFromPackageParts => {
                 "importlib_resources_open_resource_bytes_from_package_parts"
             }
@@ -1892,8 +1897,7 @@ impl WasmRuntimeImport {
             Self::CopyregAddExtension => "copyreg_add_extension",
             Self::CopyregRemoveExtension => "copyreg_remove_extension",
             Self::CopyregClearExtensionCache => "copyreg_clear_extension_cache",
-            Self::CpythonAbiPrepareStaticExtension => "cpython_abi_prepare_static_extension",
-            Self::CpythonAbiPyinitModuleToBits => "cpython_abi_pyinit_module_to_bits",
+            Self::CpythonAbiRunStaticExtensionInit => "cpython_abi_run_static_extension_init",
             Self::UnraisableHookArgsIsExact => "unraisable_hook_args_is_exact",
             Self::GcCollect => "gc_collect",
             Self::GcEnable => "gc_enable",
@@ -4143,6 +4147,7 @@ impl WasmRuntimeImport {
             Self::TypesResolveBases => "molt_types_resolve_bases",
             Self::TypesNewClass => "molt_types_new_class",
             Self::CpythonAbiCextCallTrampoline => "molt_cpython_abi_cext_call_trampoline",
+            Self::ImportlibModuleSpecInit => "molt_importlib_module_spec_init",
             Self::TkAvailable => "molt_tk_available",
             Self::TkAppNew => "molt_tk_app_new",
             Self::TkQuit => "molt_tk_quit",
@@ -4971,6 +4976,9 @@ impl WasmRuntimeImport {
             Self::ImportlibZipSourceLoaderExecModule => {
                 "molt_importlib_zip_source_loader_exec_module"
             }
+            Self::ImportlibExtensionLoaderCreateModule => {
+                "molt_importlib_extension_loader_create_module"
+            }
             Self::ImportlibExtensionLoaderExecModule => {
                 "molt_importlib_extension_loader_exec_module"
             }
@@ -4982,6 +4990,7 @@ impl WasmRuntimeImport {
             }
             Self::ImportlibImportModule => "molt_importlib_import_module",
             Self::ImportlibLoadModuleFromSpec => "molt_importlib_load_module_from_spec",
+            Self::ImportlibModuleSpecType => "molt_importlib_module_spec_type",
             Self::ImportlibResourcesOpenResourceBytesFromPackageParts => {
                 "molt_importlib_resources_open_resource_bytes_from_package_parts"
             }
@@ -5001,8 +5010,7 @@ impl WasmRuntimeImport {
             Self::CopyregAddExtension => "molt_copyreg_add_extension",
             Self::CopyregRemoveExtension => "molt_copyreg_remove_extension",
             Self::CopyregClearExtensionCache => "molt_copyreg_clear_extension_cache",
-            Self::CpythonAbiPrepareStaticExtension => "molt_cpython_abi_prepare_static_extension",
-            Self::CpythonAbiPyinitModuleToBits => "molt_cpython_abi_pyinit_module_to_bits",
+            Self::CpythonAbiRunStaticExtensionInit => "molt_cpython_abi_run_static_extension_init",
             Self::UnraisableHookArgsIsExact => "molt_unraisable_hook_args_is_exact",
             Self::GcCollect => "molt_gc_collect",
             Self::GcEnable => "molt_gc_enable",
@@ -7206,6 +7214,7 @@ impl WasmRuntimeImport {
             Self::TypesResolveBases => 3,
             Self::TypesNewClass => 3,
             Self::CpythonAbiCextCallTrampoline => 5,
+            Self::ImportlibModuleSpecInit => 12,
             Self::TkAvailable => 0,
             Self::TkAppNew => 2,
             Self::TkQuit => 2,
@@ -8008,11 +8017,13 @@ impl WasmRuntimeImport {
             Self::UuidUuid5Bytes => 3,
             Self::ImportlibSourcefileloaderExecModule => 7,
             Self::ImportlibZipSourceLoaderExecModule => 12,
+            Self::ImportlibExtensionLoaderCreateModule => 5,
             Self::ImportlibExtensionLoaderExecModule => 7,
             Self::ImportlibSourcelessLoaderExecModule => 7,
             Self::ImportlibResourcesReaderOpenResourceBytesFromRoots => 3,
             Self::ImportlibImportModule => 3,
             Self::ImportlibLoadModuleFromSpec => 5,
+            Self::ImportlibModuleSpecType => 0,
             Self::ImportlibResourcesOpenResourceBytesFromPackageParts => 7,
             Self::LinecacheLoaderGetSource => 3,
             Self::CopyregBootstrap => 0,
@@ -8030,8 +8041,7 @@ impl WasmRuntimeImport {
             Self::CopyregAddExtension => 5,
             Self::CopyregRemoveExtension => 5,
             Self::CopyregClearExtensionCache => 0,
-            Self::CpythonAbiPrepareStaticExtension => 0,
-            Self::CpythonAbiPyinitModuleToBits => 2,
+            Self::CpythonAbiRunStaticExtensionInit => 3,
             Self::UnraisableHookArgsIsExact => 2,
             Self::GcCollect => 2,
             Self::GcEnable => 0,
@@ -10233,6 +10243,7 @@ impl WasmRuntimeImport {
             Self::TypesResolveBases => WasmRuntimeReturn::OwnedObject,
             Self::TypesNewClass => WasmRuntimeReturn::OwnedObject,
             Self::CpythonAbiCextCallTrampoline => WasmRuntimeReturn::OwnedObject,
+            Self::ImportlibModuleSpecInit => WasmRuntimeReturn::OwnedObject,
             Self::TkAvailable => WasmRuntimeReturn::OwnedObject,
             Self::TkAppNew => WasmRuntimeReturn::OwnedObject,
             Self::TkQuit => WasmRuntimeReturn::OwnedObject,
@@ -11035,6 +11046,7 @@ impl WasmRuntimeImport {
             Self::UuidUuid5Bytes => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibSourcefileloaderExecModule => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibZipSourceLoaderExecModule => WasmRuntimeReturn::OwnedObject,
+            Self::ImportlibExtensionLoaderCreateModule => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibExtensionLoaderExecModule => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibSourcelessLoaderExecModule => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibResourcesReaderOpenResourceBytesFromRoots => {
@@ -11042,6 +11054,7 @@ impl WasmRuntimeImport {
             }
             Self::ImportlibImportModule => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibLoadModuleFromSpec => WasmRuntimeReturn::OwnedObject,
+            Self::ImportlibModuleSpecType => WasmRuntimeReturn::OwnedObject,
             Self::ImportlibResourcesOpenResourceBytesFromPackageParts => {
                 WasmRuntimeReturn::OwnedObject
             }
@@ -11061,8 +11074,7 @@ impl WasmRuntimeImport {
             Self::CopyregAddExtension => WasmRuntimeReturn::OwnedObject,
             Self::CopyregRemoveExtension => WasmRuntimeReturn::OwnedObject,
             Self::CopyregClearExtensionCache => WasmRuntimeReturn::OwnedObject,
-            Self::CpythonAbiPrepareStaticExtension => WasmRuntimeReturn::OwnedObject,
-            Self::CpythonAbiPyinitModuleToBits => WasmRuntimeReturn::OwnedObject,
+            Self::CpythonAbiRunStaticExtensionInit => WasmRuntimeReturn::OwnedObject,
             Self::UnraisableHookArgsIsExact => WasmRuntimeReturn::OwnedObject,
             Self::GcCollect => WasmRuntimeReturn::OwnedObject,
             Self::GcEnable => WasmRuntimeReturn::OwnedObject,

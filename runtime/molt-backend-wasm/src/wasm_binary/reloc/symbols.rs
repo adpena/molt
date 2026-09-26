@@ -18,6 +18,7 @@ pub(super) struct SymbolMaps {
     pub(super) data_symbol_map: Vec<u32>,
     pub(super) runtime_import_symbol_map: BTreeMap<WasmRuntimeImport, u32>,
     pub(super) user_import_symbol_map: Vec<u32>,
+    pub(super) native_import_symbol_map: Vec<u32>,
     pub(super) defined_func_symbol_map: Vec<u32>,
 }
 
@@ -36,6 +37,12 @@ impl SymbolMaps {
             } => self
                 .user_import_symbol_map
                 .get(*user_import_ordinal as usize)
+                .copied(),
+            WasmFunctionSymbol::NativeCallableImport {
+                native_import_ordinal,
+            } => self
+                .native_import_symbol_map
+                .get(*native_import_ordinal as usize)
                 .copied(),
         }
     }
@@ -72,6 +79,7 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
     let mut data_symbol_map = vec![0u32; data_segments.len()];
     let mut runtime_import_symbol_map = BTreeMap::new();
     let mut user_import_symbol_map = Vec::new();
+    let mut native_import_symbol_map = Vec::new();
     let mut defined_func_symbol_map = vec![0u32; scan.defined_func_count as usize];
     let mut symbol_index = 0u32;
 
@@ -91,6 +99,8 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
             runtime_import_symbol_map.insert(import_id, symbol_index);
         } else if import.module == USER_FUNCTION_IMPORT_MODULE {
             user_import_symbol_map.push(symbol_index);
+        } else if import.module == NATIVE_CALLABLE_IMPORT_MODULE {
+            native_import_symbol_map.push(symbol_index);
         }
         symbol_index += 1;
     }
@@ -153,6 +163,7 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
         data_symbol_map,
         runtime_import_symbol_map,
         user_import_symbol_map,
+        native_import_symbol_map,
         defined_func_symbol_map,
     }
 }

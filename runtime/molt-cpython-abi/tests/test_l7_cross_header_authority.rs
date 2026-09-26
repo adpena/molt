@@ -45,7 +45,6 @@ fn numeric_scalar_layout_has_one_header_authority() {
             "PyByteArray_CheckExact",
             "PySet_CheckExact",
             "PyFrozenSet_CheckExact",
-            "PyModule_CheckExact",
         ] {
             assert!(
                 header.contains(&format!("extern int {exact}")),
@@ -95,6 +94,154 @@ fn numeric_scalar_layout_has_one_header_authority() {
             "legacy scalar representation remains: {forbidden}"
         );
     }
+}
+
+#[test]
+fn module_and_cfunction_headers_have_one_linked_authority() {
+    let root = repo_root();
+    let source = std::fs::read_to_string(root.join("include/molt/Python.h"))
+        .expect("read source transport header");
+    let linked = std::fs::read_to_string(root.join("runtime/molt-cpython-abi/include/Python.h"))
+        .expect("read linked ABI header");
+    let types = std::fs::read_to_string(root.join("include/molt/shared/_cfunction_abi.h"))
+        .expect("read C-callable layout authority");
+    let module = std::fs::read_to_string(root.join("include/molt/shared/_module_definition_abi.h"))
+        .expect("read module layout authority");
+    let exports =
+        std::fs::read_to_string(root.join("include/molt/shared/_module_callable_exports.h"))
+            .expect("read module/callable export authority");
+
+    for (name, source_include, linked_include) in [
+        (
+            "_cfunction_abi.h",
+            "\"shared/_cfunction_abi.h\"",
+            "<_cfunction_abi.h>",
+        ),
+        (
+            "_module_definition_abi.h",
+            "\"shared/_module_definition_abi.h\"",
+            "<_module_definition_abi.h>",
+        ),
+        (
+            "_module_callable_exports.h",
+            "\"shared/_module_callable_exports.h\"",
+            "<_module_callable_exports.h>",
+        ),
+    ] {
+        assert!(source.contains(source_include), "source lacks {name}");
+        assert!(
+            linked.contains(linked_include),
+            "linked header lacks {name}"
+        );
+    }
+    for required in [
+        "METH_FASTCALL",
+        "METH_METHOD",
+        "PyCFunctionObject",
+        "PyCMethodObject",
+    ] {
+        assert!(
+            types.contains(required),
+            "missing callable authority: {required}"
+        );
+    }
+    assert!(module.contains("PyModuleDef_HEAD_INIT"));
+    for required in [
+        "PyModule_Create2",
+        "PyModuleDef_Init",
+        "PyModule_FromDefAndSpec2",
+        "PyModule_ExecDef",
+        "PyModule_AddFunctions",
+        "PyModule_GetDef",
+        "PyModule_CheckExact",
+        "PyCFunction_NewEx",
+        "PyCMethod_New",
+        "PyCFunction_GetFunction",
+    ] {
+        assert!(
+            exports.contains(required),
+            "missing ABI declaration: {required}"
+        );
+    }
+    for line in source.lines().map(str::trim_start) {
+        if line.starts_with("static inline ") {
+            assert!(
+                !line.contains("PyModule_")
+                    && !line.contains("PyState_")
+                    && !line.contains("PyCFunction_")
+                    && !line.contains("PyCMethod_"),
+                "source retained a competing module/callable implementation: {line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn external_c_api_data_uses_one_shared_linkage_policy() {
+    let root = repo_root();
+    let source = std::fs::read_to_string(root.join("include/molt/Python.h"))
+        .expect("read source transport header");
+    let linked = std::fs::read_to_string(root.join("runtime/molt-cpython-abi/include/Python.h"))
+        .expect("read linked ABI header");
+    let exports =
+        std::fs::read_to_string(root.join("include/molt/shared/_module_callable_exports.h"))
+            .expect("read shared module export header");
+    let policy = std::fs::read_to_string(root.join("include/molt/shared/_c_api_linkage.h"))
+        .expect("read shared C-API data linkage policy");
+
+    assert!(source.contains("#include \"shared/_c_api_linkage.h\""));
+    assert!(linked.contains("#include <_c_api_linkage.h>"));
+    assert!(exports.contains("#include \"_c_api_linkage.h\""));
+    assert!(
+        policy.contains("#ifndef PyAPI_DATA"),
+        "caller override was lost"
+    );
+    assert!(policy.contains(
+        "defined(_WIN32) && defined(MOLT_CPYTHON_ABI_SHARED) && MOLT_CPYTHON_ABI_SHARED"
+    ));
+    assert!(policy.contains("#define PyAPI_DATA(RTYPE) extern __declspec(dllimport) RTYPE"));
+    assert!(policy.contains("#define PyAPI_DATA(RTYPE) extern RTYPE"));
+    for (header, declarations) in [
+        (
+            &source,
+            &[
+                "PyAPI_DATA(PyTypeObject) MoltManaged_Type;",
+                "PyAPI_DATA(PyLongObject) _Py_TrueStruct;",
+            ][..],
+        ),
+        (
+            &linked,
+            &[
+                "PyAPI_DATA(PyObject) Py_None;",
+                "PyAPI_DATA(PyObject) PyExc_ValueError;",
+                "PyAPI_DATA(const unsigned long) Py_Version;",
+                "PyAPI_DATA(int) Py_OptimizeFlag;",
+            ][..],
+        ),
+        (
+            &exports,
+            &[
+                "PyAPI_DATA(PyTypeObject) PyModule_Type;",
+                "PyAPI_DATA(PyTypeObject) PyModuleDef_Type;",
+                "PyAPI_DATA(PyTypeObject) PyCFunction_Type;",
+                "PyAPI_DATA(PyTypeObject) PyCMethod_Type;",
+            ][..],
+        ),
+    ] {
+        for declaration in declarations {
+            assert!(
+                header.contains(*declaration),
+                "missing shared DATA declaration: {declaration}"
+            );
+        }
+        for line in header.lines().map(str::trim) {
+            assert!(
+                !(line.starts_with("extern ") && line.ends_with(';') && !line.contains('(')),
+                "external DATA bypasses shared policy: {line}"
+            );
+        }
+    }
+    assert!(source.contains("static int Py_OptimizeFlag = 0;"));
 }
 
 #[test]

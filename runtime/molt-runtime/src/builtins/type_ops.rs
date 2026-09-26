@@ -329,7 +329,7 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                     let func_ptr = func_obj.as_ptr();
                     if let Some(func_ptr) = func_ptr {
                         let func_class_bits = object_class_bits(func_ptr);
-                        if func_class_bits == builtins.builtin_function_or_method {
+                        if builtins.is_builtin_callable_class(func_class_bits) {
                             func_class_bits
                         } else {
                             crate::builtins::types::method_class(_py)

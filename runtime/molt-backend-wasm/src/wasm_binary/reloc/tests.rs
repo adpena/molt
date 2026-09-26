@@ -393,6 +393,76 @@ fn table_reloc_sites_use_symbol_identity_after_import_strip() {
 }
 
 #[test]
+fn native_initializer_table_reloc_resolves_native_import_symbol_after_import_strip() {
+    let mut types = TypeSection::new();
+    types.function([], []);
+    types.function([], [wasm_encoder::ValType::I32]);
+
+    let mut imports = ImportSection::new();
+    imports.import(
+        RUNTIME_IMPORT_MODULE,
+        "types_bootstrap",
+        EntityType::Function(0),
+    );
+    imports.import(
+        RUNTIME_IMPORT_MODULE,
+        "abc_bootstrap",
+        EntityType::Function(0),
+    );
+    imports.import(
+        NATIVE_CALLABLE_IMPORT_MODULE,
+        "PyInit__nd_image",
+        EntityType::Function(1),
+    );
+
+    let mut funcs = FunctionSection::new();
+    funcs.function(0);
+
+    let mut table_relocations = WasmTableRelocations::default();
+    let mut body = Function::new([]);
+    table_relocations.emit_i64(
+        true,
+        3,
+        3,
+        &mut body,
+        &WasmCallableTableTarget {
+            current_table_index: 4101,
+            address: WasmCallableTableAddress::Relocatable(
+                WasmFunctionSymbol::NativeCallableImport {
+                    native_import_ordinal: 0,
+                },
+            ),
+            role: WasmCallableTableRole::DirectCallable,
+        },
+    );
+    body.instruction(&Instruction::Drop);
+    body.instruction(&Instruction::End);
+    let mut codes = CodeSection::new();
+    codes.function(&body);
+
+    let mut module = Module::new();
+    module.section(&types);
+    module.section(&imports);
+    module.section(&funcs);
+    module.section(&codes);
+
+    let mut unused = BTreeSet::new();
+    unused.insert("types_bootstrap".to_string());
+    let stripped = strip_unused_imports(module.finish(), &unused);
+    let relocated = add_reloc_sections(stripped, &[], &[], table_relocations.relocs());
+
+    // Post-strip symbols: abc_bootstrap=0, PyInit__nd_image=1, defined body=2.
+    assert_eq!(
+        reloc_code_entries(&relocated, 1)
+            .into_iter()
+            .map(|(_, symbol)| symbol)
+            .collect::<Vec<_>>(),
+        vec![1],
+        "a native initializer table address must bind to the PyInit import symbol, not a stale function index"
+    );
+}
+
+#[test]
 fn fixed_shared_runtime_table_address_emits_no_linker_relocation() {
     let mut relocations = WasmTableRelocations::default();
     let mut body = Function::new([]);

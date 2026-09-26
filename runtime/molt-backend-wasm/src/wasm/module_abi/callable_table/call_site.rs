@@ -71,6 +71,21 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
             .target_for_slot(slot, WasmCallableTableRole::Trampoline)
     }
 
+    /// Table address of a native initializer handed to the runtime
+    /// extension-init transaction instead of being called directly.
+    pub(in crate::wasm) fn native_initializer_target(
+        &self,
+        symbol: &str,
+    ) -> WasmCallableTableTarget {
+        let slot = *self
+            .plan
+            .native_initializer_to_table_idx
+            .get(symbol)
+            .unwrap_or_else(|| panic!("native initializer `{symbol}` has no callable-table slot"));
+        self.plan
+            .target_for_slot(slot, WasmCallableTableRole::DirectCallable)
+    }
+
     pub(in crate::wasm) fn callable_table_pair(
         &self,
         target_name: &str,
@@ -131,6 +146,7 @@ mod tests {
             func_to_table_idx: BTreeMap::from([("callee".to_string(), 7)]),
             func_to_index: BTreeMap::from([("callee".to_string(), 42)]),
             func_to_trampoline_idx: BTreeMap::from([("callee".to_string(), 9)]),
+            native_initializer_to_table_idx: BTreeMap::new(),
             app_callable_resolver: None,
             positional_call_shapes: BTreeMap::from([("callee".to_string(), (2, true))]),
             function_abi_returns_value: BTreeMap::from([("callee".to_string(), true)]),
@@ -166,6 +182,7 @@ mod tests {
             func_to_table_idx: BTreeMap::from([("callee".to_string(), 7)]),
             func_to_index: BTreeMap::from([("callee".to_string(), 42)]),
             func_to_trampoline_idx: BTreeMap::from([("callee".to_string(), 9)]),
+            native_initializer_to_table_idx: BTreeMap::new(),
             app_callable_resolver: None,
             positional_call_shapes: BTreeMap::new(),
             function_abi_returns_value: BTreeMap::from([("callee".to_string(), true)]),

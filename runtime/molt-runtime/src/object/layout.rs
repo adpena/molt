@@ -1814,7 +1814,7 @@ unsafe fn prepare_code_signature_from_function_attrs(
 ) -> Result<Option<PreparedCodeSignature>, ()> {
     unsafe {
         if let Some(classes) = builtin_classes_if_initialized(_py)
-            && object_class_bits(func_ptr) == classes.builtin_function_or_method
+            && classes.is_builtin_callable_class(object_class_bits(func_ptr))
         {
             return Ok(None);
         }

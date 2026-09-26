@@ -17,16 +17,15 @@ use crate::{
     class_mro_vec, class_name_for_error, class_set_layout_version_bits, class_set_qualname_bits,
     clear_exception, collect_runtime_classinfo, dec_ref_bits, dict_del_in_place, dict_get_in_place,
     dict_order, dict_set_in_place, dict_update_apply, dict_update_set_in_place, exception_pending,
-    function_dict_bits, generic_alias_origin_bits, inc_ref_bits, init_atomic_bits,
-    instance_dict_bits, intern_static_name, is_truthy, isinstance_runtime, issubclass_bits,
-    issubclass_runtime, missing_bits, molt_call_bind, molt_callargs_new, molt_callargs_push_kw,
-    molt_callargs_push_pos, molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq,
-    molt_getattr_builtin, molt_hash_builtin, molt_index, molt_iter, molt_iter_next, molt_len,
-    molt_object_setattr, molt_repr_from_obj, molt_setitem_method, molt_str_from_obj,
-    molt_string_isidentifier, obj_eq, obj_from_bits, object_class_bits, object_type_id,
-    property_del_bits, property_get_bits, property_set_bits, raise_exception, raise_not_iterable,
-    runtime_classinfo_protocol_match, runtime_state, string_obj_to_owned, to_i64,
-    tuple_from_iter_bits, type_name, type_of_bits,
+    generic_alias_origin_bits, inc_ref_bits, init_atomic_bits, instance_dict_bits,
+    intern_static_name, is_truthy, isinstance_runtime, issubclass_bits, issubclass_runtime,
+    missing_bits, molt_call_bind, molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos,
+    molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq, molt_getattr_builtin,
+    molt_hash_builtin, molt_index, molt_iter, molt_iter_next, molt_len, molt_object_setattr,
+    molt_repr_from_obj, molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_eq,
+    obj_from_bits, object_class_bits, object_type_id, property_del_bits, property_get_bits,
+    property_set_bits, raise_exception, raise_not_iterable, runtime_classinfo_protocol_match,
+    runtime_state, string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
 };
 
 pub(crate) mod class_construction;
@@ -36,6 +35,7 @@ pub(crate) mod dataclasses;
 pub(crate) mod descriptor_objects;
 pub(crate) mod dynamic_class_attr;
 pub(crate) mod keyword_metadata;
+pub(crate) mod module_spec;
 pub(crate) mod native_descriptors;
 pub(crate) mod wrappers;
 
@@ -53,6 +53,11 @@ pub(crate) use dynamic_class_attr::dynamic_class_attribute_class;
 pub use dynamic_class_attr::*;
 pub use keyword_metadata::*;
 pub(crate) use keyword_metadata::{HARD_KEYWORDS, keyword_contains};
+pub(crate) use module_spec::alloc_module_spec;
+pub use module_spec::{
+    molt_importlib_module_spec_init, molt_importlib_module_spec_parent,
+    molt_importlib_module_spec_repr, molt_importlib_module_spec_type,
+};
 pub use native_descriptors::*;
 pub use wrappers::*;
 
@@ -141,6 +146,10 @@ define_types_runtime_state! {
     types_prepare_class_fn,
     types_resolve_bases_fn,
     types_new_class_fn,
+    module_spec_class,
+    module_spec_init_fn,
+    module_spec_repr_fn,
+    module_spec_parent_fn,
 }
 
 fn types_state(_py: &PyToken<'_>) -> &'static TypesRuntimeState {
@@ -764,6 +773,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
 mod tests {
     use super::*;
     use crate::MoltHeader;
+    use crate::function_dict_bits;
     use crate::object::maybe_ptr_from_bits;
     use std::sync::Once;
     use std::sync::atomic::Ordering;

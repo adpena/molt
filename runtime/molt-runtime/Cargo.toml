@@ -25,6 +25,15 @@ name = "list_delta_perf_attestation"
 path = "tests/list_delta_perf_attestation.rs"
 required-features = ["l7-attestation-probe"]
 
+# One image carrying the runtime and the CPython-ABI exports for native
+# C-extension tests (`tests/cext_dlopen_smoke.rs`). Build it explicitly in the
+# test's target/profile: `cargo build --example cext_host --features cext_loader`.
+[[example]]
+name = "cext_host"
+path = "examples/cext_host.rs"
+crate-type = ["cdylib"]
+required-features = ["cext_loader"]
+
 [features]
 default = ["stdlib_full", "wasi_host"]
 l7-attestation-probe = ["molt-cpython-abi/l7-attestation-core"]
@@ -153,7 +162,7 @@ molt_tk_native = ["stdlib_tk", "molt-runtime-tk/native-tcl"]
 # Enable dlopen-based C extension loading via the CPython ABI shim.
 # The ABI bridge itself is always available so source-recompiled static
 # extensions can use the runtime hook table on wasm without enabling dlopen.
-cext_loader = ["molt-cpython-abi/extension-loader"]
+cext_loader = ["molt-cpython-abi/extension-loader", "dep:libloading"]
 # Enable dlopen-based loading for source-recompiled libmolt extensions.
 source_extension_loader = ["dep:libloading"]
 # Reserved for the freestanding wasm target. Keep this feature independent
@@ -269,6 +278,7 @@ libloading = { version = "0.8", optional = true }
 [dev-dependencies]
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", features = ["runtime-test-support"] }
+cc = "1"
 trybuild = { version = "1", features = ["diff"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

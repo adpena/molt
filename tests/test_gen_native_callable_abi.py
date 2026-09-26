@@ -156,6 +156,43 @@ def test_schema_rejects_identity_arity_and_machine_signature_drift(
         gen.load_schema(invalid_public_classification)
 
 
+def test_pyinit_payload_feeds_the_runtime_transaction_not_the_raw_symbol(
+    tmp_path: Path,
+) -> None:
+    gen = _gen()
+    (pyinit,) = (
+        abi for abi in gen.load_schema().abis if abi.lowering == "pyinit_module"
+    )
+    assert pyinit.fixed_arity == 1
+    assert (pyinit.browser_params, pyinit.wasm_params, pyinit.native_params) == (
+        (),
+        (),
+        (),
+    )
+    assert (pyinit.wasm_results, pyinit.native_results) == (("i32",), ("pointer",))
+
+    source = gen.SOURCE.read_text(encoding="utf-8")
+    pyinit_header = 'lowering = "pyinit_module"\npython_callable = false\n'
+    for label, current, drifted in (
+        (
+            "zero_payload",
+            f"{pyinit_header}fixed_arity = 1",
+            f"{pyinit_header}fixed_arity = 0",
+        ),
+        (
+            "raw_symbol_parameter",
+            'browser_result = "molt.pyobject_ptr"\nwasm_params = []',
+            'browser_result = "molt.pyobject_ptr"\nwasm_params = ["i64"]',
+        ),
+    ):
+        drift = source.replace(current, drifted, 1)
+        assert drift != source, f"{label} fixture no longer matches the registry"
+        path = tmp_path / f"{label}.toml"
+        path.write_text(drift, encoding="utf-8")
+        with pytest.raises(gen.SchemaError, match="signatures and arity must match"):
+            gen.load_schema(path)
+
+
 def test_consumers_delegate_abi_classification_to_generated_projections() -> None:
     frontend_sources = tuple(
         (ROOT / path).read_text(encoding="utf-8")

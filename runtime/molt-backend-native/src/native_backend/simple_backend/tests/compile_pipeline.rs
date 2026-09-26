@@ -246,10 +246,10 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
         ),
         (
             "invoke_ffi",
-            0,
+            1,
             Some("molt.pyinit_module_v1"),
-            None,
-            false,
+            Some("molt_cpython_abi_run_static_extension_init"),
+            true,
             true,
         ),
     ] {

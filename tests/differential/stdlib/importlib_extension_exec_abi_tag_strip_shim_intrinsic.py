@@ -15,11 +15,12 @@ with open(os.path.join(root, "abimod.molt.py"), "w", encoding="utf-8") as handle
 
 loader = importlib.machinery.ExtensionFileLoader("abimod_exec", ext_path)
 spec = importlib.util.spec_from_file_location("abimod_exec", ext_path, loader=loader)
-module = importlib.util.module_from_spec(spec) if spec is not None else None
+module = None
 
 loaded = False
 error_name = "none"
 try:
+    module = importlib.util.module_from_spec(spec) if spec is not None else None
     if spec is not None and spec.loader is not None and module is not None:
         spec.loader.exec_module(module)
         loaded = getattr(module, "value", None) == 733

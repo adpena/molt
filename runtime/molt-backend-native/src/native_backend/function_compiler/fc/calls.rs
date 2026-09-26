@@ -1717,16 +1717,43 @@ fn handle_invoke_ffi_op(
                     )
                 }
                 molt_ir::native_callable_abi::NativeCallableLowering::PyinitModule => {
+                    // The raw initializer is never called from compiled code.
+                    // Its address crosses into the runtime transaction, which
+                    // owns hook setup, package context, invocation, result
+                    // validation/publication and transfers one owned module.
+                    let module_name_bits = *var_get_boxed_overflow_safe(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        &mut *import_refs,
+                        &mut *sealed_blocks,
+                        vars,
+                        &args_names[0],
+                        representation_plan,
+                    )
+                    .expect("native PyInit module-name payload not found");
                     let pointer_type = module.target_config().pointer_type();
-                    let direct_symbol =
+                    let initializer =
                         declare_native_callable_symbol(module, builder, symbol, &machine_signature);
-                    let call = builder.ins().call(direct_symbol, &[]);
-                    let pointer = builder.inst_results(call)[0];
-                    if pointer_type == types::I64 {
-                        pointer
+                    let initializer_addr = builder.ins().func_addr(pointer_type, initializer);
+                    let initializer_addr = if pointer_type == types::I64 {
+                        initializer_addr
                     } else {
-                        builder.ins().uextend(types::I64, pointer)
-                    }
+                        builder.ins().uextend(types::I64, initializer_addr)
+                    };
+                    let run_init = import_func_ref(
+                        module,
+                        import_ids,
+                        builder,
+                        import_refs,
+                        "molt_cpython_abi_run_static_extension_init",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let call = builder
+                        .ins()
+                        .call(run_init, &[initializer_addr, module_name_bits]);
+                    builder.inst_results(call)[0]
                 }
                 molt_ir::native_callable_abi::NativeCallableLowering::ObjectValues
                 | molt_ir::native_callable_abi::NativeCallableLowering::ObjectCallargs => {
@@ -1768,9 +1795,7 @@ fn handle_invoke_ffi_op(
                     out,
                     result,
                 );
-            } else if abi_contract.lowering()
-                != molt_ir::native_callable_abi::NativeCallableLowering::PyinitModule
-            {
+            } else {
                 bind_owned_runtime_result(op, result, module, import_ids, builder, vars);
             }
             return;

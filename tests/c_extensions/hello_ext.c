@@ -6,7 +6,8 @@
  *   add(a, b)   -> a + b
  *
  * Compile against the Molt CPython ABI:
- *   ./scripts/build-cext.sh tests/c_extensions/hello_ext.c
+ *   Use the Cargo-owned C-extension fixture builder in
+ *   runtime/test_support/cext_fixture.rs for runtime-backed tests.
  */
 
 #include <Python.h>

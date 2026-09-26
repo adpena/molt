@@ -51,8 +51,8 @@ KNOWN_GOOD = """\
 ===MOLT_DISCOVERY: driving PyInit__multiarray_umath from /w/_multiarray_umath.so
 [MOLT_TRACE_CAPI] call PyCapsule_Import(datetime.datetime_CAPI)
 [MOLT_TRACE_CAPI] call PyImport_ImportModule(numpy.exceptions)
-===MOLT_DISCOVERY_FRONTIER (LoadError): InitReturnedNull { name: "_multiarray_umath" }
-===MOLT_DISCOVERY_FRONTIER_DISPLAY: numpy _multiarray_umath init returned NULL
+===MOLT_DISCOVERY_FRONTIER (LoadError): InitializationFailed { name: "_multiarray_umath" }
+===MOLT_DISCOVERY_FRONTIER_DISPLAY: extension _multiarray_umath initialization failed (C exception pending)
 ===MOLT_DISCOVERY_EXC: "import of 'numpy.exceptions' failed (runtime import error pending)"
 == driver exit code: 10
 """
@@ -67,7 +67,7 @@ REGRESSION_DATETIME = """\
 [MOLT_TRACE_CAPI] call PyCapsule_Import(datetime.datetime_CAPI)
 [MOLT_TRACE_CAPI] call PyImport_ImportModule(datetime)
 [MOLT_TRACE_CAPI] silent-failure PyCapsule_Import(datetime.datetime_CAPI)
-===MOLT_DISCOVERY_FRONTIER (LoadError): InitReturnedNull { name: "_multiarray_umath" }
+===MOLT_DISCOVERY_FRONTIER (LoadError): InitializationFailed { name: "_multiarray_umath" }
 ===MOLT_DISCOVERY_EXC: pending exception value = "PyCapsule_Import could not import module capsule \\"datetime.datetime_CAPI\\""
 == driver exit code: 10
 """

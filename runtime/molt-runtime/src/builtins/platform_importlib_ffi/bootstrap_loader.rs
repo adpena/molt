@@ -429,21 +429,11 @@ pub extern "C" fn molt_importlib_zip_source_exec_payload(
     })
 }
 
-pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
+fn importlib_admit_dynamic_extension(
     _py: &PyToken<'_>,
-    module_bits: u64,
-    namespace_ptr: *mut u8,
     module_name: &str,
     path: &str,
-) -> Result<(), u64> {
-    let _ = namespace_ptr;
-    // Compiler-admitted application modules are independent of their source
-    // or extension-shaped origin.  The immutable build catalog is the sole
-    // body authority; only a catalog miss enters the genuine dynamic-loader
-    // lane below.
-    if importlib_try_exec_compiled_module(_py, module_bits, module_name)? {
-        return Ok(());
-    }
+) -> Result<Option<SourceExtensionLoaderContract>, u64> {
     let allowed = has_capability(_py, "fs.read");
     audit_capability_decision(
         "importlib.exec.extension",
@@ -482,9 +472,50 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
         ));
     }
     importlib_require_extension_metadata(_py, module_name, path)?;
-    if let Some(contract) = importlib_source_extension_loader_contract(_py, module_name, path)? {
+    importlib_source_extension_loader_contract(_py, module_name, path)
+}
+
+fn importlib_extension_exec_owns_publication(
+    _py: &PyToken<'_>,
+    module_bits: u64,
+    module_name_bits: u64,
+) -> Result<bool, u64> {
+    if !importlib_spec_exec_owns(module_bits) {
+        return Ok(false);
+    }
+    let modules_bits = importlib_runtime_modules_bits(_py)?;
+    let visible = match obj_from_bits(modules_bits).as_ptr() {
+        Some(modules_ptr) => importlib_dict_get_string_key_bits(_py, modules_ptr, module_name_bits),
+        None => Err(importlib_modules_runtime_error(_py)),
+    };
+    dec_ref_bits(_py, modules_bits);
+    if visible? != Some(module_bits) {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            "extension exec module differs from the import transaction's sys.modules entry",
+        ));
+    }
+    Ok(true)
+}
+
+pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
+    _py: &PyToken<'_>,
+    module_bits: u64,
+    module_name_bits: u64,
+    module_name: &str,
+    path: &str,
+) -> Result<(), u64> {
+    // Compiler-admitted application modules are independent of their source
+    // or extension-shaped origin. The immutable build catalog is the sole
+    // body authority; only a catalog miss enters the genuine dynamic loader.
+    if importlib_try_exec_compiled_module(_py, module_bits, module_name)? {
+        return Ok(());
+    }
+    if let Some(contract) = importlib_admit_dynamic_extension(_py, module_name, path)? {
         #[cfg(all(feature = "source_extension_loader", not(target_arch = "wasm32")))]
         {
+            let namespace_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
             match source_extension_loader_dlopen(
                 _py,
                 namespace_ptr,
@@ -519,16 +550,28 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
     // -- Native C extension loading via dlopen --
     #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
     {
-        match cext_loader_dlopen(_py, namespace_ptr, module_name, path) {
-            Ok(()) => return Ok(()),
-            Err(msg) => {
-                return Err(raise_exception::<_>(
-                    _py,
-                    "ImportError",
-                    &format!("failed to load C extension {module_name:?} from {path:?}: {msg}"),
-                ));
+        let publish_cache =
+            importlib_extension_exec_owns_publication(_py, module_bits, module_name_bits)?;
+        let result = crate::cpython_abi_hooks::execute_prepared_extension(
+            module_bits,
+            module_name_bits,
+            publish_cache,
+        );
+        if exception_pending(_py) {
+            if !obj_from_bits(result).is_none() {
+                dec_ref_bits(_py, result);
             }
+            return Err(MoltObject::none().bits());
         }
+        if !obj_from_bits(result).is_none() {
+            dec_ref_bits(_py, result);
+            return Err(raise_exception::<_>(
+                _py,
+                "SystemError",
+                "C extension execution returned a non-None result",
+            ));
+        }
+        return Ok(());
     }
     #[allow(unreachable_code)]
     Err(importlib_extension_exec_unavailable(
@@ -537,6 +580,73 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
         path,
         "extension",
     ))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_extension_loader_create_module(
+    module_name_bits: u64,
+    path_bits: u64,
+    spec_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let path = match string_arg_from_bits(_py, path_bits, "path") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        // A compiler-admitted extension-shaped module has its own in-place
+        // execution contract; creating a second native module would split it.
+        if crate::builtins::module_table::module_execution_target_has_body(&module_name)
+            == Some(true)
+        {
+            return MoltObject::none().bits();
+        }
+        match importlib_admit_dynamic_extension(_py, &module_name, &path) {
+            Ok(Some(_)) => return MoltObject::none().bits(),
+            Ok(None) => {}
+            Err(bits) => return bits,
+        }
+        #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
+        {
+            molt_cpython_abi::bridge::molt_cpython_abi_init();
+            if !crate::cpython_abi_hooks::register_cpython_hooks() {
+                return raise_exception::<_>(
+                    _py,
+                    "ImportError",
+                    "process-static C extensions require the primary runtime",
+                );
+            }
+            return match unsafe {
+                molt_cpython_abi::loader::create_cpython_extension(
+                    std::path::Path::new(&path),
+                    &module_name,
+                    spec_bits,
+                )
+            } {
+                Ok(bits) => bits,
+                Err(error) => {
+                    if crate::cpython_abi_hooks::transfer_pending_cpython_exception()
+                        || exception_pending(_py)
+                    {
+                        MoltObject::none().bits()
+                    } else {
+                        raise_exception::<_>(
+                            _py,
+                            "ImportError",
+                            &format!(
+                                "failed to create C extension {module_name:?} from {path:?}: {error}"
+                            ),
+                        )
+                    }
+                }
+            };
+        }
+        #[allow(unreachable_code)]
+        importlib_extension_exec_unavailable(_py, &module_name, &path, "extension")
+    })
 }
 
 pub(super) fn importlib_exec_sourceless_impl(
@@ -657,7 +767,7 @@ pub(super) fn importlib_loader_exec_module_apply(
                 importlib_exec_extension_impl(
                     _py,
                     module_bits,
-                    namespace_ptr,
+                    ctx.module_name_bits,
                     &ctx.module_name,
                     &state.origin,
                 )?;

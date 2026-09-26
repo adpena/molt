@@ -868,8 +868,6 @@ def _rewrite_native_import_lanes(
     return None
 
 
-_STATIC_NATIVE_PREPARE_SYMBOL = "molt_cpython_abi_prepare_static_extension"
-_STATIC_NATIVE_PYINIT_TO_BITS_SYMBOL = "molt_cpython_abi_pyinit_module_to_bits"
 _STATIC_NATIVE_PYINIT_EXPORT_PREFIX = "__molt_static_pyinit__."
 
 
@@ -1339,8 +1337,9 @@ def _guard_generated_native_module_init_ops(
 ) -> list[dict[str, Any]]:
     """Separate pre-publication failures from an owned cache transaction.
 
-    Cache publication may fail after writing one projection. From that operation
-    onward, unwind the name through the canonical cache deletion primitive,
+    Namespace bodies publish through ``module_cache_set``; static extensions
+    publish inside the runtime PyInit transaction. Once either succeeds, later
+    body failures unwind the name through the canonical cache deletion primitive,
     which also unpublishes the registry slot and preserves the pending error.
     Cleanup is intentionally unguarded: a pending error must not loop back into
     its own handler. No name/value allocated by a failed prologue is read there.
@@ -1384,40 +1383,20 @@ def _build_registry_native_module_init_ops(
     ]
     module_var: str
     if spec.is_extension:
-        prepare_var = f"v{next_var}"
-        next_var += 1
-        pyobj_var = f"v{next_var}"
-        next_var += 1
         module_var = f"v{next_var}"
         next_var += 1
         ops.extend(
             [
                 {
-                    "kind": "call",
-                    "s_value": _STATIC_NATIVE_PREPARE_SYMBOL,
-                    "args": [],
-                    "out": prepare_var,
-                    "value": register_global_code_id(_STATIC_NATIVE_PREPARE_SYMBOL),
-                },
-                {
                     "kind": "invoke_ffi",
-                    "args": [],
-                    "out": pyobj_var,
+                    "args": [module_name_var],
+                    "out": module_var,
                     "native_callable_export": (
                         f"{_STATIC_NATIVE_PYINIT_EXPORT_PREFIX}{spec.module}"
                     ),
                     "native_callable_binding": "direct_symbol",
                     "native_callable_abi": NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
                     "native_callable_symbol": spec.init_symbol,
-                },
-                {
-                    "kind": "call",
-                    "s_value": _STATIC_NATIVE_PYINIT_TO_BITS_SYMBOL,
-                    "args": [pyobj_var],
-                    "out": module_var,
-                    "value": register_global_code_id(
-                        _STATIC_NATIVE_PYINIT_TO_BITS_SYMBOL
-                    ),
                 },
                 {"kind": "check_exception", "value": 1},
             ]
@@ -1426,22 +1405,20 @@ def _build_registry_native_module_init_ops(
         module_var = f"v{next_var}"
         next_var += 1
         ops.append({"kind": "module_new", "args": [module_name_var], "out": module_var})
-    cache_set_var = f"v{next_var}"
-    next_var += 1
-    # Publication (module_cache_set) stays in the body so the module is
-    # visible in the store for the entirety of body execution — the same
-    # publish-before-exec shape frontend-compiled module bodies have
-    # (invariant I6); the runtime mirrors it into the ModuleTable slot while
-    # this ensure transaction is open.
     before_publication = ops
     ops = []
-    ops.append(
-        {
-            "kind": "module_cache_set",
-            "args": [module_name_var, module_var],
-            "out": cache_set_var,
-        }
-    )
+    if not spec.is_extension:
+        cache_set_var = f"v{next_var}"
+        next_var += 1
+        ops.append(
+            {
+                "kind": "module_cache_set",
+                "args": [module_name_var, module_var],
+                "out": cache_set_var,
+            }
+        )
+    # The runtime publishes static extensions before Py_mod_exec and rolls
+    # back a failed PyInit. Re-publishing here would split that transaction.
     next_var = _append_static_native_module_metadata_ops(
         ops,
         module_var=module_var,
@@ -1530,40 +1507,20 @@ def _build_static_native_module_init_ops(
             ]
         )
     elif spec.is_extension:
-        prepare_var = f"v{next_var}"
-        next_var += 1
-        pyobj_var = f"v{next_var}"
-        next_var += 1
         module_var = f"v{next_var}"
         next_var += 1
         ops.extend(
             [
                 {
-                    "kind": "call",
-                    "s_value": _STATIC_NATIVE_PREPARE_SYMBOL,
-                    "args": [],
-                    "out": prepare_var,
-                    "value": register_global_code_id(_STATIC_NATIVE_PREPARE_SYMBOL),
-                },
-                {
                     "kind": "invoke_ffi",
-                    "args": [],
-                    "out": pyobj_var,
+                    "args": [module_name_var],
+                    "out": module_var,
                     "native_callable_export": (
                         f"{_STATIC_NATIVE_PYINIT_EXPORT_PREFIX}{spec.module}"
                     ),
                     "native_callable_binding": "direct_symbol",
                     "native_callable_abi": NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
                     "native_callable_symbol": spec.init_symbol,
-                },
-                {
-                    "kind": "call",
-                    "s_value": _STATIC_NATIVE_PYINIT_TO_BITS_SYMBOL,
-                    "args": [pyobj_var],
-                    "out": module_var,
-                    "value": register_global_code_id(
-                        _STATIC_NATIVE_PYINIT_TO_BITS_SYMBOL
-                    ),
                 },
                 {"kind": "check_exception", "value": 1},
             ]
@@ -1572,17 +1529,18 @@ def _build_static_native_module_init_ops(
         module_var = f"v{next_var}"
         next_var += 1
         ops.append({"kind": "module_new", "args": [module_name_var], "out": module_var})
-    cache_set_var = f"v{next_var}"
-    next_var += 1
     before_publication = ops
     ops = []
-    ops.append(
-        {
-            "kind": "module_cache_set",
-            "args": [module_name_var, module_var],
-            "out": cache_set_var,
-        }
-    )
+    if not spec.is_extension:
+        cache_set_var = f"v{next_var}"
+        next_var += 1
+        ops.append(
+            {
+                "kind": "module_cache_set",
+                "args": [module_name_var, module_var],
+                "out": cache_set_var,
+            }
+        )
     if not spec.is_alias:
         next_var = _append_static_native_module_metadata_ops(
             ops,

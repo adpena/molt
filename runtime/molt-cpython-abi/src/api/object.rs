@@ -215,19 +215,20 @@ pub unsafe extern "C" fn PyObject_SetAttr(
         return -1;
     }
     let tp = unsafe { crate::bridge::semantic_type(o) };
-    if !tp.is_null() {
-        if let Some(setattro) = unsafe { (*tp).tp_setattro } {
-            return unsafe { setattro(o, attr_name, v) };
+    if tp.is_null() {
+        return -1;
+    }
+    if let Some(setattro) = unsafe { (*tp).tp_setattro } {
+        return unsafe { setattro(o, attr_name, v) };
+    }
+    // CPython PyObject_SetAttr also tries the legacy `char*` `tp_setattr`
+    // slot before giving up.
+    if let Some(setattr) = unsafe { (*tp).tp_setattr } {
+        let name_ptr = unsafe { crate::api::strings::PyUnicode_AsUTF8(attr_name) };
+        if name_ptr.is_null() {
+            return -1;
         }
-        // CPython PyObject_SetAttr also tries the legacy `char*` `tp_setattr`
-        // slot before giving up.
-        if let Some(setattr) = unsafe { (*tp).tp_setattr } {
-            let name_ptr = unsafe { crate::api::strings::PyUnicode_AsUTF8(attr_name) };
-            if name_ptr.is_null() {
-                return -1;
-            }
-            return unsafe { setattr(o, name_ptr, v) };
-        }
+        return unsafe { setattr(o, name_ptr, v) };
     }
     // No C set-slot. A bridge-managed Molt object still assigns attributes via
     // the runtime object model (exactly as GenericSetAttr does); route it there.
@@ -283,9 +284,10 @@ pub unsafe extern "C" fn PyObject_SetAttrString(
     // Legacy `char*` fast path: dispatch `tp_setattr` directly without minting a
     // str (preserved byte-identical for types that install it).
     let tp = unsafe { crate::bridge::semantic_type(o) };
-    if !tp.is_null()
-        && let Some(setattr) = unsafe { (*tp).tp_setattr }
-    {
+    if tp.is_null() {
+        return -1;
+    }
+    if let Some(setattr) = unsafe { (*tp).tp_setattr } {
         return unsafe { setattr(o, attr_name, v) };
     }
     // Otherwise build a str key and route through the single `PyObject_SetAttr`
@@ -917,25 +919,44 @@ pub unsafe extern "C" fn PyObject_GenericSetAttr(
         }
         return -1;
     }
-    let (obj_bits, name_bits, value_bits) = {
-        let bridge = &*GLOBAL_BRIDGE;
-        (
-            bridge.observed_handle_for_pyobj(o),
-            bridge.observed_handle_for_pyobj(name),
-            if value.is_null() {
-                None
-            } else {
-                bridge.observed_handle_for_pyobj(value)
-            },
-        )
-    };
-    // ── Native bridge-managed Molt object: the runtime object model owns
-    // attribute assignment (unchanged fast path). ──
-    if let (Some(obj_bits), Some(name_bits)) = (obj_bits, name_bits) {
-        let value_bits = value_bits.map(|value| value.bits()).unwrap_or(0);
-        return unsafe {
-            (hooks_or_stubs().object_set_attr)(obj_bits.bits(), name_bits.bits(), value_bits)
+    if let Some(obj_bits) = GLOBAL_BRIDGE.observed_handle_for_pyobj(o) {
+        let Some(name_owner) = (unsafe { crate::bridge::RuntimeValue::acquire(name) }) else {
+            return -1;
         };
+        let value_owner = if value.is_null() {
+            None
+        } else {
+            let Some(owner) = (unsafe { crate::bridge::RuntimeValue::acquire(value) }) else {
+                return -1;
+            };
+            Some(owner)
+        };
+        let rc = unsafe {
+            (hooks_or_stubs().object_set_attr)(
+                obj_bits.bits(),
+                name_owner.bits(),
+                value_owner
+                    .as_ref()
+                    .map_or(0, crate::bridge::RuntimeValue::bits),
+                value.is_null(),
+            )
+        };
+        let pending = crate::api::errors::transfer_runtime_pending_to_current();
+        if rc < 0 {
+            crate::api::imports::propagate_hook_error(
+                c"attribute mutation failed without an exception",
+            );
+            return -1;
+        }
+        if pending {
+            unsafe {
+                crate::api::errors::replace_current_with_system_error(
+                    "attribute mutation succeeded with an exception set",
+                )
+            };
+            return -1;
+        }
+        return 0;
     }
     // ── Foreign object (bridge miss): CPython `_PyObject_GenericSetAttrWithDict`
     // — a data descriptor's `tp_descr_set` wins, else assign into the instance
@@ -2176,6 +2197,16 @@ pub unsafe extern "C" fn PyObject_Call(
     if callable.is_null() {
         return ptr::null_mut();
     }
+    // A canonical managed view's runtime class is semantic identity, not the
+    // C slot owner of its physical storage. In particular a managed Type view
+    // has `ob_type == PyType_Type`, but its constructor is the runtime call
+    // authority; sending it to `type.tp_call` reads the view's NULL `tp_new`.
+    // Concrete CFunction/CMethod views are the one managed exception: they
+    // intentionally publish a complete native callable layout and vectorcall
+    // slot, so their physical dispatch remains authoritative.
+    if unsafe { runtime_call_authority(callable, false) } {
+        return unsafe { call_managed_callable(callable, args, kwargs) };
+    }
     // Vectorcall-first (CPython 3.12 `_PyObject_Call`, Objects/call.c): if the
     // callable advertises a `vectorcallfunc`, invoke it via the PEP-590
     // `_PyVectorcall_Call` conversion (tuple/dict → flat stack) rather than
@@ -2185,24 +2216,17 @@ pub unsafe extern "C" fn PyObject_Call(
     if let Some(func) = unsafe { vectorcall_function(callable) } {
         return unsafe { vectorcall_call_with_tuple(func, callable, args, kwargs) };
     }
-    let tp = unsafe { crate::bridge::semantic_type(callable) };
-    if !tp.is_null()
-        && let Some(call) = unsafe { (*tp).tp_call }
-    {
+    let tp = unsafe { (*callable).ob_type };
+    if tp.is_null() {
+        return ptr::null_mut();
+    }
+    if let Some(call) = unsafe { (*tp).tp_call } {
         return unsafe { call(callable, args, kwargs) };
     }
-    // Bridge-managed Molt callable (a compiled function / class / bound method
-    // handed back by `PyObject_GetAttrString` &c. — e.g. numpy calling
-    // `numpy.dtypes._add_dtype_helper`): bridge proxies carry no `tp_call`, so
-    // route through the runtime's single call authority (`object_call` hook:
-    // dispatch, kwargs binding, CPython-shaped exceptions). Raw-registered C
-    // objects are excluded — their synthetic handles are identity anchors, not
-    // Molt object bits — and fall through to the honest TypeError below.
-    let callable_bits = GLOBAL_BRIDGE.observed_handle_for_pyobj(callable);
-    if let Some(callable_bits) = callable_bits {
-        return unsafe { call_bridged_callable(callable_bits.bits(), args, kwargs) };
-    }
-    // No tp_call slot: the object is not callable through this path. CPython
+    // No physical tp_call slot: a foreign/raw C object is not callable through
+    // this path. A static runtime class binding alone never licenses bypassing
+    // the C object's slot protocol; `molt_type_call` handles bound builtin
+    // class shells whose constructor is explicitly runtime-owned. CPython
     // raises TypeError here; a bare NULL is a silent failure that strands an
     // extension's error check with no pending exception.
     let type_name = unsafe { type_name_lossy(callable) };
@@ -2220,6 +2244,52 @@ pub unsafe extern "C" fn PyObject_Call(
         }
     }
     ptr::null_mut()
+}
+
+/// Classify call ownership from the physical view, not from the semantic
+/// class's slots. The `type_call` entry additionally admits a bound runtime
+/// class shell when there is no C `tp_new`; native C classes with a real
+/// constructor continue through the metaclass's slot protocol.
+pub(crate) unsafe fn runtime_call_authority(
+    callable: *mut PyObject,
+    type_constructor: bool,
+) -> bool {
+    if callable.is_null() {
+        return false;
+    }
+    if GLOBAL_BRIDGE.managed_handle_for_pyobj(callable).is_some() {
+        let physical = unsafe { (*callable).ob_type };
+        return !std::ptr::eq(physical, &raw mut crate::abi_types::PyCFunction_Type)
+            && !std::ptr::eq(physical, &raw mut crate::abi_types::PyCMethod_Type);
+    }
+    type_constructor
+        && unsafe { (*callable.cast::<PyTypeObject>()).tp_new }.is_none()
+        && GLOBAL_BRIDGE.observed_handle_for_pyobj(callable).is_some()
+}
+
+/// Call a canonical managed view after validating its runtime class edge.
+/// Also used by the direct `type.tp_call` entry point: callers may invoke that
+/// slot without passing through `PyObject_Call`.
+pub(crate) unsafe fn call_managed_callable(
+    callable: *mut PyObject,
+    args: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    if unsafe { crate::bridge::semantic_type(callable) }.is_null() {
+        return ptr::null_mut();
+    }
+    let Some(bits) = GLOBAL_BRIDGE.observed_handle_for_pyobj(callable) else {
+        if !exception_already_pending() {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                    c"managed callable has no runtime value".as_ptr(),
+                )
+            };
+        }
+        return ptr::null_mut();
+    };
+    unsafe { call_bridged_callable(bits.bits(), args, kwargs) }
 }
 
 /// Invoke a Molt callable handle through the runtime `object_call` hook,
@@ -2560,14 +2630,27 @@ unsafe fn tuple_from_vectorcall_args(args: *mut *mut PyObject, nargs: isize) -> 
 /// under-aligned relative to `align_of::<*const ()>()` (the `bridge.rs`
 /// wasm32-alignment class). `read_unaligned` is correct on every target.
 unsafe fn vectorcall_function(callable: *mut PyObject) -> Option<PyVectorcallFunc> {
+    unsafe { vectorcall_slot(callable, true) }
+}
+
+/// Resolve storage once for both the flag-gated accessor and PyVectorcall_Call,
+/// whose documented tp_call entry deliberately does not require the flag.
+unsafe fn vectorcall_slot(callable: *mut PyObject, require_flag: bool) -> Option<PyVectorcallFunc> {
     if callable.is_null() {
         return None;
+    }
+    if std::ptr::eq(
+        unsafe { (*callable).ob_type },
+        &raw mut crate::abi_types::MoltManaged_Type,
+    ) && let Some(function) = GLOBAL_BRIDGE.runtime_vectorcall(callable)
+    {
+        return Some(function);
     }
     let tp = unsafe { (*callable).ob_type };
     if tp.is_null() {
         return None;
     }
-    if unsafe { (*tp).tp_flags } & Py_TPFLAGS_HAVE_VECTORCALL == 0 {
+    if require_flag && unsafe { (*tp).tp_flags } & Py_TPFLAGS_HAVE_VECTORCALL == 0 {
         return None;
     }
     let offset = unsafe { (*tp).tp_vectorcall_offset };
@@ -2879,20 +2962,7 @@ pub unsafe extern "C" fn PyVectorcall_Call(
     // support. A missing offset or NULL slot raises `TypeError`; it NEVER
     // re-enters `PyObject_Call`, so `tp_call = PyVectorcall_Call` TERMINATES
     // instead of `tp_call → PyVectorcall_Call → PyObject_Call → tp_call → …`.
-    let tp = unsafe { (*callable).ob_type };
-    let offset = if tp.is_null() {
-        0
-    } else {
-        unsafe { (*tp).tp_vectorcall_offset }
-    };
-    let func = if offset > 0 {
-        let slot = unsafe { (callable as *const u8).add(offset as usize) }
-            .cast::<Option<PyVectorcallFunc>>();
-        unsafe { ptr::read_unaligned(slot) }
-    } else {
-        None
-    };
-    let Some(func) = func else {
+    let Some(func) = (unsafe { vectorcall_slot(callable, false) }) else {
         if !exception_already_pending() {
             let type_name = unsafe { type_name_lossy(callable) };
             crate::capi_trace::record_silent_failure("PyVectorcall_Call", Some(&type_name));
@@ -3062,9 +3132,35 @@ pub unsafe extern "C" fn molt_cfunction_call(
     args: *mut PyObject,
     kwargs: *mut PyObject,
 ) -> *mut PyObject {
+    if unsafe { runtime_call_authority(callable, false) } {
+        return unsafe { call_managed_callable(callable, args, kwargs) };
+    }
     // Always use the same tuple/dict-to-vector adapter as PyObject_Call.
     // Calling the slot directly must not bypass convention or result checks.
     unsafe { vectorcall_call_with_tuple(molt_cfunction_vectorcall, callable, args, kwargs) }
+}
+
+/// The vectorcall tail of a runtime-defined builtin carrier. The native call
+/// convention adapter is not applicable: no PyMethodDef exists for this value.
+pub(crate) unsafe extern "C" fn molt_runtime_vectorcall(
+    callable: *mut PyObject,
+    args: *mut *mut PyObject,
+    nargsf: usize,
+    kwnames: *mut PyObject,
+) -> *mut PyObject {
+    let Some(values) = (unsafe { vectorcall_argument_span(args, nargsf, kwnames) }) else {
+        return ptr::null_mut();
+    };
+    let Some(packed) = (unsafe {
+        crate::api::cfunction::TupleDictArguments::from_vector(
+            values,
+            vectorcall_nargs(nargsf) as usize,
+            kwnames,
+        )
+    }) else {
+        return ptr::null_mut();
+    };
+    unsafe { call_managed_callable(callable, packed.tuple, packed.dict) }
 }
 
 pub unsafe extern "C" fn molt_cfunction_vectorcall(
@@ -3322,11 +3418,6 @@ pub unsafe extern "C" fn PyCMethod_New(
         handle = Some(bits);
     }
 
-    unsafe {
-        crate::api::refcount::Py_XINCREF(self_);
-        crate::api::refcount::Py_XINCREF(module);
-        crate::api::refcount::Py_XINCREF(cls.cast());
-    }
     let func = PyCFunctionObject {
         ob_base: PyObject {
             ob_refcnt: 1,
@@ -3342,7 +3433,27 @@ pub unsafe extern "C" fn PyCMethod_New(
         m_weakreflist: ptr::null_mut(),
         vectorcall: Some(molt_cfunction_vectorcall),
     };
-    let object = if cls.is_null() {
+    if let Some(bits) = handle {
+        // A runtime-backed callable is a canonical managed view: its physical
+        // layout and member edges live as long as any runtime owner, not only
+        // as long as the constructor C reference.
+        return unsafe {
+            GLOBAL_BRIDGE.publish_cfunction_view(
+                bits,
+                crate::abi_types::PyCMethodObject {
+                    func,
+                    mm_class: cls,
+                },
+            )
+        };
+    }
+    // Without runtime registration the native type dealloc owns the members.
+    unsafe {
+        crate::api::refcount::Py_XINCREF(self_);
+        crate::api::refcount::Py_XINCREF(module);
+        crate::api::refcount::Py_XINCREF(cls.cast());
+    }
+    if cls.is_null() {
         Box::into_raw(Box::new(func)).cast::<PyObject>()
     } else {
         Box::into_raw(Box::new(crate::abi_types::PyCMethodObject {
@@ -3350,14 +3461,7 @@ pub unsafe extern "C" fn PyCMethod_New(
             mm_class: cls,
         }))
         .cast::<PyObject>()
-    };
-    if let Some(bits) = handle {
-        if !unsafe { GLOBAL_BRIDGE.register_pyobj_for_handle(object, bits) } {
-            unsafe { crate::api::errors::release_preserving_error(&[object]) };
-            return ptr::null_mut();
-        }
     }
-    object
 }
 
 unsafe fn cfunction_construction_error() -> *mut PyObject {
@@ -3430,25 +3534,40 @@ pub unsafe extern "C" fn PyCFunction_Check(op: *mut PyObject) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyCFunction_GetFunction(op: *mut PyObject) -> Option<PyCFunction> {
+    let func = unsafe { checked_native_cfunction(op) }?;
+    unsafe { (*(*func).m_ml).ml_meth }
+}
+
+/// Native implementation extraction requires an actual C method definition,
+/// not merely builtin-function semantic identity or runtime vectorcall storage.
+unsafe fn checked_native_cfunction(op: *mut PyObject) -> Option<*mut PyCFunctionObject> {
     if unsafe { PyCFunction_Check(op) } == 0 {
+        if GLOBAL_BRIDGE.runtime_vectorcall(op).is_some() {
+            unsafe {
+                cfunction_error(
+                    (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                    "runtime-defined builtin has no native C method definition".to_owned(),
+                )
+            };
+        } else {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        }
         return None;
     }
     let func = op.cast::<PyCFunctionObject>();
-    if func.is_null() || unsafe { (*func).m_ml.is_null() } {
+    if unsafe { (*func).m_ml.is_null() } {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return None;
     }
-    unsafe { (*(*func).m_ml).ml_meth }
+    Some(func)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyCFunction_GetSelf(op: *mut PyObject) -> *mut PyObject {
-    if unsafe { PyCFunction_Check(op) } == 0 {
+    let Some(func) = (unsafe { checked_native_cfunction(op) }) else {
         return ptr::null_mut();
-    }
-    let func = op.cast::<PyCFunctionObject>();
-    if unsafe { (*func).m_ml.is_null() }
-        || unsafe { (*(*func).m_ml).ml_flags } & crate::abi_types::METH_STATIC != 0
-    {
+    };
+    if unsafe { (*(*func).m_ml).ml_flags } & crate::abi_types::METH_STATIC != 0 {
         ptr::null_mut()
     } else {
         unsafe { (*func).m_self }
@@ -3457,15 +3576,10 @@ pub unsafe extern "C" fn PyCFunction_GetSelf(op: *mut PyObject) -> *mut PyObject
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyCFunction_GetFlags(op: *mut PyObject) -> c_int {
-    if unsafe { PyCFunction_Check(op) } == 0 {
-        return 0;
-    }
-    let func = op.cast::<PyCFunctionObject>();
-    if func.is_null() || unsafe { (*func).m_ml.is_null() } {
-        0
-    } else {
-        unsafe { (*(*func).m_ml).ml_flags }
-    }
+    let Some(func) = (unsafe { checked_native_cfunction(op) }) else {
+        return -1;
+    };
+    unsafe { (*(*func).m_ml).ml_flags }
 }
 
 pub const PY_GIL_STATE_LOCKED: c_int = 0;

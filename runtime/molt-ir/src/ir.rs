@@ -2735,7 +2735,7 @@ mod json_parse_tests {
     }
 
     #[test]
-    fn simple_ir_from_json_str_requires_explicit_empty_pyinit_payload() {
+    fn simple_ir_from_json_str_requires_explicit_pyinit_name_payload() {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
@@ -2756,7 +2756,7 @@ mod json_parse_tests {
                 ]
             }"#,
         )
-        .expect_err("native callable transport must distinguish absent args from empty args");
+        .expect_err("native callable transport must carry the module-name payload");
 
         assert!(err.contains("requires an args payload"));
     }

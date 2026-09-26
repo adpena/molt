@@ -45,6 +45,12 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_zip_source_loader_exec_module as *const (),
             ))
         }
+        "molt_importlib_extension_loader_create_module" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_extension_loader_create_module",
+                crate::molt_importlib_extension_loader_create_module as *const (),
+            ))
+        }
         "molt_importlib_extension_loader_exec_module" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_extension_loader_exec_module",
@@ -157,6 +163,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_find_in_path_package_context as *const (),
             ))
         }
+        "molt_importlib_module_spec_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_module_spec_type",
+            crate::molt_importlib_module_spec_type as *const (),
+        )),
         "molt_importlib_find_spec" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_find_spec",
             crate::molt_importlib_find_spec as *const (),
