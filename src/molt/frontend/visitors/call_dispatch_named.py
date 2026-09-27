@@ -9,9 +9,6 @@ from typing import (
 
 from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
-    MOLT_DIRECT_CALL_BIND_ALWAYS,
-    MOLT_DIRECT_CALLS,
-    MOLT_REEXPORT_FUNCTIONS,
     MoltOp,
     MoltValue,
     _intrinsic_arity_exact,
@@ -180,71 +177,25 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
         )
         if imported_exception_ctor is not CALL_NOT_HANDLED:
             return imported_exception_ctor
-        target_module: str | None = None
-        direct_registry_authorized = False
-
-        if imported_from == "molt":
-            if original_attr in MOLT_DIRECT_CALLS.get("molt", set()):
-                target_module = MOLT_REEXPORT_FUNCTIONS.get(original_attr)
-                direct_registry_authorized = target_module is not None
-        elif (
-            normalized in MOLT_DIRECT_CALLS
-            and original_attr in MOLT_DIRECT_CALLS[normalized]
-        ):
-            target_module = normalized
-            direct_registry_authorized = True
-        elif (
-            imported_from in MOLT_DIRECT_CALLS
-            and original_attr in MOLT_DIRECT_CALLS[imported_from]
-        ):
-            target_module = imported_from
-            direct_registry_authorized = True
-
-        visible_import_authorized = (
-            imported_from in self.stdlib_allowlist
-            or (normalized is not None and normalized in self.stdlib_allowlist)
-            or self._is_internal_module(imported_from)
-            or self._is_known_project_module(imported_from)
-        )
-        if target_module is None and visible_import_authorized:
-            target_module = visible_module
-        if target_module is None:
+        visible_import_authorized = self._should_attempt_runtime_module_import(
+            imported_from
+        ) or self._is_internal_module(imported_from)
+        if not visible_import_authorized:
             return CALL_NOT_HANDLED
+        target_module = visible_module
 
-        force_bind = original_attr[
-            :1
-        ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
-            target_module, set()
-        )
         lowered_imported_call = self._try_emit_imported_module_direct_or_task_call(
             target_module,
             original_attr,
             node,
-            imported_from=imported_from,
-            normalized=normalized,
             needs_bind=needs_bind,
-            force_bind=force_bind,
-            direct_registry_authorized=direct_registry_authorized,
         )
         if lowered_imported_call is not None:
             return lowered_imported_call
-        if visible_import_authorized:
-            callee = self.visit(node.func)
-            if callee is None:
-                raise FrontendRejection(
-                    Diagnostic.CALL_TARGET, "Unsupported call target"
-                )
-            res = MoltValue(self.next_var(), type_hint="Any")
-            callargs = self._emit_call_args_builder(node)
-            self.emit(
-                MoltOp(
-                    kind="CALL_BIND",
-                    args=[callee, callargs],
-                    result=res,
-                )
-            )
-            return res
-        return CALL_NOT_HANDLED
+        callee = self.visit(node.func)
+        if callee is None:
+            raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
+        return self._emit_dynamic_call(node, callee)
 
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any:
         if isinstance(node.func, ast.Name):
@@ -1504,20 +1455,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 if callee is not None:
                     return self._emit_dynamic_call(node, callee)
 
-            suggestion = self._call_allowlist_suggestion(func_id, imported_from)
-            if suggestion:
-                alternative = f"use {suggestion}"
-            else:
-                alternative = (
-                    "import from an allowlisted module (see docs/spec/"
-                    "areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)"
-                )
-            detail = (
-                "Tier 0 only allows direct calls to allowlisted module-level"
-                " functions; rebinding/monkey-patching is not observed"
+            alternative = (
+                "import from a supported module (see docs/spec/"
+                "areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)"
             )
-            if suggestion:
-                detail = f"{detail}. warning: allowlisted path is {suggestion}"
+            detail = "The module must be admitted by the compilation import graph."
             if self.fallback_policy == "bridge":
                 self.compat.bridge_unavailable(
                     node,

@@ -539,6 +539,21 @@ def check_target_python_versions() -> CategoryResult:
         )
     )
 
+    width_text = _read(
+        ROOT / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
+    )
+    width_versions = tuple(
+        f"3.{minor}"
+        for minor in re.findall(r'^\s*(\d+) => Some\(\("', width_text, re.MULTILINE)
+    )
+    result.items.append(
+        CheckItem(
+            "unicode-width-target-versions",
+            width_versions == authority_versions,
+            f"Unicode width targets={width_versions} vs authority {authority_versions}; regenerate with tools/gen_unicode_width.py",
+        )
+    )
+
     # The generator now derives DEFAULT_PYTHONS from the authority import; assert
     # it no longer re-declares an independent literal tuple (a re-declared literal
     # would be silent drift). A literal-string tuple RHS is the drift signal.

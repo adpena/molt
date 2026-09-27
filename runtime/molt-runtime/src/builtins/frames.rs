@@ -1,5 +1,6 @@
 use crate::PyToken;
 use crate::builtins::exceptions::raise_exception;
+use crate::builtins::numbers::{index_bigint_from_obj, index_i64_integral_bits};
 use crate::{
     FRAME_STACK, MoltHeader, TRACEBACK_BUILD_COUNT, TRACEBACK_BUILD_FRAMES, TYPE_ID_CODE,
     TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_MODULE, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE,
@@ -10,6 +11,7 @@ use crate::{
     profile_enabled, runtime_state, string_obj_to_owned, to_i64,
 };
 use molt_obj_model::MoltObject;
+use num_traits::ToPrimitive;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 mod namespace;
@@ -962,6 +964,51 @@ unsafe fn build_frame_chain(_py: &PyToken<'_>, entries: &[FrameEntry]) -> Option
     }
 }
 
+/// Select by Python-visible frames, not by raw runtime stack entries. Runtime
+/// namespace contexts with no code object are not additional Python calls.
+/// `None` means the requested frame is absent; allocation/callback failures
+/// retain their pending exception and return `Err` instead.
+pub(crate) fn frame_at_depth(_py: &PyToken<'_>, depth: usize) -> Result<Option<u64>, ()> {
+    let snapshot = FrameStackSnapshot::capture(_py, |stack| stack);
+    let selected = snapshot
+        .entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, entry)| unsafe { frame_line_from_entry(**entry) }.is_some())
+        .nth(depth)
+        .map(|(index, _)| index);
+    let Some(index) = selected else {
+        return Ok(None);
+    };
+    let frames = unsafe { build_frame_chain(_py, &snapshot.entries[..=index]) };
+    let Some(frames) = frames else {
+        if !exception_pending(_py) {
+            raise_exception::<()>(_py, "MemoryError", "frame materialization failed");
+        }
+        return Err(());
+    };
+    if exception_pending(_py) {
+        for (bits, _) in frames {
+            dec_ref_bits(_py, bits);
+        }
+        return Err(());
+    }
+    let Some((selected_bits, _)) = frames.last().copied() else {
+        raise_exception::<()>(
+            _py,
+            "SystemError",
+            "selected Python frame was not materialized",
+        );
+        return Err(());
+    };
+    inc_ref_bits(_py, selected_bits);
+    for (bits, _) in frames {
+        dec_ref_bits(_py, bits);
+    }
+    Ok(Some(selected_bits))
+}
+
 pub(crate) fn frame_stack_trace_payload_bits(
     _py: &PyToken<'_>,
     handler_frame_index: Option<usize>,
@@ -1104,36 +1151,30 @@ pub(crate) fn exception_materialize_traceback_bits(_py: &PyToken<'_>, exc_ptr: *
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let depth_val = obj_from_bits(depth_bits);
-        let Some(depth) = to_i64(depth_val) else {
-            return raise_exception::<u64>(_py, "TypeError", "depth must be an integer");
+        let depth = if let Some(value) = index_i64_integral_bits(depth_bits) {
+            value.to_i32()
+        } else {
+            let type_error = format!(
+                "'{}' object cannot be interpreted as an integer",
+                crate::type_name(_py, obj_from_bits(depth_bits))
+            );
+            let Some(value) = index_bigint_from_obj(_py, depth_bits, &type_error) else {
+                return MoltObject::none().bits();
+            };
+            value.to_i32()
         };
-        if depth < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "depth must be >= 0");
+        let Some(depth) = depth else {
+            return raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "Python int too large to convert to C int",
+            );
+        };
+        match frame_at_depth(_py, depth.max(0) as usize) {
+            Ok(Some(bits)) => bits,
+            Ok(None) => raise_exception::<u64>(_py, "ValueError", "call stack is not deep enough"),
+            Err(()) => MoltObject::none().bits(),
         }
-        let depth = depth as usize;
-        let snapshot = FrameStackSnapshot::capture(_py, |stack| {
-            if depth >= stack.len() {
-                &[]
-            } else {
-                &stack[..=stack.len() - 1 - depth]
-            }
-        });
-        unsafe {
-            if let Some(frames) = build_frame_chain(_py, &snapshot.entries) {
-                if let Some((frame_bits, _)) = frames.last().copied() {
-                    inc_ref_bits(_py, frame_bits);
-                    for (bits, _) in frames {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return frame_bits;
-                }
-                for (bits, _) in frames {
-                    dec_ref_bits(_py, bits);
-                }
-            }
-        }
-        MoltObject::none().bits()
     })
 }
 
@@ -1357,6 +1398,34 @@ mod tests {
             assert_eq!(unsafe { ref_count(code_ptr) }, 1);
 
             dec_ref_bits(_py, code_bits);
+        });
+    }
+
+    #[test]
+    fn frame_depth_counts_only_python_visible_entries() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let (_, code) = alloc_test_code(py);
+            let globals = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            let builtins = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            for bits in [code, globals, builtins] {
+                inc_ref_bits(py, bits);
+            }
+            frame_stack_push_owned(py, code, globals, builtins);
+            frame_stack_push(py, 0); // Runtime context, not a Python call.
+
+            let frame = super::frame_at_depth(py, 0)
+                .expect("frame materialization")
+                .expect("visible Python frame");
+            assert!(super::frame_at_depth(py, 1).unwrap().is_none());
+            assert!(!crate::exception_pending(py));
+
+            dec_ref_bits(py, frame);
+            frame_stack_pop(py);
+            frame_stack_pop(py);
+            for bits in [code, globals, builtins] {
+                dec_ref_bits(py, bits);
+            }
         });
     }
 

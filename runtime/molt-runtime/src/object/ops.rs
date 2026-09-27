@@ -65,10 +65,9 @@ pub use super::ops_sys::{
     molt_time_process_time_ns, molt_time_sleep, molt_time_strftime, molt_time_time,
     molt_time_time_ns, molt_time_timegm, molt_time_timezone, molt_time_tzname,
     molt_traceback_exception_chain_payload, molt_traceback_exception_components,
-    molt_traceback_extract_tb, molt_traceback_format_caret_line, molt_traceback_format_exc,
-    molt_traceback_format_exception, molt_traceback_format_exception_only,
-    molt_traceback_format_stack, molt_traceback_format_tb, molt_traceback_infer_col_offsets,
-    molt_traceback_payload, molt_traceback_source_line,
+    molt_traceback_extract_tb, molt_traceback_format_exc, molt_traceback_format_exception,
+    molt_traceback_format_exception_only, molt_traceback_format_stack, molt_traceback_format_tb,
+    molt_traceback_payload,
 };
 pub(crate) use ascii_bytes::{
     bytes_ascii_capitalize, bytes_ascii_lower, bytes_ascii_swapcase, bytes_ascii_title,
@@ -190,6 +189,18 @@ pub(crate) mod unicode_printable_table {
 
     pub(crate) fn is_printable(code: u32) -> bool {
         super::unicode_range_contains(UNICODE_PRINTABLE_RANGES, code)
+    }
+}
+
+/// Shared by public unicodedata and source diagnostics, selected by target
+/// Python rather than the interpreter used to build the compiler/runtime.
+pub(crate) mod unicode_east_asian_width_table {
+    include!("unicode_width_generated.rs");
+
+    pub(crate) fn width(code: u32, minor: i64) -> &'static str {
+        let (_, ranges) = for_minor(minor).expect("unsupported target Python Unicode version");
+        let index = ranges.partition_point(|entry| entry.1 < code);
+        ranges[index].2
     }
 }
 

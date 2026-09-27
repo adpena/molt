@@ -162,11 +162,6 @@ def _safe_intrinsic(
     return _noop
 
 
-def _noop_getframe(_depth: int = 0) -> object:
-    """Fallback for when molt_getframe intrinsic is unavailable (e.g. WASM/node)."""
-    return None
-
-
 def _noop_is_string_obj(val: object) -> bool:
     """Fallback for when molt_is_string_obj intrinsic is unavailable (e.g. WASM/node)."""
     return isinstance(val, str)
@@ -198,10 +193,9 @@ def _platlibdir_default() -> str:
     return "lib"
 
 
-# Define early to avoid circular-import NameError during stdlib bootstrap.
-# _safe_intrinsic never raises — WASM builds won't crash when the lazy
-# resolver hasn't wired these yet.
-_MOLT_GETFRAME = _safe_intrinsic("molt_getframe", _noop_getframe)
+# Frame depth counts Python frames only. Publish the runtime callable itself:
+# a Python forwarding wrapper would change the visible stack and argument law.
+_MOLT_GETFRAME = _require_intrinsic("molt_getframe")
 # Always use isinstance-based check: the molt_is_string_obj intrinsic
 # fails on WASM when the string was allocated by the compiler (its header
 # type_id can diverge from TYPE_ID_STRING for interned/constant strings).
@@ -1303,9 +1297,6 @@ def _ensure_heavy_api_initialized() -> None:
             return None, None, None
         return type(exc), exc, getattr(exc, "__traceback__", None)
 
-    def _getframe(depth: int = 0) -> object | None:
-        return _MOLT_GETFRAME(depth + 2)
-
     def getdefaultencoding() -> str:
         return _MOLT_SYS_GETDEFAULTENCODING()
 
@@ -1474,7 +1465,7 @@ def _ensure_heavy_api_initialized() -> None:
             "getrecursionlimit": getrecursionlimit,
             "setrecursionlimit": setrecursionlimit,
             "exc_info": exc_info,
-            "_getframe": _getframe,
+            "_getframe": _MOLT_GETFRAME,
             "getdefaultencoding": getdefaultencoding,
             "getfilesystemencoding": getfilesystemencoding,
             "getfilesystemencodeerrors": getfilesystemencodeerrors,

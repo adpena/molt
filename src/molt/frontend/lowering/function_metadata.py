@@ -53,7 +53,6 @@ class MaterializedFunctionMetadata:
     code_symbol: str | None
     trace_filename: str
     trace_lineno: int
-    trace_name: str
     varnames: tuple[str, ...]
     code_names: tuple[str, ...]
     freevars: tuple[str, ...]
@@ -185,7 +184,6 @@ def emit_materialized_function_metadata(
     if metadata.code_symbol is not None:
         filename = emitter.const_str(metadata.trace_filename)
         trace_lineno = emitter.const_int(metadata.trace_lineno)
-        trace_name = emitter.const_str(metadata.trace_name)
         linetable = emitter.const_none()
         varnames = emitter.tuple_new(
             [emitter.const_str(name) for name in metadata.varnames]
@@ -196,7 +194,7 @@ def emit_materialized_function_metadata(
         code = emitter.code_new(
             [
                 filename,
-                trace_name,
+                name_value,
                 trace_lineno,
                 linetable,
                 varnames,
@@ -413,7 +411,6 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         qualname: str,
         trace_filename: str | None = None,
         trace_lineno: int | None = None,
-        trace_name: str | None = None,
         posonly_params: list[str],
         pos_or_kw_params: list[str],
         kwonly_params: list[str],
@@ -463,7 +460,6 @@ class FunctionMetadataMixin(GeneratorMixinBase):
                 code_symbol=code_symbol,
                 trace_filename=trace_filename or self.source_path or "<unknown>",
                 trace_lineno=int(trace_lineno or 0),
-                trace_name=trace_name or qualname or name,
                 varnames=tuple(varnames_list),
                 code_names=tuple(code_names or ()),
                 freevars=tuple(freevars),
@@ -551,10 +547,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             if not func_symbol.startswith(symbol_prefix):
                 continue
             func_id = func_symbol[len(symbol_prefix) :]
-            if (
-                self._lookup_func_defaults(module_name, func_id) is not None
-                or self._lookup_func_kind(module_name, func_id) is not None
-            ):
+            if self._is_linkable_module_function_symbol(module_name, func_id):
                 return module_name, func_id
         return None
 
@@ -566,6 +559,8 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         normalized = self._normalize_allowlist_module(module_name)
         if normalized is not None:
             module_name = normalized
+        if not self._is_linkable_module_function_symbol(module_name, func_id):
+            return None
         info = self._lookup_func_defaults(module_name, func_id)
         info_kind = self._normalize_func_kind(info.get("kind")) if info else None
         kind = self._lookup_func_kind(module_name, func_id) or info_kind

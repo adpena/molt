@@ -129,7 +129,11 @@ pub(crate) fn loop_guard_path(
                 return Some(path);
             }
             Terminator::Branch { target, .. } => current = *target,
-            _ => return None,
+            Terminator::CondBranch { .. }
+            | Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Return { .. }
+            | Terminator::Unreachable => return None,
         }
     }
 }
@@ -151,7 +155,11 @@ pub(super) fn loop_body_path(
         path.push(current);
         match &func.blocks.get(&current)?.terminator {
             Terminator::Branch { target, .. } => current = *target,
-            _ => return None,
+            Terminator::CondBranch { .. }
+            | Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Return { .. }
+            | Terminator::Unreachable => return None,
         }
     }
     (!path.is_empty()).then_some(path)

@@ -20,12 +20,15 @@ def _load_sys_shim(
     *,
     runtime_active: bool,
     scalar_intrinsics: dict[str, Callable[[], object]],
+    unavailable: frozenset[str] = frozenset(),
 ) -> tuple[types.ModuleType, list[str]]:
     require_calls: list[str] = []
     intrinsics = types.ModuleType("_intrinsics")
 
     def require_intrinsic(name: str, _namespace: object = None):
         require_calls.append(name)
+        if name in unavailable:
+            raise RuntimeError(f"intrinsic unavailable: {name}")
         if name in scalar_intrinsics:
             return scalar_intrinsics[name]
         if runtime_active and name in SCALAR_INTRINSICS:
@@ -146,3 +149,25 @@ def test_inactive_reference_harness_uses_host_sys_metadata(monkeypatch):
     assert module.maxunicode == sys.maxunicode
     assert module.byteorder == sys.byteorder
     assert SCALAR_INTRINSICS.isdisjoint(require_calls)
+
+
+def test_frame_publication_retains_runtime_callable_and_caller(monkeypatch):
+    intrinsics = _valid_scalar_intrinsics()
+    intrinsics["molt_getframe"] = sys._getframe
+    module, _ = _load_sys_shim(
+        monkeypatch, runtime_active=True, scalar_intrinsics=intrinsics
+    )
+    # CPython supplies the independent frame oracle. This checks publication,
+    # not Molt's runtime: the differential fixture proves the compiled path.
+    assert module._getframe is sys._getframe
+    assert module._getframe() is sys._getframe()
+
+
+def test_frame_publication_rejects_unavailable_runtime_primitive(monkeypatch):
+    with pytest.raises(RuntimeError, match="intrinsic unavailable: molt_getframe"):
+        _load_sys_shim(
+            monkeypatch,
+            runtime_active=True,
+            scalar_intrinsics=_valid_scalar_intrinsics(),
+            unavailable=frozenset({"molt_getframe"}),
+        )

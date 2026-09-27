@@ -34,7 +34,7 @@ from molt.cli.native_link_plan import (
 )
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
-from molt.cli import link_fingerprints
+from molt.cli import link_fingerprints, progress
 
 
 def _build_cache_info(
@@ -143,6 +143,19 @@ def _attach_process_output(
     if process.stderr:
         data["stderr"] = process.stderr
     return data
+
+
+def _emit_native_link_process_output(
+    process: subprocess.CompletedProcess[str],
+) -> None:
+    # Build status and diagnostics use stderr in text mode. Preserve both
+    # captured linker streams there: drivers may report failures or warnings
+    # on either stream, and the outer build consumer reads this one channel.
+    for output in (process.stdout, process.stderr):
+        if output:
+            sys.stderr.write(output)
+            if not output.endswith("\n"):
+                sys.stderr.write("\n")
 
 
 def _emit_build_success_json(
@@ -431,6 +444,9 @@ def _emit_native_link_result(
     strip_after_link: bool = True,
     link_selection: tuple[Path, Path] | None = None,
 ) -> int:
+    if not json_output:
+        progress.finish()
+        _emit_native_link_process_output(link_process)
     if link_process.returncode == 0:
         # LinkPlan owns strip ordering. Ordinary release plans strip here;
         # BOLT plans retain symbols and relocations until the optimized image

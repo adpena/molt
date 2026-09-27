@@ -734,9 +734,6 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                 imported_child_module in self.known_modules
                 or imported_child_module in self.stdlib_allowlist
             )
-            if module_name == "asyncio" and attr_name in {"run", "sleep"}:
-                module_prefix = f"{self._sanitize_module_name(module_name)}__"
-                attr_val.type_hint = f"Func:{module_prefix}{attr_name}"
             known_func_hint = self._known_module_function_type_hint(
                 module_name, attr_name
             )

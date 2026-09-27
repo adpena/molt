@@ -114,7 +114,9 @@ stdlib_crypto_legacy = [
 stdlib_compression = ["dep:bzip2", "dep:flate2", "dep:xz2", "dep:molt-runtime-compression"]
 stdlib_serialization = ["dep:rmpv", "dep:serde_cbor"]
 stdlib_archive = ["dep:zip", "stdlib_serial"]
-stdlib_ast = ["dep:rustpython-parser"]
+# Gates the Python ast APIs. The parser also owns traceback expression ranges
+# for every profile; diagnostics must not substitute punctuation heuristics.
+stdlib_ast = []
 stdlib_fs_extra = ["dep:glob", "dep:tempfile"]
 # Granular domain feature gates for resolve_symbol: when disabled, the
 # linker can strip the implementation code for unused domains.
@@ -248,7 +250,7 @@ rmpv = { version = "1.3", optional = true }
 serde_cbor = { version = "0.11", optional = true }
 
 # Parsing
-rustpython-parser = { version = "0.4", default-features = false, features = ["location", "num-bigint"], optional = true }
+rustpython-parser = { version = "0.4", default-features = false, features = ["location", "num-bigint"] }
 
 # Glob/tempfile
 glob = { version = "0.3", optional = true }

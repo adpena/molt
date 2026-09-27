@@ -189,7 +189,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4b1ad8ae175fd6ce496e9c569cee3e2456ce02bbfb07cbf9f51e2f2d15874796",
+  "authority_sha256": "1beef75b8dcb75b2fc042b4f53c09ac314f28698a01adf3a12617e8f27aff824",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -1600,6 +1600,31 @@
         "python",
         "uv",
         "rustfmt"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/gen_unicode_width.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.unicode-width.generated",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
       ]
     },
     {
@@ -4203,7 +4228,7 @@
         "headroom_seconds": 180,
         "projected_makespan_seconds": 3420,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2955
+          "repository-policy": 2985
         }
       },
       "rust": {

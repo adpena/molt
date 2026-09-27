@@ -1,4 +1,6 @@
 use super::*;
+use rustpython_parser::ast::Ranged;
+use rustpython_parser::{Mode as ParseMode, ast as pyast, parse as parse_python};
 
 pub(crate) fn traceback_limit_from_bits(
     _py: &PyToken<'_>,
@@ -132,6 +134,15 @@ pub(crate) fn traceback_source_line_native(
     filename: &str,
     lineno: i64,
 ) -> String {
+    traceback_source_span_native(_py, filename, lineno, lineno)
+}
+
+fn traceback_source_span_native(
+    _py: &PyToken<'_>,
+    filename: &str,
+    lineno: i64,
+    end_lineno: i64,
+) -> String {
     if lineno <= 0 {
         return String::new();
     }
@@ -149,261 +160,393 @@ pub(crate) fn traceback_source_line_native(
         return String::new();
     };
     let reader = BufReader::new(file);
-    let target = lineno as usize;
-    for (idx, line_result) in reader.lines().enumerate() {
-        if idx + 1 == target {
-            if let Ok(line) = line_result {
-                return line;
-            }
-            return String::new();
-        }
-    }
-    String::new()
-}
-
-pub(crate) fn traceback_line_trim_bounds(line: &str) -> Option<(i64, i64)> {
-    if line.is_empty() {
-        return None;
-    }
-    let chars: Vec<char> = line.chars().collect();
-    if chars.is_empty() {
-        return None;
-    }
-    let mut start = 0usize;
-    while start < chars.len() && chars[start].is_whitespace() {
-        start += 1;
-    }
-    let mut end = chars.len();
-    while end > start && chars[end - 1].is_whitespace() {
-        end -= 1;
-    }
-    if end <= start {
-        return None;
-    }
-    Some((start as i64, end as i64))
-}
-
-pub(crate) fn traceback_infer_column_offsets(line: &str) -> (i64, i64) {
-    if line.is_empty() {
-        return (0, 0);
-    }
-    let chars: Vec<char> = line.chars().collect();
-    if chars.is_empty() {
-        return (0, 0);
-    }
-    let mut start = 0usize;
-    while start < chars.len() && chars[start].is_whitespace() {
-        start += 1;
-    }
-    if start >= chars.len() {
-        return (0, 0);
-    }
-    let mut end = chars.len();
-    while end > start && chars[end - 1].is_whitespace() {
-        end -= 1;
-    }
-    let trimmed: String = chars[start..end].iter().collect();
-    let mut highlighted_start = start;
-    if let Some(rest) = trimmed
-        .strip_prefix("return ")
-        .or_else(|| trimmed.strip_prefix("raise "))
-        .or_else(|| trimmed.strip_prefix("yield "))
-        .or_else(|| trimmed.strip_prefix("await "))
-        .or_else(|| trimmed.strip_prefix("assert "))
-    {
-        highlighted_start = end.saturating_sub(rest.chars().count());
-        while highlighted_start < end && chars[highlighted_start].is_whitespace() {
-            highlighted_start += 1;
-        }
+    let full_span = runtime_target_at_least(_py, 3, 13);
+    let last = if full_span {
+        end_lineno.max(lineno)
     } else {
-        let trimmed_chars: Vec<char> = trimmed.chars().collect();
-        for idx in 0..trimmed_chars.len() {
-            if trimmed_chars[idx] != '=' {
-                continue;
-            }
-            let prev = if idx > 0 {
-                Some(trimmed_chars[idx - 1])
-            } else {
-                None
-            };
-            let next = if idx + 1 < trimmed_chars.len() {
-                Some(trimmed_chars[idx + 1])
-            } else {
-                None
-            };
-            if matches!(prev, Some('=' | '!' | '<' | '>' | ':')) || matches!(next, Some('=')) {
-                continue;
-            }
-            let mut rhs_start = start + idx + 1;
-            while rhs_start < end && chars[rhs_start].is_whitespace() {
-                rhs_start += 1;
-            }
-            if rhs_start < end {
-                highlighted_start = rhs_start;
-            }
+        lineno
+    };
+    let mut source = String::new();
+    for (idx, line_result) in reader.lines().enumerate() {
+        let number = idx as i64 + 1;
+        if number < lineno {
+            continue;
+        }
+        if number > last {
+            break;
+        }
+        let Ok(line) = line_result else {
+            return String::new();
+        };
+        // 3.12 observes the raw linecache line, including its normalized EOF
+        // newline. 3.13+ FrameSummary._set_lines strips each captured source
+        // line before joining the span. Explicitly supplied lines bypass this.
+        source.push_str(if full_span { line.trim_end() } else { &line });
+        source.push('\n');
+        if number == last {
             break;
         }
     }
-    let col = highlighted_start as i64;
-    let end_col = end.max(highlighted_start) as i64;
-    if end_col <= col {
-        (col, col + 1)
+    source
+}
+
+fn traceback_display_width(line: &str, offset: usize, minor: i64) -> usize {
+    if line.is_ascii() {
+        return offset;
+    }
+    line.chars()
+        .take(offset)
+        .map(|ch| {
+            match crate::object::ops::unicode_east_asian_width_table::width(ch as u32, minor) {
+                "W" | "F" => 2,
+                _ => 1,
+            }
+        })
+        .sum()
+}
+
+/// Return the CPython caret anchor as character offsets in the selected source
+/// segment. AST ranges and lexer token ranges are UTF-8 byte offsets.
+fn traceback_caret_anchor(segment: &str, include_calls: bool) -> Option<(usize, usize)> {
+    let wrapped = if include_calls {
+        format!("(\n{segment}\n)")
     } else {
-        (col, end_col)
-    }
-}
-
-pub(crate) fn traceback_format_caret_line_native(
-    line: &str,
-    mut colno: i64,
-    mut end_colno: i64,
-) -> String {
-    if line.is_empty() || colno < 0 {
-        return String::new();
-    }
-    let text_len = line.chars().count() as i64;
-    if text_len <= 0 {
-        return String::new();
-    }
-    if end_colno < colno {
-        end_colno = colno;
-    }
-    if colno > text_len {
-        colno = text_len;
-    }
-    if end_colno > text_len {
-        end_colno = text_len;
-    }
-    let Some((trim_start, trim_end)) = traceback_line_trim_bounds(line) else {
-        return String::new();
+        segment.to_owned()
     };
-    if colno < trim_start {
-        colno = trim_start;
-    }
-    if end_colno > trim_end {
-        end_colno = trim_end;
-    }
-    if end_colno <= colno {
-        return String::new();
-    }
-    let width = (end_colno - colno) as usize;
-    let col_usize = colno as usize;
-    let mut out = String::with_capacity(4 + col_usize + width + 1);
-    out.push_str("    ");
-    for ch in line.chars().take(col_usize) {
-        if ch == '\t' {
-            out.push('\t');
-        } else {
-            out.push(' ');
-        }
-    }
-
-    // CPython 3.12 uses ^ for the "anchor" (operator, dot, paren) and ~ for
-    // the rest.  Find the anchor within the highlighted region by scanning
-    // for operator tokens in the source text.
-    let chars: Vec<char> = line.chars().skip(col_usize).take(width).collect();
-    let anchor = find_caret_anchor(&chars);
-    match anchor {
-        Some((a_start, a_end)) => {
-            for i in 0..width {
-                if i >= a_start && i < a_end {
-                    out.push('^');
-                } else {
-                    out.push('~');
+    let pyast::Mod::Module(module) =
+        parse_python(&wrapped, ParseMode::Module, "<traceback>").ok()?
+    else {
+        return None;
+    };
+    let [pyast::Stmt::Expr(statement)] = module.body.as_slice() else {
+        return None;
+    };
+    let expression = statement.value.as_ref();
+    let chars: Vec<char> = segment.chars().collect();
+    let normalize =
+        |byte: usize| traceback_byte_offset_to_char_offset(segment, byte as i64) as usize;
+    // 3.12 parses the unwrapped segment and uses AST columns. Its BinOp
+    // algorithm intentionally mixes byte columns and character-indexed scanning
+    // before a second byte conversion. Preserve that observable versioned rule,
+    // including its non-ASCII placement, rather than guessing a token anchor.
+    if !include_calls {
+        let column = |offset| {
+            let byte = u32::from(offset) as usize;
+            wrapped[..byte].rsplit('\n').next().unwrap_or("").len()
+        };
+        return match expression {
+            pyast::Expr::BinOp(node) => {
+                let left = column(node.left.range().end());
+                let right = column(node.right.range().start());
+                let gap = chars.get(normalize(left)..normalize(right))?;
+                let whitespace = gap.iter().take_while(|ch| ch.is_whitespace()).count();
+                let mut start = left + whitespace;
+                let mut end = start + 1;
+                if gap
+                    .get(whitespace + 1)
+                    .is_some_and(|ch| !ch.is_whitespace())
+                {
+                    end += 1;
                 }
+                while chars
+                    .get(start)
+                    .is_some_and(|ch| ch.is_whitespace() || matches!(ch, ')' | '#'))
+                {
+                    start += 1;
+                    end += 1;
+                }
+                Some((normalize(start), normalize(end)))
             }
-        }
-        None => {
-            for _ in 0..width {
-                out.push('^');
+            pyast::Expr::Subscript(node) => {
+                let mut start = normalize(column(node.value.range().end()));
+                let mut end = normalize(column(node.slice.range().end()) + 1);
+                while chars.get(start).is_some_and(|ch| *ch != '[') {
+                    start += 1;
+                }
+                while chars.get(end).is_some_and(|ch| *ch != ']') {
+                    end += 1;
+                }
+                if end < chars.len() {
+                    end += 1;
+                }
+                Some((start, end))
             }
+            _ => None,
+        };
+    }
+    let position = |offset| normalize((u32::from(offset) as usize).saturating_sub(2));
+    let scan = |mut index: usize, stop: fn(char) -> bool| -> Option<usize> {
+        while let Some(&ch) = chars.get(index) {
+            if matches!(ch, '\\' | '#') {
+                while chars.get(index).is_some_and(|ch| *ch != '\n') {
+                    index += 1;
+                }
+            } else if stop(ch) {
+                return Some(index);
+            }
+            index += 1;
         }
-    }
-    out.push('\n');
-    out
-}
-
-/// Find the binary-operator anchor position within a highlighted region.
-/// Returns (start, end) as char offsets within `region`, or None if the whole
-/// region should use `^`.  Matches CPython 3.12 which only uses `~`/`^` for
-/// binary operations — attribute access, calls, subscripts all use `^`.
-fn find_caret_anchor(region: &[char]) -> Option<(usize, usize)> {
-    if region.len() <= 2 {
-        return None; // too short for binary op pattern
-    }
-    // Binary operators: find a run of operator chars in the interior,
-    // indicating `operand OP operand`.  Whitespace around the operator
-    // is expected (e.g. `1 / 0` has spaces around `/`).
-    let op_char = |c: char| {
-        matches!(
-            c,
-            '+' | '-' | '*' | '/' | '%' | '|' | '&' | '^' | '~' | '<' | '>' | '=' | '!' | '@'
-        )
+        None
     };
-    let mut i = 0;
-    // Skip leading non-operator chars (left operand + whitespace).
-    while i < region.len() && !op_char(region[i]) {
-        i += 1;
+    match expression {
+        pyast::Expr::BinOp(node) => {
+            let start = scan(position(node.left.range().end()), |ch| {
+                !ch.is_whitespace() && ch != ')'
+            })?;
+            let mut end = start + 1;
+            if end < position(node.right.range().start())
+                && chars
+                    .get(end)
+                    .is_some_and(|ch| !ch.is_whitespace() && !matches!(ch, '\\' | '#'))
+            {
+                end += 1;
+            }
+            Some((start, end))
+        }
+        pyast::Expr::Subscript(node) => Some((
+            scan(position(node.value.range().end()), |ch| ch == '[')?,
+            position(node.range.end()),
+        )),
+        pyast::Expr::Call(node) => Some((
+            scan(position(node.func.range().end()), |ch| ch == '(')?,
+            position(node.range.end()),
+        )),
+        _ => None,
     }
-    if i == 0 || i >= region.len() {
-        return None; // no left operand or no operator
-    }
-    let op_start = i;
-    // Consume the operator token (may be multi-char: //, **, <<, etc.)
-    while i < region.len() && op_char(region[i]) {
-        i += 1;
-    }
-    let op_end = i;
-    // Skip whitespace after operator.
-    while i < region.len() && region[i] == ' ' {
-        i += 1;
-    }
-    // Must have a right operand remaining.
-    if i >= region.len() {
-        return None;
-    }
-    // Verify left operand has non-whitespace content before operator.
-    let left_has_content = region[..op_start].iter().any(|c| !c.is_whitespace());
-    if !left_has_content {
-        return None;
-    }
-    Some((op_start, op_end))
 }
 
 #[cfg(test)]
 mod traceback_format_tests {
     use super::{
-        PythonVersionInfo, format_sys_version, traceback_format_caret_line_native,
-        traceback_infer_column_offsets,
+        PythonVersionInfo, TracebackPayloadFrame, format_sys_version, traceback_caret_anchor,
+        traceback_payload_format_frame, traceback_payload_frame_source_lines_for_target,
+        traceback_payload_to_formatted_entries, traceback_summary_caret_plan,
     };
 
     #[test]
-    fn infer_column_offsets_prefers_rhs_for_assignment() {
-        let (col, end_col) = traceback_infer_column_offsets("total = left + right   ");
-        assert_eq!(col, 8);
-        assert!(end_col > col);
+    fn formatted_traceback_entries_keep_each_frame_together() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let mut payload = [
+                TracebackPayloadFrame {
+                    filename: "<first>".to_string(),
+                    lineno: 3,
+                    end_lineno: 3,
+                    colno: 8,
+                    end_colno: 14,
+                    name: "first".to_string(),
+                    line: "value = source".to_string(),
+                },
+                TracebackPayloadFrame {
+                    filename: "<second>".to_string(),
+                    lineno: 9,
+                    end_lineno: 9,
+                    colno: -1,
+                    end_colno: -1,
+                    name: "second".to_string(),
+                    line: String::new(),
+                },
+            ];
+            let state = crate::runtime_state(py);
+            let saved_version = state.sys_version_info.lock().unwrap().clone();
+            for (minor, expected) in [
+                (
+                    12,
+                    "  File \"<first>\", line 3, in first\n    value = source\n             ^^^^^^\n",
+                ),
+                (
+                    13,
+                    "  File \"<first>\", line 3, in first\n    value = source\n            ^^^^^^\n",
+                ),
+                (
+                    14,
+                    "  File \"<first>\", line 3, in first\n    value = source\n            ^^^^^^\n",
+                ),
+            ] {
+                *state.sys_version_info.lock().unwrap() = Some(PythonVersionInfo {
+                    major: 3,
+                    minor,
+                    micro: 0,
+                    releaselevel: "final".to_string(),
+                    serial: 0,
+                });
+                let entries = traceback_payload_to_formatted_entries(py, &payload);
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0], expected, "target Python 3.{minor}");
+                assert_eq!(entries[1], "  File \"<second>\", line 9, in second\n");
+                payload[0].line.push('\n');
+                let captured = traceback_payload_to_formatted_entries(py, &payload);
+                assert_eq!(
+                    captured[0],
+                    "  File \"<first>\", line 3, in first\n    value = source\n            ^^^^^^\n",
+                    "newline retained in captured source for Python 3.{minor}"
+                );
+                payload[0].line.pop();
+            }
+            *state.sys_version_info.lock().unwrap() = saved_version;
+            crate::MoltObject::none().bits()
+        });
     }
 
     #[test]
-    fn infer_column_offsets_skips_return_keyword() {
-        let (col, end_col) = traceback_infer_column_offsets("    return value");
-        assert_eq!(col, 11);
-        assert_eq!(end_col, 16);
+    fn explicit_source_without_columns_is_trimmed_without_inferred_caret() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let frame = TracebackPayloadFrame {
+                filename: "<explicit>".to_string(),
+                lineno: 4,
+                end_lineno: 4,
+                colno: -1,
+                end_colno: -1,
+                name: "plain".to_string(),
+                line: "    x = 1".to_string(),
+            };
+            assert_eq!(
+                traceback_payload_format_frame(py, &frame),
+                "  File \"<explicit>\", line 4, in plain\n    x = 1\n"
+            );
+            crate::MoltObject::none().bits()
+        });
     }
 
     #[test]
-    fn caret_line_preserves_tabs_for_alignment() {
-        let line = "\titem = source";
-        let caret = traceback_format_caret_line_native(line, 1, 5);
-        assert!(caret.starts_with("    \t"));
-        assert!(caret.contains("^^^^"));
+    fn public_summary_span_is_first_line_only_in_312_and_multiline_in_313() {
+        let frame = TracebackPayloadFrame {
+            filename: "<multiline>".to_string(),
+            lineno: 1,
+            end_lineno: 3,
+            colno: 8,
+            end_colno: 5,
+            name: "demo".to_string(),
+            line: "alpha = (\n    1 +\n    2".to_string(),
+        };
+        let lines_312 = traceback_payload_frame_source_lines_for_target(&frame, 12);
+        assert_eq!(lines_312[0], "    alpha = (\n");
+        assert!(!lines_312.iter().any(|line| line.contains("1 +")));
+        assert!(!lines_312.iter().any(|line| line.trim() == "2"));
+        assert_eq!(
+            lines_312.iter().filter(|line| line.contains('^')).count(),
+            1
+        );
+
+        let lines_313 = traceback_payload_frame_source_lines_for_target(&frame, 13);
+        assert!(lines_313.iter().any(|line| line.trim() == "alpha = ("));
+        assert!(lines_313.iter().any(|line| line.trim() == "1 +"));
+        assert!(lines_313.iter().any(|line| line.trim() == "2"));
+        assert!(lines_313.iter().filter(|line| line.contains('^')).count() >= 2);
     }
 
     #[test]
-    fn caret_line_omits_invalid_ranges() {
-        let line = "value = source";
-        assert!(traceback_format_caret_line_native(line, 0, 0).is_empty());
-        assert!(traceback_format_caret_line_native(line, 10, 5).is_empty());
+    fn public_summary_full_line_without_anchor_has_no_caret() {
+        let frame = TracebackPayloadFrame {
+            filename: "<tabs>".to_string(),
+            lineno: 5,
+            end_lineno: 5,
+            colno: 1,
+            end_colno: 999,
+            name: "boom".to_string(),
+            line: "\tassert value and (".to_string(),
+        };
+        for minor in [12, 13, 14] {
+            assert_eq!(
+                traceback_payload_frame_source_lines_for_target(&frame, minor),
+                ["    assert value and (\n"]
+            );
+        }
+    }
+
+    #[test]
+    fn aggregate_anchors_follow_target_ast_and_offset_semantics() {
+        for (text, byte, character) in [("é", 1, 1), ("漢", 1, 1), ("漢", 2, 1), ("漢", 3, 1)] {
+            assert_eq!(
+                super::traceback_byte_offset_to_char_offset(text, byte),
+                character
+            );
+        }
+        assert_eq!(traceback_caret_anchor("a + b", false), Some((2, 3)));
+        assert_eq!(traceback_caret_anchor("(a+b) * c", false), Some((6, 7)));
+        assert_eq!(traceback_caret_anchor("café / 0", false), Some((6, 7)));
+        assert_eq!(traceback_caret_anchor("café / 0", true), Some((5, 6)));
+        for (source, expected) in [
+            ("éé / 0", (3, 4)),
+            ("漢字 / 0", (3, 4)),
+            ("(éé) / 0", (3, 4)),
+            ("éé ** 0", (4, 6)),
+            ("éé + z + q", (7, 8)),
+        ] {
+            assert_eq!(
+                traceback_caret_anchor(source, false),
+                Some(expected),
+                "{source}"
+            );
+        }
+        assert_eq!(traceback_caret_anchor("a[\"=\"]", false), Some((1, 6)));
+        assert_eq!(traceback_caret_anchor("f(x=1)", false), None);
+        assert_eq!(traceback_caret_anchor("f(x=1)", true), Some((1, 6)));
+        assert_eq!(traceback_caret_anchor("a == b", true), None);
+        assert_eq!(traceback_caret_anchor("\"a+b\"", true), None);
+    }
+
+    #[test]
+    fn aggregate_full_line_suppression_uses_parsed_anchor() {
+        let one = |source: &str| [source.to_string()];
+        assert!(traceback_summary_caret_plan(&one("a + b"), 0, 5, false).0);
+        assert!(traceback_summary_caret_plan(&one("a[0]"), 0, 4, false).0);
+        assert!(!traceback_summary_caret_plan(&one("f(x=1)"), 0, 6, false).0);
+        assert!(traceback_summary_caret_plan(&one("f(x=1)"), 0, 6, true).0);
+        assert!(!traceback_summary_caret_plan(&one("x = y"), 0, 5, true).0);
+        assert!(!traceback_summary_caret_plan(&one("a == b"), 0, 6, true).0);
+        assert!(!traceback_summary_caret_plan(&one("obj.attr"), 0, 8, true).0);
+        assert!(!traceback_summary_caret_plan(&one("\"a+b\""), 0, 5, true).0);
+        assert!(traceback_summary_caret_plan(&one("x = a + b"), 4, 9, true).0);
+        assert!(!traceback_summary_caret_plan(&one("x = f()"), 4, 7, true).0);
+    }
+
+    #[test]
+    fn formatted_traceback_entries_compact_consecutive_recursive_frames() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let frame = TracebackPayloadFrame {
+                filename: "<recursive>".to_string(),
+                lineno: 7,
+                end_lineno: 7,
+                colno: -1,
+                end_colno: -1,
+                name: "recurse".to_string(),
+                line: "recurse()".to_string(),
+            };
+            let entries = traceback_payload_to_formatted_entries(py, &vec![frame; 5]);
+            assert_eq!(entries.len(), 4);
+            assert!(
+                entries[..3]
+                    .iter()
+                    .all(|entry| entry.starts_with("  File \"<recursive>\", line 7, in recurse\n"))
+            );
+            assert_eq!(entries[3], "  [Previous line repeated 2 more times]\n");
+            crate::MoltObject::none().bits()
+        });
+    }
+
+    #[test]
+    fn diagnostic_width_and_public_ucd_version_follow_target_not_host() {
+        use crate::object::ops::unicode_east_asian_width_table::{for_minor, width};
+        for (minor, version, emoji_width) in [
+            (12, "15.0.0", "N"),
+            (13, "15.1.0", "N"),
+            (14, "16.0.0", "W"),
+        ] {
+            assert_eq!(for_minor(minor).unwrap().0, version);
+            assert_eq!(width(0x1fae9, minor), emoji_width);
+            assert_eq!(width(0x231a, minor), "W");
+            assert_eq!(width(0xd800, minor), "N");
+            assert_eq!(width(0xff21, minor), "F");
+            assert_eq!(width(0x0301, minor), "A");
+            assert_eq!(
+                super::traceback_display_width("\u{1fae9}", 1, minor),
+                if minor == 14 { 2 } else { 1 }
+            );
+        }
+        assert!(for_minor(99).is_none());
     }
 
     #[test]
@@ -528,7 +671,7 @@ pub(crate) fn traceback_append_exception_single_lines(
     if !obj_from_bits(tb_bits).is_none() {
         out.push("Traceback (most recent call last):\n".to_string());
         let payload = traceback_payload_from_source(_py, tb_bits, limit);
-        out.extend(traceback_payload_to_formatted_lines(_py, &payload));
+        out.extend(traceback_payload_to_formatted_entries(_py, &payload));
     }
     out.push(traceback_format_exception_only_line(
         _py,
@@ -698,13 +841,12 @@ pub(crate) fn traceback_payload_from_traceback(
     let mut out: Vec<TracebackPayloadFrame> = Vec::new();
     for (filename, lineno, name) in traceback_frames(_py, source_bits, limit) {
         let line = traceback_source_line_native(_py, &filename, lineno);
-        let (colno, end_colno) = traceback_infer_column_offsets(&line);
         out.push(TracebackPayloadFrame {
             filename,
             lineno,
             end_lineno: lineno,
-            colno,
-            end_colno,
+            colno: -1,
+            end_colno: -1,
             name,
             line,
         });
@@ -783,13 +925,12 @@ pub(crate) fn traceback_payload_from_frame_chain(
             }
         }
         let line = traceback_source_line_native(_py, &filename, lineno);
-        let (colno, end_colno) = traceback_infer_column_offsets(&line);
         out.push(TracebackPayloadFrame {
             filename,
             lineno,
             end_lineno: lineno,
-            colno,
-            end_colno,
+            colno: -1,
+            end_colno: -1,
             name,
             line,
         });
@@ -843,13 +984,8 @@ pub(crate) fn traceback_payload_from_lazy_chain(
                 }
             }
             let line = traceback_source_line_native(_py, &filename, lineno);
-            let mut colno = traceback_payload_col(payload_ptr);
-            let mut end_colno = traceback_payload_end_col(payload_ptr);
-            if !line.is_empty() && (colno < 0 || end_colno <= colno) {
-                let inferred = traceback_infer_column_offsets(&line);
-                colno = inferred.0;
-                end_colno = inferred.1;
-            }
+            let colno = traceback_payload_col(payload_ptr);
+            let end_colno = traceback_payload_end_col(payload_ptr);
             out.push(TracebackPayloadFrame {
                 filename,
                 lineno,
@@ -898,19 +1034,14 @@ pub(crate) fn traceback_payload_from_entry(
                     let filename = format_obj_str(_py, obj_from_bits(elems[0]));
                     let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
                     let end_lineno = to_i64(obj_from_bits(elems[2])).unwrap_or(lineno);
-                    let mut colno = to_i64(obj_from_bits(elems[3])).unwrap_or(0);
-                    let mut end_colno = to_i64(obj_from_bits(elems[4])).unwrap_or(colno.max(0));
+                    let colno = to_i64(obj_from_bits(elems[3])).unwrap_or(-1);
+                    let end_colno = to_i64(obj_from_bits(elems[4])).unwrap_or(-1);
                     let name = format_obj_str(_py, obj_from_bits(elems[5]));
                     let line = if obj_from_bits(elems[6]).is_none() {
-                        String::new()
+                        traceback_source_span_native(_py, &filename, lineno, end_lineno)
                     } else {
                         format_obj_str(_py, obj_from_bits(elems[6]))
                     };
-                    if !line.is_empty() && (colno < 0 || end_colno <= colno) {
-                        let inferred = traceback_infer_column_offsets(&line);
-                        colno = inferred.0;
-                        end_colno = inferred.1;
-                    }
                     return Some(TracebackPayloadFrame {
                         filename,
                         lineno,
@@ -930,13 +1061,12 @@ pub(crate) fn traceback_payload_from_entry(
                     } else {
                         format_obj_str(_py, obj_from_bits(elems[3]))
                     };
-                    let (colno, end_colno) = traceback_infer_column_offsets(&line);
                     return Some(TracebackPayloadFrame {
                         filename,
                         lineno,
                         end_lineno: lineno,
-                        colno,
-                        end_colno,
+                        colno: -1,
+                        end_colno: -1,
                         name,
                         line,
                     });
@@ -946,13 +1076,12 @@ pub(crate) fn traceback_payload_from_entry(
                     let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
                     let name = format_obj_str(_py, obj_from_bits(elems[2]));
                     let line = traceback_source_line_native(_py, &filename, lineno);
-                    let (colno, end_colno) = traceback_infer_column_offsets(&line);
                     return Some(TracebackPayloadFrame {
                         filename,
                         lineno,
                         end_lineno: lineno,
-                        colno,
-                        end_colno,
+                        colno: -1,
+                        end_colno: -1,
                         name,
                         line,
                     });
@@ -1021,28 +1150,21 @@ pub(crate) fn traceback_payload_from_entry(
                 let name = dict_get_in_place(_py, entry_ptr, name_key)
                     .map(|bits| format_obj_str(_py, obj_from_bits(bits)))
                     .unwrap_or_else(|| "<module>".to_string());
-                let line = dict_get_in_place(_py, entry_ptr, line_key)
-                    .map(|bits| format_obj_str(_py, obj_from_bits(bits)))
-                    .unwrap_or_else(|| traceback_source_line_native(_py, &filename, lineno));
-                let (mut colno, mut end_colno) = traceback_infer_column_offsets(&line);
-                if let Some(value) = dict_get_in_place(_py, entry_ptr, colno_key)
+                let colno = dict_get_in_place(_py, entry_ptr, colno_key)
                     .and_then(|bits| to_i64(obj_from_bits(bits)))
-                {
-                    colno = value;
-                }
-                if let Some(value) = dict_get_in_place(_py, entry_ptr, end_colno_key)
+                    .unwrap_or(-1);
+                let end_colno = dict_get_in_place(_py, entry_ptr, end_colno_key)
                     .and_then(|bits| to_i64(obj_from_bits(bits)))
-                {
-                    end_colno = value;
-                }
-                if !line.is_empty() && (colno < 0 || end_colno <= colno) {
-                    let inferred = traceback_infer_column_offsets(&line);
-                    colno = inferred.0;
-                    end_colno = inferred.1;
-                }
+                    .unwrap_or(-1);
                 let end_lineno = dict_get_in_place(_py, entry_ptr, end_lineno_key)
                     .and_then(|bits| to_i64(obj_from_bits(bits)))
                     .unwrap_or(lineno);
+                let line = dict_get_in_place(_py, entry_ptr, line_key)
+                    .filter(|bits| !obj_from_bits(*bits).is_none())
+                    .map(|bits| format_obj_str(_py, obj_from_bits(bits)))
+                    .unwrap_or_else(|| {
+                        traceback_source_span_native(_py, &filename, lineno, end_lineno)
+                    });
                 return Some(TracebackPayloadFrame {
                     filename,
                     lineno,
@@ -1216,100 +1338,283 @@ pub(crate) fn traceback_payload_to_list(
     }
 }
 
-pub(crate) fn traceback_payload_frame_source_lines(
+fn traceback_summary_caret_plan(
+    lines: &[String],
+    start: i64,
+    end: i64,
+    include_calls: bool,
+) -> (bool, Option<(usize, usize)>) {
+    if start < 0 || end < 0 {
+        return (false, None);
+    }
+    let Some(first_line) = lines.first() else {
+        return (false, None);
+    };
+    let Some(last_line) = lines.last() else {
+        return (false, None);
+    };
+    let start = (start as usize).min(first_line.chars().count());
+    let end = (end as usize).min(last_line.chars().count());
+    let source = lines.join("\n");
+    let source_chars: Vec<char> = source.chars().collect();
+    let suffix_len = last_line.chars().count() - end;
+    let selected_end = source_chars.len().saturating_sub(suffix_len);
+    if selected_end < start {
+        return (false, None);
+    }
+    let segment: String = source_chars[start..selected_end].iter().collect();
+    let anchor = traceback_caret_anchor(&segment, include_calls);
+    if anchor.is_some() {
+        // CPython suppresses a call that is the entire RHS of a simple
+        // assignment, even though the selected segment itself is a Call.
+        if include_calls
+            && let Ok(pyast::Mod::Module(module)) =
+                parse_python(&source, ParseMode::Module, "<traceback>")
+            && let [statement] = module.body.as_slice()
+        {
+            let value = match statement {
+                pyast::Stmt::Assign(node) if matches!(node.targets.as_slice(), [pyast::Expr::Name(_)])
+                    && matches!(node.value.as_ref(), pyast::Expr::Call(_)) => Some(node.value.as_ref()),
+                pyast::Stmt::Return(node) => node.value.as_deref().filter(|value|
+                    matches!(value, pyast::Expr::Call(call) if matches!(call.func.as_ref(), pyast::Expr::Name(_)))),
+                _ => None,
+            };
+            if let Some(value) = value {
+                // CPython compares AST byte columns to the selected character
+                // columns here, including its behavior for non-ASCII prefixes.
+                let value_start = u32::from(value.range().start()) as usize;
+                let value_end = u32::from(value.range().end()) as usize;
+                let last_line_start = source.rfind('\n').map_or(0, |byte| byte + 1);
+                if value_start == start && value_end == last_line_start + end {
+                    return (false, anchor);
+                }
+            }
+        }
+        return (true, anchor);
+    }
+    (
+        first_line.chars().take(start).any(|ch| !ch.is_whitespace())
+            || last_line.chars().skip(end).any(|ch| !ch.is_whitespace()),
+        anchor,
+    )
+}
+
+fn traceback_byte_offset_to_char_offset(line: &str, offset: i64) -> i64 {
+    if offset < 0 {
+        return -1;
+    }
+    let byte = (offset as usize).min(line.len());
+    String::from_utf8_lossy(&line.as_bytes()[..byte])
+        .chars()
+        .count() as i64
+}
+
+fn traceback_payload_frame_source_lines_for_target(
+    frame: &TracebackPayloadFrame,
+    minor: i64,
+) -> Vec<String> {
+    let full_span = minor >= 13;
+    let display_width = |line: &str, offset| traceback_display_width(line, offset, minor);
+    let first = frame.line.lines().next().unwrap_or("");
+    if frame.line.trim().is_empty() {
+        return Vec::new();
+    }
+    if !full_span {
+        // Unlike the multiline renderer, 3.12 counts the original terminator
+        // and trailing whitespace when translating source to display columns.
+        let first = frame.line.split_inclusive('\n').next().unwrap_or("");
+        let mut result = vec![format!("    {}\n", first.trim())];
+        if frame.colno < 0 || frame.end_colno < 0 {
+            return result;
+        }
+        let start = traceback_byte_offset_to_char_offset(first, frame.colno) as usize;
+        let end = if frame.end_lineno > frame.lineno {
+            first.trim_end().chars().count()
+        } else {
+            traceback_byte_offset_to_char_offset(first, frame.end_colno) as usize
+        };
+        let segment: String = first
+            .chars()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect();
+        let anchor = if frame.end_lineno == frame.lineno {
+            traceback_caret_anchor(&segment, false)
+        } else {
+            None
+        };
+        if end.saturating_sub(start) < first.trim().chars().count()
+            || anchor.is_some_and(|(left, right)| right > left)
+        {
+            let stripped = first.chars().count() - first.trim().chars().count();
+            let padding = (display_width(first, start) + 1).saturating_sub(stripped);
+            let extent = display_width(first, end).saturating_sub(display_width(first, start));
+            let mut indicator = format!("    {}", " ".repeat(padding));
+            if let Some((left, right)) = anchor {
+                let left = display_width(&segment, left);
+                let right = display_width(&segment, right);
+                indicator.push_str(&"~".repeat(left));
+                indicator.push_str(&"^".repeat(right.saturating_sub(left)));
+                indicator.push_str(&"~".repeat(extent.saturating_sub(right)));
+            } else {
+                indicator.push_str(&"^".repeat(extent));
+            }
+            indicator.push('\n');
+            result.push(indicator);
+        }
+        return result;
+    }
+    if frame.colno < 0 || frame.end_colno < 0 {
+        return vec![format!("    {}\n", first.trim())];
+    }
+    // Source is captured by ingress. Formatting never consults a live frame or
+    // rereads a file; dedent and anchors are computed across the whole span.
+    let dedented = molt_stdlib_text::textwrap::textwrap_dedent_impl(&frame.line);
+    let lines: Vec<String> = dedented.lines().map(str::to_owned).collect();
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let raw_last = frame.line.lines().last().unwrap_or("");
+    let removed = first
+        .chars()
+        .count()
+        .saturating_sub(lines[0].chars().count()) as i64;
+    let start = (traceback_byte_offset_to_char_offset(first, frame.colno) - removed).max(0);
+    let end = (traceback_byte_offset_to_char_offset(raw_last, frame.end_colno) - removed).max(0);
+    let last = lines.len() - 1;
+    let (show, anchor) = traceback_summary_caret_plan(&lines, start, end, true);
+    // Map a segment character offset back to a source line/display column.
+    let position = |offset: usize| {
+        let mut remaining = offset + start as usize;
+        for (index, line) in lines.iter().enumerate() {
+            let count = line.chars().count();
+            if remaining <= count || index == last {
+                return (index, display_width(line, remaining));
+            }
+            remaining -= count + 1;
+        }
+        unreachable!("source contains at least one line")
+    };
+    let anchor = anchor.map(|(left, right)| (position(left), position(right)));
+    let mut significant = std::collections::BTreeSet::from([0, last]);
+    if let Some((left, right)) = anchor {
+        for index in [left.0, right.0] {
+            significant.extend(index.saturating_sub(1)..=(index + 1).min(last));
+        }
+    }
+    let output_line = |index: usize, result: &mut String| {
+        let line = &lines[index];
+        result.push_str(line);
+        result.push('\n');
+        if !show {
+            return;
+        }
+        let whitespace = line.chars().take_while(|ch| ch.is_whitespace()).count();
+        let extent = display_width(
+            line,
+            if index == last {
+                end as usize
+            } else {
+                line.chars().count()
+            },
+        );
+        let start_display = if index == 0 {
+            display_width(line, start as usize)
+        } else {
+            0
+        };
+        for col in 0..extent {
+            let ch = if col < whitespace || col < start_display {
+                ' '
+            } else if let Some((left, right)) = anchor {
+                if (index, col) >= left && (index, col) < right {
+                    '^'
+                } else {
+                    '~'
+                }
+            } else {
+                '^'
+            };
+            result.push(ch);
+        }
+        result.push('\n');
+    };
+    let mut result = String::new();
+    let mut previous = None;
+    for index in significant {
+        if let Some(prev) = previous {
+            if index == prev + 2 {
+                output_line(index - 1, &mut result);
+            } else if index > prev + 2 {
+                result.push_str(&format!("...<{} lines>...\n", index - prev - 1));
+            }
+        }
+        output_line(index, &mut result);
+        previous = Some(index);
+    }
+    let rendered = molt_stdlib_text::textwrap::textwrap_dedent_impl(&result);
+    rendered
+        .lines()
+        .map(|line| format!("    {line}\n"))
+        .collect()
+}
+
+fn traceback_payload_frame_source_lines(
     _py: &PyToken<'_>,
     frame: &TracebackPayloadFrame,
 ) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut first_line = frame.line.clone();
-    let mut first_colno = frame.colno;
-    let mut first_end_colno = frame.end_colno;
-    if first_line.is_empty() {
-        first_line = traceback_source_line_native(_py, &frame.filename, frame.lineno);
-        if first_line.is_empty() {
-            return lines;
-        }
-        if first_colno < 0 || first_end_colno <= first_colno {
-            let (col, end_col) = traceback_infer_column_offsets(&first_line);
-            first_colno = col;
-            first_end_colno = end_col;
-        }
-    }
-
-    let span_end = frame.end_lineno.max(frame.lineno);
-    if span_end <= frame.lineno || frame.lineno <= 0 || (span_end - frame.lineno) > 64 {
-        lines.push(format!("    {}\n", first_line));
-        let caret = traceback_format_caret_line_native(&first_line, first_colno, first_end_colno);
-        if !caret.is_empty() {
-            lines.push(caret);
-        }
-        return lines;
-    }
-
-    for lineno in frame.lineno..=span_end {
-        let text = if lineno == frame.lineno {
-            first_line.clone()
-        } else {
-            traceback_source_line_native(_py, &frame.filename, lineno)
-        };
-        if text.is_empty() {
-            continue;
-        }
-        lines.push(format!("    {}\n", text));
-
-        let text_len = text.chars().count() as i64;
-        if text_len <= 0 {
-            continue;
-        }
-        let (trim_start, trim_end) = traceback_line_trim_bounds(&text).unwrap_or((0, text_len));
-        let (start, end) = if lineno == frame.lineno {
-            let start = if first_colno >= 0 {
-                first_colno
-            } else {
-                trim_start
-            };
-            let end = if lineno == span_end {
-                if first_end_colno > start {
-                    first_end_colno
-                } else {
-                    trim_end
-                }
-            } else {
-                trim_end
-            };
-            (start, end)
-        } else if lineno == span_end {
-            let end = if frame.end_colno > trim_start {
-                frame.end_colno
-            } else {
-                trim_end
-            };
-            (trim_start, end)
-        } else {
-            (trim_start, trim_end)
-        };
-        let caret = traceback_format_caret_line_native(&text, start, end);
-        if !caret.is_empty() {
-            lines.push(caret);
-        }
-    }
-
-    lines
+    traceback_payload_frame_source_lines_for_target(frame, runtime_target_minor(_py))
 }
 
-pub(crate) fn traceback_payload_to_formatted_lines(
+pub(crate) fn traceback_payload_format_frame(
+    _py: &PyToken<'_>,
+    frame: &TracebackPayloadFrame,
+) -> String {
+    let mut entry = format!(
+        "  File \"{}\", line {}, in {}\n",
+        frame.filename, frame.lineno, frame.name
+    );
+    for line in traceback_payload_frame_source_lines(_py, frame) {
+        entry.push_str(&line);
+    }
+    entry
+}
+
+/// Each entry is one complete frame, as required by format_stack/format_tb.
+pub(crate) fn traceback_payload_to_formatted_entries(
     _py: &PyToken<'_>,
     payload: &[TracebackPayloadFrame],
 ) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    for frame in payload {
-        lines.push(format!(
-            "  File \"{}\", line {}, in {}\n",
-            frame.filename, frame.lineno, frame.name
-        ));
-        lines.extend(traceback_payload_frame_source_lines(_py, frame));
+    const RECURSIVE_CUTOFF: usize = 3;
+    let mut entries = Vec::with_capacity(payload.len());
+    let mut index = 0;
+    while index < payload.len() {
+        let first = &payload[index];
+        let mut run_end = index + 1;
+        while run_end < payload.len() {
+            let next = &payload[run_end];
+            if next.filename != first.filename
+                || next.lineno != first.lineno
+                || next.name != first.name
+            {
+                break;
+            }
+            run_end += 1;
+        }
+        for frame in &payload[index..run_end.min(index + RECURSIVE_CUTOFF)] {
+            entries.push(traceback_payload_format_frame(_py, frame));
+        }
+        let omitted = run_end - index - RECURSIVE_CUTOFF.min(run_end - index);
+        if omitted > 0 {
+            entries.push(format!(
+                "  [Previous line repeated {} more time{}]\n",
+                omitted,
+                if omitted == 1 { "" } else { "s" }
+            ));
+        }
+        index = run_end;
     }
-    lines
+    entries
 }
 
 pub(crate) fn traceback_exception_components_payload(

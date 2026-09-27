@@ -2882,71 +2882,6 @@ pub extern "C" fn molt_traceback_exception_chain_payload(value_bits: u64, limit_
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_traceback_source_line(filename_bits: u64, lineno_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(filename) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "filename must be str");
-        };
-        let Some(lineno) = to_i64(obj_from_bits(lineno_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "lineno must be int");
-        };
-        let text = traceback_source_line_native(_py, &filename, lineno);
-        let ptr = alloc_string(_py, text.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_traceback_infer_col_offsets(line_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "line must be str");
-        };
-        let (colno, end_colno) = traceback_infer_column_offsets(&line);
-        let colno_bits = MoltObject::from_int(colno).bits();
-        let end_colno_bits = MoltObject::from_int(end_colno).bits();
-        let tuple_ptr = alloc_tuple(_py, &[colno_bits, end_colno_bits]);
-        dec_ref_bits(_py, colno_bits);
-        dec_ref_bits(_py, end_colno_bits);
-        if tuple_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(tuple_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_traceback_format_caret_line(
-    line_bits: u64,
-    colno_bits: u64,
-    end_colno_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "line must be str");
-        };
-        let Some(colno) = to_i64(obj_from_bits(colno_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "colno must be int");
-        };
-        let Some(end_colno) = to_i64(obj_from_bits(end_colno_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "end_colno must be int");
-        };
-        let out = traceback_format_caret_line_native(&line, colno, end_colno);
-        let ptr = alloc_string(_py, out.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_traceback_format_exception_only(exc_type_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let line = traceback_format_exception_only_line(_py, exc_type_bits, value_bits);
@@ -3048,11 +2983,9 @@ pub extern "C" fn molt_traceback_format_tb(tb_bits: u64, limit_bits: u64) -> u64
             Ok(limit) => limit,
             Err(bits) => return bits,
         };
-        let mut lines: Vec<String> = Vec::new();
-        for (filename, line, name) in traceback_frames(_py, tb_bits, limit) {
-            lines.push(format!("  File \"{filename}\", line {line}, in {name}\n"));
-        }
-        traceback_lines_to_list(_py, &lines)
+        let payload = traceback_payload_from_source(_py, tb_bits, limit);
+        let entries = traceback_payload_to_formatted_entries(_py, &payload);
+        traceback_lines_to_list(_py, &entries)
     })
 }
 
@@ -3064,8 +2997,8 @@ pub extern "C" fn molt_traceback_format_stack(source_bits: u64, limit_bits: u64)
             Err(bits) => return bits,
         };
         let payload = traceback_payload_from_source(_py, source_bits, limit);
-        let lines = traceback_payload_to_formatted_lines(_py, &payload);
-        traceback_lines_to_list(_py, &lines)
+        let entries = traceback_payload_to_formatted_entries(_py, &payload);
+        traceback_lines_to_list(_py, &entries)
     })
 }
 
@@ -3076,77 +3009,8 @@ pub extern "C" fn molt_traceback_extract_tb(tb_bits: u64, limit_bits: u64) -> u6
             Ok(limit) => limit,
             Err(bits) => return bits,
         };
-        let mut tuples: Vec<u64> = Vec::new();
-        for (filename, lineno, name) in traceback_frames(_py, tb_bits, limit) {
-            let line_text = traceback_source_line_native(_py, &filename, lineno);
-            let (colno, end_colno) = traceback_infer_column_offsets(&line_text);
-            let end_lineno = lineno;
-            let filename_ptr = alloc_string(_py, filename.as_bytes());
-            if filename_ptr.is_null() {
-                for bits in tuples {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let name_ptr = alloc_string(_py, name.as_bytes());
-            if name_ptr.is_null() {
-                dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
-                for bits in tuples {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let line_ptr = alloc_string(_py, line_text.as_bytes());
-            if line_ptr.is_null() {
-                dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
-                dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
-                for bits in tuples {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
-            let lineno_bits = MoltObject::from_int(lineno).bits();
-            let end_lineno_bits = MoltObject::from_int(end_lineno).bits();
-            let colno_bits = MoltObject::from_int(colno).bits();
-            let end_colno_bits = MoltObject::from_int(end_colno).bits();
-            let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let line_bits = MoltObject::from_ptr(line_ptr).bits();
-            let tuple_ptr = alloc_tuple(
-                _py,
-                &[
-                    filename_bits,
-                    lineno_bits,
-                    end_lineno_bits,
-                    colno_bits,
-                    end_colno_bits,
-                    name_bits,
-                    line_bits,
-                ],
-            );
-            dec_ref_bits(_py, filename_bits);
-            dec_ref_bits(_py, end_lineno_bits);
-            dec_ref_bits(_py, colno_bits);
-            dec_ref_bits(_py, end_colno_bits);
-            dec_ref_bits(_py, name_bits);
-            dec_ref_bits(_py, line_bits);
-            if tuple_ptr.is_null() {
-                for bits in tuples {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            tuples.push(MoltObject::from_ptr(tuple_ptr).bits());
-        }
-        let list_ptr = alloc_list(_py, tuples.as_slice());
-        for bits in tuples {
-            dec_ref_bits(_py, bits);
-        }
-        if list_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(list_ptr).bits()
-        }
+        let payload = traceback_payload_from_source(_py, tb_bits, limit);
+        traceback_payload_to_list(_py, &payload)
     })
 }
 

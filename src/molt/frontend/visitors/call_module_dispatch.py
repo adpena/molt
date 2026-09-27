@@ -9,9 +9,6 @@ from typing import (
 
 from molt.frontend._types import (
     INTRINSIC_HANDLE_CLASS_CONSTRUCTORS,
-    MOLT_DIRECT_CALLS,
-    MOLT_REEXPORT_FUNCTIONS,
-    STDLIB_DIRECT_CALL_MODULES,
     MoltOp,
     MoltValue,
     _intrinsic_arity_exact,
@@ -34,36 +31,6 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         if module_name == "molt.stdlib" or module_name.startswith("molt.stdlib."):
             return False
         return module_name == "molt" or module_name.startswith("molt.")
-
-    @staticmethod
-    def _display_allowlist_module(module_name: str) -> str:
-        if module_name in STDLIB_DIRECT_CALL_MODULES:
-            return f"molt.stdlib.{module_name}"
-        return module_name
-
-    def _call_allowlist_suggestion(
-        self, func_id: str, imported_from: str | None
-    ) -> str | None:
-        if imported_from == "molt":
-            target_module = MOLT_REEXPORT_FUNCTIONS.get(func_id)
-            if target_module:
-                return f"{target_module}.{func_id}"
-        if imported_from:
-            normalized = self._normalize_allowlist_module(imported_from)
-            if (
-                normalized
-                and normalized in MOLT_DIRECT_CALLS
-                and func_id in MOLT_DIRECT_CALLS[normalized]
-            ):
-                display_module = self._display_allowlist_module(normalized)
-                return f"{display_module}.{func_id}"
-            if (
-                imported_from in MOLT_DIRECT_CALLS
-                and func_id in MOLT_DIRECT_CALLS[imported_from]
-            ):
-                display_module = self._display_allowlist_module(imported_from)
-                return f"{display_module}.{func_id}"
-        return None
 
     @staticmethod
     def _known_module_func_kind(info: dict[str, Any] | None) -> FunctionKind | None:
@@ -255,11 +222,7 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         original_attr: str,
         node: ast.Call,
         *,
-        imported_from: str | None,
-        normalized: str | None,
         needs_bind: bool,
-        force_bind: bool,
-        direct_registry_authorized: bool,
     ) -> MoltValue | None:
         if target_module is None:
             return None
@@ -274,67 +237,25 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
             # module attribute, not a synthesized module__function symbol, owns
             # dispatch and rebinding semantics.
             return None
-        target_kind = self._lookup_func_kind(target_module, original_attr)
-        known_direct_target = self._lookup_func_defaults(target_module, original_attr)
-        has_known_direct_target = known_direct_target is not None
-        known_info_kind = self._known_module_func_kind(known_direct_target)
-        has_known_task_target = (
-            target_kind not in {None, FunctionKind.SYNC} or known_info_kind is not None
-        )
-        direct_target_is_linkable = self._is_linkable_module_function_symbol(
-            target_module
-        )
-        # Speculative direct calls assume the target module defines the
-        # attribute as a compiled function. When the module's function facts
-        # are known and the attribute is not among its defs (star-import
-        # re-exports like numpy._core.multiarray.dtype forwarding the C
-        # extension), the direct symbol would never exist at link, so the
-        # call must stay a dynamic bound call.
-        target_module_funcs = self.known_func_kinds.get(target_module)
-        if target_module_funcs is None and normalized is not None:
-            target_module_funcs = self.known_func_kinds.get(normalized)
-        speculative_target_is_defined = (
-            target_module_funcs is None or original_attr in target_module_funcs
-        )
-        allow_speculative_internal_direct = (
-            not has_known_direct_target
-            and target_kind in {None, FunctionKind.SYNC}
-            and speculative_target_is_defined
-            and imported_from is not None
-            and imported_from not in self.stdlib_allowlist
-            and (normalized is None or normalized not in self.stdlib_allowlist)
-            and (
-                self._is_internal_module(imported_from)
-                or self._is_known_project_module(imported_from)
-            )
-            and not force_bind
-        )
-        if (
-            not direct_target_is_linkable
-            or not self._imported_module_attr_is_stable(target_module, original_attr)
-            or not (
-                direct_registry_authorized
-                or has_known_direct_target
-                or has_known_task_target
-                or allow_speculative_internal_direct
-            )
-        ):
+        if not self._is_linkable_module_function_symbol(
+            target_module, original_attr
+        ) or not self._imported_module_attr_is_stable(target_module, original_attr):
             return None
 
         lowered_task_func = self._emit_known_module_task_func_call(
             target_module,
             original_attr,
             node,
-            needs_bind=needs_bind or force_bind,
+            needs_bind=needs_bind,
         )
         if lowered_task_func is not None:
             return lowered_task_func
-        if needs_bind or force_bind or has_known_task_target:
+        if needs_bind:
             return self._emit_call_bind_for_known_module_func(
                 node,
                 result_hint="Any",
             )
-        # Registry and module stability facts identify a candidate code symbol,
+        # Source definition and linkability facts identify a candidate code symbol,
         # not an immutable Python function/defaults ABI. Keep its live operand.
         callee = self.visit(node.func)
         if callee is None:
