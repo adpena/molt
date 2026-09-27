@@ -427,7 +427,11 @@ inside the current activation are distinct from supplied closure values.
 Function, lambda, deferred annotation and generator-expression activations share
 external-slot discovery and entry widening: compatible cells may hold arbitrary
 values or be empty. A generator expression's first iterator is acquired in its
-creating scope; only its deferred body uses foreign activation inputs. Inline
+creating scope and transported in the Python-visible `.0` frame slot. Both
+synchronous and asynchronous loop lowering consume that acquired value without
+re-evaluating the outer expression or borrowing its source-position binding
+facts for a fabricated name. The original lexical regions own capture: only
+the deferred body uses foreign activation inputs. Inline
 class and eager comprehension scopes inherit their enclosing activation's
 custody, but class preparation and other callbacks still invalidate exposed
 cells. Callback exposure is independent of lexical storage: an empty lexical

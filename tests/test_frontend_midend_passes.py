@@ -892,11 +892,12 @@ def test_canonicalization_uses_current_unique_producers_and_restores_emitter_ind
 
 
 @pytest.mark.parametrize(
-    ("enclosing_source", "owner_name", "has_closure"),
+    ("enclosing_source", "owner_name", "has_closure", "async_outer"),
     [
         pytest.param(
             "gen = (value for value in outer())\n",
             "molt_main",
+            False,
             False,
             id="without-lexical-capture",
         ),
@@ -904,19 +905,50 @@ def test_canonicalization_uses_current_unique_producers_and_restores_emitter_ind
             "def make(captured):\n    return (value + captured for value in outer())\n",
             "genexpr_eager__make",
             True,
+            False,
             id="with-lexical-capture",
+        ),
+        pytest.param(
+            "globals()['outer'] = [1, 2]\ngen = (value for value in outer)\n",
+            "molt_main",
+            False,
+            False,
+            id="invalidated-global-name",
+        ),
+        pytest.param(
+            "class Owner:\n    values = [1, 2]\n    gen = (v for v in values)\n",
+            "molt_main",
+            False,
+            False,
+            id="class-namespace-outer",
+        ),
+        pytest.param(
+            "async def make(outer):\n    return (v async for v in outer)\n",
+            "genexpr_eager__make_poll",
+            False,
+            True,
+            id="async-iterator",
+        ),
+        pytest.param(
+            "async def make(outer, captured):\n"
+            "    return (v + captured async for v in outer)\n",
+            "genexpr_eager__make_poll",
+            True,
+            True,
+            id="async-iterator-with-lexical-capture",
         ),
     ],
 )
 def test_genexpr_outer_iterator_is_eager_and_frame_owned(
-    enclosing_source: str, owner_name: str, has_closure: bool
+    enclosing_source: str, owner_name: str, has_closure: bool, async_outer: bool
 ) -> None:
     source = "def outer():\n    return [1, 2]\n" + enclosing_source
     gen = SimpleTIRGenerator(module_name="genexpr_eager", source_path="probe.py")
     gen.visit(ast.parse(source))
     functions = {fn["name"]: fn for fn in gen.to_json()["functions"]}
     owner_ops = functions[owner_name]["ops"]
-    (definition,) = (op for op in owner_ops if op.get("task_kind") == "generator")
+    task_kind = "async_generator" if async_outer else "generator"
+    (definition,) = (op for op in owner_ops if op.get("task_kind") == task_kind)
     assert definition["kind"] == ("func_new_closure" if has_closure else "func_new")
     plan = gen.funcs_map[definition["s_value"]]["stateful_frame_plan"]
     assert plan.poll_symbol == definition["s_value"]
@@ -932,7 +964,7 @@ def test_genexpr_outer_iterator_is_eager_and_frame_owned(
     assert len(generator_call["args"]) == 2
     producers = {op["out"]: op for op in owner_ops if "out" in op}
     iterator = producers[generator_call["args"][1]]
-    assert iterator["kind"] == "iter"
+    assert iterator["kind"] == ("aiter" if async_outer else "iter")
     assert owner_ops.index(iterator) < owner_ops.index(generator_call)
 
     # The hidden .0 parameter follows any lexical closure in the shared frame
@@ -951,6 +983,9 @@ def test_genexpr_outer_iterator_is_eager_and_frame_owned(
     )
     assert not _module_global_reads_named(poll_ops, "outer"), (
         "outer iterable expression must not be deferred into the poll state machine"
+    )
+    assert not any(op["kind"] in {"iter", "aiter"} for op in poll_ops), (
+        "the frame must consume its acquired iterator, not reacquire a source name"
     )
 
 
