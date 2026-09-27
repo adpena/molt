@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import sys
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,28 @@ import pytest
 from tests.rust.process_guard import run_rust_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_unicode_width_projection_matches_running_cpython() -> None:
+    source = (
+        ROOT / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
+    ).read_text(encoding="utf-8")
+    major, minor = sys.version_info[:2]
+    table_name = f"WIDTH_{major}_{minor}"
+    table = source.split(f"const {table_name}: WidthRanges = &[", 1)[1].split("];", 1)[
+        0
+    ]
+    assert f'{minor} => Some(("{unicodedata.unidata_version}", {table_name}))' in source
+    expected = 0
+    for lo, hi, width in re.findall(r'\((\d+), (\d+), "(N|Na|A|H|W|F)"\)', table):
+        start, end = int(lo), int(hi)
+        assert start == expected
+        assert all(
+            unicodedata.east_asian_width(chr(code)) == width
+            for code in range(start, end + 1)
+        )
+        expected = end + 1
+    assert expected == 0x110000
 
 
 def test_runtime_build_python_consumers_share_one_authority() -> None:

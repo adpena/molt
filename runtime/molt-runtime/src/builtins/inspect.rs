@@ -5,10 +5,10 @@ use crate::object::HEADER_FLAG_COROUTINE;
 use crate::object::layout::CodeExecutionKind;
 use crate::{
     TYPE_ID_FUNCTION, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TYPE, alloc_dict_with_pairs,
-    alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes, call_callable1,
-    clear_exception, dec_ref_bits, decode_value_list, exception_pending, int_bits_from_i64,
-    is_truthy, maybe_ptr_from_bits, missing_bits, molt_dir_builtin, molt_getattr_builtin,
-    obj_from_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
+    alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes, call_callable1, dec_ref_bits,
+    decode_value_list, exception_pending, int_bits_from_i64, is_truthy, maybe_ptr_from_bits,
+    missing_bits, molt_dir_builtin, molt_getattr_builtin, obj_from_bits, object_type_id,
+    raise_exception, string_obj_to_owned, to_i64, type_of_bits,
 };
 
 fn get_attr_optional(
@@ -1036,18 +1036,13 @@ pub extern "C" fn molt_inspect_cleandoc(doc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_currentframe() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        // Skip intrinsic + inspect.currentframe wrapper frames to match CPython.
-        let depth_bits = int_bits_from_i64(_py, 2);
-        if obj_from_bits(depth_bits).is_none() {
-            return MoltObject::none().bits();
+        // The runtime intrinsic has no Python frame. Skip only the compiled
+        // inspect.currentframe wrapper; an absent caller maps to None, while
+        // materialization errors remain pending.
+        match crate::builtins::frames::frame_at_depth(_py, 1) {
+            Ok(Some(bits)) => bits,
+            Ok(None) | Err(()) => MoltObject::none().bits(),
         }
-        let frame_bits = crate::molt_getframe(depth_bits);
-        dec_ref_bits(_py, depth_bits);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            return MoltObject::none().bits();
-        }
-        frame_bits
     })
 }
 

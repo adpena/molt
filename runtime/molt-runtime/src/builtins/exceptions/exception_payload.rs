@@ -556,24 +556,19 @@ fn format_single_exception(_py: &PyToken<'_>, ptr: *mut u8) -> String {
         // by runtime intrinsics, not Python-level raise statements.
         out.push_str("Traceback (most recent call last):\n");
         if let Some((file, line, name, col, end_col)) = frame_stack_top_info(_py) {
-            out.push_str(&format!("  File \"{file}\", line {line}, in {name}\n"));
-            if let Some(src_line) = read_source_line(&file, line) {
-                let trimmed = src_line.trim_start();
-                let trim_offset = (src_line.len() - trimmed.len()) as i64;
-                out.push_str(&format!("    {}\n", trimmed));
-                // Only show carets when precise col_offset data is available.
-                // No heuristic fallback — CPython shows no caret for frames
-                // without column info in the code object.
-                if col >= 0 && end_col >= 0 {
-                    let c = col - trim_offset;
-                    let ec = end_col - trim_offset;
-                    let caret =
-                        crate::object::ops_sys::traceback_format_caret_line_native(trimmed, c, ec);
-                    if !caret.is_empty() {
-                        out.push_str(&caret);
-                    }
-                }
-            }
+            let source = crate::object::ops_sys::traceback_source_line_native(_py, &file, line);
+            let frame = crate::object::ops_sys::TracebackPayloadFrame {
+                filename: file,
+                lineno: line,
+                end_lineno: line,
+                colno: col,
+                end_colno: end_col,
+                name,
+                line: source,
+            };
+            out.push_str(&crate::object::ops_sys::traceback_payload_format_frame(
+                _py, &frame,
+            ));
         }
     }
     let kind = exception_class_name(ptr);
@@ -766,142 +761,32 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
     if obj_from_bits(trace_bits).is_none() {
         return None;
     }
-    if traceback_payload_is_lazy(trace_bits) {
-        let payload = crate::object::ops_sys::traceback_payload_from_source(_py, trace_bits, None);
-        if payload.is_empty() {
-            return None;
+    let was_lazy = traceback_payload_is_lazy(trace_bits);
+    let mut payload = crate::object::ops_sys::traceback_payload_from_source(_py, trace_bits, None);
+    if !was_lazy {
+        // The eager traceback path historically records a precise raise-site
+        // span outside the traceback object. Apply it to the innermost frame
+        // before using the common source/caret renderer.
+        let saved_col = LAST_EXCEPTION_COL.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let saved = *slot;
+            *slot = (-1, -1);
+            saved
+        });
+        if saved_col.0 >= 0
+            && saved_col.1 > saved_col.0
+            && let Some(frame) = payload.last_mut()
+        {
+            frame.colno = saved_col.0;
+            frame.end_colno = saved_col.1;
         }
-        let mut out = String::from("Traceback (most recent call last):\n");
-        out.extend(crate::object::ops_sys::traceback_payload_to_formatted_lines(_py, &payload));
-        return Some(out);
+        // The synthetic molt_main wrapper is not a Python traceback frame.
+        payload.retain(|frame| !(frame.filename == "<module>" && frame.name == "<module>"));
     }
-    let mut out = String::from("Traceback (most recent call last):\n");
-    let tb_frame_bits =
-        intern_static_name(_py, &runtime_state(_py).interned.tb_frame_name, b"tb_frame");
-    let tb_lineno_bits = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.tb_lineno_name,
-        b"tb_lineno",
-    );
-    let tb_next_bits =
-        intern_static_name(_py, &runtime_state(_py).interned.tb_next_name, b"tb_next");
-    let f_code_bits = intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
-    let f_lineno_bits =
-        intern_static_name(_py, &runtime_state(_py).interned.f_lineno_name, b"f_lineno");
-    let mut current_bits = trace_bits;
-    let mut depth = 0usize;
-    while !obj_from_bits(current_bits).is_none() {
-        if depth > 512 {
-            out.push_str("  <traceback truncated>\n");
-            break;
-        }
-        let tb_obj = obj_from_bits(current_bits);
-        let Some(tb_ptr) = tb_obj.as_ptr() else {
-            break;
-        };
-        let (frame_bits, line, next_bits) = unsafe {
-            let dict_bits = instance_dict_bits(tb_ptr);
-            let mut frame_bits = MoltObject::none().bits();
-            let mut line = 0i64;
-            let mut next_bits = MoltObject::none().bits();
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                && object_type_id(dict_ptr) == TYPE_ID_DICT
-            {
-                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_frame_bits) {
-                    frame_bits = bits;
-                }
-                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_lineno_bits)
-                    && let Some(val) = to_i64(obj_from_bits(bits))
-                {
-                    line = val;
-                }
-                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_next_bits) {
-                    next_bits = bits;
-                }
-            }
-            (frame_bits, line, next_bits)
-        };
-        let (filename, func_name, frame_line) = unsafe {
-            let mut filename = "<unknown>".to_string();
-            let mut func_name = "<module>".to_string();
-            let mut frame_line = line;
-            if let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() {
-                let dict_bits = instance_dict_bits(frame_ptr);
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                {
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_bits)
-                        && let Some(val) = to_i64(obj_from_bits(bits))
-                    {
-                        frame_line = val;
-                    }
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_bits)
-                        && let Some(code_ptr) = obj_from_bits(bits).as_ptr()
-                        && object_type_id(code_ptr) == TYPE_ID_CODE
-                    {
-                        let filename_bits = code_filename_bits(code_ptr);
-                        if let Some(name) = string_obj_to_owned(obj_from_bits(filename_bits)) {
-                            filename = name;
-                        }
-                        let name_bits = code_name_bits(code_ptr);
-                        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits))
-                            && !name.is_empty()
-                        {
-                            func_name = name;
-                        }
-                    }
-                }
-            }
-            (filename, func_name, frame_line)
-        };
-        let final_line = if line > 0 { line } else { frame_line };
-        // Skip the synthetic <module> wrapper frame that molt_main pushes.
-        // CPython doesn't have this frame — it goes directly to the module
-        // chunk which has the real filename and line number.
-        if filename == "<module>" && func_name == "<module>" {
-            current_bits = next_bits;
-            depth += 1;
-            continue;
-        }
-        out.push_str(&format!(
-            "  File \"{filename}\", line {final_line}, in {func_name}\n"
-        ));
-        if let Some(src_line) = read_source_line(&filename, final_line) {
-            let trimmed = src_line.trim_start();
-            let trim_offset = (src_line.len() - trimmed.len()) as i64;
-            out.push_str(&format!("    {}\n", trimmed));
-            // Use col_offset stashed at exception-raise time.
-            // Use precise col_offset stashed at exception-raise time.
-            // No heuristic fallback — CPython shows no caret for frames
-            // without column info in the code object.
-            let saved_col = LAST_EXCEPTION_COL.with(|cell| {
-                let val = *cell.borrow();
-                *cell.borrow_mut() = (-1, -1);
-                val
-            });
-            if saved_col.0 >= 0 && saved_col.1 >= 0 {
-                let c = saved_col.0 - trim_offset;
-                let ec = saved_col.1 - trim_offset;
-                let caret =
-                    crate::object::ops_sys::traceback_format_caret_line_native(trimmed, c, ec);
-                if !caret.is_empty() {
-                    out.push_str(&caret);
-                }
-            }
-        }
-        current_bits = next_bits;
-        depth += 1;
-    }
-    Some(out)
-}
-
-/// Read a single source line from a file for traceback display.
-/// Returns None if the file can't be read or the line doesn't exist.
-/// Matches CPython's `linecache.getline` behaviour for AOT tracebacks.
-fn read_source_line(filename: &str, lineno: i64) -> Option<String> {
-    if lineno <= 0 || filename.is_empty() || filename == "<unknown>" || filename == "<module>" {
+    if payload.is_empty() {
         return None;
     }
-    let content = std::fs::read_to_string(filename).ok()?;
-    content.lines().nth((lineno - 1) as usize).map(String::from)
+    let mut out = String::from("Traceback (most recent call last):\n");
+    out.extend(crate::object::ops_sys::traceback_payload_to_formatted_entries(_py, &payload));
+    Some(out)
 }

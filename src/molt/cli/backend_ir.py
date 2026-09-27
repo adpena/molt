@@ -1169,7 +1169,6 @@ def _append_native_callable_function_metadata_ops(
             code_symbol=wrapper_symbol,
             trace_filename=f"<native callable export {export.qualified_name}>",
             trace_lineno=0,
-            trace_name=export.name,
             varnames=tuple(bound_params),
             code_names=(),
             freevars=(),

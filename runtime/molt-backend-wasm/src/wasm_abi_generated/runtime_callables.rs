@@ -7147,21 +7147,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 0,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_traceback_source_line",
-        import: WasmRuntimeImport::TracebackSourceLine,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_traceback_infer_col_offsets",
-        import: WasmRuntimeImport::TracebackInferColOffsets,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_traceback_format_caret_line",
-        import: WasmRuntimeImport::TracebackFormatCaretLine,
-        arity: 3,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_traceback_format_exception_only",
         import: WasmRuntimeImport::TracebackFormatExceptionOnly,
         arity: 2,
@@ -15089,9 +15074,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_gc_freeze" => Some(WasmRuntimeImport::GcFreeze),
         "molt_gc_unfreeze" => Some(WasmRuntimeImport::GcUnfreeze),
         "molt_gc_get_freeze_count" => Some(WasmRuntimeImport::GcGetFreezeCount),
-        "molt_traceback_source_line" => Some(WasmRuntimeImport::TracebackSourceLine),
-        "molt_traceback_infer_col_offsets" => Some(WasmRuntimeImport::TracebackInferColOffsets),
-        "molt_traceback_format_caret_line" => Some(WasmRuntimeImport::TracebackFormatCaretLine),
         "molt_traceback_format_exception_only" => {
             Some(WasmRuntimeImport::TracebackFormatExceptionOnly)
         }
@@ -17818,9 +17800,6 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_gc_freeze" => Some(0),
         "molt_gc_unfreeze" => Some(0),
         "molt_gc_get_freeze_count" => Some(0),
-        "molt_traceback_source_line" => Some(2),
-        "molt_traceback_infer_col_offsets" => Some(1),
-        "molt_traceback_format_caret_line" => Some(3),
         "molt_traceback_format_exception_only" => Some(2),
         "molt_traceback_format_exception" => Some(5),
         "molt_traceback_format_tb" => Some(2),

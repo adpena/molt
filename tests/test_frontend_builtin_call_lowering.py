@@ -251,6 +251,49 @@ def test_globals_callable_uses_canonical_builtin_without_local_wrappers(
         assert len(generator.module_chunk_symbols) > 1
 
 
+def test_code_names_match_cpython_without_losing_function_qualnames() -> None:
+    source = """
+def outer():
+    def inner():
+        return 1
+    def generator():
+        yield 1
+    async def coroutine():
+        return 1
+    async def async_generator():
+        yield 1
+    return lambda value: value
+"""
+    expected = {}
+    pending = [compile(source, "<names>", "exec")]
+    while pending:
+        code = pending.pop()
+        expected[code.co_name] = code.co_qualname
+        pending.extend(value for value in code.co_consts if isinstance(value, CodeType))
+
+    ir = compile_to_tir(source)
+    actual_names = []
+    actual_functions = {}
+    for function in ir["functions"]:
+        ops = function["ops"]
+        producers = {op["out"]: op for op in ops if "out" in op}
+        for op in ops:
+            if op["kind"] == "code_new":
+                actual_names.append(producers[op["args"][1]]["s_value"])
+            elif (
+                op["kind"] == "call"
+                and op.get("s_value") == "molt_function_init_metadata_packed"
+            ):
+                fields = producers[op["args"][1]]["args"]
+                actual_functions[producers[fields[0]]["s_value"]] = producers[
+                    fields[1]
+                ]["s_value"]
+    assert sorted(actual_names) == sorted(expected)
+    assert actual_functions == {
+        name: qualname for name, qualname in expected.items() if name != "<module>"
+    }
+
+
 def test_code_slots_split_lexical_module_bootstrap_from_active_globals() -> None:
     ir = compile_to_tir("def target():\n    return globals()\n")
     main_ops = next(
@@ -2637,6 +2680,67 @@ def test_local_module_counter_list_constructor_uses_intrinsic_handle_path() -> N
     assert all(op.get("kind") != "call_bind" for op in main_ops)
 
 
+@pytest.mark.parametrize(
+    ("module", "member"),
+    [("sys", "_getframe"), ("helpers", "exported"), ("molt", "spawn")],
+)
+@pytest.mark.parametrize("from_import", [False, True])
+@pytest.mark.parametrize("definition_facts", [None, {}])
+def test_imported_callable_requires_source_definition_for_code_symbol(
+    module: str, member: str, from_import: bool, definition_facts: dict | None
+) -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={module},
+        direct_call_modules={module},
+        stdlib_allowlist={module},
+        known_func_kinds={} if definition_facts is None else {module: definition_facts},
+    )
+    source = (
+        f"from {module} import {member} as published\nreturn published(0)\n"
+        if from_import
+        else f"import {module} as published\nreturn published.{member}(0)\n"
+    )
+    gen.visit(ast.parse("def probe():\n" + indent(source, "    ")))
+    ops = gen.funcs_map["__main____probe"]["ops"]
+    # A module being compiled says nothing about how this attribute was
+    # published: it may be a builtin, re-export, class or callable instance.
+    # Without a definition there is no code address for the linker to resolve.
+    assert not any(op.kind == "CALL_GUARDED" for op in ops)
+    assert not any(
+        (op.metadata or {}).get("target") == f"{module}__{member}" for op in ops
+    )
+    assert any(op.kind in {"CALL_BIND", "CALL_FUNC"} for op in ops)
+
+
+@pytest.mark.parametrize("member", ["run", "sleep"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_imported_callable_hint_respects_link_partition(
+    member: str, compiled: bool
+) -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"asyncio"},
+        direct_call_modules={"asyncio"} if compiled else set(),
+        stdlib_allowlist={"asyncio"},
+        known_func_kinds={"asyncio": {member: "sync"}},
+    )
+    gen.visit(
+        ast.parse(
+            "def probe():\n"
+            f"    from asyncio import {member} as published\n"
+            "    alias = published\n"
+            "    return alias(0)\n"
+        )
+    )
+    ops = gen.funcs_map["__main____probe"]["ops"]
+    guarded = [op for op in ops if op.kind == "CALL_GUARDED"]
+    assert bool(guarded) is compiled
+    if compiled:
+        assert len(guarded) == 1
+        assert guarded[0].metadata == {"target": f"asyncio__{member}"}
+    else:
+        assert any(op.kind == "CALL_FUNC" for op in ops)
+
+
 def test_stdlib_direct_call_requires_lowered_target_module() -> None:
     gen = SimpleTIRGenerator(
         module_name="collections",
@@ -2667,10 +2771,10 @@ def test_stdlib_direct_call_requires_lowered_target_module() -> None:
     )
 
     assert not any(
-        op.get("kind") == "call" and op.get("s_value") == "copy__copy"
+        op.get("kind") in {"call", "call_guarded"} and op.get("s_value") == "copy__copy"
         for op in func_ops
     )
-    assert any(op.get("kind") == "call_bind" for op in func_ops)
+    assert any(op.get("kind") == "call_func" for op in func_ops)
     assert "copy" in _importlib_transaction_targets(func_ops)
 
 
@@ -3195,11 +3299,7 @@ def test_collections_namedtuple_kwonly_defaults_use_live_binding(local: bool) ->
         if local
         else set(_module_attr_accesses(main_ops, "module_get_global", "namedtuple"))
     )
-    supplied = (
-        _bound_positional_args(main_ops, call_targets)
-        if local
-        else _positional_call(main_ops, call_targets, 2)["args"][1:]
-    )
+    supplied = _positional_call(main_ops, call_targets, 2)["args"][1:]
     assert len(supplied) == 2
     assert const_str[supplied[0]] == "T"
     fields = next(op for op in main_ops if op.get("out") == supplied[1])

@@ -7457,24 +7457,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_traceback_source_line",
-        symbol: "molt_traceback_source_line",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_infer_col_offsets",
-        symbol: "molt_traceback_infer_col_offsets",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_format_caret_line",
-        symbol: "molt_traceback_format_caret_line",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_traceback_format_exception_only",
         symbol: "molt_traceback_format_exception_only",
         arity: 2,
@@ -7538,7 +7520,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_getframe",
         symbol: "molt_getframe",
         arity: 1,
-        defaults: &[],
+        defaults: &[IntrinsicDefaultValue::Int(0)],
     },
     IntrinsicSpec {
         name: "molt_getrecursionlimit",

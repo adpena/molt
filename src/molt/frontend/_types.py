@@ -973,172 +973,6 @@ def _intrinsic_arity(runtime_name: str) -> int:
     return 0 if arity is None else arity
 
 
-MOLT_REEXPORT_FUNCTIONS = {
-    "cancel_current": "molt.concurrency",
-    "cancelled": "molt.concurrency",
-    "CancellationToken": "molt.concurrency",
-    "Channel": "molt.concurrency",
-    "channel": "molt.concurrency",
-    "current_token": "molt.concurrency",
-    "set_current_token": "molt.concurrency",
-    "spawn": "molt.concurrency",
-    "Request": "molt.net",
-    "Response": "molt.net",
-    "Stream": "molt.net",
-    "StreamSender": "molt.net",
-    "WebSocket": "molt.net",
-    "stream": "molt.net",
-    "stream_channel": "molt.net",
-    "ws_connect": "molt.net",
-    "ws_pair": "molt.net",
-}
-
-MOLT_DIRECT_CALLS = {
-    "molt": {
-        "cancel_current",
-        "cancelled",
-        "channel",
-        "current_token",
-        "set_current_token",
-        "spawn",
-        "stream",
-        "stream_channel",
-        "ws_connect",
-        "ws_pair",
-    },
-    "molt.concurrency": {
-        "cancel_current",
-        "cancelled",
-        "channel",
-        "current_token",
-        "set_current_token",
-        "spawn",
-    },
-    "molt.net": {
-        "stream",
-        "stream_channel",
-        "ws_connect",
-        "ws_pair",
-    },
-    "asyncio": {
-        "create_task",
-        "current_task",
-        "ensure_future",
-        "gather",
-        "get_event_loop",
-        "get_running_loop",
-        "new_event_loop",
-        "run",
-        "set_event_loop",
-        "sleep",
-    },
-    "contextlib": {"closing", "nullcontext"},
-    "contextvars": {"copy_context"},
-    "copy": {"copy", "deepcopy"},
-    "dataclasses": {
-        "asdict",
-        "astuple",
-        "dataclass",
-        "field",
-        "fields",
-        "is_dataclass",
-        "make_dataclass",
-        "replace",
-    },
-    "email._encoded_words": {
-        "decode",
-        "decode_b",
-        "decode_q",
-        "encode",
-        "encode_b",
-        "encode_q",
-        "len_b",
-        "len_q",
-    },
-    "fnmatch": {"fnmatch", "fnmatchcase"},
-    "functools": {"lru_cache", "partial", "reduce", "update_wrapper", "wraps"},
-    "importlib": {"import_module", "invalidate_caches", "reload"},
-    "inspect": {
-        "cleandoc",
-        "getdoc",
-        "isfunction",
-        "isclass",
-        "ismodule",
-        "iscoroutinefunction",
-        "isgeneratorfunction",
-        "signature",
-    },
-    "io": {"open"},
-    "os": {"getenv", "unlink"},
-    "pprint": {"pformat", "pprint"},
-    "string": {"capwords"},
-    "sys": {
-        "exc_info",
-        "getdefaultencoding",
-        "getfilesystemencoding",
-        "getrecursionlimit",
-        "_getframe",
-        "setrecursionlimit",
-    },
-    "itertools": {"chain", "islice", "repeat"},
-    "traceback": {
-        "format_exception",
-        "format_exception_only",
-        "format_exc",
-        "format_tb",
-        "print_exception",
-        "print_exc",
-        "print_tb",
-    },
-    "threading": {"Thread"},
-    "tkinter._support": {
-        "_has_gui_capability",
-        "_has_process_spawn_capability",
-        "_require_gui_capability",
-        "_require_process_spawn_capability",
-        "_require_tk_runtime",
-        "_tk_available",
-        "_tk_unavailable_message",
-        "has_gui_capability",
-        "has_process_spawn_capability",
-        "require_gui_capability",
-        "require_process_spawn_capability",
-        "require_tk_runtime",
-        "tk_available",
-        "tk_unavailable_message",
-    },
-    "typing": {
-        "TypeVar",
-        "cast",
-        "get_args",
-        "get_origin",
-        "overload",
-        "runtime_checkable",
-    },
-    "warnings": {
-        "catch_warnings",
-        "filterwarnings",
-        "formatwarning",
-        "resetwarnings",
-        "showwarning",
-        "simplefilter",
-        "warn",
-        "warn_explicit",
-    },
-    "wsgiref.simple_server": {"make_server"},
-}
-
-MOLT_DIRECT_CALL_BIND_ALWAYS = {
-    "asyncio": {"gather"},
-    "functools": {"partial"},
-    "molt.gpu.tensor": {"tensor_take_rows", "zeros"},
-    "operator": {"attrgetter", "itemgetter", "methodcaller"},
-    # itertools wrappers have vararg/default binding semantics that must go
-    # through CALL_BIND unless we explicitly materialize packed args.
-    "itertools": {"chain", "islice", "repeat"},
-}
-
-
 @dataclass(frozen=True)
 class IntrinsicHandleClassConstructorSpec:
     type_hint: str
@@ -1167,10 +1001,6 @@ INTRINSIC_HANDLE_CLASS_CONSTRUCTORS: dict[
 INTRINSIC_HANDLE_CLASS_CONSTRUCTORS_BY_TYPE: dict[
     str, IntrinsicHandleClassConstructorSpec
 ] = {spec.type_hint: spec for spec in INTRINSIC_HANDLE_CLASS_CONSTRUCTORS.values()}
-
-STDLIB_DIRECT_CALL_MODULES = {
-    module for module in MOLT_DIRECT_CALLS if not module.startswith("molt.")
-}
 
 
 @dataclass(frozen=True)
@@ -1426,13 +1256,9 @@ __all__ = [
     "_intrinsic_arity_exact",
     "_intrinsic_defaults_exact",
     "_intrinsic_arity",
-    "MOLT_REEXPORT_FUNCTIONS",
-    "MOLT_DIRECT_CALLS",
-    "MOLT_DIRECT_CALL_BIND_ALWAYS",
     "IntrinsicHandleClassConstructorSpec",
     "INTRINSIC_HANDLE_CLASS_CONSTRUCTORS",
     "INTRINSIC_HANDLE_CLASS_CONSTRUCTORS_BY_TYPE",
-    "STDLIB_DIRECT_CALL_MODULES",
     "TryScope",
     "MethodInfo",
     "ClassInfo",
