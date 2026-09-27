@@ -570,6 +570,11 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         return None
 
     def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        return self._visit_async_for(node)
+
+    def _visit_async_for(
+        self, node: ast.AsyncFor, *, iterator: MoltValue | None = None
+    ) -> None:
         if not self.is_async():
             raise FrontendRejection(
                 Diagnostic.CONTROL_FLOW,
@@ -580,7 +585,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             record_exception_prefixes=True
         )
         try:
-            return self._visit_async_for_lowering(node)
+            return self._visit_async_for_lowering(node, iterator=iterator)
         finally:
             # Async iteration may execute zero times. Join the pre-loop binding
             # state with every loop-body assignment exactly like synchronous
@@ -588,14 +593,18 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             # iteration target's non-module state.
             self._finish_module_provenance_flow(provenance_flow)
 
-    def _visit_async_for_lowering(self, node: ast.AsyncFor) -> None:
-        iterable = self.visit(node.iter)
-        if iterable is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE,
-                "Unsupported iterable in async for loop",
-            )
-        iter_obj = self._emit_aiter(iterable)
+    def _visit_async_for_lowering(
+        self, node: ast.AsyncFor, *, iterator: MoltValue | None = None
+    ) -> None:
+        if iterator is None:
+            iterable = self.visit(node.iter)
+            if iterable is None:
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported iterable in async for loop",
+                )
+            iterator = self._emit_aiter(iterable)
+        iter_obj = iterator
         iter_slot = self._new_async_internal_slot()
         self.emit(
             MoltOp(

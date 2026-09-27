@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, Concatenate, ParamSpec
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.static_truth import static_expression_result
@@ -26,14 +26,19 @@ from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
 
+_VisitorArgs = ParamSpec("_VisitorArgs")
+
+
 def _with_module_provenance_loop_flow(
-    visitor: Callable[[Any, Any], None],
-) -> Callable[[Any, Any], None]:
+    visitor: Callable[Concatenate[Any, _VisitorArgs], None],
+) -> Callable[Concatenate[Any, _VisitorArgs], None]:
     @wraps(visitor)
-    def wrapped(self: Any, node: Any) -> None:
+    def wrapped(
+        self: Any, *args: _VisitorArgs.args, **kwargs: _VisitorArgs.kwargs
+    ) -> None:
         flow = self._begin_module_provenance_flow(record_exception_prefixes=True)
         try:
-            return visitor(self, node)
+            return visitor(self, *args, **kwargs)
         finally:
             self._finish_module_provenance_flow(flow)
 
@@ -194,12 +199,15 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         self._emit_context_body(node, enter_val, action)
         return None
 
-    @_with_module_provenance_loop_flow
     def visit_For(self, node: ast.For) -> None:
+        return self._visit_for(node)
+
+    @_with_module_provenance_loop_flow
+    def _visit_for(self, node: ast.For, *, iterator: MoltValue | None = None) -> None:
         self._prepare_exact_class_loop_entry(node.body)
         exact_assigned = self._collect_assigned_names(node.body + node.orelse)
         exact_assigned.update(self._collect_target_names(node.target))
-        if self._emit_split_dict_increment_for_loop(node):
+        if iterator is None and self._emit_split_dict_increment_for_loop(node):
             self._clear_exact_bindings(exact_assigned)
             return None
         break_name: ScratchCell | None = None
@@ -218,6 +226,15 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         assigned = self._collect_assigned_names(node.body)
         assigned.update(target_names)
         self._prepare_mutable_control_flow_bindings(assigned)
+        if iterator is not None:
+            # A generator expression acquired its outer iterator in the
+            # enclosing frame. Consume that value, never re-evaluate or apply
+            # source-expression optimizations to the original iterable here.
+            self._emit_iter_loop(node, iterator, loop_break_flag=break_name)
+            if break_name is not None:
+                self._emit_loop_orelse(break_name, node.orelse)
+            self._clear_exact_bindings(exact_assigned)
+            return None
         reduction = None
         # The vector/reduction fast paths (VEC_SUM/VEC_PROD/VEC_MIN/VEC_MAX)
         # collapse an accumulator loop into a single op and elide the
