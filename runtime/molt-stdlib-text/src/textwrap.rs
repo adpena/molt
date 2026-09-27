@@ -567,7 +567,7 @@ pub fn textwrap_dedent_impl(text: &str) -> String {
     let mut margin: Option<&str> = None;
     let lines: Vec<&str> = text.split('\n').collect();
     for &line in &lines {
-        let stripped = line.trim_start();
+        let stripped = line.trim_start_matches([' ', '\t']);
         if stripped.is_empty() {
             continue;
         }
@@ -591,18 +591,15 @@ pub fn textwrap_dedent_impl(text: &str) -> String {
         }
     }
     let margin = margin.unwrap_or("");
-    if margin.is_empty() {
-        return text.to_string();
-    }
     let margin_len = margin.len();
     let mut result = String::with_capacity(text.len());
     for (i, line) in lines.iter().enumerate() {
         if i > 0 {
             result.push('\n');
         }
-        if line.trim_start().is_empty() {
+        if line.trim_start_matches([' ', '\t']).is_empty() {
             // Whitespace-only line: strip all leading whitespace
-            result.push_str(line.trim_start());
+            // This normalization also applies when the common margin is empty.
         } else if line.len() >= margin_len && &line[..margin_len] == margin {
             result.push_str(&line[margin_len..]);
         } else {
@@ -702,6 +699,9 @@ mod tests {
 
         let dedented = textwrap_dedent_impl("    alpha\n      beta\n");
         assert_eq!(dedented, "alpha\n  beta\n");
+        assert_eq!(textwrap_dedent_impl("a\n   \nb"), "a\n\nb");
+        assert_eq!(textwrap_dedent_impl("\t \n"), "\n");
+        assert_eq!(textwrap_dedent_impl("\u{a0}a\n\u{a0}b"), "\u{a0}a\n\u{a0}b");
     }
 
     #[test]

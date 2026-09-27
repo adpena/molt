@@ -334,10 +334,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
     ) -> frozenset[str]: ...
 
-    def _call_allowlist_suggestion(
-        self, func_id: str, imported_from: str | None
-    ) -> str | None: ...
-
     def _call_has_bound_builtin_name(self, node: ast.expr) -> bool: ...
 
     @staticmethod
@@ -717,9 +713,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         index: int = ...,
     ) -> MoltValue: ...
 
-    @staticmethod
-    def _display_allowlist_module(module_name: str) -> str: ...
-
     def _dotted_attribute_parts(self, expr: ast.AST) -> tuple[str, ...] | None: ...
 
     def _dotted_imported_module_target(
@@ -1055,7 +1048,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         qualname: str,
         trace_filename: str | None = ...,
         trace_lineno: int | None = ...,
-        trace_name: str | None = ...,
         posonly_params: list[str],
         pos_or_kw_params: list[str],
         kwonly_params: list[str],
@@ -1836,7 +1828,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _is_known_project_module(self, module_name: str | None) -> bool: ...
 
-    def _is_linkable_module_function_symbol(self, module_name: str | None) -> bool: ...
+    def _is_linkable_module_function_symbol(
+        self, module_name: str | None, func_id: str
+    ) -> bool: ...
 
     def _is_native_python_export(self, target_module: str, attr_name: str) -> bool: ...
 
@@ -2613,11 +2607,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         original_attr: str,
         node: ast.Call,
         *,
-        imported_from: str | None,
-        normalized: str | None,
         needs_bind: bool,
-        force_bind: bool,
-        direct_registry_authorized: bool,
     ) -> MoltValue | None: ...
 
     def _try_emit_imported_named_call(

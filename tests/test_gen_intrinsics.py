@@ -61,6 +61,8 @@ def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
 
     assert length_hint.arity == 2
     assert length_hint.defaults == ("IntrinsicDefaultValue::Int(0)",)
+    assert by_name["molt_getframe"].arity == 1
+    assert by_name["molt_getframe"].defaults == ("IntrinsicDefaultValue::Int(0)",)
 
     generated = (ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs").read_text()
     assert "pub(crate) enum IntrinsicDefaultValue" in generated

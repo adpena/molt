@@ -4,6 +4,22 @@
 **Purpose:** Define deterministic, testable transforms from Python AST → Molt IR for supported idioms.
 **Audience:** Compiler engineers, optimization authors writing compiler passes.
 
+## Imported callable code identity
+
+Import visibility and code-symbol custody are distinct. A guarded Python call
+may name a `(module, function)` code address only when the module belongs to the
+compiled partition and canonical source analysis declares that function. Named
+imports, module-attribute calls and callable type hints share this rule. Public
+API spellings, re-export lists and missing analysis cannot establish a symbol.
+
+Runtime-published builtins, re-exports and other callable values use their actual
+imported binding. Even with a proven code address, guarded dispatch retains that
+live value; the shared runtime guard owns callable identity, closure and binding
+eligibility. Defaults, positional/keyword arguments and decorator replacements
+do not require per-function frontend binding lists. Native exports still require
+their declared callable ABI metadata. This rule is independent of target/backend
+and does not broaden import admission or the verified subset.
+
 ## Context-manager scope custody
 
 `TryScope` owns nonlocal cleanup for `return`, `break`, and `continue` in both

@@ -9245,21 +9245,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::TracebackSourceLine,
-        name: "traceback_source_line",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TracebackInferColOffsets,
-        name: "traceback_infer_col_offsets",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TracebackFormatCaretLine,
-        name: "traceback_format_caret_line",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::TracebackFormatExceptionOnly,
         name: "traceback_format_exception_only",
         type_idx: 3,
@@ -19456,12 +19441,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_gc_unfreeze" => Some(WasmRuntimeImport::GcUnfreeze),
         "gc_get_freeze_count" => Some(WasmRuntimeImport::GcGetFreezeCount),
         "molt_gc_get_freeze_count" => Some(WasmRuntimeImport::GcGetFreezeCount),
-        "traceback_source_line" => Some(WasmRuntimeImport::TracebackSourceLine),
-        "molt_traceback_source_line" => Some(WasmRuntimeImport::TracebackSourceLine),
-        "traceback_infer_col_offsets" => Some(WasmRuntimeImport::TracebackInferColOffsets),
-        "molt_traceback_infer_col_offsets" => Some(WasmRuntimeImport::TracebackInferColOffsets),
-        "traceback_format_caret_line" => Some(WasmRuntimeImport::TracebackFormatCaretLine),
-        "molt_traceback_format_caret_line" => Some(WasmRuntimeImport::TracebackFormatCaretLine),
         "traceback_format_exception_only" => Some(WasmRuntimeImport::TracebackFormatExceptionOnly),
         "molt_traceback_format_exception_only" => {
             Some(WasmRuntimeImport::TracebackFormatExceptionOnly)
