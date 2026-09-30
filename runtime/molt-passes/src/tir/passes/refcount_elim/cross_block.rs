@@ -33,9 +33,9 @@ pub(super) fn eliminate_cross_block_pairs(
         };
         if *succ_id == pred_id
             || *succ_id == func.entry_block
-            || !pred_map
+            || pred_map
                 .get(succ_id)
-                .is_some_and(|preds| preds.as_slice() == [pred_id])
+                .is_none_or(|preds| preds.as_slice() != [pred_id])
         {
             continue;
         }

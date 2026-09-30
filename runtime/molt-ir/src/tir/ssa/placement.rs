@@ -618,10 +618,10 @@ impl<'a> SsaContext<'a> {
                     {
                         return false;
                     }
-                    if let Some(targets) = exact_exception_probe {
-                        if exception_probe.replace(targets).is_some() {
-                            return false;
-                        }
+                    if let Some(targets) = exact_exception_probe
+                        && exception_probe.replace(targets).is_some()
+                    {
+                        return false;
                     }
                 }
             }
@@ -651,13 +651,13 @@ impl<'a> SsaContext<'a> {
                             }
                             next
                         } else if target == guard.done_target {
-                            (states != 0).then_some(ITER_PATH_NO_STEP).unwrap_or(0)
+                            if states != 0 { ITER_PATH_NO_STEP } else { 0 }
                         } else {
                             return false;
                         }
                     } else if let Some((exception_target, continue_target)) = exception_probe {
                         if target == exception_target {
-                            (states != 0).then_some(ITER_PATH_NO_STEP).unwrap_or(0)
+                            if states != 0 { ITER_PATH_NO_STEP } else { 0 }
                         } else if target == continue_target {
                             states
                         } else {
@@ -682,7 +682,7 @@ impl<'a> SsaContext<'a> {
 
                 if implicit_edge || !regular_edge {
                     propagated = true;
-                    let next_states = (states != 0).then_some(ITER_PATH_NO_STEP).unwrap_or(0);
+                    let next_states = if states != 0 { ITER_PATH_NO_STEP } else { 0 };
                     if next_states & !incoming_states[target] != 0 {
                         incoming_states[target] |= next_states;
                         if !queued[target] {

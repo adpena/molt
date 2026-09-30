@@ -26,12 +26,10 @@ pub(super) fn is_hoistable(
     >,
 ) -> bool {
     let effects = super::super::effects::op_effects_with_types(op, value_types);
-    (effects.consistent && effects.effect_free && effects.nothrow)
-        || op.is_plain_value_copy()
+    op.is_plain_value_copy()
         || (effects.consistent
             && effects.effect_free
-            && !effects.nothrow
-            && throw_condition_disproven(op, vr, value_types))
+            && (effects.nothrow || throw_condition_disproven(op, vr, value_types)))
 }
 
 /// True when an operand-proven `pure_may_throw` operator instance is

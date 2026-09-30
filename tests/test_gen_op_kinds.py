@@ -7184,7 +7184,7 @@ def test_semantic_operand_shapes_are_canonical_and_generated() -> None:
         expected = (
             f"count == {arity}"
             if type(arity) is int
-            else "count % 2 == 0"
+            else "count.is_multiple_of(2)"
             if arity == "variable_pairs"
             else "true"
         )

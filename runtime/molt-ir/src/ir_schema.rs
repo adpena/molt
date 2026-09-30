@@ -206,7 +206,7 @@ pub fn validate_op_shape(
             actual: operands,
         })
     } else if shape.value_rule == SimpleIrOpValueRule::NonNegative
-        && !value.is_some_and(|value| value >= 0)
+        && value.is_none_or(|value| value < 0)
     {
         Some(OpShapeViolation::NonNegativeValue { actual: value })
     } else {
