@@ -1368,15 +1368,9 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "uses: ./.github/actions/setup-project" in wasm_text
     assert 'cache-cargo: "true"' in wasm_text
     assert "cache-namespace: wasm-ci" in wasm_text
-    assert (
-        "uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b"
-        in wasm_text
-    )
-    assert (
-        f"tool: wasm-tools@{tool_releases.tool_release('wasm-tools').version}"
-        in wasm_text
-    )
-    assert "fallback: none" in wasm_text
+    assert "python3 -m molt.tool_releases provision wasm-tools" in wasm_text
+    assert '--github-path "$GITHUB_PATH"' in wasm_text
+    assert "taiki-e/install-action" not in wasm_text
     assert (
         "MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
         in wasm_text
