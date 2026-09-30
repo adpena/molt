@@ -950,8 +950,8 @@ def write_tests(tests: list[TestCase], dry_run: bool = False) -> list[Path]:
 
     # Ensure __init__.py exists
     init_path = OUTPUT_DIR / "__init__.py"
-    if not init_path.exists():
-        init_path.write_text("", encoding="utf-8")
+    if not init_path.exists() or not init_path.read_text(encoding="utf-8").strip():
+        init_path.write_text("# MOLT_META: source_role=fixture\n", encoding="utf-8")
 
     written: list[Path] = []
     for test in tests:

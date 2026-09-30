@@ -879,3 +879,33 @@ def test_receipt_closure_rejects_a_different_requested_build_profile(
         verified_subset.verify_receipt_closure(
             receipt_root=tmp_path, source_sha=SOURCE_SHA, build_profile="release"
         )
+
+
+def test_generated_theorem_programs_are_required_without_counting_package_fixture():
+    validation = verified_subset.validate_manifest()
+    suite = next(
+        item
+        for item in validation.policy.suites
+        if item.path.endswith("generated_from_proofs")
+    )
+    assert suite.cpython_equivalence_floor == 18
+    generated = [
+        source
+        for source in validation.inventory.sources
+        if "/generated_from_proofs/" in source.path
+    ]
+    assert sum(source.metadata.source_role == "program" for source in generated) == 18
+    assert sum(source.metadata.source_role == "fixture" for source in generated) == 1
+    for projection in validation.projections:
+        programs = [
+            test
+            for test in projection.applicable
+            if "/generated_from_proofs/" in test.path
+        ]
+        assert len(programs) == 18
+        fixture = next(
+            test
+            for test in projection.excluded
+            if test.path.endswith("generated_from_proofs/__init__.py")
+        )
+        assert fixture.exclusion_reason == "inert fixture source"
