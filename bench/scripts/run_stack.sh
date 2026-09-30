@@ -36,6 +36,11 @@ else
   RUN_PY=(python3)
 fi
 
+# Resolve uv's interpreter once. Service PIDs must identify the actual server,
+# not an intermediary uv process that can exit before its children.
+PYTHON_BIN="$("${RUN_PY[@]}" -c 'import sys; print(sys.executable)')"
+RUN_PY=("$PYTHON_BIN")
+
 SERVER="${MOLT_SERVER:-auto}"
 SERVER_PORT="${MOLT_SERVER_PORT:-8000}"
 if [[ -n "${MOLT_SERVER_WORKERS:-}" ]]; then
@@ -59,7 +64,9 @@ else
 fi
 SERVER_THREADS="${MOLT_SERVER_THREADS:-2}"
 SERVER_KEEPALIVE="${MOLT_SERVER_KEEPALIVE:-15}"
-SERVER_PID_FILE="$ROOT/tmp/molt_gunicorn.pid"
+SERVER_PID_FILE="$MOLT_DIFF_TMPDIR/molt_gunicorn_${MOLT_SESSION_ID:-demo-stack}.pid"
+
+source "$ROOT/bench/scripts/stack_lifecycle.sh"
 
 if [[ "$SERVER" == "auto" ]]; then
   if "${RUN_PY[@]}" - <<'PY'
@@ -109,7 +116,7 @@ fi
 # Start worker
 $WORKER_CMD > "$ROOT/logs/molt_worker.log" 2>&1 &
 WORKER_PID=$!
-trap 'kill $WORKER_PID 2>/dev/null || true' EXIT
+SERVICE_PIDS+=("$WORKER_PID")
 export MOLT_DEMO_WORKER_PID="$WORKER_PID"
 METRICS_PATH="${MOLT_DEMO_METRICS_PATH:-$ROOT/bench/results/molt_demo_metrics.jsonl}"
 rm -f "$METRICS_PATH"
@@ -148,7 +155,7 @@ if [[ "$SERVER" == "gunicorn" ]]; then
 fi
 case "$SERVER" in
   django)
-    SERVER_CMD=("${RUN_PY[@]}" demo/django_app/manage.py runserver "$SERVER_PORT")
+    SERVER_CMD=("${RUN_PY[@]}" demo/django_app/manage.py runserver "127.0.0.1:$SERVER_PORT" --noreload)
     ;;
   gunicorn)
     SERVER_CMD=(
@@ -180,7 +187,7 @@ esac
 
 "${SERVER_CMD[@]}" > "$ROOT/logs/molt_django.log" 2>&1 &
 DJ_PID=$!
-trap 'kill $WORKER_PID $DJ_PID 2>/dev/null || true' EXIT
+SERVICE_PIDS+=("$DJ_PID")
 export MOLT_DEMO_SERVER_PID="$DJ_PID"
 if [[ "$SERVER" == "gunicorn" ]]; then
   for _ in {1..50}; do
@@ -191,10 +198,33 @@ if [[ "$SERVER" == "gunicorn" ]]; then
     sleep 0.1
   done
 fi
-sleep 2
+# Probe bounded readiness rather than sending the load to an unready server.
+"${RUN_PY[@]}" - "$SERVER_PORT" "$DJ_PID" <<'PY'
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+port, pid = map(int, sys.argv[1:])
+deadline = time.monotonic() + 30
+last_error = "server did not respond"
+while time.monotonic() < deadline:
+    try:
+        os.kill(pid, 0)
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health/", timeout=1) as response:
+            if response.status == 200:
+                break
+    except ProcessLookupError:
+        raise SystemExit("Demo server exited before readiness; see logs/molt_django.log")
+    except (OSError, urllib.error.URLError) as exc:
+        last_error = str(exc)
+    time.sleep(0.1)
+else:
+    raise SystemExit(f"Demo server readiness failed: {last_error}")
+PY
 
 cd "$ROOT"
 "${RUN_PY[@]}" bench/scripts/run_demo_bench.py
 
-kill $DJ_PID $WORKER_PID 2>/dev/null || true
-trap - EXIT
+# EXIT cleanup owns both successful and failed runs.

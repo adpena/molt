@@ -129,7 +129,8 @@ runs:
         fi
         rustup toolchain install "$RUST_TOOLCHAIN" "${args[@]}"
         rustup default "$RUST_TOOLCHAIN"
-        rustc --version --verbose
+        rustc "+$RUST_TOOLCHAIN" --version --verbose
+        python3 tools/check_rust_toolchain.py --compiler-version "$(rustc "+$RUST_TOOLCHAIN" --version)"
 
     - name: Cache uv downloads
       if: steps.inputs.outputs.cache-uv == 'true'
