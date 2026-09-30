@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path
@@ -19,6 +20,23 @@ CPYTHON_COMMIT = "b" * 40
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+@lru_cache(maxsize=1)
+def _discovery_fixture_sources() -> tuple[tuple[str, str], ...]:
+    from molt.cli.python_source_closure import local_python_import_closure
+
+    root = nightly_sharding.ROOT
+    closure = local_python_import_closure(
+        root, (root / relative for relative in nightly_sharding.DISCOVERY_SOURCE_SEEDS)
+    )
+    # This toy checkout contains no CLI dynamic import facade or manifest;
+    # copy the real reachable Python source family, preserving import semantics.
+    return tuple(
+        (path.relative_to(root).as_posix(), path.read_text(encoding="utf-8"))
+        for path in closure.paths
+        if path.suffix == ".py"
+    )
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -58,6 +76,18 @@ def _repo(tmp_path: Path) -> Path:
         )
         + "\n",
     )
+    _write(
+        root / "config/verified_subset.toml",
+        (nightly_sharding.ROOT / "config/verified_subset.toml").read_text(
+            encoding="utf-8"
+        ),
+    )
+    _write(
+        root / "tests/differential/basic/generated_from_proofs/__init__.py",
+        "# MOLT_META: source_role=fixture\n",
+    )
+    for relative, content in _discovery_fixture_sources():
+        _write(root / relative, content)
     for relative in nightly_sharding.AUTHORITY_INPUTS:
         path = root / relative
         if not path.exists():
@@ -428,3 +458,68 @@ def test_artifact_archive_rejects_unsafe_members(tmp_path: Path, member: str) ->
     rows = [{"path": member, "size": 1, "sha256": hashlib.sha256(b"x").hexdigest()}]
     with pytest.raises(ValueError, match="unsafe artifact member path"):
         nightly_sharding._validate_artifact_archive(archive, rows)
+
+
+def test_nightly_uses_canonical_program_selection_and_binds_imported_fixtures(tmp_path):
+    root = _repo(tmp_path)
+    generated = root / "tests/differential/basic/generated_from_proofs/test_theorem.py"
+    _write(generated, "print(1)\n")
+    helper = root / "tests/differential/basic/pkg/helper.py"
+    _write(helper, "VALUE = 1\n")
+    programs, fixtures = nightly_sharding._differential_sources(root)
+    assert generated in programs
+    assert helper in fixtures and helper not in programs
+    assert (
+        root / "tests/differential/basic/generated_from_proofs/__init__.py" in fixtures
+    )
+    discovered = [
+        entry["path"]
+        for entry in nightly_sharding.discover_corpora(root)["differential"]
+    ]
+    assert discovered == nightly_sharding._current_corpus_paths(root, "differential")
+    assert len(discovered) == 17
+    inputs = {
+        row["path"]: row["sha256"] for row in nightly_sharding._authority_inputs(root)
+    }
+    relative = helper.relative_to(root).as_posix()
+    assert relative in inputs
+    _write(helper, "VALUE = 2\n")
+    changed = {
+        row["path"]: row["sha256"] for row in nightly_sharding._authority_inputs(root)
+    }
+    assert changed[relative] != inputs[relative]
+
+
+def test_discovery_custody_dependency_changes_invalidate_plan_authority(tmp_path):
+    root = _repo(tmp_path)
+    before = _plan(root)
+    _write(root / "src/molt/file_publication.py", "# changed custody implementation\n")
+    after = _plan(root)
+    assert before["authority_sha256"] != after["authority_sha256"]
+    assert before["plan_sha256"] != after["plan_sha256"]
+
+
+def test_new_discovery_import_is_automatically_bound_by_shared_source_closure(tmp_path):
+    root = _repo(tmp_path)
+    path = root / "src/molt/file_publication.py"
+    path.write_text(path.read_text() + "\nfrom molt import discovery_probe\n")
+    extra = root / "src/molt/discovery_probe.py"
+    _write(extra, "VALUE = 1\n")
+    before = _plan(root)
+    inputs = {
+        row["path"]: row["sha256"] for row in nightly_sharding._authority_inputs(root)
+    }
+    assert "src/molt/discovery_probe.py" in inputs
+    _write(extra, "VALUE = 2\n")
+    after = _plan(root)
+    assert before["authority_sha256"] != after["authority_sha256"]
+
+
+def test_unknown_dynamic_discovery_import_cannot_produce_a_partial_plan(tmp_path):
+    root = _repo(tmp_path)
+    path = root / "src/molt/file_publication.py"
+    path.write_text(
+        path.read_text() + "\nimport importlib\nimportlib.import_module(module_name)\n"
+    )
+    with pytest.raises(ValueError, match="dynamic"):
+        _plan(root)

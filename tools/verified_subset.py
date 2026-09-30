@@ -131,7 +131,8 @@ def validate_suite_equivalence_floors(
     sources = {source.path: source for source in inventory.sources}
     for suite, members in zip(policy.suites, inventory.suite_members, strict=True):
         actual = sum(
-            sources[path].metadata.verification_scope
+            sources[path].metadata.source_role == "program"
+            and sources[path].metadata.verification_scope
             == test_policy.CPYTHON_EQUIVALENCE_SCOPE
             for path in members
         )

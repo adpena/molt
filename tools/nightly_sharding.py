@@ -33,6 +33,8 @@ from molt.artifact_publication import (
 )
 from tools.command_execution import CommandExecutor
 from tools import nightly_shard_profile
+from tools.compat import test_policy
+from molt.verified_subset import load_verified_subset_policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +68,14 @@ AUTHORITY_INPUTS = (
     "config/cpython_regrtest_sources.toml",
     "tools/proof_plan.toml",
     "tools/proof_plan.py",
+    "config/release_targets.toml",
+    "config/verified_subset.toml",
+    "tools/theorem_to_test.py",
+)
+
+DISCOVERY_SOURCE_SEEDS = (
+    "tools/compat/test_policy.py",
+    "src/molt/verified_subset.py",
 )
 
 
@@ -187,14 +197,25 @@ def _discover_regrtest(root: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _differential_sources(root: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """Use release policy for programs; retain imported support modules as inputs."""
+    policy = load_verified_subset_policy(root / "config/verified_subset.toml")
+    inventory = test_policy.load_test_inventory(policy.suite_selectors, repo_root=root)
+    programs = test_policy.program_files(inventory)
+    physical = test_policy.collect_physical_test_files(
+        (("tests/differential/basic", True), ("tests/differential/stdlib", True)),
+        repo_root=root,
+    )
+    program_paths = set(programs)
+    fixtures = tuple(path for path in physical if path not in program_paths)
+    inventory.verify_unchanged()
+    return programs, fixtures
+
+
 def discover_corpora(root: Path = ROOT) -> dict[str, list[dict[str, Any]]]:
     """Discover exact Nightly corpora in stable path order."""
 
     conformance_root = root / "tests" / "harness" / "corpus" / "monty_compat"
-    differential_roots = (
-        root / "tests" / "differential" / "basic",
-        root / "tests" / "differential" / "stdlib",
-    )
     corpora = {
         "conformance": [
             _file_entry(root, path)
@@ -202,10 +223,7 @@ def discover_corpora(root: Path = ROOT) -> dict[str, list[dict[str, Any]]]:
             if path.is_file()
         ],
         "differential": [
-            _file_entry(root, path)
-            for directory in differential_roots
-            for path in sorted(directory.rglob("*.py"))
-            if path.is_file()
+            _file_entry(root, path) for path in _differential_sources(root)[0]
         ],
         "regrtest": _discover_regrtest(root),
     }
@@ -226,15 +244,7 @@ def _current_corpus_paths(root: Path, program: str) -> list[str]:
             if path.is_file()
         )
     if program == "differential":
-        return sorted(
-            _relative(root, path)
-            for directory in (
-                root / "tests/differential/basic",
-                root / "tests/differential/stdlib",
-            )
-            for path in directory.rglob("*.py")
-            if path.is_file()
-        )
+        return [_relative(root, path) for path in _differential_sources(root)[0]]
     test_root = root / "third_party/cpython/Lib/test"
     names = {
         entry.stem
@@ -281,13 +291,26 @@ def lpt_shards(
 
 
 def _authority_inputs(root: Path) -> list[dict[str, str]]:
-    inputs = []
-    for relative in AUTHORITY_INPUTS:
+    # Reuse the compiler/tool import authority: new discovery imports enter the
+    # plan identity automatically; unknown dynamic imports fail closed.
+    from molt.cli.python_source_closure import local_python_import_closure
+
+    closure = local_python_import_closure(
+        root, (root / relative for relative in DISCOVERY_SOURCE_SEEDS)
+    )
+    source_hashes = {
+        _relative(root, path): closure.source_sha256[path] for path in closure.paths
+    }
+    fixture_paths = (_relative(root, path) for path in _differential_sources(root)[1])
+    for relative in set(AUTHORITY_INPUTS).union(fixture_paths):
         path = root / relative
         if not path.is_file():
             raise ValueError(f"nightly shard authority input is missing: {relative}")
-        inputs.append({"path": relative, "sha256": _file_digest(path)})
-    return inputs
+        source_hashes[relative] = _file_digest(path)
+    return [
+        {"path": relative, "sha256": digest}
+        for relative, digest in sorted(source_hashes.items())
+    ]
 
 
 def _measurement_contract_digest(inputs: Sequence[Mapping[str, str]]) -> str:
