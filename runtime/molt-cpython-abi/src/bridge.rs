@@ -6656,9 +6656,9 @@ mod static_binding_transaction_tests {
     }
 
     fn rebind_with_competitor(old_bits: AbiHandle, bits: AbiHandle, owned: bool) {
+        init_tag_table();
         let bridge = Arc::new(ObjectBridge::new());
         let addr = 0x88000usize;
-        let other_addr = addr + 0x10;
         let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
         assert!(unsafe {
             bridge
@@ -6690,23 +6690,39 @@ mod static_binding_transaction_tests {
         let contender = thread::spawn(move || {
             competing_start.wait();
             let result = if owned {
-                // Exercise the exact owned-registration map transaction.
-                // Runtime-hold/error cleanup is covered by the public API
-                // integration tests, without mutating unit-test global hooks.
-                competing.publish_owned_raw_binding(other_addr, bits)
+                // Owned runtime crossings publish canonical managed views;
+                // raw reverse identities are borrowed only. Exercise their
+                // actual insertion transaction with one owned C reference.
+                // Runtime-hold/error cleanup remains in public API integration
+                // tests, without mutating unit-test global runtime hooks.
+                let (entry, candidate) =
+                    unsafe { competing.build_pyobj_entry(bits, 1, false) }.unwrap();
+                let candidate_addr = candidate.addr();
+                let inserted = match competing.insert_managed_entry(bits, entry) {
+                    Ok(()) => true,
+                    Err((entry, rejection)) => {
+                        assert_eq!(rejection, ManagedEntryRejection::Occupied);
+                        assert_eq!(entry.view.py_obj().addr(), candidate_addr);
+                        drop(entry);
+                        false
+                    }
+                };
+                (inserted, Some(candidate_addr))
             } else {
                 let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
-                unsafe { competing.unbind_static_pyobj_from_runtime_handle(ptr, bits) }
+                (
+                    unsafe { competing.unbind_static_pyobj_from_runtime_handle(ptr, bits) },
+                    None,
+                )
             };
             done_tx.send(result).unwrap();
         });
         start.wait();
         resume_tx.send(()).unwrap();
         assert!(writer.join().unwrap());
-        assert_eq!(
-            done_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            !owned
-        );
+        let (inserted_or_unbound, candidate_addr) =
+            done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(inserted_or_unbound, !owned);
         contender.join().unwrap();
         assert!(
             !bridge
@@ -6724,13 +6740,15 @@ mod static_binding_transaction_tests {
                 bridge.address_shard(addr).lock().from_py.get(&addr),
                 Some(&bits)
             );
+            let candidate_addr = candidate_addr.unwrap();
             assert!(
                 !bridge
-                    .address_shard(other_addr)
+                    .address_shard(candidate_addr)
                     .lock()
                     .from_py
-                    .contains_key(&other_addr)
+                    .contains_key(&candidate_addr)
             );
+            assert!(!bridge.handle_shard(bits).lock().to_py.contains_key(&bits));
             assert!(unsafe { bridge.unbind_static_pyobj_from_runtime_handle(ptr, bits) });
         } else {
             let address = bridge.address_shard(addr).lock();
@@ -6752,7 +6770,7 @@ mod static_binding_transaction_tests {
     }
 
     #[test]
-    fn static_rebinding_serializes_owned_publication() {
+    fn static_rebinding_serializes_managed_owned_publication() {
         for (old_bits, bits) in rebind_cases() {
             rebind_with_competitor(old_bits, bits, true);
         }

@@ -70,6 +70,12 @@ schema_version = 1
 # ---------------------------------------------------------------------------
 
 [[crate]]
+name = "molt-launcher"
+runtime_layer = "outside"
+layer = 0
+role = "native release launcher over the embedded Python bootstrap; no workspace dependencies"
+
+[[crate]]
 name = "molt-ir"
 runtime_layer = "outside"
 layer = 0
