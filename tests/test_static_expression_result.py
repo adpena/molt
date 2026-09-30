@@ -52,7 +52,7 @@ def test_cpython_split_protocol_capsule() -> None:
 
 def test_cpython_string_predicate_capsule() -> None:
     runpy.run_path(
-        str(Path(__file__).parent / "differential/basic/string_predicate_protocol.py")
+        str(Path(__file__).parent / "differential/basic/str_predicate_protocol.py")
     )
 
 

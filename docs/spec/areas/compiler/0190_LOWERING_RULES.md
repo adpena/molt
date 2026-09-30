@@ -374,7 +374,7 @@ Alphabetic, cased/titlecase and identifier properties are generated from the
 selected CPython authority alongside numeric, whitespace and printable tables;
 Rust Unicode properties and case-conversion allocations are not classification
 authorities. Lone surrogates are ordinary uncased/nonprintable code points, not
-a reason to reject the surrounding string. `string_predicate_protocol.py`
+a reason to reject the surrounding string. `str_predicate_protocol.py`
 owns the replayable classifier/subclass/receiver corpus. Host reference output
 or table generation alone does not prove compiled native/WASM parity.
 

@@ -2172,9 +2172,17 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
 
     assert summary["failed"] == 0
     assert summary["config"]["compiler_target_python"] == oracle.short
+    # CI places pytest scratch under the checkout; other hosts place it outside.
+    # Assert the same source identity in either location, without calling the
+    # production normalizer to compute its own expected answer.
+    expected_path = target_file.resolve()
+    try:
+        expected_path = expected_path.relative_to(module.test_policy.ROOT.resolve())
+    except ValueError:
+        pass
     assert summary["item_results"] == [
         {
-            "path": str(target_file).replace("\\", "/"),
+            "path": expected_path.as_posix(),
             "status": "pass",
             "duration_s": 0.25,
         }

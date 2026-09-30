@@ -1276,15 +1276,9 @@ def guarded_completed_process(
     # Resolve a relative path-bearing interpreter against the parent cwd before
     # memory_guard.run_guarded hands it to the child spawn boundary.
     command = memory_guard._resolve_relative_executable(command)
-    sentinel_is_active = _sentinel_active() or _external_repo_sentinel_active(
-        prefix,
-        env,
-    )
-    cleanup_tracked_orphans = (
-        False
-        if sampling_scope == "owned_tree"
-        else (not sentinel_is_active if cleanup_orphans is None else cleanup_orphans)
-    )
+    # Suite sentinels own suite-wide observation. Each command still owns its
+    # isolated descendant tree and must close that tree before retiring scratch.
+    cleanup_tracked_orphans = True if cleanup_orphans is None else cleanup_orphans
     sentinel_context = (
         contextlib.nullcontext(None)
         if sampling_scope == "owned_tree"
@@ -1557,11 +1551,8 @@ def guarded_completed_process_to_tempfiles(
     # Resolve a relative path-bearing executable against the parent cwd before
     # memory_guard.run_guarded hands it to the child spawn boundary.
     command = memory_guard._resolve_relative_executable(command)
-    sentinel_is_active = _sentinel_active() or _external_repo_sentinel_active(
-        prefix,
-        env,
-    )
-    cleanup_tracked_orphans = not sentinel_is_active
+    # A suite sentinel does not replace this command's descendant custody.
+    cleanup_tracked_orphans = True
     with _auto_repo_sentinel(
         prefix=prefix,
         env=env,

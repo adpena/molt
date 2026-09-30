@@ -248,7 +248,8 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
     for (opcode, kind, returns_value) in [
         (OpCode::Call, "cell_new", true),
         (OpCode::Copy, "cell_new", true),
-        (OpCode::Call, "spawn", false),
+        // The machine ABI returns an owned boxed None, not void.
+        (OpCode::Call, "spawn", true),
     ] {
         for (value, inline_proven) in [(7, false), (7, true), (i64::MAX, false), (i64::MIN, false)]
         {
