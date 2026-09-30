@@ -514,7 +514,7 @@ pub extern "C" fn PyTuple_GetItem(tuple: u64, index: isize) -> u64 {
                 return 0;
             }
             // Borrowed reference — do not inc_ref.
-            crate::object::seq_access::item(ptr, index as usize).unwrap_or(0)
+            crate::object::seq_access::initialized_tuple_item(_py, ptr, index as usize).unwrap_or(0)
         }
     })
 }

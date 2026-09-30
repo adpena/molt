@@ -804,6 +804,7 @@ mod tests {
 
     #[test]
     fn type_new_borrows_kwargs_dict() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -854,6 +855,7 @@ mod tests {
 
     #[test]
     fn type_init_borrows_kwargs_dict() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -886,6 +888,7 @@ mod tests {
 
     #[test]
     fn types_bootstrap_returns_fresh_dicts_with_cached_helpers() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         let first_bits = molt_types_bootstrap();
@@ -928,6 +931,7 @@ mod tests {
 
     #[test]
     fn types_runtime_state_is_owned_and_clearable() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         let state = RuntimeState::new();
@@ -946,6 +950,7 @@ mod tests {
 
     #[test]
     fn cached_runtime_class_is_not_published_before_configuration_succeeds() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -967,6 +972,7 @@ mod tests {
 
     #[test]
     fn vararg_marker_reuses_function_dict_and_preserves_empty_arg_names() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -1022,6 +1028,7 @@ mod tests {
 
     #[test]
     fn types_coroutine_clones_generator_code_without_mutating_shared_authority() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -1208,6 +1215,7 @@ mod tests {
 
     #[test]
     fn types_coroutine_is_identity_for_coroutines_and_rejects_noncallables() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -1263,6 +1271,7 @@ mod tests {
 
     #[test]
     fn cell_class_publishes_comparison_hash_and_contents_protocol() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
         crate::with_gil_entry_nopanic!(py, {
             let class_bits = cell_class(py);

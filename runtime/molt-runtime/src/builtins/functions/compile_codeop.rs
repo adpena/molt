@@ -1125,6 +1125,10 @@ mod code_object_ownership_tests {
         unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
+    extern "C" fn owned_code_callable() -> u64 {
+        MoltObject::none().bits()
+    }
+
     #[test]
     fn codeobj_from_filename_balances_temporary_name_reference() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
@@ -1310,7 +1314,9 @@ mod code_object_ownership_tests {
     fn molt_function_get_code_returns_owned_reference() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let func_ptr = alloc_function_obj(_py, 0, 0);
+            // Code attachment requires genuine callable provenance. Use the
+            // canonical address authority for native and wasm function tables.
+            let func_ptr = alloc_function_obj(_py, fn_addr!(owned_code_callable), 0);
             let func_bits = MoltObject::from_ptr(func_ptr).bits();
             let filename_ptr = alloc_string(_py, b"<function-code-test>");
             let name_ptr = alloc_string(_py, b"<function-code-test-name>");

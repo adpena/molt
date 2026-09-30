@@ -1619,6 +1619,7 @@ fn importlib_sha256_file_matches_direct_byte_hash() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn importlib_sha256_path_supports_zip_archive_members() {
+    let _test = crate::test_support::RuntimeTestTransaction::new();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

@@ -84,6 +84,11 @@ impl Drop for PendingCallTestCustody {
 }
 
 fn process_global_test_state() -> MutexGuard<'static, ()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    assert!(
+        !crate::concurrency::gil_held(),
+        "runtime test transaction must acquire process-state custody before the GIL"
+    );
     PROCESS_GLOBAL_TEST_STATE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -162,6 +167,7 @@ pub(crate) struct RuntimeTestTransaction {
     pending_exceptions: Option<PendingExceptionSnapshot>,
     gc: Option<crate::object::gc::GcRuntimeTestSnapshot>,
     execution_thread_attached: bool,
+    retained_thread_state_before: bool,
     _process_state: MutexGuard<'static, ()>,
 }
 
@@ -269,6 +275,8 @@ impl RuntimeTestTransaction {
 
     fn enter(isolate_gc: bool) -> Self {
         let process_state = process_global_test_state();
+        let retained_thread_state_before =
+            molt_cpython_abi::api::object::current_thread_has_retained_runtime_state();
         let pending_calls = PendingCallTestCustody::enter();
         assert_eq!(
             crate::state::runtime_state::molt_runtime_init(),
@@ -302,6 +310,7 @@ impl RuntimeTestTransaction {
             pending_exceptions: Some(pending_exceptions),
             gc,
             execution_thread_attached,
+            retained_thread_state_before,
             _process_state: process_state,
         }
     }
@@ -339,6 +348,17 @@ impl Drop for RuntimeTestTransaction {
                 self.execution_thread_attached,
                 "current-thread runtime execution attachment leaked across test transaction"
             );
+        }
+        // The harness thread can outlive this transaction. Retire only the
+        // detached state this transaction created before releasing process-state
+        // custody; otherwise its later TLS destructor races the next test's
+        // global retained-owner assertions and destructive lifecycle reset.
+        // A predecessor's record (including its restored exception) is borrowed.
+        if !self.retained_thread_state_before
+            && crate::state::runtime_state::runtime_is_initialized()
+            && molt_cpython_abi::api::object::current_thread_has_retained_runtime_state()
+        {
+            drop(crate::concurrency::execution::RuntimeExecutionGuard::enter_with_worker_cleanup());
         }
     }
 }
@@ -439,5 +459,42 @@ fn runtime_test_transaction_overhead_probe() {
         "{{\"iterations\":{ITERATIONS},\"elapsed_ns\":{},\"ns_per_transaction\":{}}}",
         elapsed.as_nanos(),
         elapsed.as_nanos() / u128::from(ITERATIONS),
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn transaction_retires_created_thread_state_before_harness_tls_exit() {
+    let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
+    let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+    let harness = std::thread::spawn(move || {
+        assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+        {
+            let _transaction = RuntimeTestTransaction::new();
+            // Snapshotting exception state crosses the real execution boundary.
+            assert!(molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+        }
+        let retained = molt_cpython_abi::api::object::current_thread_has_retained_runtime_state();
+        dropped_tx.send(retained).unwrap();
+        // Keep native TLS alive after releasing the transaction's mutex.
+        exit_rx.recv().unwrap();
+    });
+    let retained_after_drop = dropped_rx.recv().unwrap();
+    exit_tx.send(()).unwrap();
+    harness.join().unwrap();
+    assert!(
+        !retained_after_drop,
+        "transaction-created owner survived until harness TLS exit"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn transaction_rejects_gil_before_process_state_lock() {
+    let _gil = crate::concurrency::GilGuard::new();
+    let failure = catch_expected_unwind(RuntimeTestTransaction::new);
+    assert!(
+        failure.is_err(),
+        "GIL-first fixture admission must fail before waiting on the process-state mutex"
     );
 }
