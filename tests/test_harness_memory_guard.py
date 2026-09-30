@@ -1357,7 +1357,25 @@ def test_guarded_completed_process_honors_external_repo_sentinel_env(
     )
 
     assert result.returncode == 0
-    assert captured["cleanup_orphans"] is False
+    assert captured["cleanup_orphans"] is True
+
+
+def test_nested_command_keeps_its_scratch_custody_under_suite_sentinel(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        harness_memory_guard.repo_sentinel_active_env_key("MOLT_TEST"), "1"
+    )
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('nested-owned-tree')"],
+        prefix="MOLT_TEST",
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "nested-owned-tree\n"
+    assert result.infrastructure_failure is None
+    assert result.temporary_artifacts is not None
+    assert result.temporary_artifacts["closure"]["closed"] is True
 
 
 def test_execution_context_start_repo_sentinel_honors_external_marker(
@@ -1938,7 +1956,7 @@ def test_guarded_completed_process_reports_orphan_cleanup(
     assert "next action: inspect child process lifecycle and logs" in result.stderr
 
 
-def test_guarded_completed_process_defers_orphan_cleanup_to_active_sentinel(
+def test_guarded_completed_process_closes_owned_tree_under_active_sentinel(
     monkeypatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -1973,7 +1991,7 @@ def test_guarded_completed_process_defers_orphan_cleanup_to_active_sentinel(
         limits=limits,
     )
 
-    assert captured["cleanup_orphans"] is False
+    assert captured["cleanup_orphans"] is True
 
 
 def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
