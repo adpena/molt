@@ -1640,6 +1640,7 @@ mod tests {
 
     #[test]
     fn abc_register_returns_owned_reference_for_registry_insert() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -1682,6 +1683,7 @@ mod tests {
 
     #[test]
     fn abc_register_returns_owned_reference_for_existing_subclass() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -1709,6 +1711,7 @@ mod tests {
 
     #[test]
     fn abc_subclasscheck_walks_abc_direct_subclasses_for_virtual_registry() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -1741,6 +1744,7 @@ mod tests {
 
     #[test]
     fn abc_update_abstractmethods_returns_owned_reference() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -1763,6 +1767,7 @@ mod tests {
 
     #[test]
     fn typing_cast_returns_owned_reference() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -1787,6 +1792,7 @@ mod tests {
 
     #[test]
     fn typing_get_args_missing_attr_returns_tagged_empty_tuple() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
@@ -1802,6 +1808,7 @@ mod tests {
 
     #[test]
     fn get_attr_default_reads_inherited_type_attrs_through_mro() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         let (set_base_ok, set_base_pending, set_attr_ok, set_attr_pending, inherited) =

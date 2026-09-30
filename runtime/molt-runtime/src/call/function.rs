@@ -3154,6 +3154,7 @@ mod tests {
 
     #[test]
     fn public_vec_call_preserves_callee_owned_arg_alias_return() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
@@ -3183,6 +3184,7 @@ mod tests {
 
     #[test]
     fn fixed_arity_entry_routes_varargs_functions_through_binder() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
@@ -3267,6 +3269,7 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn trampoline_lane_dispatches_trampoline_not_fixed_arity_call_target() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init();
         crate::with_gil_entry_nopanic!(_py, {
             // `alloc_runtime_function_obj` registers the fixed-arity fn_ptr and
@@ -3307,6 +3310,7 @@ mod tests {
 
     #[test]
     fn fixed_arity_type_constructor_builtins_route_visible_args_through_binder() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init();
         crate::with_gil_entry_nopanic!(_py, {
             let type_new_bits =
@@ -3393,6 +3397,7 @@ mod tests {
 
     #[test]
     fn call_func_fast1_preserves_callee_owned_arg_alias_return() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(

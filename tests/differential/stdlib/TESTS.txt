@@ -1186,6 +1186,7 @@ tests/differential/stdlib/importlib_metadata_version.py
 tests/differential/stdlib/importlib_missing_module_shape.py
 tests/differential/stdlib/importlib_module_from_spec.py
 tests/differential/stdlib/importlib_module_reload.py
+tests/differential/stdlib/importlib_module_spec.py
 tests/differential/stdlib/importlib_optional_import_intrinsic.py
 tests/differential/stdlib/importlib_public_api_validation.py
 tests/differential/stdlib/importlib_relative_import_from_package.py
@@ -1899,6 +1900,7 @@ tests/differential/stdlib/typing_typeddict_class_defaults.py
 tests/differential/stdlib/typing_typevar_default_version_gate.py
 tests/differential/stdlib/unicode_normalization.py
 tests/differential/stdlib/unicodedata_basic.py
+tests/differential/stdlib/unittest_mock_protocol.py
 tests/differential/stdlib/unraisable_hook_args_authority.py
 tests/differential/stdlib/urllib_cookie_redirect_combo.py
 tests/differential/stdlib/urllib_cookiejar_persistence.py

@@ -420,9 +420,7 @@ source = "tests/differential/COVERAGE_INDEX.yaml + tests/differential/{basic,std
 check_mode = true
 check_command = "tools/gen_diff_lanes.py --check"
 idempotent = true
-# Freshness is gated by the CI --check step (the lane manifests must match the
-# coverage index + on-disk tests); there is no separate byte-equality pytest.
-sync_test_reason = "CI --check step is the freshness gate (lane manifests vs COVERAGE_INDEX.yaml + on-disk tests); no separate byte-equality pytest"
+sync_test = "tests/test_gen_diff_lanes.py"
 closed_domains = []
 discovery_only = false
 

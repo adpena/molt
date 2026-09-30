@@ -402,10 +402,27 @@ fn c_api_number_power() {
     crate::with_gil_entry_nopanic!(_py, {
         let a = MoltObject::from_int(2).bits();
         let b = MoltObject::from_int(10).bits();
-        let res = PyNumber_Power(a, b, 0);
+        let res = PyNumber_Power(a, b, MoltObject::none().bits());
         assert_ne!(res, 0);
         assert_eq!(to_i64(obj_from_bits(res)), Some(1024));
         dec_ref_bits(_py, res);
+    });
+}
+
+#[test]
+fn c_api_number_power_zero_moduli_are_present_and_rejected_like_cpython() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let base = MoltObject::from_int(2).bits();
+        let exponent = MoltObject::from_int(10).bits();
+        for (modulus, expected) in [
+            (MoltObject::from_float(0.0).bits(), "TypeError"),
+            (MoltObject::from_float(-0.0).bits(), "TypeError"),
+            (MoltObject::from_int(0).bits(), "ValueError"),
+        ] {
+            assert_eq!(PyNumber_Power(base, exponent, modulus), 0);
+            assert_pending_exception_class(_py, expected);
+        }
     });
 }
 

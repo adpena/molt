@@ -1330,6 +1330,7 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     #[test]
     fn wasm_logical_gil_and_execution_nesting_are_distinct() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         assert!(gil_held(), "single-threaded wasm owns the logical GIL");
         assert!(
             !execution_is_nested(),

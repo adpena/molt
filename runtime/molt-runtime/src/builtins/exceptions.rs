@@ -5072,6 +5072,26 @@ mod tests {
     }
 
     #[test]
+    fn builtin_layout_initialization_survives_disabled_debug_assertions() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let classes = crate::builtin_classes(_py);
+            for bits in [classes.base_exception_group, classes.exception_group] {
+                let ptr = obj_from_bits(bits).as_ptr().expect("exception group class");
+                assert_eq!(
+                    unsafe { crate::object::class_exception_layout_root(ptr) },
+                    molt_obj_model::ExceptionLayoutRoot::BaseExceptionGroup
+                );
+            }
+            let dict = obj_from_bits(classes.dict).as_ptr().expect("dict class");
+            assert_eq!(
+                unsafe { crate::object::class_instance_shape_id(dict) },
+                crate::object::ObjectShapeId::DictSubclass
+            );
+        });
+    }
+
+    #[test]
     fn typed_exception_layout_root_is_class_metadata_not_a_name_heuristic() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
@@ -6071,13 +6091,11 @@ mod tests {
 
     #[test]
     fn worker_exit_releases_its_pending_exception_edge() {
-        // This deliberately does not hold a runtime test transaction. The worker's TLS
-        // destructor reacquires runtime custody before consuming its owned
-        // exception edge, so holding an unrelated process-wide fixture lock
-        // across join would create a hidden lock lifetime and can deadlock a
-        // parallel test that is already exercising the GIL. The exception
-        // object and both refcount observations are protected by the GIL; TLS
-        // teardown is the authority being tested here.
+        // Keep this runtime alive across the parent's detached exception edge
+        // and worker TLS destruction. The worker enters production GIL/lifetime
+        // custody, not the fixture mutex, so it can complete while this test
+        // excludes destructive lifecycle transactions in other harness threads.
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         let (exc_bits, baseline) = crate::with_gil_entry_nopanic!(_py, {
             let exc_ptr = alloc_exception(_py, "RuntimeError", "worker-exit");
             let bits = MoltObject::from_ptr(exc_ptr).bits();

@@ -307,6 +307,23 @@ pub(crate) unsafe fn item(ptr: *mut u8, index: usize) -> Option<u64> {
     unsafe { with_locked_sequence_slice(ptr, |items| items.get(index).copied()) }
 }
 
+/// Read a borrowed initialized tuple construction slot.
+///
+/// Physical storage uses the runtime's missing sentinel until a construction
+/// slot is filled. C-API readers must distinguish that absence from every
+/// legitimate object bit pattern, including float +0.0 (`Some(0)`) and None.
+#[inline]
+pub(crate) unsafe fn initialized_tuple_item(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    index: usize,
+) -> Option<u64> {
+    if ptr.is_null() || unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+        return None;
+    }
+    unsafe { item(ptr, index) }.filter(|bits| *bits != missing_bits(py))
+}
+
 #[inline]
 pub(crate) unsafe fn read_item_gil_borrowed(ptr: *mut u8, index: usize, out: *mut u64) -> i32 {
     crate::gil_assert();

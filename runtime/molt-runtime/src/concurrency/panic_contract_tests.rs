@@ -148,12 +148,10 @@ fn python_level_error_is_catchable() {
 
 #[test]
 fn pending_exceptions_are_isolated_between_native_threads() {
-    // This test exercises thread-local exception state and must remain safe
-    // under the default parallel harness. Do not hold a runtime test transaction while
-    // acquiring the GIL: other tests legitimately enter those authorities in
-    // the opposite lifetime (GIL-protected work followed by serialized global
-    // assertions), and nesting them here would create a harness-only AB/BA
-    // deadlock. Runtime initialization is itself linearized.
+    // Acquire fixture custody before GIL custody, and keep the runtime alive
+    // until both worker exception channels and TLS destructors have completed.
+    // Worker execution borrows production custody without taking this mutex.
+    let _test = crate::test_support::RuntimeTestTransaction::new();
     assert_eq!(molt_runtime_init(), 1);
     let _ = molt_exception_clear();
     // Runtime initialization no longer leaves a hidden process-lifetime GIL

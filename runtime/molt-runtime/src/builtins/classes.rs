@@ -662,10 +662,11 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         let group_ptr = obj_from_bits(base_exception_group)
             .as_ptr()
             .expect("validated BaseExceptionGroup class pointer");
-        debug_assert!(crate::object::class_set_exception_layout_root(
+        let rooted = crate::object::class_set_exception_layout_root(
             group_ptr,
             molt_obj_model::ExceptionLayoutRoot::BaseExceptionGroup,
-        ));
+        );
+        assert!(rooted, "exception group class layout selected twice");
     }
 
     let _ = molt_class_set_base(object, MoltObject::none().bits());
@@ -696,12 +697,13 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(dict, object);
     init_dict_subclass_layout(_py, dict);
     if let Some(dict_class_ptr) = obj_from_bits(dict).as_ptr() {
-        debug_assert!(unsafe {
+        let shaped = unsafe {
             crate::object::class_set_instance_shape_id(
                 dict_class_ptr,
                 crate::object::ObjectShapeId::DictSubclass,
             )
-        });
+        };
+        assert!(shaped, "dict class shape selected twice");
     }
     let _ = molt_class_set_base(dict_keys, object);
     let _ = molt_class_set_base(dict_items, object);

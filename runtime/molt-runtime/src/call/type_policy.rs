@@ -209,6 +209,7 @@ mod tests {
 
     #[test]
     fn object_builtin_methods_match_runtime_symbols() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let new_bits = object_method_bits(_py, "__new__");
             let init_bits = object_method_bits(_py, "__init__");
@@ -223,6 +224,7 @@ mod tests {
 
     #[test]
     fn type_call_matches_runtime_symbol() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let call_bits = type_method_bits(_py, "__call__");
             assert!(unsafe {
@@ -233,6 +235,7 @@ mod tests {
 
     #[test]
     fn exception_builtin_methods_match_runtime_symbols() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let new_bits = crate::builtins::exceptions::exception_method_bits(_py, "__new__");
             let init_bits = crate::builtins::exceptions::exception_method_bits(_py, "__init__");
@@ -253,6 +256,7 @@ mod tests {
 
     #[test]
     fn constructor_policy_rejects_args_for_default_object_constructor() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let new_bits = object_method_bits(_py, "__new__");
             let init_bits = object_method_bits(_py, "__init__");
@@ -265,6 +269,7 @@ mod tests {
 
     #[test]
     fn constructor_policy_skips_object_init_for_custom_new() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let new_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
@@ -284,6 +289,7 @@ mod tests {
 
     #[test]
     fn constructor_policy_forwards_args_to_custom_init_even_with_custom_new() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let new_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,

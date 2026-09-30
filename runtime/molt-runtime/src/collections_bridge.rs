@@ -428,6 +428,7 @@ mod tests {
 
     #[test]
     fn defaultdict_handle_owns_factory_after_caller_releases_local() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {

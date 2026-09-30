@@ -904,15 +904,9 @@ unsafe extern "C" fn hook_tuple_item(bits: u64, i: usize) -> BorrowedHandleResul
         return BorrowedHandleResult::missing();
     }
     with_gil(|py| {
-        unsafe {
-            crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
-                items.get(i).copied()
-            })
-        }
-        .flatten()
-        .filter(|item_bits| *item_bits != crate::missing_bits(&py))
-        .map(BorrowedHandleResult::ok)
-        .unwrap_or_else(BorrowedHandleResult::missing)
+        unsafe { crate::object::seq_access::initialized_tuple_item(&py, ptr, i) }
+            .map(BorrowedHandleResult::ok)
+            .unwrap_or_else(BorrowedHandleResult::missing)
     })
 }
 
@@ -9328,12 +9322,25 @@ mod tests {
                     hook_tuple_item(bits, index).decode(),
                     DecodedHandleResult::Missing
                 ));
+                assert_eq!(crate::c_api::PyTuple_GetItem(bits, index as isize), 0);
+                assert!(!crate::exception_pending(&_py));
                 assert!(matches!(
                     hook_tuple_set(bits, index, 0, ptr::null_mut()).decode(),
                     DecodedHandleResult::Missing
                 ));
                 assert_eq!(borrowed_bits(hook_tuple_item(bits, index)), Some(0));
+                assert_eq!(crate::c_api::PyTuple_GetItem(bits, index as isize), 0);
+                assert!(!crate::exception_pending(&_py));
             }
+            let none = MoltObject::none().bits();
+            assert!(matches!(
+                hook_tuple_set(bits, 3, none, ptr::null_mut()).decode(),
+                DecodedHandleResult::Ok(0)
+            ));
+            assert_eq!(borrowed_bits(hook_tuple_item(bits, 3)), Some(none));
+            assert_eq!(crate::c_api::PyTuple_GetItem(bits, 3), none);
+            assert!(!crate::exception_pending(&_py));
+
             match hook_tuple_set(bits, 2, val, ptr::null_mut()).decode() {
                 molt_cpython_abi::hooks::DecodedHandleResult::Missing => {}
                 _ => panic!("tuple store failed"),
@@ -9343,6 +9350,8 @@ mod tests {
                 Some(4)
             );
             assert_eq!(borrowed_bits(hook_tuple_item(bits, 2)), Some(val));
+            assert_eq!(crate::c_api::PyTuple_GetItem(bits, 2), val);
+            assert!(!crate::exception_pending(&_py));
 
             let heap_ptr = alloc_string(&_py, b"owned");
             assert!(!heap_ptr.is_null());
@@ -9352,6 +9361,14 @@ mod tests {
                 _ => panic!("tuple heap store failed"),
             };
             dec_ref_bits(&_py, old);
+            let borrowed_refs = (*header_from_obj_ptr(heap_ptr)).ref_count_snapshot();
+            assert_eq!(borrowed_bits(hook_tuple_item(bits, 2)), Some(heap_bits));
+            assert_eq!(crate::c_api::PyTuple_GetItem(bits, 2), heap_bits);
+            assert_eq!(
+                (*header_from_obj_ptr(heap_ptr)).ref_count_snapshot(),
+                borrowed_refs,
+                "tuple construction reads must not acquire an owned reference"
+            );
             assert_eq!(
                 crate::object::seq_access::tracked_heap_edge_count(ptr),
                 Some(1)

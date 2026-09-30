@@ -2972,6 +2972,7 @@ mod tests {
 
     #[test]
     fn cached_method_name_must_match_even_at_the_same_site() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let alpha_ptr = super::alloc_string(_py, b"alpha");
             assert!(!alpha_ptr.is_null());
@@ -3000,6 +3001,7 @@ mod tests {
 
     #[test]
     fn call_bind_builtin_full_binding_preserves_callee_owned_alias_return() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
@@ -3040,6 +3042,7 @@ mod tests {
 
     #[test]
     fn call_bind_builtin_default_padded_argv_preserves_callee_owned_alias_return() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
@@ -3114,6 +3117,7 @@ mod tests {
 
     #[test]
     fn resolve_construct_after_init_no_pending_returns_instance_unchanged() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let list_ptr = alloc_list(_py, &[MoltObject::from_int(7).bits()]);
             assert!(!list_ptr.is_null());
@@ -3139,6 +3143,7 @@ mod tests {
 
     #[test]
     fn resolve_construct_after_init_pending_drops_instance_and_returns_none() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // Hold an extra owning reference so the helper's drop is observable
             // without freeing the object out from under the test.
@@ -3196,6 +3201,7 @@ mod tests {
 
     #[test]
     fn resolve_construct_after_init_rejects_and_consumes_non_none_result() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let inst_ptr = alloc_list(_py, &[MoltObject::from_int(11).bits()]);
             let result_ptr = alloc_list(_py, &[MoltObject::from_int(13).bits()]);
@@ -3234,6 +3240,7 @@ mod tests {
 
     #[test]
     fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             clear_call_bind_ic_cache(_py);
             let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
@@ -3340,6 +3347,7 @@ mod tests {
 
     #[test]
     fn callargs_registries_are_runtime_scoped() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             {
@@ -3381,6 +3389,7 @@ mod tests {
 
     #[test]
     fn clear_call_bind_ic_cache_clears_thread_local_cache() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let entry = CallBindIcEntry {
                 fn_ptr: 11,
@@ -3402,6 +3411,7 @@ mod tests {
 
     #[test]
     fn mro_resolved_call_cache_owns_and_releases_target() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             clear_call_bind_ic_cache(_py);
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
@@ -3659,6 +3669,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_no_default_exact_arity_is_direct() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // def m(self, x): ...  called as obj.m(arg)  -> direct
             let func_bits = unsafe { make_test_function(_py, 2, &[]) };
@@ -3744,6 +3755,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_positional_default_is_direct_over_paddable_range() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // def m(self, x, bump=1): ...  -> direct (positional default), NOT
             // binder. __defaults__ = (1,) (a non-empty tuple).
@@ -3784,6 +3796,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_two_positional_defaults_widen_paddable_range() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // def m(self, a, b, c=1, d=2): ...  -> arity 5, 2 defaults.
             let one = MoltObject::from_int(1).bits();
@@ -3826,6 +3839,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_kwonly_with_default_needs_binder() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // def m(self, x, *, ctx=None): ...  -> binder (kwonly name present).
             let name_ptr = crate::object::builders::alloc_string(_py, b"ctx");
@@ -3853,6 +3867,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_kwonly_without_default_needs_binder() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // def m(self, x, *, ctx): ...  (kwonly, no default) -> binder.
             // The kw-only NAME alone forces the binder; defaults are orthogonal.
@@ -3873,6 +3888,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_kwdefaults_only_needs_binder() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // A non-empty __kwdefaults__ dict (kw-only defaults) forces the
             // binder even if the kwonly-names tuple was not explicitly recorded.
@@ -3895,6 +3911,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_varargs_needs_binder() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // def m(self, *args): ...  -> binder (*args present).
             let star_ptr = crate::object::builders::alloc_string(_py, b"args");
@@ -3917,6 +3934,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_bind_kind_needs_binder() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let bind_kind_bits = MoltObject::from_int(crate::BIND_KIND_PACKED_BUILTIN).bits();
             let func_bits =
@@ -3934,6 +3952,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_kwargs_needs_binder() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // def m(self, **kwargs): ...  -> binder (**kwargs present).
             let kw_ptr = crate::object::builders::alloc_string(_py, b"kwargs");
@@ -3949,6 +3968,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_arity_mismatch_blocks_direct_without_binder() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // def m(self, a, b): ...  (no defaults). Direct only at exact arity.
             let func_bits = unsafe { make_test_function(_py, 3, &[]) };
@@ -3976,6 +3996,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_wide_arity_over_argv_max_blocks_direct() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // A method whose fixed arity exceeds DIRECT_ARGV_MAX (16) must take
             // the binder even with no binder-forcing features, since the direct
@@ -3995,6 +4016,7 @@ mod tests {
 
     #[test]
     fn method_ic_plan_non_function_classifies_none() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             // A non-function callable bits value must not classify (the fast path
             // is function-only).
