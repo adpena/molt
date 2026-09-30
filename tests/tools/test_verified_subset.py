@@ -124,6 +124,7 @@ def _execution(coordinate: authority.VerifiedSubsetCoordinate) -> dict[str, obje
     ]
     return {
         "backend": backend,
+        "profiles": verified_subset.execution_profiles(coordinate.build_profile),
         "ci": {
             "job": "coordinate",
             "provider": "github-actions",
@@ -220,16 +221,24 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
     assert policy.backends == ("native", "wasm")
     assert policy.abi == "cpython-language"
     assert policy.concurrency == "gil"
-    assert len(coordinates) == 36
+    assert len(coordinates) == 72
     assert {
-        (coordinate.python, coordinate.platform, coordinate.arch, coordinate.backend)
+        (
+            coordinate.python,
+            coordinate.platform,
+            coordinate.arch,
+            coordinate.backend,
+            coordinate.build_profile,
+        )
         for coordinate in coordinates
     } == {
-        (python, target["platform"], target["arch"], backend)
+        (python, target["platform"], target["arch"], backend, profile)
         for python in policy.python_versions
         for target in authority.RELEASE_TARGETS
         for backend in policy.backends
+        for profile in policy.build_profiles
     }
+    assert len({coordinate.id for coordinate in coordinates}) == 72
 
 
 def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(
@@ -246,7 +255,8 @@ def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(
         json.dumps(version) for version in default.reference_cpython
     )
     document = (
-        'schema = "molt.verified-subset.v1"\n'
+        'schema = "molt.verified-subset.v2"\n'
+        'build_profiles = ["dev", "release"]\n'
         f"reference_cpython = [{reference_versions}]\n"
         'excluded_verification_scopes = ["capability_policy", '
         '"dynamic_execution_policy"]\n'
@@ -357,7 +367,7 @@ def test_coordinate_projection_excludes_inapplicable_and_policy_scope_rows() -> 
     coordinate = next(
         item
         for item in authority.verified_subset_coordinates(policy)
-        if item.id == "windows-x86_64-py312-cpython-language-gil-wasm"
+        if item.id == "windows-x86_64-py312-cpython-language-gil-wasm-dev"
     )
     validation = verified_subset.validate_manifest()
     projection = validation.projection(coordinate)
@@ -680,7 +690,8 @@ def _small_policy(root: Path) -> authority.VerifiedSubsetPolicy:
     config.mkdir()
     path = config / "verified_subset.toml"
     path.write_text(
-        'schema = "molt.verified-subset.v1"\n'
+        'schema = "molt.verified-subset.v2"\n'
+        'build_profiles = ["dev", "release"]\n'
         f"reference_cpython = {json.dumps(default.reference_cpython)}\n"
         f"excluded_verification_scopes = {json.dumps(default.excluded_verification_scopes)}\n"
         'differential_suites = [{path="suite", recursive=false, cpython_equivalence_floor=1}]\n',
@@ -831,4 +842,40 @@ def test_verify_receipts_rejects_failed_coordinate(
         verified_subset.verify_receipt_closure(
             receipt_root=tmp_path,
             source_sha=SOURCE_SHA,
+        )
+
+
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_profiles_are_explicit_and_ambient_overrides_do_not_change_selection(
+    monkeypatch, profile
+):
+    for name in (
+        "MOLT_RUNTIME_BUILD_PROFILE",
+        "MOLT_RELEASE_CARGO_PROFILE",
+        "MOLT_DIFF_BUILD_PROFILE",
+        "MOLT_DIFF_STDLIB_PROFILE",
+    ):
+        monkeypatch.setenv(name, "invalid")
+    monkeypatch.setenv("CARGO_PROFILE_RELEASE_OUTPUT_DEBUG_ASSERTIONS", "false")
+    env = verified_subset._profile_environment(profile)
+    assert "CARGO_PROFILE_RELEASE_OUTPUT_DEBUG_ASSERTIONS" not in env
+    assert "MOLT_RUNTIME_BUILD_PROFILE" not in env
+    assert "MOLT_DIFF_STDLIB_PROFILE" not in env
+    assert verified_subset.execution_profiles(profile)["runtime"] == (
+        "dev-fast" if profile == "dev" else "release-output"
+    )
+
+
+def test_invalid_build_profile_fails_closed():
+    with pytest.raises(ValueError, match="build profile"):
+        verified_subset.execution_profiles("relase")
+
+
+def test_receipt_closure_rejects_a_different_requested_build_profile(
+    tmp_path, monkeypatch
+):
+    _write_receipts(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="profile differs"):
+        verified_subset.verify_receipt_closure(
+            receipt_root=tmp_path, source_sha=SOURCE_SHA, build_profile="release"
         )

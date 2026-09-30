@@ -596,12 +596,55 @@ def _backend_identity(coordinate: VerifiedSubsetCoordinate) -> dict[str, object]
     }
 
 
+def execution_profiles(build_profile: str) -> dict[str, str]:
+    """Canonical guest and host profile selection; test headers own stdlib scope."""
+    if build_profile not in {"dev", "release"}:
+        raise ValueError("verified-subset build profile must be dev or release")
+    from molt.cli.cargo_profiles import _resolve_cargo_profile_name_cached
+
+    runtime, error = _resolve_cargo_profile_name_cached(build_profile, "")
+    if error:
+        raise ValueError(error)
+    return {
+        "build": build_profile,
+        "runtime": runtime,
+        "backend": "release",
+        "stdlib_policy": "test-metadata-and-build-default",
+    }
+
+
+def _profile_environment(build_profile: str) -> dict[str, str]:
+    execution_profiles(build_profile)
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("CARGO_PROFILE_")
+    }
+    for name in (
+        "MOLT_DIFF_BUILD_PROFILE",
+        "MOLT_DIFF_STDLIB_PROFILE",
+        "MOLT_BACKEND_PROFILE",
+        "MOLT_DEV_CARGO_PROFILE",
+        "MOLT_RELEASE_CARGO_PROFILE",
+        "MOLT_DEV_BACKEND_CARGO_PROFILE",
+        "MOLT_RELEASE_BACKEND_CARGO_PROFILE",
+        "MOLT_RUNTIME_BUILD_PROFILE",
+        "MOLT_WASM_CARGO_PROFILE",
+    ):
+        env.pop(name, None)
+    return env
+
+
 def _execution_identity(
-    coordinate: VerifiedSubsetCoordinate, *, source_sha: str
+    coordinate: VerifiedSubsetCoordinate,
+    *,
+    source_sha: str,
+    build_profile: str | None = None,
 ) -> dict[str, object]:
     require_current_host(coordinate)
     return {
         "backend": _backend_identity(coordinate),
+        "profiles": execution_profiles(build_profile or coordinate.build_profile),
         "ci": _github_execution_identity(coordinate, source_sha=source_sha),
         "host": {
             "arch": test_policy.current_architecture(),
@@ -620,6 +663,7 @@ def run_differential_suites(
     results_path: Path,
     schedule_path: Path,
     summary_path: Path,
+    build_profile: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     require_current_host(coordinate)
     schedule_path.write_text(
@@ -627,7 +671,10 @@ def run_differential_suites(
         encoding="utf-8",
         newline="\n",
     )
-    env = dict(os.environ)
+    build_profile = build_profile or coordinate.build_profile
+    if build_profile != coordinate.build_profile:
+        raise ValueError("requested build profile differs from coordinate")
+    env = _profile_environment(build_profile)
     env["MOLT_DIFF_RESULTS_JSONL"] = str(results_path)
     env["MOLT_DIFF_PYTHON"] = sys.executable
     env["MOLT_VERIFIED_SUBSET_COORDINATE"] = coordinate.id
@@ -644,6 +691,8 @@ def run_differential_suites(
         coordinate.python,
         "--target",
         coordinate.backend,
+        "--build-profile",
+        build_profile,
         "--jobs",
         "1",
         "--json-output",
@@ -703,7 +752,10 @@ def verify_receipt_closure(
     receipt_root: Path,
     source_sha: str,
     validation: VerifiedSubsetValidation | None = None,
+    build_profile: str | None = None,
 ) -> None:
+    if build_profile is not None:
+        execution_profiles(build_profile)
     validation = validation or validate_manifest()
     validation.require_root(ROOT)
     expected_coordinates = {coordinate.id for coordinate in validation.coordinates}
@@ -741,6 +793,11 @@ def verify_receipt_closure(
             raise ValueError(
                 f"invalid verified-subset receipt {path}: {'; '.join(problems)}"
             )
+        selected_profile = payload["facts"]["coordinate"]["build_profile"]
+        if build_profile is not None and selected_profile != build_profile:
+            raise ValueError(
+                f"verified-subset receipt profile differs from requested profile: {path}"
+            )
         if payload.get("status") != release_receipt.STATUS_PASS:
             raise ValueError(f"verified-subset receipt did not pass: {path}")
         facts = payload.get("facts")
@@ -775,7 +832,11 @@ def _run_coordinate(
     raw_argv: Sequence[str],
     receipt_path: Path | None,
     source_sha: str | None,
+    build_profile: str | None = None,
 ) -> int:
+    build_profile = build_profile or coordinate.build_profile
+    if build_profile != coordinate.build_profile:
+        raise ValueError("requested build profile differs from coordinate")
     validation.require_root(ROOT)
     policy = validation.policy
     destination = release_receipt.prepare_receipt_destination(
@@ -798,6 +859,7 @@ def _run_coordinate(
             results_path=results_path,
             schedule_path=schedule_path,
             summary_path=summary_path,
+            build_profile=build_profile,
         )
         summary = _load_summary(summary_path)
         results = _result_outcomes(
@@ -811,7 +873,9 @@ def _run_coordinate(
         if destination is not None:
             input_paths = list(verified_subset_authority_files(policy))
             execution = _execution_identity(
-                coordinate, source_sha=destination.source_sha
+                coordinate,
+                source_sha=destination.source_sha,
+                build_profile=build_profile,
             )
             receipt = release_receipt.build_receipt(
                 kind=release_receipt.KIND_VERIFIED_SUBSET,
@@ -854,8 +918,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     verify.add_argument("--source-sha", required=True)
     verify.add_argument("--receipt-root", required=True, type=Path)
+    verify.add_argument("--build-profile", choices=("dev", "release"))
     run = subparsers.add_parser("run", help="execute one exact matrix coordinate")
     run.add_argument("--coordinate", required=True)
+    run.add_argument("--build-profile", choices=("dev", "release"))
     release_receipt.add_receipt_arguments(run)
     args = parser.parse_args(raw_argv)
     try:
@@ -887,6 +953,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 receipt_root=args.receipt_root,
                 source_sha=args.source_sha,
                 validation=validation,
+                build_profile=args.build_profile,
             )
             print(
                 "verified subset receipts: OK "
@@ -906,6 +973,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raw_argv=raw_argv,
             receipt_path=args.receipt,
             source_sha=args.source_sha,
+            build_profile=args.build_profile,
         )
     except (OSError, ValueError) as exc:
         print(f"verified subset: ERROR: {exc}", file=sys.stderr)

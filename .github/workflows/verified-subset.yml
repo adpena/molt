@@ -99,12 +99,14 @@ jobs:
         shell: bash
         env:
           COORDINATE_ID: ${{ matrix.id }}
+          BUILD_PROFILE: ${{ matrix.build_profile }}
           SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
           TARGET_PYTHON: ${{ matrix.reference_python }}
         run: >-
           uv run --project . --python "$TARGET_PYTHON" --no-sync
           python tools/verified_subset.py run
           --coordinate "$COORDINATE_ID"
+          --build-profile "$BUILD_PROFILE"
           --receipt "proof-receipts/${COORDINATE_ID}.json"
           --source-sha "$SOURCE_SHA"
 

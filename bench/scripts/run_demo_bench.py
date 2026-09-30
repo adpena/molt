@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import platform
+import re
 import shutil
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,8 +25,24 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+from git_identity import (  # noqa: E402
+    clean_checkout_status_arguments,
+    is_git_object_id,
+    require_git_object_id,
+)
 
 BENCH_MEMORY_PREFIX = "MOLT_BENCH"
+RUNS_DIRNAME = "demo-runs"
+RUN_MANIFEST = "run.json"
+RUN_SCHEMA = "molt.demo-run.v1"
+SOURCE_SCHEMA = "molt.demo-source.v1"
+EVIDENCE_SCOPE = "demo-development-signal"
+SCOPE_NOTE = (
+    "Scope: development signal against absolute demo budgets; "
+    "not CPython-relative or release acceptance evidence."
+)
+_RUN_ID = re.compile(r"[a-z0-9][a-z0-9-]{7,127}")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 def base_env(env: dict[str, str] | None = None) -> dict[str, str]:
@@ -382,7 +401,22 @@ def run_k6(
     return data, proc_metrics
 
 
+def k6_metric_values(metric: dict[str, Any]) -> dict[str, Any]:
+    """Normalize handleSummary values and legacy --summary-export metrics."""
+    values = metric.get("values", metric)
+    return values if isinstance(values, dict) else {}
+
+
+def k6_error_rate(metric: dict[str, Any]) -> Any:
+    values = k6_metric_values(metric)
+    # k6's legacy exporter renames Rate.rate to value, unlike Counter.rate.
+    if "rate" in values and "value" in values and values["rate"] != values["value"]:
+        return None
+    return values.get("rate", values.get("value"))
+
+
 def k6_p95(durations: dict[str, Any]) -> Any:
+    durations = k6_metric_values(durations)
     percentiles = durations.get("percentiles")
     return (
         percentiles.get("95")
@@ -393,8 +427,9 @@ def k6_p95(durations: dict[str, Any]) -> Any:
 
 def parse_k6_summary(name: str, summary: dict[str, Any]) -> BenchResult:
     http = summary.get("metrics", {})
-    reqs = http.get("http_reqs", {}).get("rate", 0.0)
-    durations = http.get("http_req_duration", {})
+    reqs = k6_metric_values(http.get("http_reqs", {})).get("rate", 0.0)
+    durations = k6_metric_values(http.get("http_req_duration", {}))
+    durations = k6_metric_values(durations)
     percentiles = durations.get("percentiles")
     if isinstance(percentiles, dict):
         p50 = percentiles.get("50", 0.0)
@@ -405,7 +440,7 @@ def parse_k6_summary(name: str, summary: dict[str, Any]) -> BenchResult:
         p99 = durations.get("p(99)", 0.0)
         p999 = durations.get("p(99.9)", durations.get("p(99.99)", 0.0))
     p95 = k6_p95(durations)
-    error_rate = http.get("http_req_failed", {}).get("rate", 0.0)
+    error_rate = k6_error_rate(http.get("http_req_failed", {}))
     payload_bytes = summarize_payload_bytes(summary)
     if payload_bytes:
         summary["payload_bytes_per_req"] = payload_bytes
@@ -438,8 +473,8 @@ def check_regressions(artifact: dict[str, Any]) -> list[str]:
             )
             continue
         p95 = k6_p95(metrics["http_req_duration"])
-        reqs = metrics["http_reqs"].get("count")
-        error_rate = metrics["http_req_failed"].get("rate")
+        reqs = k6_metric_values(metrics["http_reqs"]).get("count")
+        error_rate = k6_error_rate(metrics["http_req_failed"])
         values = {"p95": p95, "requests": reqs, "error_rate": error_rate}
         invalid = [
             key
@@ -461,23 +496,238 @@ def check_regressions(artifact: dict[str, Any]) -> list[str]:
     return failures
 
 
-def read_regression_artifact(path: Path) -> dict[str, Any]:
-    """Read a complete run, or retained scenarios from an interrupted run."""
-    if not path.is_dir():
-        return json.loads(path.read_text())
-    composites = list(path.glob("demo_k6_*.json"))
+def _git_bytes(*args: str) -> bytes:
+    env = base_env()
+    proc = harness_memory_guard.guarded_completed_process(
+        ["git", *args],
+        prefix=BENCH_MEMORY_PREFIX,
+        capture_output=True,
+        text=False,
+        env=env,
+        cwd=ROOT,
+        limits=bench_memory_limits(env),
+        timeout=120.0,
+    )
+    if proc.returncode != 0 or getattr(proc, "timed_out", False):
+        raise ValueError(f"git {' '.join(args)} failed with exit {proc.returncode}")
+    return proc.stdout or b""
+
+
+def capture_source_identity() -> dict[str, object]:
+    """Identify the Git-visible source by digests; never record source text."""
+    head = _git_bytes("rev-parse", "HEAD").decode("ascii", "replace").strip()
+    status = _git_bytes(*clean_checkout_status_arguments(null_terminated=True))
+    tracked_diff = _git_bytes("diff", "--binary", "--no-ext-diff", "HEAD", "--")
+    return {
+        "schema": SOURCE_SCHEMA,
+        "head": require_git_object_id(head, label="Demo source HEAD"),
+        "dirty": bool(status),
+        "status_sha256": hashlib.sha256(status).hexdigest(),
+        "tracked_diff_sha256": hashlib.sha256(tracked_diff).hexdigest(),
+    }
+
+
+def _is_source_identity(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("schema") == SOURCE_SCHEMA
+        and is_git_object_id(value.get("head"))
+        and isinstance(value.get("dirty"), bool)
+        and all(
+            isinstance(value.get(key), str) and _SHA256.fullmatch(value[key])
+            for key in ("status_sha256", "tracked_diff_sha256")
+        )
+    )
+
+
+def worker_binary_identity(path_text: str | None) -> dict[str, object] | None:
+    """Identify the worker the stack built, when it names one."""
+    if not path_text:
+        return None
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with Path(path_text).open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                size += len(chunk)
+                digest.update(chunk)
+    except OSError:
+        return None
+    return {"path": path_text, "size": size, "sha256": digest.hexdigest()}
+
+
+def prepare_run(runs_root: Path, requested: str | None = None) -> Path:
+    """Exclusively create one run directory and record its identity before startup.
+
+    The directory is a fresh UUID, or exactly ``requested`` (CI names one per job
+    attempt). An existing directory is never reused and nothing is deleted.
+    """
+    runs_root = runs_root.resolve()
+    if requested:
+        directory = Path(requested).absolute()
+        contained = directory.parent.resolve() == runs_root
+        if not contained or not _RUN_ID.fullmatch(directory.name):
+            raise ValueError(
+                f"Demo run directory must be {runs_root / '<run-id>'} with a "
+                f"lowercase [a-z0-9-] run id of 8-128 characters: {requested}"
+            )
+        directory = runs_root / directory.name
+    else:
+        directory = runs_root / uuid.uuid4().hex
+    # Capture first: unavailable Git fails before any directory exists.
+    manifest = {
+        "schema": RUN_SCHEMA,
+        "run_id": directory.name,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "evidence_scope": EVIDENCE_SCOPE,
+        "source": capture_source_identity(),
+    }
+    runs_root.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir()
+    except FileExistsError as exc:
+        raise ValueError(
+            f"Demo run directory already exists; runs are never reused: {directory}"
+        ) from exc
+    with (directory / RUN_MANIFEST).open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(manifest, indent=2) + "\n")
+    return directory
+
+
+def _read_run_file(directory: Path, name: str) -> Any:
+    path = directory / name
+    if path.is_symlink() or not path.is_file() or path.resolve().parent != directory:
+        raise ValueError(
+            f"Demo run evidence is not a regular file in {directory}: {name}"
+        )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_run_manifest(directory: Path) -> tuple[Path, dict[str, Any]]:
+    """Validate one explicit run directory against its immutable identity."""
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError(f"Demo run directory must be a real directory: {directory}")
+    directory = directory.resolve(strict=True)
+    if not (directory / RUN_MANIFEST).exists():
+        raise ValueError(
+            f"{directory} is not a demo run directory ({RUN_MANIFEST} is missing); "
+            "pass the run directory printed by run_stack.sh"
+        )
+    manifest = _read_run_file(directory, RUN_MANIFEST)
+    if not isinstance(manifest, dict) or manifest.get("schema") != RUN_SCHEMA:
+        raise ValueError(f"Invalid demo run marker: {directory / RUN_MANIFEST}")
+    run_id = manifest.get("run_id")
+    if run_id != directory.name or not _RUN_ID.fullmatch(run_id):
+        raise ValueError(
+            f"Demo run identity {run_id!r} does not match directory {directory.name!r}"
+        )
+    if not _is_source_identity(manifest.get("source")):
+        raise ValueError(f"Demo run {run_id} has no valid source identity")
+    return directory, manifest
+
+
+def check_run_directory(directory: Path) -> tuple[Path, dict[str, Any], list[str]]:
+    """Check exactly one explicit run; nothing searches for a latest result."""
+    directory, manifest = load_run_manifest(directory)
+    run_id = manifest["run_id"]
+    composites = sorted(path.name for path in directory.glob("demo_k6_*.json"))
     if len(composites) > 1:
         raise ValueError(
-            f"Expected at most one current demo artifact, found {len(composites)}"
+            f"Demo run {run_id} has {len(composites)} composite artifacts; "
+            "expected at most one"
         )
+    run_failures: list[str] = []
     if composites:
-        return json.loads(composites[0].read_text())
-    artifact: dict[str, Any] = {}
-    for name in ("baseline", "offload", "offload_table"):
-        summary = path / f"k6_{name}_summary.json"
-        if summary.is_file():
-            artifact[name] = json.loads(summary.read_text())
-    return artifact
+        artifact = _read_run_file(directory, composites[0])
+        run = artifact.get("run") if isinstance(artifact, dict) else None
+        if (
+            not isinstance(run, dict)
+            or run.get("run_id") != run_id
+            or run.get("source") != manifest["source"]
+        ):
+            raise ValueError(f"{composites[0]} is not bound to demo run {run_id}")
+        if run.get("source_end") != manifest["source"]:
+            run_failures.append(
+                f"run {run_id}: source identity changed or was unavailable "
+                "when the run finished"
+            )
+    else:
+        # A run that stopped early is judged by the summaries it retained.
+        artifact = {}
+        for name in ("baseline", "offload", "offload_table"):
+            summary = f"k6_{name}_summary.json"
+            if (directory / summary).exists():
+                artifact[name] = _read_run_file(directory, summary)
+        run_failures.append(
+            f"run {run_id}: incomplete; no composite artifact was published"
+        )
+    return directory, manifest, check_regressions(artifact) + run_failures
+
+
+def describe_run(directory: Path, manifest: dict[str, Any]) -> str:
+    source = manifest["source"]
+    state = "with local changes" if source["dirty"] else "clean"
+    run_id = manifest["run_id"]
+    return f"demo run {run_id} at {source['head']} ({state}) in {directory}"
+
+
+def announce_run(directory: Path, *, file: TextIO | None = None) -> None:
+    print(f"Demo run {directory.name}: {directory}", file=file)
+    print(
+        "Check it with: python bench/scripts/run_demo_bench.py "
+        f"--check-regressions {directory}",
+        file=file,
+    )
+
+
+def bind_run(requested: str | None) -> tuple[Path, dict[str, Any]]:
+    """Use the stack's bound run, or bind a fresh one for a direct invocation."""
+    try:
+        if requested:
+            directory, manifest = load_run_manifest(Path(requested))
+        else:
+            directory = prepare_run(RESULTS_DIR / RUNS_DIRNAME)
+            directory, manifest = load_run_manifest(directory)
+            announce_run(directory, file=sys.stderr)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Cannot bind demo run: {exc}") from exc
+    existing = sorted(
+        path.name
+        for path in directory.iterdir()
+        if path.name.startswith(("demo_k6_", "k6_"))
+    )
+    if existing:
+        raise SystemExit(
+            f"Demo run {directory.name} already has benchmark output "
+            f"({', '.join(existing)}); bind a new run instead of reusing it"
+        )
+    return directory, manifest
+
+
+def check_cli(target: Path) -> None:
+    """Check one explicit run directory, or one historical artifact file."""
+    try:
+        if target.is_dir():
+            directory, manifest, failures = check_run_directory(target)
+        else:
+            directory = manifest = None
+            failures = check_regressions(json.loads(target.read_text()))
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        raise SystemExit(f"Invalid demo performance artifact: {exc}") from exc
+    if directory is None or manifest is None:
+        if failures:
+            raise SystemExit("\n".join(failures))
+        print("Perf check OK")
+        print(
+            f"note: {target} is a historical artifact, not bound to a demo run",
+            file=sys.stderr,
+        )
+        return
+    description = describe_run(directory, manifest)
+    if failures:
+        raise SystemExit("\n".join([f"Perf check FAILED: {description}", *failures]))
+    print(f"Perf check OK: {description}")
+    print(SCOPE_NOTE)
 
 
 def run_scenario(name: str, script: str, env: dict[str, str]) -> BenchResult:
@@ -580,12 +830,11 @@ def summarize_worker_metrics(path: Path) -> dict[str, dict[str, float]]:
 
 
 def main() -> None:
-    # Fixed scenario files and timestamped composites belong to this invocation.
-    # Never permit an old successful artifact to stand in for a failed run.
-    for pattern in ("k6_*_summary.json", "demo_k6_*.json", "demo_k6_*.md"):
-        for path in RESULTS_DIR.glob(pattern):
-            path.unlink()
+    global RESULTS_DIR
+    directory, manifest = bind_run(os.environ.get("MOLT_DEMO_RUN_DIR"))
+    RESULTS_DIR = directory
     env = base_env()
+    worker_binary = worker_binary_identity(env.get("MOLT_DEMO_WORKER_BIN"))
     limits = bench_memory_limits(env)
     with harness_memory_guard.repo_process_sentinel(
         repo_root=ROOT,
@@ -597,11 +846,24 @@ def main() -> None:
         offload = run_scenario("offload", "bench/k6/offload.js", env)
         offload_table = run_scenario("offload_table", "bench/k6/offload_table.js", env)
     results = [baseline, offload, offload_table]
+    # Evidence is source-bound only if the identity recorded at startup still holds.
+    try:
+        source_end: dict[str, object] | None = capture_source_identity()
+    except (OSError, ValueError) as exc:
+        print(f"Demo source identity unavailable at run end: {exc}", file=sys.stderr)
+        source_end = None
+    source_bound = source_end == manifest["source"]
 
     timestamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
     artifact = {
         "timestamp": timestamp,
-        "git": run_cmd(["git", "rev-parse", "HEAD"]) or "",
+        "run": {
+            "run_id": manifest["run_id"],
+            "evidence_scope": EVIDENCE_SCOPE,
+            "source": manifest["source"],
+            "source_end": source_end,
+            "worker_binary": worker_binary,
+        },
         "machine": collect_machine_info(),
         "tool_versions": collect_tool_versions(),
         "baseline": baseline.raw,
@@ -660,8 +922,15 @@ def main() -> None:
     out_path = RESULTS_DIR / f"demo_k6_{timestamp}.json"
     out_path.write_text(json.dumps(artifact, indent=2))
     md_path = RESULTS_DIR / f"demo_k6_{timestamp}.md"
+    source_state = "unchanged" if source_bound else "changed or unavailable"
     md_lines = [
         f"# Demo k6 {timestamp}",
+        "",
+        f"Run: {describe_run(directory, manifest)}",
+        "",
+        f"Source identity at end: {source_state}",
+        "",
+        SCOPE_NOTE,
         "",
         "## Summary",
     ]
@@ -770,17 +1039,27 @@ def main() -> None:
     print(fmt(baseline))
     print(fmt(offload))
     print(fmt(offload_table))
+    announce_run(directory)
+    if not source_bound:
+        raise SystemExit(
+            f"Demo run {manifest['run_id']} is not source-bound: the Git source "
+            "identity changed or was unavailable when the run finished"
+        )
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--check-regressions":
+    if sys.argv[1:] == ["--prepare-run"]:
         try:
-            failures = check_regressions(read_regression_artifact(Path(sys.argv[2])))
-        except (OSError, ValueError, TypeError, AttributeError) as exc:
-            raise SystemExit(f"Invalid demo performance artifact: {exc}") from exc
-        if failures:
-            raise SystemExit("\n".join(failures))
-        print("Perf check OK")
+            run_directory = prepare_run(
+                RESULTS_DIR / RUNS_DIRNAME, os.environ.get("MOLT_DEMO_RUN_DIR")
+            )
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"Cannot bind demo run: {exc}") from exc
+        announce_run(run_directory, file=sys.stderr)
+        print(run_directory)
+        raise SystemExit(0)
+    if len(sys.argv) == 3 and sys.argv[1] == "--check-regressions":
+        check_cli(Path(sys.argv[2]))
         raise SystemExit(0)
     if not shutil.which("k6"):
         raise SystemExit(
