@@ -590,24 +590,44 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
 
 #[test]
 fn handwritten_container_owned_results_release_when_discarded() {
-    for (opcode, preserved, operand_count, result_name) in [
-        (OpCode::BuildList, None, 1, "sequence_builder_result"),
-        (OpCode::BuildTuple, None, 1, "sequence_builder_result"),
-        (OpCode::BuildSet, None, 1, "aggregate_result"),
-        (OpCode::BuildDict, None, 2, "aggregate_result"),
-        (OpCode::Copy, Some("frozenset_new"), 1, "aggregate_result"),
-        (OpCode::BuildSlice, None, 3, "slice"),
-        (OpCode::GetIter, None, 1, "molt_iter_checked"),
-        (OpCode::IterNext, None, 1, "molt_iter_next"),
-        (OpCode::ForIter, None, 1, "molt_iter_next"),
+    for (opcode, preserved, operand_count, result_name, runtime_symbol) in [
+        (OpCode::BuildList, None, 1, "sequence_builder_result", None),
+        (OpCode::BuildTuple, None, 1, "sequence_builder_result", None),
+        (OpCode::BuildSet, None, 1, "aggregate_result", None),
+        (OpCode::BuildDict, None, 2, "aggregate_result", None),
+        (
+            OpCode::Copy,
+            Some("frozenset_new"),
+            1,
+            "aggregate_result",
+            None,
+        ),
+        (OpCode::BuildSlice, None, 3, "slice", None),
+        (
+            OpCode::GetIter,
+            None,
+            1,
+            "molt_iter_checked",
+            Some("molt_iter_checked"),
+        ),
+        (
+            OpCode::IterNext,
+            None,
+            1,
+            "molt_iter_next",
+            Some("molt_iter_next"),
+        ),
+        (
+            OpCode::ForIter,
+            None,
+            1,
+            "molt_iter_next",
+            Some("molt_iter_next"),
+        ),
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        if let Some(symbol) = match opcode {
-            OpCode::GetIter => Some("molt_iter_checked"),
-            OpCode::IterNext | OpCode::ForIter => Some("molt_iter_next"),
-            _ => None,
-        } {
+        if let Some(symbol) = runtime_symbol {
             backend.runtime_callable_symbols.insert(symbol.into());
         }
         let mut func = TirFunction::new(

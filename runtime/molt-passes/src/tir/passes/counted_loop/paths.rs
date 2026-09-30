@@ -129,7 +129,11 @@ pub(crate) fn loop_guard_path(
                 return Some(path);
             }
             Terminator::Branch { target, .. } => current = *target,
-            _ => return None,
+            Terminator::CondBranch { .. }
+            | Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Return { .. }
+            | Terminator::Unreachable => return None,
         }
     }
 }
@@ -151,8 +155,137 @@ pub(super) fn loop_body_path(
         path.push(current);
         match &func.blocks.get(&current)?.terminator {
             Terminator::Branch { target, .. } => current = *target,
-            _ => return None,
+            Terminator::CondBranch { .. }
+            | Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Return { .. }
+            | Terminator::Unreachable => return None,
         }
     }
     (!path.is_empty()).then_some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tir::blocks::TirBlock;
+    use crate::tir::types::TirType;
+
+    fn path_fixture() -> (TirFunction, BlockId, BlockId, BlockId, ValueId) {
+        let mut func = TirFunction::new(
+            "counted_path_contract".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let header = func.entry_block;
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let condition = func.fresh_value();
+        for id in [body, exit] {
+            func.blocks.insert(
+                id,
+                TirBlock {
+                    id,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Unreachable,
+                },
+            );
+        }
+        (func, header, body, exit, condition)
+    }
+
+    fn refused_terminators(target: BlockId, condition: ValueId) -> [Terminator; 5] {
+        [
+            Terminator::CondBranch {
+                cond: condition,
+                then_block: target,
+                then_args: vec![],
+                else_block: target,
+                else_args: vec![],
+            },
+            Terminator::Switch {
+                value: condition,
+                cases: vec![(1, target, vec![])],
+                default: target,
+                default_args: vec![],
+            },
+            Terminator::StateDispatch {
+                cases: vec![(1, target, vec![])],
+                default: target,
+                default_args: vec![],
+            },
+            Terminator::Return { values: vec![] },
+            Terminator::Unreachable,
+        ]
+    }
+
+    #[test]
+    fn path_helpers_refuse_non_straight_line_terminator_families() {
+        let (mut func, header, body, exit, condition) = path_fixture();
+        let region = HashSet::from([header, body]);
+        // A generic edge follower would accept these single-effective-target
+        // dispatches and reach the material guard. Their semantics still differ
+        // from the unconditional normal path required by counted recognition.
+        func.blocks.get_mut(&body).unwrap().terminator = Terminator::CondBranch {
+            cond: condition,
+            then_block: body,
+            then_args: vec![],
+            else_block: exit,
+            else_args: vec![],
+        };
+        for terminator in refused_terminators(body, condition) {
+            func.blocks.get_mut(&header).unwrap().terminator = terminator;
+            assert!(loop_guard_path(&func, header, &region, None).is_none());
+        }
+        // The same dispatches could structurally reach the header as a latch;
+        // the straight-line body contract must reject them rather than follow.
+        for terminator in refused_terminators(header, condition) {
+            func.blocks.get_mut(&body).unwrap().terminator = terminator;
+            assert!(loop_body_path(&func, header, body, &region).is_none());
+        }
+    }
+
+    #[test]
+    fn path_helpers_preserve_material_and_terminal_guards_and_latches() {
+        let (mut func, header, body, exit, condition) = path_fixture();
+        let region = HashSet::from([header, body]);
+        func.blocks.get_mut(&header).unwrap().terminator = Terminator::Branch {
+            target: body,
+            args: vec![],
+        };
+        for (then_block, else_block) in [(body, exit), (exit, body)] {
+            func.blocks.get_mut(&body).unwrap().terminator = Terminator::CondBranch {
+                cond: condition,
+                then_block,
+                then_args: vec![],
+                else_block,
+                else_args: vec![],
+            };
+            assert_eq!(
+                loop_guard_path(&func, header, &region, None),
+                Some(vec![header, body])
+            );
+        }
+        func.blocks.get_mut(&body).unwrap().terminator = Terminator::Branch {
+            target: header,
+            args: vec![],
+        };
+        assert_eq!(
+            loop_body_path(&func, header, body, &region),
+            Some(vec![body])
+        );
+        assert_eq!(
+            loop_guard_path(&func, header, &region, Some(body)),
+            Some(vec![header, body])
+        );
+        assert!(loop_guard_path(&func, header, &region, None).is_none());
+        func.blocks.get_mut(&body).unwrap().terminator = Terminator::Branch {
+            target: exit,
+            args: vec![],
+        };
+        assert!(loop_guard_path(&func, header, &region, None).is_none());
+        assert!(loop_body_path(&func, header, body, &region).is_none());
+    }
 }
