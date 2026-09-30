@@ -163,3 +163,53 @@ def test_native_failure_evidence_publication_failure_is_observable(
         signal = capsys.readouterr().err
     assert "Original compile failure" in signal
     assert "evidence volume unavailable" in signal
+
+
+def test_native_build_lock_failure_retains_structured_evidence_and_timing(
+    plan, monkeypatch
+):
+    from molt.cli import build_locks
+
+    monkeypatch.setattr(
+        runtime, "_prepare_native_runtime_build", lambda *_a, **_k: plan
+    )
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("native lock timed out")
+
+    monkeypatch.setattr(build_locks, "_acquire_file_lock", unavailable)
+    timings = {}
+    assert not runtime._ensure_runtime_lib(
+        plan.runtime_lib,
+        None,
+        True,
+        plan.cargo_profile,
+        plan.project_root,
+        1.0,
+        stage_timings_ms=timings,
+        runtime_state=plan.runtime_state,
+    )
+    assert plan.runtime_state.native_runtime_build_failure.stage == "build-lock"
+    assert timings["runtime_lib_build_lock"] >= 0
+
+
+def test_native_locked_work_runtime_error_is_not_mislabeled(plan, monkeypatch):
+    monkeypatch.setattr(
+        runtime, "_prepare_native_runtime_build", lambda *_a, **_k: plan
+    )
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("native locked invariant failed")
+
+    monkeypatch.setattr(runtime, "_reuse_native_runtime_under_lock", broken)
+    with pytest.raises(RuntimeError, match="native locked invariant failed"):
+        runtime._ensure_runtime_lib(
+            plan.runtime_lib,
+            None,
+            True,
+            plan.cargo_profile,
+            plan.project_root,
+            1.0,
+            runtime_state=plan.runtime_state,
+        )
+    assert plan.runtime_state.native_runtime_build_failure is None

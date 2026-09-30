@@ -157,13 +157,14 @@ def _runtime_lib_path_cached(
     stdlib_profile: str | None,
     cargo_target_override: str | None,
     cwd_str: str,
+    session_id: str | None = None,
 ) -> Path:
     profile_dir = _cargo_profile_dir(cargo_profile)
     target_root = _cargo_target_root_cached(
         project_root_str,
         cargo_target_override,
         cwd_str,
-        _molt_session_id(),
+        session_id,
     )
     archive_name = _runtime_lib_archive_name(stdlib_profile, target_triple)
     if target_triple:
@@ -184,6 +185,7 @@ def _runtime_lib_path(
         stdlib_profile,
         os.environ.get("CARGO_TARGET_DIR"),
         os.fspath(Path.cwd()),
+        _molt_session_id(),
     )
 
 
