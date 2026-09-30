@@ -123,6 +123,33 @@ def _parse_target_python_version(value: str | None) -> TargetPythonVersion:
     return target
 
 
+def resolve_target_python_for_oracle(
+    oracle_version: tuple[int, int] | None,
+    explicit: str | TargetPythonVersion | None = None,
+) -> TargetPythonVersion:
+    """Require the compiled language minor to match the measured CPython oracle."""
+    if oracle_version is None:
+        raise ValueError("cannot derive Molt target Python from the CPython oracle")
+    derived = require_supported_target_python(
+        TargetPythonVersion(oracle_version[0], oracle_version[1], 0)
+    )
+    if explicit is None:
+        return derived
+    target = (
+        require_supported_target_python(explicit)
+        if isinstance(explicit, TargetPythonVersion)
+        else _parse_target_python_version(explicit)
+    )
+    if isinstance(explicit, str) and explicit != target.short:
+        raise ValueError("Molt target Python must use canonical 3.<minor> spelling")
+    if target.feature_version != oracle_version:
+        raise ValueError(
+            "Molt target Python does not match the CPython oracle: "
+            f"target={target.short}, oracle={derived.short}"
+        )
+    return target
+
+
 def _project_requires_python(project_root: Path) -> str | None:
     pyproject = project_root / "pyproject.toml"
     if not pyproject.exists():

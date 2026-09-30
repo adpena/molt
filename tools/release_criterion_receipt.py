@@ -582,6 +582,7 @@ def _validate_verified_subset_facts(
             "reference_python",
             "abi",
             "backend",
+            "build_profile",
             "concurrency",
             "platform",
             "arch",
@@ -735,10 +736,22 @@ def _validate_verified_subset_facts(
             )
 
     execution = facts.get("execution")
-    execution_keys = frozenset({"backend", "ci", "host", "python", "rust"})
+    execution_keys = frozenset({"backend", "ci", "host", "python", "rust", "profiles"})
     if not _is_exact_object(execution, execution_keys):
         problems.append("facts.execution schema is invalid")
     else:
+        profiles = execution.get("profiles")
+        if (
+            not isinstance(profiles, dict)
+            or not isinstance(profiles.get("build"), str)
+            or profiles.get("build") not in {"dev", "release"}
+            or profiles != verified.execution_profiles(profiles["build"])
+            or (
+                expected_coordinate is not None
+                and profiles["build"] != expected_coordinate.build_profile
+            )
+        ):
+            problems.append("facts.execution.profiles schema is invalid")
         ci = execution.get("ci")
         ci_keys = frozenset(
             {

@@ -974,3 +974,42 @@ def verification_scope_paths(
     return frozenset(
         source.path for source in sources if source.metadata.verification_scope == scope
     )
+
+
+def collect_environment_overrides(
+    file_path: str | Path, *, repo_root: Path = ROOT
+) -> dict[str, str]:
+    """Parse test environment headers; PYTHONPATH uses repository-relative entries.
+
+    The header separator is ':' on every host; the execution separator is the
+    host's os.pathsep. This is test policy syntax, never a native absolute path.
+    """
+    overrides: dict[str, str] = {}
+    try:
+        text = Path(file_path).read_text(encoding="utf-8")
+    except OSError:
+        return overrides
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("# MOLT_ENV:"):
+            continue
+        for assignment in stripped[len("# MOLT_ENV:") :].strip().split():
+            if "=" not in assignment:
+                continue
+            key, value = assignment.split("=", 1)
+            if key == "PYTHONPATH":
+                paths = []
+                for entry in value.split(":"):
+                    relative = portable_relative_path(entry)
+                    path = repo_root.joinpath(*relative.parts).resolve(strict=True)
+                    if (
+                        not path.is_relative_to(repo_root.resolve())
+                        or not path.is_dir()
+                    ):
+                        raise ValueError(
+                            f"test PYTHONPATH entry is not a repository directory: {entry}"
+                        )
+                    paths.append(str(path))
+                value = os.pathsep.join(paths)
+            overrides[key] = value
+    return overrides

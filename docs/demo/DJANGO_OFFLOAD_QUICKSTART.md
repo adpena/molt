@@ -40,20 +40,55 @@ uv run --python 3.12 python3 manage.py runserver
 ```
 bench/scripts/run_stack.sh
 ```
-Artifacts land in `bench/results/` (k6 JSON + markdown summary). Each run
-replaces prior demo summaries so a failed invocation cannot reuse stale results.
-The stack waits for `/health/` before load generation and drains its service
-process groups on success, failure, or interruption. Nightly CI uploads k6 output,
-server/worker logs, and guard diagnostics even when the benchmark fails.
-Validate a completed artifact with
-`python bench/scripts/run_demo_bench.py --check-regressions bench/results/demo_k6_<timestamp>.json`.
-The checker requires all three scenarios, finite p95 latency, completed requests,
-and error rates below 1%; p95 must remain below 1000 ms for baseline/offload and
-1500 ms for offload_table. Pass `bench/results` instead of a JSON file to
-check retained per-scenario summaries after an interrupted run. Nightly CI runs
-this comparison even when k6 fails; missing scenarios remain failures.
-Worker metrics land in `bench/results/molt_demo_metrics.jsonl` unless `MOLT_DEMO_METRICS_PATH` is set.
-Worker/server logs land in `logs/molt_worker.log` and `logs/molt_django.log`.
+Each invocation first binds its own run directory,
+`bench/results/demo-runs/<run-id>/`, and prints the run id and path. Binding
+happens before environment setup, the worker build, preflight, or server
+readiness, so a failed startup can only fail its own run. The directory is
+created exclusively: a random UUID locally, or exactly `MOLT_DEMO_RUN_DIR` when
+that is set to a new `bench/results/demo-runs/<run-id>` path (Nightly CI uses
+`perf-demo-<run id>-<attempt>`). An existing directory is refused, and earlier
+runs are never modified or deleted.
+
+The directory's `run.json` records the run id and the Git source identity:
+HEAD, a dirty flag, and SHA-256 digests of `git status` and the tracked diff.
+No source text is stored, and the contents of untracked files are not hashed.
+A Git checkout is required. The bench captures the identity again when it
+finishes and fails the run if Git became unavailable or the identity changed,
+for example because `uv sync` or `cargo build` rewrote a lockfile, a tracked
+file was edited, or a file was added or removed during the run.
+
+Everything the run produces stays in its directory: the per-scenario k6
+summaries and output logs, one `demo_k6_<timestamp>.json` composite bound to the
+run id (with the worker binary's SHA-256 when the stack built or found it), a
+markdown summary, and worker metrics in `molt_demo_metrics.jsonl`.
+`MOLT_DEMO_METRICS_PATH` may name another metrics file, but that file must not
+exist yet. Server and worker logs are shared by all runs: `logs/molt_django.log`
+and `logs/molt_worker.log` hold the latest run's output. The stack waits for
+`/health/` before load generation and drains its service process groups on
+success, failure, or interruption.
+
+Check a run with
+`python bench/scripts/run_demo_bench.py --check-regressions bench/results/demo-runs/<run-id>`.
+The checker reads only that directory. It requires `run.json`, at most one
+composite bound to the same run id, and a source identity that did not change.
+The budgets: all three scenarios, finite p95 latency, completed requests, and
+error rates below 1%; p95 must stay below 1000 ms for baseline/offload and
+1500 ms for offload_table. A run that stopped early is judged by the summaries
+it kept, and it still fails: missing scenarios and a missing composite are
+failures. Passing `bench/results` or `bench/results/demo-runs` fails. Passing
+a composite JSON file checks only that historical artifact; the result is not
+tied to any run, and CI never uses this mode.
+
+Nightly CI sets `MOLT_DEMO_RUN_DIR` for each job attempt and checks exactly
+that directory even when the stack fails. It uploads the directory together
+with the server/worker logs and guard diagnostics.
+
+These budgets are a development signal from one `ubuntu-latest` cell (the
+Python in `.python-version` and a `dev-fast` worker). They are absolute, never
+compare against CPython, and are not release or acceptance evidence. For the
+canonical CPython-relative gate, see
+[Running Benchmarks](../BENCHMARKING.md#running-benchmarks).
+
 Set `MOLT_FAKE_DB_DELAY_MS` to simulate base DB latency,
 `MOLT_FAKE_DB_DECODE_US_PER_ROW` to simulate per-row decode cost, and
 `MOLT_FAKE_DB_CPU_ITERS` to simulate per-row CPU work.

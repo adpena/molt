@@ -337,6 +337,7 @@ def _verified_execution(coordinate, source_sha: str) -> dict[str, object]:
     ]
     return {
         "backend": backend,
+        "profiles": verified_subset.execution_profiles(coordinate.build_profile),
         "ci": {
             "job": "coordinate",
             "provider": "github-actions",

@@ -213,6 +213,7 @@ def _verified_execution(
         }
     return {
         "backend": backend,
+        "profiles": verified_subset.execution_profiles(coordinate.build_profile),
         "ci": {
             "job": "coordinate",
             "provider": "github-actions",
@@ -902,3 +903,18 @@ def test_fail_closed_gate_emits_registry_counts_without_text_sniffing(
         captured["facts"]["class_counts"].values()  # type: ignore[index,union-attr]
     )
     assert captured["input_paths"] == [fail_closed_gate.REGISTRY_PATH]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "wrong", "malformed"])
+def test_verified_receipt_profiles_cannot_be_absent_or_disagree_with_coordinate(
+    monkeypatch, mutation
+):
+    payload, _ = _verified_receipt(monkeypatch)
+    execution = payload["facts"]["execution"]
+    if mutation == "missing":
+        del execution["profiles"]
+    elif mutation == "wrong":
+        execution["profiles"] = verified_subset.execution_profiles("release")
+    else:
+        execution["profiles"]["build"] = []
+    assert any("execution" in item for item in _validate_verified(payload))
