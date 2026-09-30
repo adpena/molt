@@ -30,7 +30,7 @@ from molt.cli.atomic_io import (
     _atomic_copy_file,
     _atomic_write_json,
 )
-from molt.cli.build_locks import _build_lock
+from molt.cli.build_locks import _build_lock, BuildLockAcquisitionError
 from molt.cli.cargo_execution import (
     CargoPlanExecutionError,
     CargoExecutionResult,
@@ -1293,26 +1293,48 @@ def _ensure_runtime_lib(
     )
     if plan is None:
         return False
-    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1" and runtime_lib.exists():
-        if plan.manifest_matches():
-            return plan.accept(stage="skip-admission-identity-stability")
-        with _build_lock(project_root, plan.lock_name):
-            return (
-                plan.accept(stage="skip-refresh-admission-identity-stability")
-                if plan.refresh_manifest()
-                else False
-            )
-    if (
-        plan.session_key is not None
-        and plan.session_key in _RUNTIME_LIB_VERIFIED
-        and plan.manifest_matches()
-    ):
-        return plan.accept(stage="session-cache-admission-identity-stability")
-    with _build_lock(project_root, plan.lock_name):
-        reuse = _reuse_native_runtime_under_lock(plan)
-        if reuse is not None:
-            return reuse
-        hydrate = _hydrate_native_runtime_under_lock(plan)
-        if hydrate is not None:
-            return hydrate
-        return _build_native_runtime_under_lock(plan)
+    lock_start = time.perf_counter()
+    try:
+        if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1" and runtime_lib.exists():
+            if plan.manifest_matches():
+                return plan.accept(stage="skip-admission-identity-stability")
+            with _build_lock(
+                project_root,
+                plan.lock_name,
+                default_timeout_s=cargo_timeout if cargo_timeout is not None else 300.0,
+            ):
+                return (
+                    plan.accept(stage="skip-refresh-admission-identity-stability")
+                    if plan.refresh_manifest()
+                    else False
+                )
+        if (
+            plan.session_key is not None
+            and plan.session_key in _RUNTIME_LIB_VERIFIED
+            and plan.manifest_matches()
+        ):
+            return plan.accept(stage="session-cache-admission-identity-stability")
+        with _build_lock(
+            project_root,
+            plan.lock_name,
+            default_timeout_s=cargo_timeout if cargo_timeout is not None else 300.0,
+        ):
+            reuse = _reuse_native_runtime_under_lock(plan)
+            if reuse is not None:
+                return reuse
+            hydrate = _hydrate_native_runtime_under_lock(plan)
+            if hydrate is not None:
+                return hydrate
+            return _build_native_runtime_under_lock(plan)
+    except BuildLockAcquisitionError as exc:
+        _record_runtime_build_stage_ms(
+            stage_timings_ms, "runtime_lib_build_lock", lock_start
+        )
+        return _record_native_runtime_failure(
+            runtime_state,
+            project_root=project_root,
+            stage="build-lock",
+            summary=f"Native runtime build lock acquisition failed: {exc}",
+            command=plan.cmd,
+            emit_diagnostic=not json_output,
+        )

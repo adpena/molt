@@ -8,8 +8,8 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Any
+from molt.cli.config_resolution import _select_codegen_backend
 from molt.cli.native_link_plan import NativeArtifactKind
-from molt.cli.wasm_codegen_layout import prepare_wasm_codegen_layout
 
 
 @dataclass(frozen=True)
@@ -283,6 +283,8 @@ def emit_pipeline_fact_graph(
     try:
         wasm_layout = None
         if output_layout.is_wasm:
+            from molt.cli.wasm_codegen_layout import prepare_wasm_codegen_layout
+
             try:
                 wasm_layout = prepare_wasm_codegen_layout(
                     runtime_context.runtime_state.runtime_wasm_codegen_binding,
@@ -378,18 +380,10 @@ def run_factgraph_command(
         )
     target = args.target
     backend_choice = args.backend or "auto"
-    if target == "llvm":
-        if backend_choice not in {"auto", "llvm"}:
-            return fail(
-                "`--target llvm` selects the LLVM backend; it conflicts "
-                f"with `--backend {backend_choice}`.",
-                args.json,
-                command="factgraph",
-            )
-        backend_choice = "llvm"
-        target = "native"
-    effective_backend = "cranelift" if backend_choice == "auto" else backend_choice
-    os.environ["MOLT_BACKEND"] = effective_backend
+    target, backend_error = _select_codegen_backend(target, backend_choice)
+    if backend_error:
+        return fail(backend_error, args.json, command="factgraph")
+    effective_backend = os.environ["MOLT_BACKEND"]
     return build(
         file_path=args.file,
         target=target,

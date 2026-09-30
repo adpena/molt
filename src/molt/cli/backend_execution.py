@@ -157,13 +157,14 @@ def _backend_bin_path_cached(
     cwd_str: str,
     os_name: str,
     backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
+    session_id: str | None = None,
 ) -> Path:
     profile_dir = _cargo_profile_dir(cargo_profile)
     target_root = _cargo_target_root_cached(
         project_root_str,
         cargo_target_override,
         cwd_str,
-        _molt_session_id(),
+        session_id,
     )
     exe_suffix = ".exe" if os_name == "nt" else ""
     # Disambiguate binary path by feature set to prevent native/wasm/rust
@@ -189,6 +190,7 @@ def _backend_bin_path(
         os.fspath(Path.cwd()),
         os.name,
         backend_features,
+        _molt_session_id(),
     )
 
 

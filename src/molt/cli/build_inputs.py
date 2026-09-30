@@ -429,6 +429,20 @@ def _resolve_build_entry(
     ), None
 
 
+def _resolve_backend_compiler_profile() -> tuple[BuildProfile, str, str | None]:
+    """Resolve the host backend compiler's build profile and Cargo profile.
+
+    The backend compiler is selected independently of the guest build profile.
+    ``molt build`` and the ``internal-backend-build`` prewarm share this
+    resolution so the prewarm admits the binary a build dispatches.
+    """
+    backend_profile, profile_error = _resolve_backend_profile()
+    backend_cargo_profile, cargo_profile_error = _resolve_backend_cargo_profile_name(
+        backend_profile
+    )
+    return backend_profile, backend_cargo_profile, profile_error or cargo_profile_error
+
+
 def _prepare_build_config(
     *,
     project_root: Path,
@@ -535,17 +549,14 @@ def _prepare_build_config(
     if timeout_err:
         return None, _fail(timeout_err, json_output, command="build")
 
-    backend_profile, profile_err = _resolve_backend_profile()
-    if profile_err:
-        return None, _fail(profile_err, json_output, command="build")
-    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(profile)
-    if runtime_profile_err:
-        return None, _fail(runtime_profile_err, json_output, command="build")
-    backend_cargo_profile, backend_profile_err = _resolve_backend_cargo_profile_name(
-        backend_profile
+    backend_profile, backend_cargo_profile, backend_profile_err = (
+        _resolve_backend_compiler_profile()
     )
     if backend_profile_err:
         return None, _fail(backend_profile_err, json_output, command="build")
+    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(profile)
+    if runtime_profile_err:
+        return None, _fail(runtime_profile_err, json_output, command="build")
 
     capabilities_source = None
     cli_capability_policy: CapabilityPolicy | None = None
@@ -710,15 +721,7 @@ def _prepare_build_preamble(
         phase_starts["resolve_entry"] = diagnostics_start
     stdlib_root = _stdlib_root_path()
     warnings: list[str] = []
-    native_arch_perf_enabled = False
-    if _native_arch_perf_requested():
-        if target != "native":
-            warnings.append(
-                "Native-arch perf profile requested, but non-native target selected; ignoring."
-            )
-        else:
-            _enable_native_arch_rustflags()
-            native_arch_perf_enabled = True
+    native_arch_perf_enabled = _apply_native_arch_perf_policy(target, warnings)
     return _PreparedBuildPreamble(
         diagnostics_path_spec=diagnostics_path_spec,
         diagnostics_enabled=diagnostics_enabled,
@@ -1193,6 +1196,23 @@ def _native_arch_perf_requested() -> bool:
         os.environ.get("MOLT_PERF_PROFILE", ""),
         os.environ.get("MOLT_NATIVE_ARCH_PERF", ""),
     )
+
+
+def _apply_native_arch_perf_policy(target: Target, warnings: list[str]) -> bool:
+    """Apply the native-arch perf profile's RUSTFLAGS for native targets.
+
+    RUSTFLAGS reach every Cargo build and the backend compiler fingerprint, so
+    ``molt build`` and the backend prewarm apply the same policy.
+    """
+    if not _native_arch_perf_requested():
+        return False
+    if target != "native":
+        warnings.append(
+            "Native-arch perf profile requested, but non-native target selected; ignoring."
+        )
+        return False
+    _enable_native_arch_rustflags()
+    return True
 
 
 def _enable_native_arch_rustflags() -> bool:

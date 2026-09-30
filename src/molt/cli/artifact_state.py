@@ -143,28 +143,62 @@ def _maybe_hydrate_artifact_from_canonical_target(
     from molt.cli.runtime_fingerprints import (
         _runtime_artifact_fingerprint_matches,
         _write_runtime_fingerprint,
+        _read_runtime_fingerprint,
+        _admitted_runtime_fingerprint,
     )
 
     if fingerprint is None:
         return False
     if artifact.resolve() == candidate_artifact.resolve():
         return False
-    if not _runtime_artifact_fingerprint_matches(
-        candidate_artifact,
-        fingerprint,
-        candidate_fingerprint_path,
-        require_artifact_digest=require_artifact_digest,
-    ):
-        return False
+    from molt.toolchain_identity import (
+        stable_regular_file_identity,
+        verify_stable_regular_file_identity,
+    )
+    from molt.cli.static_archive_identity import artifact_content_identity
+
     try:
+        candidate_identity = stable_regular_file_identity(
+            candidate_artifact, label="canonical hydration source"
+        )
+        if not _runtime_artifact_fingerprint_matches(
+            candidate_artifact,
+            fingerprint,
+            candidate_fingerprint_path,
+            require_artifact_digest=require_artifact_digest,
+        ):
+            return False
+        verify_stable_regular_file_identity(
+            candidate_identity, label="admitted hydration source"
+        )
+        admitted_fingerprint = _admitted_runtime_fingerprint(
+            fingerprint, _read_runtime_fingerprint(candidate_fingerprint_path)
+        )
         artifact.parent.mkdir(parents=True, exist_ok=True)
         _atomic_copy_file(candidate_artifact, artifact)
-        fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_runtime_fingerprint(
-            fingerprint_path,
-            fingerprint,
-            artifact=artifact if require_artifact_digest else None,
+        verify_stable_regular_file_identity(
+            candidate_identity, label="hydration source after copy"
         )
-    except OSError:
+        copied_identity = stable_regular_file_identity(
+            artifact, label="hydrated artifact"
+        )
+        if (
+            copied_identity.sha256 != candidate_identity.sha256
+            or copied_identity.size != candidate_identity.size
+        ):
+            raise ValueError("Hydration copy differs from admitted artifact bytes")
+        if require_artifact_digest:
+            admitted_fingerprint["artifact_content_identity"] = (
+                artifact_content_identity(artifact)
+            )
+            verify_stable_regular_file_identity(
+                copied_identity, label="hydration receipt content"
+            )
+        fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_runtime_fingerprint(fingerprint_path, admitted_fingerprint)
+        verify_stable_regular_file_identity(
+            copied_identity, label="hydration publication"
+        )
+    except (OSError, ValueError):
         return False
     return True

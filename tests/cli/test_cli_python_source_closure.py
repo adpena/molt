@@ -88,7 +88,7 @@ def test_repository_wasm_linker_closure_reaches_binding_authority(
     assert seed in closure
     assert root / "src/molt/compiler_analysis/python_binding_flow.py" in closure
     assert root / "src/molt/compiler_analysis/python_lexical_scope.py" in closure
-    assert root / "src/molt/cli/wasm_link_optimizer_policy.py" in closure
+    assert root / "tools/wasm_link_optimizer_policy.py" in closure
 
 
 def _relative_paths(root: Path, paths: tuple[Path, ...]) -> set[str]:

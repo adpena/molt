@@ -144,3 +144,36 @@ def _select_capability_input(
 ) -> CapabilityInput | None:
     """Select the first present policy while preserving explicit deny-all values."""
     return next((candidate for candidate in candidates if candidate is not None), None)
+
+
+def _select_codegen_backend(target: str, backend_choice: str) -> tuple[str, str | None]:
+    """Canonicalize ``--target llvm``/``--backend`` and export ``MOLT_BACKEND``.
+
+    `--target llvm` is an alias for "native binary, LLVM backend": the LLVM
+    backend emits host-native objects, so the runtime staticlib and the entire
+    native link path are identical to `--target native`; the only difference
+    is the codegen backend. Canonicalize it to the `native` target (so every
+    downstream `target == "native"` branch - runtime triple, stdlib object
+    split, native link driver - fires) and route the backend selection through
+    MOLT_BACKEND. Without this, "llvm" leaks into the cargo `--target` slot,
+    which expects a rustc target triple, and the runtime build fails with
+    "could not find specification for target \"llvm\"".
+
+    "auto" defaults to cranelift for all builds. LLVM remains opt-in until its
+    end-to-end parity and operational tooling are on the same footing as the
+    default Cranelift lane. `build` and `internal-backend-build` both select
+    here, so a prewarm builds the backend feature lane the build dispatches.
+    """
+    if target == "llvm":
+        if backend_choice not in {"auto", "llvm"}:
+            return target, (
+                "`--target llvm` selects the LLVM backend; it conflicts "
+                f"with `--backend {backend_choice}`. Use `--target native "
+                "--backend llvm` to mix, or drop one flag."
+            )
+        backend_choice = "llvm"
+        target = "native"
+    os.environ["MOLT_BACKEND"] = (
+        "cranelift" if backend_choice == "auto" else backend_choice
+    )
+    return target, None

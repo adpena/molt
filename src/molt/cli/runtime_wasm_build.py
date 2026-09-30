@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from molt.cli.artifact_state import (
 from molt.cli.atomic_io import (
     _atomic_copy_file,
 )
-from molt.cli.build_locks import _build_lock
+from molt.cli.build_locks import _build_lock, BuildLockAcquisitionError
 from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
@@ -243,10 +244,26 @@ def _materialize_runtime_wasm_member_from_target(
         raise ValueError(
             "runtime WASM member publication requires its captured fingerprints"
         )
-    with _build_lock(ctx.root, ctx.lock_name):
-        return bool(
-            _reuse_target_runtime_wasm(
-                ctx,
-                persist_output_fingerprint=False,
+    lock_start = time.perf_counter()
+    try:
+        with _build_lock(
+            ctx.root,
+            ctx.lock_name,
+            default_timeout_s=cargo_timeout if cargo_timeout is not None else 300.0,
+        ):
+            return bool(
+                _reuse_target_runtime_wasm(
+                    ctx,
+                    persist_output_fingerprint=False,
+                )
             )
+    except BuildLockAcquisitionError as exc:
+        _record_runtime_wasm_build_phase(
+            "build_lock",
+            time.perf_counter() - lock_start,
+            kind=ctx.kind,
+            mode="rejected",
+            detail=str(exc),
         )
+        print(f"Runtime WASM build lock acquisition failed: {exc}", file=sys.stderr)
+        return False
