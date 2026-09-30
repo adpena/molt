@@ -1,9 +1,9 @@
 schema_version = 2
 
 # Pinned releases of standalone tool binaries that both CI and the local
-# custody toolchain root install from. One authority: the CI workflow pin
-# (taiki-e/install-action `tool: <name>@<version>`) and the proof-plan
-# toolchain policy are gated against it, and src/molt/tool_releases.py
+# custody toolchain root install from. One authority: the CI provisioning
+# command and proof-plan toolchain policy consume this manifest, and
+# src/molt/tool_releases.py
 # provisions the host asset into `<toolchain root>/<name>-<version>/bin`
 # only after the download matches the recorded size and SHA-256 exactly.
 # Each tool's `provenance` names the authority its digests were read from (a

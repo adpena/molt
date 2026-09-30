@@ -425,11 +425,44 @@ def fake_test_file(tmp_path) -> Path:
 
 
 @pytest.fixture
-def install_fake_registry(monkeypatch):
+def cpython_oracle(monkeypatch) -> TargetPythonVersion:
+    """Declare the stubbed CPython oracle's identity instead of probing one.
+
+    run_cpython is stubbed, so no live interpreter answers for the oracle; the
+    real probe is a guarded subprocess whose result, failures included, is
+    cached for the whole process. The declared minor is supported but differs
+    from the interpreter running pytest, so a target derived from the host
+    rather than the oracle cannot pass. Target admission itself stays real.
+    """
+    oracle = TargetPythonVersion(3, 12 if sys.version_info[:2] == (3, 13) else 13, 0)
+    command = molt_diff._resolve_python_command(sys.executable)
+
+    def version(probed: tuple[str, ...]) -> tuple[int, int]:
+        assert probed == command, f"probed {probed}, not the oracle {command}"
+        return oracle.feature_version
+
+    def sys_env(probed: tuple[str, ...]) -> dict[str, str]:
+        assert probed == command, f"probed {probed}, not the oracle {command}"
+        return {
+            "MOLT_PYTHON_VERSION": oracle.short,
+            "MOLT_SYS_VERSION_INFO": (
+                f"{oracle.major},{oracle.minor},{oracle.micro},"
+                f"{oracle.release},{oracle.serial}"
+            ),
+        }
+
+    monkeypatch.setattr(molt_diff, "_python_command_version", version)
+    monkeypatch.setattr(molt_diff, "_molt_sys_env_for_python_command", sys_env)
+    return oracle
+
+
+@pytest.fixture
+def install_fake_registry(monkeypatch, cpython_oracle):
     """Install a fake backend registry into molt_diff and stub run_cpython.
 
     Returns a function that takes a mapping {backend: BackendResult}, installs it
-    as the registry, and stubs CPython to a chosen oracle output.
+    as the registry, and stubs CPython to a chosen oracle output whose identity
+    is the declared ``cpython_oracle``.
     """
 
     def _install(backend_results: dict, cpython=("42\n", "", 0)):
@@ -494,6 +527,7 @@ def test_all_backends_receive_one_stdlib_profile(
 def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
     fake_test_file: Path,
     install_fake_registry,
+    cpython_oracle: TargetPythonVersion,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_test_file.write_text(
@@ -513,19 +547,47 @@ def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
     status = molt_diff.diff_test(
         str(fake_test_file),
         targets=("native", "wasm"),
-        target_python=f"{sys.version_info.major}.{sys.version_info.minor}",
+        target_python=cpython_oracle.short,
     )
 
     assert status == "pass"
     wasm_contexts = registry["wasm"].contexts
     assert len(native_contexts) == len(wasm_contexts) == 1
     assert native_contexts[0] == wasm_contexts[0]
-    assert native_contexts[0].target_python.short == (
-        f"{sys.version_info.major}.{sys.version_info.minor}"
+    assert native_contexts[0].target_python == cpython_oracle
+    assert native_contexts[0].environment["MOLT_PYTHON_VERSION"] == (
+        cpython_oracle.short
     )
     assert native_contexts[0].environment["MOLT_CAPABILITY_TIER"] == "none"
     assert native_contexts[0].capabilities == "net.listen,net.outbound"
     assert "poison.inherited" not in native_contexts[0].capabilities
+
+
+def test_target_mismatching_the_oracle_fails_before_any_execution(
+    fake_test_file: Path,
+    install_fake_registry,
+    cpython_oracle: TargetPythonVersion,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, native_contexts = install_fake_registry(
+        {
+            "native": compat_backends.BackendResult("42\n", "", 0),
+            "wasm": compat_backends.BackendResult("42\n", "", 0),
+        }
+    )
+    monkeypatch.setattr(
+        molt_diff,
+        "run_cpython",
+        lambda *_a, **_k: pytest.fail("an inadmissible target ran the oracle"),
+    )
+    # 3.14 is a supported target but never the declared oracle.
+    assert cpython_oracle.short != "3.14"
+    with pytest.raises(ValueError, match="does not match the CPython oracle"):
+        molt_diff.diff_test(
+            str(fake_test_file), targets=("native", "wasm"), target_python="3.14"
+        )
+    assert native_contexts == []
+    assert registry["wasm"].contexts == []
 
 
 def test_all_backends_agree_with_cpython_passes(
@@ -623,6 +685,7 @@ def test_fault_injection_inert_when_unset() -> None:
     assert out.stdout == base.stdout  # no env -> no perturbation
 
 
+@pytest.mark.usefixtures("cpython_oracle")
 def test_uncalibrated_when_no_backend_available(fake_test_file, monkeypatch) -> None:
     # A backend whose toolchain is unavailable is a LOUD uncalibrated, never a
     # silent pass. With only an unavailable backend requested, the test resolves

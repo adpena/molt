@@ -66,10 +66,7 @@ jobs:
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
 
       - name: Install WASM validator
-        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
-        with:
-          tool: wasm-tools@1.259.0
-          fallback: none
+        run: python3 -m molt.tool_releases provision wasm-tools --github-path "$GITHUB_PATH"
 
       - name: Setup canonical native and WASM linker SDK
         uses: ./.github/actions/setup-llvm

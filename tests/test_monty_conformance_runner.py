@@ -337,12 +337,15 @@ def test_run_binary_reports_guard_timeout_as_timeout(monkeypatch, tmp_path: Path
     binary.write_text("binary", encoding="utf-8")
 
     def fake_guard(command, **kwargs):
-        return run_molt_conformance.subprocess.CompletedProcess(
+        result = run_molt_conformance.subprocess.CompletedProcess(
             command,
             run_molt_conformance.process_guard_common.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
             "",
             "memory_guard: timeout after 2.00s\n",
         )
+
+        result.timed_out = True
+        return result
 
     monkeypatch.setattr(
         run_molt_conformance.process_guard_common.harness_memory_guard,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.target_python import TargetPythonVersion
 from molt.verified_subset import load_verified_subset_policy
 
 import importlib.util
@@ -64,6 +65,37 @@ def _configure_fixture_cpython_runner(
         module, "_resolve_python_command", lambda _python: [sys.executable]
     )
     monkeypatch.setattr(module, "_run_subprocess", run_from_fixture_cwd)
+
+
+def _declare_cpython_oracle(
+    module: ModuleType, monkeypatch: pytest.MonkeyPatch, python_exe: str
+) -> TargetPythonVersion:
+    """Declare the CPython oracle's identity instead of probing a live interpreter.
+
+    The declared minor is supported but differs from the interpreter running
+    pytest, so a target derived from the host rather than the oracle cannot
+    pass. Target admission itself stays real.
+    """
+    oracle = TargetPythonVersion(3, 12 if sys.version_info[:2] == (3, 13) else 13, 0)
+    command = module._resolve_python_command(python_exe)
+
+    def version(probed: tuple[str, ...]) -> tuple[int, int]:
+        assert probed == command, f"probed {probed}, not the oracle {command}"
+        return oracle.feature_version
+
+    def sys_env(probed: tuple[str, ...]) -> dict[str, str]:
+        assert probed == command, f"probed {probed}, not the oracle {command}"
+        return {
+            "MOLT_PYTHON_VERSION": oracle.short,
+            "MOLT_SYS_VERSION_INFO": (
+                f"{oracle.major},{oracle.minor},{oracle.micro},"
+                f"{oracle.release},{oracle.serial}"
+            ),
+        }
+
+    monkeypatch.setattr(module, "_python_command_version", version)
+    monkeypatch.setattr(module, "_molt_sys_env_for_python_command", sys_env)
+    return oracle
 
 
 @pytest.mark.parametrize("script_reference", ["absolute", "relative"])
@@ -285,6 +317,11 @@ def test_molt_target_python_must_match_cpython_oracle(
     assert module._resolve_molt_target_python("python", "3.14").short == "3.14"
     with pytest.raises(ValueError, match="does not match the CPython oracle"):
         module._resolve_molt_target_python("python", "3.13")
+    # An unknown oracle fails closed; an explicit target cannot stand in for it.
+    monkeypatch.setattr(module, "_python_exe_version", lambda _python: None)
+    for explicit in (None, "3.14"):
+        with pytest.raises(ValueError, match="cannot derive Molt target Python"):
+            module._resolve_molt_target_python("python", explicit)
 
 
 @pytest.mark.parametrize("retry_isolated", [None, "0", "1"])
@@ -485,6 +522,7 @@ def test_run_diff_serial_emits_run_line_before_file_work(
         def start_repo_sentinel(self, **_kwargs):
             return None
 
+    _declare_cpython_oracle(module, monkeypatch, sys.executable)
     monkeypatch.setattr(module, "_ensure_diff_run_lock", lambda: None)
     monkeypatch.setattr(module, "_prune_orphan_diff_workers", lambda: None)
     monkeypatch.setattr(module, "_prune_orphan_build_helpers", lambda: None)
@@ -2050,6 +2088,7 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
     target_file.write_text("print('ok')\n", encoding="utf-8")
     seen_cache_roots: list[str | None] = []
 
+    oracle = _declare_cpython_oracle(module, monkeypatch, "python")
     monkeypatch.setattr(module, "_repo_root", lambda: repo_root)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
     monkeypatch.delenv("MOLT_CACHE", raising=False)
@@ -2106,9 +2145,7 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
         execution_context: object,
     ):
         del file_path, build_profile
-        assert execution_context.target_python.short == (
-            f"{sys.version_info.major}.{sys.version_info.minor}"
-        )
+        assert execution_context.target_python == oracle
         seen_cache_roots.append(os.environ.get("MOLT_CACHE"))
         return module.compat_backends.BackendResult(
             "",
@@ -2134,6 +2171,7 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
     summary = module.run_diff(target_file, "python", warm_cache=True)
 
     assert summary["failed"] == 0
+    assert summary["config"]["compiler_target_python"] == oracle.short
     assert summary["item_results"] == [
         {
             "path": str(target_file).replace("\\", "/"),
