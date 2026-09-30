@@ -66,3 +66,18 @@ def test_cargo_version_probe_normalizes_config_wrapper(monkeypatch) -> None:
     tool._run(["cargo", "--version"])
 
     assert captured["env"]["CARGO_INCREMENTAL"] == "0"  # type: ignore[index]
+
+
+def test_selected_compiler_meets_workspace_minimum() -> None:
+    tool = _load_check_rust_toolchain()
+    assert not tool.check_compiler_version(
+        "rustc 1.96.0-nightly (2d76d9bc7 2026-03-09)"
+    ).ok
+    assert not tool.check_compiler_version(
+        "rustc 1.96.1-nightly (abcdef 2026-06-01)"
+    ).ok
+    assert tool.check_compiler_version("rustc 1.96.1 (31fca3adb 2026-06-26)").ok
+    assert tool.check_compiler_version(
+        "rustc 1.101.0-nightly (c1070d693 2026-09-28)"
+    ).ok
+    assert not tool.check_compiler_version("garbage").ok

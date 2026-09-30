@@ -232,6 +232,25 @@ def check_installed_toolchain() -> CheckReport:
     return CheckReport(tuple(errors))
 
 
+def check_compiler_version(version: str) -> CheckReport:
+    """Check the selected compiler against Cargo's workspace minimum."""
+    match = re.fullmatch(
+        r"rustc (\d+)\.(\d+)\.(\d+)(-[^ ]+)?(?:\s.*)?", version.strip()
+    )
+    if match is None:
+        return CheckReport((f"unrecognized rustc version: {version!r}",))
+    actual = tuple(int(match[i]) for i in (1, 2, 3))
+    minimum_text = _read_toml(Path("Cargo.toml"))["workspace"]["package"][
+        "rust-version"
+    ]
+    minimum = tuple(int(part) for part in minimum_text.split("."))
+    if actual < minimum or (actual == minimum and match[4]):
+        return CheckReport(
+            (f"{version} is below workspace rust-version {minimum_text}",)
+        )
+    return CheckReport(())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -239,8 +258,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="check only checked-in repository contracts, not local rustup tools",
     )
+    parser.add_argument(
+        "--compiler-version",
+        help="validate an explicit rustc --version output against the workspace minimum",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.compiler_version is not None:
+        report = check_compiler_version(args.compiler_version)
+        for error in report.errors:
+            print(error, file=sys.stderr)
+        return 0 if report.ok else 1
 
     reports = [check_repository_contract()]
     if not args.skip_installed:
