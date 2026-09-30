@@ -1036,7 +1036,7 @@ impl ScalarRepresentationPlan {
             if current.kind != original_kind
                 || current.value != Some(offset)
                 || current.out.is_some()
-                || !current.args.as_ref().is_some_and(|args| args.len() == 2)
+                || current.args.as_ref().is_none_or(|args| args.len() != 2)
             {
                 continue;
             }

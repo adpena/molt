@@ -27,6 +27,15 @@ tests, measurements, and explicit user direction over stale prose.
 
 ## Engineer coherent systems
 
+- Before each repair or optimization, map the operation/semantic family,
+  sibling sites across backend, profile and platform implementations, upstream
+  producers and assumptions, downstream consumers and exports, and lateral
+  analogous sites. Search by failure mechanism as well as symbol spelling.
+- Check family completeness before landing: prefer one structural correction
+  and explicit invariants, cover every truly affected site with family-wide
+  regression or differential tests, and have adversarial review challenge the
+  impact map. Record justified semantic exceptions and unverified coordinates;
+  do not mechanically change similar-looking sites with different semantics.
 - Enter through one concrete aperture, then follow the invariant through the
   complete coherent authority class. The aperture bounds discovery; it does
   not limit the engineering end state.

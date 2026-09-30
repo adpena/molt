@@ -309,7 +309,7 @@ fn integer_true_division_never_rounds_its_operands_before_the_ratio() {
         );
     }
     for (left, right, expected) in [
-        (7, 2, 3.5),
+        (7, 2, 3.5_f64),
         (-7, 2, -3.5),
         (9_007_199_254_740_994, 2, 4_503_599_627_370_497.0),
         (i64::MIN, 1, -9_223_372_036_854_775_808.0),
@@ -321,11 +321,7 @@ fn integer_true_division_never_rounds_its_operands_before_the_ratio() {
         else {
             panic!("exact operands {left}/{right} must fold");
         };
-        assert_eq!(
-            actual.to_bits(),
-            (expected as f64).to_bits(),
-            "{left}/{right}"
-        );
+        assert_eq!(actual.to_bits(), expected.to_bits(), "{left}/{right}");
     }
 }
 
@@ -383,7 +379,7 @@ fn compound_materialization_checks_recursive_cost_before_allocation() {
     };
     let large = s(&"x".repeat(MAX_COMPOUND_ELEMENTS));
     assert_eq!(eval(OpCode::Add, &[large.clone(), s("y")]), None);
-    assert_eq!(builtin("repr", &[large.clone()]), None);
+    assert_eq!(builtin("repr", std::slice::from_ref(&large)), None);
     assert_eq!(eval(OpCode::Mul, &[s("x"), ConstVal::Int(i64::MAX)]), None);
     assert_eq!(
         eval(
@@ -395,7 +391,7 @@ fn compound_materialization_checks_recursive_cost_before_allocation() {
         ),
         None
     );
-    assert_eq!(eval(OpCode::BuildTuple, &[large.clone()]), None);
+    assert_eq!(eval(OpCode::BuildTuple, std::slice::from_ref(&large)), None);
     let half = ConstVal::Tuple(vec![s(&"x".repeat(501))].into());
     assert_eq!(eval(OpCode::Add, &[half.clone(), half.clone()]), None);
     assert_eq!(eval(OpCode::BuildTuple, &[half.clone(), half]), None);

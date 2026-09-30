@@ -581,13 +581,13 @@ fn handle_call_direct_op(
             continue;
         }
         // The token carries this path\'s owner across SSA redefinitions.
-        cleanup_roots.release(builder, local_dec_ref_obj, &name);
+        cleanup_roots.release(builder, local_dec_ref_obj, name);
     }
     for name in &origin_ptr_cleanup {
         if arg_cleanup_roots.contains(alias_root_name(alias_roots, name)) {
             continue;
         }
-        cleanup_roots.release(builder, local_dec_ref_obj, &name);
+        cleanup_roots.release(builder, local_dec_ref_obj, name);
     }
     for name in &arg_cleanup_names {
         cleanup_roots.release(builder, local_dec_ref_obj, name);

@@ -23,7 +23,7 @@ use molt_lang_obj_model::MoltObject;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::os::raw::{c_char, c_int, c_ulong};
+use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -838,7 +838,7 @@ fn type_modified_recurses_subclasses_and_notifies_312_watchers() {
         heap.ht_type.ob_base.ob_base.ob_type = &raw mut PyType_Type;
         heap.ht_type.tp_flags =
             Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_READY | Py_TPFLAGS_VALID_VERSION_TAG;
-        heap.ht_type.tp_version_tag = 100 + index as c_ulong;
+        heap.ht_type.tp_version_tag = 100 + u32::try_from(index).unwrap();
         heap._spec_cache.getitem = (&raw mut heap.ht_type).cast();
     }
     child.ht_type.tp_base = &raw mut base.ht_type;

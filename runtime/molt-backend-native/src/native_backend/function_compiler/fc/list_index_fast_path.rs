@@ -340,16 +340,16 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
             }
             _ => {}
         }
-        if let Some(layout) = typed_list_index_layout(idx, op, representation_plan) {
-            if depth == 0 {
-                let name = op.args.as_ref().unwrap()[0].clone();
-                match layout {
-                    ListIndexLayout::FlatInt => {
-                        list_int_accessed.insert(name);
-                    }
-                    ListIndexLayout::Generic => {
-                        list_generic_accessed.insert(name);
-                    }
+        if let Some(layout) = typed_list_index_layout(idx, op, representation_plan)
+            && depth == 0
+        {
+            let name = op.args.as_ref().unwrap()[0].clone();
+            match layout {
+                ListIndexLayout::FlatInt => {
+                    list_int_accessed.insert(name);
+                }
+                ListIndexLayout::Generic => {
+                    list_generic_accessed.insert(name);
                 }
             }
         }

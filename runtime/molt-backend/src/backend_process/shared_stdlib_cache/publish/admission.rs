@@ -9,6 +9,7 @@ use super::sidecars::{
 
 /// A reader observes the archive and all sidecars from one published generation.
 /// Lock failures are loud cache misses; compile admission propagates them below.
+#[cfg(any(unix, test))]
 pub(crate) fn shared_stdlib_cache_matches(
     path: &Path,
     expected_key: Option<&str>,

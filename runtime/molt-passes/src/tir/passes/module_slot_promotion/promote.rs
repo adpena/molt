@@ -428,7 +428,7 @@ fn candidate_is_legal(
         let block = &func.blocks[&bid];
         if !matches!(&block.terminator, Terminator::Branch { .. })
             || block.ops.is_empty()
-            || block.ops.len() % 2 != 0
+            || !block.ops.len().is_multiple_of(2)
         {
             dbg.note(format!(
                 "{} loop@{:?}: refused (malformed generated store-back block {:?})",

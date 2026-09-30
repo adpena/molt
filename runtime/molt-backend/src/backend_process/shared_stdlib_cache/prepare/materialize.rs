@@ -45,18 +45,15 @@ pub(crate) fn materialize_stdlib_cache(
     ) {
         return Err(cleanup_temporary_after_error(&temp_stdlib_path, err));
     }
-    if let Err(err) = publish_shared_stdlib_cache_archive(
+    // The publisher owns temporary cleanup and preserves cleanup failures.
+    publish_shared_stdlib_cache_archive(
         stdlib_path,
         &temp_stdlib_path,
         stdlib_count,
         request.expected_cache_key,
         request.expected_cache_manifest,
         current_partition_manifest,
-    ) {
-        // The publisher owns temporary cleanup and preserves any cleanup
-        // failure in the returned publication error.
-        return Err(err);
-    }
+    )?;
 
     ir.functions = std::mem::take(user_remaining);
     eprintln!(
