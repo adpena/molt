@@ -35,6 +35,17 @@ impl NativeArtifactKind {
         Ok(())
     }
 
+    // Daemon protocol/cache-key consumers compile on Unix, and their tests
+    // compile on every host. Match that caller boundary rather than removing
+    // an API solely because a normal Windows build cannot observe its caller.
+    #[cfg(any(unix, test))]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Object => "object",
+            Self::Archive => "archive",
+        }
+    }
+
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
         match value {
             "object" => Ok(Self::Object),
@@ -49,6 +60,22 @@ impl NativeArtifactKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_transport_protocol_labels_roundtrip_without_aliasing() {
+        for (kind, label) in [
+            (NativeArtifactKind::Object, "object"),
+            (NativeArtifactKind::Archive, "archive"),
+        ] {
+            assert_eq!(kind.as_str(), label);
+            assert_eq!(NativeArtifactKind::parse(kind.as_str()), Ok(kind));
+        }
+        assert_ne!(
+            NativeArtifactKind::Object.as_str(),
+            NativeArtifactKind::Archive.as_str()
+        );
+        assert!(NativeArtifactKind::parse("wasm").is_err());
+    }
 
     #[test]
     fn shared_stdlib_admission_is_owned_by_native_transport_kind() {
