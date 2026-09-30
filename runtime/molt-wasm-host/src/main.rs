@@ -29,7 +29,7 @@ use wasmtime::{
     MemoryType, Module, OptLevel, Ref, Result, Store, Table, TableType, Val, ValType,
 };
 use wasmtime_wasi::p1::WasiP1Ctx;
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder, p1};
+use wasmtime_wasi::{FsPerms, WasiCtxBuilder, p1};
 
 mod db_host;
 mod engine;

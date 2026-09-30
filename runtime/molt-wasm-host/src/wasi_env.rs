@@ -57,6 +57,6 @@ pub(super) fn build_wasi_ctx(
     let mut wasi_args: Vec<String> = vec!["app".to_string()];
     wasi_args.extend(guest_args.iter().cloned());
     builder.args(&wasi_args);
-    builder.preopened_dir(".", ".", DirPerms::all(), FilePerms::all())?;
+    builder.preopened_dir(".", ".", FsPerms::ReadWrite)?;
     Ok(builder.build_p1())
 }
