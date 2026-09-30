@@ -25,6 +25,7 @@ from molt.cli.build_output_layout import (
 )
 from molt.cli.config_resolution import (
     _coerce_bool,
+    _select_codegen_backend,
     _select_capability_input,
     resolve_stdlib_profile,
 )
@@ -52,6 +53,10 @@ from molt.cli.setup_readiness import doctor, setup
 from molt.cli.toolchain_validation import update_repo, validate
 from molt.cli.wrapper_build import _build_args_has_python_version_flag
 from molt.wasm_optimization import WASM_OPT_DEV_DEFAULT, WASM_OPT_RELEASE_DEFAULT
+
+
+def _configured_build_target(target: str | None, build_cfg: Mapping[str, Any]) -> str:
+    return target or build_cfg.get("target") or "native"
 
 
 def _dispatch_entrypoint_command(
@@ -89,6 +94,23 @@ def _dispatch_entrypoint_command(
             verbose=args.verbose,
         )
 
+    if args.command == "internal-backend-build":
+        target, backend_error = _select_codegen_backend(
+            _configured_build_target(args.target, build_cfg), args.backend
+        )
+        if backend_error is not None:
+            return _fail(backend_error, args.json, command="internal-backend-build")
+        # Deferred: the backend admission stack is not part of CLI startup.
+        from molt.cli import backend_build as _backend_build
+
+        return _backend_build._prebuild_backend_binary(
+            project_root=config_root,
+            target=target,
+            json_output=args.json,
+            cargo_timeout=args.cargo_timeout,
+            verbose=args.verbose,
+        )
+
     if args.command == "debug":
         return _debug_helpers._handle_debug_command(args)
 
@@ -103,7 +125,7 @@ def _dispatch_entrypoint_command(
             quiet=getattr(args, "quiet", False),
             json_output=args.json,
         )
-        target = args.target or build_cfg.get("target") or "native"
+        target = _configured_build_target(args.target, build_cfg)
         codec = args.codec or build_cfg.get("codec") or "msgpack"
         type_hints = args.type_hints or build_cfg.get("type_hints") or "check"
         fallback = args.fallback or build_cfg.get("fallback") or "error"
@@ -331,35 +353,9 @@ def _dispatch_entrypoint_command(
                 if isinstance(default_wasm_profile, str):
                     wasm_profile = default_wasm_profile
 
-        # `--target llvm` is an alias for "native binary, LLVM backend": the
-        # LLVM backend emits host-native objects, so the runtime staticlib and
-        # the entire native link path are identical to `--target native`; the
-        # only difference is the codegen backend.  Canonicalize it to the
-        # `native` target (so every downstream `target == "native"` branch -
-        # runtime triple, stdlib object split, native link driver - fires) and
-        # route the backend selection through MOLT_BACKEND below.  Without this,
-        # "llvm" leaks into the cargo `--target` slot, which expects a rustc
-        # target triple, and the runtime build fails with "could not find
-        # specification for target \"llvm\"".
-        if target == "llvm":
-            if backend_choice not in {"auto", "llvm"}:
-                return _fail(
-                    "`--target llvm` selects the LLVM backend; it conflicts "
-                    f"with `--backend {backend_choice}`. Use `--target native "
-                    "--backend llvm` to mix, or drop one flag.",
-                    args.json,
-                    command="build",
-                )
-            backend_choice = "llvm"
-            target = "native"
-        # --backend: resolve effective backend and propagate via MOLT_BACKEND.
-        # "auto" defaults to cranelift for all builds. LLVM remains opt-in
-        # until its end-to-end parity and operational tooling are on the same
-        # footing as the default Cranelift lane.
-        effective_backend = backend_choice
-        if effective_backend == "auto":
-            effective_backend = "cranelift"
-        os.environ["MOLT_BACKEND"] = effective_backend
+        target, backend_error = _select_codegen_backend(target, backend_choice)
+        if backend_error is not None:
+            return _fail(backend_error, args.json, command="build")
 
         bolt_requested = getattr(args, "bolt", False)
         build_rc = build_fn(

@@ -22,6 +22,8 @@ from molt.cli.source_extension_invocation import (
 from molt.cli.toolchain_validation import _VALIDATE_SUITE_CHOICES
 from molt.wasm_optimization import WASM_OPT_LEVELS
 
+_CODEGEN_BACKEND_CHOICES = ("cranelift", "llvm", "auto")
+
 
 def _build_entrypoint_parser() -> argparse.ArgumentParser:
     from molt import __version__
@@ -263,7 +265,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     build_parser.add_argument(
         "--backend",
-        choices=["cranelift", "llvm", "auto"],
+        choices=_CODEGEN_BACKEND_CHOICES,
         default="auto",
         help="Compilation backend (auto=cranelift; llvm is opt-in and requires an LLVM toolchain).",
     )
@@ -884,6 +886,39 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
 
+    # Prewarms the backend compiler `molt build --target/--backend` admits.
+    backend_build_parser = subparsers.add_parser(
+        "internal-backend-build",
+        help=argparse.SUPPRESS,
+    )
+    backend_build_parser.add_argument(
+        "--target",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    backend_build_parser.add_argument(
+        "--backend",
+        choices=_CODEGEN_BACKEND_CHOICES,
+        default="auto",
+        help=argparse.SUPPRESS,
+    )
+    backend_build_parser.add_argument(
+        "--cargo-timeout",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    backend_build_parser.add_argument(
+        "--json",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    backend_build_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+
     debug_parser = subparsers.add_parser(
         "debug",
         help="Inspect and retain canonical compiler debug artifacts.",
@@ -1175,7 +1210,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--backend",
-        choices=["cranelift", "llvm", "auto"],
+        choices=_CODEGEN_BACKEND_CHOICES,
         default=None,
         help="Compilation backend passed to `molt build` (auto=cranelift; llvm is opt-in and requires an LLVM toolchain).",
     )

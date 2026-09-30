@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Mapping
 
@@ -44,7 +45,7 @@ from molt.cli.backend_execution import (
     _read_backend_daemon_identity,
     _start_backend_daemon,
 )
-from molt.cli.build_locks import _build_lock
+from molt.cli.build_locks import _build_lock, BuildLockAcquisitionError
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
@@ -106,6 +107,61 @@ def _record_pipeline_stage_ms(
     stage_timings_ms[name] = round(
         max(0.0, (time.perf_counter() - started_at) * 1000.0),
         6,
+    )
+
+
+@dataclass(frozen=True)
+class _BackendSelection:
+    """The backend compiler one build lane dispatches."""
+
+    cargo_profile: str
+    features: tuple[str, ...]
+    binary: Path
+
+
+def _select_backend_binary(
+    *,
+    molt_root: Path,
+    backend_cargo_profile: str,
+    is_wasm: bool,
+    is_luau_transpile: bool,
+    is_rust_transpile: bool,
+) -> _BackendSelection:
+    """Select the backend compiler for a build lane.
+
+    Build setup, backend dispatch, and the ``internal-backend-build`` prewarm
+    all select here, so a prewarm admits the exact feature-tagged binary a
+    later build runs. The feature authority folds ``MOLT_BACKEND=llvm`` into
+    both the Cargo features and the binary path.
+    """
+    backend_features = _backend_features_for_target(
+        is_wasm=is_wasm,
+        is_luau_transpile=is_luau_transpile,
+        is_rust_transpile=is_rust_transpile,
+    )
+    return _BackendSelection(
+        cargo_profile=backend_cargo_profile,
+        features=backend_features,
+        binary=_backend_bin_path(molt_root, backend_cargo_profile, backend_features),
+    )
+
+
+def _ensure_selected_backend_binary(
+    selection: _BackendSelection,
+    *,
+    molt_root: Path,
+    cargo_timeout: float | None,
+    json_output: bool,
+    stage_timings_ms: dict[str, float] | None = None,
+) -> _backend_binary._BackendBinaryEnsureResult:
+    return _backend_binary._ensure_backend_binary(
+        selection.binary,
+        cargo_timeout=cargo_timeout,
+        json_output=json_output,
+        cargo_profile=selection.cargo_profile,
+        project_root=molt_root,
+        backend_features=selection.features,
+        stage_timings_ms=stage_timings_ms,
     )
 
 
@@ -179,20 +235,20 @@ def _prepare_backend_setup(
     if callable_symbols_error is not None:
         return None, callable_symbols_error
 
-    backend_features = _backend_features_for_target(
+    backend_selection = _select_backend_binary(
+        molt_root=molt_root,
+        backend_cargo_profile=backend_cargo_profile,
         is_wasm=is_wasm,
         is_luau_transpile=is_luau_transpile,
         is_rust_transpile=is_rust_transpile,
     )
-    backend_bin = _backend_bin_path(molt_root, backend_cargo_profile, backend_features)
+    backend_bin = backend_selection.binary
     backend_binary_start = time.perf_counter()
-    backend_ensure_result = _backend_binary._ensure_backend_binary(
-        backend_bin,
+    backend_ensure_result = _ensure_selected_backend_binary(
+        backend_selection,
+        molt_root=molt_root,
         cargo_timeout=cargo_timeout,
         json_output=json_output,
-        cargo_profile=backend_cargo_profile,
-        project_root=molt_root,
-        backend_features=backend_features,
         stage_timings_ms=stage_timings_ms,
     )
     _record_pipeline_stage_ms(
@@ -390,6 +446,55 @@ def _prepare_backend_runtime_context(
     ), None
 
 
+def _start_backend_daemon_under_lock(
+    backend_bin: Path,
+    daemon_socket: Path,
+    *,
+    cargo_profile: str,
+    project_root: Path,
+    target_triple: str | None,
+    config_digest: str | None,
+    startup_timeout: float | None,
+    json_output: bool,
+    warnings: list[str],
+    backend_env: Mapping[str, str] | None,
+    phase: str,
+) -> tuple[bool, _CliFailure | None]:
+    """One startup/restart acquisition boundary; inner failures retain identity."""
+    started = time.perf_counter()
+    try:
+        with _build_lock(
+            project_root,
+            f"backend-daemon.{cargo_profile}",
+            default_timeout_s=startup_timeout if startup_timeout is not None else 300.0,
+        ):
+            ready = _start_backend_daemon(
+                backend_bin,
+                daemon_socket,
+                cargo_profile=cargo_profile,
+                project_root=project_root,
+                target_triple=target_triple,
+                config_digest=config_digest,
+                startup_timeout=startup_timeout,
+                json_output=json_output,
+                warnings=warnings,
+                backend_env=backend_env,
+            )
+        return ready, None
+    except BuildLockAcquisitionError as exc:
+        return False, _fail(
+            f"Backend daemon lock acquisition failed: {exc}",
+            json_output,
+            command="build",
+            data={
+                "failure": {"phase": phase},
+                "stage_timings_ms": {
+                    phase: (time.perf_counter() - started) * 1000.0,
+                },
+            },
+        )
+
+
 def _prepare_backend_dispatch(
     *,
     is_rust_transpile: bool,
@@ -426,10 +531,11 @@ def _prepare_backend_dispatch(
         backend_env.pop("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", None)
         backend_env.pop("MOLT_WASM_LINK", None)
         backend_env.update(wasm_layout.backend_environment())
-    # Single source of truth (shared with the cache-key binary-identity
-    # resolver): the 'llvm' feature is folded in by the helper when
-    # MOLT_BACKEND == "llvm" so the backend binary is compiled with inkwell/LLVM
-    # support and the feature-tagged path/identity stays consistent.
+    # Single source of truth (shared with setup, the backend prewarm, and the
+    # cache-key binary-identity resolver): the 'llvm' feature is folded in by
+    # the helper when MOLT_BACKEND == "llvm" so the backend binary is compiled
+    # with inkwell/LLVM support and the feature-tagged path/identity stays
+    # consistent.
     backend_features: tuple[str, ...] = _backend_features_for_target(
         is_wasm=is_wasm,
         is_luau_transpile=is_luau_transpile,
@@ -444,16 +550,19 @@ def _prepare_backend_dispatch(
     reloc_requested = is_wasm and wasm_layout is not None and wasm_layout.relocatable
 
     if backend_bin is None:
-        backend_bin = _backend_bin_path(
-            molt_root, backend_cargo_profile, backend_features
+        backend_selection = _select_backend_binary(
+            molt_root=molt_root,
+            backend_cargo_profile=backend_cargo_profile,
+            is_wasm=is_wasm,
+            is_luau_transpile=is_luau_transpile,
+            is_rust_transpile=is_rust_transpile,
         )
-        backend_ensure_result = _backend_binary._ensure_backend_binary(
-            backend_bin,
+        backend_bin = backend_selection.binary
+        backend_ensure_result = _ensure_selected_backend_binary(
+            backend_selection,
+            molt_root=molt_root,
             cargo_timeout=cargo_timeout,
             json_output=json_output,
-            cargo_profile=backend_cargo_profile,
-            project_root=molt_root,
-            backend_features=backend_features,
         )
         if not backend_ensure_result:
             return None, _fail(
@@ -490,19 +599,22 @@ def _prepare_backend_dispatch(
             config_digest=daemon_config_digest,
         )
         startup_timeout = _backend_daemon_start_timeout()
-        with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
-            daemon_ready = _start_backend_daemon(
-                backend_bin,
-                daemon_socket,
-                cargo_profile=backend_cargo_profile,
-                project_root=molt_root,
-                target_triple=target_triple,
-                config_digest=daemon_config_digest,
-                startup_timeout=startup_timeout,
-                json_output=json_output,
-                warnings=warnings,
-                backend_env=backend_env,
-            )
+        daemon_ready, daemon_lock_failure = _start_backend_daemon_under_lock(
+            backend_bin,
+            daemon_socket,
+            cargo_profile=backend_cargo_profile,
+            project_root=molt_root,
+            target_triple=target_triple,
+            config_digest=daemon_config_digest,
+            startup_timeout=startup_timeout,
+            json_output=json_output,
+            warnings=warnings,
+            backend_env=backend_env,
+            phase="backend_daemon_start_lock",
+        )
+        if daemon_lock_failure is not None:
+            return None, daemon_lock_failure
+
     return _PreparedBackendDispatch(
         backend_env=backend_env,
         reloc_requested=reloc_requested,
@@ -721,19 +833,22 @@ def _execute_backend_compile(
                 if diagnostics_enabled and "backend_daemon_restart" not in phase_starts:
                     phase_starts["backend_daemon_restart"] = time.perf_counter()
                 restart_timeout = _backend_daemon_start_timeout()
-                with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
-                    daemon_ready = _start_backend_daemon(
-                        backend_bin,
-                        daemon_socket,
-                        cargo_profile=backend_cargo_profile,
-                        project_root=molt_root,
-                        target_triple=target_triple,
-                        config_digest=backend_daemon_config_digest,
-                        startup_timeout=restart_timeout,
-                        json_output=json_output,
-                        warnings=warnings,
-                        backend_env=backend_env,
-                    )
+                daemon_ready, daemon_lock_failure = _start_backend_daemon_under_lock(
+                    backend_bin,
+                    daemon_socket,
+                    cargo_profile=backend_cargo_profile,
+                    project_root=molt_root,
+                    target_triple=target_triple,
+                    config_digest=backend_daemon_config_digest,
+                    startup_timeout=restart_timeout,
+                    json_output=json_output,
+                    warnings=warnings,
+                    backend_env=backend_env,
+                    phase="backend_daemon_restart_lock",
+                )
+                if daemon_lock_failure is not None:
+                    return None, daemon_lock_failure
+
                 if daemon_ready:
                     daemon_compile = _compile_with_backend_daemon(
                         daemon_socket,

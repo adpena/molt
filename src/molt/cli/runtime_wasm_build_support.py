@@ -298,7 +298,11 @@ def _ensure_wasm_cpython_abi_staticlib(
         stage = "lock"
         lock_name = f"runtime.{cargo_profile}.wasm32-wasip1.cpython-abi"
         build_state_root = _build_state_root(root)
-        with _build_lock(root, lock_name):
+        with _build_lock(
+            root,
+            lock_name,
+            default_timeout_s=cargo_timeout if cargo_timeout is not None else 300.0,
+        ):
             stage = "pre-build-identity"
             pre_identity = resolve_identity()
             fingerprint = runtime_build_fingerprint(pre_identity)

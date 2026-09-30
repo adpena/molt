@@ -16,8 +16,12 @@ def _build_lock_dir_cached(project_root_str: str, build_state_root_str: str) -> 
     return Path(build_state_root_str) / "build_locks"
 
 
+class BuildLockAcquisitionError(RuntimeError):
+    """Expected acquisition failure; errors inside locked work stay distinct."""
+
+
 @contextmanager
-def _build_lock(project_root: Path, name: str):
+def _build_lock(project_root: Path, name: str, *, default_timeout_s: float = 300.0):
     lock_dir = _build_lock_dir_cached(
         os.fspath(project_root),
         os.fspath(_build_state_root(project_root)),
@@ -28,17 +32,20 @@ def _build_lock(project_root: Path, name: str):
     lock_path = lock_dir / f"{name}.lock"
     lock_timeout = _parse_lock_timeout(
         os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", ""),
-        default_s=300.0,
+        default_s=default_timeout_s,
     )
     timeout_label = "unbounded" if lock_timeout is None else f"{lock_timeout:.1f}s"
-    handle = _acquire_file_lock(
-        lock_path,
-        timeout_s=lock_timeout,
-        timeout_message=(
-            f"Timed out waiting for build lock {lock_path} after {timeout_label}. "
-            "Check for stale molt build/backend helper processes."
-        ),
-    )
+    try:
+        handle = _acquire_file_lock(
+            lock_path,
+            timeout_s=lock_timeout,
+            timeout_message=(
+                f"Timed out waiting for build lock {lock_path} after {timeout_label}. "
+                "Check for stale molt build/backend helper processes."
+            ),
+        )
+    except (OSError, RuntimeError) as exc:
+        raise BuildLockAcquisitionError(str(exc)) from exc
     try:
         yield
     finally:

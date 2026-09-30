@@ -4,6 +4,8 @@ import inspect
 from pathlib import Path
 import subprocess
 
+import pytest
+
 from molt.cli import backend_output_pipeline, extension_commands, native_toolchain
 from molt.cli import link_pipeline, native_link_command
 
@@ -76,8 +78,9 @@ def test_bolt_success_without_optimized_artifact_fails_closed(
     )
 
 
+@pytest.mark.parametrize("has_link_selection", [False, True])
 def test_bolt_finalizes_candidate_before_atomic_publication(
-    tmp_path, monkeypatch
+    has_link_selection, tmp_path, monkeypatch
 ) -> None:
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -86,6 +89,13 @@ def test_bolt_finalizes_candidate_before_atomic_publication(
     bolt_binary = Path(f"{binary}.bolt")
     binary.write_bytes(b"original")
     bolt_binary.write_bytes(b"optimized")
+    selection_candidate = tmp_path / "selection.candidate.json"
+    selection_candidate.write_text("{}", encoding="utf-8")
+    selection = (
+        (selection_candidate, tmp_path / "selection.json")
+        if has_link_selection
+        else None
+    )
     received: dict[str, object] = {}
     monkeypatch.setattr(native_toolchain, "_compiler_root", lambda: tmp_path)
     monkeypatch.setattr(native_toolchain.sys, "platform", "linux")
@@ -114,6 +124,7 @@ def test_bolt_finalizes_candidate_before_atomic_publication(
             out_dir=None,
             build_rc=0,
             json_output=True,
+            link_selection=selection,
         )
         == 0
     )
@@ -123,6 +134,7 @@ def test_bolt_finalizes_candidate_before_atomic_publication(
         "target_triple": None,
         "strip": True,
         "receipt": None,
+        "link_selection": selection,
     }
     assert binary.read_bytes() == b"finalized"
 

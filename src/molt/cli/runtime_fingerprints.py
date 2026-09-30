@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 import stat
 from typing import Any
@@ -35,6 +36,25 @@ _FIELDS = frozenset(
         "build_identity_scope",
     }
 )
+# The identity an artifact is admitted under. Everything else in a sidecar is
+# refreshable metadata: source-tree timestamp digests and clean-head states are
+# fast-path cache keys, and build identities are pinned to these keys by
+# payload validation (where ``inputs_digest`` is their compile digest).
+_ARTIFACT_SEMANTIC_IDENTITY_KEYS = (
+    "hash",
+    "rustc",
+    "meta_digest",
+    "build_identity_scope",
+)
+_ARTIFACT_REFRESHABLE_METADATA_KEYS = (
+    "inputs_digest",
+    "source_state",
+    "build_identity",
+)
+
+
+def _artifact_semantic_identity(fingerprint: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: fingerprint.get(key) for key in _ARTIFACT_SEMANTIC_IDENTITY_KEYS}
 
 
 def _runtime_fingerprint_payload_is_valid(payload: object) -> bool:
@@ -106,29 +126,61 @@ def _write_runtime_fingerprint(
     _atomic_write_json(path, payload, indent=2)
 
 
+def _admitted_runtime_fingerprint(
+    fingerprint: dict[str, Any], stored: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Retain known receipt coordinates after source/artifact admission matched.
+
+    Missing current tool metadata never erases an admitted identity. Known
+    coordinates still have to match exactly; callers first verify the artifact
+    bytes using the canonical admission predicate.
+    """
+    if stored is None or not _runtime_fingerprint_payload_is_valid(stored):
+        raise ValueError("artifact receipt lost custody during admission")
+    identity = _artifact_semantic_identity(stored)
+    if any(
+        fingerprint.get(key) is not None and fingerprint[key] != value
+        for key, value in identity.items()
+    ):
+        raise ValueError("artifact semantic identity changed during admission")
+    admitted = {
+        **fingerprint,
+        **{
+            key: value
+            for key, value in identity.items()
+            if fingerprint.get(key) is None and value is not None
+        },
+    }
+
+    if (
+        admitted.get("build_identity_scope") is not None
+        and admitted.get("build_identity") is None
+    ):
+        admitted["build_identity"] = stored["build_identity"]
+    _fingerprint_payload(admitted)
+    return admitted
+
+
 def _refresh_runtime_fingerprint_metadata(
     path: Path, fingerprint: dict[str, Any]
 ) -> None:
     existing = _read_runtime_fingerprint(path)
     if existing is None:
-        return
+        raise ValueError("artifact receipt lost custody before metadata refresh")
     payload = _fingerprint_payload(fingerprint)
-    if any(
-        existing.get(key) != payload.get(key)
-        for key in (
-            "hash",
-            "rustc",
-            "inputs_digest",
-            "meta_digest",
-            "build_identity_scope",
-        )
-    ):
+    if _artifact_semantic_identity(existing) != _artifact_semantic_identity(payload):
         raise ValueError(
             "artifact metadata refresh cannot change its admitted semantic identity"
         )
     if "artifact_content_identity" in existing:
         payload["artifact_content_identity"] = existing["artifact_content_identity"]
-    _atomic_write_json(path, payload, indent=2)
+    # The admitted identity remains usable if only its metadata cannot be
+    # written. Every backend/native/WASM caller shares this policy; malformed
+    # or changed semantic identity above is never suppressed.
+    try:
+        _atomic_write_json(path, payload, indent=2)
+    except OSError:
+        pass
 
 
 def _stored_fingerprint_matches_source_metadata(
@@ -185,18 +237,16 @@ def _runtime_fingerprint_metadata_needs_refresh(
 ) -> bool:
     if stored_fingerprint is None:
         return False
-    for key in (
-        "hash",
-        "rustc",
-        "inputs_digest",
-        "meta_digest",
-        "source_state",
-        "build_identity",
-        "build_identity_scope",
+    # Only metadata is refreshable. A fingerprint that names another identity,
+    # or knows less of it (an unavailable rustc), must not rewrite the receipt.
+    if _artifact_semantic_identity(stored_fingerprint) != _artifact_semantic_identity(
+        fingerprint
     ):
-        if stored_fingerprint.get(key) != fingerprint.get(key):
-            return True
-    return False
+        return False
+    return any(
+        stored_fingerprint.get(key) != fingerprint.get(key)
+        for key in _ARTIFACT_REFRESHABLE_METADATA_KEYS
+    )
 
 
 def _artifact_needs_rebuild(
@@ -216,7 +266,7 @@ def _artifact_needs_rebuild(
         return True
     return any(
         stored_fingerprint.get(key) != fingerprint.get(key)
-        for key in ("hash", "rustc", "meta_digest", "build_identity_scope")
+        for key in _ARTIFACT_SEMANTIC_IDENTITY_KEYS
         if fingerprint.get(key) is not None
     )
 
