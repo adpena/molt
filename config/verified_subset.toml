@@ -1,4 +1,5 @@
-schema = "molt.verified-subset.v1"
+schema = "molt.verified-subset.v2"
+build_profiles = ["dev", "release"]
 reference_cpython = ["3.12.13", "3.13.11", "3.14.3"]
 excluded_verification_scopes = ["capability_policy", "dynamic_execution_policy"]
 differential_suites = [

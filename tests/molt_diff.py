@@ -53,8 +53,7 @@ from molt import file_locks  # noqa: E402
 from molt import python_interpreter  # noqa: E402
 from molt.target_python import (  # noqa: E402
     TargetPythonVersion,
-    _parse_target_python_version,
-    require_supported_target_python,
+    resolve_target_python_for_oracle,
 )
 from tests import process_guard_common  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
@@ -209,22 +208,7 @@ def _configure_diff_artifact_environment(
 
 
 def _collect_env_overrides(file_path: str) -> dict[str, str]:
-    overrides: dict[str, str] = {}
-    try:
-        text = Path(file_path).read_text()
-    except OSError:
-        return overrides
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("# MOLT_ENV:"):
-            continue
-        payload = stripped[len("# MOLT_ENV:") :].strip()
-        for token in payload.split():
-            if "=" not in token:
-                continue
-            key, value = token.split("=", 1)
-            overrides[key] = value
-    return overrides
+    return test_policy.collect_environment_overrides(file_path, repo_root=_REPO_ROOT)
 
 
 def _diff_capabilities(env: dict[str, str]) -> str:
@@ -354,26 +338,7 @@ def _resolve_molt_target_python(
     python_exe: PythonCommand,
     explicit: str | TargetPythonVersion | None,
 ) -> TargetPythonVersion:
-    oracle_version = _python_exe_version(python_exe)
-    if oracle_version is None:
-        raise ValueError("cannot derive Molt target Python from the CPython oracle")
-    derived = require_supported_target_python(
-        TargetPythonVersion(oracle_version[0], oracle_version[1], 0)
-    )
-    if explicit is None:
-        return derived
-    if isinstance(explicit, TargetPythonVersion):
-        target = require_supported_target_python(explicit)
-    else:
-        target = _parse_target_python_version(explicit)
-    if isinstance(explicit, str) and explicit != target.short:
-        raise ValueError("Molt target Python must use canonical 3.<minor> spelling")
-    if target.feature_version != oracle_version:
-        raise ValueError(
-            "Molt target Python does not match the CPython oracle: "
-            f"target={target.short}, oracle={derived.short}"
-        )
-    return target
+    return resolve_target_python_for_oracle(_python_exe_version(python_exe), explicit)
 
 
 def _molt_sys_env_for_python_exe(python_exe: PythonCommand) -> dict[str, str]:
@@ -1617,9 +1582,11 @@ def _diff_allow_rustc_wrapper() -> bool:
 
 def _diff_build_profile() -> str:
     raw = os.environ.get("MOLT_DIFF_BUILD_PROFILE", "").strip().lower()
-    if raw in {"dev", "release"}:
-        return raw
-    return "dev"
+    if not raw:
+        return "dev"
+    if raw not in {"dev", "release"}:
+        raise ValueError("MOLT_DIFF_BUILD_PROFILE must be 'dev' or 'release'")
+    return raw
 
 
 def _diff_prune_every() -> int:

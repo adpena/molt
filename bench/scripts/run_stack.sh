@@ -3,6 +3,15 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 export MOLT_REPO_ROOT="$ROOT"
+# Bind this invocation's exclusive run directory (MOLT_DEMO_RUN_DIR, or a fresh
+# UUID) before configuration, worker build, preflight or readiness, so a failed
+# startup can only fail its own run. Assign before export: `export V="$(...)"`
+# would mask a failed bind. The guarded inner layer reuses the same binding.
+if [[ "${MOLT_GUARDED_STACK_INNER:-0}" != "1" ]]; then
+  MOLT_DEMO_RUN_DIR="$(python3 "$ROOT/bench/scripts/run_demo_bench.py" --prepare-run)"
+  export MOLT_DEMO_RUN_DIR
+fi
+: "${MOLT_DEMO_RUN_DIR:?the outer stack must bind the demo run directory}"
 eval "$(
   python3 "$ROOT/tools/run_context_env.py" \
     --root "$ROOT" \
@@ -11,7 +20,7 @@ eval "$(
     --dx \
     --format posix
 )"
-mkdir -p "$MOLT_DIFF_TMPDIR" "$ROOT/logs" "$ROOT/bench/results"
+mkdir -p "$MOLT_DIFF_TMPDIR" "$ROOT/logs"
 
 if [[ "${MOLT_GUARDED_STACK_INNER:-0}" != "1" ]]; then
   export MOLT_GUARDED_STACK_INNER=1
@@ -105,6 +114,8 @@ EXPORTS="$ROOT/demo/molt_worker_app/molt_exports.json"
 WORKER_CMD="$WORKER_BIN --stdio --exports $EXPORTS --compiled-exports $EXPORTS"
 
 export MOLT_WORKER_CMD="$WORKER_CMD"
+# The bench records this binary's identity in the run's composite artifact.
+export MOLT_DEMO_WORKER_BIN="$WORKER_BIN"
 export MOLT_ACCEL_CLIENT_MODE="${MOLT_ACCEL_CLIENT_MODE:-shared}"
 export DJANGO_SETTINGS_MODULE=demoapp.settings
 export PYTHONPATH=$ROOT/src:$ROOT/demo/django_app
@@ -112,15 +123,20 @@ if [[ -n "${MOLT_DEMO_DB_PATH:-}" ]]; then
   export MOLT_DB_SQLITE_PATH="${MOLT_DB_SQLITE_PATH:-$MOLT_DEMO_DB_PATH}"
   "${RUN_PY[@]}" -m demoapp.db_seed --path "$MOLT_DEMO_DB_PATH"
 fi
+# The server appends worker metrics per request; never mix in another run's
+# lines, and never delete an earlier run's file.
+METRICS_PATH="${MOLT_DEMO_METRICS_PATH:-$MOLT_DEMO_RUN_DIR/molt_demo_metrics.jsonl}"
+if [[ -e "$METRICS_PATH" ]]; then
+  echo "Demo metrics file already exists; name a new one: $METRICS_PATH" >&2
+  exit 1
+fi
+export MOLT_DEMO_METRICS_PATH="$METRICS_PATH"
 
 # Start worker
 $WORKER_CMD > "$ROOT/logs/molt_worker.log" 2>&1 &
 WORKER_PID=$!
 SERVICE_PIDS+=("$WORKER_PID")
 export MOLT_DEMO_WORKER_PID="$WORKER_PID"
-METRICS_PATH="${MOLT_DEMO_METRICS_PATH:-$ROOT/bench/results/molt_demo_metrics.jsonl}"
-rm -f "$METRICS_PATH"
-export MOLT_DEMO_METRICS_PATH="$METRICS_PATH"
 
 # Preflight: ensure the worker command is functional before k6 runs.
 "${RUN_PY[@]}" - <<'PY'
