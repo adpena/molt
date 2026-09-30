@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import json
 import sys
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -275,3 +276,26 @@ def test_generator_rejects_missing_webgpu_browser_probe() -> None:
             break
     with pytest.raises(gen.TargetFeatureManifestError, match="browser probe"):
         gen.build_model(data)
+
+
+def test_generated_python_is_formatter_stable(tmp_path: Path) -> None:
+    gen = _load_generator()
+    generated = tmp_path / "target_feature_manifest.py"
+    generated.write_text(gen.render_python(gen.build_model()), encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ruff",
+            "format",
+            "--check",
+            "--config",
+            str(ROOT / "pyproject.toml"),
+            str(generated),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -818,6 +818,7 @@ mod stream_tests {
 
     #[test]
     fn stream_blocking_enqueue_waits_for_byte_budget_release() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
         let stream_ptr = ptr_from_bits(stream_bits);
         assert!(!stream_ptr.is_null());
@@ -851,6 +852,7 @@ mod stream_tests {
 
     #[test]
     fn stream_oversized_single_message_can_make_forward_progress() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
         let oversized = vec![3u8; STREAM_MIN_MAX_QUEUED_BYTES + 1];
         let sent =

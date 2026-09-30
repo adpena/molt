@@ -649,6 +649,7 @@ mod tests {
 
     #[test]
     fn list_int_slice_preserves_flat_storage() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let source_ptr =
                 crate::object::builders::alloc_list_int_from_raw_slice(_py, &[10, 20, 30, 40, 50])
@@ -674,6 +675,7 @@ mod tests {
 
     #[test]
     fn list_bool_reverse_slice_preserves_flat_storage() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let source_ptr =
                 crate::object::builders::alloc_list_bool_from_raw_slice(_py, &[1, 0, 1, 1, 0])
@@ -699,6 +701,7 @@ mod tests {
 
     #[test]
     fn list_copy_preserves_flat_int_storage_through_shared_builder() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let source_ptr =
                 crate::object::builders::alloc_list_int_from_raw_slice(_py, &[2, 3, 5, 7])

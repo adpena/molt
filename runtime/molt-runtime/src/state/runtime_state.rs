@@ -1738,6 +1738,7 @@ mod tests {
 
     #[test]
     fn extension_state_is_scoped_to_runtime_and_drained_once() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         EXT_INIT_COUNT.store(0, Ordering::SeqCst);
         EXT_CLEAR_COUNT.store(0, Ordering::SeqCst);
         EXT_DROP_COUNT.store(0, Ordering::SeqCst);
