@@ -492,7 +492,7 @@ executable = "wasm-tools"
 version_args = ["--version"]
 version_pattern = '^wasm-tools 1\.259\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$'
 setup_value = "1.259.0"
-setup_evidence = ["config/tool_releases.toml::version = \"1.259.0\"", ".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.259.0"]
+setup_evidence = ["config/tool_releases.toml::version = \"1.259.0\"", ".github/workflows/molt-wasm-ci.yml::python3 -m molt.tool_releases provision wasm-tools"]
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-repository-policy"

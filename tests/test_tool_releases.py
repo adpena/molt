@@ -295,3 +295,57 @@ def test_pinned_executable_prefers_a_provisioned_release(
         encoding="utf-8",
     )
     assert tool_releases.pinned_executable("node", ROOT) == executable
+
+
+def test_cli_exports_only_attested_tool_directory(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    import molt.dx
+
+    release, archive = _pinned_release(tmp_path, b"verified tool bytes")
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    (downloads / archive.name).write_bytes(archive.read_bytes())
+    toolchain_root = tmp_path / "target-root"
+    discovery = tool_releases.provision_tool(
+        release, toolchain_root, downloads=downloads
+    )
+    monkeypatch.setattr(
+        molt.dx,
+        "checkout_custody",
+        lambda _root: SimpleNamespace(toolchain_root=toolchain_root),
+    )
+    output = tmp_path / "github-path"
+    output.write_text("existing-directory\n")
+    assert (
+        tool_releases.main(
+            [
+                "discover",
+                "demo",
+                "--repo-root",
+                str(tmp_path),
+                "--github-path",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert output.read_text().splitlines() == [
+        "existing-directory",
+        str(discovery.executable.parent),
+    ]
+    discovery.executable.write_bytes(b"tampered")
+    before = output.read_bytes()
+    assert (
+        tool_releases.main(
+            [
+                "discover",
+                "demo",
+                "--repo-root",
+                str(tmp_path),
+                "--github-path",
+                str(output),
+            ]
+        )
+        == 1
+    )
+    assert output.read_bytes() == before

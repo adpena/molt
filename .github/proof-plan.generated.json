@@ -189,7 +189,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "3b846f0e30de4e11cc4b70d0bc57cda0f96002f361194b0e10dc544f0db9034d",
+  "authority_sha256": "84c6b3fff8e6ac5f2a8d946620ceb0110b8ea3efae593446794e449419cf4cd2",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -6086,7 +6086,7 @@
       "name": "wasm-tools",
       "setup_evidence": [
         "config/tool_releases.toml::version = \"1.259.0\"",
-        ".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.259.0"
+        ".github/workflows/molt-wasm-ci.yml::python3 -m molt.tool_releases provision wasm-tools"
       ],
       "setup_value": "1.259.0",
       "version_args": [

@@ -476,6 +476,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("action", choices=("list", "discover", "provision"))
     parser.add_argument("tool", nargs="?")
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    parser.add_argument(
+        "--github-path",
+        type=Path,
+        help="append the attested executable directory to GitHub Actions PATH",
+    )
     args = parser.parse_args(argv)
     releases = load_tool_releases(args.repo_root)
     if args.action == "list":
@@ -496,6 +501,9 @@ def main(argv: list[str] | None = None) -> int:
             f"{release.name} {release.version}: not provisioned under {toolchain_root}"
         )
         return 1
+    if args.github_path is not None:
+        with args.github_path.open("a", encoding="utf-8") as path_file:
+            path_file.write(str(discovery.executable.parent) + "\n")
     print(
         f"{release.name} {release.version}: {discovery.executable} "
         f"sha256={discovery.executable_sha256}"
