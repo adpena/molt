@@ -40,7 +40,18 @@ uv run --python 3.12 python3 manage.py runserver
 ```
 bench/scripts/run_stack.sh
 ```
-Artifacts land in `bench/results/` (k6 JSON + markdown summary).
+Artifacts land in `bench/results/` (k6 JSON + markdown summary). Each run
+replaces prior demo summaries so a failed invocation cannot reuse stale results.
+The stack waits for `/health/` before load generation and drains its service
+process groups on success, failure, or interruption. Nightly CI uploads k6 output,
+server/worker logs, and guard diagnostics even when the benchmark fails.
+Validate a completed artifact with
+`python bench/scripts/run_demo_bench.py --check-regressions bench/results/demo_k6_<timestamp>.json`.
+The checker requires all three scenarios, finite p95 latency, completed requests,
+and error rates below 1%; p95 must remain below 1000 ms for baseline/offload and
+1500 ms for offload_table. Pass `bench/results` instead of a JSON file to
+check retained per-scenario summaries after an interrupted run. Nightly CI runs
+this comparison even when k6 fails; missing scenarios remain failures.
 Worker metrics land in `bench/results/molt_demo_metrics.jsonl` unless `MOLT_DEMO_METRICS_PATH` is set.
 Worker/server logs land in `logs/molt_worker.log` and `logs/molt_django.log`.
 Set `MOLT_FAKE_DB_DELAY_MS` to simulate base DB latency,

@@ -35,6 +35,7 @@ jobs:
           sync: "true"
           sync-frozen: "true"
           sync-dev: "true"
+          sync-groups: demo
       - name: Install k6
         run: |
           if ! command -v k6 >/dev/null 2>&1; then
@@ -50,25 +51,16 @@ jobs:
           chmod +x bench/scripts/run_stack.sh
           ./bench/scripts/run_stack.sh
       - name: Check regressions (p95 thresholds)
-        run: |
-          python - <<'PY'
-          import json, sys, pathlib
-          path = pathlib.Path("bench/results").glob("demo_k6_*.json")
-          latest = sorted(path)[-1]
-          data = json.loads(latest.read_text())
-          def p95(block):
-              return block.get("metrics", {}).get("http_req_duration", {}).get("percentiles", {}).get("95", 0.0)
-          thresholds = {"baseline": 1000.0, "offload": 1000.0, "offload_table": 1500.0}
-          for key, limit in thresholds.items():
-              block = data.get(key, {})
-              val = p95(block)
-              if val > limit:
-                  print(f"REGRESSION: {key} p95 {val}ms > {limit}ms")
-                  sys.exit(1)
-          print("Perf check OK")
-          PY
+        if: always()
+        run: python bench/scripts/run_demo_bench.py --check-regressions bench/results
       - name: Upload k6 artifacts
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: demo-k6
-          path: bench/results/*.json
+          path: |
+            bench/results/
+            logs/molt_django.log
+            logs/molt_worker.log
+            tmp/harness_memory_guard/
+            tmp/bench/demo/

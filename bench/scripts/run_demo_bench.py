@@ -86,6 +86,7 @@ def read_process_table() -> list[tuple[int, int, float, int, str]]:
         env=env,
         cwd=ROOT,
         limits=bench_memory_limits(env),
+        timeout=5.0,
     )
     if proc.returncode != 0:
         return []
@@ -320,7 +321,14 @@ def run_k6(
     env = base_env(env)
     env.setdefault("K6_SUMMARY_TREND_STATS", "med,p(95),p(99),p(99.9)")
     env.setdefault("K6_LOG_LEVEL", "error")
-    cmd = ["k6", "run", "--quiet", str(script)]
+    cmd = [
+        "k6",
+        "run",
+        "--quiet",
+        "--summary-export",
+        env["K6_SUMMARY_EXPORT"],
+        str(script),
+    ]
     stderr_path = RESULTS_DIR / f"k6_{script.stem}_stderr.log"
     matchers = extract_proc_matchers(env)
     samples = {label: [] for label in matchers}
@@ -338,7 +346,7 @@ def run_k6(
     sampler = threading.Thread(
         target=sample_external_processes,
         name=f"demo-bench-{script.stem}-sampler",
-        daemon=True,
+        daemon=False,
     )
     sampler.start()
     try:
@@ -353,7 +361,7 @@ def run_k6(
         )
     finally:
         stop_sampling.set()
-        sampler.join(timeout=2.0)
+        sampler.join()
     with stderr_path.open("w", encoding="utf-8") as handle:
         if proc.stdout:
             handle.write(proc.stdout)
@@ -362,12 +370,25 @@ def run_k6(
     if proc.returncode != 0:
         tail = tail_lines(stderr_path)
         detail = tail[-1] if tail else f"exit code {proc.returncode}"
-        raise SystemExit(f"k6 failed for {script}: {detail}")
-    # k6 summary is printed to stderr in JSON when K6_SUMMARY_EXPORT is set
+        print("\n".join(tail), file=sys.stderr)
+        raise SystemExit(
+            f"k6 failed for {script} (exit {proc.returncode}): {detail}; "
+            f"full output: {stderr_path}; summary: {env['K6_SUMMARY_EXPORT']}"
+        )
+    # The explicit flag is supported independently of k6 environment aliases.
     summary_path = Path(env["K6_SUMMARY_EXPORT"])
     data = json.loads(summary_path.read_text())
     proc_metrics = summarize_proc_samples(samples)
     return data, proc_metrics
+
+
+def k6_p95(durations: dict[str, Any]) -> Any:
+    percentiles = durations.get("percentiles")
+    return (
+        percentiles.get("95")
+        if isinstance(percentiles, dict)
+        else durations.get("p(95)")
+    )
 
 
 def parse_k6_summary(name: str, summary: dict[str, Any]) -> BenchResult:
@@ -377,19 +398,86 @@ def parse_k6_summary(name: str, summary: dict[str, Any]) -> BenchResult:
     percentiles = durations.get("percentiles")
     if isinstance(percentiles, dict):
         p50 = percentiles.get("50", 0.0)
-        p95 = percentiles.get("95", 0.0)
         p99 = percentiles.get("99", 0.0)
         p999 = percentiles.get("999", 0.0)
     else:
         p50 = durations.get("p(50)", durations.get("med", 0.0))
-        p95 = durations.get("p(95)", 0.0)
         p99 = durations.get("p(99)", 0.0)
         p999 = durations.get("p(99.9)", durations.get("p(99.99)", 0.0))
+    p95 = k6_p95(durations)
     error_rate = http.get("http_req_failed", {}).get("rate", 0.0)
     payload_bytes = summarize_payload_bytes(summary)
     if payload_bytes:
         summary["payload_bytes_per_req"] = payload_bytes
     return BenchResult(name, reqs, p50, p95, p99, p999, error_rate, summary)
+
+
+def check_regressions(artifact: dict[str, Any]) -> list[str]:
+    """Validate the actual k6 summary schema and retain the nightly budgets."""
+    failures: list[str] = []
+    for name, limit in {
+        "baseline": 1000.0,
+        "offload": 1000.0,
+        "offload_table": 1500.0,
+    }.items():
+        block = artifact.get(name)
+        if not isinstance(block, dict):
+            failures.append(f"{name}: missing scenario summary")
+            continue
+        metrics = block.get("metrics")
+        if not isinstance(metrics, dict):
+            failures.append(f"{name}: missing metrics")
+            continue
+        required_metrics = ("http_req_duration", "http_reqs", "http_req_failed")
+        malformed = [
+            key for key in required_metrics if not isinstance(metrics.get(key), dict)
+        ]
+        if malformed:
+            failures.append(
+                f"{name}: missing or invalid metrics {', '.join(malformed)}"
+            )
+            continue
+        p95 = k6_p95(metrics["http_req_duration"])
+        reqs = metrics["http_reqs"].get("count")
+        error_rate = metrics["http_req_failed"].get("rate")
+        values = {"p95": p95, "requests": reqs, "error_rate": error_rate}
+        invalid = [
+            key
+            for key, value in values.items()
+            if isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ]
+        if invalid:
+            failures.append(f"{name}: missing or invalid {', '.join(invalid)}")
+            continue
+        if reqs <= 0:
+            failures.append(f"{name}: no requests completed")
+        if error_rate >= 0.01:
+            failures.append(f"{name}: error rate {error_rate} >= 0.01")
+        if p95 >= limit:
+            failures.append(f"{name}: p95 {p95}ms >= {limit}ms")
+    return failures
+
+
+def read_regression_artifact(path: Path) -> dict[str, Any]:
+    """Read a complete run, or retained scenarios from an interrupted run."""
+    if not path.is_dir():
+        return json.loads(path.read_text())
+    composites = list(path.glob("demo_k6_*.json"))
+    if len(composites) > 1:
+        raise ValueError(
+            f"Expected at most one current demo artifact, found {len(composites)}"
+        )
+    if composites:
+        return json.loads(composites[0].read_text())
+    artifact: dict[str, Any] = {}
+    for name in ("baseline", "offload", "offload_table"):
+        summary = path / f"k6_{name}_summary.json"
+        if summary.is_file():
+            artifact[name] = json.loads(summary.read_text())
+    return artifact
 
 
 def run_scenario(name: str, script: str, env: dict[str, str]) -> BenchResult:
@@ -492,6 +580,11 @@ def summarize_worker_metrics(path: Path) -> dict[str, dict[str, float]]:
 
 
 def main() -> None:
+    # Fixed scenario files and timestamped composites belong to this invocation.
+    # Never permit an old successful artifact to stand in for a failed run.
+    for pattern in ("k6_*_summary.json", "demo_k6_*.json", "demo_k6_*.md"):
+        for path in RESULTS_DIR.glob(pattern):
+            path.unlink()
     env = base_env()
     limits = bench_memory_limits(env)
     with harness_memory_guard.repo_process_sentinel(
@@ -680,6 +773,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--check-regressions":
+        try:
+            failures = check_regressions(read_regression_artifact(Path(sys.argv[2])))
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            raise SystemExit(f"Invalid demo performance artifact: {exc}") from exc
+        if failures:
+            raise SystemExit("\n".join(failures))
+        print("Perf check OK")
+        raise SystemExit(0)
     if not shutil.which("k6"):
         raise SystemExit(
             "k6 is required for the demo bench; install from https://k6.io/"

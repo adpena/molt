@@ -11,13 +11,13 @@ name: Sanitizers
 #   AddressSanitizer (runtime lib tests):
 #     RUSTFLAGS='-Zsanitizer=address' RUSTDOCFLAGS='-Zsanitizer=address' \
 #     ASAN_OPTIONS='detect_leaks=0' \
-#     cargo +nightly-2026-03-10 test -p molt-runtime --lib --no-default-features \
+#     cargo +nightly-2026-09-29 test -p molt-runtime --lib --no-default-features \
 #       --features stdlib_micro --target <triple> -Zbuild-std
 #   AddressSanitizer (backend lib tests):
 #     RUSTFLAGS='-Zsanitizer=address' RUSTDOCFLAGS='-Zsanitizer=address' \
-#     cargo +nightly-2026-03-10 test -p molt-backend --lib --target <triple> -Zbuild-std
+#     cargo +nightly-2026-09-29 test -p molt-backend --lib --target <triple> -Zbuild-std
 #   Miri (NaN-boxing object model):
-#     cargo +nightly-2026-03-10 miri test -p molt-lang-obj-model --lib
+#     cargo +nightly-2026-09-29 miri test -p molt-lang-obj-model --lib
 #
 # Feasibility notes (see the hardening-wave baton):
 #   * ASan + -Zbuild-std: WORKS on aarch64-apple-darwin and x86_64 Linux.
@@ -109,6 +109,13 @@ jobs:
           rust-components: miri, rust-src
           cache-cargo: "true"
           cache-namespace: miri-obj-model
+
+      - name: Prepare independent Miri scratch directory
+        # Miri builds an independent Cargo sysroot project outside our workspace.
+        run: |
+          scratch="$RUNNER_TEMP/molt-miri"
+          mkdir -p "$scratch"
+          printf 'TMPDIR=%s\nMOLT_DIFF_TMPDIR=%s\n' "$scratch" "$scratch" >> "$GITHUB_ENV"
 
       - name: Miri — obj-model lib unit tests
         # Permissive provenance: molt's NaN-boxing recovers TAG_PTR values via
