@@ -3737,7 +3737,7 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::DecRef => count == 1,
         OpCode::DelBoundary => true,
         OpCode::BuildList => true,
-        OpCode::BuildDict => count % 2 == 0,
+        OpCode::BuildDict => count.is_multiple_of(2),
         OpCode::BuildTuple => true,
         OpCode::BuildSet => true,
         OpCode::BuildSlice => true,

@@ -7,7 +7,9 @@ mod sidecars;
 
 pub(crate) use files::bytes_to_lower_hex;
 
-pub(crate) use admission::{admit_or_invalidate_shared_stdlib_cache, shared_stdlib_cache_matches};
+pub(crate) use admission::admit_or_invalidate_shared_stdlib_cache;
+#[cfg(any(unix, test))]
+pub(crate) use admission::shared_stdlib_cache_matches;
 pub(crate) use archive::publish_shared_stdlib_cache_archive;
 #[cfg(test)]
 pub(crate) use lock::with_shared_stdlib_cache_publish_lock;

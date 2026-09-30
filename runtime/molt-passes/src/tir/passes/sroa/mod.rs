@@ -10,6 +10,7 @@
 //! - every removed store remains refcount-neutral after boxing into its field,
 //! - every removed store is a recognized typed-slot store within its allocation's
 //!   fixed field extent; class layouts reserve a trailing dictionary word.
+//!
 //! Allocation and field-extent admission are shared with DSE and backend field
 //! store planning; stable block compaction removes admitted operations in linear time.
 //! Finalizer-bearing roots are excluded even if an upstream artifact marks

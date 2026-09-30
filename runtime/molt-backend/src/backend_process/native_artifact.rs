@@ -44,13 +44,6 @@ impl NativeArtifactKind {
             )),
         }
     }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Object => "object",
-            Self::Archive => "archive",
-        }
-    }
 }
 
 #[cfg(test)]

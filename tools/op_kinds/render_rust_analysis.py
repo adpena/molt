@@ -125,7 +125,7 @@ def _render_operand_independent_result_type(opcodes: list[dict]) -> str:
         acceptance = (
             f"count == {arity}"
             if type(arity) is int
-            else "count % 2 == 0"
+            else "count.is_multiple_of(2)"
             if arity == "variable_pairs"
             else "true"
         )

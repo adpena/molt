@@ -18,10 +18,10 @@
     "molt-private": 40,
     "private": 61,
     "private-representation": 1,
-    "public-version-specific": 149,
-    "stable-abi": 440,
+    "public-version-specific": 152,
+    "stable-abi": 447,
     "stable-values-version-specific-layout": 1,
-    "total": 703,
+    "total": 713,
     "unstable": 9,
     "version-specific-public": 2
   },
@@ -352,6 +352,13 @@
       "stability": "stable-abi",
       "surface": "function",
       "symbol": "PyCMethod_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyCMethod_Type",
       "verified_at": "3.12"
     },
     {
@@ -2056,6 +2063,20 @@
     },
     {
       "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyModule_Add",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_AddFunctions",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
       "stability": "stable-abi",
       "surface": "function",
       "symbol": "PyModule_AddIntConstant",
@@ -2080,6 +2101,13 @@
       "stability": "stable-abi",
       "surface": "function",
       "symbol": "PyModule_AddStringConstant",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_AddType",
       "verified_at": "3.12"
     },
     {
@@ -2128,6 +2156,13 @@
       "source": "runtime/molt-cpython-abi/src/api/modules.rs",
       "stability": "stable-abi",
       "surface": "function",
+      "symbol": "PyModule_GetDef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
       "symbol": "PyModule_GetDict",
       "verified_at": "3.12"
     },
@@ -2135,7 +2170,35 @@
       "source": "runtime/molt-cpython-abi/src/api/modules.rs",
       "stability": "stable-abi",
       "surface": "function",
+      "symbol": "PyModule_GetFilename",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_GetFilenameObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
       "symbol": "PyModule_GetName",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_GetNameObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyModule_GetObject",
       "verified_at": "3.12"
     },
     {
@@ -2157,6 +2220,13 @@
       "stability": "stable-abi",
       "surface": "function",
       "symbol": "PyModule_NewObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_SetDocString",
       "verified_at": "3.12"
     },
     {

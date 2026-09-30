@@ -91,17 +91,16 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
                         .extend(builtin_callable_family());
                 }
             }
-            if matches!(op.kind.as_str(), "const_str" | "builtin_func") {
-                if let Some(name) = op
+            if matches!(op.kind.as_str(), "const_str" | "builtin_func")
+                && let Some(name) = op
                     .s_value
                     .as_deref()
                     // The runtime's explicit `_molt_` alias resolves the same
                     // canonical provider; resolver tables contain primary names.
                     .map(|name| name.strip_prefix('_').unwrap_or(name))
                     .filter(|name| name.starts_with("molt_"))
-                {
-                    requirements.intrinsic_names.insert(name.to_owned());
-                }
+            {
+                requirements.intrinsic_names.insert(name.to_owned());
             }
             if let Some(name) = &op.runtime_symbol {
                 requirements.intrinsic_names.insert(name.clone());
