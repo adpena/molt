@@ -1022,6 +1022,9 @@ def test_lowering_gap_pattern_does_not_absorb_completed_neighboring_arms(tmp_pat
         "}\n",
         encoding="utf-8",
     )
+    (rust / "synthetic_supported_helpers.rs").write_text(
+        "fn emit_enumerate(&mut self, op: &OpIR) {}\nfn emit_sorted(&mut self, op: &OpIR) {}\n"
+    )
     findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
     assert len(findings) == 1
     assert findings[0].metric == 3
@@ -1086,6 +1089,833 @@ def test_lowering_gap_ignores_nested_comments_and_literal_fake_calls(tmp_path):
     assert (
         findings[0].detail == "L6:module_import, module_import_from, module_import_star"
     )
+
+
+@pytest.mark.parametrize(
+    "separator", ["\x0b", "\x0c", "\x1c", "\x85", "\u2028", "\u2029"]
+)
+def test_lowering_gap_paired_views_keep_rust_newline_coordinates(tmp_path, separator):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        f'let note = "a{separator}b{separator}c";\n'
+        '"zip" => {\nzip_impl();\n}\n'
+        '"module_import" | "module_import_from" | "module_import_star" => {\n'
+        'self.emit_unsupported_op(op, "required");\n}\n',
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert len(findings) == 1 and findings[0].metric == 3
+    assert (
+        findings[0].detail == "L6:module_import, module_import_from, module_import_star"
+    )
+
+
+def test_lowering_gap_multiline_pattern_survives_comment_only_lines(tmp_path):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '"zip" => self.emit_zip(op),\n'
+        '"module_import"\n// keep this family together\n'
+        '| "module_import_from"\n/* nested /* => */ comment */\n'
+        '| "module_import_star" => {\n'
+        'self.emit_unsupported_op(op, "required");\n}\n',
+        encoding="utf-8",
+    )
+    (rust / "synthetic_supported_helpers.rs").write_text(
+        "fn emit_zip(&mut self, op: &OpIR) {}\n"
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert len(findings) == 1 and findings[0].metric == 3
+    assert (
+        findings[0].detail == "L7:module_import, module_import_from, module_import_star"
+    )
+
+
+def test_lowering_gap_follows_rejection_only_sibling_and_forwarders(tmp_path):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    (rust / "op_emitter").mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '"module_import" | "module_import_from" | "module_import_star" => self.emit_import(op),\n',
+        encoding="utf-8",
+    )
+    (rust / "op_emitter/modules.rs").write_text(
+        "fn emit_import(&mut self, op: &OpIR) { self.import_rejection(op); }\n"
+        "fn import_rejection(&mut self, op: &OpIR) {\n"
+        'self.emit_unsupported_op(op, "requires Python import protocol");\n}\n',
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert len(findings) == 1 and findings[0].metric == 3
+    assert (
+        findings[0].detail == "L1:module_import, module_import_from, module_import_star"
+    )
+
+
+def test_lowering_gap_keeps_mixed_validation_guard_visible_without_global_claim(
+    tmp_path,
+):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    (rust / "op_emitter").mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '"unpack_sequence" => self.emit_unpack(op),\n', encoding="utf-8"
+    )
+    (rust / "op_emitter/gaps.rs").write_text(
+        "fn emit_unpack(&mut self, op: &OpIR) {\n"
+        'if bad_arity(op) { self.emit_unsupported_op(op, "invalid arity"); return; }\n'
+        'self.emit_line("actual unpacking");\n}\n',
+        encoding="utf-8",
+    )
+    (rust / "synthetic_supported_helpers.rs").write_text(
+        "fn emit_line(&mut self, text: &str) {}\n"
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].probe == "rust_backend_rejection_applicability"
+    assert "emit_unpack" in findings[0].detail and findings[0].metric == 0
+
+
+def test_lowering_gap_does_not_accept_ambiguous_delegated_method_identity(tmp_path):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    (rust / "op_emitter").mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '"module_import" => self.emit_import(op),\n', encoding="utf-8"
+    )
+    (rust / "op_emitter/first.rs").write_text(
+        'fn emit_import(&mut self, op: &OpIR) { self.emit_unsupported_op(op, "missing"); }\n',
+        encoding="utf-8",
+    )
+    (rust / "op_emitter/second.rs").write_text(
+        'fn emit_import(&mut self, op: &OpIR) { self.emit_line("supported"); }\n',
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert any(
+        "Ambiguous" in f.title
+        and f.metric == 0
+        and f.probe == "rust_backend_rejection_applicability"
+        for f in findings
+    )
+    metrics = SA.ratchet_metrics(findings)
+    assert metrics["rust_backend_lowering_gaps_total"] == 0
+    assert metrics["rust_backend_rejection_applicability_total"] > 0
+
+
+def test_lowering_gap_literal_cfg_test_does_not_hide_real_rejection(tmp_path):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    (rust / "op_emitter").mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '"module_import" => self.emit_import(op),\n', encoding="utf-8"
+    )
+    (rust / "op_emitter/modules.rs").write_text(
+        'const NOTE: &str = r#"\n#[cfg(test)]\nmod tests {\n"#;\n'
+        'fn emit_import(&mut self, op: &OpIR) { self.emit_unsupported_op(op, "missing"); }\n',
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert any(f.metric == 1 and "module_import" in f.detail for f in findings)
+
+
+@pytest.mark.parametrize("guard", ["let note = 1;", "if bad_arity(op) { return; }"])
+def test_lowering_gap_transitive_mixed_helper_remains_applicability_debt(
+    tmp_path, guard
+):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '"module_import" => self.emit_import(op),\n', encoding="utf-8"
+    )
+    (rust / "modules.rs").write_text(
+        f"fn emit_import(&mut self, op: &OpIR) {{ {guard} self.forward_import(op); }}\n"
+        "fn forward_import(&mut self, op: &OpIR) { let note = 2; self.reject_import(op); }\n"
+        'fn reject_import(&mut self, op: &OpIR) { self . emit_unsupported_op(op, "missing"); }\n',
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert not any(f.metric for f in findings)
+    obligations = [
+        f for f in findings if f.probe == "rust_backend_rejection_applicability"
+    ]
+    assert len(obligations) == 2
+    assert all(f.metric == 0 for f in obligations)
+    assert any("emit_import:" in f.detail for f in obligations)
+    assert any("forward_import:" in f.detail for f in obligations)
+
+
+@pytest.mark.parametrize(
+    "callee", ["self . emit_import(op)", "self\n    . emit_import(op)"]
+)
+def test_lowering_gap_shared_call_grammar_covers_spaced_multiline_dispatch(
+    tmp_path, callee
+):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        f'"module_import" | "module_import_from" | "module_import_star" => {callee},\n',
+        encoding="utf-8",
+    )
+    (rust / "modules.rs").write_text(
+        'fn emit_import(&mut self, op: &OpIR) { self . emit_unsupported_op(op, "missing"); }\n',
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert len(findings) == 1 and findings[0].metric == 3
+    assert "module_import, module_import_from, module_import_star" in findings[0].detail
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "Self::emit_unsupported_op",
+        "Self\n :: emit_unsupported_op",
+        "self . emit_unsupported_op",
+    ],
+)
+def test_lowering_gap_known_non_call_rejection_reference_is_unresolved_debt(
+    tmp_path, reference
+):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        f'"module_import" => {{ let reject = {reference}; reject(self, op, "missing"); }},\n',
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].probe == "rust_backend_rejection_applicability"
+    assert findings[0].metric == 0
+    assert "emit_unsupported_op" in findings[0].detail
+
+
+@pytest.mark.parametrize(
+    "signature",
+    [
+        "fn emit_import(&mut self, op: &OpIR)",
+        "fn emit_import<'a>(&mut self, op: &'a OpIR)",
+    ],
+)
+@pytest.mark.parametrize("site", ["rust/modules.rs", "rust.rs"])
+def test_lowering_gap_generic_and_root_module_helper_inventory(
+    tmp_path, signature, site
+):
+    source = tmp_path / "runtime/molt-backend-rust/src"
+    (source / "rust").mkdir(parents=True)
+    (source / "rust/op_emitter.rs").write_text(
+        '"module_import" => self.emit_import(op),\n'
+    )
+    (source / site).write_text(
+        signature + ' { self.emit_unsupported_op(op, "missing"); }\n'
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert SA.ratchet_metrics(findings)["rust_backend_lowering_gaps_total"] == 1
+
+
+def test_lowering_gap_missing_or_macro_helper_is_fail_closed_proof_debt(tmp_path):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text('"module_import" => self.emit_import(op),\n')
+    (rust / "modules.rs").write_text(
+        'macro_rules! reject { ($n:ident) => { fn $n(&mut self, op: &OpIR) { self.emit_unsupported_op(op, "missing"); } }; }\nimpl RustBackend { reject!(emit_import); }\n'
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert any("Unresolved" in f.title and "emit_import" in f.detail for f in findings)
+    assert (
+        SA.ratchet_metrics(findings)["rust_backend_rejection_applicability_total"] >= 1
+    )
+
+
+@pytest.mark.parametrize(
+    "prefix", ["#[cfg(test)]\nmod tests;\n", "\x0c\n#[cfg(test)]\nfn helper() {}\n"]
+)
+def test_lowering_gap_cfg_test_declaration_cannot_hide_later_production(
+    tmp_path, prefix
+):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text('"module_import" => self.emit_import(op),\n')
+    (rust / "modules.rs").write_text(
+        prefix
+        + 'fn emit_import(&mut self, op: &OpIR) { self.emit_unsupported_op(op, "missing"); }\n'
+    )
+    assert (
+        SA.ratchet_metrics(SA.probe_rust_backend_lowering_gaps(tmp_path))[
+            "rust_backend_lowering_gaps_total"
+        ]
+        == 1
+    )
+
+
+def test_rust_stub_cfg_scope_cannot_be_spoofed_by_literal_or_out_of_line_module():
+    text = 'const T: &str = "\n#[cfg(test)]\nmod tests {\n";\nfn live() { todo!("gap"); }\n'
+    assert any(hit.marker == "todo!" for hit in SA._rust_stub_surface_hits(text))
+    assert any(
+        hit.marker == "todo!"
+        for hit in SA._rust_stub_surface_hits(
+            '#[cfg(test)]\nmod tests;\nfn live() { todo!("gap"); }\n'
+        )
+    )
+    assert not SA._rust_stub_surface_hits(
+        '#[cfg(test)]\nfn test_only() { todo!("fixture"); }\n'
+    )
+
+
+@pytest.mark.parametrize("prior_reject", [False, True])
+@pytest.mark.parametrize(
+    "callee", ["self . emit_import(op)", "self\n . emit_import(op)"]
+)
+def test_lowering_gap_multiline_anchor_uses_own_arm_and_preserves_dedup(
+    tmp_path, prior_reject, callee
+):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    prior = 'self.emit_unsupported_op(op, "zip");' if prior_reject else "zip_impl();"
+    (rust / "op_emitter.rs").write_text(
+        f'"zip" => {{\n{prior}\n}}\n"module_import"\n| "module_import_from"\n| "module_import_star" => {callee},\n'
+    )
+    (rust / "modules.rs").write_text(
+        'fn emit_import(&mut self, op: &OpIR) { self.emit_unsupported_op(op, "missing"); }\n'
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert (
+        SA.ratchet_metrics(findings)["rust_backend_lowering_gaps_total"]
+        == 3 + prior_reject
+    )
+    assert any(
+        "module_import, module_import_from, module_import_star" in f.detail
+        for f in findings
+    )
+
+
+def test_mixed_rejection_obligations_are_independently_fail_closed_ratchet():
+    finding = SA.Finding(
+        probe="rust_backend_rejection_applicability",
+        severity="medium",
+        title="unproven",
+        location="fixture",
+        detail="mixed",
+        suggested_action="prove",
+        class_retired="rust-backend-rejection-applicability",
+        metric=0,
+    )
+    metrics = SA.ratchet_metrics([finding])
+    assert metrics["rust_backend_lowering_gaps_total"] == 0
+    assert metrics["rust_backend_rejection_applicability_total"] == 1
+    assert (
+        metrics["rust_backend_rejection_applicability_total"]
+        > SA.ratchet_metrics([])["rust_backend_rejection_applicability_total"]
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "impl A { fn width(&self) -> usize { self.width } }\nimpl B { fn width(&self) -> usize { self.width } }\n",
+        "impl A { fn new() -> Self { A } }\nimpl B { fn new() -> Self { B } fn make() -> Self { Self::new() } }\n",
+    ],
+)
+def test_lowering_gap_unrelated_field_and_associated_references_are_not_rejection_debt(
+    tmp_path, source
+):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text("")
+    (rust / "types.rs").write_text(source)
+    metrics = SA.ratchet_metrics(SA.probe_rust_backend_lowering_gaps(tmp_path))
+    assert metrics["rust_backend_lowering_gaps_total"] == 0
+    assert metrics["rust_backend_rejection_applicability_total"] == 0
+
+
+def test_lowering_gap_associated_call_is_proof_debt_never_definite(tmp_path):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '"module_import" => Self::emit_import(self, op),\n'
+    )
+    (rust / "modules.rs").write_text(
+        'fn emit_import(&mut self, op: &OpIR) { Self::emit_unsupported_op(self, op, "missing"); }\n'
+    )
+    metrics = SA.ratchet_metrics(SA.probe_rust_backend_lowering_gaps(tmp_path))
+    assert metrics["rust_backend_lowering_gaps_total"] == 0
+    assert metrics["rust_backend_rejection_applicability_total"] >= 1
+
+
+@pytest.mark.parametrize(
+    "callee", ["self\u200e.\u200femit_import(op)", "self.r#emit_import(op)"]
+)
+def test_lowering_gap_rust_whitespace_and_raw_identifiers_share_call_grammar(
+    tmp_path, callee
+):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        f'"zip" => {{ zip_impl(); }}\n"module_import" | "module_import_star" => {callee},\n'
+    )
+    (rust / "modules.rs").write_text(
+        'fn r#emit_import(&mut self, op: &OpIR) { self.r#emit_unsupported_op(op, "missing"); }\n'
+    )
+    assert (
+        SA.ratchet_metrics(SA.probe_rust_backend_lowering_gaps(tmp_path))[
+            "rust_backend_lowering_gaps_total"
+        ]
+        == 2
+    )
+
+
+@pytest.mark.parametrize(
+    "test_member", ["hits: u32,", "Variant(u32),", "hits: (u32, u32),"]
+)
+def test_rust_cfg_test_member_comma_does_not_hide_next_production_impl(test_member):
+    source = f'struct S {{\n#[cfg(test)]\n{test_member}\n}}\nimpl S {{ fn live(&self) {{ todo!("gap"); }} }}\n'
+    assert any(hit.marker == "todo!" for hit in SA._rust_stub_surface_hits(source))
+
+
+def test_rust_cfg_multiline_test_function_parameters_remain_excluded():
+    source = '#[cfg(test)]\nfn test_only(a: u32,\n b: u32) { todo!("test fixture"); }\nfn live() { todo!("gap"); }\n'
+    assert [(h.line, h.marker) for h in SA._rust_stub_surface_hits(source)] == [
+        (4, "todo!")
+    ]
+
+
+@pytest.mark.parametrize(
+    "variant", ["renamed", "relocated", "free", "direct", "missing"]
+)
+def test_rejection_recording_mechanism_survives_refactoring(tmp_path, variant):
+    crate = tmp_path / "runtime/molt-backend-rust"
+    family = crate / "src/rust"
+    family.mkdir(parents=True)
+    (crate / "Cargo.toml").write_text("[package]\nname='fixture'\n")
+    (crate / "src/rust.rs").write_text(
+        'struct RustBackend {\nunsupported_ops: Vec<String>,\n}\nfn emit_source(&mut self, op: &OpIR) { self.unsupported_ops.clear(); self.emit(op); String::new() }\nfn compile_checked(&mut self, op: &OpIR) { let source = self.emit_source(op); if !self.unsupported_ops.is_empty() { return Err(format!("unsupported: {:?}", self.unsupported_ops)); } Ok(source) }'
+    )
+    name = "record_refusal" if variant == "renamed" else "emit_unsupported_op"
+    recorder = f'fn {name}(&mut self, op: &OpIR, reason: impl Into<String>) {{ let reason = reason.into(); self.unsupported_ops.push(format!("rejected")); }}\n'
+    invocation = f'self.{name}(op, "missing")'
+    if variant == "free":
+        invocation = f'{name}(self, op, "missing")'
+    elif variant == "direct":
+        invocation = 'self.unsupported_ops.push(format!("rejected"))'
+    path = family / "op_emitter.rs"
+    if variant == "relocated":
+        path = family / "op_emitter/mod.rs"
+        path.parent.mkdir()
+    if variant != "missing":
+        path.write_text(
+            recorder
+            + f'fn emit(&mut self, op: &OpIR) {{ match op.kind {{ "module_import" => {{ {invocation}; }} }} }}'
+        )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    metrics = SA.ratchet_metrics(findings)
+    if variant in {"renamed", "relocated"}:
+        assert metrics["rust_backend_lowering_gaps_total"] == 1
+    else:
+        assert metrics["rust_backend_lowering_gaps_total"] == 0
+        assert metrics["rust_backend_rejection_applicability_total"] > 0
+        if variant in {"free", "direct"}:
+            assert any("emit:" in finding.detail for finding in findings)
+        else:
+            assert any(
+                "dispatch source authority" in finding.title for finding in findings
+            )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["runtime/molt-runtime/src/abi.rs", "runtime/molt-backend-rust/src/rust/abi.rs"],
+)
+def test_cfg_test_member_cannot_hide_production_abi_stub_sibling(tmp_path, relative):
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        'struct State {\n#[cfg(test)]\nhits: u32,\n}\nimpl State { fn export(&self) { todo!("production ABI gap"); } }\n'
+    )
+    findings = SA.probe_rust_stub_surfaces(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].metric == 1
+    assert findings[0].location == f"{relative}:5"
+
+
+@pytest.mark.parametrize(
+    "refactor", ["rename", "relocate", "raw_reference", "rust_whitespace"]
+)
+def test_actual_rejection_protocol_refactor_preserves_debt(tmp_path, refactor):
+    import shutil
+
+    relative = Path("runtime/molt-backend-rust")
+    original = ROOT / relative
+    destination = tmp_path / relative
+    shutil.copytree(original / "src/rust", destination / "src/rust")
+    shutil.copyfile(original / "src/rust.rs", destination / "src/rust.rs")
+    shutil.copyfile(original / "Cargo.toml", destination / "Cargo.toml")
+    before = SA.ratchet_metrics(SA.probe_rust_backend_lowering_gaps(tmp_path))
+    assert before["rust_backend_lowering_gaps_total"] > 0
+    if refactor == "rename":
+        for path in (destination / "src").rglob("*.rs"):
+            source = path.read_text()
+            path.write_text(source.replace("emit_unsupported_op", "record_refusal"))
+    elif refactor in {"raw_reference", "rust_whitespace"}:
+        for path in (destination / "src").rglob("*.rs"):
+            source = path.read_text()
+            if refactor == "raw_reference":
+                source = source.replace(
+                    ".emit_unsupported_op(", ".r#emit_unsupported_op("
+                )
+            else:
+                source = source.replace(
+                    ".emit_unsupported_op(", ".\u200e emit_unsupported_op("
+                )
+            path.write_text(source)
+    else:
+        old = destination / "src/rust/op_emitter.rs"
+        new = destination / "src/rust/op_emitter/mod.rs"
+        new.parent.mkdir(exist_ok=True)
+        old.rename(new)
+    after = SA.ratchet_metrics(SA.probe_rust_backend_lowering_gaps(tmp_path))
+    assert (
+        after["rust_backend_lowering_gaps_total"]
+        == before["rust_backend_lowering_gaps_total"]
+    )
+    assert (
+        after["rust_backend_rejection_applicability_total"]
+        == before["rust_backend_rejection_applicability_total"]
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'self.unsupported_ops.push(format!("missing")); self.unsupported_ops.clear();',
+        "self.unsupported_ops.extend(Vec::<String>::new());",
+        'let deferred = || self.unsupported_ops.push(format!("missing"));',
+    ],
+)
+def test_recording_mutation_is_not_definite_refusal_without_terminal_push(
+    tmp_path, body
+):
+    import shutil
+
+    relative = Path("runtime/molt-backend-rust")
+    original = ROOT / relative
+    destination = tmp_path / relative
+    shutil.copytree(original / "src/rust", destination / "src/rust")
+    shutil.copyfile(original / "src/rust.rs", destination / "src/rust.rs")
+    shutil.copyfile(original / "Cargo.toml", destination / "Cargo.toml")
+    path = destination / "src/rust/op_emitter.rs"
+    source = path.read_text()
+    code = SA.mask_rust_comments_and_strings(source)
+    method = code.index("pub(super) fn emit_unsupported_op")
+    opening = code.index("{", method)
+    end, _ = SA._balanced_block(code, opening)
+    path.write_text(source[: opening + 1] + body + source[end - 1 :])
+    metrics = SA.ratchet_metrics(SA.probe_rust_backend_lowering_gaps(tmp_path))
+    assert metrics["rust_backend_lowering_gaps_total"] == 0
+    assert metrics["rust_backend_rejection_applicability_total"] > 0
+
+
+@pytest.mark.parametrize(
+    "recovery", ["dispatcher_clear", "consumer_clear", "missing_err", "aliased_clear"]
+)
+def test_actual_rejection_protocol_recovery_requires_proof_not_definite_gap(
+    tmp_path, recovery
+):
+    import shutil
+
+    relative = Path("runtime/molt-backend-rust")
+    original = ROOT / relative
+    destination = tmp_path / relative
+    shutil.copytree(original / "src/rust", destination / "src/rust")
+    shutil.copyfile(original / "src/rust.rs", destination / "src/rust.rs")
+    shutil.copyfile(original / "Cargo.toml", destination / "Cargo.toml")
+    if recovery in {"dispatcher_clear", "aliased_clear"}:
+        path = destination / "src/rust/op_emitter.rs"
+        source = path.read_text().replace(
+            "pub(super) fn emit_op(&mut self, op: &OpIR) {",
+            (
+                "pub(super) fn emit_op(&mut self, op: &OpIR) { self.unsupported_ops.clear();"
+                if recovery == "dispatcher_clear"
+                else "pub(super) fn emit_op(&mut self, op: &OpIR) { { let alias = &mut *self; alias.unsupported_ops.clear(); }"
+            ),
+        )
+    else:
+        path = destination / "src/rust.rs"
+        source = path.read_text()
+        if recovery == "consumer_clear":
+            source = source.replace(
+                "if !self.unsupported_ops.is_empty() {",
+                "self.unsupported_ops.clear(); if !self.unsupported_ops.is_empty() {",
+            )
+        else:
+            source = source.replace(
+                "return Err(format!(",
+                "let _ignored: Result<String, String> = Err(format!(",
+            )
+    path.write_text(source)
+    metrics = SA.ratchet_metrics(SA.probe_rust_backend_lowering_gaps(tmp_path))
+    assert metrics["rust_backend_lowering_gaps_total"] == 0
+    assert metrics["rust_backend_rejection_applicability_total"] > 0
+
+
+@pytest.mark.parametrize("retain_recorder", [True, False])
+def test_healthy_uncalled_refusal_protocol_has_no_permanent_debt_floor(
+    tmp_path, retain_recorder
+):
+    crate = tmp_path / "runtime/molt-backend-rust"
+    family = crate / "src/rust"
+    family.mkdir(parents=True)
+    (crate / "Cargo.toml").write_text("[package]\nname='fixture'\n")
+    (crate / "src/rust.rs").write_text(
+        "struct RustBackend {\nunsupported_ops: Vec<String>,\n}\nfn emit_source(&mut self) { self.unsupported_ops.clear(); String::new() }\n"
+        'fn compile_checked(&mut self) { let source = self.emit_source(); if !self.unsupported_ops.is_empty() { return Err(format!("unsupported: {:?}", self.unsupported_ops)); } Ok(source) }\n'
+    )
+    (family / "op_emitter.rs").write_text(
+        (
+            'fn record(&mut self) { self.unsupported_ops.push(format!("missing")); }\n'
+            if retain_recorder
+            else ""
+        )
+        + 'fn emit_line(&mut self) { self.output.push("x"); }'
+    )
+    metrics = SA.ratchet_metrics(SA.probe_rust_backend_lowering_gaps(tmp_path))
+    assert metrics["rust_backend_lowering_gaps_total"] == 0
+    assert metrics["rust_backend_rejection_applicability_total"] == 0
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), -1, True, "0"])
+def test_cli_ratchet_rejects_invalid_baseline_numbers(tmp_path, capsys, bad_value):
+    path = tmp_path / "tools/structural_audit_baseline.json"
+    path.parent.mkdir()
+    metrics = SA.ratchet_metrics([])
+    metrics["rust_backend_rejection_applicability_total"] = bad_value
+    path.write_text(json.dumps(metrics))
+    assert SA.main(["--root", str(tmp_path), "--check"]) == 2
+    import math
+
+    expected = (
+        "non-finite JSON number"
+        if isinstance(bad_value, float) and not math.isfinite(bad_value)
+        else "finite non-negative numbers"
+    )
+    assert expected in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "call", ["self.emit_unsupported_op(op)", "emit_unsupported_op(self, op)"]
+)
+def test_retired_primitive_with_remaining_calls_is_unresolved_proof_debt(
+    tmp_path, call
+):
+    crate = tmp_path / "runtime/molt-backend-rust"
+    family = crate / "src/rust"
+    family.mkdir(parents=True)
+    (crate / "Cargo.toml").write_text("[package]\nname='fixture'\n")
+    (crate / "src/rust.rs").write_text(
+        f"fn emit_source(&mut self) {{ self.unsupported_ops.clear(); {call}; String::new() }}\n"
+        'fn compile_checked(&mut self) { let source = self.emit_source(); if !self.unsupported_ops.is_empty() { return Err(format!("unsupported: {:?}", self.unsupported_ops)); } Ok(source) }\n'
+    )
+    (family / "op_emitter.rs").write_text("")
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert (
+        SA.ratchet_metrics(findings)["rust_backend_rejection_applicability_total"] > 0
+    )
+    assert any("emit_unsupported_op" in finding.detail for finding in findings)
+
+
+@pytest.mark.parametrize(
+    "reason", ["missing", "module_import_star", "other", "string=>arrow"]
+)
+def test_lowering_gap_body_literals_do_not_count_as_pattern_ops(tmp_path, reason):
+    path = tmp_path / "runtime/molt-backend-rust/src/rust/op_emitter.rs"
+    path.parent.mkdir(parents=True)
+    path.write_text(f'"module_import" => self.emit_unsupported_op(op, "{reason}"),\n')
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert SA.ratchet_metrics(findings)["rust_backend_lowering_gaps_total"] == 1
+    assert findings[0].detail == "L1:module_import"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '#[cfg(test)] let t = (); todo!("production");',
+        '#[cfg(test)] fn test_only() {} fn live() { todo!("production"); }',
+        '#[cfg(test)]\nfn test_only() {\n} fn live() { todo!("production"); }',
+    ],
+)
+def test_cfg_test_partial_line_cannot_hide_following_production(source):
+    assert any(hit.marker == "todo!" for hit in SA._rust_stub_surface_hits(source))
+
+
+@pytest.mark.parametrize(
+    "escape",
+    [
+        "recursive_entry",
+        "raw_field",
+        "destructure",
+        "take_self",
+        "assign_self",
+        "alias_take",
+        "foreign_backend",
+        "unknown_signature",
+        "unchecked_compile",
+        "pre_emission_self",
+        "late_entry_reset",
+        "reset_after_emit",
+        "early_return",
+        "bad_ok_tail",
+        "async_recorder",
+        "unknown_macro",
+        "unicode_macro",
+        "recursive_checked",
+        "public_lowerer",
+        "public_extern_lowerer",
+        "public_unknown_signature",
+        "public_ambiguous_lowerer",
+        "unknown_absolute_take",
+        "paren_assign_default",
+        "typed_alias_default",
+        "imported_take",
+        "qualified_default_reference",
+        "foreign_qualified",
+        "unknown_reset_without_field",
+        "ambiguous_reset",
+    ],
+)
+def test_actual_protocol_escape_is_explicit_unmet_evidence(tmp_path, escape):
+    import shutil
+
+    relative = Path("runtime/molt-backend-rust")
+    original = ROOT / relative
+    destination = tmp_path / relative
+    shutil.copytree(original / "src/rust", destination / "src/rust")
+    shutil.copyfile(original / "src/rust.rs", destination / "src/rust.rs")
+    shutil.copyfile(original / "Cargo.toml", destination / "Cargo.toml")
+    emitter = destination / "src/rust/op_emitter.rs"
+    root = destination / "src/rust.rs"
+    source = emitter.read_text()
+    entry = "pub(super) fn emit_op(&mut self, op: &OpIR) {"
+    injected = {
+        "recursive_checked": "let _ = self.compile_checked(&crate::SimpleIR { functions: Vec::new(), profile: None });",
+        "paren_assign_default": "*(self) = Default::default();",
+        "typed_alias_default": "let this: &mut Self = self; *this = Default::default();",
+        "imported_take": "use std::mem::take; let _old = take(self);",
+        "qualified_default_reference": "let constructor = <Self as Default>::default; *self = constructor();",
+        "unknown_reset_without_field": "Self::reset_all(self, [0]);",
+        "unknown_absolute_take": "Self::reset_all(self, [0]);",
+        "ambiguous_reset": "*self = Self::new();",
+        "recursive_entry": "self.emit_source(&crate::SimpleIR { functions: Vec::new(), profile: None }, None);",
+        "raw_field": "self.r#unsupported_ops.clear();",
+        "destructure": "{ let Self { unsupported_ops, .. } = &mut *self; unsupported_ops.clear(); }",
+        "take_self": "let _old = std::mem::take(self);",
+        "assign_self": "*self = Self::new();",
+        "alias_take": "let alias = &mut *self; let _old = std::mem::take(alias);",
+        "unknown_signature": "Self::reset_refusals(self, [0]);",
+    }
+    if escape in injected:
+        source = source.replace(entry, entry + injected[escape])
+        if escape == "unknown_signature":
+            source += "\nimpl RustBackend { fn reset_refusals(&mut self, _s: [u8; 1]) { self.unsupported_ops.clear(); } }\n"
+        elif escape == "unknown_reset_without_field":
+            source += "\nimpl RustBackend { fn reset_all(&mut self, _s: [u8; 1]) { *self = Self::new(); } }\n"
+        elif escape == "unknown_absolute_take":
+            source += "\nimpl RustBackend { fn reset_all(&mut self, _s: [u8; 1]) { let _old = ::std::mem::take(self); } }\n"
+        elif escape == "ambiguous_reset":
+            source += "\nstruct Shadow; impl Shadow { fn emit_op(&self) {} }\n"
+        emitter.write_text(source)
+    elif escape == "async_recorder":
+        emitter.write_text(
+            source.replace(
+                "pub(super) fn emit_unsupported_op",
+                "pub(super) async fn emit_unsupported_op",
+            )
+        )
+    elif escape in {"unknown_macro", "unicode_macro"}:
+        invocation = "bail!()" if escape == "unknown_macro" else "bail\u200e!()"
+        source = source.replace(
+            '.push(format!("`{}` (rust backend): {reason}", op.kind));',
+            f".push({invocation});",
+        )
+        assert f".push({invocation});" in source
+        emitter.write_text("macro_rules! bail { () => { return }; }\n" + source)
+    else:
+        source = root.read_text()
+        if escape in {
+            "public_lowerer",
+            "public_extern_lowerer",
+            "public_unknown_signature",
+            "public_ambiguous_lowerer",
+        }:
+            visibility = (
+                'pub extern "C"' if escape == "public_extern_lowerer" else "pub"
+            )
+            padding = ", _pad: [u8; 1]" if escape == "public_unknown_signature" else ""
+            source += f"\nimpl RustBackend {{ {visibility} fn compile_function(&mut self, func: &FunctionIR{padding}) -> String {{ self.emit_function(func, None); std::mem::take(&mut self.output) }} }}\n"
+            if escape == "public_ambiguous_lowerer":
+                source += (
+                    "\nstruct Shadow; impl Shadow { fn compile_function(&self) {} }\n"
+                )
+        elif escape == "foreign_qualified":
+            source = source.replace(
+                "self.emit_op(&ops[i]);",
+                "{ let mut trial: Self = Default::default(); Self::emit_op(&mut trial, &ops[i]); self.output.push_str(&trial.output); }",
+            )
+        elif escape == "foreign_backend":
+            source = source.replace(
+                "self.emit_op(&ops[i]);",
+                "{ let mut trial = RustBackend::new(); trial.emit_op(&ops[i]); self.output.push_str(&trial.output); }",
+            )
+        elif escape == "unchecked_compile":
+            source = source.replace("#[cfg(test)]\n    fn compile(", "fn compile(")
+        elif escape == "pre_emission_self":
+            source = source.replace(
+                "let source = self.emit_source",
+                "self.emit_op(&ir.functions[0].ops[0]); let source = self.emit_source",
+            )
+        elif escape == "late_entry_reset":
+            source = source.replace(
+                "// Entry point", "self.unsupported_ops.clear(); // Entry point"
+            )
+        elif escape == "reset_after_emit":
+            source = source.replace("self.unsupported_ops.clear();", "", 1).replace(
+                "// Entry point", "self.unsupported_ops.clear(); // Entry point"
+            )
+        elif escape == "early_return":
+            source = source.replace(
+                "let source = self.emit_source",
+                "return Ok(String::new()); let source = self.emit_source",
+            )
+        elif escape == "bad_ok_tail":
+            source = source.replace("Ok(source)", "Ok(String::new())")
+        root.write_text(source)
+    metrics = SA.ratchet_metrics(SA.probe_rust_backend_lowering_gaps(tmp_path))
+    assert metrics["rust_backend_lowering_gaps_total"] == 0
+    assert metrics["rust_backend_rejection_applicability_total"] > 0
+
+
+def test_refusal_field_inference_excludes_unrelated_empty_checks():
+    source = 'if !self.output.is_empty() { let present = 1; } if !self.unsupported_ops.is_empty() { return Err(format!("unsupported: {:?}", self.unsupported_ops)); }'
+    assert [match[1] for match in SA._rust_checked_refusal_guards(source)] == [
+        "unsupported_ops"
+    ]
+
+
+@pytest.mark.parametrize("corruption", ["duplicate", "extra", "missing"])
+def test_cli_baseline_json_integrity_matches_receipt_authority(
+    tmp_path, capsys, corruption
+):
+    path = tmp_path / "tools/structural_audit_baseline.json"
+    path.parent.mkdir()
+    baseline = SA.ratchet_metrics([])
+    if corruption == "duplicate":
+        text = json.dumps(baseline)
+        text = text[:-1] + ', "rust_backend_lowering_gaps_total": 999}'
+    elif corruption == "extra":
+        baseline["unrecognized_metric"] = 0
+        text = json.dumps(baseline)
+    else:
+        del baseline["rust_backend_lowering_gaps_total"]
+        text = json.dumps(baseline)
+    path.write_text(text)
+    assert SA.main(["--root", str(tmp_path), "--check"]) == 2
+    error = capsys.readouterr().err
+    assert "invalid baseline" in error or "metric keys differ" in error
 
 
 if __name__ == "__main__":

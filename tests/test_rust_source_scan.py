@@ -144,3 +144,16 @@ def test_preserve_literals_masks_only_real_comments_and_preserves_offsets():
     assert "&'a str" in masked
     assert "trailing" not in masked and "nested" not in masked and "final" not in masked
     assert "https://x" not in mask_rust_comments_and_strings(source)
+
+
+def test_preserved_rust_quote_character_literals_do_not_start_strings():
+    source = (
+        r"""let quote = '"'; let apostrophe = '\''; let value: &'a str = "https://x"; // trailing"""
+        + "\n"
+    )
+    preserved = mask_rust_comments_and_strings(source, preserve_literals=True)
+    masked = mask_rust_comments_and_strings(source)
+    assert r"""'"'""" in preserved and r"""'\''""" in preserved
+    assert "&'a str" in preserved and "&'a str" in masked
+    assert "trailing" not in preserved and "https://x" in preserved
+    assert len(preserved) == len(masked) == len(source)
