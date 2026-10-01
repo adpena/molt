@@ -169,6 +169,14 @@ def _canonical_scoreboard_doc(
             "backend": backend,
             "profile": profile,
             "build_ok": True,
+            "build_observation": {
+                "selected_profiles": {
+                    "guest_profile": "release",
+                    "compiler_profile": "release",
+                    "runtime_profile": profile,
+                    "target": "native",
+                }
+            },
             "run_blocked": False,
             "molt_ok": True,
             "cpython_ok": True,

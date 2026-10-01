@@ -51,6 +51,15 @@ def winning_cell():
         repeat_passes=5,
         repeat_ci_lo=1.01,
         repeat_ci_hi=1.2,
+        build_observation={
+            "compiled_with_verified": False,
+            "selected_profiles": {
+                "guest_profile": "release",
+                "runtime_profile": "wasm-release",
+                "compiler_profile": "release",
+                "target": "wasm",
+            },
+        },
         output_parity=perf_schema.output_parity_evidence(
             reference_observations=[("cpython", "result", "", 0)],
             molt_observations=[("molt", "result", "", 0)],
@@ -334,3 +343,34 @@ def test_canonical_benchmark_registry_cannot_silently_drop_a_workload(monkeypatc
     monkeypatch.setattr(bench_suites, "BENCHMARKS", bench_suites.BENCHMARKS[1:])
     with pytest.raises(ValueError, match="benchmark ownership"):
         required_matrix(source_sha="a" * 40, root=ROOT)
+
+
+@pytest.mark.parametrize(
+    "field", ["guest_profile", "runtime_profile", "compiler_profile", "target"]
+)
+def test_matrix_rejects_labels_disconnected_from_selected_build(field):
+    matrix = fixture_matrix()
+    shards, toolchains = fixture_receipts(matrix)
+    row = next(row for shard in shards for row in shard["cells"])
+    row["measurement"]["build_observation"]["selected_profiles"][field] = (
+        "wrong-profile"
+    )
+    # Top-level coordinate labels still exactly match the expected authority.
+    assert row["observed_profiles"]["runtime_profile"] == "wasm-release"
+    problems = performance_matrix_problems(
+        matrix, shards, toolchain_identities=toolchains
+    )
+    assert any("measured build profile observation" in p for p in problems)
+
+
+def test_matrix_rejects_historical_missing_build_profile_binding():
+    matrix = fixture_matrix()
+    shards, toolchains = fixture_receipts(matrix)
+    row = next(row for shard in shards for row in shard["cells"])
+    row["measurement"].pop("build_observation")
+    assert any(
+        "measured build profile observation" in p
+        for p in performance_matrix_problems(
+            matrix, shards, toolchain_identities=toolchains
+        )
+    )
