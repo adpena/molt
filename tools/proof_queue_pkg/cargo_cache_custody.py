@@ -6,6 +6,12 @@ input. No candidate may be reused without a complete enforced input closure.
 
 from __future__ import annotations
 
+from tools.exception_diagnostics import (
+    add_exception_note,
+    exception_diagnostic,
+    exception_type_name,
+)
+
 from dataclasses import dataclass
 import datetime as dt
 import json
@@ -447,7 +453,7 @@ class CargoCacheLease:
             publication = {
                 "state": "unsealed",
                 "reason": "invalid-execution-details",
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": exception_diagnostic(exc),
             }
         else:
             if not complete:
@@ -491,14 +497,27 @@ class CargoCacheLease:
                     failed = {
                         "state": "unsealed",
                         "reason": "publication-failed",
-                        "error": f"{type(exc).__name__}: {exc}",
+                        "error": exception_diagnostic(exc),
                     }
+                    # Keep an owned in-memory outcome even when persistence itself
+                    # fails before updating the lease. This is not durable credit.
+                    self.publication_outcome = dict(failed)
                     try:
                         self._persist_publication(failed)
                     except BaseException as owner_exc:
-                        exc.add_note(
+                        self.publication_outcome = {
+                            **failed,
+                            "owner_persistence": {
+                                "state": "failed",
+                                "diagnostic": exception_diagnostic(owner_exc),
+                            },
+                        }
+                        self.owner["publication"] = self.publication_outcome
+                        self.owner_persisted = False
+                        add_exception_note(
+                            exc,
                             "Cargo generation owner publication also failed: "
-                            f"{type(owner_exc).__name__}: {owner_exc}"
+                            + exception_diagnostic(owner_exc),
                         )
                     raise
         cargo_output_layout.validate_root(self.provenance.get("cargo_output_root"))
@@ -528,7 +547,9 @@ class CargoCacheLease:
             try:
                 if not self.published:
                     self._persist_publication(
-                        {
+                        self.publication_outcome
+                        if self.publication_outcome is not None
+                        else {
                             "state": "unsealed",
                             "reason": "lease-closed-without-publication",
                         }
@@ -1250,7 +1271,7 @@ def _transition_terminal_output(
                 lifecycle=disposition.blocked_lifecycle,
                 **{
                     disposition.blocked_at_field: _utc_now(),
-                    f"{disposition.action}_error": f"{type(exc).__name__}: {exc}",
+                    f"{disposition.action}_error": f"{exception_type_name(exc)}: {exception_diagnostic(exc)}",
                 },
             )
             _write_owner(owner_path, owner)
