@@ -1368,10 +1368,11 @@ def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
 
 
 def _rust_match_arm_text_before(lines: list[str], call_index: int) -> str:
+    code_lines = mask_rust_comments_and_strings("\n".join(lines)).splitlines()
     arrow_index: int | None = None
     floor = max(-1, call_index - 50)
     for idx in range(call_index, floor, -1):
-        if "=> {" in lines[idx]:
+        if "=> {" in code_lines[idx]:
             arrow_index = idx
             break
     if arrow_index is None:
@@ -1379,6 +1380,10 @@ def _rust_match_arm_text_before(lines: list[str], call_index: int) -> str:
     start = arrow_index
     while start > 0:
         previous = lines[start - 1].strip()
+        # A completed neighboring arm is not part of this arm's pattern, even
+        # when its first token is another opcode string literal.
+        if "=>" in code_lines[start - 1]:
+            break
         if previous.startswith('"') or previous.startswith('| "'):
             start -= 1
             continue
@@ -1412,9 +1417,10 @@ def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
         text = path.read_text(errors="replace")
     except OSError:
         return []
-    lines = text.splitlines()
+    lines = mask_rust_comments_and_strings(text, preserve_literals=True).splitlines()
+    code_lines = mask_rust_comments_and_strings(text).splitlines()
     findings: list[Finding] = []
-    for line_no, line in enumerate(lines, start=1):
+    for line_no, line in enumerate(code_lines, start=1):
         if "self.emit_unsupported_op(" not in line:
             continue
         call_block = "\n".join(lines[line_no - 1 : min(len(lines), line_no + 8)])
