@@ -1,6 +1,9 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    "tests/test_exception_diagnostics.py",
+    "tools/exception_diagnostics.py",
+    "src/molt/exception_diagnostics.py",
     "bench/scoreboard/cold_start_budget.json",
     "src/molt/cli/backend_cache_setup.py",
     "src/molt/cli/backend_execution.py",
@@ -228,7 +231,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "994ba13204083a2f373dc4bb12298417fb76683445758c4906706e3f86deea23",
+  "authority_sha256": "1a86fac5916a3e584716e2ee38d74302f592792f2159498e7d287e662a045611",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3138,7 +3141,8 @@
         "tests/test_molt_diff_expected_failures.py",
         "tests/test_compat_multibackend_oracle.py",
         "tests/test_child_clock_custody.py",
-        "tests/test_perf_calibration.py"
+        "tests/test_perf_calibration.py",
+        "tests/test_exception_diagnostics.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -4221,7 +4225,8 @@
         "-q",
         "tests/test_cargo_quarantine_custody.py",
         "tests/test_child_clock_custody.py",
-        "tests/test_perf_calibration.py"
+        "tests/test_perf_calibration.py",
+        "tests/test_exception_diagnostics.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -4256,7 +4261,8 @@
         "-q",
         "tests/test_cargo_quarantine_custody.py",
         "tests/test_child_clock_custody.py",
-        "tests/test_perf_calibration.py"
+        "tests/test_perf_calibration.py",
+        "tests/test_exception_diagnostics.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -4291,7 +4297,8 @@
         "-q",
         "tests/test_cargo_quarantine_custody.py",
         "tests/test_child_clock_custody.py",
-        "tests/test_perf_calibration.py"
+        "tests/test_perf_calibration.py",
+        "tests/test_exception_diagnostics.py"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",

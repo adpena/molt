@@ -1955,3 +1955,97 @@ def test_legacy_inventory_is_read_only_and_fail_closed(tmp_path):
     ]
     assert legacy.is_dir()
     assert not (legacy.parent / "owner.json").exists()
+
+
+@pytest.mark.parametrize("failure_point", ["before-observation", "owner-write"])
+def test_failed_publication_owner_write_keeps_structured_secondary_without_primary_callbacks(
+    monkeypatch, tmp_path, failure_point
+):
+    def _hostile():
+        called = []
+
+        class Meta(type):
+            @property
+            def __name__(cls):
+                called.append("name")
+                raise RuntimeError("name callback")
+
+        class Error(Exception, metaclass=Meta):
+            @property
+            def __notes__(self):
+                called.append("notes")
+                raise RuntimeError("notes callback")
+
+            def __str__(self):
+                called.append("str")
+                raise RuntimeError("str callback")
+
+        return Error("original"), called
+
+    def _raise(error):
+        raise error
+
+    primary, calls = _hostile()
+    cleanup, cleanup_calls = _hostile()
+    monkeypatch.setattr(cache.cargo_output_layout, "validate_root", lambda *args: None)
+    monkeypatch.setattr(cache, "_read_current_pointer", lambda *args, **kwargs: {})
+    monkeypatch.setattr(cache, "_complete_custody", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        cache.command_identity,
+        "_directory_manifest_identity",
+        lambda *args, **kwargs: _raise(primary),
+    )
+    lease = cache.CargoCacheLease(
+        tmp_path, tmp_path, tmp_path, tmp_path, None, {"input_sha256": "input"}, {}, {}
+    )
+    publications = []
+
+    def fail_publication(payload):
+        publications.append(payload)
+        raise cleanup
+
+    persist_publication = lease._persist_publication
+    persisted_owners = []
+
+    def fail_owner_write(path, owner):
+        publications.append(dict(owner["publication"]))
+        raise cleanup
+
+    if failure_point == "before-observation":
+        monkeypatch.setattr(lease, "_persist_publication", fail_publication)
+    else:
+        monkeypatch.setattr(cache, "_write_owner", fail_owner_write)
+    with pytest.raises(type(primary)) as caught:
+        lease.publish({})
+    assert caught.value is primary and publications[0]["state"] == "unsealed"
+    assert publications[0]["error"] == "Error: original"
+    assert lease.publication_outcome == {
+        "state": "unsealed",
+        "reason": "publication-failed",
+        "error": "Error: original",
+        "owner_persistence": {"state": "failed", "diagnostic": "Error: original"},
+    }
+    assert lease.owner_persisted is False
+    assert lease.owner["publication"] == lease.publication_outcome
+    assert (
+        list(
+            dict.items(
+                BaseException.__dict__["__dict__"].__get__(primary, BaseException)
+            )
+        )
+        == []
+    )
+    assert calls == cleanup_calls == []
+
+    # The close retry must serialize the same failed outcome, including the
+    # secondary failure, rather than replacing or losing its owned evidence.
+    monkeypatch.setattr(lease, "_persist_publication", persist_publication)
+    monkeypatch.setattr(
+        cache, "_write_owner", lambda path, owner: persisted_owners.append(dict(owner))
+    )
+    monkeypatch.setattr(cache, "_release_file_lock", lambda lock: None)
+    lease.close()
+    assert persisted_owners[0]["publication"] == lease.publication_outcome
+    assert lease.owner_persisted is True
+    assert lease.closed is True
+    assert calls == cleanup_calls == []
