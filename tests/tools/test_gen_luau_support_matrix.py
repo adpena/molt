@@ -5,6 +5,7 @@ import sys
 import uuid
 from pathlib import Path
 from types import ModuleType
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -284,3 +285,152 @@ def test_pending_call_poll_requirement_cannot_be_reported_as_exact() -> None:
     )
     assert "marked variant" in rows["exception_finally_pending_observer"].note
     assert "target contract rejects" in rows["async_work_poll"].note
+
+
+@pytest.mark.parametrize(
+    "helper", ["emit_unsupported_op", "emit_unsupported_op_with_reason"]
+)
+@pytest.mark.parametrize("kind", ["const_ellipsis", "const_float", "callargs_new"])
+def test_rejection_only_shared_helper_is_never_reported_implemented(helper, kind):
+    mod = _load_module()
+    body = f'"{kind}" => {{ self.{helper}(op, "reason"); }}'
+    assert mod._classify(kind, body).status == "compile-error"
+
+
+@pytest.mark.parametrize("kind", ["func_new_closure", "getframe", "state_yield"])
+def test_pre_source_rejection_remains_primary_over_source_helper(kind):
+    mod = _load_module()
+    row = mod._classify(kind, f'"{kind}" => {{ self.emit_unsupported_op(op); }}')
+    assert row.status == "not-admitted"
+    assert "before source generation" in row.note
+
+
+@pytest.mark.parametrize(
+    "kind", ["const_int", "const_bigint", "add", "callargs_expand_kwstar"]
+)
+def test_declared_limits_preserve_their_specific_conditional_contract(kind):
+    mod = _load_module()
+    body = f'"{kind}" => {{ if admitted {{ self.emit_line("value"); }} else {{ self.emit_unsupported_op(op); }} }}'
+    row = mod._classify(kind, body)
+    assert row.status == "implemented-target-limited"
+    assert "branch-admitted" not in row.note
+
+
+@pytest.mark.parametrize("kind", ["const_float", "builtin_func", "callargs_new", "box"])
+def test_conditional_rejection_is_not_universal_rejection_or_exact_support(kind):
+    mod = _load_module()
+    body = f'"{kind}" => {{ if admitted {{ self.emit_line("value"); }} else {{ self.emit_unsupported_op_with_reason(op, "bad operand"); }} }}'
+    assert mod._unsupported_emission_kind(body) == "conditional"
+    row = mod._classify(kind, body)
+    if kind in mod._PRE_SOURCE_NOT_ADMITTED:
+        assert row.status == "not-admitted"
+    else:
+        assert row.status == (
+            "implemented-target-limited"
+            if kind == "builtin_func"
+            else "implemented-exact"
+        )
+        if kind == "builtin_func":
+            assert "builtin-name whitelist" in row.note
+
+
+@pytest.mark.parametrize(
+    "noncode",
+    [
+        "// self.emit_unsupported_op(op);\n",
+        "/* self.emit_unsupported_op(op); /* nested */ */",
+        'let text = r###"self.emit_unsupported_op(op); { }"###;',
+        'let text = "self.emit_unsupported_op_with_reason(op, reason)";',
+    ],
+)
+def test_shared_helper_spelling_in_noncode_does_not_lower_support(noncode):
+    mod = _load_module()
+    body = f'"const_none" => {{ {noncode} self.emit_line("nil"); }}'
+    assert mod._unsupported_emission_kind(body) is None
+    assert mod._classify("const_none", body).status == "implemented-exact"
+
+
+def test_supported_branch_before_late_rejection_is_not_universal_rejection():
+    mod = _load_module()
+    body = '"const_float" => { if valid { self.emit_line("value"); return true; } self.emit_unsupported_op(op); }'
+    assert mod._unsupported_emission_kind(body) == "conditional"
+    assert mod._classify("const_float", body).status == "implemented-exact"
+
+
+def test_every_actual_shared_rejection_arm_has_honest_support_status():
+    mod = _load_module()
+    source = "\n".join(
+        path.read_text() for path in mod._source_files(mod.DEFAULT_SOURCE)
+    )
+    seen = set()
+    for match in mod._extract_emit_op_matches(source):
+        for kinds, body in mod._iter_arms(match):
+            rejection = mod._unsupported_emission_kind(body)
+            if rejection is None:
+                continue
+            for kind in kinds:
+                seen.add(kind)
+                if rejection == "only" or kind == "builtin_func":
+                    assert mod._classify(kind, body).status != "implemented-exact", kind
+    assert {
+        "const_ellipsis",
+        "func_new_closure",
+        "const_float",
+        "builtin_func",
+        "callargs_new",
+        "box",
+    } <= seen
+
+
+def test_luau_classifier_source_family_and_regressions_are_mandatory():
+    import tomllib
+
+    mod = _load_module()
+    plan = tomllib.loads((REPO_ROOT / "tools/proof_plan.toml").read_text())
+    commands = {command["id"]: command for command in plan["command"]}
+    assert (
+        "tests/tools/test_gen_luau_support_matrix.py"
+        in commands["repository.docs-tests"]["argv"]
+    )
+    assert commands["repository.docs-tests"]["timeout_seconds"] == 600
+    assert {
+        "tools/gen_luau_support_matrix.py",
+        "tests/tools/test_gen_luau_support_matrix.py",
+        "src/molt/rust_source_scan.py",
+        "runtime/molt-ir/src/tir/op_kinds.toml",
+    } <= set(plan["authority_inputs"])
+    assert {
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in mod._source_files(mod.DEFAULT_SOURCE)
+    } <= set(plan["authority_inputs"])
+
+
+def test_actual_raw_fallback_report_explicitly_excludes_structured_cfg_acceptance():
+    mod = _load_module()
+    output = mod.build_output(mod.DEFAULT_SOURCE)
+    assert "**Scope:** raw OpIR emitter-arm classification" in output
+    assert "whole-function acceptance or execution" in output
+    assert "`function_body.rs` and `flow_dispatch.rs`" in output
+    assert "exception-check edges can bypass raw `emit_op`" in output
+    assert "that route requires its own validation" in output
+    for kind in ("jump", "goto", "br_if", "branch_false", "check_exception"):
+        assert f"| `{kind}` | `compile-error` |" in output
+    flow = (mod.DEFAULT_SOURCE / "flow_dispatch.rs").read_text()
+    function = (mod.DEFAULT_SOURCE / "function_body.rs").read_text()
+    assert "simpleir_kind_is_exception_check" in flow
+    assert "simpleir_kind_is_structural" in flow
+    assert "emit_logical_flow" in function
+
+
+def test_source_reader_excludes_test_code_even_with_emitter_shaped_text(tmp_path):
+    mod = _load_module()
+    root = tmp_path / "luau"
+    root.mkdir()
+    production = root / "op_values.rs"
+    production.write_text("production")
+    (root / "tests.rs").write_text(
+        'fn emit_fake_op() { match op.kind { "const_none" => self.emit_unsupported_op(op), } }'
+    )
+    (root / "tests").mkdir()
+    (root / "tests" / "fake.rs").write_text("test code")
+    assert mod._source_files(root) == [production]

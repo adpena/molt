@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from generator_io import generated_file_matches, write_generated_text
+from molt.rust_source_scan import mask_rust_comments_and_strings
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +119,39 @@ _STARTS_WITH_RE = re.compile(r'kind\.starts_with\("([^"]+)"\)')
 _EMIT_OP_FN_RE = re.compile(
     r"\bfn\s+emit[A-Za-z0-9_]*\s*\(\s*&mut\s+self\s*,\s*op:\s*&OpIR\s*\)"
 )
+_UNSUPPORTED_EMISSION_CALL = re.compile(
+    r"\bself\s*\.\s*emit_unsupported_op(?:_with_reason)?\s*\("
+)
+
+
+def _unsupported_emission_kind(body: str) -> str | None:
+    """Distinguish rejection-only arms from branch-dependent checked rejection.
+
+    The shared helper records compile_checked failure rather than emitting an
+    inline unsupported marker. Conditional calls are not proof of universal
+    rejection, but cannot attest unrestricted support either. Lexical masking
+    prevents comments, raw strings and diagnostic text from becoming calls.
+    """
+    code = mask_rust_comments_and_strings(body)
+    if not _UNSUPPORTED_EMISSION_CALL.search(code):
+        return None
+    expression = code.split("=>", 1)[-1].strip().rstrip(",").strip()
+    if expression.startswith("{") and expression.endswith("}"):
+        expression = expression[1:-1].strip()
+    call = _UNSUPPORTED_EMISSION_CALL.match(expression)
+    if call is None:
+        return "conditional"
+    depth = 1
+    index = call.end()
+    while index < len(expression) and depth:
+        depth += (expression[index] == "(") - (expression[index] == ")")
+        index += 1
+    if depth:
+        raise ValueError("unterminated unsupported-emission helper call")
+    tail = expression[index:].strip()
+    if re.fullmatch(r";?\s*(?:return\s+(?:true|false)\s*;)?", tail):
+        return "only"
+    return "conditional"
 
 
 def _find_matching_brace(text: str, open_idx: int) -> int:
@@ -319,6 +353,13 @@ def _classify(op: str, body: str) -> Row:
             "not-admitted",
             "Operation is unclassified in the generated target-contract authority.",
         )
+    unsupported_emission = _unsupported_emission_kind(body)
+    if unsupported_emission == "only" and op not in _PRE_SOURCE_NOT_ADMITTED:
+        return Row(
+            op,
+            "compile-error",
+            "Checked Luau emission rejects this arm through the shared unsupported-operation helper.",
+        )
     if op in _PRE_SOURCE_ORDERED_MAPPING_LIMITED:
         return Row(
             op,
@@ -352,6 +393,12 @@ def _classify(op: str, body: str) -> Row:
     if "-- [unsupported op:" in body or 'error(\\"[unsupported op:' in body:
         return Row(
             op, "compile-error", "Checked Luau emission rejects unsupported markers."
+        )
+    if unsupported_emission == "conditional" and op == "builtin_func":
+        return Row(
+            op,
+            "implemented-target-limited",
+            "The raw emitter accepts its explicit builtin-name whitelist; otherwise valid unlisted builtin forms reach the shared unsupported-operation helper.",
         )
     semantic_markers = (
         "-- [async:",
@@ -413,7 +460,7 @@ def _source_files(source: Path) -> list[Path]:
         return sorted(
             path
             for path in source.rglob("*.rs")
-            if "tests" not in path.relative_to(source).parts
+            if "tests" not in path.relative_to(source).parts and path.name != "tests.rs"
         )
     return [source]
 
@@ -427,6 +474,10 @@ def _render(rows: list[Row], source: Path) -> str:
         "**Status:** Generated",
         f"**Source:** `{source_display.as_posix()}`",
         "**Target:** current/future Luau surface; Molt does not add legacy Lua compatibility shims.",
+        "",
+        "**Scope:** raw OpIR emitter-arm classification joined with generated pre-source contracts; these rows do not attest whole-function acceptance or execution.",
+        "",
+        "Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separately: jump/branch edges and exception-check edges can bypass raw `emit_op`. A rejected raw fallback is not evidence that every structured program containing that operation is unsupported; that route requires its own validation.",
         "",
         "## Summary",
         "",
@@ -452,7 +503,7 @@ def _render(rows: list[Row], source: Path) -> str:
             "",
             "- `implemented-exact`: emitted without known Luau target limitation or checked-output stub marker.",
             "- `implemented-target-limited`: emitted for an admitted subset with an explicit Luau/Python semantic limit.",
-            "- `compile-error`: checked Luau emission rejects this unsupported operation.",
+            "- `compile-error`: the checked raw emitter arm rejects this operation; separate structured CFG dispatch is outside this classification.",
             "- `not-admitted`: current lowering is intentionally rejected by checked Luau emission.",
             "",
         ]
