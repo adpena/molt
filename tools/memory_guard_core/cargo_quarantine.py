@@ -7,6 +7,7 @@ import ctypes
 import errno
 import json
 import os
+import platform
 import time
 from pathlib import Path
 import shlex
@@ -271,6 +272,58 @@ def _observed_compilers_closed(
     return True
 
 
+class _DarwinStatfs64(ctypes.Structure):
+    # Apple xnu bsd/sys/mount.h __DARWIN_STRUCT_STATFS64, both LP64 ABIs.
+    _fields_ = [
+        ("f_bsize", ctypes.c_uint32),
+        ("f_iosize", ctypes.c_int32),
+        ("f_blocks", ctypes.c_uint64),
+        ("f_bfree", ctypes.c_uint64),
+        ("f_bavail", ctypes.c_uint64),
+        ("f_files", ctypes.c_uint64),
+        ("f_ffree", ctypes.c_uint64),
+        ("f_fsid", ctypes.c_int32 * 2),
+        ("f_owner", ctypes.c_uint32),
+        ("f_type", ctypes.c_uint32),
+        ("f_flags", ctypes.c_uint32),
+        ("f_fssubtype", ctypes.c_uint32),
+        ("f_fstypename", ctypes.c_char * 16),
+        ("f_mntonname", ctypes.c_char * 1024),
+        ("f_mntfromname", ctypes.c_char * 1024),
+        ("f_flags_ext", ctypes.c_uint32),
+        ("f_reserved", ctypes.c_uint32 * 7),
+    ]
+
+
+def _darwin_local_cargo_lock_filesystem(path: Path) -> bool:
+    machine = platform.machine().lower()
+    if machine not in {"x86_64", "arm64", "aarch64"}:
+        return False
+    if ctypes.sizeof(ctypes.c_void_p) != 8 or ctypes.sizeof(_DarwinStatfs64) != 2168:
+        return False
+    # Apple xnu sys/cdefs.h: macOS x86_64 retains the INODE64 symbol suffix;
+    # arm64 has only the 64-bit inode ABI. Never fall back to legacy statfs.
+    symbol = "statfs$INODE64" if machine == "x86_64" else "statfs"
+    try:
+        probe = getattr(ctypes.CDLL(None, use_errno=True), symbol, None)
+        if probe is None:
+            return False
+        probe.argtypes = [ctypes.c_char_p, ctypes.POINTER(_DarwinStatfs64)]
+        probe.restype = ctypes.c_int
+        result = _DarwinStatfs64()
+        if probe(os.fsencode(path), ctypes.byref(result)) != 0:
+            return False
+        # MNT_LOCAL is kernel authority, not a mount-path/name heuristic.
+        # Restrict admitted local types to the native APFS/HFS lock contract.
+        return (
+            bool(result.f_flags & 0x1000)
+            and not bool(result.f_flags & 1)
+            and (result.f_fstypename in {b"apfs", b"hfs"})
+        )
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def _local_cargo_lock_filesystem(path: Path) -> bool:
     """Fail closed where Cargo can ignore locks or locality is unverified."""
     if os.name == "nt":
@@ -298,6 +351,8 @@ def _local_cargo_lock_filesystem(path: Path) -> bool:
             0x794C7630,
             0x2FC12FC1,
         }
+    if sys.platform == "darwin":
+        return _darwin_local_cargo_lock_filesystem(path)
     return False  # additional native filesystem witnesses are required
 
 

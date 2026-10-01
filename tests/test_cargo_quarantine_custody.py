@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import subprocess
 import contextlib
+import ctypes
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +20,99 @@ import pytest
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 from tools.memory_guard_core import cargo_quarantine as cargo
 from tools.memory_guard_core.process_model import process_identity
+
+
+@pytest.mark.parametrize(
+    "machine,symbol",
+    [("x86_64", "statfs$INODE64"), ("arm64", "statfs"), ("aarch64", "statfs")],
+)
+@pytest.mark.parametrize(
+    "flags,kind,rc,expected",
+    [
+        (0x1000, b"apfs", 0, True),
+        (0x1000, b"hfs", 0, True),
+        (0, b"apfs", 0, False),
+        (0x1001, b"apfs", 0, False),
+        (0x1000, b"nfs", 0, False),
+        (0x1000, b"smbfs", 0, False),
+        (0x1000, b"unknown", 0, False),
+        (0x1000, b"apfs", -1, False),
+    ],
+)
+def test_darwin_filesystem_authority_model(
+    monkeypatch, tmp_path, machine, symbol, flags, kind, rc, expected
+):
+    class Probe:
+        def __call__(self, path, pointer):
+            result = ctypes.cast(
+                pointer, ctypes.POINTER(cargo._DarwinStatfs64)
+            ).contents
+            result.f_flags = flags
+            result.f_fstypename = kind
+            return rc
+
+    monkeypatch.setattr(cargo.platform, "machine", lambda: machine)
+    monkeypatch.setattr(
+        cargo.ctypes, "CDLL", lambda *a, **kw: SimpleNamespace(**{symbol: Probe()})
+    )
+    assert cargo._darwin_local_cargo_lock_filesystem(tmp_path) is expected
+
+
+def test_darwin_filesystem_missing_authority_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(cargo.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(cargo.ctypes, "CDLL", lambda *a, **kw: SimpleNamespace())
+    assert not cargo._darwin_local_cargo_lock_filesystem(tmp_path)
+    monkeypatch.setattr(cargo.platform, "machine", lambda: "unsupported")
+    assert not cargo._darwin_local_cargo_lock_filesystem(tmp_path)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="actual Darwin header/API witness")
+def test_actual_darwin_filesystem_header_authority(tmp_path):
+    from tests.process_guard_common import run_custody_subject_process
+
+    source = tmp_path / "statfs_probe.c"
+    binary = tmp_path / "statfs_probe"
+    source.write_text(
+        """#define _DARWIN_USE_64_BIT_INODE 1
+#include <sys/mount.h>
+#include <stddef.h>
+#include <stdio.h>
+int main(int argc, char **argv) {
+  struct statfs s;
+  if (argc != 2 || statfs(argv[1], &s)) return 1;
+  printf("%zu %zu %zu %u %u %s\\n", sizeof(s), offsetof(struct statfs, f_flags), offsetof(struct statfs, f_fstypename), MNT_LOCAL, s.f_flags, s.f_fstypename);
+  return 0;
+}
+""",
+        encoding="utf-8",
+    )
+    compiled = run_custody_subject_process(
+        ["clang", str(source), "-o", str(binary)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert compiled.returncode == 0, compiled.stderr
+    measured = run_custody_subject_process(
+        [str(binary), str(tmp_path)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert measured.returncode == 0, measured.stderr
+    stdout = measured.stdout
+    size, flags_offset, type_offset, local, flags, kind = stdout.split()
+    assert int(size) == ctypes.sizeof(cargo._DarwinStatfs64) == 2168
+    assert int(flags_offset) == cargo._DarwinStatfs64.f_flags.offset == 64
+    assert int(type_offset) == cargo._DarwinStatfs64.f_fstypename.offset == 72
+    assert int(local) == 0x1000
+    assert cargo._darwin_local_cargo_lock_filesystem(tmp_path) is (
+        bool(int(flags) & int(local))
+        and not bool(int(flags) & 1)
+        and kind in {"apfs", "hfs"}
+    )
 
 
 def unit(target, profile="dev-fast", name="owned-unit"):
