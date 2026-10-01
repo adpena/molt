@@ -1354,14 +1354,19 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
     ]
     assert all(entry["family"] == "platform_portability" for entry in matrix)
     assert {entry["cell"]: entry["command_ids"] for entry in matrix} == {
-        "linux-x86_64-py312-queue-portability": ["portability.queue.linux"],
+        "linux-x86_64-py312-queue-portability": [
+            "portability.queue.linux",
+            "portability.cargo-custody.linux",
+        ],
         "macos-arm64-py312-queue-portability": [
             "portability.queue.macos",
             "portability.ir.macos",
+            "portability.cargo-custody.macos",
         ],
         "windows-x86_64-py312-queue-portability": [
             "portability.queue.windows",
             "portability.ir.windows",
+            "portability.cargo-custody.windows",
         ],
     }
     for entry in matrix:
