@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 from types import FrameType
-from typing import Any, Unpack
+from typing import Any, Unpack, cast
 
 
 DEFAULT_POLL_INTERVAL_SEC = 0.10
@@ -543,7 +543,7 @@ def _write_child_started_fd(fd: int | None) -> None:
     if fd is None:
         return
     try:
-        os.write(fd, f"{time.monotonic_ns()}\n".encode("ascii"))
+        os.write(fd, f"{time.perf_counter_ns()}\n".encode("ascii"))
     except OSError:
         pass
     with contextlib.suppress(OSError):
@@ -795,7 +795,7 @@ def run_guarded(
         max_rss_kb=max_rss_kb,
         child_rlimit_kb=child_rlimit_kb,
     )
-    start = time.monotonic()
+    start = time.perf_counter()
     observer_cpu_start = time.process_time()
     baseline_pgids: frozenset[int] = frozenset()
     guard_signal: int | None = None
@@ -853,7 +853,7 @@ def run_guarded(
         if scratch_lease is None or scratch_finalized:
             return scratch_cleanup_error
         scratch_finalized = True
-        finalize_started = time.monotonic()
+        finalize_started = time.perf_counter()
         try:
             outcome = _temporary_artifacts.finish_guard_scratch(
                 scratch_lease,
@@ -900,8 +900,8 @@ def run_guarded(
                     "closure": dict(evidence),
                 }
         assert temporary_artifacts is not None
-        temporary_artifacts["finalize_elapsed_s"] = max(
-            0.0, time.monotonic() - finalize_started
+        cast(dict[str, object], temporary_artifacts)["finalize_elapsed_s"] = max(
+            0.0, time.perf_counter() - finalize_started
         )
         return scratch_cleanup_error
 
@@ -967,7 +967,7 @@ def run_guarded(
             popen_kwargs["stdout"] = stdout_capture.fileno()
             popen_kwargs["stderr"] = stderr_capture.fileno()
         else:
-            popen_kwargs.update(inherit_stdio_kwargs())
+            popen_kwargs = {**popen_kwargs, **inherit_stdio_kwargs()}
         if input is not None:
             popen_kwargs["stdin"] = subprocess.PIPE
         if launch.pass_fds:
@@ -987,6 +987,7 @@ def run_guarded(
                 int(popen_kwargs.get("creationflags", 0) or 0)
                 | _win_job.suspended_creationflag()
             )
+        child_launch_started = time.perf_counter()
         try:
             proc = subprocess.Popen(launch.command, **popen_kwargs)
         except Exception as exc:
@@ -1010,11 +1011,19 @@ def run_guarded(
             if stderr_capture is not None:
                 stderr_capture.close()
             raise
+        child_clock = None
+        if type(proc).__module__ == "subprocess":
+            from tools.memory_guard_core.process_custody import ChildExecutionClock
+
+            child_clock = ChildExecutionClock(proc, child_launch_started)
         if guard_job is not None:
-            # Child was spawned SUSPENDED; assignment completes before resume.
-            # A custody failure terminates the still-suspended child or its job
-            # and raises with exact Win32 evidence.
-            _win_job.assign_and_resume(guard_job, proc)
+            # Start execution at the actual resume syscall, after suspended
+            # assignment and thread discovery. Kernel custody remains intact.
+            resumed_at = _win_job.assign_and_resume(guard_job, proc)
+            if child_clock is not None:
+                if resumed_at is None:
+                    raise RuntimeError("Windows child resume clock is unavailable")
+                child_clock.started = resumed_at
         _close_fds(launch.close_fds)
         child_process = GuardedChildProcess(
             pid=proc.pid,
@@ -1271,7 +1280,7 @@ def run_guarded(
         max_sampling_process_rows = 0
 
         def sampling_telemetry() -> GuardSamplingTelemetry:
-            observer_wall_time_s = max(0.0, time.monotonic() - start)
+            observer_wall_time_s = max(0.0, time.perf_counter() - start)
             observer_cpu_time_s = max(0.0, time.process_time() - observer_cpu_start)
             return GuardSamplingTelemetry(
                 attempts=sampling_attempts,
@@ -1327,7 +1336,7 @@ def run_guarded(
                 guard_token,
                 status="child_running_telemetry_degraded",
                 child_process=guarded_child_process_payload(child_process),
-                elapsed_s=time.monotonic() - start,
+                elapsed_s=time.perf_counter() - start,
                 sampling_telemetry=_sampling_telemetry_payload(telemetry),
             )
 
@@ -1583,7 +1592,7 @@ def run_guarded(
                     break
             elif proc.poll() is not None:
                 break
-            now = time.monotonic()
+            now = time.perf_counter()
             if guard_signal is not None:
                 signal_snapshot = sample_tracked_tree()
                 assert signal_snapshot is not None
@@ -1667,7 +1676,7 @@ def run_guarded(
                     break
                 if os.name != "posix" and proc.poll() is not None:
                     break
-                elapsed = time.monotonic() - start
+                elapsed = time.perf_counter() - start
                 wait_timeout = paced_poll_interval(
                     poll_interval,
                     last_sample_cost_s,
@@ -1767,7 +1776,7 @@ def run_guarded(
                 break
             if os.name != "posix" and proc.poll() is not None:
                 break
-            elapsed = time.monotonic() - start
+            elapsed = time.perf_counter() - start
             paced_interval = paced_poll_interval(poll_interval, last_sample_cost_s)
             wait_timeout = (
                 min(paced_interval, DEFAULT_FAST_START_POLL_INTERVAL_SEC)
@@ -1936,10 +1945,21 @@ def run_guarded(
                 stdout_capture.close()
             if stderr_capture is not None:
                 stderr_capture.close()
-        finished = time.monotonic()
+        finished = time.perf_counter()
         child_started = _read_child_started_at(launch.started_read_fd)
-        elapsed_start = child_started if child_started is not None else start
+        elapsed_start = start
         elapsed_s = max(0.0, finished - elapsed_start)
+        if child_clock is not None:
+            precise_start = (
+                child_started if child_started is not None else child_clock.started
+            )
+            child_elapsed_s = (
+                None
+                if child_clock.finished is None or precise_start is None
+                else max(0.0, child_clock.finished - precise_start)
+            )
+        else:
+            child_elapsed_s = None
         returncode = proc.returncode
         if violation is not None:
             returncode = GUARD_RETURN_CODE
@@ -2087,7 +2107,11 @@ def run_guarded(
         )
         # Guard elapsed time includes exact descendant closure plus scratch
         # retirement/reclamation; storage cleanup latency must remain visible.
-        elapsed_s = max(0.0, time.monotonic() - elapsed_start)
+        wall_finished = time.perf_counter()
+        elapsed_s = max(0.0, wall_finished - elapsed_start)
+        # The independent child interval must fit inside the guard wall budget.
+        if child_elapsed_s is not None and child_elapsed_s > elapsed_s:
+            child_elapsed_s = None
         scratch_state = (
             None if temporary_artifacts is None else temporary_artifacts.get("state")
         )
@@ -2143,6 +2167,12 @@ def run_guarded(
             stderr=stderr,
             timed_out=timed_out,
             elapsed_s=elapsed_s,
+            child_elapsed_s=child_elapsed_s,
+            cleanup_elapsed_s=(
+                None
+                if child_elapsed_s is None
+                else max(0.0, elapsed_s - child_elapsed_s)
+            ),
             limit_at_violation=limit_at_violation,
             orphaned_process_groups=orphaned_process_groups,
             cargo_incremental_quarantine=cargo_incremental_quarantine,
@@ -2167,6 +2197,8 @@ def run_guarded(
             ),
             timed_out=result.timed_out,
             elapsed_s=result.elapsed_s,
+            child_elapsed_s=result.child_elapsed_s,
+            cleanup_elapsed_s=result.cleanup_elapsed_s,
             violation=_rss_record_payload(result.violation),
             peak=_rss_record_payload(result.peak),
             peak_total=_rss_record_payload(result.peak_total),

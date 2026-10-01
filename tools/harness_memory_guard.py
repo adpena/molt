@@ -107,6 +107,8 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         stderr: Output | None,
         *,
         elapsed_s: float | None,
+        child_elapsed_s: float | None = None,
+        cleanup_elapsed_s: float | None = None,
         violation: memory_guard.RssViolation | None = None,
         peak: memory_guard.RssViolation | None = None,
         peak_total: memory_guard.RssViolation | None = None,
@@ -129,6 +131,8 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
         )
         self.elapsed_s = elapsed_s
+        self.child_elapsed_s = child_elapsed_s
+        self.cleanup_elapsed_s = cleanup_elapsed_s
         self.violation = violation
         self.peak = peak
         self.peak_total = peak_total
@@ -1464,6 +1468,8 @@ def guarded_completed_process(
         guarded.stdout,
         stderr,
         elapsed_s=guarded.elapsed_s,
+        child_elapsed_s=guarded.child_elapsed_s,
+        cleanup_elapsed_s=guarded.cleanup_elapsed_s,
         violation=guarded.violation,
         peak=guarded.peak,
         peak_total=guarded.peak_total,
@@ -1712,6 +1718,8 @@ def guarded_completed_process_to_tempfiles(
         stdout,
         stderr,
         elapsed_s=guarded.elapsed_s,
+        child_elapsed_s=guarded.child_elapsed_s,
+        cleanup_elapsed_s=guarded.cleanup_elapsed_s,
         violation=guarded.violation,
         peak=guarded.peak,
         peak_total=guarded.peak_total,

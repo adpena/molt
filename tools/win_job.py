@@ -326,7 +326,7 @@ def create_kill_on_close_job() -> int | None:
     return job_handle
 
 
-def _resume_process_threads(pid: int) -> None:
+def _resume_process_threads(pid: int) -> float:
     """Resume every thread of ``pid`` or fail with exact Win32 evidence."""
 
     k32 = _k32()
@@ -334,6 +334,7 @@ def _resume_process_threads(pid: int) -> None:
     if int(snap) == _INVALID_HANDLE_VALUE:
         raise _win32_error("CreateToolhelp32Snapshot")
     resumed = 0
+    first_resume_started = None
     try:
         entry = _THREADENTRY32()
         entry.dwSize = ctypes.sizeof(_THREADENTRY32)
@@ -349,9 +350,12 @@ def _resume_process_threads(pid: int) -> None:
                 if not thread:
                     raise _win32_error(f"OpenThread(tid={entry.th32ThreadID})")
                 try:
+                    resume_started = time.perf_counter()
                     previous_count = k32.ResumeThread(thread)
                     if previous_count == 0xFFFFFFFF:
                         raise _win32_error(f"ResumeThread(tid={entry.th32ThreadID})")
+                    if first_resume_started is None:
+                        first_resume_started = resume_started
                     resumed += 1
                 finally:
                     _close_handle(int(thread), operation="CloseHandle(thread)")
@@ -364,9 +368,11 @@ def _resume_process_threads(pid: int) -> None:
         _close_handle(int(snap), operation="CloseHandle(thread snapshot)")
     if resumed == 0:
         raise WinJobError(f"no resumable thread found for suspended pid={pid}")
+    assert first_resume_started is not None
+    return first_resume_started
 
 
-def _resume_process(handle: int, pid: int) -> None:
+def _resume_process(handle: int, pid: int) -> float:
     """Resume a suspended process, retaining a documented thread fallback."""
 
     primary_error: BaseException | None = None
@@ -374,16 +380,17 @@ def _resume_process(handle: int, pid: int) -> None:
         ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
         ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
         ntdll.NtResumeProcess.restype = ctypes.c_long
+        resume_started = time.perf_counter()
         status = int(ntdll.NtResumeProcess(wintypes.HANDLE(handle)))
         if status == 0:
-            return
+            return resume_started
         primary_error = WinJobError(
             f"NtResumeProcess failed: ntstatus=0x{status & 0xFFFFFFFF:08x}"
         )
     except BaseException as exc:
         primary_error = exc
     try:
-        _resume_process_threads(pid)
+        return _resume_process_threads(pid)
     except BaseException as fallback_error:
         error = WinJobError(f"could not resume suspended pid={pid}")
         if primary_error is not None:
@@ -785,7 +792,7 @@ def complete_job_custody(
     )
 
 
-def assign_and_resume(job: int | None, proc: subprocess.Popen[Any]) -> None:
+def assign_and_resume(job: int | None, proc: subprocess.Popen[Any]) -> float | None:
     """Assign a suspended child before resuming it; fail closed on either step."""
 
     if not _WINDOWS:
@@ -808,7 +815,7 @@ def assign_and_resume(job: int | None, proc: subprocess.Popen[Any]) -> None:
             proc.wait(timeout=5)
         raise assignment_error
     try:
-        _resume_process(handle, proc.pid)
+        return _resume_process(handle, proc.pid)
     except BaseException as resume_error:
         try:
             terminate_job(job)

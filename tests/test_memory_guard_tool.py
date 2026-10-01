@@ -3860,6 +3860,21 @@ def test_run_guarded_observes_child_exit_before_timeout_race(
     monkeypatch: pytest.MonkeyPatch,
     fake_popen_without_windows_job: None,
 ) -> None:
+    # Model the race, not real scratch filesystem/setup latency. The clock
+    # crosses the deadline only when fake wait publishes the child exit.
+    clock = {"now": 100.0}
+    guard_time = types.SimpleNamespace(**vars(time))
+    guard_time.perf_counter = lambda: clock["now"]
+    guard_time.perf_counter_ns = lambda: int(clock["now"] * 1_000_000_000)
+    monkeypatch.setattr(memory_guard, "time", guard_time)
+
+    def unexpected_termination(*args: object, **kwargs: object) -> None:
+        raise AssertionError("observed child exit must prevent termination")
+
+    monkeypatch.setattr(
+        memory_guard, "terminate_watched_processes", unexpected_termination
+    )
+
     class FakePopen:
         pid = 4242
         stdin = None
@@ -3875,7 +3890,7 @@ def test_run_guarded_observes_child_exit_before_timeout_race(
         def wait(self, timeout: float | None = None) -> int:
             if self.returncode is None:
                 if timeout is not None and timeout <= 0.02:
-                    time.sleep(0.06)
+                    clock["now"] = 100.51
                     self.returncode = 0
                     raise subprocess.TimeoutExpired(self.command, timeout)
                 self.returncode = 0
@@ -6477,3 +6492,139 @@ def test_main_streams_samples_without_sample_artifact(
     assert rc == 0
     assert "memory_guard sample:" in captured.err
     assert not samples_path.exists()
+
+
+@pytest.mark.parametrize("delayed_boundary", ["sampler", "scratch"])
+def test_child_clock_is_independent_of_guard_setup_and_sampler(
+    monkeypatch, delayed_boundary
+):
+    if delayed_boundary == "scratch":
+        original = memory_guard._temporary_artifacts.acquire_guard_scratch
+
+        def delayed_scratch(*args, **kwargs):
+            time.sleep(0.3)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            memory_guard._temporary_artifacts, "acquire_guard_scratch", delayed_scratch
+        )
+        sampler = memory_guard.sample_processes
+    else:
+        original = memory_guard.sample_processes
+
+        def sampler():
+            time.sleep(0.3)
+            return original()
+
+        # Windows uses its job-owned sampler; delaying that kernel-owned query
+        # must not influence the process-handle clock either.
+        if os.name == "nt":
+            original_memory = memory_guard._win_job.process_memory
+
+            def slow_memory(*args, **kwargs):
+                time.sleep(0.3)
+                return original_memory(*args, **kwargs)
+
+            monkeypatch.setattr(memory_guard._win_job, "process_memory", slow_memory)
+    result = memory_guard.run_guarded(
+        [getattr(sys, "_base_executable", sys.executable), "-I", "-S", "-c", "pass"],
+        max_rss_kb=1024 * 1024,
+        max_total_rss_kb=2 * 1024 * 1024,
+        capture_output=True,
+        text=True,
+        poll_interval=0.01,
+        sampler=sampler,
+        child_rlimit_kb=None,
+    )
+    assert result.returncode == 0
+    assert result.child_elapsed_s is not None
+    assert result.child_elapsed_s < 0.3
+    assert result.elapsed_s >= 0.3
+    assert result.elapsed_s == result.child_elapsed_s + result.cleanup_elapsed_s
+
+
+def test_posix_child_clock_has_one_reaper_independent_of_sampling(monkeypatch):
+    import threading
+
+    calls = []
+
+    def wait4(pid, flags):
+        calls.append((pid, flags))
+        return pid, 0, types.SimpleNamespace(ru_maxrss=64)
+
+    monkeypatch.setattr(process_custody.os, "wait4", wait4, raising=False)
+    monkeypatch.setattr(process_custody.os, "waitid", lambda *args: None, raising=False)
+    for name, value in (("WNOWAIT", 1), ("WEXITED", 2), ("P_PID", 3), ("WNOHANG", 4)):
+        monkeypatch.setattr(process_custody.os, name, value, raising=False)
+    proc = types.SimpleNamespace(
+        pid=123456,
+        args=["owned-mock"],
+        returncode=None,
+        wait=lambda: None,
+        _waitpid_lock=threading.Lock(),
+    )
+    monkeypatch.setattr(process_custody.os, "name", "posix")
+    clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
+    assert proc.wait(timeout=1) == 0
+    exited = clock.finished
+    time.sleep(0.05)
+    assert proc.poll() == 0
+    assert process_custody._poll_wait4_child(proc).max_rss_kb > 0
+    assert process_custody._poll_wait4_child(proc) is None
+    assert clock.finished == exited
+    assert calls == [(123456, process_custody.os.WNOHANG)]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows suspended job custody")
+def test_child_clock_excludes_suspended_job_assignment_delay(monkeypatch):
+    original_resume = memory_guard._win_job._resume_process
+
+    def delayed_resume(*args, **kwargs):
+        time.sleep(0.3)
+        return original_resume(*args, **kwargs)
+
+    monkeypatch.setattr(memory_guard._win_job, "_resume_process", delayed_resume)
+    result = memory_guard.run_guarded(
+        [getattr(sys, "_base_executable", sys.executable), "-I", "-S", "-c", "pass"],
+        max_rss_kb=1024 * 1024,
+        max_total_rss_kb=2 * 1024 * 1024,
+        capture_output=True,
+        text=True,
+        poll_interval=0.01,
+    )
+    assert result.returncode == 0
+    assert result.child_elapsed_s is not None
+    assert result.child_elapsed_s < 0.3
+    assert result.elapsed_s >= 0.3
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows Popen publishes status before waiter returns"
+)
+def test_windows_child_clock_publishes_exit_only_after_timestamp():
+    import threading
+
+    status_published = threading.Event()
+    release_wait = threading.Event()
+    proc = types.SimpleNamespace(
+        pid=123456, args=["mock-owned-handle"], returncode=None
+    )
+
+    def wait():
+        proc.returncode = 0
+        status_published.set()
+        assert release_wait.wait(1.0)
+        return 0
+
+    proc.wait = wait
+    clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
+    try:
+        assert status_published.wait(1.0)
+        assert proc.returncode == 0
+        assert proc.poll() is None
+        assert clock.finished is None
+    finally:
+        release_wait.set()
+    assert proc.wait(timeout=1.0) == 0
+    assert clock.finished is not None
+    assert proc.poll() == 0

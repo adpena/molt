@@ -6,9 +6,11 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import signal
+import select
 import subprocess
 import sys
 import time
+import threading
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 if TYPE_CHECKING:
@@ -129,7 +131,12 @@ class GuardResult:
     stdout: str | bytes
     stderr: str | bytes
     timed_out: bool = False
+    # Wall duration includes descendant closure and scratch retirement.
     elapsed_s: float | None = None
+    # Direct-child exit observation; unavailable if no child exit was observed.
+    child_elapsed_s: float | None = None
+    # Guard overhead outside child execution, including setup and cleanup.
+    cleanup_elapsed_s: float | None = None
     limit_at_violation: ResolvedMemoryLimits | None = None
     orphaned_process_groups: tuple[int, ...] = ()
     cargo_incremental_quarantine: CargoIncrementalQuarantine | None = None
@@ -431,9 +438,180 @@ def _rusage_maxrss_kb(rusage: object) -> int:
     return raw
 
 
+class ChildExecutionClock:
+    """High-resolution launch/resume-to-waiter observation, independent of sampling.
+
+    The end stamp is a blocking wait's return observation, not a kernel exit
+    timestamp; scheduler wake latency remains part of the measured interval.
+    POSIX no-rlimit launch begins immediately before Popen; an rlimit child's
+    own start pipe replaces that boundary. Windows starts at the resume syscall.
+    """
+
+    def __init__(self, proc, started: float):
+        self.proc = proc
+        self.original_wait = proc.wait
+        self.started = started
+        self.finished = None
+        self.usage = None
+        self.error = None
+        self.done = threading.Event()
+        self.usage_consumed = False
+        self.posix_waitid = os.name == "posix" and all(
+            hasattr(os, name)
+            for name in ("wait4", "waitid", "WNOWAIT", "WEXITED", "P_PID", "WNOHANG")
+        )
+        self.posix_kqueue = (
+            os.name == "posix"
+            and not self.posix_waitid
+            and all(
+                hasattr(select, name)
+                for name in (
+                    "kqueue",
+                    "kevent",
+                    "KQ_FILTER_PROC",
+                    "KQ_EV_ADD",
+                    "KQ_EV_ONESHOT",
+                    "KQ_NOTE_EXIT",
+                    "KQ_EV_ERROR",
+                )
+            )
+            and all(hasattr(os, name) for name in ("wait4", "WNOHANG"))
+        )
+        self.posix_reserved_wait = self.posix_waitid or self.posix_kqueue
+        self.reap_signal_lock = (
+            proc._waitpid_lock if self.posix_reserved_wait else threading.Lock()
+        )
+        if self.posix_reserved_wait:
+            # Popen's owned signal methods and the sole reap commit share this
+            # short critical section. The blocking wait NEVER holds this lock.
+            proc.send_signal = self.send_signal
+            proc._internal_poll = lambda *args, **kwargs: self.poll()
+        proc._molt_child_clock = self
+        # Popen polling/waiting must not race wait4 for the same child.
+        proc.poll = self.poll
+        proc.wait = self.wait
+        threading.Thread(target=self._reap, name="molt-child-exit", daemon=True).start()
+
+    def _reap(self):
+        try:
+            if self.posix_kqueue:
+                self._wait_kqueue_exit()
+            elif self.posix_waitid:
+                # WNOWAIT leaves an exited child unreaped: the PID remains
+                # reserved until the atomic reap/status publication below.
+                getattr(os, "waitid")(
+                    getattr(os, "P_PID"),
+                    self.proc.pid,
+                    getattr(os, "WEXITED") | getattr(os, "WNOWAIT"),
+                )
+                finished = time.perf_counter()
+                with self.reap_signal_lock:
+                    try:
+                        _, status, usage = getattr(os, "wait4")(
+                            self.proc.pid, getattr(os, "WNOHANG")
+                        )
+                        if _ != self.proc.pid:
+                            raise RuntimeError("reserved child exit was not reapable")
+                        self.proc.returncode = os.waitstatus_to_exitcode(status)
+                        self.finished = finished
+                        self.usage = ChildExitResourceUsage(
+                            max_rss_kb=_rusage_maxrss_kb(usage)
+                        )
+                    except BaseException as exc:
+                        self.error = exc
+                        raise
+            else:
+                self.original_wait()
+                self.finished = time.perf_counter()
+        except BaseException as exc:
+            self.error = exc
+        finally:
+            self.done.set()
+
+    def _commit_reserved_exit(self, *, finished: float | None) -> bool:
+        # Every actual reaping syscall and owned-PID signal shares this lock.
+        with self.reap_signal_lock:
+            try:
+                pid, status, usage = getattr(os, "wait4")(
+                    self.proc.pid, getattr(os, "WNOHANG")
+                )
+                if pid == 0:
+                    return False
+                if pid != self.proc.pid:
+                    raise RuntimeError("unexpected owned child reap identity")
+                self.proc.returncode = os.waitstatus_to_exitcode(status)
+                self.finished = time.perf_counter() if finished is None else finished
+                self.usage = ChildExitResourceUsage(max_rss_kb=_rusage_maxrss_kb(usage))
+                return True
+            except BaseException as exc:
+                self.error = exc
+                raise
+
+    def _wait_kqueue_exit(self):
+        # CPython 3.12 macOS has kqueue but no os.waitid. Kqueue observes exit
+        # without reaping, retaining the child's PID reservation until commit.
+        if self._commit_reserved_exit(finished=None):
+            return
+        queue = getattr(select, "kqueue")()
+        try:
+            event = getattr(select, "kevent")(
+                self.proc.pid,
+                filter=getattr(select, "KQ_FILTER_PROC"),
+                flags=getattr(select, "KQ_EV_ADD") | getattr(select, "KQ_EV_ONESHOT"),
+                fflags=getattr(select, "KQ_NOTE_EXIT"),
+            )
+            try:
+                events = queue.control([event], 1, None)
+            except OSError:
+                # An already-exited child may disappear from the event filter.
+                # Only an actual owned-child reap can resolve that race.
+                if self._commit_reserved_exit(finished=None):
+                    return
+                raise
+            finished = time.perf_counter()
+            if not self._commit_reserved_exit(finished=finished):
+                raise RuntimeError("owned child exit notification was not reapable")
+            if any(int(item.ident) != self.proc.pid for item in events):
+                raise RuntimeError("unexpected owned child exit notification")
+        finally:
+            queue.close()
+
+    def send_signal(self, sig):
+        # Only used for a native POSIX Popen whose exit remains reserved by
+        # WNOWAIT. Reaping and owned PID signaling cannot overlap.
+        with self.reap_signal_lock:
+            if self.error is not None:
+                raise self.error
+            if self.proc.returncode is not None:
+                return
+            try:
+                os.kill(self.proc.pid, sig)
+            except ProcessLookupError:
+                return
+
+    def poll(self):
+        if self.error is not None:
+            raise self.error
+        return self.proc.returncode if self.done.is_set() else None
+
+    def wait(self, timeout=None):
+        if not self.done.wait(timeout):
+            assert timeout is not None  # An unbounded Event.wait cannot expire.
+            raise subprocess.TimeoutExpired(self.proc.args, timeout)
+        return self.poll()
+
+
 def _poll_wait4_child(
     proc: subprocess.Popen[str] | subprocess.Popen[bytes],
 ) -> ChildExitResourceUsage | None:
+    clock = getattr(proc, "_molt_child_clock", None)
+    if clock is not None:
+        if clock.error is not None:
+            raise clock.error
+        if clock.done.is_set() and not clock.usage_consumed:
+            clock.usage_consumed = True
+            return clock.usage
+        return None
     if os.name != "posix" or not hasattr(os, "wait4"):
         return None
     if proc.returncode is not None:

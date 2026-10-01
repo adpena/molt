@@ -169,6 +169,8 @@ authority_inputs = [
   "tests/test_proof_plan.py",
   "tests/test_harness_memory_guard.py",
   "tests/test_memory_guard_tool.py",
+  "tests/test_child_clock_custody.py",
+  "tests/test_perf_calibration.py",
   "tests/test_python_external_custody.py",
   "tests/process_guard_common.py",
   "tests/native_process_guard.py",
@@ -903,6 +905,8 @@ inputs = [
   "tests/differential/basic/arith.py",
   "tests/test_harness_memory_guard.py",
   "tests/test_memory_guard_tool.py",
+  "tests/test_child_clock_custody.py",
+  "tests/test_perf_calibration.py",
   "tests/test_molt_queue_cli.py",
   "tests/test_dx_run_context.py",
   "tests/test_memory_guard_wiring.py",
@@ -1951,7 +1955,7 @@ resource_class = "python-tests"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -3429,7 +3433,7 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -3441,7 +3445,7 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -3453,5 +3457,5 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]

@@ -167,17 +167,22 @@ class RunMeasurement:
         harness_memory_guard.memory_guard.GuardInfrastructureFailure | None
     ) = None
 
+    violation: harness_memory_guard.memory_guard.RssViolation | None = None
+    orphaned_process_groups: tuple[int, ...] = ()
+
     @property
     def status(self) -> str:
         if self.infrastructure_failure is not None:
             return "infrastructure_error"
         if self.timed_out:
             return "timeout"
+        if self.violation is not None or self.orphaned_process_groups:
+            return "failed"
         return "pass" if self.returncode == 0 else "failed"
 
     @property
     def evidence_eligible(self) -> bool:
-        return self.infrastructure_failure is None
+        return self.status == "pass"
 
 
 def run_and_measure(
@@ -214,8 +219,23 @@ def run_and_measure(
         on_spawn=on_spawn,
         sampling_scope="owned_tree",
     )
-    if result.elapsed_s is None:
-        raise RuntimeError("guarded benchmark returned without elapsed-time telemetry")
+    if (
+        result.returncode == 0
+        and not result.timed_out
+        and result.infrastructure_failure is None
+        and getattr(result, "violation", None) is None
+        and not getattr(result, "orphaned_process_groups", ())
+    ):
+        child_time = result.child_elapsed_s
+        if (
+            child_time is None
+            or type(child_time) not in (int, float)
+            or not math.isfinite(child_time)
+            or child_time < 0
+        ):
+            raise RuntimeError(
+                "guarded benchmark returned invalid child elapsed-time telemetry"
+            )
     peak = result.peak_total
     peak_rss_bytes = None if peak is None else peak.rss_kb * 1024
 
@@ -234,7 +254,9 @@ def run_and_measure(
     err = decode_output(result.stderr)
     return RunMeasurement(
         returncode=result.returncode,
-        elapsed_s=result.elapsed_s,
+        elapsed_s=(
+            result.child_elapsed_s if result.child_elapsed_s is not None else 0.0
+        ),
         peak_rss_bytes=peak_rss_bytes,
         peak_job_commit_bytes=result.peak_job_commit_bytes,
         stdout=out,
@@ -242,6 +264,10 @@ def run_and_measure(
         timed_out=result.timed_out,
         child_returncode=getattr(result, "child_returncode", None),
         infrastructure_failure=getattr(result, "infrastructure_failure", None),
+        violation=getattr(result, "violation", None),
+        orphaned_process_groups=tuple(
+            getattr(result, "orphaned_process_groups", ()) or ()
+        ),
     )
 
 
@@ -459,7 +485,7 @@ def calibrate_cold_budget(
             fp = host_fingerprint()
             return {
                 "kind": "cold_budget_calibration",
-                "status": "infrastructure_error",
+                "status": m.status,
                 "runs": runs,
                 "evidence_runs": 0,
                 "measured_p50_ms": None,
