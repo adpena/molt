@@ -1,6 +1,9 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    "tools/proof_queue_pkg/custody_cas.py",
+    "tests/proof_queue_owned_roots.py",
+    "tests/tools/test_proof_queue_native_receipts.py",
     "tests/test_exception_diagnostics.py",
     "tools/exception_diagnostics.py",
     "src/molt/exception_diagnostics.py",
@@ -231,7 +234,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1a86fac5916a3e584716e2ee38d74302f592792f2159498e7d287e662a045611",
+  "authority_sha256": "d738045afa43063e1b9c88aeb8f51f35979de159a6bd71aba9878e3b4fafa3b1",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -413,7 +416,8 @@
         "tests/python_environment_test_support.py",
         "tools/proof_queue_pkg/**",
         "tools/proof_supervisor/**",
-        "runtime/**"
+        "runtime/**",
+        "tests/proof_queue_owned_roots.py"
       ],
       "job": "native-integration",
       "name": "native_integration",
@@ -698,7 +702,9 @@
         "tests/test_cargo_quarantine_custody.py",
         "docs/OPERATIONS.md",
         "docs/spec/STATUS.md",
-        "docs/agent/AGENTS.full.md"
+        "docs/agent/AGENTS.full.md",
+        "tests/proof_queue_owned_roots.py",
+        "tests/tools/test_proof_queue_output_layout.py"
       ],
       "job": "platform-portability",
       "name": "platform_portability",
@@ -1209,7 +1215,8 @@
         "tests/cli/test_source_extension_language.py",
         "tests/cli/test_source_extension_compiler_target.py",
         "tests/cli/test_extension_wheel_retained_inputs.py",
-        "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel"
+        "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
+        "tests/tools/test_proof_queue_output_layout.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -1267,7 +1274,8 @@
         "tests/cli/test_source_extension_language.py",
         "tests/cli/test_source_extension_compiler_target.py",
         "tests/cli/test_extension_wheel_retained_inputs.py",
-        "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel"
+        "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
+        "tests/tools/test_proof_queue_output_layout.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -1325,7 +1333,8 @@
         "tests/cli/test_source_extension_language.py",
         "tests/cli/test_source_extension_compiler_target.py",
         "tests/cli/test_extension_wheel_retained_inputs.py",
-        "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel"
+        "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
+        "tests/tools/test_proof_queue_output_layout.py"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",
@@ -3142,7 +3151,8 @@
         "tests/test_compat_multibackend_oracle.py",
         "tests/test_child_clock_custody.py",
         "tests/test_perf_calibration.py",
-        "tests/test_exception_diagnostics.py"
+        "tests/test_exception_diagnostics.py",
+        "tests/tools/test_proof_queue_output_layout.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",

@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from tests.process_guard_common import run_custody_subject_process
+from tests import proof_queue_owned_roots
 from tests.proof_queue_custody_test_support import (
     assert_execution_context_rejects_substitutions,
     publish_receipt_custody,
@@ -29,6 +30,7 @@ def _native_supervisor_binary() -> Path:
         check=True,
         text=True,
         stdout=subprocess.PIPE,
+        env=proof_queue_owned_roots.native_build_environment(source=Path(__file__)),
     )
     return Path(completed.stdout.splitlines()[-1]).resolve(strict=True)
 
@@ -37,6 +39,11 @@ def test_native_execution_context_rehashes_nonce_custody_and_transcript_artifact
     tmp_path: Path,
 ) -> None:
     """Prove the same binding assertions through the actual native verifier."""
+    tmp_path = proof_queue_owned_roots.native_case_path(
+        tmp_path,
+        source=Path(__file__),
+        nodeid="native-context-receipt",
+    )
 
     def execute(command: list[str]) -> None:
         run_custody_subject_process(command, check=True)

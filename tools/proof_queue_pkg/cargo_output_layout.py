@@ -298,6 +298,18 @@ class CargoOutputLayout:
         if (sys.platform if platform is None else platform) != "win32":
             return
         target = self.target("0" * 64, "0" * 16)
+        self.admit_cargo_path(target, platform=platform)
+
+    def admit_supervisor_target_path(self, *, platform: str | None = None) -> None:
+        """Apply the same native tool budget to control-plane Cargo builds."""
+        if (sys.platform if platform is None else platform) != "win32":
+            return
+        self.admit_cargo_path(self.supervisor_target, platform=platform)
+
+    @staticmethod
+    def admit_cargo_path(target: Path, *, platform: str | None = None) -> None:
+        if (sys.platform if platform is None else platform) != "win32":
+            return
         units = len(str(target).encode("utf-16-le", "surrogatepass")) // 2
         descendant_budget = 128
         if units + descendant_budget >= 260:

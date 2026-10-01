@@ -11,6 +11,7 @@ import sys
 import pytest
 
 from tests.process_guard_common import run_custody_subject_process
+from tests import proof_queue_owned_roots
 from tools.proof_queue_pkg import (
     execution_custody,
     process_image_capture,
@@ -113,6 +114,7 @@ def _test_proof_supervisor_binary() -> Path:
         check=True,
         text=True,
         stdout=subprocess.PIPE,
+        env=proof_queue_owned_roots.native_build_environment(source=Path(__file__)),
     )
     return Path(completed.stdout.splitlines()[-1]).resolve(strict=True)
 
@@ -153,6 +155,11 @@ def test_supervisor_admits_exact_platform_image_without_directory_authority(
 def test_process_image_inventory_captures_distinct_runtime_and_projects_once(
     tmp_path: Path,
 ) -> None:
+    tmp_path = proof_queue_owned_roots.native_case_path(
+        tmp_path,
+        source=Path(__file__),
+        nodeid="native-process-inventory",
+    )
     supervisor = _test_proof_supervisor_binary()
     runtime = tmp_path / ("runtime.exe" if sys.platform == "win32" else "runtime")
     shutil.copy2(supervisor, runtime)
@@ -209,6 +216,11 @@ def test_process_image_inventory_captures_distinct_runtime_and_projects_once(
     reason="lossless process supervision is available on Windows and Linux",
 )
 def test_python_generated_child_matches_native_execution_identity(tmp_path: Path):
+    tmp_path = proof_queue_owned_roots.native_case_path(
+        tmp_path,
+        source=Path(__file__),
+        nodeid="native-python-child",
+    )
     supervisor = _test_proof_supervisor_binary()
     scratch = tmp_path / "scratch"
     scratch.mkdir()

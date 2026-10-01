@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shlex
 import sqlite3
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -29,6 +30,7 @@ from tools.proof_queue_pkg import (
     presentation,
     runner,
     scheduling,
+    supervisor_custody,
     state,
 )
 
@@ -96,6 +98,173 @@ def test_windows_target_budget_counts_utf16_before_creating_outputs(tmp_path):
     assert not selected.result_root.exists()
 
 
+def test_windows_supervisor_budget_is_independent_of_payload_toolchains(tmp_path):
+    selected = layout.CargoOutputLayout(tmp_path / ("\U0001f600" * 70))
+    selected.admit_supervisor_target_path(platform="linux")
+    with pytest.raises(ValueError, match="reserved_descendant_units=128; limit=259"):
+        selected.admit_supervisor_target_path(platform="win32")
+    assert not selected.result_root.exists()
+
+
+@pytest.mark.parametrize("units,accepted", [(131, True), (132, False)])
+def test_windows_cargo_family_shares_exact_tool_budget(units, accepted):
+    # Use a syntactic path only: admission does not create or select a root.
+    target = Path("x" * units)
+    if accepted:
+        layout.CargoOutputLayout.admit_cargo_path(target, platform="win32")
+    else:
+        with pytest.raises(ValueError, match="no fallback is permitted"):
+            layout.CargoOutputLayout.admit_cargo_path(target, platform="win32")
+    assert not target.exists()
+
+
+def test_actual_supervisor_provisioning_checks_target_before_launch(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / ("long-supervisor-output-" * 10)
+    calls = []
+    monkeypatch.setattr(layout.sys, "platform", "win32")
+    monkeypatch.setattr(
+        supervisor_custody.command_identity,
+        "_run_captured",
+        lambda *args, **kwargs: calls.append(args),
+    )
+    with pytest.raises(ValueError, match="shorter --cargo-output-root"):
+        supervisor_custody._provision_proof_supervisor(
+            cwd=tmp_path, env={"CARGO_TARGET_DIR": str(target)}
+        )
+    assert calls == []
+    assert not target.exists()
+
+
+def test_actual_supervisor_provisioning_requires_absolute_explicit_target(tmp_path):
+    with pytest.raises(ValueError, match="explicit absolute Cargo target"):
+        supervisor_custody._provision_proof_supervisor(
+            cwd=tmp_path, env={"CARGO_TARGET_DIR": "relative-target"}
+        )
+
+
+def test_python_payload_rejects_supervisor_path_before_preflight_or_command(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    receipts = tmp_path / ("long-control-plane-path-" * 5)
+    receipts.mkdir()
+    result = receipts / "result.json"
+    request = receipts / "request.json"
+    command = [sys.executable, "-c", "raise AssertionError('must not run')"]
+    envelope = admission.envelope_for_command(command)
+    assert "cargo" not in envelope["toolchains"]
+    request.write_text(
+        json.dumps(
+            {
+                "schema": admission.EXECUTION_SCHEMA,
+                "run_id": "path-admission",
+                "execution_nonce": "a" * 64,
+                "command": command,
+                "envelope": envelope,
+                "cwd": str(source),
+                "resource_family": "python-tests",
+                "result_path": str(result),
+                "timeout_seconds": 30,
+            }
+        )
+    )
+    admit = layout.CargoOutputLayout.admit_supervisor_target_path
+    monkeypatch.setattr(
+        layout.CargoOutputLayout,
+        "admit_supervisor_target_path",
+        lambda self: admit(self, platform="win32"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        policy,
+        "_ensure_run_toolchain_preflight",
+        lambda **kwargs: calls.append("preflight"),
+    )
+    monkeypatch.setattr(
+        supervisor_custody,
+        "_provision_proof_supervisor",
+        lambda **kwargs: calls.append("provision"),
+    )
+    assert guarded_execution.execute_guarded_request(request) == 2
+    observation = json.loads(result.read_text())
+    assert observation["command_started"] is False
+    assert "Windows tool path budget" in observation["error"]
+    assert calls == []
+    assert not (receipts / "proof-supervisor-target").exists()
+
+
+def test_supervisor_boundary_rejects_root_replaced_during_preflight(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    selected_root = tmp_path / "owned-output"
+    selected_root.mkdir()
+    declaration = layout.declare_root(str(selected_root))
+    result = receipts / "result.json"
+    request = receipts / "request.json"
+    command = [sys.executable, "-c", "raise AssertionError('must not run')"]
+    envelope = admission.envelope_for_command(
+        command, cargo_output_root=str(selected_root)
+    )
+    request.write_text(
+        json.dumps(
+            {
+                "schema": admission.EXECUTION_SCHEMA,
+                "run_id": "root-replacement",
+                "execution_nonce": "a" * 64,
+                "command": command,
+                "envelope": envelope,
+                "cwd": str(source),
+                "resource_family": "python-tests",
+                "result_path": str(result),
+                "timeout_seconds": 30,
+            }
+        )
+    )
+    # This model selects the unrestricted POSIX path-budget coordinate on the
+    # host. It tests real directory identity replacement, not native POSIX use.
+    admit = layout.CargoOutputLayout.admit_supervisor_target_path
+    monkeypatch.setattr(
+        layout.CargoOutputLayout,
+        "admit_supervisor_target_path",
+        lambda self: admit(self, platform="linux"),
+    )
+    admit_image = custody_cas.admit_executable_path
+    monkeypatch.setattr(
+        custody_cas,
+        "admit_executable_path",
+        lambda root, name: admit_image(root, name, platform="linux"),
+    )
+    calls = []
+
+    def replace_root(**kwargs):
+        selected_root.rename(tmp_path / "retained-original-output")
+        selected_root.mkdir()
+        calls.append("preflight")
+        return []
+
+    monkeypatch.setattr(policy, "_ensure_run_toolchain_preflight", replace_root)
+    monkeypatch.setattr(
+        supervisor_custody,
+        "_provision_proof_supervisor",
+        lambda **kwargs: calls.append("provision"),
+    )
+    assert guarded_execution.execute_guarded_request(request) == 2
+    observation = json.loads(result.read_text())
+    assert observation["command_started"] is False
+    assert "replaced or remounted" in observation["error"]
+    assert calls == ["preflight"]
+    assert list(selected_root.iterdir()) == []
+    with pytest.raises(ValueError, match="replaced or remounted"):
+        layout.validate_root(declaration)
+
+
 def test_current_target_namespace_cannot_be_redirected(tmp_path):
     selected = layout.CargoOutputLayout.create(result_root=tmp_path / "receipts")
     selected.result_root.mkdir()
@@ -135,17 +304,37 @@ def test_placement_is_independent_of_retention_and_preserves_historical_default(
 @pytest.mark.parametrize(
     "command",
     [
-        ["python", "-c", "print(1)"],
         ["cargo", "--version"],
         ["cargo", "check", "--target-dir", "elsewhere"],
         ["cargo", "test", "--artifact-dir", "elsewhere"],
     ],
 )
-def test_untyped_query_and_secondary_output_options_cannot_select_root(
-    tmp_path, command
-):
+def test_cargo_query_and_secondary_output_options_cannot_select_root(tmp_path, command):
     with pytest.raises(ValueError):
         admission.envelope_for_command(command, cargo_output_root=str(_root(tmp_path)))
+
+
+def test_typed_python_root_places_supervisor_without_granting_cargo_permissions(
+    tmp_path,
+):
+    command = [sys.executable, "-c", "print(1)"]
+    original = admission.envelope_for_command(command)
+    root = _root(tmp_path)
+    envelope = admission.envelope_for_command(command, cargo_output_root=str(root))
+    assert envelope == {**original, "cargo_output_root": layout.declare_root(str(root))}
+    assert "cargo" not in envelope["toolchains"]
+    assert envelope["process_closure"]["descendants"] == "forbidden"
+    assert admission.validated_cargo_output_lifetime(envelope) == "retain"
+    admission.validate_envelope(envelope, command)
+    with pytest.raises(ValueError, match="explicit Cargo"):
+        admission.envelope_for_command(
+            command,
+            cargo_output_root=str(root),
+            cargo_output_lifetime="terminal-success",
+        )
+    forged = {**envelope, "toolchains": [*envelope["toolchains"], "cargo"]}
+    with pytest.raises(ValueError):
+        admission.validate_envelope(forged, command)
 
 
 @pytest.mark.parametrize("raw", [True, {}, [], "", "relative"])
@@ -727,3 +916,104 @@ def test_consumed_cargo_templates_are_admitted_complete_crate_shards(template, c
         policy._canonical_cargo_proof_command(cargo_args),
         cargo_output_lifetime="terminal-success",
     )
+
+
+@pytest.mark.parametrize("units", [259, 260])
+@pytest.mark.parametrize("non_bmp", [False, True])
+def test_executable_cas_budget_uses_canonical_factory_and_utf16(
+    tmp_path, units, non_bmp
+):
+    name = "molt-proof-supervisor.exe"
+    base = Path(tmp_path.anchor) / "molt-cas-budget-probe"
+    initial = custody_cas._file_path(base, "0" * 64, name, True)
+    current = len(str(initial).encode("utf-16-le", "surrogatepass")) // 2
+    extra = units - current
+    assert extra > 4
+    suffix = ("😀" if non_bmp else "a") + "b" * (extra - (2 if non_bmp else 1))
+    root = Path(str(base) + suffix)
+    expected = custody_cas._file_path(root, "0" * 64, name, True)
+    assert len(str(expected).encode("utf-16-le", "surrogatepass")) // 2 == units
+    if units == 259:
+        custody_cas.admit_executable_path(root, name, platform="win32")
+    else:
+        with pytest.raises(
+            ValueError, match="shorter execution result path or --logs-root"
+        ):
+            custody_cas.admit_executable_path(root, name, platform="win32")
+    assert not root.exists()
+
+
+def test_data_cas_and_posix_images_do_not_inherit_windows_launch_limit(tmp_path):
+    root = tmp_path / ("long" * 100)
+    custody_cas.admit_executable_path(root, "supervisor", platform="linux")
+    assert not root.exists()
+
+
+def test_executable_cas_admission_rejects_noncomponent_logical_name(tmp_path):
+    with pytest.raises(ValueError, match="one path component"):
+        custody_cas.admit_executable_path(
+            tmp_path, "nested/supervisor.exe", platform="win32"
+        )
+
+
+def test_oversized_metadata_image_rejects_before_preflight_or_provision(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    receipts = tmp_path / ("long-result-" * 12)
+    receipts.mkdir()
+    selected_root = tmp_path / "cargo-output"
+    selected_root.mkdir()
+    result = receipts / "result.json"
+    request = receipts / "request.json"
+    command = [sys.executable, "-c", "raise AssertionError('must not launch')"]
+    envelope = admission.envelope_for_command(
+        command, cargo_output_root=str(selected_root)
+    )
+    request.write_text(
+        json.dumps(
+            {
+                "schema": admission.EXECUTION_SCHEMA,
+                "run_id": "image-preflight",
+                "execution_nonce": "a" * 64,
+                "command": command,
+                "envelope": envelope,
+                "cwd": str(source),
+                "resource_family": "python-tests",
+                "result_path": str(result),
+                "timeout_seconds": 30,
+            }
+        )
+    )
+    # Isolate the executable CAS coordinate; the Cargo budget has its own
+    # admission models. No command or native tool is provisioned by this test.
+    monkeypatch.setattr(
+        layout.CargoOutputLayout, "admit_supervisor_target_path", lambda self: None
+    )
+    admit_image = custody_cas.admit_executable_path
+    monkeypatch.setattr(
+        custody_cas,
+        "admit_executable_path",
+        lambda root, name: admit_image(root, name, platform="win32"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        policy,
+        "_ensure_run_toolchain_preflight",
+        lambda **kwargs: calls.append("preflight"),
+    )
+    monkeypatch.setattr(
+        supervisor_custody,
+        "_provision_proof_supervisor",
+        lambda **kwargs: calls.append("provision"),
+    )
+    assert guarded_execution.execute_guarded_request(request) == 2
+    record = json.loads(result.read_text())
+    assert record["command_started"] is False
+    assert (
+        "Supervisor CAS executable exceeds Windows launch path budget"
+        in record["error"]
+    )
+    assert calls == []
+    assert not (receipts / "custody-cas").exists()

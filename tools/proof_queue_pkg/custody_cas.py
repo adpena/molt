@@ -123,6 +123,33 @@ def _file_path(root: Path, sha256: str, name: str, executable: bool) -> Path:
     return root / "files" / "sha256" / mode / sha256[:2] / sha256[2:] / name
 
 
+def admit_executable_path(
+    root: Path, logical_name: str, *, platform: str | None = None
+) -> None:
+    """Reject an unlaunchable canonical CAS image before building it.
+
+    This is path admission, not an atomic directory capability. The publisher
+    and consumer retain their existing canonical-root and digest verification.
+    """
+    import sys
+
+    if (sys.platform if platform is None else platform) != "win32":
+        return
+    if not logical_name or Path(logical_name).name != logical_name:
+        raise ValueError("proof custody file logical name must be one path component")
+    file_publication.resolve_owned_path(root)
+    target = _file_path(
+        root.expanduser().resolve(strict=False), "0" * 64, logical_name, True
+    )
+    units = len(str(target).encode("utf-16-le", "surrogatepass")) // 2
+    if units >= 260:
+        raise ValueError(
+            "Supervisor CAS executable exceeds Windows launch path budget: "
+            f"path={target}; executable_utf16_units={units}; limit=259; "
+            "select a shorter execution result path or --logs-root; no fallback is permitted"
+        )
+
+
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
     """Write one same-volume, fsync-sealed atomic terminal artifact."""
     _durable_makedirs(path.parent)
