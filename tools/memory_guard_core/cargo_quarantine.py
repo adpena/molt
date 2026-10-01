@@ -70,6 +70,8 @@ class CargoIncrementalObservation:
 
 def _owned_sample_argv(sample: ProcessSample) -> tuple[str, ...] | None:
     """Native argument boundaries from the observed process instance only."""
+    if getattr(sample, "command_kind", None) != "full":
+        return None
     argv = getattr(sample, "argv", None)
     if argv is None and os.name == "nt":
         from molt.backend_daemon_custody import _split_command
@@ -149,6 +151,7 @@ def observe_owned_incremental_state(
         sample = samples.get(pid)
         if (
             sample is None
+            or getattr(sample, "command_kind", None) != "full"
             or type(sample.started_at_ns) is not int
             or sample.started_at_ns <= 0
             or identities.get(pid) != process_identity(sample)

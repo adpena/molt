@@ -66,33 +66,67 @@ def _windows_process_snapshot_timeout_sec(
 
 def _coerce_windows_process_snapshot_rows(
     payload: object,
-) -> list[tuple[int, int, int, str, int | None, int | None]]:
+) -> list[tuple[int, int, int, str, int | None, int | None, str]]:
     if not isinstance(payload, list):
         raise ValueError("Windows process snapshot payload must be a list")
-    rows: list[tuple[int, int, int, str, int | None, int | None]] = []
+    rows: list[tuple[int, int, int, str, int | None, int | None, str]] = []
+    seen_pids: set[int] = set()
     for row in payload:
-        if not isinstance(row, list) or len(row) != 6:
-            raise ValueError("Windows process snapshot row must have six fields")
-        pid, ppid, rss_kb, command, elapsed_sec, started_at_ns = row
+        if not isinstance(row, list) or len(row) != 7:
+            raise ValueError("Windows process snapshot row must have seven fields")
+        pid, ppid, rss_kb, command, elapsed_sec, started_at_ns, command_kind = row
         if not (
             isinstance(pid, int)
             and isinstance(ppid, int)
             and isinstance(rss_kb, int)
             and isinstance(command, str)
+            and not any(isinstance(value, bool) for value in (pid, ppid, rss_kb))
+            and pid > 0
+            and ppid >= 0
+            and rss_kb >= 0
         ):
             raise ValueError("Windows process snapshot row has invalid field types")
-        if elapsed_sec is not None and not isinstance(elapsed_sec, int):
+        if elapsed_sec is not None and (
+            isinstance(elapsed_sec, bool)
+            or not isinstance(elapsed_sec, int)
+            or elapsed_sec < 0
+        ):
             raise ValueError("Windows process snapshot elapsed_sec must be int or null")
-        if started_at_ns is not None and not isinstance(started_at_ns, int):
+        if started_at_ns is not None and (
+            isinstance(started_at_ns, bool)
+            or not isinstance(started_at_ns, int)
+            or started_at_ns <= 0
+        ):
             raise ValueError(
                 "Windows process snapshot started_at_ns must be int or null"
             )
-        rows.append((pid, ppid, rss_kb, command, elapsed_sec, started_at_ns))
+        if not isinstance(command_kind, str) or command_kind not in {
+            "full",
+            "image",
+            "unavailable",
+        }:
+            raise ValueError("Windows process snapshot command authority is invalid")
+        if (command_kind == "unavailable") != (command == ""):
+            raise ValueError(
+                "Windows process snapshot command authority contradicts command text"
+            )
+        if command_kind == "image" and _windows_process_needs_full_command_line(
+            Path(command).name
+        ):
+            raise ValueError(
+                "Windows critical executable lacks full command-line authority"
+            )
+        if pid in seen_pids:
+            raise ValueError("Windows process snapshot contains duplicate PID")
+        seen_pids.add(pid)
+        rows.append(
+            (pid, ppid, rss_kb, command, elapsed_sec, started_at_ns, command_kind)
+        )
     return rows
 
 
 def _windows_process_snapshot_rows_hard_timeout() -> list[
-    tuple[int, int, int, str, int | None, int | None]
+    tuple[int, int, int, str, int | None, int | None, str]
 ]:
     if os.name != "nt":
         return []
@@ -378,7 +412,13 @@ def _windows_snapshot_api() -> SimpleNamespace:
 
 def _snapshot_read_memory(api, handle, address, size, enforce_deadline):
     enforce_deadline("reading process memory")
-    if address <= 0 or size <= 0:
+    pointer_limit = 1 << (api.ctypes.sizeof(api.ctypes.c_void_p) * 8)
+    if (
+        address <= 0
+        or size <= 0
+        or address >= pointer_limit
+        or size > pointer_limit - address
+    ):
         return None
     buffer = (api.ctypes.c_ubyte * size)()
     bytes_read = api.ctypes.c_size_t(0)
@@ -391,7 +431,8 @@ def _snapshot_read_memory(api, handle, address, size, enforce_deadline):
     ):
         return None
     enforce_deadline("reading process memory")
-    return None if bytes_read.value <= 0 else bytes(buffer[: bytes_read.value])
+    # A successful native call must attest the complete requested transfer.
+    return bytes(buffer) if bytes_read.value == size else None
 
 
 def _snapshot_read_integer(api, handle, address, size, enforce_deadline):
@@ -411,7 +452,7 @@ def _snapshot_basic_info(api, handle):
         api.ctypes.sizeof(info),
         api.ctypes.byref(returned),
     )
-    return None if status != 0 else info
+    return None if status != 0 or returned.value != api.ctypes.sizeof(info) else info
 
 
 def _snapshot_command_line(api, handle, enforce_deadline):
@@ -435,6 +476,13 @@ def _snapshot_command_line(api, handle, enforce_deadline):
         2,
         enforce_deadline,
     )
+    maximum_len = _snapshot_read_integer(
+        api,
+        handle,
+        process_parameters + api.command_line_offset + 2,
+        2,
+        enforce_deadline,
+    )
     buffer_address = _snapshot_read_integer(
         api,
         handle,
@@ -442,19 +490,57 @@ def _snapshot_command_line(api, handle, enforce_deadline):
         api.pointer_size,
         enforce_deadline,
     )
-    if not byte_len or not buffer_address:
+    if (
+        not byte_len
+        or byte_len % 2
+        or maximum_len is None
+        or maximum_len < byte_len
+        or not buffer_address
+    ):
         return None
     raw = _snapshot_read_memory(
         api,
         handle,
         buffer_address,
-        min(byte_len, 32768),
+        byte_len,
         enforce_deadline,
     )
-    if raw is None:
+    if raw is None or len(raw) != byte_len:
         return None
     enforce_deadline("reading process command line")
-    return raw.decode("utf-16-le", errors="replace").strip("\x00")
+    # The remote descriptor may mutate between its fields and the data read.
+    if (
+        _snapshot_read_integer(
+            api,
+            handle,
+            process_parameters + api.command_line_offset,
+            2,
+            enforce_deadline,
+        )
+        != byte_len
+        or _snapshot_read_integer(
+            api,
+            handle,
+            process_parameters + api.command_line_offset + 2,
+            2,
+            enforce_deadline,
+        )
+        != maximum_len
+        or _snapshot_read_integer(
+            api,
+            handle,
+            process_parameters + api.command_line_buffer_offset,
+            api.pointer_size,
+            enforce_deadline,
+        )
+        != buffer_address
+    ):
+        return None
+    try:
+        command = raw.decode("utf-16-le", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    return None if "\x00" in command else command
 
 
 def _snapshot_image_name(api, handle, enforce_deadline):
@@ -468,7 +554,7 @@ def _snapshot_image_name(api, handle, enforce_deadline):
 
 
 def _windows_process_snapshot_rows() -> list[
-    tuple[int, int, int, str, int | None, int | None]
+    tuple[int, int, int, str, int | None, int | None, str]
 ]:
     if os.name != "nt":
         return []
@@ -501,12 +587,17 @@ def _windows_process_snapshot_rows() -> list[
     enforce_deadline("creating process snapshot")
     snapshot = create_snapshot(TH32CS_SNAPPROCESS, 0)
     if snapshot == api.invalid_handle_value:
-        return []
-    rows: list[tuple[int, int, int, str, int | None, int | None]] = []
+        raise ProcessSnapshotError("Windows process snapshot creation failed")
+    rows: list[tuple[int, int, int, str, int | None, int | None, str]] = []
     try:
         entry = api.ProcessEntry32W()
         entry.dwSize = ctypes.sizeof(api.ProcessEntry32W)
+        ctypes.set_last_error(0)
         ok = process_first(snapshot, ctypes.byref(entry))
+        if not ok and ctypes.get_last_error() != 18:
+            raise ProcessSnapshotError(
+                "Windows process snapshot initial enumeration failed"
+            )
         now = time.time()
         while ok:
             enforce_deadline("enumerating process snapshot")
@@ -519,7 +610,8 @@ def _windows_process_snapshot_rows() -> list[
                 elapsed_sec: int | None = None
                 started_at_ns: int | None = None
                 exe_name = str(entry.szExeFile).strip()
-                command = exe_name
+                command = ""
+                command_kind = "unavailable"
                 access_masks = (
                     (PROCESS_QUERY_INFORMATION | PROCESS_VM_READ),
                     (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ),
@@ -548,17 +640,14 @@ def _windows_process_snapshot_rows() -> list[
                             enforce_deadline,
                         )
                         if _windows_process_needs_full_command_line(exe_name):
-                            command = (
-                                _snapshot_command_line(
-                                    api,
-                                    handle,
-                                    enforce_deadline,
-                                )
-                                or image_name
-                                or command
+                            full_command = _snapshot_command_line(
+                                api, handle, enforce_deadline
                             )
+                            command = full_command or ""
+                            command_kind = "full" if full_command else "unavailable"
                         else:
-                            command = image_name or command
+                            command = image_name or ""
+                            command_kind = "image" if image_name else "unavailable"
                         counters = process_memory_counters_type()
                         counters.cb = ctypes.sizeof(process_memory_counters_type)
                         if get_process_memory_info(
@@ -607,10 +696,16 @@ def _windows_process_snapshot_rows() -> list[
                         command,
                         elapsed_sec,
                         started_at_ns,
+                        command_kind,
                     )
                 )
             enforce_deadline("advancing process snapshot")
+            ctypes.set_last_error(0)
             ok = process_next(snapshot, ctypes.byref(entry))
+            if not ok and ctypes.get_last_error() != 18:
+                raise ProcessSnapshotError(
+                    "Windows process snapshot enumeration failed before completion"
+                )
     finally:
         close_handle(snapshot)
     return rows

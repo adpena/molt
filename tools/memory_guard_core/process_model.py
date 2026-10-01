@@ -17,7 +17,7 @@ from typing import Any, cast
 
 from tools.memory_guard_core.windows_snapshot import (
     ProcessSnapshotError,
-    _windows_process_snapshot_rows,
+    _windows_process_snapshot_rows_hard_timeout,
 )
 
 
@@ -146,6 +146,7 @@ class ProcessSample:
     started_at_ns: int | None = None
     # None uses the native sampler's command source; () explicitly means unknown.
     argv: tuple[str, ...] | None = None
+    command_kind: str = "full"
 
 
 @dataclass(frozen=True, slots=True)
@@ -800,11 +801,15 @@ def parse_windows_process_snapshot_rows(
     rows: Sequence[
         tuple[int, int, int, str, int | None]
         | tuple[int, int, int, str, int | None, int | None]
+        | tuple[int, int, int, str, int | None, int | None, str]
     ],
 ) -> dict[int, ProcessSample]:
     samples: dict[int, ProcessSample] = {}
     for row in rows:
-        if len(row) == 5:
+        command_kind = "full"
+        if len(row) == 7:
+            pid, ppid, rss_kb, command, elapsed_sec, started_at_ns, command_kind = row
+        elif len(row) == 5:
             pid, ppid, rss_kb, command, elapsed_sec = row
             started_at_ns = None
         else:
@@ -819,6 +824,7 @@ def parse_windows_process_snapshot_rows(
             pgid=None,
             elapsed_sec=elapsed_sec,
             started_at_ns=started_at_ns,
+            command_kind=command_kind,
         )
     return samples
 
@@ -898,8 +904,9 @@ def sample_processes_windows(
         Sequence[
             tuple[int, int, int, str, int | None]
             | tuple[int, int, int, str, int | None, int | None]
+            | tuple[int, int, int, str, int | None, int | None, str]
         ],
-    ] = _windows_process_snapshot_rows,
+    ] = _windows_process_snapshot_rows_hard_timeout,
 ) -> dict[int, ProcessSample]:
     try:
         rows = snapshot_rows()
@@ -1060,6 +1067,13 @@ def has_external_host_control_plane_lineage(
     sample = samples.get(pid)
     if sample is None:
         return False
+    if pid not in owned_pids and any(
+        samples[ancestor].command_kind == "unavailable"
+        for ancestor in ancestor_pids(samples, pid)
+        if ancestor in samples
+    ):
+        # Unknown command evidence cannot grant permission to terminate an unrelated tree.
+        return True
     host_lineage = has_host_control_plane_ancestor(
         samples,
         pid,
