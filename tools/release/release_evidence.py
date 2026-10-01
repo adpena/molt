@@ -125,6 +125,29 @@ def verify_e3_provenance(manifest: Path, *, source_sha: str) -> None:
         )
 
 
+def verify_full_release_acceptance(
+    manifest: Path, *, source_sha: str, repo_root: Path = ROOT
+) -> None:
+    """A stable public release requires more than the separate H0 recovery gate."""
+    from tools import release_matrix_acceptance as acceptance
+
+    matrix = acceptance.required_matrix(source_sha=source_sha, root=repo_root)
+    # The E1–E4 bundle has an exact file/role closure. It carries the daily E2
+    # scoreboard, not authenticated full-matrix shards. Do not infer complete
+    # coverage or toolchain admission from that smaller evidence family.
+    problems = acceptance.full_release_problems(
+        matrix,
+        (),
+        toolchain_identities={},
+        semantic_bundle_manifest=manifest,
+        root=repo_root,
+    )
+    if problems:
+        raise ValueError(
+            "full v1 release acceptance is incomplete: " + "; ".join(problems)
+        )
+
+
 def verify_evidence(
     manifest: Path,
     *,
@@ -175,6 +198,9 @@ def verify_evidence(
                     bundle=phase_manifest.parent
                     / payload["signed_attestation"]["path"],
                 )
+        verify_full_release_acceptance(
+            manifest, source_sha=source_sha, repo_root=repo_root
+        )
     elif phase_manifest is not None:
         raise ValueError("pre-stable releases must not claim an H0 phase exit")
     if authenticate:
