@@ -1634,6 +1634,17 @@ def validated_cargo_output_lifetime(
 def _bind_output_root_declaration(
     envelope: dict[str, object], declaration: Mapping[str, object]
 ) -> None:
+    # Every admitted payload provisions a native Cargo supervisor. A typed
+    # non-Cargo payload can place that control-plane build without acquiring
+    # Cargo payload/descendant permissions or output-disposal semantics.
+    toolchains = envelope.get("toolchains")
+    if not isinstance(toolchains, list) or not all(
+        isinstance(name, str) for name in toolchains
+    ):
+        raise ValueError("Cargo output placement requires typed toolchain authority")
+    if "cargo" not in toolchains:
+        envelope["cargo_output_root"] = dict(declaration)
+        return
     delegated = envelope.get("delegated")
     cargo = delegated if isinstance(delegated, Mapping) else envelope
     argv = cargo.get("argv")

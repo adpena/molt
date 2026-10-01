@@ -322,17 +322,28 @@ def execute_guarded_request(request_path: Path) -> int:
         output_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
             envelope, result_root=result_path.parent, source_root=effective_cwd
         )
+        # Even non-Cargo payloads provision the native supervisor with Cargo.
+        # Reject an inadmissible control-plane target before provisioning or
+        # command execution; ambient target directories cannot redirect it.
+        output_layout.admit_supervisor_target_path()
+        custody_cas.admit_executable_path(
+            result_path.parent / "custody-cas",
+            "molt-proof-supervisor.exe"
+            if sys.platform == "win32"
+            else "molt-proof-supervisor",
+        )
         if output_layout.declaration is not None:
             output_layout.validate_environment(inherited_env)
-            cargo_command = admission._nested_command(command) or command
-            environment._require_cargo_build_tool_environment_context(
-                cargo_command,
-                outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(
-                    envelope
-                ),
-                cwd=cwd,
-                env=inherited_env,
-            )
+            if "cargo" in envelope.get("toolchains", []):
+                cargo_command = admission._nested_command(command) or command
+                environment._require_cargo_build_tool_environment_context(
+                    cargo_command,
+                    outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(
+                        envelope
+                    ),
+                    cwd=cwd,
+                    env=inherited_env,
+                )
             for name in cargo_output_environment.TEMPORARY_VARIABLE_NAMES:
                 inherited_env[name] = str(output_layout.temporary)
             inherited_env["PYTHONPYCACHEPREFIX"] = str(
@@ -410,6 +421,7 @@ def execute_guarded_request(request_path: Path) -> int:
         # source tree.  It is therefore the single authority for the reusable
         # supervisor build as well; inherited Cargo target state must not move
         # control-plane output back under proof source custody.
+        cargo_output_layout.validate_root(output_layout.declaration)
         supervisor_target = output_layout.supervisor_target
         source_root = effective_cwd.resolve(strict=True)
         supervisor_target = Path(os.path.abspath(supervisor_target))

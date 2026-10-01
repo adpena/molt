@@ -33,6 +33,7 @@ from molt.file_hashing import _sha256_file
 from molt import python_environment_identity
 from molt.exact_json import ExactJsonError, canonical_json_sha256
 from tests.python_environment_test_support import build_environment_manifest
+from tests import proof_queue_owned_roots
 from tests.proof_queue_custody_test_support import (
     ReceiptCustodyFactory,
     assert_execution_context_rejects_substitutions,
@@ -68,6 +69,7 @@ from tools.proof_queue_pkg import (
     cli,
     command_admission,
     command_identity,
+    cargo_output_layout,
     execution_environment,
     execution_receipt_details,
     guarded_execution,
@@ -2382,7 +2384,93 @@ def custody_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @dataclass(frozen=True)
 class GuardedExecutionAuthorities:
     python_identity: dict[str, object]
-    supervisor_target: Path
+
+
+_REAL_METADATA_CASES = frozenset(
+    [
+        "test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity",
+        "test_guarded_receipt_rejects_stable_dirty_source",
+        "test_guarded_receipt_rejects_source_mutation_during_command",
+        "test_live_custody_detects_mutate_execute_restore_transient",
+        "test_live_custody_detects_tracked_directory_rename_restore",
+        "test_python_leaf_blocks_cargo_and_node_children_before_launch",
+        "test_python_bootstrap_installs_custody_under_isolated_startup",
+        "test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
+        "test_python_leaf_blocks_exec_replacement_before_launch",
+        "test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain",
+        "test_proof_queue_exec_records_passed_run",
+        "test_proof_queue_exec_preserves_command_help_after_delimiter",
+        "test_proof_queue_exec_honors_explicit_memory_guard_poll_override",
+        "test_proof_queue_evidence_accepts_positional_run_id",
+        "test_proof_queue_projection_failure_is_nonfatal_observability",
+        "test_proof_queue_submission_metadata_failure_is_terminal",
+        "test_proof_queue_guarded_identity_failure_is_explicit_nonexecution",
+        "test_proof_queue_wasm_rows_check_rust_target_before_run",
+        "test_proof_queue_wasm_preflight_fails_before_command",
+    ]
+)
+
+
+def _real_metadata_root() -> dict[str, object]:
+    return proof_queue_owned_roots.metadata_root()
+
+
+def _owned_metadata_case(root: dict[str, object], nodeid: str, nonce: str) -> Path:
+    return proof_queue_owned_roots.owned_metadata_case(
+        root, nodeid, nonce, source=Path(__file__)
+    )
+
+
+@pytest.fixture(name="tmp_path")
+def _real_case_tmp_path(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
+    if sys.platform != "win32" or request.node.originalname not in _REAL_METADATA_CASES:
+        return tmp_path
+    import secrets
+
+    return _owned_metadata_case(
+        _real_metadata_root(), request.node.nodeid, secrets.token_hex(16)
+    )
+
+
+def _real_cargo_output_root() -> str | None:
+    """Use an explicitly provisioned test boundary; never choose another root."""
+    configured = os.environ.get("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT")
+    if configured is None:
+        if sys.platform == "win32":
+            raise ValueError(
+                "Windows real queue tests require an existing short "
+                "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT supplied by the test owner"
+            )
+        return None
+    return str(cargo_output_layout.declare_root(configured)["path"])
+
+
+def _real_queue_output_arguments() -> list[str]:
+    root = _real_cargo_output_root()
+    return [] if root is None else ["--cargo-output-root", root]
+
+
+def test_real_queue_windows_output_root_requires_owner_selection(monkeypatch):
+    monkeypatch.delenv("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    with pytest.raises(ValueError, match="supplied by the test owner"):
+        _real_cargo_output_root()
+
+
+def test_real_queue_output_root_is_declared_not_created(tmp_path, monkeypatch):
+    missing = tmp_path / "missing-owner-root"
+    monkeypatch.setenv("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT", str(missing))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        _real_cargo_output_root()
+    assert not missing.exists()
+    owned = tmp_path / "owned-root"
+    owned.mkdir()
+    monkeypatch.setenv("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT", str(owned))
+    assert _real_queue_output_arguments() == [
+        "--cargo-output-root",
+        str(owned.resolve()),
+    ]
+    assert list(owned.iterdir()) == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Unix socket paths have SUN_LEN")
@@ -2475,10 +2563,7 @@ def guarded_execution_authorities(
         hash_workers=proof_plan.ProofPlan.load().inventory_hash_workers,
     )
     assert identity is not None
-    return GuardedExecutionAuthorities(
-        python_identity=identity,
-        supervisor_target=tmp_path_factory.mktemp("proof-supervisor-target"),
-    )
+    return GuardedExecutionAuthorities(python_identity=identity)
 
 
 def _rebind_cached_python_identity(
@@ -2561,7 +2646,9 @@ def _execute_request(
     resource_family: str = "python-tests",
     authorities: GuardedExecutionAuthorities | None = None,
 ) -> tuple[int, dict[str, object]]:
-    envelope = command_admission.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(
+        command, cargo_output_root=_real_cargo_output_root()
+    )
     request = result.with_suffix(".request.json")
     request.write_text(
         json.dumps(
@@ -2583,7 +2670,6 @@ def _execute_request(
     if authorities is None:
         rc = guarded_execution.execute_guarded_request(request)
     else:
-        provision_supervisor = supervisor_custody._provision_proof_supervisor
 
         def cached_python_identity(
             envelope: dict[str, object],
@@ -2611,20 +2697,8 @@ def _execute_request(
                 selection=selection,
             )
 
-        def provision_shared_supervisor(
-            *, cwd: Path, env: dict[str, str]
-        ) -> tuple[Path, dict[str, object]]:
-            shared_env = dict(env)
-            shared_env["CARGO_TARGET_DIR"] = str(authorities.supervisor_target)
-            return provision_supervisor(cwd=cwd, env=shared_env)
-
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(command_identity, "_python_identity", cached_python_identity)
-            patch.setattr(
-                supervisor_custody,
-                "_provision_proof_supervisor",
-                provision_shared_supervisor,
-            )
             rc = guarded_execution.execute_guarded_request(request)
     return rc, json.loads(result.read_text(encoding="utf-8"))
 
@@ -3535,7 +3609,13 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     )
     assert provenance["state"] == "cold"
     assert provenance["requested_target"] == str(persistent_target)
-    assert Path(derived_root["path"]).parent.parent.name == provenance["input_sha256"]
+    expected_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
+        record["envelope"], result_root=execution_path.parent, source_root=repo
+    )
+    assert Path(derived_root["path"]) == expected_layout.target(
+        provenance["input_sha256"], provenance["generation_id"]
+    )
+    assert len(Path(derived_root["path"]).name) == 64
     assert record["cargo_cache_publication"]["state"] == "sealed"
     assert record["cargo_cache_publication"]["purpose"] == "preserved-candidate"
     assert record["cargo_cache_publication"]["reusable"] is False
@@ -4244,6 +4324,7 @@ def test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain(
             "--repo-root",
             str(repo),
             "exec",
+            *_real_queue_output_arguments(),
             "--id",
             "python-import-light",
             "--reason",
@@ -4422,6 +4503,7 @@ def test_proof_queue_exec_records_passed_run(
             "--repo-root",
             str(repo),
             "exec",
+            *_real_queue_output_arguments(),
             "--id",
             "queue-smoke",
             "--reason",
@@ -4548,6 +4630,7 @@ def test_proof_queue_exec_preserves_command_help_after_delimiter(
                 "--repo-root",
                 str(repo),
                 "exec",
+                *_real_queue_output_arguments(),
                 "--id",
                 "command-help",
                 "--reason",
@@ -4666,6 +4749,7 @@ def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
             "--repo-root",
             str(repo),
             "exec",
+            *_real_queue_output_arguments(),
             "--id",
             "queue-poll-override",
             "--reason",
@@ -4888,6 +4972,7 @@ def test_proof_queue_evidence_accepts_positional_run_id(
             [
                 *base_args,
                 "exec",
+                *_real_queue_output_arguments(),
                 "--id",
                 "evidence-smoke",
                 "--reason",
@@ -4950,6 +5035,7 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
             "--repo-root",
             str(repo),
             "exec",
+            *_real_queue_output_arguments(),
             "--id",
             "projection-warning",
             "--reason",
@@ -5033,6 +5119,7 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
             "--repo-root",
             str(repo),
             "exec",
+            *_real_queue_output_arguments(),
             "--id",
             "metadata-crash",
             "--reason",
@@ -5099,6 +5186,7 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
             "--repo-root",
             str(repo),
             "exec",
+            *_real_queue_output_arguments(),
             "--id",
             "metadata-followup",
             "--reason",
@@ -5136,6 +5224,7 @@ def test_proof_queue_guarded_identity_failure_is_explicit_nonexecution(
             "--repo-root",
             str(state.ROOT),
             "exec",
+            *_real_queue_output_arguments(),
             "--id",
             "identity-capture-failure",
             "--reason",
@@ -16026,3 +16115,106 @@ def test_queue_terminal_transition_frees_contention_key(tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def test_real_metadata_root_is_required_and_never_created(tmp_path, monkeypatch):
+    monkeypatch.delenv("MOLT_PROOF_TEST_METADATA_ROOT", raising=False)
+    with pytest.raises(ValueError, match="supplied by the test owner"):
+        _real_metadata_root()
+    missing = tmp_path / "missing-metadata"
+    monkeypatch.setenv("MOLT_PROOF_TEST_METADATA_ROOT", str(missing))
+    with pytest.raises(ValueError, match="unavailable"):
+        _real_metadata_root()
+    assert not missing.exists()
+
+
+def test_metadata_case_identity_and_root_replacement_are_failclosed(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "owned-metadata"
+    root.mkdir()
+    monkeypatch.setenv("MOLT_PROOF_TEST_METADATA_ROOT", str(root))
+    declaration = _real_metadata_root()
+    case = _owned_metadata_case(declaration, "module::case[coordinate]", "a" * 32)
+    owner = json.loads((case / "metadata-owner.json").read_text())
+    assert len(case.name) == 64
+    assert owner["namespace_sha256"] == case.name
+    assert owner["identity"]["nodeid"] == "module::case[coordinate]"
+    assert (
+        owner["identity"]["test_source_sha256"]
+        == hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    )
+    assert owner["root"] == declaration
+    with pytest.raises(FileExistsError):
+        _owned_metadata_case(declaration, "module::case[coordinate]", "a" * 32)
+    root.rename(tmp_path / "retained-root")
+    root.mkdir()
+    with pytest.raises(ValueError, match="replaced or remounted"):
+        _owned_metadata_case(declaration, "other-case", "b" * 32)
+    assert list(root.iterdir()) == []
+
+
+def test_native_fixture_environment_uses_declared_short_root_and_preserves_inputs(
+    monkeypatch,
+):
+    monkeypatch.setenv("MOLT_FIXTURE_SENTINEL", "preserved")
+    environment = proof_queue_owned_roots.native_build_environment(
+        source=Path(__file__)
+    )
+    if sys.platform != "win32":
+        assert environment["MOLT_FIXTURE_SENTINEL"] == "preserved"
+        return
+    cargo = os.environ["MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT"]
+    metadata = _real_metadata_root()
+    target = Path(environment["CARGO_TARGET_DIR"])
+    assert target.is_relative_to(Path(cargo))
+    assert not target.is_relative_to(Path(str(metadata["path"])))
+    assert environment["MOLT_FIXTURE_SENTINEL"] == "preserved"
+    assert target.name == "proof-supervisor-target"
+    assert not target.exists()
+    owner_files = list(Path(str(metadata["path"])).glob("*/metadata-owner.json"))
+    assert any(
+        json.loads(p.read_text())["identity"]["nodeid"]
+        == "test_proof_queue.py::supervisor-build"
+        for p in owner_files
+    )
+
+
+def test_cached_python_authority_never_redirects_supervisor_build_layout(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "source"
+    repo.mkdir()
+    result = tmp_path / "result.json"
+    admitted_environment = {
+        "CARGO_TARGET_DIR": "admitted-target",
+        "MOLT_SENTINEL": "preserved",
+    }
+    observed = []
+
+    def provision(*, cwd, env):
+        observed.append((cwd, dict(env)))
+        return Path("real-admitted-image"), {
+            "build_target_dir": env["CARGO_TARGET_DIR"]
+        }
+
+    monkeypatch.setattr(supervisor_custody, "_provision_proof_supervisor", provision)
+
+    def execute(request):
+        binary, telemetry = supervisor_custody._provision_proof_supervisor(
+            cwd=repo, env=admitted_environment
+        )
+        assert binary == Path("real-admitted-image")
+        assert telemetry["build_target_dir"] == "admitted-target"
+        result.write_text(json.dumps({"command_started": False, "model": True}))
+        return 0
+
+    monkeypatch.setattr(guarded_execution, "execute_guarded_request", execute)
+    authority = GuardedExecutionAuthorities(python_identity={})
+    rc, record = _execute_request(
+        repo, result, [sys.executable, "-c", "pass"], authorities=authority
+    )
+    assert rc == 0 and record["model"] is True
+    assert observed == [(repo, admitted_environment)]
+    assert not hasattr(authority, "supervisor_target")
+    assert supervisor_custody._provision_proof_supervisor is provision
