@@ -90,15 +90,21 @@ def resolve_command(command: Sequence[str], *, venv: Path) -> list[str]:
     return resolved
 
 
-def main(argv: list[str] | None = None) -> int:
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        allow_abbrev=False,
         description=(
             "Execute a command with the repository virtualenv activated, without "
             "leaving an extra process-manager child in the guarded process tree."
-        )
+        ),
     )
     parser.add_argument("--venv", default=None)
     parser.add_argument("command", nargs=argparse.REMAINDER)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argument_parser()
     args = parser.parse_args(argv)
     command = list(args.command)
     if command and command[0] == "--":

@@ -61,8 +61,13 @@ def test_zip_application_owns_one_sys_path_entry(tmp_path: Path) -> None:
     assert payload["count"] == 1
 
 
+@pytest.mark.parametrize(
+    "target",
+    ["molt", "molt.cli", "molt.__main__", "molt.cli.__main__", "molt.cli.entrypoint"],
+)
 def test_safe_path_molt_module_receives_only_its_own_validated_source_root(
     tmp_path: Path,
+    target: str,
 ) -> None:
     root = Path(python_custody_bootstrap.__file__).resolve().parents[2]
     environment = os.environ.copy()
@@ -75,7 +80,7 @@ def test_safe_path_molt_module_receives_only_its_own_validated_source_root(
             str(Path(python_custody_bootstrap.__file__).resolve()),
             "module",
             "0",
-            "molt",
+            target,
             "--version",
         ],
         cwd=tmp_path,

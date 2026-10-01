@@ -121,6 +121,7 @@ def _proof_command_policy_error(command: list[str]) -> str | None:
         envelope = command_admission.envelope_for_command(command)
     except ValueError as exc:
         return f"proof queue refuses an untyped command envelope: {exc}"
+    command = [str(value) for value in envelope["argv"]]
     basename = _command_basename(command[0])
     if basename in {"cargo", "cargo.exe"}:
         return (
