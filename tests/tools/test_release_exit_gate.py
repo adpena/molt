@@ -14,13 +14,15 @@ import pytest
 from molt.verified_subset import load_verified_subset_policy
 from tests.process_guard_common import run_guarded_test_process
 from tests.tools.verified_subset_fixtures import synthetic_validation
-from tools import release_exit_gate, verified_subset
+from tests.tools.receipt_engine_fixtures import install_observed_runtime
+from tools import perf_scoreboard, release_exit_gate, verified_subset
 from tools.compat import comparison, test_policy
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_SHA = "a" * 40
 NOW = dt.datetime(2026, 8, 14, 1, 0, tzinfo=dt.timezone.utc)
+_REAL_TOOLCHAIN_PROBLEMS = release_exit_gate.pa.scoreboard_observed_toolchain_problems
 
 
 @pytest.mark.parametrize("target", [[], {}, None, True])
@@ -41,8 +43,21 @@ def test_registry_target_wrong_types_return_diagnostics(target: object) -> None:
     assert any("target must be native or wasm" in problem for problem in problems)
 
 
-def _load_gate(monkeypatch: pytest.MonkeyPatch, *, stub_source: bool = True):
+def _load_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stub_source: bool = True,
+    stub_toolchain_admission: bool = True,
+):
+    install_observed_runtime(monkeypatch)
     module = release_exit_gate
+    # Synthetic bundle tests isolate storage/source/registry contracts, not real
+    # compiler/runtime admission. Dedicated regressions below retain the actual
+    # fail-closed toolchain authority; this stub is never emitted as evidence.
+    if stub_toolchain_admission:
+        monkeypatch.setattr(
+            module.pa, "scoreboard_observed_toolchain_problems", lambda _doc: []
+        )
     monkeypatch.setattr(module.pa.perf_schema, "validate_board", lambda _doc: [])
     if stub_source:
         monkeypatch.setattr(module, "_assert_clean_landed_source", lambda *_args: None)
@@ -196,6 +211,11 @@ def _write_e1_receipt(
         ],
         "parity_gate": _hashed_without_role(gate, parity_gate, receipt_path),
         "iteration_mode": False,
+        "generated_at": "2026-08-14T12:00:00Z",
+        "producer": {
+            "argv": ["tools/pact_witness_acceptance.py", "--target", target],
+            "execution_tools": None,
+        },
     }
     receipt_path.write_text(json.dumps(payload), encoding="utf-8")
     return receipt_path
@@ -214,6 +234,14 @@ def _scoreboard_cell(gate, benchmark: str, backend: str) -> dict[str, object]:
         "warm_speedup": 2.0,
         "verdict": gate.pa.perf_schema.VERDICT_GREEN,
         "classification": gate.pa.perf_schema.CLASS_GREEN,
+        "stable": True,
+        "repeat_stability": "STABLE_ABOVE",
+        "repeat_ci_lo": 1.5,
+        "repeat_ci_hi": 2.5,
+        "output_parity": gate.pa.perf_schema.output_parity_evidence(
+            reference_observations=[("cpython:cold", "result\n", "", 0)],
+            molt_observations=[("molt:cold", "result\n", "", 0)],
+        ),
         "repeat_passes": int(gate.pa.CANONICAL_PERF_REPEAT),
         "measured_quiescent": True,
     }
@@ -234,7 +262,15 @@ def _write_scoreboard(
         "kind": gate.E2_SCOREBOARD_KIND,
         "generated_at": generated_at,
         "git_rev": source_sha,
+        "host": {
+            "cpython_oracle": {"version": "3.12.13"},
+            "molt_target_python": "3.12",
+        },
         "provenance": {
+            "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
+            "benchmark_tool_sha": perf_scoreboard._benchmark_tool_identity()[
+                "ondisk_blob_sha"
+            ],
             "origin_sha": source_sha,
             "local_head_sha": source_sha,
             "merge_base_sha": source_sha,
@@ -445,6 +481,7 @@ def _write_typed_receipts(
                     source_sha,
                 ],
                 "tool": verified_tool,
+                "audit_engine": None,
             },
             "facts": verified_subset._receipt_facts(
                 coordinate=coordinate,
@@ -1063,3 +1100,38 @@ def test_cli_exposes_only_assemble_and_verify(
         gate.main(["--allow-missing-evidence"])
 
     assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize("forged_verified", (False, True))
+def test_assembly_rejects_unadmitted_e2_toolchains(
+    tmp_path, monkeypatch, forged_verified
+):
+    gate = _load_gate(monkeypatch, stub_toolchain_admission=False)
+    inputs = _inputs(tmp_path, gate)
+    payload = _read(inputs["e2_scoreboard"])
+    if forged_verified:
+        for cell in gate.pa.perf_schema.flatten_cells(payload):
+            cell["build_observation"] = {
+                "kind": "molt-build-observation-v1",
+                "compiled_with_verified": True,
+            }
+    _write(inputs["e2_scoreboard"], payload)
+    with pytest.raises(ValueError, match="invalid E2 scoreboard") as exc_info:
+        gate.assemble_release_bundle(**inputs)
+    assert "observation is missing" in str(
+        exc_info.value
+    ) or "used-byte admission receipt is unavailable" in str(exc_info.value)
+
+
+def test_verification_rejects_unadmitted_e2_toolchains(tmp_path, monkeypatch):
+    gate = _load_gate(monkeypatch)
+    manifest, _report = _assemble(tmp_path, gate)
+    monkeypatch.setattr(
+        gate.pa, "scoreboard_observed_toolchain_problems", _REAL_TOOLCHAIN_PROBLEMS
+    )
+    report = gate.verify_release_bundle(manifest, repo_root=REPO_ROOT, now=NOW)
+    assert report.passed is False
+    assert any(
+        "E2:" in problem and "observation is missing" in problem
+        for problem in report.problems
+    )

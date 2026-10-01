@@ -442,17 +442,52 @@ def _build_molt_artifact(
     )
 
 
+def _execution_elapsed(
+    result: harness_memory_guard.GuardedCompletedProcess,
+) -> float | None:
+    """Failed executions retain diagnostics, never contribute timing samples."""
+    import math
+
+    if (
+        result.returncode != 0
+        or getattr(result, "timed_out", False)
+        or getattr(result, "infrastructure_failure", None) is not None
+        or getattr(result, "violation", None) is not None
+        or getattr(result, "orphaned_process_groups", ())
+    ):
+        return None
+    value = getattr(result, "child_elapsed_s", None)
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(
+            "successful startup sample has no valid direct-child execution clock"
+        )
+    return float(value)
+
+
 def _sample_record(
     *,
     index: int,
     command: list[str],
     result: harness_memory_guard.GuardedCompletedProcess,
 ) -> dict[str, Any]:
+    elapsed = _execution_elapsed(result)
+    infrastructure = getattr(result, "infrastructure_failure", None)
     return {
         "index": index,
         "command": command,
         "returncode": result.returncode,
-        "elapsed_s": None if result.elapsed_s is None else round(result.elapsed_s, 6),
+        "elapsed_s": None if elapsed is None else round(elapsed, 6),
+        "guard_wall_elapsed_s": getattr(result, "elapsed_s", None),
+        "timed_out": bool(getattr(result, "timed_out", False)),
+        "infrastructure_failure": None
+        if infrastructure is None
+        else asdict(infrastructure),
+        "orphaned_process_groups": list(getattr(result, "orphaned_process_groups", ())),
         "stdout": result.stdout or "",
         "stderr": result.stderr or "",
     }
@@ -515,8 +550,9 @@ def _measure_artifact(
                 if artifact.suffix == ".wasm":
                     (run_path.parent / "manifest.json").unlink(missing_ok=True)
         records.append(_sample_record(index=index, command=command, result=result))
-        if result.returncode == 0 and result.elapsed_s is not None:
-            elapsed.append(result.elapsed_s)
+        sample_elapsed = _execution_elapsed(result)
+        if sample_elapsed is not None:
+            elapsed.append(sample_elapsed)
 
     return {
         "label": label,
@@ -602,11 +638,8 @@ def _measure_cold_first_sighting(
         timeout=timeout,
         progress_label=f"output-audit startup {label} cold-first",
     )
-    elapsed = (
-        [result.elapsed_s]
-        if result.returncode == 0 and result.elapsed_s is not None
-        else []
-    )
+    sample_elapsed = _execution_elapsed(result)
+    elapsed = [] if sample_elapsed is None else [sample_elapsed]
     return {
         "label": label,
         "mode": "cold_first_sighting",
@@ -769,8 +802,9 @@ def _measure_cpython(
             progress_label=f"output-audit cpython run {index + 1}/{samples}",
         )
         records.append(_sample_record(index=index, command=command, result=result))
-        if result.returncode == 0 and result.elapsed_s is not None:
-            elapsed.append(result.elapsed_s)
+        sample_elapsed = _execution_elapsed(result)
+        if sample_elapsed is not None:
+            elapsed.append(sample_elapsed)
     return {
         "label": "cpython",
         "mode": "interpreter_process",

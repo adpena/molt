@@ -194,6 +194,11 @@ def _canonical_scoreboard_doc(
             ),
             "log_artifact": f"bench/scoreboard/logs/{Path(benchmark).stem}-{backend}.log",
             "classification": "GREEN_STABLE",
+            "repeat_passes": 5,
+            "repeat_ci_lo": 1.5,
+            "repeat_ci_hi": 2.5,
+            "repeat_stability": "STABLE_ABOVE",
+            "measured_quiescent": True,
         }
 
     return {
@@ -284,6 +289,8 @@ def _current_scoreboard_doc(**overrides: object) -> dict:
     assert isinstance(provenance, dict)
     provenance.update(
         {
+            "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
+            "benchmark_tool_sha": "b" * 64,
             "local_head_sha": "a" * 40,
             "authoritative": True,
             "authoritative_reason": "unit-test",
@@ -518,10 +525,13 @@ def _scoreboard_payload(
     stamped: bool = False,
 ) -> dict:
     payload = {
+        "scoreboard": _canonical_scoreboard_doc()["scoreboard"],
         "kind": "cpython_floor_scoreboard",
         "generated_at": generated_at,
         "git_rev": git_rev,
         "provenance": {
+            "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
+            "benchmark_tool_sha": "b" * 64,
             "local_head_sha": local_head_sha or git_rev,
             "authoritative": authoritative,
             "authoritative_reason": "unit-test",

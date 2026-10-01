@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import re
 import json
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
@@ -12,7 +14,7 @@ from molt.portable_paths import portable_path_identity, portable_relative_path
 from molt.toolchain_identity import stable_file_sha256
 from tools.git_identity import is_git_object_id
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 KIND = "molt-pact-witness-acceptance"
 STATUS_PASS = "PASS"
 TARGETS = frozenset({"native", "wasm"})
@@ -285,6 +287,26 @@ def acceptance_coordinate(payload: Mapping[str, Any]) -> tuple[str, str, str] | 
     return values if all(isinstance(value, str) and value for value in values) else None
 
 
+def _invocation_matches_target(argv: list[str], target: object) -> bool:
+    values: dict[str, str] = {}
+    index = 1
+    while index < len(argv):
+        option, separator, value = argv[index].partition("=")
+        if option not in {"--target", "--out-dir"}:
+            return False
+        if not separator:
+            index += 1
+            if index >= len(argv):
+                return False
+            value = argv[index]
+        if not value:
+            return False
+        # argparse's last occurrence owns the actual invoked value.
+        values[option] = value
+        index += 1
+    return values.get("--target") == target
+
+
 def validate_acceptance_receipt(
     payload: object,
     *,
@@ -305,6 +327,8 @@ def validate_acceptance_receipt(
         "artifacts",
         "parity_gate",
         "iteration_mode",
+        "generated_at",
+        "producer",
     }
     if not isinstance(payload, Mapping):
         return ("acceptance receipt root must be an object",)
@@ -326,6 +350,54 @@ def validate_acceptance_receipt(
         problems.append("acceptance receipt target must be native or wasm")
     if payload.get("iteration_mode") is not False:
         problems.append("acceptance receipt iteration_mode must be false")
+
+    observed_at = payload.get("generated_at")
+    if not isinstance(observed_at, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z",
+        observed_at,
+    ):
+        problems.append(
+            "acceptance receipt generated_at must be a strict UTC timestamp"
+        )
+    else:
+        try:
+            observed = dt.datetime.fromisoformat(observed_at[:-1] + "+00:00")
+        except ValueError:
+            problems.append("acceptance receipt generated_at is invalid")
+        else:
+            if observed > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5):
+                problems.append("acceptance receipt generated_at is in the future")
+    producer = payload.get("producer")
+    if not isinstance(producer, Mapping) or set(producer) != {
+        "argv",
+        "execution_tools",
+    }:
+        problems.append(
+            "acceptance receipt producer must contain exactly argv and execution_tools"
+        )
+    else:
+        argv = producer.get("argv")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or not all(isinstance(arg, str) and arg for arg in argv)
+            or argv[0] != "tools/pact_witness_acceptance.py"
+        ):
+            problems.append(
+                "acceptance receipt producer.argv must name the acceptance producer invocation"
+            )
+        else:
+            if not _invocation_matches_target(argv, target):
+                problems.append(
+                    "acceptance receipt producer.argv must match the accepted target invocation"
+                )
+        # The producer does not yet admit the guest compiler/runtime/oracle
+        # identity closure. Null is an explicit missing observation, never a
+        # writer-Python substitution or a digest that can close H0.
+        if producer.get("execution_tools") is not None:
+            problems.append(
+                "acceptance receipt producer.execution_tools must be null until a typed execution identity authority exists"
+            )
 
     receipt_root = _receipt_root(receipt_path) if receipt_path is not None else None
     closure_paths: dict[str, tuple[PurePosixPath, str]] = {}

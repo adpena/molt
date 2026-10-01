@@ -8,6 +8,10 @@ import sys
 import time
 from typing import Any
 
+from molt.toolchain_identity import (
+    executable_content_identity,
+    stable_file_content_identity,
+)
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.artifact_publication import discard_staged_output
 from molt.cli.binary_image_analysis import (
@@ -35,6 +39,38 @@ from molt.cli.native_link_plan import (
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
 from molt.cli import link_fingerprints
+
+
+def _observed_build_toolchain(
+    *, backend_bin: Path | None, runtime_lib: Path | None, output: Path
+) -> dict[str, Any]:
+    """Observe selected bytes; unknown or failed observations never become claims.
+
+    This is an observation at publication, not an attestation of which bytes an
+    already-running daemon loaded. Consumers must retain that distinction.
+    """
+    facts: dict[str, Any] = {
+        "kind": "molt-build-observation-v1",
+        "compiled_with_verified": False,
+    }
+    for name, path, executable in (
+        ("compiler", backend_bin, True),
+        ("runtime", runtime_lib, False),
+        ("artifact", output, False),
+    ):
+        if path is None:
+            facts[name] = None
+            continue
+        try:
+            identity = (
+                executable_content_identity(path, label=f"build {name}")
+                if executable
+                else stable_file_content_identity(path, label=f"build {name}")
+            )
+            facts[name] = {"path": str(path), "identity": identity}
+        except (OSError, ValueError) as exc:
+            facts[name] = {"error": str(exc)}
+    return facts
 
 
 def _build_cache_info(
@@ -430,6 +466,7 @@ def _emit_native_link_result(
     resolved_diagnostics_verbosity: str,
     strip_after_link: bool = True,
     link_selection: tuple[Path, Path] | None = None,
+    backend_bin: Path | None = None,
 ) -> int:
     if link_process.returncode == 0:
         # LinkPlan owns strip ordering. Ordinary release plans strip here;
@@ -540,6 +577,9 @@ def _emit_native_link_result(
                 runtime_lib=runtime_lib,
                 link_skipped=link_skipped,
                 external_native_artifacts=external_native_artifacts,
+            )
+            data["observed_toolchain"] = _observed_build_toolchain(
+                backend_bin=backend_bin, runtime_lib=runtime_lib, output=output_binary
             )
             _attach_build_metadata(
                 data,

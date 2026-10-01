@@ -53,6 +53,19 @@ do not create a second performance authority. Profile outliers and resolve
 known budget violations or pathological scaling before release. Aggregate
 speedups cannot cancel a failing workload, target, or resource budget.
 
+For v1.0, every individual canonical benchmark at every required target,
+backend, profile, and reference-CPython version coordinate must statistically
+demonstrate a speedup greater than 1.0 against matched CPython. A point estimate
+or aggregate is insufficient: noisy or inconclusive measurements and unmeasured
+coordinates remain acceptance blockers. Keep the declared workload and target
+coverage intact; do not remove benchmarks, narrow the verified subset, or count
+skips as wins. Report runtime, build latency, startup, and memory separately.
+
+The semantic acceptance matrix retains CPython 3.12, 3.13, and 3.14 across the
+declared verified subset. Asyncio, threading, multiprocessing, stdlib, and
+advertised third-party package coverage require coordinate-bound correctness
+evidence before their performance results can establish release acceptance.
+
 Megafunctions are structural review triggers: isolate semantic responsibilities
 and ownership, remove repeated analysis, and measure compiler and generated-code
 costs. Splitting lines into wrappers is not acceptance; neither is faster

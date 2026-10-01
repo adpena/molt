@@ -609,7 +609,8 @@ def test_measure_molt_run_exception_uses_typed_guard_outcome(
 
 def test_measure_runtime_uses_guard_child_elapsed(monkeypatch) -> None:
     completed = subprocess.CompletedProcess(["tool"], 0, "out", "")
-    completed.elapsed_s = 0.0125
+    completed.elapsed_s = 9.0125
+    completed.child_elapsed_s = 0.0125
     limits = bench_tool.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
     calls: list[dict[str, object]] = []
 
@@ -633,7 +634,8 @@ def test_measure_molt_run_uses_guard_child_elapsed(monkeypatch, tmp_path: Path) 
     binary = tmp_path / "molt-bin"
     binary.write_text("binary", encoding="utf-8")
     completed = subprocess.CompletedProcess([str(binary)], 0, "out", "")
-    completed.elapsed_s = 0.034
+    completed.elapsed_s = 9.034
+    completed.child_elapsed_s = 0.034
     limits = bench_tool.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
     calls: list[dict[str, object]] = []
 
@@ -1794,3 +1796,59 @@ def test_main_writes_json_then_exits_nonzero_on_output_parity_failure(
         raise AssertionError("expected output parity failure to exit nonzero")
 
     assert writes == [out_json]
+
+
+def test_benchmark_run_missing_child_clock_is_not_timing_evidence(
+    monkeypatch, tmp_path
+):
+    completed = subprocess.CompletedProcess(["probe"], 0, "out", "")
+    completed.elapsed_s = 9.0
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: completed,
+    )
+    result = bench_tool.measure_molt_run(tmp_path / "probe")
+    assert isinstance(result, bench_tool.MoltFailure)
+    assert result.elapsed_s is None
+
+
+def test_batch_benchmark_build_preserves_explicit_oracle_minor(tmp_path):
+    params = bench_tool._molt_build_params(
+        script="probe.py",
+        out_dir=tmp_path,
+        build_profile="release",
+        extra_args=["--python-version", "3.14"],
+        env={},
+    )
+    assert params["python_version"] == "3.14"
+
+
+def test_failed_baseline_diagnostics_precede_missing_clock(monkeypatch, capsys):
+    completed = subprocess.CompletedProcess(["probe"], 124, "", "deadline expired")
+    completed.elapsed_s = 12.0
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: completed,
+    )
+    assert bench_tool.measure_runtime(["probe"]) is None
+    diagnostic = capsys.readouterr().err
+    assert "deadline expired" in diagnostic
+    assert "timing evidence" not in diagnostic
+
+
+@pytest.mark.parametrize("clock", [True, -0.1, float("nan"), float("inf")])
+def test_successful_benchmark_invalid_clock_is_not_sample(monkeypatch, tmp_path, clock):
+    completed = subprocess.CompletedProcess(["probe"], 0, "out", "")
+    completed.child_elapsed_s = clock
+    completed.elapsed_s = 12.0
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: completed,
+    )
+    assert isinstance(
+        bench_tool.measure_molt_run(tmp_path / "probe"), bench_tool.MoltFailure
+    )
+    assert bench_tool.measure_runtime(["probe"]) is None

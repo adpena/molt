@@ -55,6 +55,10 @@ def _cell(**overrides: object) -> dict[str, object]:
         ),
         "log_artifact": "bench/scoreboard/logs/fib.log",
         "classification": schema.CLASS_GREEN,
+        "repeat_passes": 5,
+        "repeat_ci_lo": 1.5,
+        "repeat_ci_hi": 2.5,
+        "repeat_stability": "STABLE_ABOVE",
     }
     cell.update(overrides)
     return cell
@@ -132,8 +136,8 @@ def test_non_authoritative_board_downgrades_warm_red_to_advisory() -> None:
         measured_quiescent=False,
     )
     boards = pb.project_all(_source_doc([red], authoritative=False))
-    assert boards["cpython"]["summary"]["board_state"] != pb.GATE_FAIL
-    assert boards["cpython"]["summary"]["cells_advisory"] == 1
+    assert boards["cpython"]["summary"]["board_state"] == pb.GATE_FAIL
+    assert boards["cpython"]["summary"]["cells_fail"] == 1
 
 
 def test_quiescent_warm_red_gates_even_on_dirty_tree() -> None:
@@ -175,8 +179,8 @@ def test_profile_board_dev_fast_red_is_advisory_not_fail() -> None:
     )
     boards = pb.project_all(_source_doc([dev_red]))
     prof = boards["profile"]["summary"]
-    assert prof["board_state"] != pb.GATE_FAIL  # dev-fast warm red does not block
-    assert prof["cells_advisory"] == 1
+    assert prof["board_state"] == pb.GATE_FAIL  # every declared profile must win
+    assert prof["cells_fail"] == 1
 
 
 def test_profile_board_release_fast_red_fails() -> None:
