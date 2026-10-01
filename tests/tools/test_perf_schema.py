@@ -140,7 +140,7 @@ def test_perf_scoreboard_uses_schema_vocabulary_authority() -> None:
     assert scoreboard.SCHEMA_VERSION == schema.SCHEMA_VERSION
     assert scoreboard.VERDICT_FAIL_ENGINE == schema.VERDICT_FAIL_ENGINE
     assert scoreboard.CLASS_RED_STABLE == schema.CLASS_RED_STABLE
-    assert scoreboard.GATE_FAILING_VERDICTS is schema.GATE_FAILING_VERDICTS
+    assert scoreboard.verdict_fails_gate is schema.verdict_fails_gate
 
 
 def test_schema_accepts_valid_board_and_materializes_cell() -> None:

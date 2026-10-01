@@ -42,7 +42,11 @@ from molt.cli import link_fingerprints
 
 
 def _observed_build_toolchain(
-    *, backend_bin: Path | None, runtime_lib: Path | None, output: Path
+    *,
+    backend_bin: Path | None,
+    runtime_lib: Path | None,
+    output: Path,
+    selected_profiles: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Observe selected bytes; unknown or failed observations never become claims.
 
@@ -53,6 +57,8 @@ def _observed_build_toolchain(
         "kind": "molt-build-observation-v1",
         "compiled_with_verified": False,
     }
+    if selected_profiles is not None:
+        facts["selected_profiles"] = dict(selected_profiles)
     for name, path, executable in (
         ("compiler", backend_bin, True),
         ("runtime", runtime_lib, False),
@@ -467,6 +473,7 @@ def _emit_native_link_result(
     strip_after_link: bool = True,
     link_selection: tuple[Path, Path] | None = None,
     backend_bin: Path | None = None,
+    selected_profiles: Mapping[str, str] | None = None,
 ) -> int:
     if link_process.returncode == 0:
         # LinkPlan owns strip ordering. Ordinary release plans strip here;
@@ -579,7 +586,10 @@ def _emit_native_link_result(
                 external_native_artifacts=external_native_artifacts,
             )
             data["observed_toolchain"] = _observed_build_toolchain(
-                backend_bin=backend_bin, runtime_lib=runtime_lib, output=output_binary
+                backend_bin=backend_bin,
+                runtime_lib=runtime_lib,
+                output=output_binary,
+                selected_profiles=selected_profiles,
             )
             _attach_build_metadata(
                 data,

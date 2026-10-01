@@ -160,11 +160,7 @@ BACKENDS_BY_NAME = {
     "wasm": WASM,
 }
 
-PROFILE_BUILD_FLAG = {
-    "release-fast": "release",
-    "release-output": "release",  # same CLI flag; distinguished by env below
-    "dev-fast": "dev",
-}
+from perf_scoreboard_build_profiles import PROFILE_BUILD_FLAG as PROFILE_BUILD_FLAG  # noqa: E402
 
 
 def _llvm_backend_pin():
