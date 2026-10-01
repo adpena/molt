@@ -171,10 +171,10 @@ def test_darwin_cached_authority_preserves_bound_command_and_identity(
             self.metadata_calls += 1
             return (100, 200, 987_654_321_000, "node")
 
-        def command(self, pid: int) -> str:
+        def argv(self, pid: int) -> tuple[str, ...]:
             assert pid == 200
             self.command_calls += 1
-            return "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js"
+            return ("node", "/usr/local/lib/node_modules/@openai/codex/bin/codex.js")
 
     authority = FakeAuthority()
     monkeypatch.setattr(process_model.sys, "platform", "darwin")
@@ -221,9 +221,9 @@ def test_darwin_cached_authority_keeps_reuse_fail_closed(monkeypatch) -> None:
             assert pid == 200
             return next(self.metadata_rows)
 
-        def command(self, pid: int) -> str:
+        def argv(self, pid: int) -> tuple[str, ...]:
             assert pid == 200
-            return "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js"
+            return ("node", "/usr/local/lib/node_modules/@openai/codex/bin/codex.js")
 
     monkeypatch.setattr(process_model.sys, "platform", "darwin")
     monkeypatch.setattr(
