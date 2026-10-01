@@ -122,13 +122,12 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
         root.join("runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs"),
     )
     .unwrap();
-    let luau = fs::read_to_string(root.join("runtime/molt-backend-luau/src/luau/op_exceptions.rs"))
-        .unwrap();
-    let rust =
-        fs::read_to_string(root.join("runtime/molt-backend-rust/src/rust/op_emitter/gaps.rs"))
+    let luau =
+        fs::read_to_string(root.join("runtime/molt-backend-luau/src/luau/compile_pipeline.rs"))
             .unwrap();
+    let rust = fs::read_to_string(root.join("runtime/molt-backend-rust/src/rust.rs")).unwrap();
     let mlir =
-        fs::read_to_string(root.join("runtime/molt-backend-mlir/src/tir_to_mlir/ops.rs")).unwrap();
+        fs::read_to_string(root.join("runtime/molt-backend-mlir/src/tir_to_mlir.rs")).unwrap();
     let wasm = fs::read_to_string(
         root.join("runtime/molt-backend-wasm/src/wasm/op_loop/control_ops/exceptions.rs"),
     )
@@ -162,14 +161,46 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
                 || backend.contains("AsyncWorkPollAndExceptionPending")
         );
     }
-    for unsupported_backend in [&luau, &rust, &mlir] {
-        assert!(unsupported_backend.contains("async_work_poll"));
-        assert!(
-            unsupported_backend
-                .contains("canonical pending-call/eval-breaker runtime boundary is unavailable")
-        );
+    // Source architecture witness: Rust/Luau reject through shared admission
+    // before private source emission, not stale leaf-emitter string markers.
+    // Actual backend rejection executions live in their own compiler suites.
+    for (backend, target) in [(&luau, "luau_release_fast"), (&rust, "rust_release_fast")] {
+        let checked = &backend[backend
+            .find("pub fn compile_checked(")
+            .expect("public checked boundary")..];
+        let admission = checked
+            .find("validate_target_contract_with_representation_plan(")
+            .expect("shared target admission");
+        let publication = checked
+            .find("self.emit_source(")
+            .expect("private source generation");
+        assert!(admission < publication);
+        assert!(checked[admission..publication].contains(target));
+    }
+    let admission =
+        fs::read_to_string(root.join("runtime/molt-tir/src/target_admission.rs")).unwrap();
+    let runtime_admission =
+        fs::read_to_string(root.join("runtime/molt-tir/src/target_admission/runtime.rs")).unwrap();
+    let generated =
+        fs::read_to_string(root.join("runtime/molt-ir/src/tir/op_kinds_generated.rs")).unwrap();
+    assert!(admission.contains("validate_runtime_target_contract(ir, target_info)"));
+    assert!(runtime_admission.contains("op.runtime_requirements()"));
+    assert!(runtime_admission.contains("requirements.difference(supported_requirements)"));
+    assert!(runtime_admission.contains("SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS"));
+    assert!(
+        generated.contains("operation requires the target runtime's pending-call and eval-breaker polling boundary")
+    );
+    for target in ["native", "wasm", "llvm"] {
+        assert!(target_info.contains(&format!(
+            "assert!(TargetInfo::{target}_release_fast().supports_pending_call_eval_breaker_poll())"
+        )));
+    }
+    for target in ["luau", "rust", "mlir"] {
+        assert!(target_info.contains(&format!("assert!(!TargetInfo::{target}_release_fast().supports_pending_call_eval_breaker_poll())")));
     }
     assert!(mlir.contains("op.is_async_work_poll()"));
+    assert!(mlir.contains("!target.supports_pending_call_eval_breaker_poll()"));
+    assert!(mlir.contains("PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON"));
 }
 
 #[test]
