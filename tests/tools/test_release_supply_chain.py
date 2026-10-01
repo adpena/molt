@@ -248,9 +248,10 @@ def test_stable_release_requires_green_h0_phase_exit(
         "verify_phase_manifest",
         lambda *_a, **_k: pem.PhaseReport("H0", "a" * 40, True, ()),
     )
-    release_evidence.verify_evidence(
-        bundle, version="1.0.0", source_sha="a" * 40, phase_manifest=phase
-    )
+    with pytest.raises(ValueError, match="full v1 release acceptance is incomplete"):
+        release_evidence.verify_evidence(
+            bundle, version="1.0.0", source_sha="a" * 40, phase_manifest=phase
+        )
 
     # Pre-1.0 releases are not stable contracts and need no phase exit.
     release_evidence.verify_evidence(bundle, version="0.0.001", source_sha="a" * 40)

@@ -1,0 +1,42 @@
+schema = "molt.release-acceptance-matrix.v1"
+
+# All advertised executable backends require semantic admission. LLVM currently
+# has no canonical E3 coordinate producer; keep that absence as a release blocker.
+required_semantic_backends = ["llvm", "native", "wasm"]
+
+# Guest, runtime Cargo, and compiler Cargo profiles are separate observed facts.
+# These are applicable execution lanes, not a blind Cargo-profile Cartesian product.
+lane = [
+  { backend = "native", guest_profile = "dev", runtime_profile = "dev-fast", compiler_profile = "release", authority = "src/molt/cli/cargo_profiles.py" },
+  { backend = "native", guest_profile = "release", runtime_profile = "release-output", compiler_profile = "release", authority = "src/molt/cli/cargo_profiles.py" },
+  { backend = "native", guest_profile = "release", runtime_profile = "release-size", compiler_profile = "release", authority = "docs/spec/areas/tooling/0001-toolchains.md" },
+  { backend = "native", guest_profile = "release", runtime_profile = "release-fast", compiler_profile = "release", authority = "tools/PERF_AUTHORITY.md" },
+  { backend = "llvm", guest_profile = "dev", runtime_profile = "dev-fast", compiler_profile = "release", authority = "src/molt/cli/cargo_profiles.py" },
+  { backend = "llvm", guest_profile = "release", runtime_profile = "release-output", compiler_profile = "release", authority = "src/molt/cli/cargo_profiles.py" },
+  { backend = "llvm", guest_profile = "release", runtime_profile = "release-size", compiler_profile = "release", authority = "docs/spec/areas/tooling/0001-toolchains.md" },
+  { backend = "llvm", guest_profile = "release", runtime_profile = "release-fast", compiler_profile = "release", authority = "tools/PERF_AUTHORITY.md" },
+  { backend = "wasm", guest_profile = "dev", runtime_profile = "dev-fast", compiler_profile = "release", authority = "src/molt/cli/runtime_wasm_build_policy.py" },
+  { backend = "wasm", guest_profile = "release", runtime_profile = "release-output", compiler_profile = "release", authority = "src/molt/cli/cargo_profiles.py" },
+  { backend = "wasm", guest_profile = "release", runtime_profile = "wasm-release", compiler_profile = "release", authority = "src/molt/cli/runtime_wasm_build_policy.py" },
+]
+
+# These exclusions describe advertised applicability; they do not certify the
+# experimental emitters. Any change to their support tier requires this authority
+# and the full acceptance projection to change together.
+excluded_backend = [
+  { backend = "rust", reason = "Experimental closed-world source emitter; general Python imports explicitly rejected", authority = "docs/spec/STATUS.md" },
+  { backend = "luau", reason = "Experimental closed-world source emitter; general Python imports explicitly rejected", authority = "docs/spec/STATUS.md" },
+  { backend = "mlir", reason = "Advertised text emission, not an executable CPython runtime comparison", authority = "src/molt/cli/entrypoint_parser.py" },
+]
+
+# Runtime confidence intervals cannot stand in for these separate requirements.
+# Until source-bound budgets and measurement producers exist they stay blockers.
+required_metric = [
+  { name = "frontend_build_latency", authority = "tools/PERF_AUTHORITY.md", status = "unmeasured" },
+  { name = "startup", authority = "tools/PERF_AUTHORITY.md", status = "unmeasured" },
+  { name = "peak_memory", authority = "tools/PERF_AUTHORITY.md", status = "unmeasured" },
+  { name = "temporary_disk", authority = "tools/PERF_AUTHORITY.md", status = "unmeasured" },
+  { name = "binary_size", authority = "tools/PERF_AUTHORITY.md", status = "unmeasured" },
+  { name = "input_size_scaling", authority = "tools/PERF_AUTHORITY.md", status = "unmeasured" },
+  { name = "advertised_ecosystem_workloads", authority = "tools/PERF_AUTHORITY.md", status = "unmeasured" },
+]
