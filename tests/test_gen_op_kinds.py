@@ -7291,3 +7291,32 @@ def test_fuzz_and_primitive_effect_shapes_cannot_override_operand_authority() ->
     bad["primitive_operator_effect_cases"][0]["operands"].pop()
     with pytest.raises(gen.OpKindTableError, match="canonical fixed operand_arity"):
         primitive_effect_cases(bad)
+
+
+def test_serialized_ellipsis_is_registered_without_broad_runtime_admission():
+    import tomllib
+    from tools.op_kinds.frontend_validate import _simpleir_registered_runtime_kinds
+    from tools.op_kinds.render_rust import _render_rs_unformatted
+
+    data = tomllib.loads(TABLE.read_text(encoding="utf-8"))
+    registered = _simpleir_registered_runtime_kinds(data)
+    assert "CONST_ELLIPSIS" in registered
+    assert "const_ellipsis" in registered
+    # NotImplemented is a separate singleton with version-dependent truth;
+    # this repair must not implicitly authorize its absent representation.
+    assert (
+        "const_not_implemented" not in data["simpleir_runtime_neutral_semantics_kinds"]
+    )
+    rust_profile = next(
+        p for p in data["simpleir_target_runtime_profiles"] if p["target"] == "rust"
+    )
+    assert rust_profile["supported"] == []
+    rendered = _render_rs_unformatted(data)
+    body = rendered.split("pub fn simpleir_runtime_requirements_table", 1)[1].split(
+        "_ => None", 1
+    )[0]
+    pattern = re.search(
+        r"(?P<patterns>[^;{}]+) => Some\(SimpleIrRuntimeRequirements\(0\)\)", body
+    )
+    assert pattern is not None
+    assert '"const_ellipsis"' in pattern.group("patterns")

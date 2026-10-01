@@ -399,7 +399,11 @@ simpleir_deterministic_lifetime_semantics_kinds = [
 # Terminal drop-phase completion markers prove pipeline state but perform no
 # runtime lifetime action. They need explicit neutral classification because
 # they are preserved SimpleIR artifacts rather than first-class opcodes.
+# CONST_ELLIPSIS is a frontend-only effect spelling; serialization emits the
+# lowercase wire operation below. Its immutable immediate singleton requires
+# no runtime service. This does not admit general identity/object protocols.
 simpleir_runtime_neutral_semantics_kinds = [
+    "const_ellipsis",
     "drop_inserted", "exception_region_drops_inserted",
 ]
 # Internal execution-frame state used to preserve source-location and unwind
