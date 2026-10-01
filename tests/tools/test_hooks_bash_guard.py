@@ -188,3 +188,120 @@ def test_run_blocks_destructive_git_returns_exit_2(monkeypatch, tmp_path):
         },
     )
     assert code == 2
+
+
+def test_wrapper_and_queue_substrings_cannot_hide_heavy_builds():
+    for command in (
+        "python tools/venv_exec.py cargo build",
+        "python -m tools.venv_exec -- cargo test",
+        "cargo build && echo proof_queue",
+        "echo venv_exec.py; cargo check",
+        "python tools/proof_queue.py list; cargo build",
+        "cargo build --manifest-path proof_queue/Cargo.toml",
+        "python -m molt.cli build examples/hello.py",
+        "uv run cargo build",
+    ):
+        decision = _d(command, queue=True)
+        assert decision.block and decision.rule == "build-bypasses-queue", command
+
+
+def test_actual_queue_payload_and_leaf_wrapper_do_not_look_like_direct_builds():
+    assert not _d("python tools/proof_queue.py cargo -- build", queue=True).block
+    assert not _d("python tools/venv_exec.py -- python -c 'print(1)'", queue=True).block
+
+
+def test_cargo_operation_family_cannot_hide_behind_selector_or_global_options():
+    prefixes = (
+        "",
+        "python tools/venv_exec.py -- ",
+        "python -m tools.venv_exec -- ",
+        "python tools/uv_project_env.py --python 3.12 --purpose hook-test -- ",
+        "python -m tools.uv_project_env --python 3.14 --purpose hook-test -- ",
+        "uv run ",
+    )
+    operations = (
+        "build",
+        "b",
+        "test",
+        "t",
+        "check",
+        "c",
+        "run",
+        "r",
+        "clippy",
+        "bench",
+        "rustc",
+        "doc",
+        "rustdoc",
+        "install",
+    )
+    global_options = (
+        "+stable ",
+        "--locked ",
+        "--color always ",
+        "--config build.jobs=1 ",
+        "+nightly --offline --color=always ",
+        "-Z unstable-options ",
+        "-C . ",
+    )
+    for prefix in prefixes:
+        for options in global_options:
+            for operation in operations:
+                command = f"{prefix}cargo {options}{operation}"
+                decision = _d(command, queue=True)
+                assert decision.block and decision.rule == "build-bypasses-queue", (
+                    command
+                )
+
+
+def test_cargo_option_operands_are_not_operations_and_idle_queue_is_preserved():
+    for command in (
+        "cargo --config build metadata",
+        "cargo +stable --color test metadata",
+        "python tools/venv_exec.py -- cargo --config build metadata",
+        "python tools/uv_project_env.py --python 3.12 -- cargo +stable --color test metadata",
+    ):
+        assert not _d(command, queue=True).block, command
+    assert not _d(
+        "python tools/venv_exec.py -- cargo +stable --color always build", queue=False
+    ).block
+
+
+def test_malformed_cargo_global_options_fail_closed_during_live_queue():
+    for prefix in (
+        "",
+        "python tools/venv_exec.py -- ",
+        "python tools/uv_project_env.py --python 3.12 -- ",
+    ):
+        for payload in ("cargo +", "cargo --color", "cargo --config"):
+            decision = _d(prefix + payload, queue=True)
+            assert decision.block and decision.rule == "build-bypasses-queue", (
+                prefix + payload
+            )
+
+
+def test_override_text_and_unrelated_assignments_cannot_grant_execution_waiver():
+    for heavy in (
+        "cargo +stable build",
+        "python tools/venv_exec.py -- cargo build",
+        "python tools/uv_project_env.py --python 3.12 -- cargo build",
+    ):
+        for text in (
+            "echo MOLT_GUARD_OK",
+            "echo 'MOLT_GUARD_OK=1'",
+            "MOLT_GUARD_OK=1 echo harmless",
+            'echo "MOLT_GUARD_OK=1"',
+        ):
+            for command in (f"{heavy} && {text}", f"{text}; {heavy}"):
+                decision = _d(command, queue=True)
+                assert decision.block and not decision.override, command
+    assert _d("git reset --hard && echo 'MOLT_GUARD_OK=1'", shared=True).block
+
+
+def test_inline_override_is_scoped_to_actual_assignment_and_obeys_environment_precedence():
+    assert not _d("MOLT_GUARD_OK=1 cargo +stable build", queue=True).block
+    assert not _d('MOLT_GUARD_OK="1" cargo build', queue=True).block
+    decision = _d("MOLT_GUARD_OK=0 cargo build", queue=True, env={"MOLT_GUARD_OK": "1"})
+    assert decision.block and not decision.override
+    assert not _d('"MOLT_GUARD_OK=1" echo harmless', queue=True).override
+    assert _d("MOLT_GUARD_OK=1 echo harmless; cargo build", queue=True).block

@@ -13,12 +13,13 @@ from molt.exact_json import canonical_json_bytes
 from tools import proof_plan
 from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import cargo_output_layout
+from tools.proof_queue_pkg.python_payload_authority import is_molt_cli_payload
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.py")
 
-ENVELOPE_SCHEMA = "molt.proof-command-envelope.v4"
+ENVELOPE_SCHEMA = "molt.proof-command-envelope.v5"
 EXECUTION_SCHEMA = "molt.proof-command-execution.v4"
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -296,7 +297,110 @@ def _normalized_entrypoint_target(value: str) -> str:
     return normalized.casefold()
 
 
-def _command_entrypoint(argv: Sequence[str]) -> tuple[str, str] | None:
+def _command_wrapper(
+    command: Sequence[str],
+) -> tuple[dict[str, object], list[str]] | None:
+    """Model one environment wrapper using its actual argument-parser authority."""
+    payload = list(command)
+    if not payload:
+        return None
+    transport_prefix = None
+    if _basename(payload[0]) in {"uv", "uv.exe"}:
+        transport_prefix, payload = _uv_prefix_and_payload(payload)
+    first = _basename(payload[0])
+    if first in _PY_LAUNCHERS:
+        offset = 2 if len(payload) > 1 and _PY_SELECTOR.fullmatch(payload[1]) else 1
+        payload = [payload[0], *payload[offset:]]
+    elif not _PYTHON_COMMAND.fullmatch(first):
+        return None
+    invocation = parse_python_invocation(payload)
+    if invocation.mode == "module":
+        name = {"tools.venv_exec": "venv", "tools.uv_project_env": "uv-project"}.get(
+            str(invocation.target)
+        )
+    elif invocation.mode == "script":
+        # Model only the repository-owned wrapper actually selected by Python.
+        # Resolving components covers equivalent spellings without treating a
+        # nonexistent case alias (on case-sensitive hosts) as executable code.
+        candidate = Path(str(invocation.target))
+        if not candidate.is_absolute():
+            candidate = _REPO_ROOT / candidate
+        try:
+            selected = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        name = next(
+            (
+                kind
+                for filename, kind in (
+                    ("venv_exec.py", "venv"),
+                    ("uv_project_env.py", "uv-project"),
+                )
+                if selected == (_REPO_ROOT / "tools" / filename).resolve(strict=True)
+            ),
+            None,
+        )
+    else:
+        return None
+    if name is None:
+        return None
+    if transport_prefix is not None:
+        allowed = {
+            "run",
+            "--active",
+            "--project",
+            ".",
+            "--python",
+            "3.12",
+            "--no-sync",
+            "--no-config",
+            "--offline",
+        }
+        if (
+            any(value not in allowed for value in transport_prefix[1:])
+            or not {"--active", "--no-sync", "--no-config"}.issubset(transport_prefix)
+            or _uv_option_values(transport_prefix, "--project") != ["."]
+            or _uv_option_values(transport_prefix, "--python") != ["3.12"]
+        ):
+            raise ValueError(
+                "wrapper uv transport requires the active no-sync/no-config project contract"
+            )
+    from tools import venv_exec, uv_project_env
+
+    authority = venv_exec if name == "venv" else uv_project_env
+    try:
+        options = authority.argument_parser().parse_args(list(invocation.arguments))
+    except SystemExit as exc:
+        if exc.code == 0:
+            return None  # A terminal help query executes no wrapped payload.
+        raise ValueError(f"invalid {name} wrapper options") from exc
+    wrapped = list(options.command)
+    if wrapped[:1] == ["--"]:
+        wrapped = wrapped[1:]
+    if name == "uv-project" and options.print_env:
+        if wrapped:
+            raise ValueError(
+                "uv-project --print-env with execution is not a modeled proof wrapper"
+            )
+        return None
+    if not wrapped:
+        raise ValueError(f"{name} wrapper requires a payload command")
+    descriptor = (
+        {"kind": name, "venv": options.venv}
+        if name == "venv"
+        else {
+            "kind": name,
+            "python": options.python,
+            "purpose": options.purpose,
+            "venv": options.venv,
+        }
+    )
+    return descriptor, wrapped
+
+
+def _command_entrypoint(
+    argv: Sequence[str], *, _wrapper_depth: int = 0
+) -> tuple[str, str] | None:
     """Return the stable program entrypoint whose plan authority cannot drift.
 
     Arguments are deliberately excluded.  If an argv is close enough to execute
@@ -306,6 +410,11 @@ def _command_entrypoint(argv: Sequence[str]) -> tuple[str, str] | None:
     """
     if not argv:
         return None
+    modeled = _command_wrapper(argv)
+    if modeled is not None:
+        if _wrapper_depth >= 1:
+            raise ValueError("command wrappers are limited to one typed layer")
+        return _command_entrypoint(modeled[1], _wrapper_depth=_wrapper_depth + 1)
     payload = [str(value) for value in argv]
     if _basename(payload[0]) in {"uv", "uv.exe"}:
         _prefix, payload = _uv_prefix_and_payload(payload)
@@ -320,17 +429,29 @@ def _command_entrypoint(argv: Sequence[str]) -> tuple[str, str] | None:
     if python_index is not None:
         if python_index >= len(payload):
             return None
-        target = payload[python_index]
-        if target == "-m" and python_index + 1 < len(payload):
-            module = payload[python_index + 1]
+        invocation = parse_python_invocation([payload[0], *payload[python_index:]])
+        if invocation.mode == "module":
+            module = str(invocation.target)
             if module == "tools.guarded_exec":
                 return None
-            return ("python-module", module.casefold())
-        if target.startswith("-"):
+            is_cli = is_molt_cli_payload("module", module, repo_root=_REPO_ROOT)
+            entrypoint = ("python-module", module.casefold())
+        elif invocation.mode == "script":
+            target = str(invocation.target)
+            if _basename(target) == "guarded_exec.py":
+                return None
+            normalized = _normalized_entrypoint_target(target)
+            is_cli = is_molt_cli_payload(
+                "script", str(invocation.target), repo_root=_REPO_ROOT
+            )
+            entrypoint = ("python-script", normalized)
+        else:
             return None
-        if _basename(target) == "guarded_exec.py":
-            return None
-        return ("python-script", _normalized_entrypoint_target(target))
+        if is_cli and invocation.arguments:
+            command = invocation.arguments[0]
+            if not command.startswith("-"):
+                return ("python-cli-command", f"molt.cli:{command}".casefold())
+        return entrypoint
     if first in {"node", "node.exe"} and len(payload) > 1:
         target = payload[1]
         if not target.startswith("-"):
@@ -434,6 +555,7 @@ def _command_registration(
     has_python: bool,
     has_uv: bool,
     typed_python: Mapping[str, object] | None = None,
+    execution_argv: Sequence[str] | None = None,
 ) -> tuple[str, list[str], list[str]]:
     registry = _proof_command_registry()
     exact = registry["exact"]
@@ -493,12 +615,18 @@ def _command_registration(
     if (
         isinstance(near_matches, list)
         and isinstance(variants, set)
-        and len(variants) == 1
+        and (
+            len(variants) == 1
+            or (entrypoint is not None and entrypoint[0] == "python-cli-command")
+        )
     ):
         raise ValueError(
             "proof-plan entrypoint argv must match its registered command exactly; "
             f"near-match would discard toolchain authority for {near_matches!r}"
         )
+
+    if execution_argv is not None:
+        argv = execution_argv
 
     toolchains: list[str] = []
 
@@ -743,6 +871,24 @@ def parse_cargo_invocation(argv: Sequence[str]) -> CargoInvocation:
         tuple(positionals),
         forwarded,
     )
+
+
+def cargo_invocation_for_envelope(
+    envelope: Mapping[str, object],
+) -> CargoInvocation | None:
+    """Distinguish a Cargo payload from a Python driver declaring Cargo children."""
+    delegated = envelope.get("delegated")
+    cargo = delegated if isinstance(delegated, Mapping) else envelope
+    argv = cargo.get("argv")
+    if not isinstance(argv, list) or not argv:
+        raise ValueError("Cargo policy requires admitted executable argv")
+    if _basename(str(argv[0])) in {"cargo", "cargo.exe"}:
+        return parse_cargo_invocation(argv)
+    if "cargo" in envelope.get("toolchains", []) and isinstance(
+        cargo.get("python"), Mapping
+    ):
+        return None
+    raise ValueError("Cargo policy requires a Cargo payload or declared Python driver")
 
 
 def command_proof_kind(envelope: Mapping[str, object]) -> ProofKind:
@@ -1103,11 +1249,9 @@ def _typed_python_command_family(
                 "lane_id": lane.id,
                 "environment_root": str(_locked_python_environment_root(str(argv[0]))),
             }
-    if (
-        invocation.mode != "module"
-        or invocation.target not in {"molt", "molt.cli"}
-        or invocation.arguments[:2] != ("extension", "produce-set")
-    ):
+    if not is_molt_cli_payload(
+        invocation.mode, invocation.target, repo_root=_REPO_ROOT
+    ) or invocation.arguments[:2] != ("extension", "produce-set"):
         return None
     if python.get("kind") != "direct" or invocation.interpreter_options != ("-P",):
         raise ValueError(
@@ -1287,6 +1431,15 @@ def _envelope_for_command(
     argv = [str(value) for value in command]
     if not argv or not argv[0]:
         raise ValueError("proof command must have a non-empty executable")
+    submitted_argv = list(argv)
+    modeled_wrapper = _command_wrapper(argv)
+    wrapper = None
+    if modeled_wrapper is not None:
+        wrapper, argv = modeled_wrapper
+        if _command_wrapper(argv) is not None:
+            raise ValueError("command wrappers are limited to one typed layer")
+        if _guarded_exec_invocation(argv) is not None:
+            raise ValueError("command wrappers cannot delegate guarded_exec")
     first = _basename(argv[0])
     if first in _SHELL_LAUNCHERS:
         raise ValueError(
@@ -1338,10 +1491,11 @@ def _envelope_for_command(
         invocation = parse_python_invocation(_python_invocation_argv(argv, python))
         typed_python = _typed_python_command_family(argv, python, invocation)
     registration_kind, toolchains, proof_plan_command_ids = _command_registration(
-        argv,
+        submitted_argv,
         has_python=python is not None,
         has_uv=first in {"uv", "uv.exe"},
         typed_python=typed_python,
+        execution_argv=argv if wrapper is not None else None,
     )
     guarded_exec = _guarded_exec_invocation(argv)
     nested_command = (
@@ -1406,6 +1560,11 @@ def _envelope_for_command(
             "toolchains": list(toolchains),
         }
     return {
+        **(
+            {"submitted_argv": submitted_argv, "wrapper": wrapper}
+            if wrapper is not None
+            else {}
+        ),
         "schema": ENVELOPE_SCHEMA,
         "kind": registration_kind,
         "argv": argv,
