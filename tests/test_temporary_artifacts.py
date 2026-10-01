@@ -514,3 +514,127 @@ def test_helper_subdirectories_are_owned_by_terminal_guard_not_context_age(tmp_p
 def test_retention_limits_are_exact_nonnegative_integers(count, bytes_):
     with pytest.raises(ValueError):
         scratch.ScratchRetention(count, bytes_)
+
+
+@pytest.mark.parametrize(
+    "invalidity", ["released", "closed", "wrong-process", "different-generation"]
+)
+def test_terminal_publication_requires_actual_live_parent_lock(
+    tmp_path, monkeypatch, invalidity
+):
+    lease, _ = _lease(tmp_path)
+    handle = lease.lock
+    assert handle is not None
+    try:
+        if invalidity == "released":
+            file_locks._release_file_lock(handle)
+        elif invalidity == "closed":
+            handle.file.close()
+        elif invalidity == "wrong-process":
+            monkeypatch.setattr(
+                file_locks.os, "getpid", lambda: handle.owner_process_id + 1
+            )
+        else:
+            original_key = handle.registry_key
+            handle.registry_key = original_key + ".other"
+        with pytest.raises(ValueError, match="live ownership"):
+            _finish(lease)
+        assert lease.target.exists()
+        assert not (lease.generation / "terminal.json").exists()
+    finally:
+        monkeypatch.undo()
+        if invalidity == "different-generation":
+            handle.registry_key = original_key
+        lease.release()
+
+
+def test_terminal_publication_pins_custody_against_postcheck_transfer(
+    tmp_path, monkeypatch
+):
+    import threading
+
+    lease, _ = _lease(tmp_path)
+    handle = lease.lock
+    reached = threading.Event()
+    attempted = threading.Event()
+    transferred = threading.Event()
+    contender = []
+    errors = []
+    original = scratch._publish_index
+
+    def transfer():
+        try:
+            assert reached.wait(5)
+            attempted.set()
+            file_locks._release_file_lock(handle)
+            contender.append(
+                file_locks._try_acquire_file_lock(lease.generation / "lock")
+            )
+            transferred.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    def publish(*args):
+        reached.set()
+        assert attempted.wait(5)
+        assert not transferred.wait(0.05)
+        assert file_locks._file_lock_is_owned(handle)
+        return original(*args)
+
+    monkeypatch.setattr(scratch, "_publish_index", publish)
+    thread = threading.Thread(target=transfer)
+    thread.start()
+    try:
+        result = _finish(lease)
+        assert result["state"] == "reclaimed"
+        assert transferred.wait(5)
+        assert contender[0] is not None
+        assert not file_locks._file_lock_is_owned(handle)
+        assert file_locks._file_lock_is_owned(contender[0])
+        assert _read(lease.generation / "owner.json")["state"] == "reclaimed"
+    finally:
+        reached.set()
+        thread.join(5)
+        lease.release()
+        for acquired in contender:
+            if acquired is not None:
+                file_locks._release_file_lock(acquired)
+    assert not thread.is_alive()
+    assert not errors
+
+
+def test_terminal_callback_cannot_revoke_its_own_custody(tmp_path, monkeypatch):
+    lease, _ = _lease(tmp_path)
+    handle = lease.lock
+    original = scratch._publish_index
+
+    def publish(*args):
+        with pytest.raises(RuntimeError, match="owned operation"):
+            lease.release()
+        assert lease.lock is handle
+        assert file_locks._file_lock_is_owned(handle)
+        return original(*args)
+
+    monkeypatch.setattr(scratch, "_publish_index", publish)
+    assert _finish(lease)["state"] == "reclaimed"
+    assert lease.lock is None
+    assert not handle.operation_owners
+
+
+def test_terminal_callback_failure_releases_pin_and_preserves_payload(
+    tmp_path, monkeypatch
+):
+    lease, _ = _lease(tmp_path)
+    handle = lease.lock
+
+    def fail(*args):
+        assert file_locks._file_lock_is_owned(handle)
+        raise RuntimeError("forced pinned publication failure")
+
+    monkeypatch.setattr(scratch, "_publish_index", fail)
+    with pytest.raises(RuntimeError, match="forced pinned publication failure"):
+        _finish(lease)
+    assert lease.target.exists()
+    assert lease.lock is None
+    assert not handle.operation_owners
+    assert not file_locks._file_lock_is_owned(handle)
