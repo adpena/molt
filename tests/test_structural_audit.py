@@ -1009,5 +1009,84 @@ def _python_class(name: str, span: int) -> str:
     return f"class {name}:\n{body}\n"
 
 
+def test_lowering_gap_pattern_does_not_absorb_completed_neighboring_arms(tmp_path):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '"enumerate" => self.emit_enumerate(op),\n'
+        '"zip" | "sorted" => self.emit_sorted(op),\n'
+        '"module_import"\n'
+        '| "module_import_from"\n'
+        '| "module_import_star" => {\n'
+        '    self.emit_unsupported_op(op, "requires import protocol");\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].metric == 3
+    assert (
+        findings[0].detail == "L6:module_import, module_import_from, module_import_star"
+    )
+    assert SA.ratchet_metrics(findings)["rust_backend_lowering_gaps_total"] == 3
+
+
+def test_lowering_gap_ignores_comment_arrows_and_commented_calls(tmp_path):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '// self.emit_unsupported_op(op, "comment-only");\n'
+        '"module_import"\n'
+        '| "module_import_from" // => protocol note\n'
+        '| "module_import_star" => {\n'
+        '    self.emit_unsupported_op(op, "requires import protocol");\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].metric == 3
+    assert (
+        findings[0].detail == "L5:module_import, module_import_from, module_import_star"
+    )
+
+
+@pytest.mark.parametrize(
+    "literal", ['"https://x"', 'r##"// /* fake */"##', "' / '".replace(" ", "")]
+)
+def test_lowering_gap_preserves_call_after_literals(tmp_path, literal):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '"module_import" => {\n'
+        f'let note = {literal}; self.emit_unsupported_op(op, "required");\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert len(findings) == 1 and findings[0].metric == 1
+    assert findings[0].detail == "L2:module_import"
+
+
+def test_lowering_gap_ignores_nested_comments_and_literal_fake_calls(tmp_path):
+    rust = tmp_path / "runtime/molt-backend-rust/src/rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        'let fake = r#"self.emit_unsupported_op(op, "fake");"#;\n'
+        '/* outer /* nested */ self.emit_unsupported_op(op, "fake"); */\n'
+        '"module_import"\n'
+        '| "module_import_from" /* => nested /* => */ */\n'
+        '| "module_import_star" => {\n'
+        'self.emit_unsupported_op(op, "required");\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert len(findings) == 1 and findings[0].metric == 3
+    assert (
+        findings[0].detail == "L6:module_import, module_import_from, module_import_star"
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

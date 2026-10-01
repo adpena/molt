@@ -1069,35 +1069,33 @@ fn local_heap_and_unpromotable_layout_keep_destruction() {
 
 #[test]
 fn rc_pairs_do_not_cross_python_callbacks_or_unrelated_finalizers() {
-    for opcode in [
-        OpCode::Add,
-        OpCode::Bool,
-        OpCode::LoadAttr,
-        OpCode::Index,
-        OpCode::GetIter,
-        OpCode::IterNext,
-        OpCode::Copy,
-        OpCode::DecRef,
-        OpCode::Free,
-        OpCode::DeleteVar,
-        OpCode::DelBoundary,
+    for (opcode, has_result) in [
+        (OpCode::Add, true),
+        (OpCode::Bool, true),
+        (OpCode::LoadAttr, true),
+        (OpCode::Index, true),
+        (OpCode::GetIter, true),
+        (OpCode::IterNext, true),
+        (OpCode::Copy, true),
+        (OpCode::DecRef, false),
+        (OpCode::Free, false),
+        (OpCode::DeleteVar, false),
+        (OpCode::DelBoundary, false),
     ] {
         let mut func = make_func();
         let root = func.fresh_value();
         let other = func.fresh_value();
         let result = func.fresh_value();
-        let mut boundary = make_op(opcode, vec![other], vec![result]);
+        let mut boundary = make_op(
+            opcode,
+            vec![other],
+            if has_result { vec![result] } else { vec![] },
+        );
         if opcode == OpCode::Copy {
             boundary.attrs.insert(
                 "_original_kind".into(),
                 molt_passes::tir::ops::AttrValue::Str("opaque_future_callback".into()),
             );
-        }
-        if matches!(
-            opcode,
-            OpCode::DecRef | OpCode::Free | OpCode::DeleteVar | OpCode::DelBoundary
-        ) {
-            boundary.results.clear();
         }
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_op(OpCode::IncRef, vec![root], vec![]));

@@ -1,11 +1,11 @@
 use super::*;
 
-const BINARY_OPS: [OpCode; 5] = [
-    OpCode::BitAnd,
-    OpCode::BitOr,
-    OpCode::BitXor,
-    OpCode::Shl,
-    OpCode::Shr,
+const BINARY_CASES: [(OpCode, TirType); 5] = [
+    (OpCode::BitAnd, TirType::Bool),
+    (OpCode::BitOr, TirType::Bool),
+    (OpCode::BitXor, TirType::Bool),
+    (OpCode::Shl, TirType::I64),
+    (OpCode::Shr, TirType::I64),
 ];
 
 fn integer_constant(id: u32, ty: &TirType) -> TirOp {
@@ -31,14 +31,11 @@ fn integer_constant(id: u32, ty: &TirType) -> TirOp {
 fn integer_bitwise_result_family_preserves_python_type_without_raw_storage_proof() {
     use crate::repr::Repr;
 
-    for opcode in BINARY_OPS {
+    for (opcode, bool_pair_result) in BINARY_CASES {
         for lhs in [TirType::Bool, TirType::I64, TirType::BigInt] {
             for rhs in [TirType::Bool, TirType::I64, TirType::BigInt] {
-                let expected = if lhs == TirType::Bool
-                    && rhs == TirType::Bool
-                    && matches!(opcode, OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor)
-                {
-                    TirType::Bool
+                let expected = if lhs == TirType::Bool && rhs == TirType::Bool {
+                    bool_pair_result.clone()
                 } else {
                     TirType::I64
                 };
@@ -111,7 +108,11 @@ fn integer_bitwise_result_family_preserves_python_type_without_raw_storage_proof
 
 #[test]
 fn integer_bitwise_result_rules_reject_unknown_domains_and_invalid_shapes() {
-    for opcode in BINARY_OPS.into_iter().chain([OpCode::BitNot]) {
+    for opcode in BINARY_CASES
+        .into_iter()
+        .map(|(opcode, _)| opcode)
+        .chain([OpCode::BitNot])
+    {
         let arity = if opcode == OpCode::BitNot { 1 } else { 2 };
         for count in (0..=3).filter(|count| *count != arity) {
             let operands = vec![TirType::I64; count];
