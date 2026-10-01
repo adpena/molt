@@ -4116,7 +4116,7 @@ def test_exit_signal_payload_classifies_windows_sigterm_status(
     }
 
 
-def test_cargo_incremental_quarantine_moves_only_incremental_dirs(
+def test_cargo_incremental_quarantine_moves_only_observed_inactive_profile_cache(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "target"
@@ -4139,30 +4139,36 @@ def test_cargo_incremental_quarantine_moves_only_incremental_dirs(
         target_dir=target,
         command=["cargo", "test"],
         cwd=tmp_path,
+        descendants_closed=True,
+        observations=(
+            memory_guard.CargoIncrementalObservation(
+                90051, 300, str(debug_file.parent.parent), 90050, 200
+            ),
+        ),
+        eligible_observations=frozenset(
+            {
+                memory_guard.CargoIncrementalObservation(
+                    90051, 300, str(debug_file.parent.parent), 90050, 200
+                )
+            }
+        ),
     )
 
-    assert not (target / "debug" / "incremental").exists()
-    assert not (target / "aarch64-apple-darwin" / "dev-fast" / "incremental").exists()
+    assert not debug_file.parent.exists()
+    assert triple_file.exists()
     assert non_incremental.exists()
-    assert len(receipt.moved_paths) == 2
+    assert len(receipt.moved_paths) == 1
     assert receipt.errors == ()
     assert receipt.quarantine_dir is not None
     quarantine_dir = Path(receipt.quarantine_dir)
     assert (quarantine_dir / "debug" / "incremental" / "unit-a" / "work.o").exists()
-    assert (
-        quarantine_dir
-        / "aarch64-apple-darwin"
-        / "dev-fast"
-        / "incremental"
-        / "unit-b"
-        / "work.o"
-    ).exists()
+    assert triple_file.exists()
     assert receipt.receipt_path is not None
     payload = json.loads(Path(receipt.receipt_path).read_text(encoding="utf-8"))
     assert payload["reason"] == "signal_exit"
     assert payload["target_dir"] == str(target)
     assert payload["command"] == ["cargo", "test"]
-    assert len(payload["moved_paths"]) == 2
+    assert len(payload["moved_paths"]) == 1
 
 
 def test_cargo_incremental_quarantine_skips_sibling_session_targets(
@@ -4228,16 +4234,29 @@ def test_cargo_incremental_quarantine_skips_sibling_session_targets(
         target_dir=target,
         command=["cargo", "test"],
         cwd=tmp_path,
+        descendants_closed=True,
+        observations=(
+            memory_guard.CargoIncrementalObservation(
+                90051, 300, str(root_incremental.parent.parent), 90050, 200
+            ),
+        ),
+        eligible_observations=frozenset(
+            {
+                memory_guard.CargoIncrementalObservation(
+                    90051, 300, str(root_incremental.parent.parent), 90050, 200
+                )
+            }
+        ),
     )
 
-    assert not (target / "release-fast" / "incremental").exists()
+    assert not root_incremental.parent.exists()
     assert session_incremental.exists()
     assert session_triple_incremental.exists()
     assert old_receipt_incremental.exists()
     assert nested_session_receipt_incremental.exists()
     assert receipt.errors == ()
     assert [Path(move.original_path) for move in receipt.moved_paths] == [
-        target / "release-fast" / "incremental"
+        root_incremental.parent.parent
     ]
 
 
@@ -4259,17 +4278,30 @@ def test_cargo_incremental_quarantine_moves_explicit_session_target(
         target_dir=target,
         command=["cargo", "build"],
         cwd=tmp_path,
+        descendants_closed=True,
+        observations=(
+            memory_guard.CargoIncrementalObservation(
+                90051, 300, str(session_incremental.parent.parent), 90050, 200
+            ),
+        ),
+        eligible_observations=frozenset(
+            {
+                memory_guard.CargoIncrementalObservation(
+                    90051, 300, str(session_incremental.parent.parent), 90050, 200
+                )
+            }
+        ),
     )
 
-    assert not (target / "debug" / "incremental").exists()
+    assert not session_incremental.parent.exists()
     assert sibling_incremental.exists()
     assert receipt.errors == ()
     assert [Path(move.original_path) for move in receipt.moved_paths] == [
-        target / "debug" / "incremental"
+        session_incremental.parent.parent
     ]
 
 
-def test_cargo_incremental_quarantine_prunes_old_receipts(tmp_path: Path) -> None:
+def test_cargo_incremental_quarantine_preserves_old_receipts(tmp_path: Path) -> None:
     target = tmp_path / "target"
     parent = target / ".molt_state" / "quarantine" / "cargo_incremental"
     base_mtime = time.time() - 600
@@ -4287,17 +4319,30 @@ def test_cargo_incremental_quarantine_prunes_old_receipts(tmp_path: Path) -> Non
         target_dir=target,
         command=["cargo", "build"],
         cwd=tmp_path,
+        descendants_closed=True,
+        observations=(
+            memory_guard.CargoIncrementalObservation(
+                90051, 300, str(live_file.parent.parent), 90050, 200
+            ),
+        ),
+        eligible_observations=frozenset(
+            {
+                memory_guard.CargoIncrementalObservation(
+                    90051, 300, str(live_file.parent.parent), 90050, 200
+                )
+            }
+        ),
         retention_keep=2,
     )
 
     assert receipt.quarantine_dir is not None
     remaining = sorted(path.name for path in parent.iterdir() if path.is_dir())
-    assert len(remaining) == 2
+    assert len(remaining) == 4
     assert Path(receipt.quarantine_dir).name in remaining
-    assert receipt.pruned_quarantine_dirs
+    assert receipt.pruned_quarantine_dirs == ()
 
 
-def test_run_guarded_signal_exit_quarantines_cargo_incremental(
+def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "target"
@@ -4348,8 +4393,8 @@ def test_run_guarded_signal_exit_quarantines_cargo_incremental(
 
     assert result.returncode != 0
     assert result.cargo_incremental_quarantine is not None
-    assert "quarantined Cargo incremental state" in result.stderr
-    assert not (target / "debug" / "incremental").exists()
+    assert result.cargo_incremental_quarantine.ownership_status == "deferred"
+    assert live_file.exists()
 
 
 def _run_guarded_cargo_with_fake_orphan_cleanup(

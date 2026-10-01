@@ -739,11 +739,12 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   are keyed by the mutable build-state root: default `MOLT_SESSION_ID` runs get
   isolated lock directories and explicit shared `CARGO_TARGET_DIR`/
   `MOLT_BUILD_STATE_DIR` runs share lock files. Canonical dev/CI/DX and CLI
-  Cargo build environments default `CARGO_INCREMENTAL=0` unless an operator
-  explicitly opts into incremental-debug work, and the memory guard quarantines
-  only Cargo `*/incremental` directories under the effective `CARGO_TARGET_DIR`
-  after guarded Cargo/rustc/rustdoc interruption, with summary JSON/stderr
-  receipts and bounded quarantine retention. Multi-agent task scaffolds now
+  Cargo incremental policy comes from the shared environment authority.
+  Guard recovery requires a freshly interrupted, birth-bound direct Cargo/Rustc
+  pair and exclusive native target/profile locks. Uncertain or active ownership
+  defers recovery without cache mutation; later test/build-script failures retain
+  completed compiler caches. Recovery receipts preserve planned and moved paths,
+  partial outcomes and earlier evidence without automatic quarantine pruning. Multi-agent task scaffolds now
   route through `tools/throughput_env.sh` and capture a sourced
   `logs/agents/<task>/env.sh`, so resumed agents reuse the same
   `RunContext`-derived artifact root, shared target/cache roots, daemon socket

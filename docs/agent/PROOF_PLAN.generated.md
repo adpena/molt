@@ -47,7 +47,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 81 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 89 |
 
 ## Scheduled families
 
@@ -243,6 +243,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `formal.lean.sorry-baseline` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 1 |
 | `formal.quint.models` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 1200 s | `formal-tools` | 0 |
 | `formal.correspondence` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 0 |
+| `portability.cargo-custody.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
+| `portability.cargo-custody.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
+| `portability.cargo-custody.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 
 ## Local integration families
 
