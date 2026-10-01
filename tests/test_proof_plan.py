@@ -2471,3 +2471,42 @@ def test_replay_quantifies_avoided_launches(monkeypatch) -> None:
     assert replay["families"]["rust"]["selected"] == 1
     assert replay["families"]["rust_security"]["selected"] == 0
     assert replay["families"]["rust_security"]["avoidable_percent"] == 100.0
+
+
+@pytest.mark.parametrize(
+    ("path", "families"),
+    [
+        (
+            "tests/proof_queue_owned_roots.py",
+            {"python_unit", "platform_portability", "native_integration"},
+        ),
+        (
+            "tools/proof_queue_pkg/custody_cas.py",
+            {"python_unit", "platform_portability", "native_integration"},
+        ),
+        (
+            "tests/tools/test_proof_queue_output_layout.py",
+            {"python_unit", "platform_portability"},
+        ),
+    ],
+)
+def test_cas_executable_placement_dependencies_select_all_owning_families(
+    path, families
+):
+    selected = {family.name for family in PLAN.select([path]).selected}
+    assert families <= selected
+
+
+def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells():
+    commands = {command.id: command for command in PLAN.commands}
+    for cid in (
+        "python.unit.harness",
+        "portability.queue.linux",
+        "portability.queue.macos",
+        "portability.queue.windows",
+    ):
+        command = commands[cid]
+        assert "tests/tools/test_proof_queue_output_layout.py" in command.argv
+        assert command.data["timeout_seconds"] == (
+            900 if cid == "python.unit.harness" else 600
+        )

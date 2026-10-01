@@ -18,6 +18,7 @@ from molt.dx import PROOF_SCRATCH_ROOT_ENV
 from molt.exact_json import ExactJsonError, encode_exact, loads_exact, read_exact
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
+from tools.proof_queue_pkg import cargo_output_layout
 from tools.proof_queue_pkg import custody_cas
 from tools.proof_queue_pkg import execution_custody
 from tools.proof_queue_pkg import process_image_capture
@@ -59,6 +60,12 @@ def source_authority_paths(repo_root: Path) -> tuple[Path, ...]:
 def _provision_proof_supervisor(
     *, cwd: Path, env: Mapping[str, str]
 ) -> tuple[Path, dict[str, object]]:
+    target = Path(env["CARGO_TARGET_DIR"])
+    if not target.is_absolute():
+        raise ValueError(
+            "native proof supervisor requires an explicit absolute Cargo target"
+        )
+    cargo_output_layout.CargoOutputLayout.admit_cargo_path(target)
     started = time.perf_counter()
     build = admission._REPO_ROOT / "tools" / "proof_supervisor" / "build.py"
     completed = command_identity._run_captured(
