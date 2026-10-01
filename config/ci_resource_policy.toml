@@ -20,6 +20,10 @@ warm_timeout_seconds = 300
 integration_timeout_seconds = 600
 cold_timeout_seconds = 1200
 suite_timeout_seconds = 1800
+# Dedicated release-output aggregate: cold MSVC compile measured2097s;
+# threefold compile headroom plus all eight mandatory child guards.
+# Linux cold shipping timing remains unmeasured.
+shipping_timeout_seconds = 9000
 observed_cold_timeout_seconds = 300.51
 minimum_cold_headroom_multiplier = 3.0
 measurement_run_id = 30209686001

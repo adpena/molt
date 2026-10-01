@@ -9,6 +9,9 @@
 schema = "molt.proof-plan.v4"
 
 authority_inputs = [
+  "tests/tools/test_cargo_test_binary_discovery.py",
+  "tests/tools/test_runtime_test_gate.py",
+  "tools/run_runtime_test_gate.py",
   ".gitattributes",
   ".github/actions/setup-lean/action.yml",
   ".github/actions/setup-llvm/action.yml",
@@ -555,6 +558,16 @@ target = "x86_64-unknown-linux-gnu"
 profile = "dev"
 
 [[matrix_cell]]
+id = "linux-x86_64-rust-native-release-output"
+runner = "ubuntu-latest"
+os = "linux"
+arch = "x86_64"
+python = "none"
+backend = "rust"
+target = "x86_64-unknown-linux-gnu"
+profile = "release-output"
+
+[[matrix_cell]]
 id = "linux-x86_64-rust-wasi-dev"
 runner = "ubuntu-latest"
 os = "linux"
@@ -747,7 +760,7 @@ dependencies = []
 [[ci_family]]
 name = "rust"
 description = "Rust workspace build, target checks, test truth, and non-overlapping lint proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/libtest_results.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/libtest_results.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py", "tools/run_runtime_test_gate.py", "tests/tools/test_runtime_test_gate.py", "tests/tools/test_cargo_test_binary_discovery.py"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "rust-build-unit-smoke"
@@ -756,9 +769,9 @@ admission_job = "rust-build-unit-smoke"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
-# Runtime ownership and serialized cold-lifecycle tests have distinct selectors;
-# the command envelope is 71 minutes. This is a ceiling, not a performance claim.
-timeout_minutes = 75
+# Full parallel runtime plus seven fresh-process shipping witnesses are mandatory.
+# The full resource-serialized DAG is bounded by this complete job envelope.
+timeout_minutes = 240
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -2098,18 +2111,21 @@ toolchains = ["cargo", "node", "wasm-ld"]
 [[command]]
 id = "rust.test.runtime-cold-lifecycle"
 family = "rust"
-cell = "linux-x86_64-rust-native-dev"
+cell = "linux-x86_64-rust-native-release-output"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_budget = "warm"
+# Windows x86_64 MSVC cold release-output compilation measured 2097 seconds
+# on source c809781ec; 6300 seconds preserves threefold compile headroom.
+# Metadata, discovery and all eight mandatory child guards fit this separate
+# 9000-second command envelope. Linux cold timing remains unmeasured.
+timeout_budget = "shipping"
 cache_domain = "cargo-workspace"
 dependencies = ["rust.test.ir-wasm-runtime-authorities"]
-# These tests require a cold process-global runtime and are deliberately ignored
-# by ordinary libtest runs. Select their families explicitly and serialize them;
-# do not enable unrelated ignored GC/performance probes or repeat ordinary tests.
-# Match the prerequisite runtime profile/features; this is not a cache-hit claim.
-argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--lib", "-p", "molt-runtime", "--no-default-features", "--features", "molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "state::lifecycle::shutdown_tests::", "state::runtime_state::", "--ignored", "--nocapture", "--test-threads=1"]
-toolchains = ["cargo"]
+# Full default-feature shipping runtime: parallel remainder plus seven separate
+# fresh-process lifecycle/GIL witnesses. Four performance probes remain explicit
+# unrun entries; no missing child or incomplete result accounting can pass.
+argv = ["uv", "run", "--frozen", "python3", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
+toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
 id = "rust.clippy.workspace-default"

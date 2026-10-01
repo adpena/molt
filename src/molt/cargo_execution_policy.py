@@ -351,6 +351,7 @@ def load_ci_cargo_policy(
         "integration_timeout_seconds",
         "cold_timeout_seconds",
         "suite_timeout_seconds",
+        "shipping_timeout_seconds",
         "observed_cold_timeout_seconds",
         "minimum_cold_headroom_multiplier",
         "measurement_run_id",
@@ -384,12 +385,16 @@ def load_ci_cargo_policy(
             execution["suite_timeout_seconds"],
             label="cargo_execution.suite_timeout_seconds",
         ),
+        "shipping": _positive_int(
+            execution["shipping_timeout_seconds"],
+            label="cargo_execution.shipping_timeout_seconds",
+        ),
     }
     ordered = tuple(timeout_seconds_by_class.values())
     if ordered != tuple(sorted(ordered)):
         raise ValueError(
             "CI Cargo execution budgets must be monotonic: "
-            "cross-check <= warm <= integration <= cold <= suite"
+            "cross-check <= warm <= integration <= cold <= suite <= shipping"
         )
     observed = _positive_float(
         execution["observed_cold_timeout_seconds"],

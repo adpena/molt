@@ -198,6 +198,7 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         "cross-check": 240,
         "integration": 600,
         "suite": 1800,
+        "shipping": 9000,
         "warm": 300,
     }
     assert projection["cargo_execution_policy"]["measurement_job_id"] == 89_813_773_652
@@ -311,42 +312,44 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     }.issubset(filters)
 
 
-def test_cold_lifecycle_partition_selects_only_serialized_ignored_families() -> None:
+def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting() -> (
+    None
+):
     commands = {command.id: command for command in PLAN.commands}
     core = commands["rust.test.ir-wasm-runtime-authorities"]
-    cold = commands["rust.test.runtime-cold-lifecycle"]
-    assert cold.family == core.family
-    assert cold.data["cell"] == core.data["cell"]
-    assert cold.data["tiers"] == core.data["tiers"]
-    assert cold.data["dependencies"] == [core.id]
-    assert cold.data["timeout_budget"] == "warm"
-    assert cold.data["resource_class"] == core.data["resource_class"]
-    assert set(cold.toolchains) == {"cargo"}
-    assert {"cargo", "rustc", "git"} <= set(PLAN.required_toolchains(cold))
-
-    cargo_args = cold.argv[: cold.argv.index("--")]
-    assert cargo_args[cargo_args.index("-p") + 1] == "molt-runtime"
-    assert cargo_args.count("-p") == 1
-    assert "--lib" in cargo_args
-    assert "--bins" not in cargo_args
-    assert "--test" not in cargo_args
-    assert "--no-default-features" in cargo_args
-    for option in ("--profile", "--config"):
-        expected = core.argv[core.argv.index(option) + 1]
-        assert cargo_args[cargo_args.index(option) + 1] == expected
-    core_features = core.argv[core.argv.index("--features") + 1].split(",")
-    assert set(cargo_args[cargo_args.index("--features") + 1].split(",")) == {
-        feature for feature in core_features if feature.startswith("molt-runtime/")
-    }
-    assert cold.argv[cold.argv.index("--") + 1 :] == (
-        "state::lifecycle::shutdown_tests::",
-        "state::runtime_state::",
-        "--ignored",
-        "--nocapture",
-        "--test-threads=1",
+    shipping = commands["rust.test.runtime-cold-lifecycle"]
+    assert shipping.family == core.family
+    assert shipping.data["cell"] == "linux-x86_64-rust-native-release-output"
+    assert shipping.data["tiers"] == core.data["tiers"]
+    assert shipping.data["dependencies"] == [core.id]
+    assert shipping.data["timeout_budget"] == "shipping"
+    assert shipping.data["timeout_seconds"] == 9000
+    assert shipping.data["resource_class"] == core.data["resource_class"]
+    assert {"python", "uv", "cargo", "rustc", "git"} <= set(
+        PLAN.required_toolchains(shipping)
     )
-    assert "--include-ignored" not in core.argv
-    assert "--ignored" not in core.argv
+    assert shipping.argv == (
+        "uv",
+        "run",
+        "--frozen",
+        "python3",
+        "tools/run_runtime_test_gate.py",
+        "--profile",
+        "release-output",
+        "--build-timeout-seconds",
+        "6300",
+        "--child-timeout-seconds",
+        "120",
+        "--parallel-threads",
+        "8",
+    )
+    for path in (
+        "tools/run_runtime_test_gate.py",
+        "tests/tools/test_runtime_test_gate.py",
+        "tests/tools/test_cargo_test_binary_discovery.py",
+    ):
+        assert path in PLAN.authority_inputs
+        assert _classes(path)["rust"] is True
 
 
 def test_libtest_accounting_is_hashed_and_selects_rust_consumers() -> None:
