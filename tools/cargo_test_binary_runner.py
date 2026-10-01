@@ -26,12 +26,13 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 if TYPE_CHECKING:
     from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
@@ -243,16 +244,23 @@ def _publish_fallback_evidence(path: Path, text: str) -> None:
         handle.write(text)
 
 
+@contextmanager
+def execution_stdout(execution: BinaryExecution) -> Iterator[TextIO]:
+    """Read complete closed capture; the in-memory stdout is a diagnostic tail."""
+    stream = (
+        StringIO(execution.stdout)
+        if execution.stdout_evidence is None
+        else execution.stdout_evidence.open("r", encoding="utf-8", errors="replace")
+    )
+    with stream:
+        yield stream
+
+
 def _libtest_report(execution: BinaryExecution) -> LibtestReport:
     if execution._parsed_libtest is not None:
         return execution._parsed_libtest
-    if execution.stdout_evidence is None:
-        report = parse_libtest(StringIO(execution.stdout), execution.argv)
-    else:
-        with execution.stdout_evidence.open(
-            "r", encoding="utf-8", errors="replace"
-        ) as handle:
-            report = parse_libtest(handle, execution.argv)
+    with execution_stdout(execution) as stream:
+        report = parse_libtest(stream, execution.argv)
     # BinaryExecution is published only after stream capture has closed. Cache
     # its immutable interpretation, not a live stream or mutable receipt.
     object.__setattr__(execution, "_parsed_libtest", report)
@@ -517,10 +525,14 @@ def listed_tests(
             f"termination={json.dumps(process.termination, sort_keys=True)}"
         )
     tests = []
-    for line in process.stdout.splitlines():
-        identity, separator, kind = line.rpartition(": ")
-        if separator and kind == "test" and identity:
-            tests.append(identity)
+    with execution_stdout(process) as stream:
+        for line in stream:
+            line = line.rstrip("\r\n")
+            identity, separator, kind = line.rpartition(": ")
+            if separator and kind == "test" and identity:
+                if identity in tests:
+                    raise RuntimeError(f"duplicate test discovery identity: {identity}")
+                tests.append(identity)
     if not tests:
         raise RuntimeError("test discovery returned zero tests")
     return tests, process
