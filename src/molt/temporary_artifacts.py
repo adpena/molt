@@ -19,7 +19,12 @@ import time
 
 from molt.exact_json import canonical_json_sha256, read_exact, write_exact
 from molt.file_deletion import delete_path
-from molt.file_locks import _FileLockHandle, _try_acquire_file_lock, _release_file_lock
+from molt.file_locks import (
+    _FileLockHandle,
+    _try_acquire_file_lock,
+    _release_file_lock,
+    _file_lock_owned_operation,
+)
 from molt.file_publication import (
     durable_namespace_publish_directory_exclusive,
     durable_publish_exclusive,
@@ -332,8 +337,42 @@ def finish_guard_scratch(
     """Called only by the owning guard after its existing closure boundary."""
     generation = lease.generation
     root = generation.parent
-    if lease.lock is None:
-        raise ValueError("scratch parent has released its lease")
+    handle = lease.lock
+    if handle is None:
+        raise ValueError(
+            "scratch parent has released its lease or lacks live ownership"
+        )
+    entered = False
+    try:
+        with _file_lock_owned_operation(handle, expected_lock_path=generation / "lock"):
+            entered = True
+            early = _finish_guard_scratch_owned(
+                lease, closed=closed, success=success, evidence=evidence
+            )
+    finally:
+        if entered:
+            lease.release()
+    if early is not None:
+        return early
+    sweep = reclaim_terminal_scratch(root, retention=retention)
+    final_owner = _owner(generation)
+    return {
+        "state": final_owner["state"],
+        "receipt": str(generation / "owner.json"),
+        "error": final_owner.get("error"),
+        "retention": sweep,
+    }
+
+
+def _finish_guard_scratch_owned(
+    lease: GuardScratchLease,
+    *,
+    closed: bool,
+    success: bool,
+    evidence: Mapping[str, object],
+) -> dict[str, object] | None:
+    """Terminal publication/reclamation while the caller pins exact custody."""
+    generation = lease.generation
     try:
         owner = _owner(generation)
         if owner != lease.owner:
@@ -417,16 +456,6 @@ def finish_guard_scratch(
             )
         error.add_note(f"scratch preserved; evidence: {generation}")
         raise
-    finally:
-        lease.release()
-    sweep = reclaim_terminal_scratch(root, retention=retention)
-    final_owner = _owner(generation)
-    return {
-        "state": final_owner["state"],
-        "receipt": str(generation / "owner.json"),
-        "error": final_owner.get("error"),
-        "retention": sweep,
-    }
 
 
 def reclaim_terminal_scratch(
