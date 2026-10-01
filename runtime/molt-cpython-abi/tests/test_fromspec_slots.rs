@@ -45,6 +45,7 @@ fn pytype_spec_flags(flags: c_ulong) -> c_uint {
 
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(0x6100_0000);
 static DICTS: Mutex<Option<HashMap<u64, HashMap<u64, u64>>>> = Mutex::new(None);
+static STR_HANDLES: Mutex<Option<HashMap<Vec<u8>, u64>>> = Mutex::new(None);
 
 fn fresh_handle() -> u64 {
     let address = NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed) as usize;
@@ -97,7 +98,6 @@ unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHan
 }
 
 unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
-    static STR_HANDLES: Mutex<Option<HashMap<Vec<u8>, u64>>> = Mutex::new(None);
     let bytes = if data.is_null() {
         Vec::new()
     } else {
@@ -113,8 +113,34 @@ unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
         .or_insert_with(fresh_handle)
 }
 
-unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
-    0xFF
+unsafe extern "C" fn fake_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
+    let strings = STR_HANDLES.lock().unwrap();
+    let Some(bytes) = strings.as_ref().and_then(|strings| {
+        strings
+            .iter()
+            .find_map(|(bytes, handle)| (*handle == bits).then_some(bytes))
+    }) else {
+        return ptr::null();
+    };
+    if !out_len.is_null() {
+        unsafe { *out_len = bytes.len() };
+    }
+    bytes.as_ptr()
+}
+
+unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
+    if dicts().as_ref().unwrap().contains_key(&bits) {
+        return MoltTypeTag::Dict as u8;
+    }
+    if STR_HANDLES
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|strings| strings.values().any(|handle| *handle == bits))
+    {
+        return MoltTypeTag::Str as u8;
+    }
+    MoltTypeTag::Other as u8
 }
 
 unsafe extern "C" fn fake_noop_ref(_bits: u64) {}
@@ -126,6 +152,7 @@ fn install_hooks() {
     hooks.dict_set = fake_dict_set;
     hooks.dict_get = fake_dict_get;
     hooks.alloc_str = fake_alloc_str;
+    hooks.str_data = fake_str_data;
     hooks.classify_heap = fake_classify_heap;
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;

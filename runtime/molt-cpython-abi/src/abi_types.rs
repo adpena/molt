@@ -1724,11 +1724,25 @@ unsafe extern "C" fn tuple_slot_new(
     subtype
 }
 
-/// Called once at runtime init to patch static type objects.
+/// Publish process-owned builtin shells once.
 ///
 /// # Safety
-/// Must be called before any C extension is loaded. Single-threaded init only.
+/// Complete initialization before any extension accesses the static shells.
+/// Repeated and concurrent initialization calls are synchronized and permitted.
+/// Runtime teardown/rebuild still requires its own exclusive lifecycle custody.
+/// Runtime restart retires and
+/// rebuilds runtime-backed roots through the explicit lifecycle functions below;
+/// extension loading must never reset live type flags, slots or identities.
+///
+/// The initializer only stores static data/function pointers and initializes
+/// exception shells; it invokes no runtime hooks or loader callbacks, so it
+/// cannot recursively enter this publication boundary.
 pub unsafe fn init_static_types() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| unsafe { initialize_static_type_shells() });
+}
+
+unsafe fn initialize_static_type_shells() {
     macro_rules! set_name {
         ($ty:expr, $s:literal) => {
             $ty.tp_name = $s.as_ptr().cast();
