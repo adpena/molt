@@ -93,6 +93,7 @@ STRUCTURAL_AUDIT_METRICS = frozenset(
         "python_stub_surfaces_total",
         "repr_name_scalar_authority_violations",
         "rust_backend_lowering_gaps_total",
+        "rust_backend_rejection_applicability_total",
         "rust_stub_surfaces_total",
         "undecomposed_god_files",
     }
