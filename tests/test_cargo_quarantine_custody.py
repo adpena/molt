@@ -155,6 +155,7 @@ def recover(target, observed, *, assume_closed=True):
 def test_observe_incremental_requires_typed_owned_rustc_birth(tmp_path):
     path = tmp_path / "cache with spaces" / "owned unit"
     sample = SimpleNamespace(
+        command_kind="full",
         pid=90051,
         ppid=90050,
         rss_kb=64,
@@ -165,6 +166,7 @@ def test_observe_incremental_requires_typed_owned_rustc_birth(tmp_path):
         argv=("rustc", "-C", f"incremental={path}"),
     )
     parent = SimpleNamespace(
+        command_kind="full",
         pid=90050,
         ppid=1,
         started_at_ns=200,
@@ -450,9 +452,15 @@ def test_partial_profile_move_retains_complete_planned_receipt(tmp_path, monkeyp
 def test_reused_parent_birth_never_grants_incremental_observation(tmp_path):
     path = tmp_path / "incremental"
     parent = SimpleNamespace(
-        pid=90050, ppid=1, started_at_ns=400, command="cargo", argv=("cargo",)
+        command_kind="full",
+        pid=90050,
+        ppid=1,
+        started_at_ns=400,
+        command="cargo",
+        argv=("cargo",),
     )
     child = SimpleNamespace(
+        command_kind="full",
         pid=90051,
         ppid=90050,
         started_at_ns=300,
@@ -655,6 +663,7 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
 )
 def test_observer_rejects_unproven_cargo_producer(tmp_path, case):
     child = SimpleNamespace(
+        command_kind="full",
         pid=90051,
         ppid=90050,
         started_at_ns=300,
@@ -662,6 +671,7 @@ def test_observer_rejects_unproven_cargo_producer(tmp_path, case):
         argv=("rustc", "-C", f"incremental={tmp_path}"),
     )
     parent = SimpleNamespace(
+        command_kind="full",
         pid=90050,
         ppid=1,
         started_at_ns=200,
@@ -901,12 +911,23 @@ def test_completed_compiler_cache_is_not_quarantined_on_later_timeout(tmp_path):
 def test_unverified_wrapper_cannot_grant_cargo_producer_authority(tmp_path, wrapper):
     samples = {
         90050: SimpleNamespace(
-            pid=90050, ppid=1, started_at_ns=200, command="cargo", argv=("cargo",)
+            command_kind="full",
+            pid=90050,
+            ppid=1,
+            started_at_ns=200,
+            command="cargo",
+            argv=("cargo",),
         ),
         90051: SimpleNamespace(
-            pid=90051, ppid=90050, started_at_ns=250, command=wrapper, argv=(wrapper,)
+            command_kind="full",
+            pid=90051,
+            ppid=90050,
+            started_at_ns=250,
+            command=wrapper,
+            argv=(wrapper,),
         ),
         90052: SimpleNamespace(
+            command_kind="full",
             pid=90052,
             ppid=90051,
             started_at_ns=300,
@@ -1187,6 +1208,7 @@ def test_observer_uses_effective_final_incremental_option_only(tmp_path, style):
         "relative": ("-C", "incremental=relative"),
     }[style]
     child = SimpleNamespace(
+        command_kind="full",
         pid=90051,
         ppid=90050,
         started_at_ns=300,
@@ -1194,6 +1216,7 @@ def test_observer_uses_effective_final_incremental_option_only(tmp_path, style):
         argv=("rustc", "-C", f"incremental={previous}", *final),
     )
     parent = SimpleNamespace(
+        command_kind="full",
         pid=90050,
         ppid=1,
         started_at_ns=200,
@@ -1258,6 +1281,7 @@ def test_lock_rebinding_during_closure_never_mutates_cache(tmp_path, monkeypatch
 def test_response_file_unknown_and_option_terminator_are_not_scanned(tmp_path, tail):
     path = tmp_path / "observed/incremental"
     child = SimpleNamespace(
+        command_kind="full",
         pid=90051,
         ppid=90050,
         started_at_ns=300,
@@ -1265,6 +1289,7 @@ def test_response_file_unknown_and_option_terminator_are_not_scanned(tmp_path, t
         argv=("rustc", "-C", f"incremental={path}", *tail),
     )
     parent = SimpleNamespace(
+        command_kind="full",
         pid=90050,
         ppid=1,
         started_at_ns=200,
@@ -1481,7 +1506,9 @@ def test_linux_native_sampler_preserves_argv_without_flattening(tmp_path):
     ],
 )
 def test_native_build_kind_uses_executable_not_flattened_diagnostic(argv, expected):
-    sample = SimpleNamespace(argv=argv, command="rustc misleading-diagnostic")
+    sample = SimpleNamespace(
+        command_kind="full", argv=argv, command="rustc misleading-diagnostic"
+    )
     assert cargo._samples_include_cargo_build_state({7: sample}, {7}) is expected
 
 

@@ -260,7 +260,7 @@ def test_sample_processes_windows_uses_injected_snapshot_authority(monkeypatch) 
     monkeypatch.setattr(module.subprocess, "run", fail_run)
     monkeypatch.setattr(
         module,
-        "_windows_process_snapshot_rows",
+        "_windows_process_snapshot_rows_hard_timeout",
         lambda: [(7, 1, 9, "python.exe", 3)],
     )
 
@@ -278,7 +278,9 @@ def test_sample_processes_windows_timeout_fails_closed(monkeypatch) -> None:
     def timed_out():
         raise TimeoutError("snapshot deadline")
 
-    monkeypatch.setattr(module, "_windows_process_snapshot_rows", timed_out)
+    monkeypatch.setattr(
+        module, "_windows_process_snapshot_rows_hard_timeout", timed_out
+    )
 
     with pytest.raises(
         windows_snapshot.ProcessSnapshotError, match="Windows process snapshot"
@@ -349,14 +351,14 @@ def test_windows_process_snapshot_hard_timeout_decodes_complete_rows(
         assert args[0][-1] == windows_snapshot.WINDOWS_PROCESS_SNAPSHOT_HELPER_ARG
         return SimpleNamespace(
             returncode=0,
-            stdout='[[7,1,9,"python.exe",3,123456789]]',
+            stdout='[[7,1,9,"python.exe",3,123456789,"full"]]',
             stderr="",
         )
 
     monkeypatch.setattr(windows_snapshot.subprocess, "run", fake_run)
 
     assert windows_snapshot._windows_process_snapshot_rows_hard_timeout() == [
-        (7, 1, 9, "python.exe", 3, 123456789)
+        (7, 1, 9, "python.exe", 3, 123456789, "full")
     ]
 
 
@@ -1716,3 +1718,337 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
     assert terminated["reason"] == "tracked_orphan_cleanup"
     assert terminated["sampler"] is not None
     assert terminated["root_owned"] is True
+
+
+@pytest.mark.parametrize("transfer", [0, 3, 4, 5])
+def test_windows_memory_read_requires_exact_transfer(transfer):
+    import ctypes
+
+    def read(handle, address, buffer, size, returned):
+        for index in range(size):
+            buffer[index] = 65
+        returned._obj.value = transfer
+        return True
+
+    api = SimpleNamespace(ctypes=ctypes, read_memory=read)
+    result = windows_snapshot._snapshot_read_memory(
+        api, None, 123, 4, lambda stage: None
+    )
+    assert result == (b"AAAA" if transfer == 4 else None)
+
+
+@pytest.mark.parametrize(
+    "address,size", [(0, 4), (-1, 4), (123, 0), (1 << 64, 4), ((1 << 64) - 2, 4)]
+)
+def test_windows_memory_read_rejects_unrepresentable_ranges(address, size):
+    import ctypes
+
+    def read(*args):
+        raise AssertionError("invalid range reached native reader")
+
+    api = SimpleNamespace(ctypes=ctypes, read_memory=read)
+    assert (
+        windows_snapshot._snapshot_read_memory(
+            api, None, address, size, lambda stage: None
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["A" * 32767, "A" * 16385, "hello 😀"],
+    ids=["maximum-utf16", "above-old-truncation", "surrogate-pair"],
+)
+def test_windows_command_read_preserves_complete_utf16(monkeypatch, payload):
+    raw = payload.encode("utf-16-le")
+    api = SimpleNamespace(
+        peb_process_parameters_offset=0x20,
+        pointer_size=8,
+        command_line_offset=0x70,
+        command_line_buffer_offset=0x78,
+    )
+    monkeypatch.setattr(
+        windows_snapshot,
+        "_snapshot_basic_info",
+        lambda *args: SimpleNamespace(PebBaseAddress=0x1000),
+    )
+    fields = {0x1020: 0x2000, 0x2070: len(raw), 0x2072: len(raw), 0x2078: 0x3000}
+    monkeypatch.setattr(
+        windows_snapshot,
+        "_snapshot_read_integer",
+        lambda api, handle, address, size, deadline: fields[address],
+    )
+    sizes = []
+
+    def read(api, handle, address, size, deadline):
+        sizes.append(size)
+        return raw
+
+    monkeypatch.setattr(windows_snapshot, "_snapshot_read_memory", read)
+    assert (
+        windows_snapshot._snapshot_command_line(api, None, lambda stage: None)
+        == payload
+    )
+    assert sizes == [len(raw)]
+
+
+@pytest.mark.parametrize(
+    "case", ["odd", "partial", "surrogate", "nul", "maximum", "changed"]
+)
+def test_windows_command_read_rejects_invalid_or_changed_descriptors(monkeypatch, case):
+    raw = {
+        "odd": b"A\x00B",
+        "partial": b"A\x00",
+        "surrogate": b"\x00\xd8",
+        "nul": b"\x00\x00",
+    }.get(case, b"A\x00")
+    length = 4 if case == "partial" else len(raw)
+    api = SimpleNamespace(
+        peb_process_parameters_offset=0x20,
+        pointer_size=8,
+        command_line_offset=0x70,
+        command_line_buffer_offset=0x78,
+    )
+    monkeypatch.setattr(
+        windows_snapshot,
+        "_snapshot_basic_info",
+        lambda *args: SimpleNamespace(PebBaseAddress=0x1000),
+    )
+    fields = {
+        0x1020: 0x2000,
+        0x2070: length,
+        0x2072: 0 if case == "maximum" else length,
+        0x2078: 0x3000,
+    }
+    counts = {}
+
+    def integer(api, handle, address, size, deadline):
+        counts[address] = counts.get(address, 0) + 1
+        return (
+            0x4000
+            if case == "changed" and address == 0x2078 and counts[address] > 1
+            else fields[address]
+        )
+
+    monkeypatch.setattr(windows_snapshot, "_snapshot_read_integer", integer)
+    monkeypatch.setattr(windows_snapshot, "_snapshot_read_memory", lambda *args: raw)
+    assert (
+        windows_snapshot._snapshot_command_line(api, None, lambda stage: None) is None
+    )
+
+
+@pytest.mark.parametrize("module", [process_custody, process_model])
+def test_all_default_windows_sampling_uses_isolated_authority(monkeypatch, module):
+    def native():
+        raise AssertionError("native query escaped helper isolation")
+
+    monkeypatch.setattr(windows_snapshot, "_windows_process_snapshot_rows", native)
+    if module is process_model:
+        assert (
+            module.sample_processes_windows.__defaults__[0]
+            is windows_snapshot._windows_process_snapshot_rows_hard_timeout
+        )
+    else:
+        monkeypatch.setattr(
+            module,
+            "_windows_process_snapshot_rows_hard_timeout",
+            lambda: [(7, 1, 9, "python.exe", 3, 123)],
+        )
+        assert module.sample_processes_windows()[7].command == "python.exe"
+
+
+def test_windows_native_av_helper_is_typed_failure(monkeypatch):
+    monkeypatch.setattr(windows_snapshot.os, "name", "nt")
+    monkeypatch.setattr(
+        windows_snapshot.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=3221225477, stdout="[]", stderr="native query fault"
+        ),
+    )
+    with pytest.raises(windows_snapshot.ProcessSnapshotError, match="3221225477"):
+        windows_snapshot._windows_process_snapshot_rows_hard_timeout()
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        [True, 1, 9, "python.exe", 3, 123],
+        [7, -1, 9, "python.exe", 3, 123],
+        [7, 1, -1, "python.exe", 3, 123],
+        [7, 1, 9, "python.exe", True, 123],
+        [7, 1, 9, "python.exe", 3, 0],
+    ],
+)
+def test_windows_helper_admission_rejects_invalid_identity_coordinates(row):
+    seven_field_row = [*row, "full"]
+    assert len(seven_field_row) == 7
+    with pytest.raises(ValueError, match="field types|elapsed_sec|started_at_ns"):
+        windows_snapshot._coerce_windows_process_snapshot_rows([seven_field_row])
+
+
+def test_windows_helper_admission_rejects_duplicate_pids():
+    row = [7, 1, 9, "python.exe", 3, 123, "full"]
+    with pytest.raises(ValueError, match="duplicate"):
+        windows_snapshot._coerce_windows_process_snapshot_rows([row, row])
+
+
+def test_unknown_windows_command_preserves_memory_and_birth_without_role_inference():
+    row = [7, 1, 123, "", 3, 456, "unavailable"]
+    validated = windows_snapshot._coerce_windows_process_snapshot_rows([row])
+    sample = process_model.parse_windows_process_snapshot_rows(validated)[7]
+    assert sample.command_kind == "unavailable"
+    assert sample.rss_kb == 123 and sample.started_at_ns == 456
+    assert sample.command == "pid:7"
+    assert not process_model.is_host_control_plane_process(sample)
+    assert process_model.has_external_host_control_plane_lineage(
+        {7: sample}, 7, owned_pids=()
+    )
+
+
+@pytest.mark.parametrize(
+    "command,kind",
+    [
+        ("cargo.exe", "unavailable"),
+        ("", "full"),
+        ("", "image"),
+        ("cargo.exe", "guessed"),
+    ],
+)
+def test_windows_command_authority_must_match_helper_text(command, kind):
+    with pytest.raises(ValueError):
+        windows_snapshot._coerce_windows_process_snapshot_rows(
+            [[7, 1, 9, command, 3, 123, kind]]
+        )
+
+
+@pytest.mark.parametrize("kind", ["image", "unavailable"])
+def test_cargo_parent_argv_requires_complete_command_authority(kind):
+    from tools.memory_guard_core import cargo_quarantine
+
+    parent = process_model.ProcessSample(
+        pid=7,
+        ppid=1,
+        rss_kb=1,
+        command="cargo.exe",
+        started_at_ns=123,
+        argv=("cargo.exe", "build"),
+        command_kind=kind,
+    )
+    child = process_model.ProcessSample(
+        pid=8,
+        ppid=7,
+        rss_kb=1,
+        command="rustc.exe",
+        started_at_ns=124,
+        argv=("rustc.exe", "-C", "incremental=cache"),
+    )
+    samples = {7: parent, 8: child}
+    identities = {
+        pid: process_model.process_identity(sample) for pid, sample in samples.items()
+    }
+    assert cargo_quarantine._owned_sample_argv(parent) is None
+    assert (
+        cargo_quarantine._owned_cargo_ancestor(child, samples, {7, 8}, identities)
+        is None
+    )
+    assert (
+        cargo_quarantine.observe_owned_incremental_state(samples, {7, 8}, identities)
+        == set()
+    )
+
+
+@pytest.mark.parametrize("error", [0, 5, 18])
+def test_windows_enumeration_requires_documented_complete_marker(monkeypatch, error):
+    import ctypes
+
+    class Entry(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", ctypes.c_uint32),
+            ("th32ProcessID", ctypes.c_uint32),
+            ("szExeFile", ctypes.c_wchar * 30),
+        ]
+
+    last_error = [0]
+    closed = []
+
+    def first(handle, entry):
+        entry._obj.th32ProcessID = 7
+        entry._obj.szExeFile = "python.exe"
+        return True
+
+    def next_row(handle, entry):
+        last_error[0] = error
+        return False
+
+    shim = SimpleNamespace(
+        sizeof=ctypes.sizeof,
+        byref=ctypes.byref,
+        set_last_error=lambda value: last_error.__setitem__(0, value),
+        get_last_error=lambda: last_error[0],
+    )
+    api = SimpleNamespace(
+        ctypes=shim,
+        wintypes=SimpleNamespace(),
+        counters_type=object,
+        create_snapshot=lambda *args: 99,
+        process_first=first,
+        process_next=next_row,
+        close_handle=closed.append,
+        open_process=lambda *args: None,
+        get_process_memory_info=lambda *args: False,
+        get_process_times=lambda *args: False,
+        invalid_handle_value=-1,
+        ProcessEntry32W=Entry,
+    )
+    monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", lambda: api)
+    if error == 18:
+        rows = windows_snapshot._windows_process_snapshot_rows()
+        assert rows == [(7, 0, 0, "", None, None, "unavailable")]
+    else:
+        with pytest.raises(
+            windows_snapshot.ProcessSnapshotError, match="before completion"
+        ):
+            windows_snapshot._windows_process_snapshot_rows()
+    assert closed == [99]
+
+
+def test_windows_sampler_family_is_in_mandatory_portability_proofs():
+    import tomllib
+
+    plan = tomllib.loads((REPO_ROOT / "tools/proof_plan.toml").read_text())
+    commands = {command["id"]: command for command in plan["command"]}
+    for identifier in (
+        "python.unit.harness",
+        "portability.cargo-custody.linux",
+        "portability.cargo-custody.macos",
+        "portability.cargo-custody.windows",
+    ):
+        assert (
+            "tests/tools/test_memory_guard_windows_sampling.py"
+            in commands[identifier]["argv"]
+        )
+    assert {
+        "tools/memory_guard_core/windows_snapshot.py",
+        "tools/memory_guard_core/process_model.py",
+        "tools/memory_guard_core/process_custody.py",
+        "tools/memory_guard_core/cargo_quarantine.py",
+        "tests/tools/test_memory_guard_windows_sampling.py",
+        "tests/test_cargo_quarantine_custody.py",
+    } <= set(plan["authority_inputs"])
+
+
+def test_missing_command_authority_never_grants_argument_credit():
+    from tools.memory_guard_core import cargo_quarantine
+
+    sample = SimpleNamespace(command="cargo.exe", argv=("cargo.exe",))
+    assert cargo_quarantine._owned_sample_argv(sample) is None
+
+
+@pytest.mark.parametrize("command", ["python.exe", "C:/Python/python.exe", "cargo.exe"])
+def test_critical_executable_helper_cannot_downgrade_to_image_authority(command):
+    with pytest.raises(ValueError, match="critical"):
+        windows_snapshot._coerce_windows_process_snapshot_rows(
+            [[7, 1, 9, command, 3, 123, "image"]]
+        )
