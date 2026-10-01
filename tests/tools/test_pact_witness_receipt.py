@@ -116,6 +116,11 @@ def _payload(
             receipt_path=receipt_path,
         ),
         "iteration_mode": False,
+        "generated_at": "2026-08-14T12:00:00Z",
+        "producer": {
+            "argv": ["tools/pact_witness_acceptance.py", "--target", target],
+            "execution_tools": None,
+        },
     }
     receipt_path.write_text(json.dumps(payload), encoding="utf-8")
     expected = {
@@ -408,7 +413,10 @@ def test_acceptance_receipt_rejects_schema_1_host_path_contract(
         require_artifacts=False,
     )
 
-    assert "acceptance receipt schema_version must be 2" in problems
+    assert (
+        f"acceptance receipt schema_version must be {receipt.SCHEMA_VERSION}"
+        in problems
+    )
     assert "acceptance receipt git must contain exactly source_sha" in problems
     assert "acceptance receipt packages.numpy schema is invalid" in problems
     assert any("artifacts[0] schema is invalid" in problem for problem in problems)
@@ -423,4 +431,61 @@ def test_acceptance_receipt_requires_location_for_artifact_validation(
 
     assert (
         "acceptance receipt_path is required to validate portable artifacts" in problems
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "2026-99-14T12:00:00Z", "2099-01-01T00:00:00Z", "2026-08-14T12:00:00+00:00"],
+)
+def test_acceptance_observation_time_is_strict(tmp_path: Path, value: object) -> None:
+    path, payload, expected = _payload(tmp_path, target="native")
+    payload["generated_at"] = value
+    assert any(
+        "generated_at" in problem
+        for problem in receipt.validate_acceptance_receipt(
+            payload, receipt_path=path, expected=expected
+        )
+    )
+
+
+def test_acceptance_invocation_and_unknown_toolchain_fail_closed(
+    tmp_path: Path,
+) -> None:
+    path, payload, expected = _payload(tmp_path, target="native")
+    payload["producer"]["argv"][-1] = "wasm"
+    assert any(
+        "target invocation" in problem
+        for problem in receipt.validate_acceptance_receipt(
+            payload, receipt_path=path, expected=expected
+        )
+    )
+    payload["producer"]["argv"][-1] = "native"
+    payload["producer"]["execution_tools"] = {"python": "3.12", "rustc": "1.96.1"}
+    assert any(
+        "execution_tools must be null" in problem
+        for problem in receipt.validate_acceptance_receipt(
+            payload, receipt_path=path, expected=expected
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--target=native"],
+        ["--out-dir", "some path", "--target", "native"],
+        ["--target", "wasm", "--target", "native"],
+    ],
+)
+def test_acceptance_records_valid_argument_forms(
+    tmp_path: Path, options: list[str]
+) -> None:
+    path, payload, expected = _payload(tmp_path, target="native")
+    payload["producer"]["argv"] = ["tools/pact_witness_acceptance.py", *options]
+    assert (
+        receipt.validate_acceptance_receipt(
+            payload, receipt_path=path, expected=expected
+        )
+        == ()
     )

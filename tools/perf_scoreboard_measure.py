@@ -85,6 +85,7 @@ def measure_cell(
     timeout_s: float,
     batch_server: bench._BenchBatchBuildServer | None,
     cpython_cmd: tuple[str, ...],
+    target_python_version: str,
     log_dir: Path,
     budget_ms: float | None = None,
     authoritative: bool = True,
@@ -110,7 +111,11 @@ def measure_cell(
     log_lines: list[str] = [f"# {benchmark} | {spec.backend} | {profile}"]
 
     build_env = _perfscore_build_env(spec)
-    extra_args = bench_suites.molt_args_for_benchmark(script_path)
+    extra_args = [
+        "--python-version",
+        target_python_version,
+        *bench_suites.molt_args_for_benchmark(script_path),
+    ]
     build_flag = PROFILE_BUILD_FLAG.get(profile, "release")
 
     # --- Build the molt binary via the canonical daemon batch build ---------
@@ -136,7 +141,9 @@ def measure_cell(
             )
     else:
         # WASM build/link only — produced via the CLI, not run here.
-        binary = _build_wasm_only(script_path, build_env, build_flag, log_lines)
+        binary = _build_wasm_only(
+            script_path, build_env, build_flag, log_lines, target_python_version
+        )
 
     if not isinstance(binary, bench.MoltBinary):
         cell.build_ok = False
@@ -163,6 +170,7 @@ def measure_cell(
         return cell
 
     cell.build_ok = True
+    cell.build_observation = binary.build_observation
     cell.binary_size_kib = round(binary.size_kb, 1)
     cell.compile_time_s = round(binary.build_s, 3)
     log_lines.append(
@@ -519,6 +527,7 @@ def _build_wasm_only(
     build_env: dict[str, str],
     build_flag: str,
     log_lines: list[str],
+    target_python_version: str,
 ) -> bench.MoltBinary | bench.MoltFailure:
     """Build+link a WASM artifact (run-path is blocked; we only verify it links).
 
@@ -533,6 +542,8 @@ def _build_wasm_only(
     )
     cmd = [
         *bench._molt_build_cmd(build_flag),
+        "--python-version",
+        target_python_version,
         "--target",
         "wasm",
         "--trusted",
@@ -624,7 +635,13 @@ def _build_wasm_only(
 
             shutil.rmtree(out_dir, ignore_errors=True)
 
-    return bench.MoltBinary(out_path, _TmpHolder(), build_s, size_kb)
+    return bench.MoltBinary(
+        out_path,
+        _TmpHolder(),
+        build_s,
+        size_kb,
+        payload.get("data", {}).get("observed_toolchain"),
+    )
 
 
 def _release_binary(binary: bench.MoltBinary) -> None:

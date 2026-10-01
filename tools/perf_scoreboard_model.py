@@ -6,6 +6,7 @@ import math
 import os
 import statistics
 import sys
+from typing import Any
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -90,27 +91,33 @@ class ScoreboardSchemaError(RuntimeError):
 
 
 def _load_cold_start_budgets() -> dict:
-    """Load the per (backend, profile) cold-start tax budgets in milliseconds.
-
-    Shape: ``{"budgets": {"native/release-fast": {"budget_ms": N, ...}}}``.
-    A missing file or missing cell entry means "no budget recorded yet" — the
-    FAIL_COLD_BUDGET verdict cannot fire (we never invent a budget), and the
-    board records the measured tax so the budget can be seeded from this run.
-    """
-    if not COLD_START_BUDGET_PATH.exists():
-        return {"budgets": {}}
+    """Load explicit startup budgets; missing or corrupt policy is not a pass."""
     try:
-        return json.loads(COLD_START_BUDGET_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"budgets": {}}
+        budgets = json.loads(COLD_START_BUDGET_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read cold-start budget policy: {exc}") from exc
+    if not isinstance(budgets, dict) or not isinstance(budgets.get("budgets"), dict):
+        raise ValueError("cold-start budget policy must contain a budgets object")
+    return budgets
 
 
-def _budget_ms_for(budgets: dict, backend: str, profile: str) -> float | None:
-    entry = budgets.get("budgets", {}).get(f"{backend}/{profile}")
-    if not isinstance(entry, dict):
-        return None
-    val = entry.get("budget_ms")
-    return float(val) if isinstance(val, (int, float)) else None
+def _budget_ms_for(budgets: dict, backend: str, profile: str) -> float:
+    import math
+
+    coordinate = f"{backend}/{profile}"
+    entries = budgets.get("budgets")
+    entry = entries.get(coordinate) if isinstance(entries, dict) else None
+    val = entry.get("budget_ms") if isinstance(entry, dict) else None
+    if (
+        not isinstance(val, (int, float))
+        or isinstance(val, bool)
+        or not math.isfinite(val)
+        or val < 0
+    ):
+        raise ValueError(
+            f"cold-start budget missing or invalid for {coordinate}; measure and approve policy before gating"
+        )
+    return float(val)
 
 
 DEFAULT_RUN_RSS_MB = 4096
@@ -520,6 +527,7 @@ class Cell:
     build_ok: bool = False
     binary_size_kib: float | None = None
     compile_time_s: float | None = None
+    build_observation: dict[str, Any] | None = None
 
     # Run facts.
     run_blocked: bool = False
@@ -755,6 +763,7 @@ class CpythonOracle:
     machine: str
     arch: str
     pointer_bits: int
+    base_executable: str | None = None
 
     @property
     def display(self) -> str:

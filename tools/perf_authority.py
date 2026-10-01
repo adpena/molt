@@ -87,6 +87,8 @@ __all__ = [
     "is_stale_snapshot_metadata",
     "non_canonical_provenance",
     "release_scoreboard_problems",
+    "release_cell_problems",
+    "perf_tool_identity_problems",
     "relative_time_delta",
     "safe_speedup",
     "scoreboard_revision_fields",
@@ -586,10 +588,28 @@ def current_scoreboard_problems(
         )
         problems.append(f"{label} is not authoritative: {reason}")
 
+    problems.extend(
+        f"{label} {problem}"
+        for problem in perf_tool_identity_problems(
+            provenance if isinstance(provenance, Mapping) else {}
+        )
+    )
+
     summary = doc.get("summary")
     gate_fails = summary.get("gate_fails") if isinstance(summary, Mapping) else None
     if gate_fails is not False:
         problems.append(f"{label} gate_fails is not false: {gate_fails!r}")
+
+    cells = perf_schema.flatten_cells(doc)
+    if not cells:
+        problems.append(f"{label} has no measured required cells")
+    if doc.get("benchmarks_deferred"):
+        problems.append(f"{label} contains deferred required benchmarks")
+    for cell in cells:
+        problems.extend(
+            f"{label} {_cell_label(cell)} {problem}"
+            for problem in release_cell_problems(cell)
+        )
 
     generated_at = doc.get("generated_at")
     age = doc_age_days(generated_at if isinstance(generated_at, str) else None, now=now)
@@ -612,6 +632,55 @@ def current_scoreboard_problems(
                     f"origin/main {_short_rev(origin_rev)}"
                 )
 
+    return problems
+
+
+def perf_tool_identity_problems(provenance: Mapping[str, Any]) -> list[str]:
+    """Historical entrypoint-only hashes do not attest the measurement family."""
+    if provenance.get("benchmark_tool_identity_schema") != "molt-perf-tool-family-v1":
+        return [
+            "benchmark tool identity must attest molt-perf-tool-family-v1; remeasure legacy evidence"
+        ]
+    digest = provenance.get("benchmark_tool_sha")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(ch not in "0123456789abcdef" for ch in digest)
+    ):
+        return ["benchmark tool family identity must be a lowercase SHA256 digest"]
+    return []
+
+
+def release_cell_problems(cell: Mapping[str, Any]) -> list[str]:
+    """One fail-closed acceptance rule for each required CPython comparison.
+
+    Classification remains diagnostic; only a measured, quiescent, repeated
+    confidence interval entirely above CPython establishes a release win.
+    """
+    import math
+
+    problems: list[str] = []
+    for field in ("build_ok", "molt_ok", "cpython_ok", "stable", "measured_quiescent"):
+        if cell.get(field) is not True:
+            problems.append(f"{field} must be true")
+    for field, expected in (
+        ("verdict", "GREEN"),
+        ("classification", "GREEN_STABLE"),
+        ("repeat_stability", "STABLE_ABOVE"),
+        ("repeat_passes", int(CANONICAL_PERF_REPEAT)),
+    ):
+        if cell.get(field) != expected:
+            problems.append(f"{field} must be {expected!r}")
+    if not perf_schema.output_parity_passes(cell.get("output_parity")):
+        problems.append("output parity must prove the same observable program")
+    lo, hi = cell.get("repeat_ci_lo"), cell.get("repeat_ci_hi")
+    if not all(
+        isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+        for v in (lo, hi)
+    ):
+        problems.append("repeat confidence interval must be finite")
+    elif not 1.0 < lo <= hi:
+        problems.append("repeat confidence interval must lie entirely above CPython")
     return problems
 
 
@@ -641,6 +710,9 @@ def release_scoreboard_problems(
             f"{label} schema invalid: {_sample_schema_problems(schema_problems)}"
         )
     problems.extend(canonical_scoreboard_shape_problems(doc, label=label))
+    problems.extend(
+        f"{label} {problem}" for problem in scoreboard_observed_toolchain_problems(doc)
+    )
 
     if doc.get("kind") != "cpython_floor_scoreboard":
         problems.append(f"{label} kind must be 'cpython_floor_scoreboard'")
@@ -669,6 +741,22 @@ def release_scoreboard_problems(
                 f"{label} provenance.quiescence.quiescence_wait_timeout_s "
                 f"must be {expected_wait:g}"
             )
+
+    host = doc.get("host", {})
+    oracle = host.get("cpython_oracle", {}) if isinstance(host, Mapping) else {}
+    try:
+        from molt.target_python import resolve_target_python_for_oracle
+
+        minor = tuple(int(part) for part in oracle["version"].split(".")[:2])
+        resolve_target_python_for_oracle(minor, host.get("molt_target_python"))
+        if host.get("molt_target_python") is None:
+            problems.append(f"{label} lacks recorded Molt target Python")
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        problems.append(f"{label} oracle/target mismatch: {exc}")
+
+    problems.extend(
+        f"{label} {problem}" for problem in perf_tool_identity_problems(provenance)
+    )
 
     summary = doc.get("summary")
     gate_fails = summary.get("gate_fails") if isinstance(summary, Mapping) else None
@@ -728,19 +816,13 @@ def release_scoreboard_problems(
             f"{label} must contain exact git_rev and provenance.local_head_sha"
         )
 
-    expected_repeats = int(CANONICAL_PERF_REPEAT)
+    if doc.get("benchmarks_deferred"):
+        problems.append(f"{label} contains deferred required benchmarks")
     for cell in perf_schema.flatten_cells(doc):
-        if not all(
-            cell.get(field) is True for field in ("build_ok", "molt_ok", "cpython_ok")
-        ):
-            continue
-        cell_label = _cell_label(cell)
-        if cell.get("repeat_passes") != expected_repeats:
-            problems.append(
-                f"{label} {cell_label} repeat_passes must be {expected_repeats}"
-            )
-        if cell.get("measured_quiescent") is not True:
-            problems.append(f"{label} {cell_label} measured_quiescent must be true")
+        problems.extend(
+            f"{label} {_cell_label(cell)} {problem}"
+            for problem in release_cell_problems(cell)
+        )
 
     return problems
 
@@ -805,3 +887,137 @@ def doc_age_days(
     if current.tzinfo is None:
         current = current.replace(tzinfo=dt.timezone.utc)
     return (current - ts).total_seconds() / 86400.0
+
+
+def scoreboard_observed_toolchain_problems(doc: Mapping[str, Any]) -> list[str]:
+    """Reject absent observations and avoid laundering them into E2 attestation.
+
+    Publication observations are useful diagnostics. A daemon/compile admission
+    receipt proving the exact compiler/runtime bytes is still required for E2.
+    """
+    import re
+
+    problems: list[str] = []
+
+    def check_identity(value: Any, label: str) -> None:
+        if (
+            not isinstance(value, Mapping)
+            or not isinstance(value.get("size"), int)
+            or isinstance(value.get("size"), bool)
+            or value.get("size", 0) <= 0
+            or not isinstance(value.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is None
+        ):
+            problems.append(f"{label} lacks observed file-content identity")
+
+    def check_runtime(value: Any, image: Any, label: str, version: Any = None) -> None:
+        from molt.python_runtime_identity import (
+            validate_python_runtime_identity,
+            runtime_explicit_file_content,
+        )
+
+        try:
+            runtime = validate_python_runtime_identity(value)
+        except (ValueError, TypeError) as exc:
+            problems.append(
+                f"{label} canonical Python runtime closure is invalid: {exc}"
+            )
+            return
+        if version is not None and runtime.get("version") != version:
+            problems.append(f"{label} runtime version differs from observed oracle")
+        base = runtime_explicit_file_content(runtime, "base-executable")
+        if (
+            not isinstance(image, Mapping)
+            or not isinstance(base, Mapping)
+            or any(image.get(k) != base.get(k) for k in ("sha256", "size"))
+            or image.get("content_filename") != base.get("filename")
+        ):
+            problems.append(
+                f"{label} base image differs from canonical loaded runtime closure"
+            )
+
+    provenance = doc.get("provenance", {})
+    invocations = (
+        provenance.get("producer_invocations")
+        if isinstance(provenance, Mapping)
+        else None
+    )
+    if not isinstance(invocations, list) or not invocations:
+        problems.append("producer invocation records are missing")
+    else:
+        for record in invocations:
+            if not isinstance(record, Mapping):
+                problems.append("producer invocation record is invalid")
+                continue
+            argv = record.get("argv")
+            if (
+                not isinstance(argv, list)
+                or not argv
+                or any(not isinstance(v, str) or not v for v in argv)
+            ):
+                problems.append("producer invocation argv is invalid")
+            check_identity(
+                record.get("command_interpreter"), "producer command interpreter"
+            )
+            check_identity(record.get("base_interpreter"), "producer base interpreter")
+            check_runtime(
+                record.get("runtime_closure"),
+                record.get("base_interpreter"),
+                "producer",
+            )
+    host = doc.get("host", {})
+    oracle = host.get("cpython_oracle", {}) if isinstance(host, Mapping) else {}
+    for field in ("command_executable_identity", "base_executable_identity"):
+        check_identity(
+            oracle.get(field) if isinstance(oracle, Mapping) else None,
+            f"CPython {field}",
+        )
+    check_runtime(
+        oracle.get("runtime_closure") if isinstance(oracle, Mapping) else None,
+        oracle.get("base_executable_identity") if isinstance(oracle, Mapping) else None,
+        "CPython",
+        oracle.get("version") if isinstance(oracle, Mapping) else None,
+    )
+    cells = perf_schema.flatten_cells(doc)
+    if not cells:
+        problems.append("measured cells are missing")
+        return problems
+    for cell in cells:
+        observation = (
+            cell.get("build_observation") if isinstance(cell, Mapping) else None
+        )
+        if (
+            not isinstance(observation, Mapping)
+            or observation.get("kind") != "molt-build-observation-v1"
+        ):
+            problems.append("cell build-toolchain observation is missing")
+            continue
+        for name in ("compiler", "runtime", "artifact"):
+            fact = observation.get(name)
+            check_identity(
+                fact.get("identity") if isinstance(fact, Mapping) else None,
+                f"cell {name}",
+            )
+        # No admission receipt is emitted yet; a self-authored true flag must not
+        # bypass that missing structural proof.
+        problems.append(
+            "cell compiler/runtime used-byte admission receipt is unavailable"
+        )
+    return problems
+
+
+def scoreboard_release_eligibility(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """Report canonical-core E2 eligibility, never complete release readiness."""
+    from tools.git_identity import is_git_object_id
+
+    revision = doc.get("git_rev")
+    if not is_git_object_id(revision):
+        problems = ["scoreboard lacks an exact source revision"]
+        problems.extend(scoreboard_observed_toolchain_problems(doc))
+    else:
+        problems = release_scoreboard_problems(doc, expected_source_sha=revision)
+    return {
+        "scope": "canonical-core-E2",
+        "eligible": not problems,
+        "problems": problems,
+    }

@@ -324,6 +324,16 @@ def test_build_failed_and_run_error_and_blocked_and_incompat() -> None:
     assert ps.verdict_fails_gate(ci.verdict) is False
 
 
+def _release_evidence(cell: ps.Cell) -> None:
+    # Explicit synthetic repeated evidence for gate tests, not runner samples.
+    cell.repeat_passes = 5
+    cell.repeat_ci_lo = 1.5
+    cell.repeat_ci_hi = 2.5
+    cell.repeat_stability = "STABLE_ABOVE"
+    cell.measured_quiescent = True
+    cell.classification = ps.CLASS_GREEN
+
+
 # --- Gate exit code ---------------------------------------------------------
 
 
@@ -370,16 +380,22 @@ def test_gate_fails_on_engine_red() -> None:
     assert ps._gate_exit_code(doc, no_gate=False) == 1
 
 
-def test_gate_passes_on_all_green() -> None:
+def test_statistical_green_without_complete_evidence_blocks_release() -> None:
     g = _cell(
         warm_molt_s=0.10, warm_cpython_s=0.20, cold_molt_s=0.11, cold_cpython_s=0.25
     )
     g.finalize(budget_ms=1000.0, authoritative=True)
+    _release_evidence(g)
     doc = _board([g])
-    assert ps._gate_exit_code(doc, no_gate=False) == 0
+    from dataclasses import asdict
+    from perf_authority import release_cell_problems
+
+    assert release_cell_problems(asdict(g)) == []
+    assert ps._gate_exit_code(doc, no_gate=False) == 1
+    assert ps._gate_exit_code(doc, no_gate=True) == 0
 
 
-def test_gate_warn_cold_floor_does_not_fail_unless_strict() -> None:
+def test_gate_warn_cold_floor_blocks_release_regardless_of_legacy_strict_flag() -> None:
     w = _cell(
         warm_molt_s=0.010,
         warm_cpython_s=0.020,
@@ -389,7 +405,7 @@ def test_gate_warn_cold_floor_does_not_fail_unless_strict() -> None:
     w.finalize(budget_ms=100.0, authoritative=True)
     doc = _board([w])
     assert w.verdict == ps.VERDICT_WARN_COLD_FLOOR
-    assert ps._gate_exit_code(doc, no_gate=False) == 0
+    assert ps._gate_exit_code(doc, no_gate=False) == 1
     assert ps._gate_exit_code(doc, no_gate=False, strict_cold=True) == 1
 
 
@@ -400,7 +416,7 @@ def test_gate_fail_stale_unless_allow_nonauthoritative() -> None:
     s.finalize(budget_ms=1000.0, authoritative=False)
     doc = _board([s], provenance={"authoritative": False})
     assert ps._gate_exit_code(doc, no_gate=False) == 1
-    assert ps._gate_exit_code(doc, no_gate=False, allow_nonauthoritative=True) == 0
+    assert ps._gate_exit_code(doc, no_gate=False, allow_nonauthoritative=True) == 1
 
 
 def test_gate_no_gate_always_zero() -> None:
@@ -430,6 +446,7 @@ def test_board_carries_provenance_and_passes_schema() -> None:
         "stdlib_cache_key": "deadbeef",
         "authoritative": True,
     }
+    _release_evidence(g)
     doc = _board([g], provenance=prov)
     problems = ps.validate_board(doc)
     assert problems == [], f"schema problems: {problems}"
@@ -527,6 +544,7 @@ def test_measure_cell_records_molt_failure_payload_without_live_build(
         timeout_s=1.0,
         batch_server=None,
         cpython_cmd=(sys.executable,),
+        target_python_version="3.12",
         log_dir=tmp_path / "logs",
     )
     doc = _board([cell])
@@ -607,6 +625,7 @@ def test_measure_cell_includes_existing_warmups_in_output_parity(
         timeout_s=1.0,
         batch_server=None,
         cpython_cmd=(sys.executable,),
+        target_python_version="3.12",
         log_dir=tmp_path / "logs",
     )
 
@@ -895,19 +914,18 @@ def test_benchmark_tool_identity_uses_git_tree_paths(monkeypatch) -> None:
 
     def fake_git(args: list[str]) -> str | None:
         calls.append(tuple(args))
-        if args == ["hash-object", f"--path={rel}", str(Path(ps.__file__).resolve())]:
+        if args[0] in ("hash-object", "rev-parse"):
             return "b" * 40
-        if args == ["log", "-n", "1", "--format=%H", "--", rel]:
+        if args[0] == "log":
             return "c" * 40
-        if args == ["rev-parse", f"HEAD:{rel}"]:
-            return "b" * 40
         return None
 
     monkeypatch.setattr(ps, "_git_output", fake_git)
 
     identity = ps._benchmark_tool_identity()
 
-    assert identity["path"] == rel
+    assert identity["path"] == "molt-perf-tool-family-v1"
+    assert len(identity["ondisk_blob_sha"]) == 64
     assert identity["modified_vs_head"] == "false"
     assert "\\" not in rel
     assert ("rev-parse", f"HEAD:{rel}") in calls

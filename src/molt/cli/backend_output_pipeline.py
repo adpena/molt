@@ -9,6 +9,7 @@ from molt.cli.link_fingerprints import FinalLinkReceiptRequest
 from molt.cli.build_diagnostics import _emit_build_diagnostics_if_present
 from molt.cli.build_results import (
     _emit_native_link_result,
+    _observed_build_toolchain,
     _emit_non_native_build_result,
 )
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
@@ -196,7 +197,14 @@ def _emit_backend_pipeline_outputs(
             warnings=prepared_build_preamble.warnings,
             json_output=json_output,
             resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
-            extra_fields=prepared_non_native_result.extra_fields,
+            extra_fields={
+                **prepared_non_native_result.extra_fields,
+                "observed_toolchain": _observed_build_toolchain(
+                    backend_bin=prepared_backend_runtime_context.backend_bin,
+                    runtime_lib=None,  # No verified runtime artifact binding for this lane.
+                    output=prepared_non_native_result.primary_output,
+                ),
+            },
             artifacts=prepared_non_native_result.artifacts,
             success_messages=prepared_non_native_result.success_messages,
         )
@@ -247,6 +255,13 @@ def _emit_backend_pipeline_outputs(
             warnings=prepared_build_preamble.warnings,
             json_output=json_output,
             resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
+            extra_fields={
+                "observed_toolchain": _observed_build_toolchain(
+                    backend_bin=prepared_backend_runtime_context.backend_bin,
+                    runtime_lib=None,
+                    output=prepared_object_output,
+                )
+            },
             artifacts={"object": str(prepared_object_output)},
             success_messages=[f"Successfully built {prepared_object_output}"],
         )
@@ -329,6 +344,7 @@ def _emit_backend_pipeline_outputs(
                 )
             )
     return _emit_native_link_result(
+        backend_bin=prepared_backend_runtime_context.backend_bin,
         link_process=prepared_native_link.link_process,
         link_skipped=prepared_native_link.link_skipped,
         link_fingerprint=prepared_native_link.link_fingerprint,
