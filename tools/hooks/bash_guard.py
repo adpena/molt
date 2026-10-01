@@ -123,9 +123,18 @@ DESTRUCTIVE_GIT = {
 }
 
 _ADD_SWEEP_FLAGS = {"-A", "--all", "-u", "--update"}
-_HEAVY_CARGO_SUBS = {"build", "test", "check", "clippy", "run", "bench"}
-# Substrings that mean "this build IS routed through the governed queue path".
-_QUEUE_ROUTED_MARKERS = ("proof_queue", "molt_dev.py", "molt_dev ", "venv_exec.py")
+_HEAVY_CARGO_SUBS = {
+    "build",
+    "test",
+    "check",
+    "clippy",
+    "run",
+    "bench",
+    "rustc",
+    "doc",
+    "rustdoc",
+    "install",
+}
 
 _SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
 
@@ -157,15 +166,25 @@ def _parse_segment(seg: str) -> Segment | None:
     if not tokens:
         return None
     out = Segment()
-    i = 0
-    while i < len(tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[i]):
-        name, _, val = tokens[i].partition("=")
-        out.envs[name] = val
-        i += 1
-    if i >= len(tokens):
-        return out  # env-only segment
-    out.exe = tokens[i]
-    out.args = tokens[i + 1 :]
+    remaining = seg.lstrip()
+    assignment = re.compile(
+        r"^([A-Za-z_][A-Za-z0-9_]*)=((?:[^\s\"'\\]|\\.|'[^']*'|\"(?:[^\"\\]|\\.)*\")*)(?=\s|$)"
+    )
+    while match := assignment.match(remaining):
+        words = shlex.split(match.group(0), posix=True)
+        if len(words) != 1:
+            return None
+        name, _, value = words[0].partition("=")
+        out.envs[name] = value
+        remaining = remaining[match.end() :].lstrip()
+    try:
+        tokens = shlex.split(remaining, posix=True)
+    except ValueError:
+        tokens = remaining.split()
+    if not tokens:
+        return out
+    out.exe = tokens[0]
+    out.args = tokens[1:]
     return out
 
 
@@ -192,14 +211,37 @@ def _git_subcommand(args: list[str]) -> tuple[str, list[str]]:
     return "", []
 
 
-def _override_active(command: str, env) -> bool:
-    if env and str(env.get(OVERRIDE_TOKEN, "")) == "1":
-        return True
-    # in-command env-assignment form: MOLT_GUARD_OK=1 git reset --hard ...
-    return bool(re.search(rf"\b{OVERRIDE_TOKEN}=1\b", command))
+def _override_active(segment: Segment | None, env) -> bool:
+    # An inline assignment applies only to its own execution segment and wins
+    # over inherited environment. Quoted token/argument text is not a grant.
+    if segment is not None and OVERRIDE_TOKEN in segment.envs:
+        return segment.envs[OVERRIDE_TOKEN] == "1"
+    return bool(env and str(env.get(OVERRIDE_TOKEN, "")) == "1")
 
 
 # --- the pure decision surface ---------------------------------------------
+
+
+def _heavy_payload(segment: Segment) -> tuple[str, str]:
+    """Inspect executable payloads, never queue-looking text in other segments."""
+    from tools.proof_queue_pkg import command_admission
+
+    command = [segment.exe, *segment.args]
+    modeled = command_admission._command_wrapper(command)
+    if modeled is not None:
+        command = modeled[1]
+        if command_admission._command_wrapper(command) is not None:
+            raise ValueError("command wrappers are limited to one typed layer")
+    if command_admission._basename(command[0]) in {"uv", "uv.exe"}:
+        _prefix, command = command_admission._uv_prefix_and_payload(command)
+    entrypoint = command_admission._command_entrypoint(command)
+    if entrypoint == ("python-cli-command", "molt.cli:build"):
+        return "molt", "build"
+    base = _exe_base(command[0])
+    if base == "cargo":
+        invocation = command_admission.parse_cargo_invocation(command)
+        return base, invocation.subcommand or ""
+    return base, command[1] if len(command) > 1 else ""
 
 
 def decide(
@@ -219,7 +261,7 @@ def decide(
     if not command or not command.strip():
         return Decision()
 
-    override = _override_active(command, env)
+    override = _override_active(None, env)
 
     segments = [_parse_segment(s) for s in _split_segments(command)]
     segments = [s for s in segments if s is not None]
@@ -229,6 +271,7 @@ def decide(
     # (a) destructive working-tree git on the shared checkout
     if in_shared_checkout:
         for s in git_segs:
+            override = _override_active(s, env)
             sub, rest = _git_subcommand(s.args)
             pred = DESTRUCTIVE_GIT.get(sub)
             if pred and pred(rest):
@@ -247,6 +290,7 @@ def decide(
     has_scoped_commit = False
     has_unscoped_commit = False
     for s in git_segs:
+        override = _override_active(s, env)
         sub, rest = _git_subcommand(s.args)
         if sub == "add":
             has_add = True
@@ -279,31 +323,28 @@ def decide(
             "including other agents' WIP (M20). Scope the commit: `git commit -- <pathspec>`.",
         )
 
-    # (c) heavy build bypassing the live proof_queue (M27)
-    if queue_live and OVERRIDE_TOKEN not in command:
-        routed = any(m in command for m in _QUEUE_ROUTED_MARKERS)
-        if not routed:
-            for s in segments:
-                base = _exe_base(s.exe)
-                sub = s.args[0] if s.args else ""
-                if base == "cargo" and sub in _HEAVY_CARGO_SUBS:
-                    return _mk(
-                        override,
-                        "build-bypasses-queue",
-                        f"`cargo {sub}` is a heavy build launched while a proof_queue is LIVE. "
-                        f"Route builds through the queue (M27's <=1-2 builds): "
-                        f"`python tools/proof_queue.py ...`. Bypassing risks the OOM/contention class.",
-                    )
-                if base == "molt" and sub == "build":
-                    return _mk(
-                        override,
-                        "build-bypasses-queue",
-                        "`molt build` launched while a proof_queue is LIVE. Route builds through "
-                        "the queue (M27): `python tools/proof_queue.py ...`.",
-                    )
+    # (c) Heavy builds are classified per execution segment. A queue command
+    # elsewhere, a filename substring or an environment wrapper grants no route.
+    if queue_live:
+        for segment in segments:
+            override = _override_active(segment, env)
+            try:
+                base, sub = _heavy_payload(segment)
+            except ValueError as exc:
+                return _mk(override, "build-bypasses-queue", str(exc))
+            if (base == "cargo" and sub in _HEAVY_CARGO_SUBS) or (
+                base == "molt" and sub == "build"
+            ):
+                return _mk(
+                    override,
+                    "build-bypasses-queue",
+                    f"`{base} {sub}` is a heavy build launched while a proof_queue is LIVE. "
+                    "Route builds through the queue (M27): `python tools/proof_queue.py ...`.",
+                )
 
     # (d) https push to origin (M19)
     for s in git_segs:
+        override = _override_active(s, env)
         sub, rest = _git_subcommand(s.args)
         if sub == "push":
             pushes_https_url = any(
@@ -322,7 +363,7 @@ def decide(
                     "(git@github.com:adpena/molt.git).",
                 )
 
-    return Decision(override=override)
+    return Decision(override=_override_active(None, env))
 
 
 def _mk(override: bool, rule: str, reason: str) -> Decision:

@@ -238,6 +238,14 @@ def _exact_command(
     envelope: Mapping[str, object], *, cwd: Path, env: Mapping[str, str]
 ) -> list[str]:
     argv = [str(value) for value in envelope["argv"]]  # type: ignore[index]
+    wrapper = envelope.get("wrapper")
+    if isinstance(wrapper, Mapping) and wrapper.get("kind") == "venv":
+        from tools import venv_exec
+
+        selected_venv = env.get("VIRTUAL_ENV")
+        if not selected_venv:
+            raise ValueError("modeled venv wrapper has no bound environment")
+        argv = venv_exec.resolve_command(argv, venv=Path(selected_venv))
     python = envelope.get("python")
     if isinstance(python, Mapping) and python.get("kind") in {
         "uv",

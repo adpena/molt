@@ -83,13 +83,14 @@ def run_command(command: Sequence[str], *, env: Mapping[str, str]) -> int:
     return 127
 
 
-def main(argv: list[str] | None = None) -> int:
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        allow_abbrev=False,
         description=(
             "Run uv with the canonical Molt developer project environment, so "
             "multi-Python lanes do not rewrite the shared interactive .venv or "
             "spill artifacts outside the DX resolver."
-        )
+        ),
     )
     parser.add_argument("--python", required=True)
     parser.add_argument("--purpose", default="command")
@@ -100,6 +101,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the resolved UV_PROJECT_ENVIRONMENT path before execution.",
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argument_parser()
     args = parser.parse_args(argv)
 
     env = uv_project_env(

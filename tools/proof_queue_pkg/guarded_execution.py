@@ -300,6 +300,8 @@ def execute_guarded_request(request_path: Path) -> int:
         )
     command = [str(value) for value in command]
     admission.validate_envelope(envelope, command)
+    # Execute the admitted payload, retaining submitted wrapper provenance.
+    command = [str(value) for value in envelope["argv"]]
     execution_custody.require_enforceable_process_closure(envelope)
     effective_cwd = admission._execution_source_paths(envelope, cwd=cwd)
     admission._require_external_execution_outputs(
@@ -316,7 +318,7 @@ def execute_guarded_request(request_path: Path) -> int:
     custody_session: execution_custody.ExecutionCustodySession | None = None
     cargo_cache: cargo_cache_custody.CargoCacheLease | None = None
     try:
-        inherited_env = dict(os.environ)
+        inherited_env = environment._wrapper_execution_environment(envelope, os.environ)
         output_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
             envelope, result_root=result_path.parent, source_root=effective_cwd
         )
@@ -543,6 +545,7 @@ def execute_guarded_request(request_path: Path) -> int:
             process_closure.get("descendants")
         )
         custody_authority_paths = [
+            Path(admission.__file__).resolve(strict=True),
             Path(execution_custody.__file__).resolve(strict=True),
             Path(cargo_cache_custody.__file__).resolve(strict=True),
             Path(cargo_output_environment.__file__).resolve(strict=True),
@@ -564,10 +567,20 @@ def execute_guarded_request(request_path: Path) -> int:
             custody_authority_paths.extend(
                 (
                     admission._PYTHON_CUSTODY_BOOTSTRAP.resolve(strict=True),
+                    admission._PYTHON_CUSTODY_BOOTSTRAP.with_name(
+                        "python_payload_authority.py"
+                    ).resolve(strict=True),
                     Path(execution_custody.__file__)
                     .with_name("python_child_custody.py")
                     .resolve(strict=True),
                 )
+            )
+        if envelope.get("wrapper") is not None:
+            # Wrapper parser and environment behavior are execution authorities,
+            # even though supervised execution dispatches only their payload.
+            custody_authority_paths.extend(
+                (admission._REPO_ROOT / "tools" / name).resolve(strict=True)
+                for name in ("venv_exec.py", "uv_project_env.py")
             )
         if "node" in envelope.get("toolchains", []):
             custody_authority_paths.extend(

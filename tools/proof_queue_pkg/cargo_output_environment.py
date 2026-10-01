@@ -45,7 +45,11 @@ class CargoOutputEnvironment:
         argv = envelope.get("argv")
         if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
             raise ValueError("Cargo output policy has no admitted argv")
-        invocation = command_admission.parse_cargo_invocation(argv)
+        invocation = command_admission.cargo_invocation_for_envelope(envelope)
+        # A declared Python driver can build documentation as a descendant.
+        # Bind the complete output-variable family instead of guessing its argv.
+        if invocation is None:
+            return cls(documentation=True, external_placement=external_placement)
         policy = cls.for_invocation(invocation)
         if external_placement and any(
             name == "--artifact-dir" for name, _value in invocation.option_values

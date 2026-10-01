@@ -92,6 +92,30 @@ def environment_override_policy_error(env_overrides: Mapping[str, str]) -> str |
     return None
 
 
+def _wrapper_execution_environment(
+    envelope: Mapping[str, object], inherited: Mapping[str, str]
+) -> dict[str, str]:
+    """Bind the modeled wrapper before interpreter capture or custody starts."""
+    wrapper = envelope.get("wrapper")
+    if wrapper is None:
+        return dict(inherited)
+    if not isinstance(wrapper, Mapping):
+        raise ValueError("proof wrapper descriptor is malformed")
+    from tools import venv_exec, uv_project_env
+
+    if wrapper.get("kind") == "venv":
+        venv = venv_exec.resolve_venv(env=inherited, explicit=wrapper.get("venv"))
+        return venv_exec.venv_env(venv=venv, env=inherited)
+    if wrapper.get("kind") == "uv-project":
+        return uv_project_env.uv_project_env(
+            python=str(wrapper["python"]),
+            purpose=str(wrapper["purpose"]),
+            explicit=wrapper.get("venv"),
+            env=inherited,
+        )
+    raise ValueError("proof wrapper descriptor has an unknown kind")
+
+
 def _deterministic_execution_environment(
     inherited: Mapping[str, str],
     *,
@@ -221,8 +245,8 @@ def _bind_cargo_build_tool_environment(
         return selected, bound_contract
     command = [str(value) for value in envelope["argv"]]
     command = admission._nested_command(command) or command
-    invocation = admission.parse_cargo_invocation(command)
-    if invocation.toolchain_selector is not None:
+    invocation = admission.cargo_invocation_for_envelope(envelope)
+    if invocation is not None and invocation.toolchain_selector is not None:
         selected = {
             name: value
             for name, value in selected.items()
@@ -234,12 +258,15 @@ def _bind_cargo_build_tool_environment(
         selected["RUSTUP_TOOLCHAIN"] = invocation.toolchain_selector
     outputs = cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
     _require_cargo_build_tool_environment_context(
-        command, outputs=outputs, cwd=cwd, env=selected
+        command if invocation is not None else ["cargo"],
+        outputs=outputs,
+        cwd=cwd,
+        env=selected,
     )
     updates, selection = toolchain_capture.select_cargo_build_tool_environment(
         cwd=cwd,
         env=selected,
-        rustdoc_required=invocation.requires_documenter,
+        rustdoc_required=invocation is None or invocation.requires_documenter,
     )
     folded = {name.casefold() for name in updates}
     selected = {

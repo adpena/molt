@@ -15,7 +15,21 @@ import zipfile
 
 
 _SOURCE_ROOT_ENV = "MOLT_PROOF_SOURCE_ROOT"
-_MOLT_MODULE_TARGETS = frozenset({"molt", "molt.cli"})
+if __package__:
+    from .python_payload_authority import is_molt_cli_payload
+else:
+    # Safe-path/-I startup excludes this script directory from sys.path.
+    # Load only the sibling authority, never an ambient module of the same name.
+    _payload_spec = importlib.util.spec_from_file_location(
+        "_molt_proof_python_payload_authority",
+        Path(__file__).with_name("python_payload_authority.py").resolve(strict=True),
+    )
+    if _payload_spec is None or _payload_spec.loader is None:
+        raise RuntimeError("proof Python payload authority cannot be loaded")
+    _payload_authority = importlib.util.module_from_spec(_payload_spec)
+    _payload_spec.loader.exec_module(_payload_authority)
+    is_molt_cli_payload = _payload_authority.is_molt_cli_payload
+    del _payload_authority, _payload_spec
 
 
 def _install_custody() -> None:
@@ -64,7 +78,8 @@ def _reset_import_path(mode: str, target: str | None) -> Path | None:
 def _install_source_extension_import_root(mode: str, target: str | None) -> None:
     """Expose this checkout's source only to the typed Molt module payload."""
 
-    if mode != "module" or target not in _MOLT_MODULE_TARGETS:
+    bootstrap_root = Path(__file__).resolve(strict=True).parents[2]
+    if not is_molt_cli_payload(mode, target, repo_root=bootstrap_root):
         return
     raw_root = os.environ.get(_SOURCE_ROOT_ENV)
     if raw_root is None:
