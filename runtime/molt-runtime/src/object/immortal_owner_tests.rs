@@ -18,7 +18,7 @@ fn canonical_values(py: &PyToken<'_>) -> [u64; 4] {
 }
 
 struct OwnedHeaderSnapshot {
-    flags: u32,
+    metadata_flags: u32,
     ref_count: u32,
 }
 
@@ -35,14 +35,14 @@ fn header_for_owned(bits: u64) -> OwnedHeaderSnapshot {
     );
     let header = unsafe { &*header_from_obj_ptr(ptr) };
     OwnedHeaderSnapshot {
-        flags: header.load_metadata_flags(),
+        metadata_flags: header.load_metadata_flags(),
         ref_count: header.ref_count_snapshot(),
     }
 }
 
 fn assert_canonical(bits: u64) {
     let header = header_for_owned(bits);
-    assert_ne!(header.flags & HEADER_FLAG_IMMORTAL, 0);
+    assert_ne!(header.metadata_flags & HEADER_FLAG_IMMORTAL, 0);
     assert_eq!(header.ref_count, molt_codegen_abi::IMMORTAL_REFCOUNT);
 }
 
@@ -152,7 +152,10 @@ fn literal_intrinsics_keep_cache_and_returned_owners_mortal() {
         ] {
             let first = fixture.from_intrinsic();
             assert!(!crate::exception_pending(py));
-            assert_eq!(header_for_owned(first).flags & HEADER_FLAG_IMMORTAL, 0);
+            assert_eq!(
+                header_for_owned(first).metadata_flags & HEADER_FLAG_IMMORTAL,
+                0
+            );
             assert_eq!(header_for_owned(first).ref_count, 2, "creator plus cache");
             let second = fixture.from_intrinsic();
             assert_eq!(second, first);
@@ -197,7 +200,10 @@ fn bounded_literal_cache_eviction_releases_only_its_own_reference() {
                     source.len(),
                     bits,
                 );
-                assert_eq!(header_for_owned(bits).flags & HEADER_FLAG_IMMORTAL, 0);
+                assert_eq!(
+                    header_for_owned(bits).metadata_flags & HEADER_FLAG_IMMORTAL,
+                    0
+                );
                 owners.push(bits);
             }
             assert!(
@@ -256,7 +262,10 @@ fn module_roots_and_literal_caches_survive_repeated_runtime_retirement() {
                 .enumerate()
                 {
                     let bits = fixture.from_intrinsic();
-                    assert_eq!(header_for_owned(bits).flags & HEADER_FLAG_IMMORTAL, 0);
+                    assert_eq!(
+                        header_for_owned(bits).metadata_flags & HEADER_FLAG_IMMORTAL,
+                        0
+                    );
                     unsafe {
                         crate::dict_set_in_place(
                             py,
