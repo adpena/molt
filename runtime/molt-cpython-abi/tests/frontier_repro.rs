@@ -39,8 +39,6 @@
 mod support;
 
 use molt_cpython_abi::hooks::RuntimeHooks;
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Minimal fake runtime backend
@@ -53,52 +51,8 @@ use std::sync::Mutex;
 // tests never depend on the (heavy) full `molt-runtime` crate.
 // ─────────────────────────────────────────────────────────────────────────────
 
-static STR_ARENA: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
-unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
-    // Store the payload with a trailing NUL, matching CPython's
-    // `PyUnicode_AsUTF8` contract (it returns a NUL-terminated C buffer). The
-    // recorded length excludes the NUL.
-    let payload: &[u8] = if data.is_null() || len == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(data, len) }
-    };
-    let mut owned = payload.to_vec();
-    owned.push(0);
-    // Leak so the pointer handed back through `str_data` stays valid for the
-    // whole test process (these tests are short-lived; no reclamation).
-    let leaked: &'static [u8] = Box::leak(owned.into_boxed_slice());
-    let handle = molt_lang_obj_model::MoltObject::from_ptr(leaked.as_ptr() as *mut u8).bits();
-    let mut arena = STR_ARENA.lock().unwrap();
-    arena
-        .get_or_insert_with(HashMap::new)
-        .insert(handle, leaked);
-    handle
-}
-
-unsafe extern "C" fn fake_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
-    let arena = STR_ARENA.lock().unwrap();
-    if let Some(bytes) = arena.as_ref().and_then(|m| m.get(&bits)) {
-        if !out_len.is_null() {
-            // Reported length excludes the trailing NUL byte we stored.
-            unsafe { *out_len = bytes.len().saturating_sub(1) };
-        }
-        bytes.as_ptr()
-    } else {
-        if !out_len.is_null() {
-            unsafe { *out_len = 0 };
-        }
-        std::ptr::null()
-    }
-}
-
 unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
-    if STR_ARENA
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|arena| arena.contains_key(&bits))
-    {
+    if support::fake_strings::contains(bits) {
         molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
     } else {
         molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
@@ -108,8 +62,7 @@ unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
 /// Install this binary's str hooks and own one real runtime execution boundary.
 fn install_min_hooks() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = support::stub_runtime_hooks();
-    hooks.alloc_str = fake_alloc_str;
-    hooks.str_data = fake_str_data;
+    support::fake_strings::wire(&mut hooks);
     hooks.classify_heap = fake_classify_heap;
     support::AbiTestThreadStateTransaction::new(hooks)
 }
@@ -313,6 +266,10 @@ fn frontier_06_pyobject_str_theater() {
     assert!(!s_obj.is_null(), "PyObject_Str returned NULL");
     let s = unsafe { read_pystr(s_obj) };
 
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(s_obj);
+        molt_cpython_abi::api::refcount::Py_DECREF(py);
+    }
     eprintln!("FRONTIER #6 REPRODUCED: PyObject_Str(int) -> {s:?}, CPython -> \"2147483653\"");
     assert_eq!(
         s, "2147483653",
