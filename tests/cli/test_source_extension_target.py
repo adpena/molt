@@ -13,6 +13,7 @@ from molt.cli.source_extensions import (
 
 from molt.cli.extension_manifest import _extension_binary_suffix
 from molt.cli.native_link_plan import _host_target_triple, resolve_native_target_spec
+from molt.cli.source_extension_link_projection import SourceExtensionLinkProjection
 from molt.cli.source_extension_link_requirements import (
     parse_source_extension_link_requirements,
 )
@@ -218,7 +219,11 @@ def source_plan():
         compile_units=(unit,),
         include_dirs=(),
         compile_args=(),
-        link_args=(),
+        link_projection=SourceExtensionLinkProjection(
+            primary_target_id=unit.owner_target_id,
+            primary_member_objects=(unit.producer_object_path,),
+            items=(),
+        ),
         digest="b" * 64,
     )
 
