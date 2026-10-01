@@ -871,8 +871,12 @@ def test_darwin_sampler_keeps_bound_launcher_arguments_for_host_protection(
     monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: metadata)
     monkeypatch.setattr(
         model,
-        "_darwin_proc_command",
-        lambda _pid: "node /opt/node_modules/@openai/codex/bin/codex.js app-server",
+        "_darwin_proc_argv",
+        lambda _pid: (
+            "node",
+            "/opt/node_modules/@openai/codex/bin/codex.js",
+            "app-server",
+        ),
     )
 
     samples = model.sample_processes_posix()
@@ -905,7 +909,7 @@ def test_darwin_sampler_revokes_identity_when_native_binding_changes(
         )
     )
     monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: next(metadata))
-    monkeypatch.setattr(model, "_darwin_proc_command", lambda _pid: "node codex.js")
+    monkeypatch.setattr(model, "_darwin_proc_argv", lambda _pid: ("node", "codex.js"))
 
     samples = model.sample_processes_posix()
 
