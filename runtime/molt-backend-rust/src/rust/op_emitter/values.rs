@@ -150,6 +150,19 @@ impl RustBackend {
         }
     }
 
+    pub(super) fn emit_op_const_ellipsis(&mut self, op: &OpIR) {
+        let out = out_var(op);
+        if !is_assignable_var(&out) {
+            self.emit_unsupported_op(op, "Ellipsis constant requires an assignable output");
+            return;
+        }
+        self.emit_line(&declare_molt_value(
+            &out,
+            "MoltValue::Ellipsis",
+            &self.hoisted_vars,
+        ));
+    }
+
     pub(super) fn emit_op_const_not_implemented(&mut self, op: &OpIR) {
         self.emit_unsupported_op(
             op,
