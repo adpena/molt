@@ -1808,3 +1808,76 @@ fn compile_checked_rejects_malformed_callable_family_without_substitute_values()
         "malformed callable family must fail at its first semantic violation: {err}"
     );
 }
+#[test]
+fn compile_checked_admits_ellipsis_without_runtime_capability_expansion() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const_ellipsis".to_string(),
+                    out: Some("singleton".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            execution_context: Default::default(),
+        }],
+        profile: None,
+    };
+
+    let source = RustBackend::new()
+        .compile_checked(&ir)
+        .expect("ordinary Rust programs must not require the native pending-call boundary");
+    assert!(source.contains("let mut singleton: MoltValue = MoltValue::Ellipsis;"));
+    assert_eq!(
+        compile_and_run_emitted(&source, "ellipsis_admitted").trim(),
+        ""
+    );
+}
+
+#[test]
+fn emitted_ellipsis_preserves_singleton_value_family() {
+    let body = r##"// molt_unpack_sequence(
+fn main() {
+ let a=MoltValue::Ellipsis; let b=a.clone();
+ assert!(molt_bool(&a)); assert!(a==b); assert!(molt_eq(&a,&b));
+ assert!(!molt_eq(&a,&MoltValue::None)); assert!(!molt_eq(&a,&MoltValue::Bool(true)));
+ assert_eq!(molt_str(&a),"Ellipsis"); assert_eq!(molt_str(&molt_repr(&a)),"Ellipsis");
+ assert_eq!(format!("{a:?}"),"Ellipsis");
+ assert_eq!(molt_str(&MoltValue::List(vec![a.clone(),MoltValue::None])),"[Ellipsis, None]");
+ assert_eq!(molt_str(&MoltValue::Dict(vec![(a.clone(),a.clone())])),"{Ellipsis: Ellipsis}");
+ assert_eq!(molt_unpack_type_name(&a),"ellipsis");
+ println!("Ellipsis emitted value-family checks passed");
+}
+"##;
+    let mut backend = RustBackend::new();
+    backend.emit_header();
+    backend.emit_prelude_conditional(body);
+    backend.output.push_str(body);
+    assert_eq!(
+        compile_and_run_emitted(&backend.output, "ellipsis_value_family").trim(),
+        "Ellipsis emitted value-family checks passed"
+    );
+}
+
+#[test]
+fn not_implemented_remains_distinct_and_fail_closed() {
+    let mut backend = RustBackend::new();
+    backend.emit_op(&OpIR {
+        kind: "const_not_implemented".into(),
+        out: Some("singleton".into()),
+        ..OpIR::default()
+    });
+    assert!(!backend.unsupported_ops.is_empty());
+    assert!(!backend.output.contains("MoltValue::Ellipsis"));
+}

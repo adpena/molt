@@ -49,7 +49,8 @@ impl RustBackend {
             "const_none" | "none_const" => self.emit_op_const_none(op),
             "const_bytes" => self.emit_op_const_bytes(op),
             "const_bigint" => self.emit_op_const_bigint(op),
-            "const_not_implemented" | "const_ellipsis" => self.emit_op_const_not_implemented(op),
+            "const_not_implemented" => self.emit_op_const_not_implemented(op),
+            "const_ellipsis" => self.emit_op_const_ellipsis(op),
             "box" | "box_from_raw_int" | "unbox" | "unbox_to_raw_int" => {
                 self.emit_op_representation_copy(op)
             }

@@ -905,6 +905,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "const"
         | "const_bigint"
         | "const_bool"
+        | "const_ellipsis"
         | "const_float"
         | "const_int"
         | "const_str"
