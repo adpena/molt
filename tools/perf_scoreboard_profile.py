@@ -37,8 +37,8 @@ def _profiling_popen(*args, **kwargs):
     return _facade()._profiling_popen(*args, **kwargs)
 
 
-def _perfscore_build_env(spec):
-    return _facade()._perfscore_build_env(spec)
+def _perfscore_build_env(spec, profile):
+    return _facade()._perfscore_build_env(spec, profile)
 
 
 def _release_binary(binary):
@@ -229,6 +229,7 @@ def build_profiling_binary(
     *,
     spec: "BackendSpec",
     profile: str,
+    target_python_version: str,
     inner_loops: int,
     log_lines: list[str],
 ) -> "tuple[bench.MoltBinary | None, dict]":
@@ -254,7 +255,14 @@ def build_profiling_binary(
         "refused": False,
         "reason": None,
         "looped_source_path": None,
+        "target_python": target_python_version,
     }
+    from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+
+    if target_python_version not in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS:
+        meta["refused"] = True
+        meta["reason"] = "profiling requires an explicit supported target Python minor"
+        return None, meta
     try:
         source = script_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -280,10 +288,14 @@ def build_profiling_binary(
     looped_path.write_text(plan.source, encoding="utf-8")
     meta["looped_source_path"] = str(looped_path)
 
-    build_env = _perfscore_build_env(spec)
+    build_env = _perfscore_build_env(spec, profile)
     build_env[MOLT_KEEP_SYMBOLS_ENV] = "1"  # the symbolication hatch
-    extra_args = bench_suites.molt_args_for_benchmark(script_path)
-    build_flag = PROFILE_BUILD_FLAG.get(profile, "release")
+    extra_args = [
+        "--python-version",
+        target_python_version,
+        *bench_suites.molt_args_for_benchmark(script_path),
+    ]
+    build_flag = PROFILE_BUILD_FLAG[profile]
     try:
         binary = bench.prepare_molt_binary(
             str(looped_path),
@@ -572,6 +584,7 @@ def run_hot_only_profiles(
     scripts: list[Path],
     spec: "BackendSpec",
     profile: str,
+    target_python_version: str,
     inner_loops: int,
     rss_mb: int,
     warmup_s: float = HOT_SAMPLE_WARMUP_S,
@@ -598,6 +611,7 @@ def run_hot_only_profiles(
             script,
             spec=spec,
             profile=profile,
+            target_python_version=target_python_version,
             inner_loops=inner_loops,
             log_lines=log_lines,
         )
@@ -606,6 +620,7 @@ def run_hot_only_profiles(
             "target": spec.target,
             "backend": spec.backend,
             "profile": profile,
+            "target_python": target_python_version,
             "inner_loops": inner_loops,
             "build": build_meta,
         }
@@ -627,7 +642,7 @@ def run_hot_only_profiles(
             prof = capture_hot_only_profile(
                 Path(binary.path),
                 run_args=run_args,
-                env=_perfscore_build_env(spec),
+                env=_perfscore_build_env(spec, profile),
                 rss_mb=rss_mb,
                 inner_loops=inner_loops,
                 warmup_s=warmup_s,

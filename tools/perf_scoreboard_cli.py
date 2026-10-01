@@ -79,7 +79,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
         "--profile",
         action="append",
         default=None,
-        choices=["release-fast", "release-output", "dev-fast"],
+        choices=list(api["PROFILE_BUILD_FLAG"]),
         help="profile(s) to measure (default: release-fast)",
     )
     parser.add_argument(
@@ -394,6 +394,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
             scripts=scripts,
             spec=spec,
             profile=profile,
+            target_python_version=target_python.short,
             inner_loops=ns.inner_repeat,
             rss_mb=ns.rss_mb,
         )
@@ -545,7 +546,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
             if spec.build_target == "native":
                 try:
                     batch_server = api["bench"]._BenchBatchBuildServer(
-                        api["_perfscore_build_env"](spec)
+                        api["_perfscore_build_env"](spec, profile)
                     )
                 except Exception as exc:  # noqa: BLE001
                     print(
@@ -581,6 +582,23 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
                         repeat=ns.repeat,
                         emit_cycle_profile=ns.emit_cycle_profile,
                     )
+                    if cell.build_ok:
+                        from perf_scoreboard_build_profiles import (
+                            record_measured_backend_identity,
+                        )
+
+                        try:
+                            record_measured_backend_identity(
+                                provenance,
+                                observation=cell.build_observation,
+                                backend=backend_name,
+                                profile=profile,
+                            )
+                        except ValueError as exc:
+                            cell.note = str(exc)
+                            cell.finalize(budget_ms=cell_budget_ms, authoritative=False)
+                            provenance["authoritative"] = False
+                            provenance["authoritative_reason"] = str(exc)
                     cells.append(cell)
                     if key not in benchmarks_run:
                         benchmarks_run.append(key)

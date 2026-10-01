@@ -1205,6 +1205,7 @@ PERF_TOOL_IDENTITY_PATHS = (
     "tools/perf_scoreboard.py",
     "tools/perf_scoreboard_cli.py",
     "tools/perf_scoreboard_model.py",
+    "tools/perf_scoreboard_build_profiles.py",
     "tools/perf_scoreboard_measure.py",
     "tools/perf_scoreboard_report.py",
     "tools/perf_authority.py",
@@ -1295,37 +1296,19 @@ def _backend_binary_identity_for(spec: "BackendSpec", profile: str) -> str | Non
 
 
 def _resolve_backend_binary_path(spec: "BackendSpec", profile: str) -> Path | None:
-    """Best-effort path to the daemon's molt-backend binary for this lane.
+    """Resolve only the controlled compiler coordinate used by this lane.
 
-    The daemon backend is the cargo ``molt-backend`` artifact. Its location
-    depends on the active CARGO_TARGET_DIR: it may be the shared
-    ``target/<profile_dir>/`` (solo-dev / when CARGO_TARGET_DIR points at
-    ``target``) or a session dir ``target/sessions/<id>/<profile_dir>/``. We
-    probe, in order: the live ``CARGO_TARGET_DIR``, the perfscore session dir,
-    and the shared ``target/`` root — covering every layout cli.py uses.
-    release-fast/release-output map to the ``release-fast`` cargo profile dir;
-    dev maps to ``debug``. Returns None if nothing is found (the identity then
-    degrades to None, never crashes).
+    Guest artifact profiles do not name the host compiler's Cargo directory.
+    Ambient target roots and legacy aliases are not provenance for this run.
     """
-    profile_dir = (
-        "release-fast" if PROFILE_BUILD_FLAG.get(profile) == "release" else "debug"
-    )
-    roots: list[Path] = []
-    env_target = os.environ.get("CARGO_TARGET_DIR", "").strip()
-    if env_target:
-        roots.append(Path(env_target))
-    roots.append(REPO_ROOT / "target" / "sessions" / PERFSCORE_SESSION_ID)
-    roots.append(REPO_ROOT / "target")
-    seen: set[Path] = set()
-    for root in roots:
-        if root in seen:
-            continue
-        seen.add(root)
-        for name in ("molt-backend", "molt"):
-            cand = root / profile_dir / name
-            if cand.exists():
-                return cand
-    return None
+    from perf_scoreboard_build_profiles import profile_selection
+
+    selection = profile_selection(spec, profile)
+    env = _perfscore_build_env(spec, profile)
+    root = Path(env["CARGO_TARGET_DIR"])
+    name = "molt-backend.exe" if os.name == "nt" else "molt-backend"
+    candidate = root / selection.host_cargo_profile / name
+    return candidate if candidate.is_file() else None
 
 
 def _stdlib_cache_key_signal() -> str | None:

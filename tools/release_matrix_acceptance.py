@@ -194,6 +194,9 @@ def required_matrix(*, source_sha: str, root: Path = _ROOT) -> ReleaseMatrix:
         "src/molt/release_matrix.py",
         "tools/release_matrix_acceptance.py",
         "tools/perf_authority.py",
+        "tools/perf_scoreboard_build_profiles.py",
+        "src/molt/cli/build_results.py",
+        "src/molt/cli/backend_output_pipeline.py",
         "src/molt/metric_ratios.py",
         "tools/perf_schema.py",
         *benchmarks,
@@ -393,6 +396,21 @@ def performance_matrix_problems(
             if not isinstance(measurement, Mapping):
                 problems.append(f"{identity}: measured canonical cell required")
             else:
+                observation = measurement.get("build_observation")
+                selected = (
+                    observation.get("selected_profiles")
+                    if isinstance(observation, Mapping)
+                    else None
+                )
+                expected_selected = {
+                    **profile,
+                    "target": "wasm" if coordinate["backend"] == "wasm" else "native",
+                }
+                if selected != expected_selected:
+                    problems.append(
+                        f"{identity}: measured build profile observation is missing/mismatched; "
+                        "caller-authored coordinate labels are not producer binding"
+                    )
                 problems.extend(
                     f"{identity}: {p}" for p in release_cell_problems(measurement)
                 )

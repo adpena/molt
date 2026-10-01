@@ -37,14 +37,18 @@ from perf_scoreboard_model import (  # noqa: E402
 )
 
 
-def _perfscore_build_env(spec: BackendSpec) -> dict[str, str]:
+def _perfscore_build_env(spec: BackendSpec, profile: str) -> dict[str, str]:
     """Build the conformance/build env for a backend lane.
 
     Sets the constitution's session isolation + the LLVM_SYS prefix + the
     MOLT_BACKEND selector. bench._canonical_bench_env folds in the molt
     conformance env (PYTHONPATH, codec, conformance dirs).
     """
+    from perf_scoreboard_build_profiles import profile_selection
+
+    selection = profile_selection(spec, profile)
     base = os.environ.copy()
+    base.update(selection.environment())
     # Scoreboard parity compares user-observable stderr. Profiler epochs emit
     # Molt-only diagnostics, so canonical timing runs explicitly disable ambient
     # profiler/leak modes instead of normalizing those diagnostics away later.
@@ -110,13 +114,13 @@ def measure_cell(
     cell.log_artifact = str(log_path.relative_to(REPO_ROOT))
     log_lines: list[str] = [f"# {benchmark} | {spec.backend} | {profile}"]
 
-    build_env = _perfscore_build_env(spec)
+    build_env = _perfscore_build_env(spec, profile)
     extra_args = [
         "--python-version",
         target_python_version,
         *bench_suites.molt_args_for_benchmark(script_path),
     ]
-    build_flag = PROFILE_BUILD_FLAG.get(profile, "release")
+    build_flag = PROFILE_BUILD_FLAG[profile]
 
     # --- Build the molt binary via the canonical daemon batch build ---------
     binary = None
@@ -171,6 +175,18 @@ def measure_cell(
 
     cell.build_ok = True
     cell.build_observation = binary.build_observation
+    from perf_scoreboard_build_profiles import profile_binding_problems
+
+    binding_problems = profile_binding_problems(
+        binary.build_observation, build_target=spec.build_target, profile=profile
+    )
+    if binding_problems:
+        cell.note = "Unbound build profile: " + "; ".join(binding_problems)
+        log_lines.append(cell.note)
+        cell.finalize(budget_ms=budget_ms, authoritative=False)
+        _write_log(log_path, log_lines)
+        _release_binary(binary)
+        return cell
     cell.binary_size_kib = round(binary.size_kb, 1)
     cell.compile_time_s = round(binary.build_s, 3)
     log_lines.append(

@@ -61,6 +61,22 @@ def _emit_backend_pipeline_outputs(
     bolt_requested: bool = False,
     bolt_training_cmd: str | None = None,
 ) -> int:
+    # These are resolved producer selections, not ambient labels. Native runtime
+    # bytes are admitted under this exact profile before link; WASM separately
+    # resolves its backend-specific artifact profile. Loaded-daemon attestation
+    # remains unknown in the publication observation.
+    from molt.cli.runtime_wasm_build_policy import _resolve_wasm_cargo_profile
+
+    selected_profiles = {
+        "guest_profile": profile,
+        "compiler_profile": prepared_build_config.backend_cargo_profile,
+        "runtime_profile": (
+            _resolve_wasm_cargo_profile(prepared_build_config.runtime_cargo_profile)
+            if output_layout.is_wasm
+            else prepared_build_config.runtime_cargo_profile
+        ),
+        "target": target,
+    }
     runtime_lib = prepared_backend_runtime_context.runtime_lib
     runtime_state = prepared_backend_runtime_context.runtime_state
     ensure_runtime_wasm_both = prepared_backend_runtime_context.ensure_runtime_wasm_both
@@ -201,6 +217,7 @@ def _emit_backend_pipeline_outputs(
                 **prepared_non_native_result.extra_fields,
                 "observed_toolchain": _observed_build_toolchain(
                     backend_bin=prepared_backend_runtime_context.backend_bin,
+                    selected_profiles=selected_profiles,
                     runtime_lib=None,  # No verified runtime artifact binding for this lane.
                     output=prepared_non_native_result.primary_output,
                 ),
@@ -258,6 +275,7 @@ def _emit_backend_pipeline_outputs(
             extra_fields={
                 "observed_toolchain": _observed_build_toolchain(
                     backend_bin=prepared_backend_runtime_context.backend_bin,
+                    selected_profiles=selected_profiles,
                     runtime_lib=None,
                     output=prepared_object_output,
                 )
@@ -344,6 +362,7 @@ def _emit_backend_pipeline_outputs(
                 )
             )
     return _emit_native_link_result(
+        selected_profiles=selected_profiles,
         backend_bin=prepared_backend_runtime_context.backend_bin,
         link_process=prepared_native_link.link_process,
         link_skipped=prepared_native_link.link_skipped,

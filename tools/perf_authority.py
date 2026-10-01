@@ -474,6 +474,20 @@ def canonical_scoreboard_shape_problems(
             f"{CANONICAL_PERF_PROFILE} cells; unexpected: {sample}"
         )
 
+    # Legacy labels cannot prove which producer profile built the selected bytes.
+    # Keep historical artifacts readable, but never count unbound cells as E2.
+    from perf_scoreboard_build_profiles import profile_binding_problems
+
+    for cell in cells:
+        profile = cell.get("profile")
+        if profile in {"release-fast", "release-output", "dev-fast"}:
+            for problem in profile_binding_problems(
+                cell.get("build_observation"),
+                build_target=str(cell.get("target")),
+                profile=str(profile),
+            ):
+                problems.append(f"{label} {_cell_label(cell)}: {problem}")
+
     by_benchmark: dict[str, set[str]] = {}
     cell_benchmarks: set[str] = set()
     for cell in cells:
