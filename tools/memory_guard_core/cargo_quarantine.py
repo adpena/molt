@@ -13,7 +13,7 @@ import shlex
 import stat
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 import uuid
 
 from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp
@@ -21,6 +21,14 @@ from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp
 
 if TYPE_CHECKING:
     from tools.memory_guard_core.process_model import ProcessIdentity, ProcessSample
+
+
+def _exception_diagnostic(exc: BaseException) -> str:
+    """Describe failures without invoking exception-controlled formatting."""
+    name = str.__str__(type.__dict__["__name__"].__get__(type(exc), type))
+    args = cast(Any, BaseException.args).__get__(exc, type(exc))
+    details = [arg for arg in args if type(arg) is str]
+    return name + (": " + "; ".join(details) if details else "")
 
 
 DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP = 5
@@ -118,7 +126,7 @@ def _owned_cargo_ancestor(
     argv = _owned_sample_argv(parent)
     return (
         parent
-        if argv is not None and _token_executable_name(argv[0]) == "cargo"
+        if argv is not None and _native_executable_name(argv[0]) == "cargo"
         else None
     )
 
@@ -146,7 +154,7 @@ def observe_owned_incremental_state(
         ):
             continue
         argv = _owned_sample_argv(sample)
-        if argv is None or _token_executable_name(argv[0]) != "rustc":
+        if argv is None or _native_executable_name(argv[0]) != "rustc":
             continue
         producer = _owned_cargo_ancestor(sample, samples, watched, identities)
         if producer is None or type(producer.started_at_ns) is not int:
@@ -346,13 +354,17 @@ def _command_tokens(fragment: str) -> list[str]:
         return fragment.split()
 
 
-def _token_executable_name(token: str) -> str:
-    text = token.strip().strip("\"'")
-    name = text.replace("\\", "/").rsplit("/", 1)[-1]
+def _native_executable_name(token: str) -> str:
+    """Native argv elements are already delimited; literal quotes are data."""
+    name = token.replace("\\", "/").rsplit("/", 1)[-1]
     suffix = Path(name).suffix.casefold()
     if suffix in {".exe", ".cmd", ".bat"}:
         name = name[: -len(suffix)]
     return name.casefold()
+
+
+def _token_executable_name(token: str) -> str:
+    return _native_executable_name(token.strip().strip("\"'"))
 
 
 def _command_invokes_cargo_build_state(command: Sequence[str]) -> bool:
@@ -371,6 +383,12 @@ def _samples_include_cargo_build_state(
         sample = samples.get(pid)
         if sample is None:
             continue
+        argv = getattr(sample, "argv", None)
+        if isinstance(argv, tuple):
+            if argv and all(isinstance(arg, str) and "\0" not in arg for arg in argv):
+                if _native_executable_name(argv[0]) in _CARGO_BUILD_STATE_EXECUTABLES:
+                    return True
+            continue  # Explicitly unknown native argv grants no role.
         command = getattr(sample, "command", None)
         if isinstance(command, str) and _command_invokes_cargo_build_state(
             _command_tokens(command)
@@ -735,7 +753,7 @@ def _quarantine_cargo_incremental_state(
                 },
             )
     except (OSError, ValueError, RuntimeError, ImportError) as exc:
-        errors.append(str(exc))
+        errors.append(_exception_diagnostic(exc))
         status = "partial" if moved else "deferred"
     finally:
         # A failed unlock/close must not strand other coordinate handles or
@@ -746,7 +764,7 @@ def _quarantine_cargo_incremental_state(
             except Exception as exc:
                 errors.append(
                     f"Cargo coordinate lock release failed: {lock_path}: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{_exception_diagnostic(exc)}"
                 )
                 status = "partial" if moved else "deferred"
             except BaseException as exc:
@@ -788,7 +806,9 @@ def _quarantine_cargo_incremental_state(
                 payload=final_payload,
             )
         except (OSError, ValueError, RuntimeError) as exc:
-            errors.append(f"Cargo final receipt publication failed: {exc}")
+            errors.append(
+                f"Cargo final receipt publication failed: {_exception_diagnostic(exc)}"
+            )
             final_receipt = replace(
                 final_receipt,
                 ownership_status="partial" if moved else "deferred",

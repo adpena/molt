@@ -8,6 +8,7 @@ from functools import lru_cache
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -472,17 +473,27 @@ def _linux_proc_started_at_ns(pid: int) -> int | None:
     return None if identity is None else identity[2]
 
 
-def _linux_proc_command(
-    pid: int,
-    fallback: str,
-    proc_root: Path = Path("/proc"),
-) -> str:
+def _linux_proc_argv(
+    pid: int, proc_root: Path = Path("/proc")
+) -> tuple[str, ...] | None:
+    """Preserve kernel argv boundaries, including empty and whitespace arguments."""
     try:
         raw = (proc_root / str(pid) / "cmdline").read_bytes()
     except OSError:
-        return fallback
-    fields = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
-    return " ".join(fields) if fields else fallback
+        return None
+    if not raw or not raw.endswith(b"\0"):
+        return None
+    fields = tuple(
+        part.decode(errors="surrogateescape") for part in raw.split(b"\0")[:-1]
+    )
+    return fields if fields and fields[0] else None
+
+
+def _linux_proc_command(
+    pid: int, fallback: str, proc_root: Path = Path("/proc")
+) -> str:
+    argv = _linux_proc_argv(pid, proc_root)
+    return shlex.join(argv) if argv is not None else fallback
 
 
 def _linux_proc_rss_kb(pid: int, proc_root: Path = Path("/proc")) -> int:
@@ -536,7 +547,8 @@ def sample_processes_linux_proc(
         if before is None:
             continue
         ppid, pgid, started_at_ns, comm = before
-        command = _linux_proc_command(pid, comm, proc_root)
+        argv = _linux_proc_argv(pid, proc_root)
+        command = shlex.join(argv) if argv is not None else comm
         rss_kb = _linux_proc_rss_kb(pid, proc_root)
         after = stat_reader(pid, proc_root)
         if after != before:
@@ -549,6 +561,7 @@ def sample_processes_linux_proc(
             pgid=pgid,
             elapsed_sec=max(0, int(uptime_sec - started_at_ns / 1_000_000_000)),
             started_at_ns=started_at_ns,
+            argv=argv,
         )
     if not samples:
         raise ProcessSnapshotError("Linux /proc snapshot contained no stable rows")
@@ -588,7 +601,7 @@ class _DarwinProcessAuthority:
         command = raw_name.decode(errors="replace") or f"pid:{pid}"
         return int(info.pbi_ppid), int(info.pbi_pgid), started_at_ns, command
 
-    def command(self, pid: int) -> str | None:
+    def argv(self, pid: int) -> tuple[str, ...] | None:
         mib = (self.ctypes.c_int * 3)(1, 49, pid)
         size = self.ctypes.c_size_t(0)
         if (
@@ -624,9 +637,13 @@ class _DarwinProcessAuthority:
             end = raw.find(b"\0", offset)
             if end < 0:
                 break
-            argv.append(raw[offset:end].decode(errors="replace"))
+            argv.append(raw[offset:end].decode(errors="surrogateescape"))
             offset = end + 1
-        return " ".join(argv) if len(argv) == argc else None
+        return tuple(argv) if len(argv) == argc else None
+
+    def command(self, pid: int) -> str | None:
+        argv = self.argv(pid)
+        return shlex.join(argv) if argv is not None else None
 
 
 def _load_darwin_process_authority() -> _DarwinProcessAuthority:
@@ -733,6 +750,26 @@ def _darwin_proc_started_at_ns(pid: int) -> int | None:
     return None if metadata is None else metadata[2]
 
 
+def _darwin_proc_argv(pid: int) -> tuple[str, ...] | None:
+    """Preserve native KERN_PROCARGS2 boundaries; permission/unknown fails closed."""
+    if sys.platform != "darwin" or pid <= 0:
+        return None
+    authority = _darwin_process_authority()
+    if authority is None:
+        return None
+    try:
+        argv = authority.argv(pid)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    if (
+        not isinstance(argv, tuple)
+        or not argv
+        or any(not isinstance(arg, str) or "\0" in arg for arg in argv)
+    ):
+        return None
+    return argv
+
+
 def _darwin_proc_command(pid: int) -> str | None:
     """Read Darwin argv from KERN_PROCARGS2 for one process instance."""
 
@@ -809,9 +846,9 @@ def sample_processes_posix() -> dict[int, ProcessSample]:
         bound_samples: dict[int, ProcessSample] = {}
         for pid, sample in samples.items():
             before = _darwin_proc_metadata(pid)
-            command = _darwin_proc_command(pid)
+            argv = _darwin_proc_argv(pid)
             after = _darwin_proc_metadata(pid)
-            if before is None or before != after or command is None:
+            if before is None or before != after or argv is None:
                 bound_samples[pid] = ProcessSample(
                     pid=pid,
                     ppid=0,
@@ -820,6 +857,7 @@ def sample_processes_posix() -> dict[int, ProcessSample]:
                     pgid=sample.pgid,
                     elapsed_sec=sample.elapsed_sec,
                     started_at_ns=None,
+                    argv=(),
                 )
                 continue
             ppid, pgid, started_at_ns, _native_name = before
@@ -827,10 +865,11 @@ def sample_processes_posix() -> dict[int, ProcessSample]:
                 pid=pid,
                 ppid=max(0, ppid),
                 rss_kb=sample.rss_kb,
-                command=command,
+                command=shlex.join(argv),
                 pgid=pgid,
                 elapsed_sec=sample.elapsed_sec,
                 started_at_ns=started_at_ns,
+                argv=argv,
             )
         samples = bound_samples
     else:
@@ -918,13 +957,14 @@ def _cached_host_control_plane_command(
     executable_names: frozenset[str],
     launcher_names: frozenset[str],
     argument_executable_names: frozenset[str],
+    argv: tuple[str, ...] | None = None,
 ) -> bool:
     """Cache lexical work only, with every policy input in the value key.
 
     A process's current command is read on every call. PID, creation identity,
     ancestry, and ownership never enter this cache; those remain live facts.
     """
-    folded_command = command.casefold()
+    folded_command = (" ".join(argv) if argv else command).casefold()
     normalized_command = folded_command.replace("\\", "/")
     if (
         any(
@@ -932,10 +972,22 @@ def _cached_host_control_plane_command(
             or token.casefold().replace("\\", "/") in normalized_command
             for token in tokens
         )
-        or command_executable_name(command) in executable_names
+        or (
+            argv[0].replace("\\", "/").rsplit("/", 1)[-1].casefold()
+            if argv
+            else command_executable_name(command)
+        )
+        in executable_names
     ):
         return True
-    names = command_arg_executable_names(command)
+    names = (
+        tuple(
+            arg.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
+            for arg in argv
+        )
+        if argv
+        else command_arg_executable_names(command)
+    )
     return (
         len(names) >= 2
         and names[0] in launcher_names
@@ -950,6 +1002,7 @@ def is_host_control_plane_process(sample: ProcessSample) -> bool:
         HOST_CONTROL_PLANE_EXECUTABLE_NAMES,
         HOST_CONTROL_PLANE_LAUNCHER_NAMES,
         HOST_CONTROL_PLANE_ARG_EXECUTABLE_NAMES,
+        sample.argv,
     )
 
 
@@ -1020,7 +1073,11 @@ def has_external_host_control_plane_lineage(
         return True
     if pid not in descendant_pids(samples, current_pid):
         return True
-    executable = command_executable_name(sample.command)
+    executable = (
+        sample.argv[0].replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        if sample.argv
+        else command_executable_name(sample.command)
+    )
     if executable in HOST_CONTROL_PLANE_LINEAGE_PROTECTED_EXECUTABLE_NAMES:
         return True
     return is_host_control_plane_process(sample)

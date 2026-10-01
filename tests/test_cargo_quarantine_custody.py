@@ -1,7 +1,7 @@
 """Model contracts inject filesystem/closure premises; actual_* tests are native.
 
-Passing modeled transactions is not native platform qualification. macOS native
-argv/filesystem recovery admission remains unavailable and must remain deferred.
+Passing modeled transactions is not native platform qualification. Native Darwin argv behavior requires the actual-platform gate; Windows model
+passes are not native credit. Darwin filesystem recovery still defers unknown.
 """
 
 from __future__ import annotations
@@ -1261,3 +1261,249 @@ def test_actual_native_profile_lock_shared_budget_uses_other_process(
         proc.wait(timeout=10)
         for stream in (proc.stdin, proc.stdout, proc.stderr):
             stream.close()
+
+
+def test_darwin_native_argv_decoder_preserves_boundaries_and_raw_bytes():
+    import ctypes
+    import sys
+    from tools.memory_guard_core import process_model as model
+
+    wanted = (
+        b"/toolchain with 'quotes'/rustc",
+        b"-Cincremental=/cache with spaces",
+        b"",
+        b"raw-\xff",
+    )
+    raw = (
+        len(wanted).to_bytes(4, sys.byteorder, signed=True)
+        + b"/native/exec\0\0"
+        + b"\0".join(wanted)
+        + b"\0ENV=value\0"
+    )
+    calls = []
+
+    def sysctl(mib, count, buffer, size, new, newlen):
+        calls.append(tuple(mib))
+        assert count == 3 and tuple(mib) == (1, 49, 7)
+        size._obj.value = len(raw)
+        if buffer is not None:
+            ctypes.memmove(buffer, raw, len(raw))
+        return 0
+
+    authority = model._DarwinProcessAuthority(
+        ctypes, None, None, object, lambda *args: 0, sysctl
+    )
+    assert authority.argv(7) == tuple(
+        arg.decode(errors="surrogateescape") for arg in wanted
+    )
+    assert calls == [(1, 49, 7), (1, 49, 7)]
+
+
+@pytest.mark.parametrize("failure", [None, "cargo_reuse", "rustc_reuse", "denied"])
+def test_darwin_sampler_to_cargo_observer_preserves_native_authority(
+    tmp_path, monkeypatch, failure
+):
+    from tools.memory_guard_core import process_model as model
+
+    incremental = tmp_path / "cache with spaces and 'quotes'" / "debug" / "incremental"
+    argv = {
+        100: ("/toolchain with 'quotes'/cargo", "check"),
+        101: ("/toolchain with 'quotes'/rustc", "-C", f"incremental={incremental}", ""),
+    }
+    metadata = {100: (1, 100, 1000, "cargo"), 101: (100, 101, 2000, "rustc")}
+    calls = {100: 0, 101: 0}
+
+    def birth(pid):
+        calls[pid] += 1
+        row = metadata[pid]
+        if calls[pid] == 2 and failure == (
+            "cargo_reuse" if pid == 100 else "rustc_reuse"
+        ):
+            return (*row[:2], row[2] + 1, row[3])
+        return row
+
+    class Authority:
+        def argv(self, pid):
+            if failure == "denied":
+                raise PermissionError("ordinary native argv denied")
+            return argv[pid]
+
+    monkeypatch.setattr(model.sys, "platform", "darwin")
+    monkeypatch.setattr(model, "_darwin_process_authority_cache", Authority())
+    monkeypatch.setattr(model, "_darwin_proc_metadata", birth)
+    monkeypatch.setattr(
+        model.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            [],
+            0,
+            "100 1 100 64 Thu Jul 17 07:15:01 2026 cargo\n101 100 101 64 Thu Jul 17 07:15:01 2026 rustc\n",
+            "",
+        ),
+    )
+    samples = model.sample_processes_posix()
+    identities = {pid: model.ProcessIdentity(row[2]) for pid, row in metadata.items()}
+    observed = cargo.observe_owned_incremental_state(samples, set(samples), identities)
+    if failure is None:
+        assert observed == {
+            cargo.CargoIncrementalObservation(101, 2000, str(incremental), 100, 1000)
+        }
+        assert samples[101].argv == argv[101]
+        assert samples[100].argv == argv[100]
+        assert cargo._samples_include_cargo_build_state(samples, set(samples))
+    else:
+        assert not observed
+        if failure == "denied":
+            assert all(
+                sample.argv == () and sample.started_at_ns is None
+                for sample in samples.values()
+            )
+
+
+def test_linux_native_sampler_preserves_argv_without_flattening(tmp_path):
+    from tools.memory_guard_core import process_model as model
+
+    proc = tmp_path / "123"
+    proc.mkdir()
+    argv = (b"/toolchain with 'quotes'/rustc", b"-Cincremental=/cache with spaces", b"")
+    (proc / "cmdline").write_bytes(b"\0".join(argv) + b"\0")
+    (proc / "status").write_text("VmRSS: 40 kB\n")
+    samples = model.sample_processes_linux_proc(
+        tmp_path, stat_reader=lambda *args: (1, 123, 2000, "rustc"), uptime_sec=1
+    )
+    assert samples[123].argv == tuple(arg.decode() for arg in argv)
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (("/path with 'quotes'/rustc",), True),
+        (("/path with 'quotes'/cargo",), True),
+        (("/path/rustc.exe",), True),
+        (("/path/'rustc'",), False),
+        (("/path/python", "cargo"), False),
+        ((), False),
+    ],
+)
+def test_native_build_kind_uses_executable_not_flattened_diagnostic(argv, expected):
+    sample = SimpleNamespace(argv=argv, command="rustc misleading-diagnostic")
+    assert cargo._samples_include_cargo_build_state({7: sample}, {7}) is expected
+
+
+def test_host_native_launcher_classification_uses_typed_arguments():
+    from tools.memory_guard_core import process_model as model
+
+    sample = model.ProcessSample(
+        7,
+        1,
+        1,
+        "misleading diagnostic",
+        argv=("/prefix with 'quotes'/node", "/scripts with spaces/codex.js"),
+    )
+    assert model.is_host_control_plane_process(sample)
+    changed = model.ProcessSample(
+        7, 1, 1, sample.command, argv=("/prefix/python", "unrelated.py")
+    )
+    assert not model.is_host_control_plane_process(changed)
+
+
+class _UnformattableRecoveryError(OSError):
+    def __str__(self):
+        raise AssertionError("exception formatting must not run")
+
+
+@pytest.mark.parametrize("failure_site", ["release", "initial", "final"])
+def test_recovery_diagnostics_cannot_interrupt_cleanup(
+    tmp_path, monkeypatch, failure_site
+):
+    import molt.file_locks as locks
+
+    target = tmp_path / "target"
+    owned = unit(target)
+    acquire, release = locks._try_acquire_file_lock, locks._release_file_lock
+    acquired, attempts = [], []
+    publish = cargo._write_cargo_quarantine_receipt
+    publications = []
+
+    def capture(path):
+        handle = acquire(path)
+        if handle is not None:
+            acquired.append(handle)
+        return handle
+
+    def release_once(handle):
+        attempts.append(handle)
+        release(handle)
+        if failure_site == "release" and len(attempts) == 1:
+            raise _UnformattableRecoveryError("injected release failure")
+
+    def failing_publication(**kwargs):
+        publications.append(kwargs)
+        if failure_site == "initial" or (
+            failure_site == "final" and len(publications) == 3
+        ):
+            raise _UnformattableRecoveryError("injected publication failure")
+        return publish(**kwargs)
+
+    monkeypatch.setattr(locks, "_try_acquire_file_lock", capture)
+    monkeypatch.setattr(locks, "_release_file_lock", release_once)
+    monkeypatch.setattr(cargo, "_write_cargo_quarantine_receipt", failing_publication)
+    try:
+        receipt = recover(target, (observation(owned),))
+        assert len(acquired) == len(attempts) == 2
+        assert all(handle.file.closed for handle in acquired)
+        assert receipt.ownership_status == (
+            "deferred" if failure_site == "initial" else "partial"
+        )
+        assert any("_UnformattableRecoveryError" in error for error in receipt.errors)
+        if failure_site == "initial":
+            assert owned.exists() and not receipt.moved_paths
+        else:
+            assert len(receipt.moved_paths) == 1
+    finally:
+        for handle in acquired:
+            release(handle)
+
+
+class _DiagnosticTrapMetaclass(type):
+    @property
+    def __name__(cls):
+        raise AssertionError("metaclass name formatting must not run")
+
+
+class _DiagnosticTrapError(OSError, metaclass=_DiagnosticTrapMetaclass):
+    @property
+    def args(self):
+        raise AssertionError("overridden exception args must not run")
+
+    def __str__(self):
+        raise AssertionError("exception formatting must not run")
+
+
+def test_diagnostic_uses_builtin_descriptors_not_exception_callbacks():
+    error = _DiagnosticTrapError("primitive failure detail")
+    assert (
+        cargo._exception_diagnostic(error)
+        == "_DiagnosticTrapError: primitive failure detail"
+    )
+
+
+def test_diagnostic_normalizes_builtin_name_str_subclass_without_callbacks():
+    class HostileName(str):
+        def __add__(self, other):
+            raise AssertionError("name addition callback")
+
+        def __format__(self, spec):
+            raise AssertionError("name formatting callback")
+
+        def __str__(self):
+            raise AssertionError("name conversion callback")
+
+    class Error(OSError):
+        pass
+
+    Error.__name__ = HostileName("NamedError")
+    assert (
+        cargo._exception_diagnostic(Error("primitive detail"))
+        == "NamedError: primitive detail"
+    )
