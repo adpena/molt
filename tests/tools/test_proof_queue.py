@@ -1513,7 +1513,7 @@ def test_proof_command_envelope_detects_nested_guarded_cargo() -> None:
 def test_toolchain_identity_rejects_incomplete_python_closure() -> None:
     plan = SimpleNamespace(
         toolchain_policies=(
-            SimpleNamespace(
+            proof_plan.ToolchainPolicy(
                 name="python",
                 data={"version_pattern": r"^Python 3\.12\."},
             ),
@@ -1535,7 +1535,9 @@ def test_toolchain_identity_rejects_real_but_out_of_policy_version(
 ) -> None:
     plan = SimpleNamespace(
         toolchain_policies=(
-            SimpleNamespace(name="python", data={"version_pattern": r"^Python 0\.0\."}),
+            proof_plan.ToolchainPolicy(
+                name="python", data={"version_pattern": r"^Python 0\.0\."}
+            ),
         )
     )
     with pytest.raises(ValueError, match="violates canonical policy"):
