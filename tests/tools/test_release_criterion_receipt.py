@@ -1117,3 +1117,50 @@ def test_structural_engine_preflight_seal_survives_nested_inventory_mutation(
     with pytest.raises(ValueError, match="preflight identity seal changed"):
         receipt.write_receipt(payload, destination)
     assert not destination.output_path.exists()
+
+
+def test_structural_schema_matches_unpatched_producer_and_zero_proof_debt_baseline():
+    from tools import structural_audit
+
+    metrics = structural_audit.ratchet_metrics([])
+    baseline = json.loads(
+        (
+            Path(__file__).resolve().parents[2] / "tools/structural_audit_baseline.json"
+        ).read_text()
+    )
+    assert set(metrics) == receipt.STRUCTURAL_AUDIT_METRICS
+    assert set(baseline) == receipt.STRUCTURAL_AUDIT_METRICS
+    assert metrics["rust_backend_rejection_applicability_total"] == 0
+    assert baseline["rust_backend_rejection_applicability_total"] == 0
+
+
+def test_unpatched_structural_scan_metrics_validate_with_real_receipt_consumer(
+    tmp_path,
+):
+    from tools import structural_audit
+
+    kind = receipt.KIND_STRUCTURAL_AUDIT
+    _write(tmp_path / "src/molt/actual_debt.py", "# TODO(compiler): fixture debt\n")
+    payload = _valid_receipt(tmp_path, kind)
+    findings = structural_audit.run_all(tmp_path)
+    metrics = structural_audit.ratchet_metrics(findings)
+    baseline = payload["facts"]["baseline_metrics"]
+    regressed = sorted(key for key in metrics if metrics[key] > baseline[key])
+    assert "debt_markers_total" in regressed
+    payload["facts"].update(
+        metrics=metrics,
+        findings_count=len(findings),
+        regressed_metrics=regressed,
+        improved_metrics=[],
+    )
+    payload["status"] = receipt.STATUS_FAIL
+    assert (
+        receipt.validate_receipt(
+            payload,
+            expected_kind=kind,
+            expected_source_sha=SOURCE_SHA,
+            repo_root=tmp_path,
+            now=VALIDATION_NOW,
+        )
+        == ()
+    )
