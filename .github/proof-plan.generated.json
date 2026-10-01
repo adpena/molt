@@ -161,6 +161,8 @@
     "tests/test_proof_plan.py",
     "tests/test_harness_memory_guard.py",
     "tests/test_memory_guard_tool.py",
+    "tests/test_child_clock_custody.py",
+    "tests/test_perf_calibration.py",
     "tests/test_python_external_custody.py",
     "tests/process_guard_common.py",
     "tests/native_process_guard.py",
@@ -192,7 +194,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "2596f49fe0423aaf0ea5073aea71c02c1eaa412b9bfe9e469c1cf6dec7d97aa5",
+  "authority_sha256": "864a1326f21d178fac8040c62ff249cf339e23621c8d5b36533435027796d3e6",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -629,6 +631,8 @@
         "tests/differential/basic/arith.py",
         "tests/test_harness_memory_guard.py",
         "tests/test_memory_guard_tool.py",
+        "tests/test_child_clock_custody.py",
+        "tests/test_perf_calibration.py",
         "tests/test_molt_queue_cli.py",
         "tests/test_dx_run_context.py",
         "tests/test_memory_guard_wiring.py",
@@ -3094,7 +3098,9 @@
         "tests/test_bench_wasm_runtime_build_flags.py",
         "tests/test_harness_memory_guard.py",
         "tests/test_molt_diff_expected_failures.py",
-        "tests/test_compat_multibackend_oracle.py"
+        "tests/test_compat_multibackend_oracle.py",
+        "tests/test_child_clock_custody.py",
+        "tests/test_perf_calibration.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -4175,7 +4181,9 @@
         "-m",
         "pytest",
         "-q",
-        "tests/test_cargo_quarantine_custody.py"
+        "tests/test_cargo_quarantine_custody.py",
+        "tests/test_child_clock_custody.py",
+        "tests/test_perf_calibration.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -4208,7 +4216,9 @@
         "-m",
         "pytest",
         "-q",
-        "tests/test_cargo_quarantine_custody.py"
+        "tests/test_cargo_quarantine_custody.py",
+        "tests/test_child_clock_custody.py",
+        "tests/test_perf_calibration.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -4241,7 +4251,9 @@
         "-m",
         "pytest",
         "-q",
-        "tests/test_cargo_quarantine_custody.py"
+        "tests/test_cargo_quarantine_custody.py",
+        "tests/test_child_clock_custody.py",
+        "tests/test_perf_calibration.py"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",

@@ -393,6 +393,8 @@ def write_summary_json(
             result.infrastructure_failure
         ),
         "elapsed_s": result.elapsed_s,
+        "child_elapsed_s": result.child_elapsed_s,
+        "cleanup_elapsed_s": result.cleanup_elapsed_s,
         "max_rss_kb": max_rss_kb,
         "max_rss_gb": max_rss_kb / (1024 * 1024),
         "max_total_rss_kb": max_total_rss_kb,

@@ -8,8 +8,11 @@ from tools import memory_guard
 
 
 class HarnessLimitsView(Protocol):
-    max_process_rss_gb: float
-    max_total_rss_gb: float
+    @property
+    def max_process_rss_gb(self) -> float: ...
+
+    @property
+    def max_total_rss_gb(self) -> float: ...
 
 
 def normalize_prefix(prefix: str) -> str:
