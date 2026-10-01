@@ -708,6 +708,7 @@ def _publication_fixture(tmp_path, target):
         reference=reference,
         gates=gates,
         attempt_dir=tmp_path,
+        producer_argv=["tools/pact_witness_acceptance.py", "--target", target],
     )
 
 

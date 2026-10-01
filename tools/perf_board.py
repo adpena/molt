@@ -14,7 +14,7 @@ measurement script. CPython is the only absolute floor (Performance
 Constitution: any benchmark ``warm_speedup < 1.00`` stable+quiescent is RED).
 Codon is a ceiling, not a floor (advisory). PyPy gates only on *un-attributed*
 losses. Backend gates on cross-backend divergence + each lane's own floor.
-Profile holds release-fast/release-output to shipped-perf, dev-fast advisory.
+Every declared profile must demonstrate its individual CPython win.
 
 Every board carries the full methodology per cell (the cell dicts already do, by
 schema-v3 contract); this module never invents a number — when a comparator lane
@@ -34,9 +34,6 @@ from perf_schema import (
     RED_THRESHOLD,
     SCHEMA_VERSION,
     VERDICT_BUILD_FAILED,
-    VERDICT_FAIL_COLD_BUDGET,
-    VERDICT_FAIL_ENGINE,
-    VERDICT_FAIL_STALE,
     VERDICT_RUN_BLOCKED,
     VERDICT_RUN_ERROR,
     VERDICT_UNSTABLE,
@@ -76,19 +73,6 @@ _INFRA_VERDICTS = frozenset(
     }
 )
 
-# The hard gate-failing verdicts for the absolute CPython floor (mirrors
-# perf_schema.GATE_FAILING_VERDICTS, kept local so the projection predicate is
-# self-contained and testable without importing the runner).
-_CPYTHON_HARD_FAIL = frozenset(
-    {
-        VERDICT_FAIL_ENGINE,
-        VERDICT_FAIL_COLD_BUDGET,
-        VERDICT_BUILD_FAILED,
-        VERDICT_RUN_ERROR,
-        VERDICT_UNSTABLE,
-    }
-)
-
 
 @dataclass(frozen=True)
 class GateOutcome:
@@ -115,67 +99,23 @@ def _is_stable(cell: Mapping[str, Any]) -> bool:
     return cell.get("stable") is True
 
 
-def _is_quiescent(cell: Mapping[str, Any]) -> bool:
-    # A warm RED is only authoritative when measured quiescent (Rule 2/3). The
-    # cell carries ``measured_quiescent`` when --classify ran; absent that, a
-    # board-level authoritative flag governs (passed in via project()).
-    return cell.get("measured_quiescent") is True
-
-
-def _has_cpython_floor(cell: Mapping[str, Any]) -> bool:
-    """A cell has a CPython floor unless it is explicitly CPython-incompatible."""
-    return cell.get("cpython_incompatible") is not True and cell.get("verdict") != (
-        "CPY_INCOMPATIBLE"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Gate predicates (one per board)
-# ---------------------------------------------------------------------------
-
-
 def _gate_cpython(cell: Mapping[str, Any], *, board_authoritative: bool) -> GateOutcome:
-    """CPython is the ABSOLUTE FLOOR. FAIL iff a stable warm speedup < 1.00, OR a
-    hard engine/cold/build/run/unstable verdict. FAIL_STALE on a non-authoritative
-    board downgrades to ADVISORY (a noisy/dirty source cannot block, Rule 3)."""
-    verdict = str(cell.get("verdict"))
-    if not _has_cpython_floor(cell):
-        return GateOutcome(GATE_SKIP, "no CPython floor (CPython-incompatible)")
-    if verdict == VERDICT_FAIL_STALE:
-        return GateOutcome(GATE_ADVISORY, "non-authoritative tree (FAIL_STALE)")
-    if verdict == VERDICT_RUN_BLOCKED:
-        return GateOutcome(GATE_SKIP, "run-path blocked (build/link only)")
-    warm = _warm(cell)
-    # A measured warm RED is the canonical CPython-floor violation.
-    if warm is not None and warm < RED_THRESHOLD and _is_stable(cell):
-        # Quiescence gate: a non-authoritative/non-quiescent board cannot assert
-        # an absolute warm RED (it downgrades to advisory). Authoritative boards
-        # (quiescent nightly) gate hard.
-        if board_authoritative or _is_quiescent(cell):
-            return GateOutcome(
-                GATE_FAIL,
-                f"warm_speedup {warm:.4f} < {RED_THRESHOLD:.2f} (CPython floor)",
-            )
+    """A required cell passes only with authoritative statistical win evidence."""
+    from perf_authority import release_cell_problems
+
+    problems = release_cell_problems(cell)
+    if not problems and board_authoritative:
+        return GateOutcome(GATE_PASS, "statistically demonstrated CPython win")
+    if not board_authoritative:
         return GateOutcome(
-            GATE_ADVISORY,
-            f"warm_speedup {warm:.4f} < floor but board non-authoritative",
+            GATE_FAIL, "non-authoritative evidence: " + "; ".join(problems)
         )
-    if verdict in _CPYTHON_HARD_FAIL:
-        if verdict in _INFRA_VERDICTS and not board_authoritative:
-            return GateOutcome(GATE_ADVISORY, f"{verdict} on non-authoritative board")
-        return GateOutcome(GATE_FAIL, f"{verdict}")
-    return GateOutcome(GATE_PASS, "warm at/above CPython floor")
+    return GateOutcome(GATE_FAIL, "; ".join(problems))
 
 
 def _gate_profile(cell: Mapping[str, Any], *, board_authoritative: bool) -> GateOutcome:
-    """release-fast / release-output are shipped products → hold to the CPython
-    floor. dev-fast is compile-latency-optimized → its warm reds are ADVISORY
-    (doc 51 profiles table), never a hard FAIL."""
-    profile = str(cell.get("profile"))
-    base = _gate_cpython(cell, board_authoritative=board_authoritative)
-    if profile == "dev-fast" and base.verdict == GATE_FAIL:
-        return GateOutcome(GATE_ADVISORY, f"dev-fast advisory: {base.reason}")
-    return base
+    """Every declared profile is subject to the same individual CPython floor."""
+    return _gate_cpython(cell, board_authoritative=board_authoritative)
 
 
 def _gate_pypy(cell: Mapping[str, Any], *, board_authoritative: bool) -> GateOutcome:
@@ -297,7 +237,7 @@ PROJECTIONS: tuple[BoardProjection, ...] = (
         group_by=("profile", "benchmark", "backend"),
         gate_predicate=_gate_profile,
         description="dev-fast/release-fast/release-output each its own table; "
-        "release-* held to shipped-perf, dev-fast advisory",
+        "every declared profile requires the same verified CPython floor",
     ),
     BoardProjection(
         name="pypy",
@@ -489,6 +429,11 @@ def project(
         "git_rev": source_meta.get("git_rev"),
         "source_kind": source_meta.get("source_kind", "cpython_floor_scoreboard"),
         "source_authoritative": board_authoritative,
+        "status_scope": "statistical-comparison",
+        "e2_eligibility": source_meta.get(
+            "e2_eligibility",
+            {"eligible": False, "problems": ["source admission not evaluated"]},
+        ),
         "red_threshold": RED_THRESHOLD,
         "group_by": list(projection.group_by),
         "provenance": dict(source_meta.get("provenance", {})),
@@ -510,7 +455,10 @@ def project_all(
         if isinstance(provenance, Mapping)
         else True
     )
+    from perf_authority import scoreboard_release_eligibility
+
     source_meta = {
+        "e2_eligibility": scoreboard_release_eligibility(source_doc),
         "generated_at": source_doc.get("generated_at"),
         "git_rev": source_doc.get("git_rev"),
         "source_kind": source_doc.get("kind", "cpython_floor_scoreboard"),
@@ -575,6 +523,13 @@ def _print_plane(boards: Mapping[str, Mapping[str, Any]]) -> None:
         board = boards.get(name)
         if board is None:
             continue
+        admission = board.get("e2_eligibility", {})
+        print(
+            f"{name}: canonical-core E2 eligible={admission.get('eligible', False)}",
+            file=sys.stderr,
+        )
+        for problem in admission.get("problems", []):
+            print("E2 INELIGIBLE: " + problem, file=sys.stderr)
         s = board.get("summary", {})
         print(
             f"{name:<10}{board.get('kind', '?'):<26}{s.get('board_state', '?'):<10}"

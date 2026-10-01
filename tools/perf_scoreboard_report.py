@@ -14,7 +14,6 @@ from perf_schema import (
     CLASS_TIE,
     flatten_cells,
     validate_board,
-    verdict_fails_gate,
 )
 from perf_scoreboard_model import (
     SCOREBOARD_DIR,
@@ -147,6 +146,15 @@ def print_summary(doc: dict) -> None:
         )
     print("-" * 100)
 
+    from perf_authority import scoreboard_release_eligibility
+
+    admission = scoreboard_release_eligibility(doc)
+    print(
+        "STATISTICAL COMPARISON; canonical-core E2 eligible="
+        + str(admission["eligible"])
+    )
+    for problem in admission["problems"]:
+        print("E2 INELIGIBLE: " + problem)
     s = doc["summary"]
     print(
         f"TOTAL={s['cells_total']}  GREEN={s['cells_green']}  "
@@ -400,11 +408,10 @@ def diff_against_baseline(
         new_ratio = c.get("warm_speedup")
         old_ratio = old.get("warm_speedup")
         # "Newly gating" = a green-or-warn cell that became a hard gate fail.
-        was_green = not verdict_fails_gate(str(old.get("verdict", "")))
-        now_fails = verdict_fails_gate(
-            str(c.get("verdict", "")),
-            fail_stale=False,
-        )
+        from perf_authority import release_cell_problems
+
+        was_green = not release_cell_problems(old)
+        now_fails = bool(release_cell_problems(c))
         if now_fails and was_green:
             newly_red.append(
                 f"{key}: NEWLY {c.get('verdict', 'RED')}  "
@@ -453,21 +460,22 @@ def _gate_exit_code(
     strict_cold: bool = False,
     allow_nonauthoritative: bool = False,
 ) -> int:
-    """The two-dimensional gate (council ruling A).
+    """Fail unless every required cell demonstrates a repeated CPython win.
 
-    Nonzero iff any FAIL_ENGINE / FAIL_COLD_BUDGET / BUILD_FAILED / RUN_ERROR /
-    UNSTABLE. WARN_COLD_FLOOR fails ONLY with ``--strict-cold``. FAIL_STALE
-    fails UNLESS ``--allow-nonauthoritative`` (local-debug opt-out). The single
-    source of truth shared by run / merge / rebuild-summary.
+    ``no_gate`` is an explicit exploratory opt-out, never release evidence.
+    Historical summary flags cannot override the measured cells.
     """
     if no_gate:
         return 0
-    s = doc.get("summary", {})
-    if s.get("gate_fails"):
+    from perf_authority import scoreboard_release_eligibility
+
+    if not scoreboard_release_eligibility(doc)["eligible"]:
         return 1
-    if strict_cold and s.get("cells_warn_cold_floor", 0) > 0:
+    cells = _flatten_cells(doc)
+    if not cells or doc.get("benchmarks_deferred"):
         return 1
-    if (not allow_nonauthoritative) and s.get("cells_fail_stale", 0) > 0:
+    provenance = doc.get("provenance", {})
+    if not allow_nonauthoritative and provenance.get("authoritative") is not True:
         return 1
     return 0
 

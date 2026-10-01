@@ -3,6 +3,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import platform
 import shlex
@@ -10,6 +11,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+from typing import Any
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -164,6 +166,7 @@ class MoltBinary:
     temp_dir: object
     build_s: float
     size_kb: float
+    build_observation: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -439,7 +442,6 @@ def measure_runtime(
     full_cmd = cmd_args + ([script] if script else [])
     if run_args:
         full_cmd.extend(run_args)
-    start = time.perf_counter()
     try:
         res = harness_memory_guard.guarded_completed_process(
             full_cmd,
@@ -455,10 +457,29 @@ def measure_runtime(
         bench_label = f" for {label}" if label else ""
         print(f"Benchmark run{bench_label}{msg}.", file=sys.stderr)
         return None
-    elapsed_s = getattr(res, "elapsed_s", None)
-    if elapsed_s is None:
-        elapsed_s = time.perf_counter() - start
-    if res.returncode != 0:
+    if (
+        res.returncode != 0
+        or getattr(res, "timed_out", False)
+        or getattr(res, "infrastructure_failure", None) is not None
+        or getattr(res, "violation", None) is not None
+        or getattr(res, "orphaned_process_groups", ())
+    ):
+        print(
+            f"Benchmark execution failed with exit {res.returncode}: {res.stderr or ''}",
+            file=sys.stderr,
+        )
+        return None
+    elapsed_s = getattr(res, "child_elapsed_s", None)
+    if (
+        not isinstance(elapsed_s, (int, float))
+        or isinstance(elapsed_s, bool)
+        or not math.isfinite(elapsed_s)
+        or elapsed_s < 0
+    ):
+        print(
+            "Successful benchmark execution has no valid direct-child timing evidence.",
+            file=sys.stderr,
+        )
         return None
     return RunSample(elapsed_s, res.stdout, res.stderr)
 
@@ -625,6 +646,14 @@ def _molt_build_params(
     remaining = list(extra_args or [])
     while remaining:
         arg = remaining.pop(0)
+        if arg == "--python-version":
+            if not remaining:
+                raise ValueError("--python-version requires a value")
+            params["python_version"] = remaining.pop(0)
+            continue
+        if arg.startswith("--python-version="):
+            params["python_version"] = arg.split("=", maxsplit=1)[1]
+            continue
         if arg == "--type-hints":
             if not remaining:
                 raise ValueError("--type-hints requires a value")
@@ -1215,7 +1244,13 @@ def prepare_molt_binary(
             return failure
 
         binary_size = output_path.stat().st_size / 1024
-        return MoltBinary(output_path, temp_dir, build_s, binary_size)
+        return MoltBinary(
+            output_path,
+            temp_dir,
+            build_s,
+            binary_size,
+            payload.get("data", {}).get("observed_toolchain"),
+        )
 
     result = _attempt_build()
     if isinstance(result, MoltBinary):
@@ -1280,13 +1315,17 @@ def measure_molt_run(
             ),
         )
         return failure
-    elapsed_s = getattr(res, "elapsed_s", None)
-    if elapsed_s is None:
-        elapsed_s = time.perf_counter() - start
+    elapsed_s = getattr(res, "child_elapsed_s", None)
     orphaned_process_groups = tuple(
         int(pgid) for pgid in getattr(res, "orphaned_process_groups", ()) or ()
     )
-    if res.returncode != 0 or orphaned_process_groups:
+    if (
+        res.returncode != 0
+        or orphaned_process_groups
+        or getattr(res, "timed_out", False)
+        or getattr(res, "infrastructure_failure", None) is not None
+        or getattr(res, "violation", None) is not None
+    ):
         err = (res.stderr or res.stdout).strip()
         if err:
             prefix = f"Molt run failed for {label}: " if label else "Molt run failed: "
@@ -1297,11 +1336,25 @@ def measure_molt_run(
             stdout=res.stdout,
             stderr=res.stderr,
             timed_out=bool(getattr(res, "timed_out", False)),
-            elapsed_s=elapsed_s,
+            elapsed_s=getattr(res, "elapsed_s", None),
             violation=getattr(res, "violation", None),
             child_returncode=getattr(res, "child_returncode", None),
             infrastructure_failure=getattr(res, "infrastructure_failure", None),
             orphaned_process_groups=orphaned_process_groups,
+            default_status="runtime_failed",
+        )
+    if (
+        not isinstance(elapsed_s, (int, float))
+        or isinstance(elapsed_s, bool)
+        or not math.isfinite(elapsed_s)
+        or elapsed_s < 0
+    ):
+        return _classified_molt_failure(
+            phase="run",
+            returncode=res.returncode,
+            stdout=res.stdout,
+            stderr="missing direct-child execution clock; " + (res.stderr or ""),
+            elapsed_s=None,
             default_status="runtime_failed",
         )
     return RunSample(elapsed_s, res.stdout, res.stderr)

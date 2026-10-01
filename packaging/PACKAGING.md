@@ -93,6 +93,21 @@ must come from `release.yml` under the same constraints. Subject digests alone
 are not signature authentication. E1, E2 and E4 are currently typed,
 source-bound receipts, not independently signed execution attestations; release
 signing attests their verified contents, not an independent rerun.
+E4 structural receipts bind the Python audit interpreter by observed command
+and base-executable bytes, implementation, exact version, and the canonical
+`molt.python-runtime-closure.v5` inventory. That existing authority identifies
+the loaded CPython runtime-library image, import roots, runtime files, and native
+dependency closure; a launcher hash alone cannot establish this identity.
+The observation is captured before the audit and rechecked before publication.
+Unavailable or changed runtime closure prevents receipt publication. Producer
+scripts and inspected source inputs are hashed separately. This audit-engine identity does not establish E1/E2 guest
+compiler, runtime, or oracle toolchain identity; missing observations still make
+the corresponding H0 predicate false.
+E1 acceptance receipts record the actual acceptance-producer invocation and its
+completion observation time. Their `execution_tools` remains explicitly null
+until the actual compiler, runtime, and reference-oracle identity closure is
+admitted by a typed authority; neither a version string nor the receipt writer's
+Python identity can satisfy that missing H0 toolchain obligation.
 
 H0 is a separate signed projection, outside the E1-E4 bundle's closed file
 inventory. `phase_exit_manifest prepare` emits the canonical unsigned subject

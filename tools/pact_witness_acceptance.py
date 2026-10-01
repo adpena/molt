@@ -934,6 +934,7 @@ def _write_acceptance_receipt(
     reference: Path,
     gates: Path,
     attempt_dir: Path,
+    producer_argv: Sequence[str],
 ) -> Path:
     # Build and run already belong to this attempt. Bind the actual executed
     # closure in place instead of copying large artifacts or rewriting manifests.
@@ -979,6 +980,10 @@ def _write_acceptance_receipt(
             if key != "role"
         },
         "iteration_mode": False,
+        "generated_at": datetime.now(UTC)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+        "producer": {"argv": list(producer_argv), "execution_tools": None},
     }
     problems = pact_witness_receipt.validate_acceptance_receipt(
         payload, receipt_path=receipt
@@ -1005,7 +1010,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Owned tmp artifact root for build/, run/, and candidate_outputs.npz.",
     )
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
 
     # The reference oracle's numerics run inside the attested locked
     # environment of the pact-witness dependency group (numpy/scipy pinned to
@@ -1045,6 +1051,7 @@ def main(argv: list[str] | None = None) -> int:
         reference=reference,
         gates=gates,
         attempt_dir=run_dir.parent,
+        producer_argv=["tools/pact_witness_acceptance.py", *raw_argv],
     )
     print(f"pact witness acceptance PASS target={args.target}", flush=True)
     return 0

@@ -59,6 +59,7 @@ def test_measure_executable_uses_fresh_path_copies(
             stdout="1\n",
             stderr="",
             elapsed_s=0.12 + len(commands) / 1000,
+            child_elapsed_s=0.12 + len(commands) / 1000,
         )
 
     monkeypatch.setattr(audit, "_run_guarded", fake_run)
@@ -98,6 +99,7 @@ def test_measure_cold_first_sighting_runs_artifact_once(
             stdout="1\n",
             stderr="",
             elapsed_s=0.30,
+            child_elapsed_s=0.30,
         )
 
     monkeypatch.setattr(audit, "_run_guarded", fake_run)
@@ -176,7 +178,9 @@ def test_wasm_fresh_copy_rebases_manifest_to_measured_bytes(
         manifest = Path(command[-1])
         payload = json.loads(manifest.read_text(encoding="utf-8"))
         observed_modules.append(manifest.parent / payload["modules"]["linked"]["path"])
-        return SimpleNamespace(returncode=0, stdout="", stderr="", elapsed_s=0.01)
+        return SimpleNamespace(
+            returncode=0, stdout="", stderr="", elapsed_s=0.01, child_elapsed_s=0.01
+        )
 
     monkeypatch.setattr(audit, "_run_guarded", fake_run)
     result = audit._measure_artifact(
@@ -215,7 +219,9 @@ def test_wasm_startup_uses_shared_node_selector_and_deterministic_flags(
     def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
         commands.append(list(command))
-        return SimpleNamespace(returncode=0, stdout="", stderr="", elapsed_s=0.01)
+        return SimpleNamespace(
+            returncode=0, stdout="", stderr="", elapsed_s=0.01, child_elapsed_s=0.01
+        )
 
     monkeypatch.setattr(audit, "resolve_node_runtime", fake_resolve)
     monkeypatch.setattr(audit, "_run_guarded", fake_run)
@@ -314,6 +320,7 @@ def test_build_molt_artifact_emits_progress_on_stderr(
             stdout=json.dumps({"data": {"artifacts": {"luau": str(artifact)}}}),
             stderr="",
             elapsed_s=2.5,
+            child_elapsed_s=2.5,
             timed_out=False,
         )
 
@@ -450,3 +457,62 @@ def test_main_writes_json_report_without_running_real_build(
     startup = payload["cases"][0]["startup"]
     assert startup["page_cache_cold"]["mode"] == "page_cache_cold_copy"
     assert startup["cold_first_sighting"]["mode"] == "cold_first_sighting"
+
+
+def test_startup_samples_exclude_descendant_cleanup_wall_time():
+    audit = _load_audit()
+    result = SimpleNamespace(
+        returncode=0, elapsed_s=12.0, child_elapsed_s=0.02, stdout="", stderr=""
+    )
+    assert (
+        audit._sample_record(index=0, command=["probe"], result=result)["elapsed_s"]
+        == 0.02
+    )
+
+
+def test_startup_sample_rejects_missing_execution_clock():
+    import pytest
+
+    audit = _load_audit()
+    with pytest.raises(ValueError, match="execution clock"):
+        audit._sample_record(
+            index=0,
+            command=["probe"],
+            result=SimpleNamespace(returncode=0, elapsed_s=12.0, stdout="", stderr=""),
+        )
+
+
+def test_failed_startup_keeps_diagnostics_without_execution_clock():
+    audit = _load_audit()
+    result = SimpleNamespace(
+        returncode=124,
+        elapsed_s=12.0,
+        timed_out=True,
+        stdout="partial output",
+        stderr="deadline expired",
+    )
+    record = audit._sample_record(index=0, command=["probe"], result=result)
+    assert record["elapsed_s"] is None
+    assert record["guard_wall_elapsed_s"] == 12.0
+    assert record["returncode"] == 124 and record["timed_out"]
+    assert record["stderr"] == "deadline expired"
+    assert audit._execution_elapsed(result) is None
+
+
+def test_successful_startup_rejects_invalid_child_clock():
+    import pytest
+
+    audit = _load_audit()
+    for value in (None, True, -0.1, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="valid direct-child execution clock"):
+            audit._sample_record(
+                index=0,
+                command=["probe"],
+                result=SimpleNamespace(
+                    returncode=0,
+                    elapsed_s=0.01,
+                    child_elapsed_s=value,
+                    stdout="",
+                    stderr="",
+                ),
+            )

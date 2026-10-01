@@ -128,7 +128,6 @@ from perf_schema import (  # noqa: E402
     CLASS_RED_STABLE,
     CLASS_TIE,
     CLASSIFY_STATES as CLASSIFY_STATES,
-    GATE_FAILING_VERDICTS,
     RED_THRESHOLD,
     SCHEMA_VERSION,
     UNSTABLE_CV,
@@ -1202,25 +1201,71 @@ def _origin_main_sha() -> str | None:
     return _git_output(["rev-parse", "origin/main"])
 
 
-def _benchmark_tool_identity() -> dict[str, str | None]:
-    """Identity of perf_scoreboard.py itself (its own git blob + last commit).
+PERF_TOOL_IDENTITY_PATHS = (
+    "tools/perf_scoreboard.py",
+    "tools/perf_scoreboard_cli.py",
+    "tools/perf_scoreboard_model.py",
+    "tools/perf_scoreboard_measure.py",
+    "tools/perf_scoreboard_report.py",
+    "tools/perf_authority.py",
+    "src/molt/cli/build_results.py",
+    "src/molt/cli/backend_output_pipeline.py",
+    "src/molt/toolchain_identity.py",
+    "src/molt/python_runtime_identity.py",
+    "src/molt/python_file_node_custody.py",
+    "src/molt/python_identity_common.py",
+    "src/molt/python_native_dependency_custody.py",
+    "src/molt/python_native_locations.py",
+    "src/molt/exact_json.py",
+    "tools/perf_schema.py",
+    "tools/perf_board.py",
+    "tools/bench.py",
+    "tools/bench_suites.py",
+    "tools/safe_run.py",
+    "tools/perf_calibration.py",
+    "tools/harness_memory_guard.py",
+    "tools/memory_guard.py",
+    "tools/win_job.py",
+    "src/molt/metric_ratios.py",
+    "src/molt/target_python.py",
+    "tools/memory_guard_core/process_custody.py",
+    "bench/scoreboard/cold_start_budget.json",
+)
 
-    A board measured by a modified-but-uncommitted tool is as non-authoritative
-    as a board measured against a modified tree; we surface both so the reader
-    can tell whether the SCOREBOARD LOGIC changed, not just the compiler.
+
+def _benchmark_tool_identity() -> dict[str, str | None]:
+    """Content-bound identity of the complete measurement/acceptance family.
+
+    Historical single-file hashes cannot match this versioned family manifest;
+    changing a classifier, timer or gate changes the measured tool identity.
     """
-    path = Path(__file__).resolve()
-    rel = path.relative_to(REPO_ROOT).as_posix()
-    blob = _git_output(["hash-object", f"--path={rel}", str(path)])
-    last_commit = _git_output(["log", "-n", "1", "--format=%H", "--", rel])
-    # Does the committed blob differ from the on-disk file?
-    head_blob = _git_output(["rev-parse", f"HEAD:{rel}"])
+    import hashlib
+
+    ondisk: dict[str, str | None] = {}
+    committed: dict[str, str | None] = {}
+    for rel in PERF_TOOL_IDENTITY_PATHS:
+        ondisk[rel] = _git_output(
+            ["hash-object", f"--path={rel}", str(REPO_ROOT / rel)]
+        )
+        committed[rel] = _git_output(["rev-parse", f"HEAD:{rel}"])
+
+    def digest(blobs: dict[str, str | None]) -> str | None:
+        if any(value is None for value in blobs.values()):
+            return None
+        manifest = {"identity_schema": "molt-perf-tool-family-v1", "blobs": blobs}
+        return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+
+    blob, head_blob = digest(ondisk), digest(committed)
     return {
-        "path": rel,
+        "path": "molt-perf-tool-family-v1",
         "ondisk_blob_sha": blob,
         "head_blob_sha": head_blob,
-        "last_commit_sha": last_commit,
-        "modified_vs_head": str(blob is not None and blob != head_blob).lower(),
+        "last_commit_sha": _git_output(
+            ["log", "-n", "1", "--format=%H", "--", *PERF_TOOL_IDENTITY_PATHS]
+        ),
+        "modified_vs_head": str(
+            blob is None or head_blob is None or blob != head_blob
+        ).lower(),
     }
 
 
@@ -1352,6 +1397,7 @@ def gather_provenance(
         "dirty_tree": dirty,
         "diverges_from_origin": diverges,
         "benchmark_tool_sha": tool.get("ondisk_blob_sha"),
+        "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
         "benchmark_tool_last_commit": tool.get("last_commit_sha"),
         "benchmark_tool_modified": tool_modified,
         "backend_binary_identity": backend_identities,
@@ -1413,35 +1459,6 @@ def _refuses_nonauthoritative_measurement(
     return not authoritative and not allow_nonauthoritative
 
 
-def _refresh_artifact_provenance(provenance: dict, cells: list[Cell]) -> None:
-    """Fill in None artifact identities the CURRENT resolver can now compute.
-
-    A stored board may carry ``backend_binary_identity[lane] = None`` (e.g.
-    measured before a resolver fix, or the binary was not yet built). On a
-    re-derive we upgrade any such None to the now-resolvable identity, keyed by
-    the (backend, profile) lanes actually present in the board. The measured
-    origin/local/merge-base SHAs are NOT touched. ``stdlib_cache_key`` is
-    refreshed only if it is currently null.
-    """
-    existing = provenance.get("backend_binary_identity")
-    if not isinstance(existing, dict):
-        existing = {}
-    lanes = {(c.backend, c.profile) for c in cells}
-    for backend, profile in lanes:
-        key = f"{backend}/{profile}"
-        if existing.get(key) is None:
-            spec = BACKENDS_BY_NAME.get(backend)
-            if spec is not None:
-                ident = _backend_binary_identity_for(spec, profile)
-                if ident is not None:
-                    existing[key] = ident
-    provenance["backend_binary_identity"] = existing
-    if provenance.get("stdlib_cache_key") is None:
-        sig = _stdlib_cache_key_signal()
-        if sig is not None:
-            provenance["stdlib_cache_key"] = sig
-
-
 def build_scoreboard_doc(
     cells: list[Cell],
     *,
@@ -1478,7 +1495,9 @@ def build_scoreboard_doc(
 
     # The gate-failing set (the hard reds). FAIL_STALE is conditional (depends
     # on --allow-nonauthoritative), so it is reported separately, not summed in.
-    gate_failing = [c for c in cells if c.verdict in GATE_FAILING_VERDICTS]
+    from perf_authority import release_cell_problems
+
+    gate_failing = [c for c in cells if release_cell_problems(asdict(c))]
     stale_cells = [c for c in cells if c.verdict == VERDICT_FAIL_STALE]
     # The 5-state classification is active iff any cell carries a classification
     # (--classify was used). When inactive the breakdown is empty (no-op for the
@@ -1496,6 +1515,7 @@ def build_scoreboard_doc(
     }
     if cpython_identity is not None:
         host["cpython_oracle"] = cpython_identity
+        host["molt_target_python"] = cpython_identity.get("molt_target_python")
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1717,12 +1737,8 @@ def _rebuild_summary(
                 )
     host = prior.get("host", {})
     provenance = dict(prior.get("provenance", {}))
-    # Refresh ONLY the artifact identities (backend binary, stdlib cache key) —
-    # these are resolvable now (e.g. after a resolver fix) without changing the
-    # measured origin/local/merge-base SHAs. A None identity in a stored board
-    # that the current resolver CAN fill is upgraded; the measured tree identity
-    # is preserved.
-    _refresh_artifact_provenance(provenance, cells)
+    # Rebuilding projections cannot invent identities for artifacts measured
+    # earlier. Missing producer identities require a new measured receipt.
     doc = build_scoreboard_doc(
         cells,
         benchmarks_run=prior.get("benchmarks_run", []),
@@ -1767,7 +1783,7 @@ def _merge_boards(
     Used to combine separately-run backend lanes (e.g. native + llvm) into the
     single ``cpython_<gitrev>.json`` the constitution mandates, without
     re-measuring either lane. Cells are keyed (benchmark, target, backend,
-    profile); a later source overrides an earlier one for the same key.
+    profile); duplicate or incompatible evidence is rejected.
     """
     by_key: dict[tuple, Cell] = {}
     benchmarks_run: list[str] = []
@@ -1778,6 +1794,9 @@ def _merge_boards(
     cpython_version = "unknown"
     git_rev = "unknown"
     generated_at = None
+    first_doc: dict | None = None
+    merged_identities: dict = {}
+    merged_invocations: list[dict] = []
     for src in sources:
         try:
             doc = json.loads(src.read_text(encoding="utf-8"))
@@ -1793,24 +1812,129 @@ def _merge_boards(
                 file=sys.stderr,
             )
             return 3
-        host = doc.get("host", host)
-        method = doc.get("methodology", method)
-        provenance = doc.get("provenance", provenance)
-        cpython_version = host.get("cpython_baseline", cpython_version)
-        git_rev = doc.get("git_rev", git_rev)
-        generated_at = doc.get("generated_at", generated_at)
+        prov = doc.get("provenance", {})
+        invocations = prov.get("producer_invocations", [])
+        if not isinstance(invocations, list) or any(
+            not isinstance(v, dict) for v in invocations
+        ):
+            print(f"--merge: invalid producer invocations in {src}", file=sys.stderr)
+            return 3
+        merged_invocations.extend(invocations)
+        from perf_authority import perf_tool_identity_problems
+
+        identity_problems = perf_tool_identity_problems(prov)
+        if identity_problems:
+            print(
+                f"--merge: source {src}: {'; '.join(identity_problems)}",
+                file=sys.stderr,
+            )
+            return 3
+        if (
+            prov.get("authoritative") is not True
+            or prov.get("dirty_tree") is not False
+            or prov.get("quiescent") is not True
+            or prov.get("require_quiescent") is not True
+            or prov.get("benchmark_tool_modified") is not False
+            or prov.get("diverges_from_origin") is not False
+        ):
+            print(
+                f"--merge: source {src} lacks clean, quiescent authority",
+                file=sys.stderr,
+            )
+            return 3
+        if first_doc is None:
+            first_doc = doc
+            host = doc["host"]
+            method = doc["methodology"]
+            provenance = dict(prov)
+            cpython_version = host["cpython_baseline"]
+            git_rev = doc["git_rev"]
+            generated_at = doc["generated_at"]
+        else:
+            incompatible = [
+                field
+                for field in ("git_rev", "host", "methodology")
+                if doc.get(field) != first_doc.get(field)
+            ]
+            for field in (
+                "origin_sha",
+                "local_head_sha",
+                "merge_base_sha",
+                "benchmark_tool_sha",
+                "benchmark_tool_last_commit",
+                "stdlib_cache_key",
+            ):
+                if prov.get(field) != provenance.get(field):
+                    incompatible.append("provenance." + field)
+            if incompatible:
+                print(
+                    f"--merge: incompatible source {src}: {', '.join(incompatible)}",
+                    file=sys.stderr,
+                )
+                return 3
+
+            def timestamp(value: str) -> dt.datetime:
+                parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    raise ValueError("merge timestamps must include a timezone")
+                return parsed
+
+            try:
+                if timestamp(doc["generated_at"]) < timestamp(generated_at):
+                    generated_at = doc["generated_at"]
+            except ValueError as exc:
+                print(f"--merge: invalid source timestamp: {exc}", file=sys.stderr)
+                return 3
+        if any(
+            prov.get(field) != doc.get("git_rev")
+            for field in ("origin_sha", "local_head_sha", "merge_base_sha")
+        ):
+            print(f"--merge: source {src} revisions disagree", file=sys.stderr)
+            return 3
+        identities = prov.get("backend_binary_identity", {})
+        for lane, identity in identities.items():
+            if identity is None or (
+                lane in merged_identities and merged_identities[lane] != identity
+            ):
+                print(
+                    f"--merge: missing or conflicting backend identity {lane}",
+                    file=sys.stderr,
+                )
+                return 3
+            merged_identities[lane] = identity
         for d in _flatten_cells(doc):
             cell = _cell_from_dict(d)
-            by_key[(cell.benchmark, cell.target, cell.backend, cell.profile)] = cell
+            key = (cell.benchmark, cell.target, cell.backend, cell.profile)
+            if key in by_key:
+                print(f"--merge: duplicate cell {key}", file=sys.stderr)
+                return 3
+            if not identities.get(f"{cell.backend}/{cell.profile}"):
+                print(
+                    f"--merge: cell {key} lacks its measured backend identity",
+                    file=sys.stderr,
+                )
+                return 3
+            if d.get("measured_quiescent") is not True:
+                print(
+                    f"--merge: cell {key} was not measured quiescent", file=sys.stderr
+                )
+                return 3
+            by_key[key] = cell
         for b in doc.get("benchmarks_run", []):
             if b not in benchmarks_run:
                 benchmarks_run.append(b)
+    provenance["producer_invocations"] = merged_invocations
+    provenance["backend_binary_identity"] = merged_identities
     cells = list(by_key.values())
-    _finalize_with_board_context(
-        cells,
-        {"provenance": provenance},
-        allow_nonauthoritative=allow_nonauthoritative,
-    )
+    try:
+        _finalize_with_board_context(
+            cells,
+            {"provenance": provenance},
+            allow_nonauthoritative=allow_nonauthoritative,
+        )
+    except ValueError as exc:
+        print(f"scoreboard cannot admit cold-start policy: {exc}", file=sys.stderr)
+        return 3
     for cell in cells:
         if cell.verdict == VERDICT_CPY_INCOMPAT:
             dkey = f"{cell.benchmark} [{cell.backend}/{cell.profile}]"
@@ -1821,9 +1945,12 @@ def _merge_boards(
                         "reason": cell.note or "CPython baseline could not run",
                     }
                 )
+    from perf_authority import CANONICAL_PERF_BENCHMARKS
+
     doc = build_scoreboard_doc(
         cells,
-        benchmarks_run=sorted(benchmarks_run),
+        benchmarks_run=[b for b in CANONICAL_PERF_BENCHMARKS if b in benchmarks_run]
+        + [b for b in benchmarks_run if b not in CANONICAL_PERF_BENCHMARKS],
         benchmarks_deferred=deferred,
         cpython_version=cpython_version,
         samples=method.get("samples_per_phase", DEFAULT_SAMPLES),
@@ -1884,6 +2011,7 @@ _CPYTHON_IDENTITY_PROBE = "\n".join(
         "    'implementation': platform.python_implementation(),",
         "    'version': platform.python_version(),",
         "    'executable': sys.executable,",
+        "    'base_executable': sys._base_executable,",
         "    'sys_platform': sys.platform,",
         "    'machine': platform.machine(),",
         "    'pointer_bits': struct.calcsize('P') * 8,",
@@ -1973,6 +2101,7 @@ def _probe_cpython_candidate(
             machine=machine,
             arch=arch,
             pointer_bits=pointer_bits,
+            base_executable=payload.get("base_executable"),
         ),
         "",
     )

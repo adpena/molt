@@ -20,10 +20,16 @@ whose evidence rows are projected from the typed release-exit bundle
 (tools/legacy_inventory.py), and a Sigstore attestation bundle whose in-toto
 subject binds the manifest bytes.
 
-`assemble` never fabricates a fact: when an authority does not carry a required
-field (for example a Pact acceptance receipt that records no command), the row
-carries `null` and `verify` names the requirement and field that make the phase
-false. Those nulls are the work list, not a defect of the validator.
+`assemble` never fabricates a fact. Each row field is read only from the field
+its role's typed producer authority records and validates: release-criterion
+receipts (E3/E4) supply `producer.argv` and `generated_at`, structural receipts
+record their observed Python audit engine, and verified-subset
+receipts also supply their validated tool identities (`facts.execution`), and
+the perf scoreboard (E2) supplies its nested cells and `generated_at`. Keys an
+authority does not validate are never read. When an authority does not record
+a required field (the Pact acceptance receipt records no execution toolchain; the scoreboard no command or toolchain), the row carries
+`null` and `verify` names the requirement and field that make the phase false. Those nulls are the work list, not a defect of
+the validator.
 
 `prepare` validates those semantic clauses and emits the exact canonical unsigned
 signing subject. `seal` attaches an adjacent bundle to those existing bytes and
@@ -39,6 +45,7 @@ import base64
 import datetime as dt
 import hashlib
 import json
+import shlex
 import sys
 import tomllib
 from collections.abc import Mapping, Sequence
@@ -66,6 +73,9 @@ from molt.toolchain_identity import (
     verify_stable_regular_file_identity,
 )
 from tools import legacy_inventory
+from tools import pact_witness_receipt as pwr
+from tools import perf_authority as pa
+from tools import release_criterion_receipt as rcr
 from tools import release_exit_gate as reg
 from tools import verified_subset as vs
 from tools.git_identity import is_git_object_id
@@ -296,76 +306,167 @@ def _load_json(path: Path, *, label: str) -> Mapping[str, Any]:
         raise ValueError(f"{label} is unavailable: {path}: {exc}") from exc
 
 
-def _receipt_command(payload: Mapping[str, Any]) -> str | None:
+@dataclass(frozen=True)
+class _ReceiptFacts:
+    """The §5 row fields one typed evidence authority actually records."""
+
+    status: str
+    matrix_cells: tuple[str, ...] = ()
+    command: str | None = None
+    observed_at: str | None = None
+    toolchain_digest: str | None = None
+
+
+# An artifact that is not the schema its role names supplies no fact at all.
+_UNRECOGNIZED = _ReceiptFacts(STATUS_FAIL)
+# The verified-subset execution blocks that identify tools, in digest order.
+_VERIFIED_SUBSET_TOOLCHAIN = ("backend", "python", "rust")
+
+
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _pact_witness_facts(payload: Mapping[str, Any]) -> _ReceiptFacts:
+    """Acceptance schema v3 records argv and time; execution toolchain is unknown."""
+    if (
+        payload.get("kind") != pwr.KIND
+        or payload.get("schema_version") != pwr.SCHEMA_VERSION
+    ):
+        return _UNRECOGNIZED
+    coordinate = pwr.acceptance_coordinate(payload)
+    target = _text(payload.get("target"))
+    cells: tuple[str, ...] = ()
+    if coordinate is not None and target in pwr.TARGETS:
+        cpython, abi_tier, target_triple = coordinate
+        lane = "native" if target == "native" else target_triple
+        cells = (f"pact-witness:{lane}:py{cpython.replace('.', '')}:{abi_tier}",)
+    passed = payload.get("status") == pwr.STATUS_PASS
     producer = payload.get("producer")
-    if isinstance(producer, Mapping):
-        argv = producer.get("argv")
-        if (
-            isinstance(argv, list)
-            and argv
-            and all(isinstance(item, str) for item in argv)
-        ):
-            return " ".join(argv)
-    command = payload.get("command")
-    if isinstance(command, str) and command:
-        return command
-    return None
+    argv = producer.get("argv") if isinstance(producer, Mapping) else None
+    command = (
+        shlex.join(argv)
+        if isinstance(argv, list) and all(isinstance(arg, str) for arg in argv)
+        else None
+    )
+    return _ReceiptFacts(
+        STATUS_PASS if passed else STATUS_FAIL,
+        cells,
+        command=command,
+        observed_at=_text(payload.get("generated_at")),
+    )
 
 
-def _receipt_toolchain_digest(payload: Mapping[str, Any]) -> str | None:
-    for key in ("toolchain", "toolchains", "toolchain_digest"):
-        value = payload.get(key)
-        if isinstance(value, str) and len(value) == 64:
-            return value
-        if isinstance(value, (Mapping, list)) and value:
-            return canonical_json_sha256(value)
-    return None
+def _scoreboard_facts(payload: Mapping[str, Any]) -> _ReceiptFacts:
+    """Every nested scoreboard cell must satisfy canonical release acceptance.
+
+    Producer/oracle observations alone are not actual-used compiler/runtime
+    admission. The shared authority must admit that complete observation before
+    statistical wins can become PASS. Unadmitted command/toolchain facts remain
+    null; no writer/interpreter identity substitutes for unknown guest bytes.
+    """
+    schema = pa.perf_schema
+    if (
+        payload.get("kind") != reg.E2_SCOREBOARD_KIND
+        or payload.get("schema_version") != schema.SCHEMA_VERSION
+    ):
+        return _UNRECOGNIZED
+    cells = schema.flatten_cells(payload)
+    green = (
+        bool(cells)
+        and all(not pa.release_cell_problems(cell) for cell in cells)
+        and not pa.scoreboard_observed_toolchain_problems(payload)
+    )
+    covered = sorted(
+        {
+            f"perf:{cell['target']}:{cell['backend']}:{cell['profile']}"
+            for cell in cells
+            if _text(cell.get("target"))
+            and _text(cell.get("backend"))
+            and _text(cell.get("profile"))
+        }
+    )
+    return _ReceiptFacts(
+        STATUS_PASS if green else STATUS_FAIL,
+        tuple(covered),
+        observed_at=_text(payload.get("generated_at")),
+    )
 
 
-def _receipt_observed_at(payload: Mapping[str, Any]) -> str | None:
-    for key in ("generated_at", "observed_at"):
-        value = payload.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
+def _verified_subset_toolchain_digest(facts: object) -> str | None:
+    """Digest the tool identities release_criterion_receipt validates per cell.
+
+    `facts.execution` binds the reference CPython and rustc executables by
+    SHA-256 and names the backend runner (the Node binary for WASM). Its `ci`
+    block is run custody and `host` is the platform, so both stay out and one
+    toolchain keeps one digest across reruns.
+    """
+    execution = facts.get("execution") if isinstance(facts, Mapping) else None
+    if not isinstance(execution, Mapping):
+        return None
+    identities = {key: execution.get(key) for key in _VERIFIED_SUBSET_TOOLCHAIN}
+    if not all(isinstance(value, Mapping) and value for value in identities.values()):
+        return None
+    return canonical_json_sha256(identities)
 
 
-def _receipt_cells(role: str, payload: Mapping[str, Any]) -> tuple[str, ...]:
+def _criterion_facts(payload: Mapping[str, Any], *, kind: str) -> _ReceiptFacts:
+    if (
+        payload.get("kind") != kind
+        or payload.get("schema_version") != rcr.SCHEMA_VERSION
+    ):
+        return _UNRECOGNIZED
+    producer = payload.get("producer")
+    argv = producer.get("argv") if isinstance(producer, Mapping) else None
+    command = (
+        shlex.join(argv)
+        if isinstance(argv, list) and argv and all(_text(item) for item in argv)
+        else None
+    )
+    facts = payload.get("facts")
+    if kind == rcr.KIND_VERIFIED_SUBSET:
+        coordinate = facts.get("coordinate") if isinstance(facts, Mapping) else None
+        coordinate_id = (
+            _text(coordinate.get("id")) if isinstance(coordinate, Mapping) else None
+        )
+        cells = (
+            (f"{VERIFIED_SUBSET_CELL_PREFIX}{coordinate_id}",) if coordinate_id else ()
+        )
+        toolchain = _verified_subset_toolchain_digest(facts)
+    else:
+        # The E4 toolchain is the observed Python audit engine. Its source script
+        # and inspected inputs are separately content-bound by the authority.
+        # This is never substituted for a guest compiler/runtime toolchain.
+        cells = ("repository",)
+        producer = payload.get("producer")
+        engine = producer.get("audit_engine") if isinstance(producer, Mapping) else None
+        # Independently admit this typed observation before projecting a fact,
+        # even when a direct caller bypasses the enclosing bundle validator.
+        if rcr.audit_engine_problems(engine):
+            return _UNRECOGNIZED
+        toolchain = canonical_json_sha256(engine)
+    passed = payload.get("status") == rcr.STATUS_PASS
+    return _ReceiptFacts(
+        STATUS_PASS if passed else STATUS_FAIL,
+        cells,
+        command=command,
+        observed_at=_text(payload.get("generated_at")),
+        toolchain_digest=toolchain,
+    )
+
+
+def _receipt_facts(role: str, payload: Mapping[str, Any]) -> _ReceiptFacts:
+    """Project one evidence artifact through its role's typed producer authority."""
     if role.startswith("e1_"):
-        variant = payload.get("variant")
-        target = payload.get("target")
-        if isinstance(variant, Mapping) and isinstance(target, str):
-            triple = variant.get("target_triple")
-            cpython = variant.get("cpython")
-            tier = variant.get("abi_tier")
-            if target == "native":
-                triple = "native"
-            if all(isinstance(item, str) for item in (triple, cpython, tier)):
-                tag = str(cpython).replace(".", "")
-                return (f"pact-witness:{triple}:py{tag}:{tier}",)
-        return ()
+        return _pact_witness_facts(payload)
     if role == "e2_scoreboard":
-        return ("perf:native:release-fast",)
+        return _scoreboard_facts(payload)
     if role.startswith(reg.VERIFIED_SUBSET_EVIDENCE_PREFIX):
-        coordinate_id = role.removeprefix(reg.VERIFIED_SUBSET_EVIDENCE_PREFIX)
-        return (f"{VERIFIED_SUBSET_CELL_PREFIX}{coordinate_id}",)
-    if role.startswith("e4_"):
-        return ("repository",)
-    return ()
-
-
-def _receipt_status(role: str, payload: Mapping[str, Any]) -> str:
-    if role == "e2_scoreboard":
-        cells = payload.get("cells")
-        if isinstance(cells, list) and cells:
-            green = reg.pa.perf_schema.VERDICT_GREEN
-            if all(
-                isinstance(cell, Mapping) and cell.get("verdict") == green
-                for cell in cells
-            ):
-                return STATUS_PASS
-        return STATUS_FAIL
-    return STATUS_PASS if payload.get("status") == STATUS_PASS else STATUS_FAIL
+        return _criterion_facts(payload, kind=rcr.KIND_VERIFIED_SUBSET)
+    kind = role.removeprefix("e4_")
+    if role.startswith("e4_") and kind in reg.E4_KINDS:
+        return _criterion_facts(payload, kind=kind)
+    return _UNRECOGNIZED
 
 
 def project_evidence(
@@ -392,16 +493,17 @@ def project_evidence(
         artifact = bundle_manifest.parent / relative
         artifact_bytes = _read_bytes(artifact, label=f"{role} evidence")
         artifact_payload = _json_object(artifact_bytes, label=f"{role} evidence")
+        facts = _receipt_facts(role, artifact_payload)
         rows.append(
             {
                 "requirement_id": requirement.id,
                 "authority": requirement.authority,
-                "command": _receipt_command(artifact_payload),
+                "command": facts.command,
                 "artifact_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
-                "matrix_cells": list(_receipt_cells(role, artifact_payload)),
-                "status": _receipt_status(role, artifact_payload),
-                "toolchain_digest": _receipt_toolchain_digest(artifact_payload),
-                "observed_at": _receipt_observed_at(artifact_payload),
+                "matrix_cells": list(facts.matrix_cells),
+                "status": facts.status,
+                "toolchain_digest": facts.toolchain_digest,
+                "observed_at": facts.observed_at,
             }
         )
     rows.sort(key=lambda row: row["requirement_id"])
@@ -764,7 +866,10 @@ def _verify_phase_content(
     if not bundle_report.passed:
         problems.append(
             "hashes: release-exit bundle does not verify: "
-            + "; ".join(bundle_report.problems)
+            + (
+                "; ".join(bundle_report.problems)
+                or f"status is {bundle_report.status!r}"
+            )
         )
     if bundle_report.source_sha != release_commit:
         problems.append(

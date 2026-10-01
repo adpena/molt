@@ -35,7 +35,7 @@ matrix_cells = ["pact-witness:wasm32-wasip1:py312:cpython-abi"]
 id = "H0.perf.cpython_floor_scoreboard"
 authority = "tools/perf_authority.py"
 evidence_role = "e2_scoreboard"
-matrix_cells = ["perf:native:release-fast"]
+matrix_cells = ["perf:native:llvm:release-fast", "perf:native:native:release-fast"]
 
 [[phase.requirement]]
 id = "H0.verified_subset"

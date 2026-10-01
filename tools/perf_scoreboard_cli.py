@@ -9,7 +9,47 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
+from molt.toolchain_identity import executable_content_identity
+from molt.python_runtime_identity import (
+    capture_current_python_runtime,
+    validate_python_runtime_identity,
+)
+import harness_memory_guard
+from perf_scoreboard_measure import _cpython_run_env
 from perf_scoreboard_model import Cell
+
+
+def _observe_cpython_runtime(cmd: tuple[str, ...]) -> dict[str, object]:
+    """Capture the selected oracle's canonical loaded runtime closure.
+
+    The same baseline environment is used as timing runs. This runs once for
+    the selected oracle, not for every rejected discovery candidate.
+    """
+    source_root = str(Path(__file__).resolve().parents[1] / "src")
+    probe = (
+        "import json, sys; "
+        f"sys.path.insert(0, {source_root!r}); "
+        "from molt.python_runtime_identity import capture_current_python_runtime; "
+        "print(json.dumps(capture_current_python_runtime(), sort_keys=True))"
+    )
+    result = harness_memory_guard.guarded_completed_process(
+        [*cmd, "-c", probe],
+        prefix="MOLT_BENCH",
+        env=_cpython_run_env(),
+        capture_output=True,
+        text=True,
+        timeout=180.0,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"CPython runtime closure observation failed: {(result.stderr or '')[-2000:]}"
+        )
+    try:
+        return validate_python_runtime_identity(json.loads(result.stdout))
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(
+            f"CPython runtime closure observation invalid: {exc}"
+        ) from exc
 
 
 def main(api: Mapping[str, Any], argv: list[str]) -> int:
@@ -173,7 +213,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
     parser.add_argument(
         "--no-gate",
         action="store_true",
-        help="always exit 0 (measure-only; do not fail CI on RED)",
+        help="always exit 0 (diagnostic measurements; never release eligibility)",
     )
     parser.add_argument(
         "--strict-cold",
@@ -266,8 +306,19 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
     except RuntimeError as exc:
         print(f"[scoreboard] {exc}", file=sys.stderr)
         return 2
+    from molt.target_python import resolve_target_python_for_oracle
+
+    try:
+        oracle_minor = tuple(
+            int(part) for part in cpython_oracle.version.split(".")[:2]
+        )
+        target_python = resolve_target_python_for_oracle(oracle_minor)
+    except ValueError as exc:
+        print(f"[scoreboard] incompatible oracle: {exc}", file=sys.stderr)
+        return 2
     cpython_version = cpython_oracle.version
     cpython_identity = cpython_oracle.host_metadata()
+    cpython_identity["molt_target_python"] = target_python.short
     print(
         "[scoreboard] CPython oracle: "
         f"{cpython_oracle.display} "
@@ -365,6 +416,21 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
         quiescence=quiescence,
         require_quiescent=ns.require_quiescent,
     )
+    provenance["producer_invocations"] = [
+        {
+            "argv": [
+                sys.executable,
+                str(Path(__file__).with_name("perf_scoreboard.py")),
+                *argv,
+            ],
+            "command_interpreter": executable_content_identity(
+                Path(sys.executable), label="scoreboard producer command"
+            ),
+            "base_interpreter": executable_content_identity(
+                Path(sys._base_executable), label="scoreboard producer base image"
+            ),
+        }
+    ]
     # provenance.authoritative records the TRUTH (tree==origin, clean, tool
     # unmodified). `--allow-nonauthoritative` does NOT change that truth — it
     # lets the cells classify on their REAL numbers (not FAIL_STALE) for local
@@ -406,6 +472,31 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
         )
         return 1
 
+    cpython_identity["command_executable_identity"] = executable_content_identity(
+        Path(cpython_identity["executable"]), label="measured CPython command"
+    )
+    cpython_identity["base_executable_identity"] = (
+        executable_content_identity(
+            Path(cpython_oracle.base_executable), label="measured CPython base image"
+        )
+        if cpython_oracle.base_executable
+        else None
+    )
+
+    try:
+        cpython_identity["runtime_closure"] = _observe_cpython_runtime(
+            cpython_oracle.cmd
+        )
+        provenance["producer_invocations"][0]["runtime_closure"] = (
+            capture_current_python_runtime()
+        )
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(
+            f"[scoreboard] refusing incomplete Python runtime identity: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
     # --- PyPy / Codon comparator lanes (council Lane C) --------------------
     pypy_bin = api["_resolve_pypy"](ns.pypy) if ns.pypy is not None else None
     pypy_version = api["_probe_interp_version"](pypy_bin) if pypy_bin else None
@@ -423,7 +514,14 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
             file=sys.stderr,
         )
 
-    budgets = api["_load_cold_start_budgets"]()
+    try:
+        budgets = api["_load_cold_start_budgets"]()
+        for backend_name in backends:
+            for profile in profiles:
+                api["_budget_ms_for"](budgets, backend_name, profile)
+    except ValueError as exc:
+        print(f"[scoreboard] {exc}", file=sys.stderr)
+        return 2
 
     git_rev = api["_git_rev"]()
     api["SCOREBOARD_DIR"].mkdir(parents=True, exist_ok=True)
@@ -474,6 +572,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
                         timeout_s=ns.timeout,
                         batch_server=batch_server,
                         cpython_cmd=cpython_oracle.cmd,
+                        target_python_version=target_python.short,
                         log_dir=log_dir,
                         budget_ms=cell_budget_ms,
                         authoritative=effective_authoritative,
