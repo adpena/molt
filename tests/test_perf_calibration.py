@@ -87,7 +87,8 @@ def test_run_and_measure_preserves_infrastructure_outcome(monkeypatch):
         returncode=125,
         child_returncode=0,
         infrastructure_failure=infrastructure_failure,
-        elapsed_s=0.25,
+        elapsed_s=0.75,
+        child_elapsed_s=0.25,
         peak_total=None,
         peak_job_commit_bytes=None,
         stdout=b"child completed\n",
@@ -107,6 +108,7 @@ def test_run_and_measure_preserves_infrastructure_outcome(monkeypatch):
 
     measurement = pc.run_and_measure(["successful-child"])
 
+    assert measurement.elapsed_s == 0.25
     assert measurement.returncode == 125
     assert measurement.child_returncode == 0
     assert measurement.infrastructure_failure is infrastructure_failure
@@ -260,3 +262,90 @@ def test_calibration_cache_roundtrip(tmp_path):
 
 def test_load_calibration_absent_is_none(tmp_path):
     assert pc.load_calibration(repo_root=tmp_path) is None
+
+
+@pytest.mark.parametrize("child_time", [None, True, float("nan"), float("inf"), -0.1])
+def test_run_and_measure_rejects_missing_child_clock(monkeypatch, child_time):
+    result = SimpleNamespace(
+        child_elapsed_s=child_time,
+        elapsed_s=1.0,
+        returncode=0,
+        timed_out=False,
+        infrastructure_failure=None,
+    )
+    context = SimpleNamespace(
+        limits=SimpleNamespace(poll_interval=0.1),
+        run=lambda *_args, **_kwargs: result,
+    )
+    monkeypatch.setattr(pc, "replace", lambda value, **_kwargs: value)
+    monkeypatch.setattr(
+        pc.harness_memory_guard.HarnessExecutionContext,
+        "from_env",
+        lambda *_args, **_kwargs: context,
+    )
+    with pytest.raises(RuntimeError, match="child elapsed-time telemetry"):
+        pc.run_and_measure(["child"])
+
+
+@pytest.mark.parametrize("returncode,timed_out", [(124, True), (125, False)])
+def test_run_and_measure_preserves_failure_without_child_clock(
+    monkeypatch, returncode, timed_out
+):
+    result = SimpleNamespace(
+        child_elapsed_s=None,
+        elapsed_s=1.0,
+        returncode=returncode,
+        timed_out=timed_out,
+        peak_total=None,
+        peak_job_commit_bytes=None,
+        stdout=b"",
+        stderr=b"owned failure",
+        child_returncode=None,
+        infrastructure_failure=None,
+    )
+    context = SimpleNamespace(
+        limits=SimpleNamespace(poll_interval=0.1), run=lambda *_args, **_kwargs: result
+    )
+    monkeypatch.setattr(pc, "replace", lambda value, **_kwargs: value)
+    monkeypatch.setattr(
+        pc.harness_memory_guard.HarnessExecutionContext,
+        "from_env",
+        lambda *_args, **_kwargs: context,
+    )
+    measured = pc.run_and_measure(["failed-child"])
+    assert measured.returncode == returncode
+    assert measured.timed_out == timed_out
+    assert measured.evidence_eligible is False
+    assert measured.stderr == "owned failure"
+
+
+@pytest.mark.parametrize("metadata", ["violation", "orphaned_process_groups"])
+def test_calibration_preserves_guard_failure_metadata_without_clock(
+    monkeypatch, metadata
+):
+    result = SimpleNamespace(
+        child_elapsed_s=None,
+        elapsed_s=1.0,
+        returncode=0,
+        timed_out=False,
+        infrastructure_failure=None,
+        peak_total=None,
+        peak_job_commit_bytes=None,
+        stdout=b"",
+        stderr=b"guard failure",
+    )
+    setattr(result, metadata, object() if metadata == "violation" else (12345,))
+    context = SimpleNamespace(
+        limits=SimpleNamespace(poll_interval=0.1), run=lambda *_args, **_kwargs: result
+    )
+    monkeypatch.setattr(pc, "replace", lambda value, **_kwargs: value)
+    monkeypatch.setattr(
+        pc.harness_memory_guard.HarnessExecutionContext,
+        "from_env",
+        lambda *_args, **_kwargs: context,
+    )
+    measured = pc.run_and_measure(["failed-child"])
+    assert measured.returncode == 0
+    assert measured.status == "failed" and not measured.evidence_eligible
+    assert getattr(measured, metadata) == getattr(result, metadata)
+    assert measured.stderr == "guard failure"
