@@ -192,7 +192,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "19cc6bdb4ba947088b0683849ad402ff5555564044ebd7a387a8d384c7f71681",
+  "authority_sha256": "2596f49fe0423aaf0ea5073aea71c02c1eaa412b9bfe9e469c1cf6dec7d97aa5",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3247,7 +3247,8 @@
         "tests/tools/test_artifact_publish.py",
         "tests/test_wasm_bundle.py",
         "tests/cli/test_link_member_selection.py",
-        "tests/cli/test_link_selection_admission.py"
+        "tests/cli/test_link_selection_admission.py",
+        "tests/test_artifact_release_sibling.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",

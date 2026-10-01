@@ -120,7 +120,9 @@ def discard_staged_output(path: Path) -> None:
     try:
         _unlink_backup(path)
     except OSError as exc:
-        _warn_after_commit(f"artifact publication retained private stage {path}: {exc}")
+        _warn_after_commit(
+            f"artifact publication retained private stage {path}: {type(exc).__name__}"
+        )
 
 
 def _path_sort_key(path: Path) -> str:
@@ -324,7 +326,9 @@ def _load_journal(path: Path) -> dict[str, Any]:
     try:
         payload = loads_exact(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
-        raise OSError(f"invalid artifact publication journal {path}: {exc}") from exc
+        raise OSError(
+            f"invalid artifact publication journal {path}: {type(exc).__name__}"
+        ) from exc
     if not isinstance(payload, dict) or set(payload) != _PUBLICATION_JOURNAL_KEYS:
         raise OSError(f"invalid artifact publication journal payload: {path}")
     transaction_id = payload.get("transaction_id")
@@ -535,6 +539,7 @@ def _publication_locks(
     parents = {parent.resolve() for parent in initial_parents}
     while True:
         handles = []
+        primary: BaseException | None = None
         try:
             lock_paths = {_publication_lock_path(parent) for parent in parents}
             for lock_path in sorted(lock_paths, key=_path_sort_key):
@@ -552,9 +557,29 @@ def _publication_locks(
             if expanded == parents:
                 yield parents, residue_by_parent
                 return
+        except BaseException as exc:
+            primary = exc
+            raise
         finally:
+            cleanup_errors: list[BaseException] = []
             for handle in reversed(handles):
-                _release_file_lock(handle)
+                try:
+                    _release_file_lock(handle)
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+            if cleanup_errors:
+                if primary is not None:
+                    for exc in cleanup_errors:
+                        BaseException.add_note(
+                            primary,
+                            f"artifact publication lock cleanup failed: {type(exc).__name__}",
+                        )
+                elif len(cleanup_errors) == 1:
+                    raise cleanup_errors[0]
+                else:
+                    raise BaseExceptionGroup(
+                        "artifact publication lock cleanup failures", cleanup_errors
+                    )
         parents = expanded
 
 
@@ -1024,9 +1049,10 @@ def publish_validated_outputs(
             try:
                 recovery = _recover_transaction(journal_paths)
             except BaseException as recovery_error:
-                primary.add_note(
+                BaseException.add_note(
+                    primary,
                     "artifact publication rollback recovery failed: "
-                    f"{type(recovery_error).__name__}: {recovery_error}"
+                    f"{type(recovery_error).__name__}",
                 )
                 raise primary
             if not recovery.committed or not isinstance(primary, Exception):
@@ -1043,7 +1069,7 @@ def publish_validated_outputs(
                 )
                 _warn_after_commit(
                     "artifact publication committed but cleanup recovery failed: "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                    f"{type(cleanup_error).__name__}"
                 )
     if retained:
         _warn_after_commit(
