@@ -127,9 +127,12 @@ from tools.memory_guard_core.sample_records import (  # noqa: E402
 from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
     DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP as DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP,
     CargoIncrementalQuarantine as CargoIncrementalQuarantine,
+    CargoIncrementalObservation as CargoIncrementalObservation,
+    observe_owned_incremental_state as observe_owned_incremental_state,
     CargoIncrementalQuarantineMove as CargoIncrementalQuarantineMove,
     _cargo_incremental_dirs as _cargo_incremental_dirs,
     _cargo_incremental_quarantine_message as _cargo_incremental_quarantine_message,
+    _cargo_recovery_next_action as _cargo_recovery_next_action,
     _cargo_incremental_quarantine_payload as _cargo_incremental_quarantine_payload,
     _cargo_quarantine_id as _cargo_quarantine_id,
     _cargo_quarantine_parent as _cargo_quarantine_parent,
@@ -1037,18 +1040,23 @@ def run_guarded(
             # authority, never the steady-state sampler.
             job_command = " ".join(command)
             job_member_commands: dict[tuple[int, int | None], str] = {}
-            previous_job_members: frozenset[int] = frozenset()
+            job_member_contexts: dict[tuple[int, int | None], tuple[int, str]] = {}
+            previous_job_members: frozenset[tuple[int, int | None]] = frozenset()
 
             def _sample_owned_job() -> Mapping[int, ProcessSample]:
-                nonlocal job_member_commands, previous_job_members
+                nonlocal job_member_commands, job_member_contexts, previous_job_members
                 members = _win_job.process_memory(guard_job)
-                member_ids = frozenset(member.pid for member in members)
+                member_ids = frozenset(
+                    (member.pid, member.started_at_ns) for member in members
+                )
                 if member_ids != previous_job_members:
                     members = _win_job.process_memory(
                         guard_job,
                         include_image_names=True,
                     )
-                    previous_job_members = frozenset(member.pid for member in members)
+                    previous_job_members = frozenset(
+                        (member.pid, member.started_at_ns) for member in members
+                    )
                     live_keys = {
                         (member.pid, member.started_at_ns) for member in members
                     }
@@ -1057,7 +1065,28 @@ def run_guarded(
                         for key, value in job_member_commands.items()
                         if key in live_keys
                     }
+                    job_member_contexts = {
+                        key: value
+                        for key, value in job_member_contexts.items()
+                        if key in live_keys
+                    }
+                    from tools.memory_guard_core.windows_snapshot import (
+                        windows_job_command_context,
+                    )
+
                     for member in members:
+                        image_role = Path(member.image_name or "").stem.casefold()
+                        if (
+                            image_role in {"cargo", "rustc"}
+                            and member.started_at_ns is not None
+                        ):
+                            context = windows_job_command_context(
+                                member.pid, member.started_at_ns
+                            )
+                            if context is not None:
+                                job_member_contexts[
+                                    (member.pid, member.started_at_ns)
+                                ] = context
                         if member.image_name:
                             job_member_commands[(member.pid, member.started_at_ns)] = (
                                 member.image_name
@@ -1072,14 +1101,34 @@ def run_guarded(
                             f"windows-job-member pid={member.pid}",
                         )
                     )
+                    context = job_member_contexts.get(
+                        (member.pid, member.started_at_ns)
+                    )
+                    native_argv: tuple[str, ...] = ()
+                    real_parent = os.getpid() if member.pid == proc.pid else 0
+                    if context is not None:
+                        from molt.backend_daemon_custody import _split_command
+
+                        real_parent, command_text = context
+                        native_argv = tuple(_split_command(command_text))
                     samples[member.pid] = ProcessSample(
                         pid=member.pid,
-                        ppid=os.getpid() if member.pid == proc.pid else proc.pid,
+                        ppid=real_parent,
                         rss_kb=(member.rss_bytes + 1023) // 1024,
                         command=command_text,
                         pgid=child_process.pgid,
                         started_at_ns=member.started_at_ns,
+                        argv=native_argv,
                     )
+                    # Job membership grants custody independently of parentage.
+                    # Never invent Cargo ancestry to prime the resource tracker.
+                    if type(member.started_at_ns) is int and member.started_at_ns > 0:
+                        assert tracker.known_pids is not None
+                        assert tracker.known_identities is not None
+                        tracker.known_pids.add(member.pid)
+                        tracker.known_identities[member.pid] = ProcessIdentity(
+                            member.started_at_ns
+                        )
                 return samples
 
             sampler = _sample_owned_job
@@ -1200,6 +1249,9 @@ def run_guarded(
         remembered_samples: Mapping[int, ProcessSample] | None = None
         remembered_watched: set[int] | None = None
         saw_cargo_build_state = _command_invokes_cargo_build_state(command)
+        cargo_incremental_observations: set[CargoIncrementalObservation] = set()
+        latest_cargo_observations: set[CargoIncrementalObservation] = set()
+        interrupted_cargo_observations: set[CargoIncrementalObservation] = set()
         next_keepalive = (
             start + keepalive_interval
             if progress_label is not None and keepalive_interval is not None
@@ -1450,7 +1502,10 @@ def run_guarded(
             timeout_deadline: bool = False,
             allow_transient_timeout: bool = False,
         ) -> tuple[Mapping[int, ProcessSample], set[int]] | None:
-            nonlocal guard_interrupted, last_sample_cost_s
+            nonlocal guard_interrupted, last_sample_cost_s, latest_cargo_observations
+            latest_cargo_observations = (
+                set()
+            )  # Failed/remembered snapshots confer no interruption scope.
             nonlocal remembered_samples, remembered_watched
             nonlocal sampling_attempts, sampling_successes
             nonlocal sampling_wall_time_s, sampling_cpu_time_s
@@ -1501,9 +1556,13 @@ def run_guarded(
                 record_sampling_cost()
                 terminate_after_sampling_failure(reason="sampler_failure")
                 raise
-            record_sampling_cost(len(samples))
             sampling_successes += 1
             watched = tracker.update(samples)
+            latest_cargo_observations = observe_owned_incremental_state(
+                samples, watched, tracker.custody_identities(watched)
+            )
+            cargo_incremental_observations.update(latest_cargo_observations)
+            record_sampling_cost(len(samples))
             remembered_samples = samples
             remembered_watched = set(watched)
             return samples, watched
@@ -1543,6 +1602,7 @@ def run_guarded(
                     saw_cargo_build_state
                     or _samples_include_cargo_build_state(samples, watched)
                 )
+                interrupted_cargo_observations.update(latest_cargo_observations)
                 terminate_owned_tree(
                     reason="guard_signal",
                     samples=samples,
@@ -1573,6 +1633,7 @@ def run_guarded(
                     saw_cargo_build_state
                     or _samples_include_cargo_build_state(samples, watched)
                 )
+                interrupted_cargo_observations.update(latest_cargo_observations)
                 terminate_owned_tree(
                     reason="timeout",
                     samples=samples,
@@ -1681,6 +1742,7 @@ def run_guarded(
                     limit_at_violation=memory_limits_payload(current_limits),
                     elapsed_s=now - start,
                 )
+                interrupted_cargo_observations.update(latest_cargo_observations)
                 terminate_owned_tree(
                     reason="rss_limit",
                     samples=samples,
@@ -1966,6 +2028,19 @@ def run_guarded(
                 target_dir=_cargo_target_dir(child_env, effective_cwd),
                 command=command,
                 cwd=effective_cwd,
+                descendants_closed=descendants_closed,
+                eligible_observations=frozenset(interrupted_cargo_observations),
+                profile_lock_settle_s=min(termination_wait_s, 1.0),
+                observations=tuple(
+                    sorted(
+                        cargo_incremental_observations,
+                        key=lambda item: (
+                            item.incremental_dir,
+                            item.rustc_pid,
+                            item.rustc_started_at_ns,
+                        ),
+                    )
+                ),
             )
             stderr = _append_guard_message(
                 stderr,
@@ -1975,10 +2050,15 @@ def run_guarded(
             if cargo_incremental_quarantine.errors:
                 stderr = _append_guard_message(
                     stderr,
-                    "memory_guard: cargo incremental quarantine errors: "
-                    f"{'; '.join(cargo_incremental_quarantine.errors)}\n"
-                    "memory_guard: next action: run `molt clean --apply "
-                    "--kill-processes` if stale Cargo state still blocks rebuilds.\n",
+                    "memory_guard: cargo recovery "
+                    + (
+                        "deferral details: "
+                        if cargo_incremental_quarantine.ownership_status == "deferred"
+                        else "errors: "
+                    )
+                    + f"{'; '.join(cargo_incremental_quarantine.errors)}\n"
+                    + _cargo_recovery_next_action(cargo_incremental_quarantine)
+                    + "\n",
                     text=text,
                 )
         peak_job_commit_bytes = (

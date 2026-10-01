@@ -192,7 +192,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a20a0a3c454e868403ee124dd072cb2bfe0473e047aafa5e494787a2c985e28f",
+  "authority_sha256": "19cc6bdb4ba947088b0683849ad402ff5555564044ebd7a387a8d384c7f71681",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -649,7 +649,15 @@
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_win_job.py",
         "tests/tools/test_win_job_contract.py",
-        "tests/tools/test_windows_process_api.py"
+        "tests/tools/test_windows_process_api.py",
+        "tools/memory_guard_core/cargo_quarantine.py",
+        "tools/memory_guard_core/windows_snapshot.py",
+        "tools/memory_guard_core/process_model.py",
+        "tools/memory_guard_core/reporting.py",
+        "tests/test_cargo_quarantine_custody.py",
+        "docs/OPERATIONS.md",
+        "docs/spec/STATUS.md",
+        "docs/agent/AGENTS.full.md"
       ],
       "job": "platform-portability",
       "name": "platform_portability",
@@ -4151,6 +4159,105 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "-u",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_cargo_quarantine_custody.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-queue-portability",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.cargo-custody.linux",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "-u",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_cargo_quarantine_custody.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "macos-arm64-py312-queue-portability",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.cargo-custody.macos",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "-u",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_cargo_quarantine_custody.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "windows-x86_64-py312-queue-portability",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.cargo-custody.windows",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
       ]
     }
   ],

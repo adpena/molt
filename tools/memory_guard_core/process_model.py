@@ -143,6 +143,8 @@ class ProcessSample:
     pgid: int | None = None
     elapsed_sec: int | None = None
     started_at_ns: int | None = None
+    # None uses the native sampler's command source; () explicitly means unknown.
+    argv: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)

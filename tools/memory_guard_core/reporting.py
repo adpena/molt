@@ -11,6 +11,7 @@ from typing import TextIO, TypedDict, Unpack
 
 from tools.memory_guard_core.cargo_quarantine import (
     _cargo_incremental_quarantine_message,
+    _cargo_recovery_next_action,
     _cargo_incremental_quarantine_payload,
 )
 from tools.memory_guard_core.common import utc_compact_timestamp, utc_timestamp
@@ -769,13 +770,18 @@ def emit_terminal_report(
         )
         if result.cargo_incremental_quarantine.errors:
             print(
-                "memory_guard: cargo incremental quarantine errors: "
-                f"{'; '.join(result.cargo_incremental_quarantine.errors)}",
+                "memory_guard: cargo recovery "
+                + (
+                    "deferral details: "
+                    if result.cargo_incremental_quarantine.ownership_status
+                    == "deferred"
+                    else "errors: "
+                )
+                + "; ".join(result.cargo_incremental_quarantine.errors),
                 file=stderr,
             )
             print(
-                "memory_guard: next action: run `molt clean --apply "
-                "--kill-processes` if stale Cargo state still blocks rebuilds.",
+                _cargo_recovery_next_action(result.cargo_incremental_quarantine),
                 file=stderr,
             )
     if repro_payload is not None:

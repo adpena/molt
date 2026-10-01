@@ -727,7 +727,7 @@ Read these first instead of rediscovering project structure:
   - `tools/dev.py clean-artifacts --apply`: dev-wrapper alias for the same cleanup engine.
 - Notes:
   - `CARGO_TARGET_DIR` also relocates Molt’s shared build state under `<CARGO_TARGET_DIR>/.molt_state/` (locks, fingerprints, daemon state). Keep that state in the canonical target root rather than inventing parallel targets.
-  - Cargo incremental quarantine receipts under `<CARGO_TARGET_DIR>/.molt_state/quarantine/cargo_incremental/` are bounded ignored incident evidence: the guard writes and prunes them during normal retention, and explicit `molt clean --apply` removes them with other allowlisted target artifacts.
+  - Cargo incremental quarantine receipts under `<CARGO_TARGET_DIR>/.molt_state/quarantine/cargo_incremental/` are retained incident evidence. The guard does not automatically prune earlier receipts; source-bound ownership and native target/profile locks govern recovery. Archive needed receipts before explicit artifact cleanup, which is a separate deliberate action.
   - `molt clean` and `tools/dev.py clean-artifacts` both route through `tools/artifact_cleanup.py`; tracked files, dirty partner work, `.venv/`, `.omx/`, `third_party/`, fuzz corpora, and test corpora are excluded from default cleanup.
   - Keep `.gitignore` and `tools/artifact_cleanup.py` pathspecs in sync whenever a new canonical artifact root is added.
   - If a workflow would generate unusually large artifacts, put them under the canonical root for that class and clean them up once the evidence is no longer needed.

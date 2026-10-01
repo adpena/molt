@@ -616,6 +616,68 @@ def _windows_process_snapshot_rows() -> list[
     return rows
 
 
+def windows_job_command_context(
+    pid: int, expected_birth_ns: int
+) -> tuple[int, str] | None:
+    """Read native argv text and real parent for one exact kernel-owned Job member.
+
+    This uses ordinary caller rights once, never an elevated or alternate access
+    path. Failure/denial means unknown. The caller must retain Job membership
+    custody; this query alone never grants ownership of a host process.
+    """
+    if os.name != "nt" or type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+        return None
+    if type(expected_birth_ns) is not int or expected_birth_ns <= 0:
+        return None
+    api = _windows_snapshot_api()
+    handle = api.open_process(0x0410, False, pid)  # QUERY_INFORMATION | VM_READ.
+    if not handle:
+        return None
+    context = None
+    deadline = time.monotonic() + DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC
+
+    def enforce_deadline(stage):
+        if time.monotonic() > deadline:
+            raise WindowsProcessSnapshotTimeout(
+                f"Job member context timed out: {stage}"
+            )
+
+    def birth():
+        created, exited, kernel, user = (api.wintypes.FILETIME() for _ in range(4))
+        if not api.get_process_times(
+            handle,
+            api.ctypes.byref(created),
+            api.ctypes.byref(exited),
+            api.ctypes.byref(kernel),
+            api.ctypes.byref(user),
+        ):
+            return None
+        return _filetime_to_unix_ns(
+            int(created.dwLowDateTime), int(created.dwHighDateTime)
+        )
+
+    try:
+        before = birth()
+        basic = _snapshot_basic_info(api, handle)
+        if (
+            before == expected_birth_ns
+            and basic is not None
+            and int(basic.UniqueProcessId) == pid
+        ):
+            command = _snapshot_command_line(api, handle, enforce_deadline)
+            after = birth()
+            if command and before == after:
+                parent = int(basic.InheritedFromUniqueProcessId)
+                if 0 <= parent <= 0xFFFFFFFF:
+                    context = (parent, command)
+    except (OSError, ProcessSnapshotError):
+        context = None
+    finally:
+        if not api.close_handle(handle):
+            context = None
+    return context
+
+
 def _main(argv: list[str]) -> int:
     if argv != [WINDOWS_PROCESS_SNAPSHOT_HELPER_ARG]:
         return 2
