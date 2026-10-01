@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 187 |
+| Hashed executable authority inputs | 1 | 190 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 96 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -42,7 +42,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
 | `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | none | `python-unit` needs `classify-changes` | 10 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 16 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 75 min | 4260 s | 240 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 11 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 12960 s | 1440 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 14 |
 | `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
@@ -75,6 +75,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `linux-x86_64-py312-unit` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
 | `linux-x86_64-py312-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `native` | `x86_64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-rust-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `dev` |
+| `linux-x86_64-rust-native-release-output` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `release-output` |
 | `linux-x86_64-rust-wasi-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `wasm32-wasip1` | `dev` |
 | `linux-x86_64-rust-aarch64-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `aarch64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-py312-llvm-release-fast` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `llvm` | `x86_64-unknown-linux-gnu` | `release-fast` |
@@ -132,6 +133,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `integration` | 600 s |
 | `cold` | 1200 s |
 | `suite` | 1800 s |
+| `shipping` | 9000 s |
 
 ## Executable partitions
 
@@ -224,7 +226,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
 | `rust.test.compiler-authorities` | `rust` | `linux-x86_64-rust-native-dev` | `integration` | 600 s | `compiler-build-resource` | 1 |
 | `rust.test.ir-wasm-runtime-authorities` | `rust` | `linux-x86_64-rust-native-dev` | `integration` | 600 s | `compiler-build-resource` | 1 |
-| `rust.test.runtime-cold-lifecycle` | `rust` | `linux-x86_64-rust-native-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
+| `rust.test.runtime-cold-lifecycle` | `rust` | `linux-x86_64-rust-native-release-output` | `shipping` | 9000 s | `compiler-build-resource` | 1 |
 | `rust.clippy.workspace-default` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 1 |
 | `rust.clippy.feature-surfaces` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 1 |
 | `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `cold` | 1200 s | `compiler-build-resource` | 0 |

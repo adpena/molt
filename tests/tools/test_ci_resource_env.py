@@ -173,6 +173,7 @@ warm_timeout_seconds = 300
 integration_timeout_seconds = 600
 cold_timeout_seconds = 1200
 suite_timeout_seconds = 1800
+shipping_timeout_seconds = 9000
 observed_cold_timeout_seconds = 300.51
 minimum_cold_headroom_multiplier = 3.0
 measurement_run_id = 30209686001
@@ -198,6 +199,7 @@ def test_cargo_execution_budget_is_receipt_calibrated() -> None:
         "integration": 600,
         "cold": 1200,
         "suite": 1800,
+        "shipping": 9000,
     }
     assert policy.observed_cold_timeout_seconds == pytest.approx(300.51)
     assert policy.minimum_cold_headroom_multiplier == pytest.approx(3.0)

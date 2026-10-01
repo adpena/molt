@@ -1,6 +1,9 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    "tests/tools/test_cargo_test_binary_discovery.py",
+    "tests/tools/test_runtime_test_gate.py",
+    "tools/run_runtime_test_gate.py",
     ".gitattributes",
     ".github/actions/setup-lean/action.yml",
     ".github/actions/setup-llvm/action.yml",
@@ -189,7 +192,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "25e1e4a9d2d04527fe771e64262c518d4a11917aacb01eae9d976a8da2a0305a",
+  "authority_sha256": "a0f1696bcbf6a8444f9a22b3c3a7f318d015b2f083ab2065bdb47e6503db1fc8",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -214,6 +217,7 @@
       "cold": 1200,
       "cross-check": 240,
       "integration": 600,
+      "shipping": 9000,
       "suite": 1800,
       "warm": 300
     }
@@ -403,7 +407,10 @@
         "tools/cargo_test_binary_runner.py",
         "tools/libtest_results.py",
         "tools/check_cargo_test_truth.py",
-        "tests/tools/test_cargo_test_truth.py"
+        "tests/tools/test_cargo_test_truth.py",
+        "tools/run_runtime_test_gate.py",
+        "tests/tools/test_runtime_test_gate.py",
+        "tests/tools/test_cargo_test_binary_discovery.py"
       ],
       "job": "rust-build-unit-smoke",
       "name": "rust",
@@ -414,7 +421,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 75,
+      "timeout_minutes": 240,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -3605,28 +3612,22 @@
     },
     {
       "argv": [
-        "cargo",
-        "test",
-        "--timings",
+        "uv",
+        "run",
+        "--frozen",
+        "python3",
+        "tools/run_runtime_test_gate.py",
         "--profile",
-        "dev-fast",
-        "--config",
-        "profile.dev-fast.package.molt-runtime.opt-level=0",
-        "--lib",
-        "-p",
-        "molt-runtime",
-        "--no-default-features",
-        "--features",
-        "molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set",
-        "--",
-        "state::lifecycle::shutdown_tests::",
-        "state::runtime_state::",
-        "--ignored",
-        "--nocapture",
-        "--test-threads=1"
+        "release-output",
+        "--build-timeout-seconds",
+        "6300",
+        "--child-timeout-seconds",
+        "120",
+        "--parallel-threads",
+        "8"
       ],
       "cache_domain": "cargo-workspace",
-      "cell": "linux-x86_64-rust-native-dev",
+      "cell": "linux-x86_64-rust-native-release-output",
       "dependencies": [
         "rust.test.ir-wasm-runtime-authorities"
       ],
@@ -3638,9 +3639,12 @@
         "pr",
         "main"
       ],
-      "timeout_budget": "warm",
-      "timeout_seconds": 300,
+      "timeout_budget": "shipping",
+      "timeout_seconds": 9000,
       "toolchains": [
+        "python",
+        "uv",
+        "rustc",
         "cargo"
       ]
     },
@@ -4207,12 +4211,12 @@
         }
       },
       "rust": {
-        "budget_seconds": 4500,
-        "critical_path_seconds": 3000,
-        "headroom_seconds": 240,
-        "projected_makespan_seconds": 4260,
+        "budget_seconds": 14400,
+        "critical_path_seconds": 11400,
+        "headroom_seconds": 1440,
+        "projected_makespan_seconds": 12960,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 4260
+          "compiler-build-resource": 12960
         }
       },
       "rust_security": {
@@ -5528,6 +5532,16 @@
       "id": "linux-x86_64-rust-native-dev",
       "os": "linux",
       "profile": "dev",
+      "python": "none",
+      "runner": "ubuntu-latest",
+      "target": "x86_64-unknown-linux-gnu"
+    },
+    {
+      "arch": "x86_64",
+      "backend": "rust",
+      "id": "linux-x86_64-rust-native-release-output",
+      "os": "linux",
+      "profile": "release-output",
       "python": "none",
       "runner": "ubuntu-latest",
       "target": "x86_64-unknown-linux-gnu"
