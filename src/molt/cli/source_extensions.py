@@ -137,6 +137,7 @@ class _SourceExtensionArtifactSymbolInspection:
     artifact_bytes: bytes | None = None
     artifact_digest: str | None = None
     wasm_interface: WasmRelocatableObjectInterface | None = None
+    weak_defined_symbols: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -160,6 +161,8 @@ class _SourceExtensionObjectFact:
     symbol_command: tuple[str, ...]
     dependencies: tuple[_SourceExtensionDependencyFact, ...] = ()
     producer_unit: _SourceExtensionCompileUnitIdentity | None = None
+    # Admission-only projection of checksummed object bytes; not a linker winner.
+    weak_defined_symbols: frozenset[str] = frozenset()
 
     def manifest_payload(
         self,
@@ -2107,6 +2110,7 @@ def _source_extension_object_fact(
             ),
             dependencies=tuple(dependencies),
             producer_unit=producer_unit,
+            weak_defined_symbols=symbol_inspection.weak_defined_symbols,
         ),
         None,
     )
@@ -2171,6 +2175,7 @@ def _inspect_source_extension_artifact_symbols(
             artifact_bytes=artifact_bytes,
             artifact_digest=hashlib.sha256(artifact_bytes).hexdigest(),
             wasm_interface=interface,
+            weak_defined_symbols=interface.linking_symbols.weak_defined_names,
         )
 
     # Reading a native object file's global symbols is a backend/native-link
@@ -2203,6 +2208,7 @@ def _inspect_source_extension_artifact_symbols(
         wasm_imports=None,
         wasm_function_import_signatures=(),
         artifact_digest=symbol_facts.artifact_digest,
+        weak_defined_symbols=symbol_facts.weak_defined,
     )
 
 
@@ -2853,6 +2859,17 @@ def _compute_source_extension_object_closure(
             included.add(fact.object_path)
             pending.append(fact)
 
+    def admitted_eager_overlap(
+        symbol: str, symbol_owners: Sequence[_SourceExtensionObjectFact]
+    ) -> bool:
+        # All providers must already be eager roots. Never choose a lazy member
+        # or infer COMDAT selection from a duplicate name or traversal order.
+        return (
+            all(owner.object_path in eager_paths for owner in symbol_owners)
+            and sum(symbol not in owner.weak_defined_symbols for owner in symbol_owners)
+            <= 1
+        )
+
     def require(symbol: str) -> None:
         symbol_owners = owners.get(symbol)
         if not symbol_owners:
@@ -2860,10 +2877,13 @@ def _compute_source_extension_object_closure(
             # no selected source object references it.
             undefined_symbols.add(symbol)
         elif len(symbol_owners) != 1:
+            if admitted_eager_overlap(symbol, symbol_owners):
+                return
             owner_names = ", ".join(owner.object_path.name for owner in symbol_owners)
             errors.add(
                 f"source extension symbol {symbol!r} is ambiguously defined by "
-                f"{owner_names}"
+                f"{owner_names}; competing providers require explicit eager "
+                "roots and weak-binding evidence (lazy/COMDAT selection is unsupported)"
             )
         else:
             include(symbol_owners[0])
@@ -2877,6 +2897,8 @@ def _compute_source_extension_object_closure(
             )
         else:
             include(fact)
+    # Freeze eligibility before any retained-symbol or dependency traversal.
+    eager_paths = frozenset(included)
     for symbol in retained_symbols:
         require(symbol)
     while pending:
@@ -2884,18 +2906,20 @@ def _compute_source_extension_object_closure(
         for symbol in fact.undefined_symbols:
             require(symbol)
 
-    # Forced members may introduce overlapping definitions without any use of
-    # the symbol. The current symbol authority has no weak/COMDAT selection
-    # facts, so it cannot silently choose a winner.
+    # Eager providers remain selected with every dependency, even when the
+    # linker coalesces their weak definitions. No winner or body is discarded.
+    # Check unused overlaps too, and reject unresolved lazy/COMDAT selection.
     for symbol, symbol_owners in owners.items():
         if len(symbol_owners) < 2:
             continue
         selected = [owner for owner in symbol_owners if owner.object_path in included]
-        if len(selected) > 1:
+        if len(selected) > 1 and not admitted_eager_overlap(symbol, symbol_owners):
             owner_names = ", ".join(owner.object_path.name for owner in selected)
             errors.add(
                 f"source extension selected symbol {symbol!r} is ambiguously "
-                f"defined by {owner_names}"
+                f"defined by {owner_names}; competing providers require explicit "
+                "eager roots and weak-binding evidence "
+                "(lazy/COMDAT selection is unsupported)"
             )
     if errors:
         return None, sorted(errors)
