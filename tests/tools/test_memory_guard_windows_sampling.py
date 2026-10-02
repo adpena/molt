@@ -32,6 +32,36 @@ def _load_memory_guard():
     return module
 
 
+def _set_module_os_name(monkeypatch, module, name: str = "nt") -> None:
+    # pathlib and other host consumers must keep the real os module unchanged.
+    monkeypatch.setattr(
+        module, "os", SimpleNamespace(**{**vars(module.os), "name": name})
+    )
+
+
+@pytest.mark.parametrize("name", ["nt", "posix"])
+def test_module_platform_simulation_preserves_host_paths(
+    monkeypatch, tmp_path: Path, name: str
+) -> None:
+    host_name = os.name
+    host_os = windows_snapshot.os
+    witness = tmp_path / "host-path.txt"
+    witness.write_text("host filesystem", encoding="utf-8")
+
+    with monkeypatch.context() as local_patch:
+        _set_module_os_name(local_patch, windows_snapshot, name)
+        assert windows_snapshot.os is not host_os
+        assert windows_snapshot.os.name == name
+        assert windows_snapshot.os.environ is os.environ
+        assert os.name == host_name
+        assert Path(str(witness)).resolve().read_text(encoding="utf-8") == (
+            "host filesystem"
+        )
+
+    assert windows_snapshot.os is host_os
+    assert os.name == host_name
+
+
 def _windows_guard_creationflags(module) -> int:
     from molt.process_spawn import hidden_windows_process_group_creationflags
 
@@ -317,7 +347,7 @@ def test_windows_snapshot_reuses_one_immutable_api_binding() -> None:
 
 
 def test_windows_process_snapshot_hard_timeout_kills_helper(monkeypatch) -> None:
-    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+    _set_module_os_name(monkeypatch, windows_snapshot)
     monkeypatch.setattr(
         windows_snapshot,
         "_windows_process_snapshot_timeout_sec",
@@ -336,7 +366,7 @@ def test_windows_process_snapshot_hard_timeout_kills_helper(monkeypatch) -> None
 def test_windows_process_snapshot_hard_timeout_decodes_complete_rows(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+    _set_module_os_name(monkeypatch, windows_snapshot)
     monkeypatch.setattr(
         windows_snapshot,
         "_windows_process_snapshot_timeout_sec",
@@ -365,7 +395,7 @@ def test_windows_process_snapshot_hard_timeout_decodes_complete_rows(
 def test_windows_process_snapshot_hard_timeout_rejects_partial_payload(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+    _set_module_os_name(monkeypatch, windows_snapshot)
     monkeypatch.setattr(
         windows_snapshot,
         "_windows_process_snapshot_timeout_sec",
@@ -399,7 +429,7 @@ def test_windows_process_snapshot_hard_timeout_preserves_failure_authority(
     stderr: str,
     message: str,
 ) -> None:
-    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+    _set_module_os_name(monkeypatch, windows_snapshot)
     monkeypatch.setattr(
         windows_snapshot.subprocess,
         "run",
@@ -450,7 +480,7 @@ def test_windows_process_handle_rss_fails_closed_when_psapi_unavailable(
 ) -> None:
     import ctypes
 
-    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+    _set_module_os_name(monkeypatch, windows_snapshot)
 
     def missing_psapi(*_args, **_kwargs):
         raise OSError("psapi unavailable")
@@ -463,7 +493,7 @@ def test_windows_process_handle_rss_fails_closed_when_psapi_unavailable(
 def test_windows_process_handle_rss_rejects_invalid_handle_values(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+    _set_module_os_name(monkeypatch, windows_snapshot)
 
     assert windows_snapshot.windows_process_handle_rss_kb(None) is None
     assert windows_snapshot.windows_process_handle_rss_kb("not-a-handle") is None
@@ -496,6 +526,7 @@ def test_windows_wrapper_terminalizes_worker_exit_running_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _load_memory_guard()
+    host_run = subprocess.run
     summary_path = tmp_path / "memory_guard.json"
     child_process = module.GuardedChildProcess(
         pid=40132,
@@ -524,7 +555,15 @@ def test_windows_wrapper_terminalizes_worker_exit_running_summary(
         return SimpleNamespace(returncode=15)
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        module, "subprocess", SimpleNamespace(**{**vars(subprocess), "run": fake_run})
+    )
+    assert subprocess.run is host_run
+
+    def unexpected_run_guarded(*args, **kwargs):  # noqa: ANN002, ANN003
+        pytest.fail("wrapper test must delegate to the mocked worker")
+
+    monkeypatch.setattr(module, "run_guarded", unexpected_run_guarded)
 
     rc = module.main(
         [
@@ -536,7 +575,8 @@ def test_windows_wrapper_terminalizes_worker_exit_running_summary(
             "pass",
         ],
         hide_command_argv=True,
-        environ=os.environ,
+        # Model an outer wrapper, independent of the test runner's worker flag.
+        environ={},
     )
 
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -553,7 +593,7 @@ def test_windows_wrapper_terminalizes_worker_exit_running_summary(
 def test_harness_batch_process_group_kwargs_hide_windows_console(monkeypatch) -> None:
     import tools.harness_memory_guard as harness_memory_guard
 
-    monkeypatch.setattr(harness_memory_guard.os, "name", "nt")
+    _set_module_os_name(monkeypatch, harness_memory_guard)
     monkeypatch.setattr(
         harness_memory_guard.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
@@ -604,6 +644,9 @@ def test_pytest_bootstrap_process_group_kwargs_hide_windows_console(
 ) -> None:
     import molt.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
 
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
+    )
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
@@ -935,6 +978,7 @@ def test_windows_protects_external_codex_descendants_but_not_owned_children(
 
 def test_hidden_argv_uses_subprocess_worker_on_windows(monkeypatch) -> None:
     module = _load_memory_guard()
+    host_run = subprocess.run
     calls: dict[str, object] = {}
 
     stdio = {"stdin": "in", "stdout": "out", "stderr": "err"}
@@ -963,7 +1007,15 @@ def test_hidden_argv_uses_subprocess_worker_on_windows(monkeypatch) -> None:
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "inherit_stdio_kwargs", lambda: stdio)
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        module, "subprocess", SimpleNamespace(**{**vars(subprocess), "run": fake_run})
+    )
+    assert subprocess.run is host_run
+
+    def unexpected_run_guarded(*args, **kwargs):  # noqa: ANN002, ANN003
+        pytest.fail("wrapper test must delegate to the mocked worker")
+
+    monkeypatch.setattr(module, "run_guarded", unexpected_run_guarded)
 
     rc = module.main(
         ["--", "python", "-c", "print('ok')"],
@@ -1859,7 +1911,7 @@ def test_all_default_windows_sampling_uses_isolated_authority(monkeypatch, modul
 
 
 def test_windows_native_av_helper_is_typed_failure(monkeypatch):
-    monkeypatch.setattr(windows_snapshot.os, "name", "nt")
+    _set_module_os_name(monkeypatch, windows_snapshot)
     monkeypatch.setattr(
         windows_snapshot.subprocess,
         "run",
@@ -2002,6 +2054,7 @@ def test_windows_enumeration_requires_documented_complete_marker(monkeypatch, er
         invalid_handle_value=-1,
         ProcessEntry32W=Entry,
     )
+    _set_module_os_name(monkeypatch, windows_snapshot)
     monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", lambda: api)
     if error == 18:
         rows = windows_snapshot._windows_process_snapshot_rows()
