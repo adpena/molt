@@ -27,6 +27,7 @@ def native_relocatable_object(
     target_triple: str | None = None,
     symbols: tuple[str, ...] = (),
     data_symbols: tuple[str, ...] = (),
+    weak_symbols: tuple[str, ...] = (),
 ) -> bytes:
     """Real readable object sections; no executable-body or support claim.
 
@@ -51,6 +52,11 @@ def native_relocatable_object(
         not symbol or "\0" in symbol for symbol in all_symbols
     ):
         raise ValueError("Fixture symbols must be unique, nonempty, and NUL-free")
+    weak_names = frozenset(weak_symbols)
+    if not weak_names <= set(all_symbols):
+        raise ValueError("Weak fixture symbols must name declared definitions")
+    if weak_names and target.object_format is not NativeObjectFormat.ELF:
+        raise ValueError("Weak fixture bindings are implemented only for ELF")
     names = tuple(symbol.encode("ascii") for symbol in all_symbols)
     function_count = len(symbols)
     body = bytes(4 * max(1, function_count))
@@ -127,7 +133,8 @@ def native_relocatable_object(
                 struct.pack(
                     "<IBBHQQ",
                     len(strings),
-                    0x12 if function else 0x11,
+                    (0x20 if all_symbols[index] in weak_names else 0x10)
+                    | (2 if function else 1),
                     0,
                     1 if function else 2,
                     value,
