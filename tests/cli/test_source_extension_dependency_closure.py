@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -102,6 +104,7 @@ def _root_closure_fact(
     defined: tuple[str, ...],
     undefined: tuple[str, ...] = (),
     suffix: str = ".o",
+    weak: tuple[str, ...] = (),
 ) -> source_extensions._SourceExtensionObjectFact:
     return source_extensions._SourceExtensionObjectFact(
         source_path=root / f"{name}.c",
@@ -112,6 +115,7 @@ def _root_closure_fact(
         defined_symbols=defined,
         undefined_symbols=undefined,
         defined_function_symbols=defined,
+        weak_defined_symbols=frozenset(weak),
         compile_command=(),
         symbol_authority=source_extensions.SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
         symbol_command=("llvm-nm",),
@@ -217,8 +221,6 @@ def test_object_closure_rejects_ambiguous_admitted_roots(
 
 
 def test_object_closure_rejects_duplicate_compiled_identity(tmp_path: Path) -> None:
-    from dataclasses import replace
-
     init = _root_closure_fact(tmp_path, "module", defined=("PyInit_module",))
     alias = replace(
         init, defined_symbols=("another",), defined_function_symbols=("another",)
@@ -229,3 +231,236 @@ def test_object_closure_rejects_duplicate_compiled_identity(tmp_path: Path) -> N
     assert closure is None
     assert len(errors) == 1
     assert "object identity is duplicated" in errors[0]
+
+
+@pytest.mark.parametrize("left_weak", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_eager_weak_overlap_preserves_every_root_and_dependency(
+    tmp_path: Path, left_weak: bool, reverse: bool
+) -> None:
+    init = _root_closure_fact(tmp_path, "module", defined=("PyInit_module",))
+    left = _root_closure_fact(
+        tmp_path,
+        "left",
+        defined=("callback",),
+        weak=("callback",) if left_weak else (),
+        undefined=("cleanup",),
+    )
+    right = _root_closure_fact(
+        tmp_path,
+        "right",
+        defined=("callback",),
+        weak=("callback",),
+        undefined=("registration",),
+    )
+    cleanup = _root_closure_fact(
+        tmp_path, "cleanup", defined=("cleanup",), undefined=("error_handler",)
+    )
+    registration = _root_closure_fact(
+        tmp_path, "registration", defined=("registration",), undefined=("callback",)
+    )
+    unused = _root_closure_fact(tmp_path, "unused", defined=("unused",))
+    facts = (cleanup, right, unused, registration, init, left)
+    forced = (left.object_path, right.object_path)
+    if reverse:
+        facts, forced = facts[::-1], forced[::-1]
+    closure, errors = source_extensions._compute_source_extension_object_closure(
+        init_symbol="PyInit_module",
+        object_facts=facts,
+        forced_object_paths=forced,
+        retained_symbols=("callback",),
+    )
+    assert errors == []
+    assert closure is not None
+    assert closure.objects == tuple(f for f in facts if f is not unused)
+    assert closure.undefined_symbols == ("error_handler",)
+    assert closure.init_symbol_owner is init
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("force_left", [False, True])
+def test_weak_competing_provider_is_not_admitted_by_traversal(
+    tmp_path: Path, reverse: bool, force_left: bool
+) -> None:
+    init = _root_closure_fact(
+        tmp_path, "module", defined=("PyInit_module",), undefined=("callback", "unique")
+    )
+    left = _root_closure_fact(
+        tmp_path, "left", defined=("callback",), weak=("callback",)
+    )
+    right = _root_closure_fact(
+        tmp_path, "right", defined=("callback", "unique"), weak=("callback",)
+    )
+    # Resolving the unique dependency will select right, but must never promote
+    # its competing callback definition into the fixed set of eager roots.
+    facts = (init, left, right)
+    if reverse:
+        facts = facts[::-1]
+        init = replace(init, undefined_symbols=init.undefined_symbols[::-1])
+        facts = tuple(init if f.object_path == init.object_path else f for f in facts)
+    closure, errors = source_extensions._compute_source_extension_object_closure(
+        init_symbol="PyInit_module",
+        object_facts=facts,
+        forced_object_paths=(left.object_path,) if force_left else (),
+    )
+    assert closure is None
+    assert any(
+        "callback" in e and "lazy/COMDAT selection is unsupported" in e for e in errors
+    )
+
+
+@pytest.mark.parametrize("weak", [(), ("PyInit_module",)])
+def test_weak_binding_never_relaxes_unique_function_init_root(
+    tmp_path: Path, weak: tuple[str, ...]
+) -> None:
+    init = _root_closure_fact(tmp_path, "module", defined=("PyInit_module",))
+    other = _root_closure_fact(tmp_path, "other", defined=("PyInit_module",), weak=weak)
+    closure, errors = source_extensions._compute_source_extension_object_closure(
+        init_symbol="PyInit_module",
+        object_facts=(init, other),
+        forced_object_paths=(other.object_path,),
+    )
+    assert closure is None
+    assert len(errors) == 1 and "root 'PyInit_module' is ambiguous" in errors[0]
+    data_init = replace(
+        init, defined_function_symbols=(), weak_defined_symbols=frozenset(weak)
+    )
+    closure, errors = source_extensions._compute_source_extension_object_closure(
+        init_symbol="PyInit_module",
+        object_facts=(data_init,),
+    )
+    assert closure is None
+    assert len(errors) == 1 and "not a function symbol" in errors[0]
+
+
+@pytest.mark.parametrize("data", [False, True])
+@pytest.mark.parametrize(
+    "bindings", [(True, True), (False, True), (False, False), (True,)]
+)
+def test_real_elf_eager_weak_closure_agrees_with_linker(
+    tmp_path: Path, isolated_molt_cache: Path, data: bool, bindings: tuple[bool, ...]
+) -> None:
+    from molt.cli.llvm_wasi_tools import llvm_tool_candidates, llvm_linker_candidates
+    from tests.native_artifact_fixtures import native_relocatable_object
+
+    nm_candidates = llvm_tool_candidates("nm")
+    linkers = llvm_linker_candidates("ld.lld")
+    if not nm_candidates or not linkers:
+        pytest.skip("canonical llvm-nm and ELF ld.lld are unavailable")
+    nm, linker = str(nm_candidates[0]), str(linkers[0])
+    target = "x86_64-unknown-linux-gnu"
+    facts = []
+    declarations = [("module", "PyInit_module", False, False)] + [
+        (f"provider_{i}", "callback", weak, data) for i, weak in enumerate(bindings)
+    ]
+    for stem, symbol, weak, is_data in declarations:
+        obj, src = tmp_path / f"{stem}.o", tmp_path / f"{stem}.c"
+        src.write_text(
+            "/* Independent ELF symbol fixture; not compiler output. */\n",
+            encoding="utf-8",
+        )
+        obj.write_bytes(
+            native_relocatable_object(
+                target_triple=target,
+                symbols=() if is_data else (symbol,),
+                data_symbols=(symbol,) if is_data else (),
+                weak_symbols=(symbol,) if weak else (),
+            )
+        )
+        fact, error = source_extensions._source_extension_object_fact(
+            source_path=src,
+            object_path=obj,
+            language=SourceExtensionLanguage.C,
+            nm_command=(nm,),
+            target_triple=target,
+        )
+        assert error is None and fact is not None
+        assert fact.weak_defined_symbols == (
+            frozenset({symbol}) if weak else frozenset()
+        )
+        assert fact.defined_function_symbols == (() if is_data else (symbol,))
+        facts.append(fact)
+    linked = subprocess.run(
+        [
+            linker,
+            "-r",
+            *[str(f.object_path) for f in facts],
+            "-o",
+            str(tmp_path / "linked.o"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    accepted = bindings != (False, False)
+    if accepted:
+        assert linked.returncode == 0, linked.stderr
+    else:
+        assert linked.returncode != 0 and "duplicate symbol: callback" in linked.stderr
+    closure, errors = source_extensions._compute_source_extension_object_closure(
+        init_symbol="PyInit_module",
+        object_facts=facts,
+        forced_object_paths=tuple(f.object_path for f in facts),
+        retained_symbols=("callback",),
+    )
+    if accepted:
+        assert errors == []
+        assert closure is not None and closure.objects == tuple(facts)
+    else:
+        assert closure is None and any(
+            "callback" in e and "ambiguous" in e for e in errors
+        )
+
+
+@pytest.mark.parametrize("data", [False, True])
+def test_wasm_binding_projection_reaches_eager_object_closure(
+    tmp_path: Path, data: bool
+) -> None:
+    from tests.test_wasm_linking_symbols import _module, _function, _data, _section
+
+    facts = []
+    for stem, symbol in (
+        ("module", "PyInit_module"),
+        ("left", "callback"),
+        ("right", "callback"),
+    ):
+        obj, src = tmp_path / f"{stem}.o", tmp_path / f"{stem}.c"
+        src.write_text("/* Independent WASM symbol fixture. */\n", encoding="utf-8")
+        weak = symbol == "callback"
+        entry = (
+            _data(symbol, flags=1)
+            if data and weak
+            else _function(symbol, flags=int(weak), index=0)
+        )
+        if data and weak:
+            sections = _section(5, b"\x01\x00\x01") + _section(
+                11, b"\x01\x00\x41\x00\x0b\x08" + bytes(8)
+            )
+        else:
+            sections = (
+                _section(1, b"\x01\x60\x00\x00")
+                + _section(3, b"\x01\x00")
+                + _section(10, b"\x01\x02\x00\x0b")
+            )
+        obj.write_bytes(_module(entry) + sections)
+        fact, error = source_extensions._source_extension_object_fact(
+            source_path=src,
+            object_path=obj,
+            language=SourceExtensionLanguage.C,
+            target_triple="wasm32-wasip1",
+        )
+        assert error is None and fact is not None
+        assert fact.weak_defined_symbols == (
+            frozenset({symbol}) if weak else frozenset()
+        )
+        assert fact.defined_function_symbols == (() if data and weak else (symbol,))
+        facts.append(fact)
+    closure, errors = source_extensions._compute_source_extension_object_closure(
+        init_symbol="PyInit_module",
+        object_facts=facts,
+        forced_object_paths=tuple(f.object_path for f in facts),
+        retained_symbols=("callback",),
+    )
+    assert errors == []
+    assert closure is not None and closure.objects == tuple(facts)

@@ -89,7 +89,9 @@ def test_historical_projection_keeps_absent_discriminator():
 
 
 def test_windows_target_budget_counts_utf16_before_creating_outputs(tmp_path):
-    selected = layout.CargoOutputLayout(tmp_path / ("\U0001f600" * 70))
+    selected = layout.CargoOutputLayout(
+        tmp_path / ("\U0001f600" * 35) / ("\U0001f600" * 35)
+    )
     selected.admit_target_path(platform="linux")
     with pytest.raises(
         ValueError, match="target_utf16_units=.*shorter --cargo-output-root"
@@ -99,7 +101,9 @@ def test_windows_target_budget_counts_utf16_before_creating_outputs(tmp_path):
 
 
 def test_windows_supervisor_budget_is_independent_of_payload_toolchains(tmp_path):
-    selected = layout.CargoOutputLayout(tmp_path / ("\U0001f600" * 70))
+    selected = layout.CargoOutputLayout(
+        tmp_path / ("\U0001f600" * 35) / ("\U0001f600" * 35)
+    )
     selected.admit_supervisor_target_path(platform="linux")
     with pytest.raises(ValueError, match="reserved_descendant_units=128; limit=259"):
         selected.admit_supervisor_target_path(platform="win32")
@@ -944,7 +948,7 @@ def test_executable_cas_budget_uses_canonical_factory_and_utf16(
 
 
 def test_data_cas_and_posix_images_do_not_inherit_windows_launch_limit(tmp_path):
-    root = tmp_path / ("long" * 100)
+    root = tmp_path / ("long" * 50) / ("long" * 50)
     custody_cas.admit_executable_path(root, "supervisor", platform="linux")
     assert not root.exists()
 

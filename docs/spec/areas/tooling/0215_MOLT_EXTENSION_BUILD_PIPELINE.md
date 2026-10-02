@@ -227,6 +227,14 @@ that sequence. Strong and weak undefined references and weak definitions remain
 distinct. Object sidecars and central toolchain caches use one fact codec, and
 archive-wide sets are projections of member facts, not separately stored claims.
 Shared-stdlib validation tokens bind that same parsing-protocol generation.
+Source-object closure carries weak-definition facts from this reader and the
+WASM linking-symbol authority. Overlapping non-init definitions are admitted only
+when every provider is an eager root and at most one provider is strong. The eager
+set is fixed before retained-symbol and dependency traversal; all its objects and
+dependencies remain retained regardless of which definition the linker selects.
+Init roots still require one function owner, and duplicate strong definitions,
+lazy competing providers, and COMDAT selection without binding evidence fail
+closed. This does not select a linker winner or add a persisted manifest authority.
 Those aggregate sets do **not** establish lazy member extraction, linker order,
 or external-provider resolution. The lazy source/external dependency gate remains
 closed until the selected provider and final-link topology are represented.
