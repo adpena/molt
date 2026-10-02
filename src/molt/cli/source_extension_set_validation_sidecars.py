@@ -6,6 +6,11 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping, cast
+from molt.cli.extension_manifest import (
+    _MOLT_C_API_VERSION_RE,
+    _compiled_c_api_version_errors,
+    _default_molt_c_api_version,
+)
 from molt.cli.source_extension_manifest_codec import (
     _manifest_sequence,
     _object_unit_sha256,
@@ -52,6 +57,7 @@ from molt.cli.source_extension_link_arguments import source_extension_link_argum
 from molt.cli.source_extension_language import require_source_extension_language
 from molt.exact_json import canonical_json_bytes, loads_exact
 from molt.file_hashing import _sha256_bytes, _sha256_file
+from molt.source_root import compiler_source_root
 from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
@@ -284,6 +290,10 @@ def validate_source_extension_sidecars(
     target: ValidatedSourceExtensionTarget,
     inventory_sha256: Mapping[str, str],
 ) -> tuple[ValidatedSourceExtensionIdentitySidecar, ...]:
+    try:
+        current_abi = _default_molt_c_api_version(compiler_source_root())
+    except ValueError as exc:
+        raise SourceExtensionSetValidationError(str(exc)) from exc
     target_plan = target.plan
     target_commands = {role: list(command) for role, command in target.commands}
     raw_extensions = set_manifest["extensions"]
@@ -373,6 +383,25 @@ def validate_source_extension_sidecars(
             for field, expected in expected_sidecar_contract.items()
             if sidecar.get(field) != expected
         ]
+        declared_abi = sidecar.get("molt_c_api_version")
+        if not isinstance(declared_abi, str):
+            sidecar_mismatches.append("molt_c_api_version must be a string")
+        elif _MOLT_C_API_VERSION_RE.fullmatch(declared_abi.strip()) is None:
+            sidecar_mismatches.append(
+                "molt_c_api_version must be MAJOR[.MINOR[.PATCH]] "
+                f"(got {declared_abi!r})"
+            )
+        else:
+            declared_abi = declared_abi.strip()
+            sidecar_mismatches.extend(
+                _compiled_c_api_version_errors(declared_abi, current_abi)
+            )
+            expected_abi_tag = f"molt_abi{declared_abi.split('.', 1)[0]}"
+            if sidecar.get("abi_tag") != expected_abi_tag:
+                sidecar_mismatches.append(
+                    f"ABI tag mismatch: expected {expected_abi_tag!r}, "
+                    f"found {sidecar.get('abi_tag')!r}"
+                )
         source_plan = sidecar.get("source_plan")
         if (
             not isinstance(source_plan, Mapping)

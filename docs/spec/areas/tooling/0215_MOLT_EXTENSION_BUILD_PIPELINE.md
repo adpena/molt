@@ -445,10 +445,18 @@ request a local source rebuild.
 
 ---
 
-## 3. ABI Tags (Proposed)
-- `molt_c_api_version`: semantic version for the `libmolt` C-API (e.g., `0.1`).
-- Wheel tags add `molt` ABI markers (e.g., `molt_abi0` + target triple).
-- `molt` runtime rejects extensions with mismatched ABI tags.
+## 3. ABI Admission
+- `molt_c_api_version` has the form `MAJOR[.MINOR[.PATCH]]`. Extension builds
+  default to `MOLT_C_API_VERSION` in the selected SDK's `include/molt/molt.h`.
+- Artifact declarations must match the selected SDK's major. Older and newer
+  majors fail with a diagnostic requesting a rebuild against that SDK.
+- `abi_tag` must be `molt_abi<MAJOR>` for the declared major. Compatible
+  minor/patch suffixes are preserved; sealing does not restamp an older artifact.
+- Build, audit, seal, native import resolution, and complete source-extension-set
+  publication share this admission requirement. A missing, malformed, or
+  unreadable SDK version authority fails explicitly.
+- See the [extension ABI contract](../compat/contracts/libmolt_extension_abi_contract.md)
+  for the scope of this declaration check and the source-compatibility tiers.
 
 ---
 
@@ -457,16 +465,16 @@ Extensions declare Molt metadata in `pyproject.toml`:
 
 ```toml
 [tool.molt.extension]
-molt_c_api_version = "0.1"
+# Omit molt_c_api_version to build against the selected SDK's current major.
 capabilities = ["fs.read", "net"]
 determinism = "nondet"
 ```
 
 Required fields:
-- `molt_c_api_version`
 - `capabilities`
 
 Optional:
+- `molt_c_api_version` (an explicit compatible version; defaults to the selected SDK)
 - `determinism` (`deterministic` or `nondet`)
 - `effects` (explicit effect contract for FFI boundary)
 
