@@ -98,17 +98,20 @@ def test_linking_symbol_table_distinguishes_global_weak_local_and_undefined() ->
             _function("weak_fn", flags=1, index=1),
             _function("local_fn", flags=2, index=2),
             _function("undefined_fn", flags=0x50, index=3),
+            _function("weak_undefined_fn", flags=0x51, index=4),
             _data("global_data", flags=0, offset=4),
             _data("weak_data", flags=1, offset=12),
             _data("local_data", flags=2, offset=20),
             _data("undefined_data", flags=0x10),
+            _data("weak_undefined_data", flags=0x11),
         )
     )
 
     assert table.defined_functions == frozenset({"global_fn", "weak_fn"})
     assert table.defined_data == frozenset({"global_data", "weak_data"})
-    assert table.undefined_functions == frozenset({"undefined_fn"})
-    assert table.undefined_data == frozenset({"undefined_data"})
+    assert table.undefined_functions == frozenset({"undefined_fn", "weak_undefined_fn"})
+    assert table.undefined_data == frozenset({"undefined_data", "weak_undefined_data"})
+    assert table.weak_defined_names == frozenset({"weak_fn", "weak_data"})
 
 
 def test_import_parser_retains_complete_non_function_descriptors() -> None:

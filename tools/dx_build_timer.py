@@ -13,9 +13,15 @@ is the low-latency Rust proof profile. Keeping them separate prevents the
 diagnostic harness from turning a proof-timing scenario into an optimized
 release test build.
 
-It drives `cargo` directly (NOT `molt build`) because the thing being optimised
-is the cargo build of the backend crate(s) themselves. Each scenario is run N
-times; we report min/median/max so noise from other agents is visible.
+Cargo scenarios measure compiler self-build. The separate `molt-build-*`
+scenarios measure source-checkout CLI builds with a fresh MOLT_CACHE per trial,
+then reuse that cache for unchanged and edited input. Compiler home, Cargo
+targets and configured runtime locations are not cleared. Daemon reuse is
+possible only when an eligible outer guard owns the suite; per-phase guards
+retain their normal child cleanup. The receipt records the selected policy.
+These are noncanonical diagnostics, not installed-user or correctness acceptance.
+The synthetic edit adds a global assignment; no guest program is executed.
+Each scenario is run N times so noise from other agents is visible.
 Synthetic source touches are restored and then repaired with an unmeasured
 baseline build so the persistent target is not left stale for the next scenario,
 the next queue row, or the next agent.
@@ -46,6 +52,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools import harness_memory_guard  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.perf_authority import non_canonical_provenance  # noqa: E402
 from tools.throughput_measurement import elapsed_sec, phase_result  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -392,6 +399,7 @@ def _molt_build_command(
     target: str,
     profile: str,
     out_dir: Path,
+    cache_dir: Path,
     diagnostics_file: Path,
     python_executable: str | None = None,
 ) -> list[str]:
@@ -408,7 +416,10 @@ def _molt_build_command(
         profile,
         "--out-dir",
         str(out_dir),
+        "--cache-dir",
+        str(cache_dir),
         "--cache-report",
+        "--json",
         "--diagnostics",
         "--diagnostics-file",
         str(diagnostics_file),
@@ -419,9 +430,46 @@ def _molt_build_command(
 
 
 def _apply_python_edit(source: Path) -> str:
-    with source.open("a", encoding="utf-8") as handle:
-        handle.write(PYTHON_TOUCH_MARKER)
+    with source.open("ab") as handle:
+        handle.write(PYTHON_TOUCH_MARKER.encode("utf-8"))
     return PYTHON_TOUCH_MARKER.strip()
+
+
+def _molt_build_artifact(stdout: str, out_dir: Path) -> dict[str, object]:
+    """Observe the CLI's primary output; never infer correctness from a digest."""
+    from molt.toolchain_identity import stable_file_content_identity
+
+    payload = json.loads(stdout)
+    if not isinstance(payload, dict) or payload.get("command") != "build":
+        raise ValueError("missing build JSON receipt")
+    if payload.get("status") != "ok":
+        raise ValueError(f"build JSON is not successful: {payload.get('errors')!r}")
+    data = payload.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("output"), str):
+        raise ValueError("build JSON has no output path")
+    output = Path(data["output"])
+    if not output.is_absolute():
+        output = REPO_ROOT / output
+    if not output.resolve().is_relative_to(out_dir.resolve()):
+        raise ValueError("build output is outside the scenario output directory")
+    identity = stable_file_content_identity(output, label="DX build artifact")
+    observed = data.get("observed_toolchain")
+    if isinstance(observed, dict) and observed.get("artifact") is not None:
+        reported = observed["artifact"]
+        expected = reported.get("identity") if isinstance(reported, dict) else None
+        if not isinstance(expected, dict) or any(
+            expected.get(key) != identity[key] for key in ("sha256", "size")
+        ):
+            raise ValueError(
+                "build artifact differs from CLI observed_toolchain identity"
+            )
+    return {
+        "path": str(output),
+        "identity": identity,
+        "observed_toolchain": observed,
+        "cache": data.get("cache"),
+        "correctness_verified": False,
+    }
 
 
 def _touch_files(repo_root: Path = REPO_ROOT) -> dict[str, Path]:
@@ -431,7 +479,7 @@ def _touch_files(repo_root: Path = REPO_ROOT) -> dict[str, Path]:
         "function_compiler": repo_root
         / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
         "modules": repo_root / "runtime/molt-runtime/src/builtins/modules.rs",
-        "gvn": repo_root / "runtime/molt-passes/src/tir/passes/gvn.rs",
+        "gvn": repo_root / "runtime/molt-passes/src/tir/passes/gvn/mod.rs",
     }
 
 
@@ -476,7 +524,21 @@ def _snapshot_payload(
     prime: dict[str, object] | None = None,
     active: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    profiles = {
+        result.get(
+            "profile", args.test_profile if label == "test-lib" else args.profile
+        )
+        for label, result in results.items()
+    }
     payload: dict[str, object] = {
+        "provenance": non_canonical_provenance(
+            profile=next(iter(profiles))
+            if len(profiles) == 1
+            else "mixed"
+            if profiles
+            else "unmeasured",
+            source="tools/dx_build_timer.py",
+        ),
         "meta": {
             "profile": args.profile,
             "test_profile": args.test_profile,
@@ -585,7 +647,7 @@ def main() -> int:
     ap.add_argument(
         "--cold-clean",
         action="store_true",
-        help="rm -rf target dir before the cold scenario (true cold)",
+        help="Clear the Cargo target for the Cargo cold scenario only; does not apply to molt-build-*.",
     )
     ap.add_argument(
         "--no-repair-after-touch",
@@ -741,32 +803,119 @@ def main() -> int:
         )
 
     def measure_molt_build(label: str, target: str) -> None:
+        from molt.cli.default_paths import _default_home_str, _default_molt_home_cached
+
         source_name = molt_source.name
         phases = []
         molt_build_python = _molt_build_python_executable(env)
+        scenario_root = _molt_build_output_root(args) / label
+        scenario_root.mkdir(parents=True, exist_ok=True)
+        # Changing MOLT_CACHE must not implicitly redirect compiler provisioning.
+        compiler_home = str(
+            _default_molt_home_cached(
+                env.get("MOLT_HOME"),
+                env.get("MOLT_CACHE"),
+                env.get("XDG_CACHE_HOME"),
+                str(REPO_ROOT),
+                _default_home_str(),
+                sys.platform,
+                env.get("MOLT_EXT_ROOT"),
+            ).resolve()
+        )
+        reuse_outer_guard = _outer_memory_guard_reuse_enabled(env)
+        daemon_policy = (
+            "outer-guard-reuse; daemons may survive between phases; session cleanup at scenario exit"
+            if reuse_outer_guard
+            else "per-phase-guard; normal child cleanup between phases; daemon retention not assumed"
+        )
+        results[label] = {
+            "target": target,
+            "profile": args.molt_profile,
+            "source": str(molt_source),
+            "workflow": "source-checkout-diagnostic",
+            "cold_scope": (
+                "fresh MOLT_CACHE and explicit --cache-dir; compiler home, Cargo targets and configured runtime locations not cleared; "
+                + daemon_policy
+            ),
+            "daemon_policy": daemon_policy,
+            "edit_kind": "synthetic global assignment; no guest correctness check",
+            "driver": {
+                "python": molt_build_python,
+                "cwd": str(REPO_ROOT),
+                "PYTHONPATH": env.get("PYTHONPATH"),
+                "MOLT_SOURCE_ROOT": env.get("MOLT_SOURCE_ROOT"),
+                "installed_distribution_verified": False,
+            },
+            "phases": phases,
+        }
         try:
             for i in range(args.runs):
-                run_root = _molt_build_output_root(args) / label / f"run-{i + 1}"
-                if run_root.exists():
-                    shutil.rmtree(run_root)
+                run_root = Path(
+                    tempfile.mkdtemp(prefix=f"run-{i + 1}-", dir=scenario_root)
+                )
                 work_root = run_root / "work"
                 out_dir = run_root / "out"
                 diagnostics_root = run_root / "diagnostics"
+                cache_root = run_root / "cache"
+                inputs_root = run_root / "inputs"
+                cache_root.mkdir()
+                inputs_root.mkdir()
+                run_env = dict(env)
+                run_env["MOLT_CACHE"] = str(cache_root)
+                run_env["MOLT_HOME"] = compiler_home
+                cache_contract = {
+                    "MOLT_CACHE": str(cache_root),
+                    "empty_before_cold": not any(cache_root.iterdir()),
+                    "retained": {
+                        key: run_env.get(key)
+                        for key in (
+                            "MOLT_HOME",
+                            "MOLT_BIN",
+                            "CARGO_TARGET_DIR",
+                            "MOLT_DIFF_CARGO_TARGET_DIR",
+                            "MOLT_WASM_RUNTIME_DIR",
+                            "MOLT_BACKEND_DAEMON_SOCKET_DIR",
+                        )
+                    },
+                }
                 work_root.mkdir(parents=True, exist_ok=True)
                 out_dir.mkdir(parents=True, exist_ok=True)
                 diagnostics_root.mkdir(parents=True, exist_ok=True)
                 source_copy = work_root / source_name
                 shutil.copy2(molt_source, source_copy)
+                expected_source = source_copy.read_bytes()
+                source_witness = inputs_root / "original.py"
+                source_witness.write_bytes(expected_source)
 
                 for phase in ("cold", "warm", "edit"):
+                    if source_copy.read_bytes() != expected_source:
+                        raise ValueError("scenario source changed between build phases")
                     if phase == "edit":
+                        expected_edited = expected_source + PYTHON_TOUCH_MARKER.encode(
+                            "utf-8"
+                        )
                         _apply_python_edit(source_copy)
+                        if source_copy.read_bytes() != expected_edited:
+                            raise ValueError(
+                                "scenario source differs from the intended edit"
+                            )
+                        expected_source = expected_edited
+                        source_witness = inputs_root / "edited.py"
+                        source_witness.write_bytes(expected_source)
+                    source_identity = {
+                        "sha256": _sha256(expected_source),
+                        "size": len(expected_source),
+                        "witness": str(source_witness),
+                    }
+                    if source_copy.read_bytes() != expected_source:
+                        raise ValueError("scenario source changed between build phases")
                     diagnostics_file = diagnostics_root / f"{phase}.json"
                     cmd = _molt_build_command(
                         source=source_copy,
                         target=target,
                         profile=args.molt_profile,
                         out_dir=out_dir,
+                        cache_dir=cache_root,
                         diagnostics_file=diagnostics_file,
                         python_executable=molt_build_python,
                     )
@@ -781,12 +930,14 @@ def main() -> int:
                             "run": i + 1,
                             "runs": args.runs,
                             "cmd": cmd,
+                            "source_identity": source_identity,
+                            "cache_contract": cache_contract,
                             "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                         },
                     )
                     proc, raw_elapsed = _run_completed(
                         cmd,
-                        env,
+                        run_env,
                         REPO_ROOT,
                         progress_label=(
                             f"dx-build {label} {phase} run {i + 1}/{args.runs}"
@@ -813,6 +964,32 @@ def main() -> int:
                     phase_payload["diagnostics_file"] = str(diagnostics_file)
                     phase_payload["source"] = str(source_copy)
                     phase_payload["run"] = i + 1
+                    phase_payload["source_identity"] = source_identity
+                    phase_payload["cache_contract"] = cache_contract
+                    phase_payload["source_after_sha256"] = None
+                    phase_payload["artifact"] = None
+                    phase_payload["validation_errors"] = []
+                    for stream in ("stdout", "stderr"):
+                        stream_path = diagnostics_root / f"{phase}.{stream}.log"
+                        stream_path.write_text(
+                            _output_text(getattr(proc, stream)), encoding="utf-8"
+                        )
+                        phase_payload[f"{stream}_file"] = str(stream_path)
+                    try:
+                        phase_payload["source_after_sha256"] = _sha256(
+                            source_copy.read_bytes()
+                        )
+                        if (
+                            phase_payload["source_after_sha256"]
+                            != source_identity["sha256"]
+                        ):
+                            raise ValueError("scenario source changed during build")
+                        if proc.returncode == 0:
+                            phase_payload["artifact"] = _molt_build_artifact(
+                                _output_text(proc.stdout), out_dir
+                            )
+                    except (OSError, ValueError) as exc:
+                        phase_payload["validation_errors"].append(str(exc))
                     phases.append(phase_payload)
                     print(
                         (
@@ -821,22 +998,21 @@ def main() -> int:
                         ),
                         flush=True,
                     )
-                    results[label] = {
-                        "target": target,
-                        "profile": args.molt_profile,
-                        "source": str(molt_source),
-                        "phases": phases,
-                    }
                     _write_snapshot(
                         args,
                         results,
                         cargo_version=cargo_version,
                         prime=prime,
                     )
-                    if proc.returncode != 0:
+                    if proc.returncode != 0 or phase_payload["validation_errors"]:
                         break
-                if phases and phases[-1].get("returncode") != 0:
+                if phases and (
+                    phases[-1].get("returncode") != 0 or phases[-1]["validation_errors"]
+                ):
                     break
+        except (OSError, ValueError) as exc:
+            results[label]["error"] = str(exc)
+            print(f"[dx] {label} failed: {exc}", file=sys.stderr)
         finally:
             drained = _drain_current_session_backend_daemons(env)
             results.setdefault(
@@ -916,9 +1092,10 @@ def main() -> int:
         label
         for label, result in results.items()
         if result.get("rc", 0) != 0
+        or result.get("error")
         or result.get("repair_rc", 0) != 0
         or any(
-            phase.get("returncode", 0) != 0
+            phase.get("returncode", 0) != 0 or phase.get("validation_errors")
             for phase in result.get("phases", [])
             if isinstance(phase, dict)
         )
