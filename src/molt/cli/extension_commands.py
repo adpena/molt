@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from molt.source_root import compiler_source_root
 from molt.cli import source_extensions as _source_extensions
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.python_module_names import encode_python_module_names
@@ -51,6 +52,7 @@ from molt.cli.extension_manifest import (
     _MOLT_C_API_VERSION_RE,
     _coerce_str_list,
     _default_molt_c_api_version,
+    _compiled_c_api_version_errors,
     _infer_module_attr_callable_export_payloads,
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
@@ -73,8 +75,6 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.project_roots import (
-    _find_molt_root,
-    _find_project_root,
     _require_molt_root,
 )
 from molt.target_python import (
@@ -130,7 +130,7 @@ def extension_metadata(
     verbose: bool = False,
 ) -> int:
     del verbose
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "extension-metadata")
     if root_error is not None:
         return root_error
@@ -684,8 +684,7 @@ def extension_build(
             "directory ancestry"
         )
 
-    cwd_root = _find_project_root(Path.cwd())
-    molt_root = _find_molt_root(project_root, cwd_root)
+    molt_root = compiler_source_root()
     root_error = _require_molt_root(molt_root, json_output, "extension-build")
     if root_error is not None:
         return root_error
@@ -701,7 +700,10 @@ def extension_build(
     if lock_error is not None:
         return lock_error
 
-    default_abi = _default_molt_c_api_version(molt_root)
+    try:
+        default_abi = _default_molt_c_api_version(molt_root)
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="extension-build")
     abi_raw = molt_abi or extension_meta.get("molt_c_api_version") or default_abi
     if not isinstance(abi_raw, str):
         errors.append("molt ABI must be a string")
@@ -714,6 +716,7 @@ def extension_build(
         )
     abi_major = abi_version.split(".", 1)[0] if abi_version else "0"
     abi_tag = f"molt_abi{abi_major}"
+    errors.extend(_compiled_c_api_version_errors(abi_version, default_abi))
 
     if errors:
         return _fail(

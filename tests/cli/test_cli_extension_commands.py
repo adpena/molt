@@ -22,7 +22,6 @@ from molt.cli import source_extension_link_inputs as cli_source_extension_link_i
 from molt.cli import source_extensions as cli_source_extensions
 from molt.source_extension_link_inputs import SourceExtensionLinkInputs
 from molt.cli.extension_manifest import (
-    _CURRENT_MOLT_C_API_VERSION,
     _default_molt_c_api_version,
     _manifest_support_file_payloads,
 )
@@ -557,7 +556,7 @@ def _write_extension_project(
                 'module = "demoext"',
                 'sources = ["src/demoext.c"]',
                 'capabilities = ["fs.read"]',
-                'molt_c_api_version = "2"',
+                f'molt_c_api_version = "{_default_molt_c_api_version(ROOT)}"',
                 *(extension_extra_lines or []),
                 "",
             ]
@@ -921,7 +920,7 @@ def _write_meson_source_plan_project(
                 "[tool.molt.extension]",
                 'module = "pkg.demoext"',
                 'capabilities = ["fs.read"]',
-                'molt_c_api_version = "1"',
+                f'molt_c_api_version = "{_default_molt_c_api_version(ROOT)}"',
                 'python_exports = ["pkg.demoext"]',
                 "",
                 "[tool.molt.extension.source_plan]",
@@ -991,7 +990,7 @@ def _write_extension_scan_project(project_root: Path) -> None:
                 'module = "demoext"',
                 'sources = ["src/demoext.c"]',
                 'capabilities = ["fs.read"]',
-                'molt_c_api_version = "1"',
+                f'molt_c_api_version = "{_default_molt_c_api_version(ROOT)}"',
                 "",
             ]
         )
@@ -1082,7 +1081,7 @@ def _write_extension_numpy_project(project_root: Path) -> None:
                 'module = "demoext_numpy"',
                 'sources = ["src/demoext.c"]',
                 'capabilities = ["fs.read"]',
-                'molt_c_api_version = "1"',
+                f'molt_c_api_version = "{_default_molt_c_api_version(ROOT)}"',
                 "",
             ]
         )
@@ -1153,7 +1152,7 @@ def _write_extension_iterator_mapping_project(project_root: Path) -> None:
                 'module = "demoext_iter"',
                 'sources = ["src/demoext_iter.c"]',
                 'capabilities = ["fs.read"]',
-                'molt_c_api_version = "1"',
+                f'molt_c_api_version = "{_default_molt_c_api_version(ROOT)}"',
                 "",
             ]
         ),
@@ -1167,7 +1166,7 @@ def _write_extension_wheel(
     capabilities: list[str] | None = None,
     include_checksums: bool,
 ) -> tuple[Path, Path]:
-    wheel_name = "demo_ext-0.1.0-py3-molt_abi1-x86_64_unknown_linux_gnu.whl"
+    wheel_name = f"demo_ext-0.1.0-py3-molt_abi{_default_molt_c_api_version(ROOT)}-x86_64_unknown_linux_gnu.whl"
     wheel_path = root / wheel_name
     extension_entry = "demoext.so"
     extension_bytes = b"shared"
@@ -1179,8 +1178,8 @@ def _write_extension_wheel(
         "name": "demo-ext",
         "version": "0.1.0",
         "module": "demoext",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "x86_64-unknown-linux-gnu",
@@ -1840,9 +1839,9 @@ def test_extension_build_emits_wheel_and_manifest(
     assert manifest_path.exists()
     manifest = json.loads(manifest_path.read_text())
     assert manifest["wheel"] == wheel_path.name
-    assert manifest["molt_c_api_version"] == "2"
+    assert manifest["molt_c_api_version"] == _default_molt_c_api_version(ROOT)
     assert manifest["capabilities"] == ["fs.read"]
-    assert manifest["abi_tag"] == "molt_abi2"
+    assert manifest["abi_tag"] == f"molt_abi{_default_molt_c_api_version(ROOT)}"
     assert manifest["loader_kind"] == "libmolt_source"
     assert manifest["init_symbol"] == "PyInit_demoext"
     assert manifest["runtime_linkage"] == "static_link"
@@ -1864,22 +1863,16 @@ def test_extension_build_emits_wheel_and_manifest(
         assert manifest["extension"] in names
 
 
-def test_default_molt_c_api_version_fallback_tracks_current_contract(
-    tmp_path: Path,
-) -> None:
-    assert (
+def test_default_molt_c_api_version_requires_header_authority(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="cannot read C-API version authority"):
         _default_molt_c_api_version(tmp_path / "missing-root")
-        == _CURRENT_MOLT_C_API_VERSION
-    )
-
-    root = tmp_path / "bad-root"
-    (root / "include" / "molt").mkdir(parents=True)
-    (root / "include" / "molt" / "molt.h").write_text(
-        "#define NOT_THE_VERSION 1\n",
-        encoding="utf-8",
-    )
-
-    assert _default_molt_c_api_version(root) == _CURRENT_MOLT_C_API_VERSION
+    header = tmp_path / "include" / "molt" / "molt.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("#define NOT_THE_VERSION 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="version authority is malformed"):
+        _default_molt_c_api_version(tmp_path)
+    header.write_text("#define MOLT_C_API_VERSION 71u\n", encoding="utf-8")
+    assert _default_molt_c_api_version(tmp_path) == "71"
 
 
 @pytest.mark.parametrize(
@@ -2560,7 +2553,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
                 "[tool.molt.extension]",
                 'module = "pkg._cyext"',
                 'capabilities = ["fs.read"]',
-                'molt_c_api_version = "1"',
+                f'molt_c_api_version = "{_default_molt_c_api_version(ROOT)}"',
                 'python_exports = ["pkg._cyext"]',
                 "",
                 "[tool.molt.extension.source_plan]",
@@ -3072,8 +3065,8 @@ def test_extension_build_rejects_parallel_sources_with_source_plan(
     pyproject = project_root / "pyproject.toml"
     pyproject.write_text(
         pyproject.read_text(encoding="utf-8").replace(
-            'molt_c_api_version = "1"',
-            'molt_c_api_version = "1"\nsources = ["pkg/demoext.c"]',
+            f'molt_c_api_version = "{_default_molt_c_api_version(ROOT)}"',
+            f'molt_c_api_version = "{_default_molt_c_api_version(ROOT)}"\nsources = ["pkg/demoext.c"]',
         ),
         encoding="utf-8",
     )
@@ -4566,7 +4559,7 @@ def test_extension_audit_reports_abi_mismatch(tmp_path: Path) -> None:
     out_dir = tmp_path / "dist"
     out_dir.mkdir()
 
-    wheel_name = "demo_ext-0.1.0-py3-molt_abi1-x86_64_unknown_linux_gnu.whl"
+    wheel_name = f"demo_ext-0.1.0-py3-molt_abi{_default_molt_c_api_version(ROOT)}-x86_64_unknown_linux_gnu.whl"
     wheel_path = out_dir / wheel_name
     with zipfile.ZipFile(wheel_path, "w") as zf:
         zf.writestr("demoext.so", b"shared")
@@ -4576,8 +4569,8 @@ def test_extension_audit_reports_abi_mismatch(tmp_path: Path) -> None:
         "name": "demo-ext",
         "version": "0.1.0",
         "module": "demoext",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "x86_64-unknown-linux-gnu",
@@ -4593,7 +4586,7 @@ def test_extension_audit_reports_abi_mismatch(tmp_path: Path) -> None:
     rc = cli.extension_audit(
         path=str(out_dir),
         require_capabilities=True,
-        require_abi="2",
+        require_abi=str(int(_default_molt_c_api_version(ROOT)) + 1),
         json_output=False,
         verbose=False,
     )
@@ -4601,15 +4594,15 @@ def test_extension_audit_reports_abi_mismatch(tmp_path: Path) -> None:
 
 
 def test_extension_audit_accepts_embedded_manifest(tmp_path: Path) -> None:
-    wheel_name = "demo_ext-0.1.0-py3-molt_abi1-x86_64_unknown_linux_gnu.whl"
+    wheel_name = f"demo_ext-0.1.0-py3-molt_abi{_default_molt_c_api_version(ROOT)}-x86_64_unknown_linux_gnu.whl"
     wheel_path = tmp_path / wheel_name
     manifest = {
         "schema_version": 1,
         "name": "demo-ext",
         "version": "0.1.0",
         "module": "demoext",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "x86_64-unknown-linux-gnu",
@@ -4626,7 +4619,7 @@ def test_extension_audit_accepts_embedded_manifest(tmp_path: Path) -> None:
     rc = cli.extension_audit(
         path=str(wheel_path),
         require_capabilities=True,
-        require_abi="1",
+        require_abi=_default_molt_c_api_version(ROOT),
         json_output=False,
         verbose=False,
     )
@@ -4640,7 +4633,7 @@ def test_extension_audit_requires_checksums_when_requested(tmp_path: Path) -> No
     rc = cli.extension_audit(
         path=str(wheel_path),
         require_capabilities=True,
-        require_abi="1",
+        require_abi=_default_molt_c_api_version(ROOT),
         require_checksum=True,
         json_output=False,
         verbose=False,
@@ -4659,8 +4652,8 @@ def test_extension_audit_requires_manifest_python_export(
         "name": "numpy-probe",
         "version": "0.1.0",
         "module": "numpy._core._multiarray_umath",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -4699,8 +4692,8 @@ def test_extension_audit_reports_required_callable_exports_json(
         "name": "scipy-ndimage-probe",
         "version": "0.1.0",
         "module": "scipy.ndimage._nd_image",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -4763,8 +4756,8 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
         "name": "numpy-probe",
         "version": "0.1.0",
         "module": "numpy._core._multiarray_umath",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -4910,23 +4903,22 @@ def _minimal_static_extension_manifest(
     return manifest, artifact_path
 
 
-def test_extension_seal_restamps_stale_abi_to_current_runtime(
+def test_extension_seal_rejects_stale_compiled_layout(
     tmp_path: Path,
     capsys,
 ) -> None:
-    # A root sealed against an older runtime must not propagate its stale ABI
-    # label. Seal is the custody boundary that admits a recompiled artifact into
-    # the current runtime, so it re-stamps molt_c_api_version / abi_tag from the
-    # runtime header authority rather than copying the build-time label through.
+    # Seal cannot change compiled layout. Reject the old generation
+    # before any destination artifact is published.
     source_root = tmp_path / "source"
     artifact_dir = source_root / "numpy" / "_core"
     artifact_dir.mkdir(parents=True)
     (source_root / "numpy" / "__init__.py").write_text("V = 1\n", encoding="utf-8")
     (artifact_dir / "__init__.py").write_text("", encoding="utf-8")
+    old_major = int(_default_molt_c_api_version(ROOT)) - 1
     manifest, _artifact = _minimal_static_extension_manifest(
         artifact_dir=artifact_dir,
-        molt_c_api_version="1",
-        abi_tag="molt_abi1",
+        molt_c_api_version=str(old_major),
+        abi_tag=f"molt_abi{old_major}",
     )
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -4939,19 +4931,10 @@ def test_extension_seal_restamps_stale_abi_to_current_runtime(
         json_output=True,
         verbose=False,
     )
-    assert rc == 0
-    capsys.readouterr()
-
-    expected_major = _default_molt_c_api_version(ROOT).split(".", 1)[0]
-    for manifest_rel in (
-        "extension_manifest.json",
-        "numpy/_core/_multiarray_umath.molt.wasm.extension_manifest.json",
-    ):
-        sealed_manifest = json.loads(
-            (sealed_root / manifest_rel).read_text(encoding="utf-8")
-        )
-        assert sealed_manifest["molt_c_api_version"] == _CURRENT_MOLT_C_API_VERSION
-        assert sealed_manifest["abi_tag"] == f"molt_abi{expected_major}"
+    assert rc == 2
+    payload = capsys.readouterr().out
+    assert "C-API layout major mismatch" in payload
+    assert not sealed_root.exists()
 
 
 def test_extension_seal_fails_closed_on_future_abi(
@@ -4983,7 +4966,7 @@ def test_extension_seal_fails_closed_on_future_abi(
     )
     assert rc == 2
     captured = capsys.readouterr()
-    assert "newer than the current runtime" in captured.err
+    assert "C-API layout major mismatch" in captured.err
 
 
 def test_extension_seal_derives_source_capsule_requirements_for_static_artifact(
@@ -5015,8 +4998,8 @@ def test_extension_seal_derives_source_capsule_requirements_for_static_artifact(
         "name": "scipy-ndimage-probe",
         "version": "0.1.0",
         "module": "scipy.ndimage._nd_image",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -5120,8 +5103,8 @@ def test_extension_seal_persists_runtime_python_import_modules_for_static_artifa
         "name": "numpy-probe",
         "version": "0.1.0",
         "module": "numpy._core._multiarray_umath",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -5226,8 +5209,8 @@ def test_extension_seal_retains_all_inputs_for_reseal_after_source_deletion(
         "name": "numpy-probe",
         "version": "0.1.0",
         "module": "numpy._core._multiarray_umath",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -5252,6 +5235,22 @@ def test_extension_seal_retains_all_inputs_for_reseal_after_source_deletion(
             "build_root": str(build_root.resolve()),
             "compile_commands": str((build_root / "compile_commands.json").resolve()),
             "digest": "source-plan-digest",
+            "target_id": "_multiarray_umath",
+            "link_projection": {
+                "schema_version": 1,
+                "primary_target_id": "_multiarray_umath",
+                "primary_member_objects": ["_multiarray_umath.so.p/0.o"],
+                "items": [
+                    {
+                        "disposition": "source",
+                        "arguments": ["@build/loops.a"],
+                        "target_id": "loops",
+                        "archive_output": "loops.a",
+                        "member_objects": ["loops.a.p/1.o"],
+                        "loading": "default",
+                    }
+                ],
+            },
         },
         "object_closure": {
             "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
@@ -5382,8 +5381,8 @@ def test_extension_seal_rejects_stale_sealed_sources_without_runtime_import_cust
         "name": "numpy-probe",
         "version": "0.1.0",
         "module": "numpy._core._multiarray_umath",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -5480,8 +5479,8 @@ def test_extension_seal_rejects_fake_module_attr_callable_export(
         "name": "scipy-ndimage-probe",
         "version": "0.1.0",
         "module": "scipy.ndimage._nd_image",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -5607,8 +5606,8 @@ def test_extension_seal_publishes_provider_module_support_source(
         "name": "scipy-ndimage-probe",
         "version": "0.1.0",
         "module": "scipy.ndimage._nd_image",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -5823,8 +5822,8 @@ def _write_auditable_static_link_manifest(
         "name": "nativepkg-probe",
         "version": "0.1.0",
         "module": "nativepkg._native",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -6122,8 +6121,8 @@ def test_extension_audit_rejects_static_link_artifact_hash_mismatch(
         "name": "nativepkg-probe",
         "version": "0.1.0",
         "module": "nativepkg._native",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(ROOT),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": "wasm32-wasip1",
@@ -6186,14 +6185,14 @@ def test_verify_extension_manifest_json_payload(tmp_path: Path, capsys) -> None:
         artifact_path=str(wheel_path),
         require_checksum=True,
         json_output=True,
-        require_extension_abi="1",
+        require_extension_abi=_default_molt_c_api_version(ROOT),
         extension_metadata=True,
     )
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "ok"
     assert payload["data"]["extension_metadata"] is True
-    assert payload["data"]["extension_abi"] == "1"
+    assert payload["data"]["extension_abi"] == _default_molt_c_api_version(ROOT)
 
 
 def test_publish_extension_wheel_requires_checksum_verification(tmp_path: Path) -> None:
@@ -7977,3 +7976,79 @@ def test_meson_missing_source_is_irrelevant_only_outside_exact_archive_members(
     else:
         assert plan is None
         assert any("source does not exist" in error for error in errors)
+
+
+@pytest.mark.parametrize("major_delta", [-1, 1], ids=["old", "future"])
+def test_extension_audit_rejects_incompatible_layout_without_require_abi(
+    tmp_path: Path, capsys, major_delta: int
+) -> None:
+    out_dir, artifact_path, manifest_path, manifest = (
+        _write_auditable_static_link_manifest(tmp_path)
+    )
+    rc, payload = _audit_static_link_manifest(
+        out_dir, capsys, require_object_closure=True
+    )
+    assert rc == 0
+    assert payload["data"]["extension_file_status"] == "ok"
+    artifact_bytes = artifact_path.read_bytes()
+    current_abi = _default_molt_c_api_version(ROOT)
+    major = int(current_abi) + major_delta
+    manifest["molt_c_api_version"] = str(major)
+    manifest["abi_tag"] = f"molt_abi{major}"
+    finalize_source_extension_object_closure(manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_bytes = manifest_path.read_bytes()
+
+    rc, payload = _audit_static_link_manifest(
+        out_dir, capsys, require_object_closure=True
+    )
+
+    assert rc == 1
+    assert payload["errors"] == [
+        "extension C-API layout major mismatch: "
+        f"artifact declares {major}, runtime requires {current_abi}; "
+        "rebuild the extension against this runtime"
+    ]
+    assert artifact_path.read_bytes() == artifact_bytes
+    assert manifest_path.read_bytes() == manifest_bytes
+
+
+def test_extension_build_reports_missing_c_api_authority(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    _write_extension_project(project)
+    monkeypatch.setattr(
+        cli_commands, "compiler_source_root", lambda: tmp_path / "missing-root"
+    )
+    monkeypatch.setattr(cli_commands, "_require_molt_root", lambda *args: None)
+    monkeypatch.setattr(cli_commands, "_check_lockfiles", lambda *args: None)
+    result = cli_commands.extension_build(
+        project=str(project),
+        out_dir=str(tmp_path / "output"),
+        deterministic=False,
+        json_output=True,
+    )
+    assert result != 0
+    assert "cannot read C-API version authority" in capsys.readouterr().out
+    assert not (tmp_path / "output" / "extension_manifest.json").exists()
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        b"#define MOLT_C_API_VERSION 5u\n#define MOLT_C_API_VERSION invalid\n",
+        b"#define MOLT_C_API_VERSION 5u trailing\n",
+        b"#define MOLT_C_API_VERSION 4294967296u\n",
+        b"\xff\n#define MOLT_C_API_VERSION 5u\n",
+    ],
+)
+def test_c_api_version_authority_rejects_invalid_compiled_layout(
+    tmp_path: Path, contents: bytes
+) -> None:
+    header = tmp_path / "include" / "molt" / "molt.h"
+    header.parent.mkdir(parents=True)
+    header.write_bytes(contents)
+    with pytest.raises(ValueError, match="C-API version authority"):
+        _default_molt_c_api_version(tmp_path)
