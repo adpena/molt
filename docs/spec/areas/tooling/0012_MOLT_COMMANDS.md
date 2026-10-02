@@ -451,7 +451,7 @@ Expected project metadata:
 module = "mypkg._native"
 sources = ["src/native.c"]
 capabilities = ["fs.read"]
-molt_c_api_version = "1"
+# Omit molt_c_api_version to use the selected SDK's current C-API major.
 ```
 
 ## 5. Determinism and Security Flags

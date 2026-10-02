@@ -23,6 +23,7 @@ from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli import source_build_environment as build_environment
 from molt.cli import source_extension_producer as producer
 from molt.cli import source_extension_set_validation as set_validation
+from molt.cli import source_extension_set_validation_sidecars as sidecar_validation
 from molt.cli import source_extension_publication as publication
 from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
 from molt.cli.source_extension_link_arguments import source_extension_link_arguments
@@ -50,6 +51,7 @@ from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
 from molt.cli.source_extension_manifest_codec import (
+    _expand_source_extension_manifest_authorities,
     _manifest_dependencies,
     _manifest_sequence,
 )
@@ -236,6 +238,7 @@ def _write_build_pyproject(root: Path, requirements: tuple[str, ...]) -> None:
 
 
 def _write_complete_root(root: Path, *, marker: str) -> None:
+    current_abi = producer._default_molt_c_api_version(producer.compiler_source_root())
     root.mkdir(parents=True)
     (root / "marker.txt").write_text(marker, encoding="utf-8")
     for module in _MODULES:
@@ -298,6 +301,8 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
             "version": "1.18.0",
             "module": module,
             "init_symbol": root_symbol,
+            "molt_c_api_version": current_abi,
+            "abi_tag": f"molt_abi{current_abi.split('.', 1)[0]}",
             "abi_tier": "cpython-abi",
             "target_python": "py312",
             "python_tag": "py3",
@@ -3676,3 +3681,247 @@ def test_recover_and_prune_fails_closed_on_legacy_retired_destination(
             )
     assert (retired / "legacy.txt").read_text(encoding="utf-8") == "preserved\n"
     assert not destination.exists()
+
+
+def test_producer_contract_reports_missing_c_api_authority(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(producer, "compiler_source_root", lambda: tmp_path)
+    with pytest.raises(
+        producer.SourceExtensionProducerError,
+        match="cannot read C-API version authority",
+    ):
+        producer._audit_producer_contract(
+            {},
+            module="pkg.native",
+            expected_target_triple="wasm32-wasip1",
+            expected_target_python=SimpleNamespace(tag="py312", major=3),
+            expected_package_version="1.0",
+        )
+
+
+def _complete_set_abi_case(tmp_path: Path) -> dict[str, Any]:
+    publish = tmp_path / "publish"
+    _write_complete_root(publish, marker="abi-admission")
+    extension_set = SourceExtensionSet(
+        package="scipy",
+        package_version="1.18.0",
+        source=SourceExtensionSource("git", "a" * 40),
+        name="pact-witness",
+        seal_name="pact_scipy_witness",
+        variants=(),
+        build_dependency_group="source-build-scipy",
+        meson_setup_args=(),
+        use_pkg_config=True,
+        required_installed_files=(),
+        extensions=tuple(
+            SourceExtensionSpec(
+                module=module,
+                target=module.rsplit(".", 1)[-1],
+                python_exports=(module,),
+                capabilities=(),
+                provided_capsules=(),
+                exclude_linked_static_libraries=(),
+            )
+            for module in _MODULES
+        ),
+        required_config_tools=("pkg-config",),
+    )
+    entries = []
+    for spec in extension_set.extensions:
+        artifact = publish.joinpath(*spec.module.split(".")).with_suffix(".molt.wasm")
+        sidecar = json.loads(
+            artifact.with_name(artifact.name + ".extension_manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        entries.append(
+            {
+                "module": spec.module,
+                "target": spec.target,
+                "python_exports": list(spec.python_exports),
+                "capabilities": list(spec.capabilities),
+                "provided_capsules": list(spec.provided_capsules),
+                "exclude_linked_static_libraries": [],
+                "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                "wheel_sha256": sidecar["wheel_sha256"],
+                "object_closure_sha256": sidecar["object_closure"]["closure_sha256"],
+            }
+        )
+    return {
+        "publish_root": publish,
+        "extension_set": extension_set,
+        "variant": SourceExtensionVariant(
+            target_python=TargetPythonVersion(3, 12, 0),
+            abi_tier="cpython-abi",
+            target_triple="wasm32-wasip1",
+        ),
+        "set_manifest": {
+            "schema_version": producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
+            "kind": "molt-source-extension-set",
+            "package": extension_set.package,
+            "package_version": extension_set.package_version,
+            "name": extension_set.name,
+            "seal_name": extension_set.seal_name,
+            "source_head": extension_set.source.commit,
+            "submodules": [],
+            "build_environment": _build_environment_manifest(),
+            "meson": _write_meson_metadata(publish, extension_set),
+            "cpython": "3.12",
+            "abi_tier": "cpython-abi",
+            "target_triple": "wasm32-wasip1",
+            "target_metadata": _write_target_metadata(publish),
+            "installed_package_files": [],
+            "extensions": entries,
+        },
+    }
+
+
+def _rewrite_complete_set_abi(
+    case: dict[str, Any], fields: dict[str, Any], *, missing: tuple[str, ...] = ()
+) -> None:
+    # Keep a complete historical/future set coherent, including compact object
+    # identities and the enclosing set's closure digests.
+    for entry in case["set_manifest"]["extensions"]:
+        sidecar_path = (
+            case["publish_root"]
+            .joinpath(*entry["module"].split("."))
+            .with_suffix(".molt.wasm.extension_manifest.json")
+        )
+        sidecar = _expand_source_extension_manifest_authorities(
+            json.loads(sidecar_path.read_text(encoding="utf-8"))
+        )
+        sidecar.update(fields)
+        for field in missing:
+            sidecar.pop(field, None)
+        finalize_source_extension_object_closure(sidecar)
+        producer._compact_source_extension_manifest(sidecar)
+        entry["object_closure_sha256"] = sidecar["object_closure"]["closure_sha256"]
+        sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+
+
+@pytest.mark.parametrize("major_delta", [-1, 0, 1], ids=["old", "matching", "future"])
+def test_complete_set_publication_enforces_compiled_c_api_generation(
+    tmp_path: Path, major_delta: int
+) -> None:
+    case = _complete_set_abi_case(tmp_path)
+    baseline = set_validation.validate_source_extension_set_publish_root(**case)
+    assert len(baseline.sidecars) == len(_MODULES)
+    current_abi = producer._default_molt_c_api_version(producer.compiler_source_root())
+    declared_abi = str(int(current_abi) + major_delta)
+    _rewrite_complete_set_abi(
+        case,
+        {"molt_c_api_version": declared_abi, "abi_tag": f"molt_abi{declared_abi}"},
+    )
+    before = {
+        path: path.read_bytes()
+        for path in case["publish_root"].rglob("*")
+        if path.is_file()
+    }
+    if major_delta:
+        with pytest.raises(set_validation.SourceExtensionSetValidationError) as failure:
+            set_validation.validate_source_extension_set_publish_root(**case)
+        assert str(failure.value) == (
+            "extension sidecar differs from set variant contract: "
+            "extension C-API layout major mismatch: "
+            f"artifact declares {declared_abi}, runtime requires {current_abi}; "
+            "rebuild the extension against this runtime"
+        )
+    else:
+        admitted = set_validation.validate_source_extension_set_publish_root(**case)
+        assert len(admitted.sidecars) == len(_MODULES)
+        assert all(
+            json.loads(sidecar.manifest_json)["molt_c_api_version"] == declared_abi
+            for sidecar in admitted.sidecars
+        )
+    assert {path: path.read_bytes() for path in before} == before
+
+
+@pytest.mark.parametrize("suffix", ["", ".2", ".2.3"])
+def test_complete_set_publication_uses_selected_sdk_and_preserves_compatible_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    case = _complete_set_abi_case(tmp_path)
+    sdk = tmp_path / "selected-sdk"
+    header = sdk / "include/molt/molt.h"
+    header.parent.mkdir(parents=True)
+    # A deliberately distinct SDK generation defeats a hardcoded runtime label.
+    header.write_text("#define MOLT_C_API_VERSION 71u\n", encoding="utf-8")
+    monkeypatch.setattr(sidecar_validation, "compiler_source_root", lambda: sdk)
+    declared_abi = f"71{suffix}"
+    _rewrite_complete_set_abi(
+        case, {"molt_c_api_version": declared_abi, "abi_tag": "molt_abi71"}
+    )
+
+    admitted = set_validation.validate_source_extension_set_publish_root(**case)
+
+    assert len(admitted.sidecars) == len(_MODULES)
+    for sidecar in admitted.sidecars:
+        manifest = json.loads(sidecar.manifest_json)
+        assert manifest["molt_c_api_version"] == declared_abi
+        assert manifest["abi_tag"] == "molt_abi71"
+
+
+@pytest.mark.parametrize(
+    ("fields", "missing", "diagnostic"),
+    [
+        ({}, ("molt_c_api_version",), "molt_c_api_version must be a string"),
+        ({"molt_c_api_version": 5}, (), "molt_c_api_version must be a string"),
+        ({"molt_c_api_version": ""}, (), "molt_c_api_version must be MAJOR"),
+        ({"molt_c_api_version": "5.0.0.1"}, (), "molt_c_api_version must be MAJOR"),
+        ({"molt_c_api_version": "v5"}, (), "molt_c_api_version must be MAJOR"),
+        ({}, ("abi_tag",), "ABI tag mismatch"),
+        ({"abi_tag": 5}, (), "ABI tag mismatch"),
+        ({"abi_tag": "molt_abi999"}, (), "ABI tag mismatch"),
+        ({"abi_tag": "molt_abi5.0"}, (), "ABI tag mismatch"),
+    ],
+)
+def test_complete_set_publication_rejects_invalid_abi_declarations(
+    tmp_path: Path,
+    fields: dict[str, Any],
+    missing: tuple[str, ...],
+    diagnostic: str,
+) -> None:
+    case = _complete_set_abi_case(tmp_path)
+    set_validation.validate_source_extension_set_publish_root(**case)
+    _rewrite_complete_set_abi(case, fields, missing=missing)
+
+    with pytest.raises(set_validation.SourceExtensionSetValidationError) as failure:
+        set_validation.validate_source_extension_set_publish_root(**case)
+
+    assert str(failure.value).startswith(
+        "extension sidecar differs from set variant contract: " + diagnostic
+    )
+
+
+@pytest.mark.parametrize(
+    ("header_bytes", "diagnostic"),
+    [
+        (None, "cannot read C-API version authority"),
+        (b"#define MOLT_C_API_VERSION five\n", "C-API version authority is malformed"),
+        (
+            b"#define MOLT_C_API_VERSION 5\n#define MOLT_C_API_VERSION 5\n",
+            "C-API version authority is malformed",
+        ),
+        (b"\xff", "cannot read C-API version authority"),
+    ],
+)
+def test_complete_set_publication_requires_readable_sdk_abi_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    header_bytes: bytes | None,
+    diagnostic: str,
+) -> None:
+    case = _complete_set_abi_case(tmp_path)
+    set_validation.validate_source_extension_set_publish_root(**case)
+    sdk = tmp_path / "invalid-sdk"
+    header = sdk / "include/molt/molt.h"
+    if header_bytes is not None:
+        header.parent.mkdir(parents=True)
+        header.write_bytes(header_bytes)
+    monkeypatch.setattr(sidecar_validation, "compiler_source_root", lambda: sdk)
+
+    with pytest.raises(set_validation.SourceExtensionSetValidationError) as failure:
+        set_validation.validate_source_extension_set_publish_root(**case)
+
+    assert str(failure.value) == f"{diagnostic}: {header}"
