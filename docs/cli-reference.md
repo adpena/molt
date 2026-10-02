@@ -531,7 +531,7 @@ native_wheels = ["cbor2", "cryptography", "msgpack"]
 
 [tool.molt.extension]
 # C extension configuration
-molt_c_api_version = "0.1"
+# Omit molt_c_api_version to use the selected SDK's current C-API major.
 ```
 
 Target-Python custody has one resolution order: explicit `--python-version`,
