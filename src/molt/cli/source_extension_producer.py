@@ -1058,7 +1058,10 @@ def _audit_producer_contract(
     expected_target_python: TargetPythonVersion,
     expected_package_version: str,
 ) -> None:
-    current_abi = _default_molt_c_api_version(compiler_source_root())
+    try:
+        current_abi = _default_molt_c_api_version(compiler_source_root())
+    except ValueError as exc:
+        raise SourceExtensionProducerError(str(exc)) from exc
     expected = {
         "deterministic": True,
         "loader_kind": "libmolt_source",

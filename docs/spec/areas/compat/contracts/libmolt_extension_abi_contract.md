@@ -10,7 +10,8 @@ for C/C++ extensions recompiled against Molt.
 ## 1. Principles
 - `libmolt` is a recompile target, not a `libpython` drop-in.
 - Stable ABI and source-compat are different promises and must stay separated.
-- `MOLT_C_API_VERSION` versions the stable ABI tier only.
+- `MOLT_C_API_VERSION` versions the stable ABI tier and incompatible compiled
+  layouts exposed through the source-compatibility headers.
 - Compatibility overlays may grow to unblock real extension builds without
   implying CPython ABI compatibility.
 - Private/generated upstream headers are never part of the `libmolt` contract.
@@ -36,6 +37,15 @@ for C/C++ extensions recompiled against Molt.
   - intended to remain small, explicit, and toolable
   - the only header tier that downstream code should treat as ABI-stable
 
+Extension admission reads `MOLT_C_API_VERSION` from the selected SDK's canonical
+header. The artifact's declared major must match that authority; older and newer
+majors require recompilation against the selected SDK. Sealing preserves the
+declared version and never upgrades an artifact by rewriting its ABI label.
+Compatible minor/patch suffixes are preserved, and `abi_tag` must agree with the
+declared major. A missing or malformed SDK version authority fails admission.
+These checks establish declaration compatibility, not proof that an artifact was
+compiled from a particular set of headers.
+
 ### 2.2 Tier B: CPython Source-Compat Facade
 - Canonical entrypoints:
   - `include/Python.h`
@@ -49,7 +59,8 @@ for C/C++ extensions recompiled against Molt.
 - Stability promise:
   - bounded and documented
   - not a frozen ABI surface
-  - may expand between releases without changing `MOLT_C_API_VERSION`
+  - compatible additions may expand between releases without changing
+    `MOLT_C_API_VERSION`; incompatible compiled layouts require a major change
 
 ### 2.3 Tier C: Package Header Custody
 - Current focus:

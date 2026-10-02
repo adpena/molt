@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.cli.extension_manifest import _default_molt_c_api_version
+from molt.source_root import compiler_source_root
+
 from molt.cli import wasm_link_inputs
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
@@ -4551,8 +4554,8 @@ def _libmolt_source_manifest_fields(
     manifest: dict[str, Any] = {
         "schema_version": 1,
         "module": module,
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(compiler_source_root()),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(compiler_source_root())}",
         "python_tag": "py3",
         "target_python": "py312",
         "target_triple": resolved_target_triple,
@@ -31787,3 +31790,77 @@ def test_external_native_package_symbol_closure_rejects_runtime_authority_collis
     assert any(
         symbol in error and "collides with canonical" in error for error in errors
     )
+
+
+@pytest.mark.parametrize(
+    "major_delta", [-1, 0, 1, None], ids=["old", "matching", "future", "oversized"]
+)
+def test_external_native_static_resolver_enforces_compiled_c_api_generation(
+    native_archives: NativeArchiveFixtureCatalog,
+    tmp_path: Path,
+    major_delta: int | None,
+) -> None:
+    external_root, artifact_path, manifest_path = _write_external_native_package(
+        tmp_path, native_archives=native_archives
+    )
+    artifact_bytes = artifact_path.read_bytes()
+    current_abi = _default_molt_c_api_version(compiler_source_root())
+
+    # Establish that this exact native fixture passes binary/source custody.
+    baseline, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        target=None,
+    )
+    assert errors == []
+    assert baseline is not None
+    assert len(baseline.artifacts) == 1
+    assert baseline.artifacts[0].artifact_kind == "static_archive"
+
+    declared_abi = (
+        "9" * 5000 if major_delta is None else str(int(current_abi) + major_delta)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["molt_c_api_version"] = declared_abi
+    manifest["abi_tag"] = f"molt_abi{declared_abi}"
+    finalize_source_extension_object_closure(manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_bytes = manifest_path.read_bytes()
+
+    original_digit_limit = sys.get_int_max_str_digits()
+    try:
+        if major_delta is None:
+            sys.set_int_max_str_digits(4300)
+        plan, errors = cli._resolve_external_package_native_artifact_plan(
+            external_module_roots=(external_root,),
+            admitted_packages={"nativepkg"},
+            target=None,
+        )
+    finally:
+        if major_delta is None:
+            sys.set_int_max_str_digits(original_digit_limit)
+    if major_delta is None or major_delta:
+        assert plan is None
+        expected_error = (
+            "extension C-API layout major cannot be represented; "
+            "rebuild the extension against this runtime"
+            if major_delta is None
+            else (
+                "extension C-API layout major mismatch: "
+                f"artifact declares {declared_abi}, runtime requires {current_abi}; "
+                "rebuild the extension against this runtime"
+            )
+        )
+        assert errors == [f"nativepkg: {expected_error}"]
+    else:
+        assert errors == []
+        assert plan is not None
+        assert [artifact.path for artifact in plan.artifacts] == [
+            artifact_path.resolve()
+        ]
+        assert (
+            plan.artifacts[0].extension_sha256
+            == hashlib.sha256(artifact_bytes).hexdigest()
+        )
+    assert artifact_path.read_bytes() == artifact_bytes
+    assert manifest_path.read_bytes() == manifest_bytes
