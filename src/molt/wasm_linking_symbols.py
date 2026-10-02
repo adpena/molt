@@ -135,6 +135,16 @@ class WasmLinkingSymbolTable:
             if symbol.name and symbol.is_externally_linkable
         )
 
+    @property
+    def weak_defined_names(self) -> frozenset[str]:
+        return frozenset(
+            symbol.name
+            for symbol in self.symbols
+            if symbol.name
+            and symbol.is_externally_linkable
+            and symbol.flags & _SYMBOL_BINDING_MASK == _SYMBOL_BINDING_WEAK
+        )
+
     def defined_names_for_kinds(
         self, expected_symbol_kinds: Mapping[str, str]
     ) -> frozenset[str]:
