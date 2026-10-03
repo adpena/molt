@@ -87,6 +87,114 @@ fn generated_operation_shapes_agree_across_all_transport_boundaries() {
 }
 
 #[test]
+fn representation_conversions_require_one_operand_independent_of_result_use() {
+    // The wire schema specifies these four spellings independently of the
+    // generated shape inventory: an omitted inventory row must fail this test.
+    for kind in ["box", "box_from_raw_int", "unbox", "unbox_to_raw_int"] {
+        for (args, var) in [
+            (None, None),
+            (Some(vec![]), None),
+            (Some(vec!["source".into(), "extra".into()]), None),
+            (Some(vec!["source".into()]), Some("extra")),
+            (Some(vec!["source".into()]), Some("source")),
+            (Some(vec!["source".into()]), Some("none")),
+            (Some(vec!["source".into()]), Some("")),
+        ] {
+            let mut function = test_func(
+                "representation_shape",
+                vec![
+                    OpIR {
+                        kind: kind.into(),
+                        args: args.clone(),
+                        var: var.map(str::to_owned),
+                        ..OpIR::default()
+                    },
+                    op("ret_void"),
+                ],
+            );
+            function.params = vec!["source".into(), "extra".into()];
+            let ir = SimpleIR {
+                functions: vec![function],
+                profile: None,
+            };
+            let violation = if var.is_some() {
+                "forbids `var`; `args` is the sole input carrier".to_string()
+            } else {
+                format!(
+                    "requires `args` length 1, found {}",
+                    args.as_ref()
+                        .map_or("none".into(), |args| args.len().to_string())
+                )
+            };
+            let expected = format!(
+                "function `representation_shape` op#0: [family=representation_conversion] `{kind}` {violation}"
+            );
+            let encoded = serde_json::to_string(&ir).unwrap();
+            let mut function = serde_json::to_value(&ir.functions[0]).unwrap();
+            function["kind"] = "function".into();
+            let ndjson = format!(
+                "{{\"kind\":\"ir_stream_start\"}}\n{function}\n{{\"kind\":\"ir_stream_end\"}}\n"
+            );
+            for result in [
+                validate_simple_ir(&ir),
+                SimpleIR::from_json_str(&encoded).map(|_| ()),
+                serde_json::from_str::<SimpleIR>(&encoded)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                SimpleIR::from_ndjson_reader(std::io::Cursor::new(ndjson.as_bytes())).map(|_| ()),
+            ] {
+                let error = result.expect_err("malformed conversion must fail wire admission");
+                assert!(error.contains(&expected), "{error}");
+            }
+            let isolated = std::panic::catch_unwind(|| {
+                molt_backend::tir::lower_from_simple::lower_to_tir(&ir.functions[0])
+            })
+            .expect_err("malformed conversion must fail before isolated SSA lowering");
+            let message = isolated
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| isolated.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            assert!(message.contains(&expected), "{message}");
+            assert_checked_shape_rejection(&ir);
+        }
+        for out in [None, Some("none"), Some("result")] {
+            let mut function = test_func(
+                "representation_shape",
+                vec![
+                    OpIR {
+                        kind: kind.into(),
+                        args: Some(vec!["source".into()]),
+                        out: out.map(str::to_owned),
+                        ..OpIR::default()
+                    },
+                    op("ret_void"),
+                ],
+            );
+            function.params = vec!["source".into()];
+            let ir = SimpleIR {
+                functions: vec![function],
+                profile: None,
+            };
+            validate_simple_ir(&ir).expect("a discarded result does not change unary admission");
+            let tir = molt_backend::tir::lower_from_simple::lower_to_tir(&ir.functions[0]);
+            molt_backend::tir::verify::verify_operation_shapes(&tir).unwrap();
+            let roundtrip = molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir);
+            let conversions: Vec<_> = roundtrip
+                .iter()
+                .filter(|op| matches!(op.kind.as_str(), "box" | "unbox"))
+                .collect();
+            assert_eq!(conversions.len(), 1, "{kind} {out:?}: {roundtrip:?}");
+            assert_eq!(conversions[0].args.as_ref().map(Vec::len), Some(1));
+            assert_eq!(
+                molt_ir::tir::simple_def_use::simple_ir_out_result(conversions[0]).is_some(),
+                out == Some("result")
+            );
+        }
+    }
+}
+
+#[test]
 fn isolated_lowering_rejects_shapes_without_requiring_program_slot_closure() {
     use molt_ir::tir::op_kinds_generated::simpleir_op_shape;
     let shape = simpleir_op_shape("code_slot_set").unwrap();
