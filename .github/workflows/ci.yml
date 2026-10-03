@@ -145,6 +145,14 @@ jobs:
           sync-frozen: "true"
           sync-groups: dev
 
+      - name: Resolve portability command evidence custody
+        id: build-control
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
+
       - name: Execute selected platform portability partition
         run: >-
           python tools/proof_plan.py
@@ -159,6 +167,19 @@ jobs:
           name: proof-receipt-platform-portability-${{ matrix.cell }}
           path: proof-receipts/platform-portability-${{ matrix.cell }}.json
           if-no-files-found: error
+
+      - name: Upload platform portability command diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-diagnostics-platform-portability-${{ matrix.cell }}
+          path: |
+            proof-receipts/platform-portability-${{ matrix.cell }}.json
+            ${{ steps.build-control.outputs.profile_log }}
+            ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
+            ${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}
+          include-hidden-files: true
+          if-no-files-found: warn
 
   security-hardening:
     name: Security Hardening

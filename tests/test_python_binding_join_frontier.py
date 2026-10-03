@@ -388,6 +388,217 @@ def _detached(
     return replace(node, children=tuple(_detached(child) for child in node.children))
 
 
+def _dense_join_projection(
+    pool: flow._StatePool, parents: tuple[int, ...], slot: int
+) -> tuple[object, ...]:
+    """Per-slot oracle over every original parent, independent of radix joining."""
+    rows = [pool._binding_resolution(parent, slot) for parent in parents]
+    identities = 0
+    for row in rows:
+        identities |= row.identities
+    clean = all(row.clean for row in rows)
+    normal = [row for row in rows if row.identities & ~UNBOUND_IDENTITY]
+    static = normal[0].static_value if normal else None
+    if any(
+        python_static_value_key(row.static_value) != python_static_value_key(static)
+        for row in normal
+    ):
+        static = None
+    result = _reference_result_join(tuple(row.result for row in normal))
+    owner = rows[0].owner_token
+    if any(row.owner_token != owner for row in rows):
+        owner = 0
+    if not clean:
+        identities |= OTHER_IDENTITY
+        static, result, owner = None, UNKNOWN_EXPRESSION_RESULT, 0
+    return identities, python_static_value_key(static), result, clean, owner
+
+
+def _assert_dense_join(
+    pool: flow._StatePool,
+    parents: tuple[int, ...],
+    joined: int,
+    slots: tuple[int, ...],
+) -> None:
+    assert pool.get(joined).parents == tuple(sorted(set(parents)))
+    for slot in slots:
+        row = pool._binding_resolution(joined, slot).public()
+        assert (
+            row.identities,
+            python_static_value_key(row.static_value),
+            row.result,
+            row.clean,
+            row.owner_token,
+        ) == _dense_join_projection(pool, parents, slot)
+
+
+def test_wide_join_prunes_internal_reads_and_preserves_original_write_history() -> None:
+    reads: list[int] = []
+
+    class ObservedChildren(tuple):
+        def __getitem__(self, offset):
+            reads.append(offset)
+            return super().__getitem__(offset)
+
+    pool = flow._StatePool()
+    result = StaticExpressionResult.scalar(7)
+    binding = (0, INERT, 7, result, 13)
+    base = pool.set_bindings(
+        0,
+        (binding, (32, INERT, 7, result, 13), (1024, INERT, 7, result, 13)),
+    )
+    environment = pool._binding_environments[base]
+    assert environment.depth >= 2
+    pool._binding_environments[base] = replace(
+        environment,
+        root=replace(
+            environment.root, children=ObservedChildren(environment.root.children)
+        ),
+    )
+    history = [base]
+    for _ in range(63):
+        history.append(pool.set_bindings(history[-1], (binding,), record_writes=True))
+    changed = pool.set_binding(base, 1024, INERT, 9)
+    parents = (*history, changed)
+    assert len(set(parents)) == 65
+    assert all(
+        pool._binding_environments[parent] is pool._binding_environments[base]
+        for parent in history
+    )
+
+    reads.clear()
+    control = pool.join(base, changed)
+    control_reads = len(reads)
+    assert control_reads > 0
+    reads.clear()
+    joined = pool.join(*parents)
+    wide_reads = len(reads)
+    _assert_dense_join(pool, parents, joined, (0, 32, 1024, 2048))
+    assert pool.slot_updated_between(base, joined, 0)
+    assert not pool.slot_updated_between(base, control, 0)
+    assert pool.transition_binding_events(
+        base, joined
+    ) == pool.transition_binding_events(base, control)
+    # The independent child-read observer exposes expansion before leaf dedup.
+    # Same storage contributors must cost the same as the two-root control.
+    assert wide_reads == control_reads
+    assert pool.join_node_duplicate_contributors >= len(history) - 1
+    assert (
+        pool.join_node_contributor_inputs - pool.join_node_contributor_outputs
+        == pool.join_node_duplicate_contributors
+    )
+
+
+@pytest.mark.parametrize("detach", (False, True))
+def test_wide_join_preserves_epoch_absence_and_late_domain_projection(
+    detach: bool,
+) -> None:
+    pool = flow._StatePool()
+    result = StaticExpressionResult.scalar(7)
+    binding = (0, INERT, 7, result, 13)
+    base = pool.set_bindings(0, (binding, (1024, INERT, 7, result, 13)))
+    history = [base]
+    for _ in range(6):
+        history.append(pool.set_bindings(history[-1], (binding,), record_writes=True))
+    stale = pool.taint_module_bindings(base)
+    changed = pool.set_binding(base, 32, INERT, 9)
+    parents = (*history, stale, changed, 0)
+    if detach:
+        for parent in parents:
+            environment = pool._binding_environments[parent]
+            root = _detached(environment.root)
+            assert isinstance(root, flow._BindingBranch)
+            pool._binding_environments[parent] = replace(environment, root=root)
+    joined = pool.join(*parents)
+    _assert_dense_join(pool, parents, joined, (0, 32, 1024, 2048))
+    assert pool.static_value(joined, 0) == 7
+    assert not pool._binding_resolution(joined, 0).namespace_clean
+    assert not pool._binding_resolution(joined, 2048).namespace_clean
+    # Same raw storage at another epoch and an absent filler both contribute.
+    pool.set_taint_domain(sum(1 << slot for slot in (0, 32, 1024, 2048)))
+    _assert_dense_join(pool, parents, joined, (0, 32, 1024, 2048))
+    assert pool.binding(joined, 0) & OTHER_IDENTITY
+    assert pool.static_value(joined, 0) is None
+    assert pool.owner_token(joined, 0) == 0
+    assert pool.binding(joined, 2048) == UNBOUND_IDENTITY | OTHER_IDENTITY
+    assert pool.get(joined).taint_epoch == 1
+
+    # Destination epoch may advance beyond the original parents' joined epoch.
+    clean_parents = tuple(sorted((*history, changed)))
+    assert all(pool.get(parent).taint_epoch == 0 for parent in clean_parents)
+    advanced = pool.intern(flow._BindingState(parents=clean_parents, taint_epoch=2))
+    for slot in (0, 32, 1024, 2048):
+        assert not pool._binding_resolution(advanced, slot).clean
+    assert pool.slot_updated_between(base, advanced, 0)
+
+
+def test_wide_join_keeps_first_representatives_and_all_invalidation_metadata() -> None:
+    pool = flow._StatePool()
+    refs = [PythonParameterRef("same") for _ in range(3)]
+    results = [StaticExpressionResult.scalar(7) for _ in refs]
+    bases = [
+        pool.set_binding(0, 0, INERT, ref, result, index + 1)
+        for index, (ref, result) in enumerate(zip(refs, results, strict=True))
+    ]
+    invalidated = [
+        pool.invalidate_members(base, mask, definite=True)
+        for base, mask in zip(bases, (3, 1, 5), strict=True)
+    ]
+    history = list(invalidated)
+    for index, parent in enumerate(invalidated):
+        for _ in range(3):
+            parent = pool.set_bindings(
+                parent,
+                ((0, INERT, refs[index], results[index], index + 1),),
+                record_writes=True,
+            )
+            history.append(parent)
+    parents = tuple(sorted(history))
+    joined = pool.join(*parents)
+    _assert_dense_join(pool, parents, joined, (0, 32))
+    assert pool.get(joined).maybe_invalidated_members == 7
+    assert pool.get(joined).definitely_invalidated_members == 1
+    assert pool.static_value(joined, 0) is refs[0]
+    assert pool.result(joined, 0) is results[0]
+    assert pool.owner_token(joined, 0) == 0
+
+
+@pytest.mark.parametrize(
+    ("left_value", "right_value"),
+    ((True, 1), (0.0, -0.0), (float("nan"), float("nan")), (7, 7)),
+)
+def test_wide_join_retains_typed_payload_order_and_distinct_owners(
+    left_value: object,
+    right_value: object,
+) -> None:
+    pool = flow._StatePool()
+    left_result = StaticExpressionResult.scalar(left_value)
+    right_result = StaticExpressionResult.scalar(right_value)
+    left = pool.set_binding(0, 0, INERT, left_value, left_result, 13)
+    right = pool.set_binding(0, 0, INERT, right_value, right_result, 17)
+    history = [left, right]
+    for parent, value, result, owner in (
+        (left, left_value, left_result, 13),
+        (right, right_value, right_result, 17),
+    ):
+        for _ in range(4):
+            parent = pool.set_bindings(
+                parent, ((0, INERT, value, result, owner),), record_writes=True
+            )
+            history.append(parent)
+    parents = tuple(sorted(history))
+    joined = pool.join(*parents)
+    _assert_dense_join(pool, parents, joined, (0, 32))
+    assert pool.owner_token(joined, 0) == 0
+    assert pool.slot_updated_between(left, joined, 0)
+    assert (
+        pool.result(joined, 0)._semantic_key
+        == _reference_result_join(
+            tuple(pool.result(parent, 0) for parent in parents)
+        )._semantic_key
+    )
+
+
 def test_semantic_history_ignores_sharing_and_includes_absent_domain_slots() -> None:
     pool = flow._StatePool()
     pool.set_taint_domain((1 << 0) | (1 << 129))
