@@ -247,6 +247,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     signal_payload as signal_payload,
     term_signal_payload as term_signal_payload,
     terminate_verified_pid as terminate_verified_pid,
+    termination_report_dispositions as termination_report_dispositions,
     total_rss as total_rss,
     watched_pids as watched_pids,
 )
@@ -357,10 +358,12 @@ def _temporary_artifact_descendant_closure(
             "target_id": action.target_id,
             "result": action.result,
         }
-        for report in termination_reports
-        for action in report.actions
-        if action.result in {"failed", "still_live"}
-        or action.result.startswith("skipped_")
+        for report, disposition in zip(
+            termination_reports,
+            termination_report_dispositions(termination_reports),
+            strict=True,
+        )
+        for action in disposition.incomplete_actions
     ]
     sampling_complete = bool(
         sampling_telemetry is not None
