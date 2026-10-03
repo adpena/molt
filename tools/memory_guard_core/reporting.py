@@ -28,6 +28,7 @@ from tools.memory_guard_core.process_custody import (
     GuardSamplingTelemetry,
     GuardTerminationAction,
     GuardedChildProcess,
+    termination_report_dispositions,
 )
 
 
@@ -144,56 +145,38 @@ def incident_payload(
         "tracked_orphan_cleanup",
         "repo_scoped_orphan_cleanup",
     }
-    final_orphan_actions: dict[tuple[str, int], GuardTerminationAction] = {}
-    final_primary_actions: dict[tuple[str, int], GuardTerminationAction] = {}
-    for report in result.termination_reports:
-        for action in report.actions:
-            if (
-                report.reason == "tracked_orphan_cleanup"
-                and action.target_kind == "process"
-                and action.target_id == report.root_pid
-            ):
-                continue
-            target_kind = (
-                "process"
-                if action.target_kind == "owned_child_handle"
-                else action.target_kind
-            )
-            key = (target_kind, action.target_id)
-            if report.reason in orphan_reasons:
-                final_orphan_actions[key] = action
-            else:
-                final_primary_actions[key] = action
-    incomplete_orphan_actions = [
-        action
-        for action in final_orphan_actions.values()
-        if action.result not in {"completed_or_missing", "missing"}
-    ]
-    incomplete_primary_actions = [
-        action
-        for action in final_primary_actions.values()
-        if action.result not in {"completed_or_missing", "missing"}
-    ]
+    incomplete_orphan_actions: list[GuardTerminationAction] = []
+    incomplete_primary_actions: list[GuardTerminationAction] = []
+    for report, disposition in zip(
+        result.termination_reports,
+        termination_report_dispositions(result.termination_reports),
+        strict=True,
+    ):
+        if report.reason in orphan_reasons:
+            incomplete_orphan_actions.extend(disposition.incomplete_actions)
+        else:
+            incomplete_primary_actions.extend(disposition.incomplete_actions)
     candidate_pids = sorted(
         {
             action.target_id
             for action in incomplete_orphan_actions
-            if action.target_kind == "process"
+            if action.target_kind in {"process", "owned_child_handle"}
         }
     )
     primary_candidate_pids = sorted(
         {
             action.target_id
             for action in incomplete_primary_actions
-            if action.target_kind == "process"
+            if action.target_kind in {"process", "owned_child_handle"}
         }
     )
 
+    exact_job_completed = (
+        result.windows_job_cleanup is not None and result.windows_job_cleanup.completed
+    )
+
     def cleanup_truth(default: str) -> str:
-        if (
-            result.windows_job_cleanup is not None
-            and result.windows_job_cleanup.completed
-        ):
+        if exact_job_completed:
             return default
         if not incomplete_orphan_actions and not incomplete_primary_actions:
             return default
@@ -214,10 +197,6 @@ def incident_payload(
             payload["termination_reports"] = termination_reports_payload(
                 result.termination_reports
             )
-        exact_job_completed = (
-            result.windows_job_cleanup is not None
-            and result.windows_job_cleanup.completed
-        )
         if incomplete_orphan_actions and not exact_job_completed:
             payload["orphan_cleanup_status"] = "incomplete"
             payload["orphan_cleanup_candidate_pids"] = candidate_pids
@@ -307,7 +286,7 @@ def incident_payload(
                 ),
             }
         )
-    if incomplete_orphan_actions:
+    if incomplete_orphan_actions and not exact_job_completed:
         return attach_guard_custody(
             {
                 "reason": "orphan_cleanup_incomplete",

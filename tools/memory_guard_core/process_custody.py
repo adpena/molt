@@ -200,6 +200,175 @@ class GuardTerminationReport:
 
 
 @dataclass(frozen=True, slots=True)
+class GuardTerminationDisposition:
+    incomplete_actions: tuple[GuardTerminationAction, ...]
+    completed_targets: frozenset[tuple[str, int]]
+
+
+def termination_report_dispositions(
+    reports: Sequence[GuardTerminationReport],
+) -> tuple[GuardTerminationDisposition, ...]:
+    """One completion authority for closure, incidents and cleaned-group claims.
+
+    Preserve failed/skipped observations and remaining markers. Only a later
+    terminal observation for the exact report/target resolves transient liveness.
+    The separate owned-child handle can prove its direct root reaped across
+    reports, but cannot erase failed/skipped custody or descendants' evidence.
+    """
+    final_root_handles: dict[int, tuple[int, int]] = {}
+    for report_index, report in enumerate(reports):
+        for index, action in enumerate(report.actions):
+            if action.target_kind in {"process", "owned_child_handle"}:
+                if (
+                    action.target_kind == "process"
+                    and action.target_id == report.root_pid
+                    and action.result == "reaped"
+                    and action.signal is None
+                    and action.signal_name is None
+                    and action.error is None
+                ):
+                    # A later owned-root reap corroborates the held handle;
+                    # it is not a new sampled liveness/identity observation.
+                    continue
+                final_root_handles.pop(action.target_id, None)
+                if (
+                    action.target_kind == "owned_child_handle"
+                    and action.target_id == report.root_pid
+                    and action.result == "completed_or_missing"
+                    and action.error is None
+                    and action.target_id not in report.remaining_pids
+                ):
+                    final_root_handles[action.target_id] = (report_index, index)
+
+    dispositions: list[GuardTerminationDisposition] = []
+    for report_index, report in enumerate(reports):
+        remaining = {("process", pid) for pid in report.remaining_pids} | {
+            ("process_group", pgid) for pgid in report.remaining_pgids
+        }
+        last = {
+            (action.target_kind, action.target_id): index
+            for index, action in enumerate(report.actions)
+        }
+
+        def valid_action(action: GuardTerminationAction) -> bool:
+            return (
+                action.target_id > 0
+                and action.error is None
+                and (
+                    action.target_kind in {"process", "process_group"}
+                    or (
+                        action.target_kind == "owned_child_handle"
+                        and action.target_id == report.root_pid
+                    )
+                )
+            )
+
+        def terminal_exit(action: GuardTerminationAction) -> bool:
+            return (
+                valid_action(action)
+                and action.target_kind in {"process", "process_group"}
+                and action.result == "exited"
+                and action.signal is None
+                and action.signal_name is None
+            )
+
+        def reaped_root(action: GuardTerminationAction) -> bool:
+            return (
+                valid_action(action)
+                and action.target_kind == "process"
+                and action.target_id == report.root_pid
+                and action.result == "reaped"
+                and action.signal is None
+                and action.signal_name is None
+            )
+
+        incomplete: list[GuardTerminationAction] = []
+        for index, action in enumerate(report.actions):
+            target = (action.target_kind, action.target_id)
+            remaining_target = (
+                "process"
+                if action.target_kind == "owned_child_handle"
+                else action.target_kind,
+                action.target_id,
+            )
+            final_index = last[target]
+            final = report.actions[final_index]
+            later_exit = (
+                final_index > index
+                and remaining_target not in remaining
+                and (
+                    terminal_exit(final)
+                    or (
+                        valid_action(final)
+                        and final.target_kind == "owned_child_handle"
+                        and final.result == "completed_or_missing"
+                    )
+                )
+            )
+            later_root_handle = (
+                action.target_kind == "process"
+                and action.target_id == report.root_pid
+                and remaining_target not in remaining
+                and final_root_handles.get(action.target_id, (-1, -1))
+                > (report_index, index)
+            )
+            if (
+                not valid_action(action)
+                or action.result == "failed"
+                or action.result.startswith("skipped_")
+            ):
+                incomplete.append(action)
+            elif action.result in {"still_live", "sent"}:
+                if not later_exit and not (
+                    action.result == "still_live" and later_root_handle
+                ):
+                    incomplete.append(action)
+            elif action.result == "exited":
+                if not terminal_exit(action):
+                    incomplete.append(action)
+            elif action.result == "reaped":
+                if not reaped_root(action):
+                    incomplete.append(action)
+            elif action.result not in {"completed_or_missing", "missing"}:
+                incomplete.append(action)
+
+        incomplete_targets = {
+            (action.target_kind, action.target_id) for action in incomplete
+        }
+        for kind, target_id in sorted(remaining - incomplete_targets):
+            incomplete.append(
+                _termination_action(
+                    target_kind=kind,
+                    target_id=target_id,
+                    signum=None,
+                    result="still_live",
+                    error="termination report retains remaining target",
+                )
+            )
+        incomplete_targets.update(remaining)
+        completed = frozenset(
+            target
+            for target, index in last.items()
+            if target not in incomplete_targets
+            and (
+                "process" if target[0] == "owned_child_handle" else target[0],
+                target[1],
+            )
+            not in incomplete_targets
+            and (
+                terminal_exit(report.actions[index])
+                or reaped_root(report.actions[index])
+                or (
+                    valid_action(report.actions[index])
+                    and report.actions[index].result == "completed_or_missing"
+                )
+            )
+        )
+        dispositions.append(GuardTerminationDisposition(tuple(incomplete), completed))
+    return tuple(dispositions)
+
+
+@dataclass(frozen=True, slots=True)
 class GuardOrphanCleanupResult:
     process_groups: tuple[int, ...] = ()
     termination_reports: tuple[GuardTerminationReport, ...] = ()
@@ -1025,6 +1194,80 @@ def _process_group_members(
     return tuple(sample for sample in samples.values() if _sample_pgid(sample) == pgid)
 
 
+def _observe_termination_exit_action(
+    target_kind: str,
+    target_id: int,
+    identities: Mapping[int, ProcessIdentity],
+    *,
+    sampler: Callable[[], Mapping[int, ProcessSample]],
+    grace: float,
+) -> GuardTerminationAction:
+    """Observe terminal absence after identity-checked escalation; never signal.
+
+    An empty sample alone cannot prove exit. Keep a distinct terminal action
+    only when both the kernel probe and a subsequent sample establish absence.
+    Live or reused identities remain unresolved, even if the kernel probe raced
+    with their publication. The caller retains every earlier custody failure.
+    """
+    if target_kind not in {"process", "process_group"}:
+        return _termination_action(
+            target_kind=target_kind,
+            target_id=target_id,
+            signum=None,
+            result="skipped_unsupported_target_kind",
+        )
+    probe = (
+        _process_group_exited_or_unobservable
+        if target_kind == "process_group"
+        else _pid_exited_or_unobservable
+    )
+    try:
+        exited = probe(target_id, grace=max(0.02, grace))
+    except (KeyboardInterrupt, Exception) as exc:
+        return _termination_action(
+            target_kind=target_kind,
+            target_id=target_id,
+            signum=None,
+            result="failed",
+            error=f"terminal liveness observation: {exc}",
+        )
+    try:
+        samples = sampler()
+    except (KeyboardInterrupt, Exception) as exc:
+        return _termination_action(
+            target_kind=target_kind,
+            target_id=target_id,
+            signum=None,
+            result="skipped_sampler_failure",
+            error=str(exc),
+        )
+    members = (
+        _process_group_members(samples, target_id)
+        if target_kind == "process_group"
+        else (samples[target_id],)
+        if target_id in samples
+        else ()
+    )
+    identity_mismatch = any(
+        (identity := identities.get(sample.pid)) is None
+        or not process_identity_has_creation_marker(identity)
+        or process_identity(sample) != identity
+        for sample in members
+    )
+    return _termination_action(
+        target_kind=target_kind,
+        target_id=target_id,
+        signum=None,
+        result=(
+            "skipped_identity_mismatch"
+            if identity_mismatch
+            else "exited"
+            if exited and not members
+            else "still_live"
+        ),
+    )
+
+
 def _process_group_is_fully_owned(
     samples: Mapping[int, ProcessSample],
     pgid: int,
@@ -1060,6 +1303,25 @@ def terminate_watched_processes(
         sampler = sample_processes
     started_at = _utc_timestamp()
     actions: list[GuardTerminationAction] = []
+
+    def record_escalation(
+        action: GuardTerminationAction,
+        identities: Mapping[int, ProcessIdentity],
+        remaining: set[int],
+    ) -> None:
+        actions.append(action)
+        if action.result not in {"sent", "missing"}:
+            return
+        terminal = _observe_termination_exit_action(
+            action.target_kind,
+            action.target_id,
+            identities,
+            sampler=sampler,
+            grace=grace,
+        )
+        actions.append(terminal)
+        if terminal.result == "exited":
+            remaining.discard(action.target_id)
 
     def finish(
         *,
@@ -1460,13 +1722,15 @@ def terminate_watched_processes(
         if action.result == "still_live":
             remaining_pids.add(pid)
     for pgid in sorted(remaining_pgids):
-        actions.append(
+        record_escalation(
             _send_process_group_signal_if_identities_match_action(
                 pgid,
                 observed_identities,
                 signal.SIGKILL,
                 sampler=sampler,
-            )
+            ),
+            observed_identities,
+            remaining_pgids,
         )
     for pid in sorted(remaining_pids):
         if pid == os.getpid():
@@ -1479,13 +1743,15 @@ def terminate_watched_processes(
                 )
             )
             continue
-        actions.append(
+        record_escalation(
             _send_pid_signal_if_identity_action(
                 pid,
                 observed_identities.get(pid),
                 signal.SIGKILL,
                 sampler=sampler,
-            )
+            ),
+            observed_identities,
+            remaining_pids,
         )
     return finish(
         root_pgid=root_group_pgid,
@@ -1558,7 +1824,7 @@ def cleanup_tracked_orphans(
         sample = samples.get(pid)
         if sample is not None:
             group_members.setdefault(_sample_pgid(sample), set()).add(pid)
-    completed_groups = _fully_completed_process_groups(group_members, report.actions)
+    completed_groups = _fully_completed_process_groups(group_members, report)
     return GuardOrphanCleanupResult(
         process_groups=tuple(sorted(completed_groups & live_pgids)),
         termination_reports=() if report is None else (report,),
@@ -1567,25 +1833,35 @@ def cleanup_tracked_orphans(
 
 def _fully_completed_process_groups(
     group_members: Mapping[int, set[int]],
-    actions: Sequence[GuardTerminationAction],
+    report: GuardTerminationReport,
 ) -> set[int]:
     """Return only groups whose complete detected membership was terminated."""
 
+    (disposition,) = termination_report_dispositions((report,))
     completed_processes = {
-        action.target_id
-        for action in actions
-        if action.target_kind == "process" and action.result == "completed_or_missing"
+        pid for kind, pid in disposition.completed_targets if kind == "process"
     }
     completed_groups = {
-        action.target_id
-        for action in actions
-        if action.target_kind == "process_group"
-        and action.result == "completed_or_missing"
+        pgid for kind, pgid in disposition.completed_targets if kind == "process_group"
     }
     completed_groups.update(
         pgid
         for pgid, members in group_members.items()
         if members and members <= completed_processes
+    )
+    completed_groups.difference_update(
+        pgid
+        for pgid, members in group_members.items()
+        if any(
+            (action.target_kind == "process_group" and action.target_id == pgid)
+            or (
+                action.target_kind in {"process", "owned_child_handle"}
+                and action.target_id in members
+            )
+            or action.target_kind
+            not in {"process", "owned_child_handle", "process_group"}
+            for action in disposition.incomplete_actions
+        )
     )
     return completed_groups
 
@@ -1781,21 +2057,20 @@ def cleanup_repo_scoped_orphans_since_baseline(
                     grace=grace,
                 )
             )
+        report = _repo_scoped_orphan_cleanup_report(
+            fresh_group,
+            fresh_samples=fresh_samples,
+            actions=actions,
+            grace=grace,
+            started_at=started_at,
+        )
         if fresh_group.pgid in _fully_completed_process_groups(
             {fresh_group.pgid: {sample.pid for sample in fresh_group.samples}},
-            actions,
+            report,
         ):
             terminated.append(fresh_group.pgid)
         if actions:
-            reports.append(
-                _repo_scoped_orphan_cleanup_report(
-                    fresh_group,
-                    fresh_samples=fresh_samples,
-                    actions=actions,
-                    grace=grace,
-                    started_at=started_at,
-                )
-            )
+            reports.append(report)
     return GuardOrphanCleanupResult(
         process_groups=tuple(sorted(terminated)),
         termination_reports=tuple(reports),
