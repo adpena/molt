@@ -518,3 +518,25 @@ def test_getattr_default_dataflow_preserves_evaluation_order(
         assert fallback.kind == "MODULE_GET_GLOBAL"
         assert strings[fallback.args[1].name] == "fallback"
     assert ops.index(callee) < ops.index(default_op) < ops.index(access)
+
+
+@pytest.mark.parametrize("declaration", [
+    "class Native(list):\n    value: int\n",
+    "class Base(list):\n    value: int\nclass Native(Base):\n    extra: int\n",
+    "class Native(list):\n    __slots__ = ('value',)\n",
+])
+def test_native_base_layout_never_publishes_inferred_prefix_offsets(
+    declaration: str,
+) -> None:
+    generator = SimpleTIRGenerator(module_name="native_base_layout")
+    generator.visit(ast.parse(declaration))
+    assert generator.classes["Native"]["dynamic"]
+    ops = [
+        op
+        for function in generator.funcs_map.values()
+        for op in function.get("ops", [])
+    ]
+    assert not any(
+        op.kind == "CONST_STR" and op.args == ["__molt_field_offsets__"]
+        for op in ops
+    )

@@ -10,6 +10,10 @@ release, descriptors, iteration, context managers, or comparison callbacks.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_private_names import (
+    python_import_binding,
+    resolve_python_private_names,
+)
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping
@@ -115,7 +119,7 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 
-_ANALYSIS_SCHEMA: Final = 31
+_ANALYSIS_SCHEMA: Final = 33
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -1496,7 +1500,8 @@ class _StatePool:
             pending.extend(state.parents)
         return not reached_previous
 
-    def taint_module_bindings(self, state_id: int) -> int:
+    def taint_exposed_bindings(self, state_id: int) -> int:
+        """Expire the shared domain of callback-visible storage bindings."""
         # The namespace can acquire previously undeclared names, even when the
         # module has no statically allocated binding slots (e.g. import-star).
         state = self._states[state_id]
@@ -1511,7 +1516,7 @@ class _StatePool:
 
     def taint_slots(self, state_id: int, slots: int) -> int:
         if slots & self._taint_domain_mask:
-            state_id = self.taint_module_bindings(state_id)
+            state_id = self.taint_exposed_bindings(state_id)
             slots &= ~self._taint_domain_mask
         updates: list[
             tuple[
@@ -2059,6 +2064,11 @@ class _Analyzer:
         self._scope_slot_cache: dict[tuple[int, str], int | None] = {}
         self._history_summaries: dict[int, _HistorySummary] = {}
         self._next_owner_token = 1
+        # Reads awaiting their source consumer, keyed by lexical storage slot.
+        # A store invalidates a borrow, not the value already evaluated from it.
+        # These operation-local scopes use the same writes/effects as binding
+        # analysis; no second AST walk or spelling-based walrus classifier.
+        self._binding_read_scopes: list[dict[int, set[PythonNodeKey]]] = []
         # AST instances use identity equality/hash. Keeping the node itself as the
         # key both avoids repeated source-key construction and retains synthetic
         # nodes for the analysis lifetime, so CPython cannot recycle an id into a
@@ -2357,13 +2367,25 @@ class _Analyzer:
         if self.module_scope is not None:
             for global_name in sorted(scope.globals):
                 self._ensure_module_slot(global_name)
+        first_local_slot = len(self.slot_names)
         for local_name in sorted(scope.locals):
             scope.slots[local_name] = len(self.slot_names)
             self.slot_names.append(f"{scope.scope_id}:{local_name}")
             self.slot_owner_scope_ids.append(scope.scope_id)
-        if kind == "class":
-            # Class bodies execute against a mapping, not private fast locals.
-            self.callback_slot_mask |= sum(1 << slot for slot in scope.slots.values())
+        if kind == "class" or (
+            self.policy.target_python >= (3, 13) and kind != "module"
+        ):
+            # Class namespaces are mappings. PEP 667 also exposes optimized
+            # activation bindings to write-through frame proxies: an arbitrary
+            # callback can replace a local without a lexical/nonlocal store.
+            # Use the same exposure epoch as captured cells and globals so all
+            # consumers lose stale type, value, owner and callable identities.
+            # A store can establish a clean fact when its displaced owner
+            # cannot call back; inert operations do not advance the epoch.
+            # Scope slots form one contiguous interval. Construct its bitset
+            # once, without one growing arbitrary-precision addition per local.
+            local_slot_mask = (1 << len(scope.slots)) - 1
+            self.callback_slot_mask |= local_slot_mask << first_local_slot
             self.states.set_taint_domain(
                 self.module_slot_mask | self.callback_slot_mask
             )
@@ -2677,6 +2699,7 @@ class _Analyzer:
             or (previous is not None and previous.module_namespace_observable),
             previous.truth_effects if previous is not None else NO_EFFECTS,
             name_lookup,
+            previous.binding_capture_required if previous is not None else False,
         )
         return self.expressions[key].result
 
@@ -2684,9 +2707,9 @@ class _Analyzer:
         fact = self.expressions.get(self._node_key(node))
         return UNKNOWN_EXPRESSION_RESULT if fact is None else fact.result
 
-    def _widen_module_bindings(self, state_id: int) -> int:
+    def _widen_exposed_bindings(self, state_id: int) -> int:
         self._namespace_observation_epoch += 1
-        return self.states.taint_module_bindings(state_id)
+        return self.states.taint_exposed_bindings(state_id)
 
     def _apply_effects(
         self,
@@ -2706,13 +2729,19 @@ class _Analyzer:
             | INVOKES_CONTEXT_CALLBACK
             | INVOKES_COMPARISON_CALLBACK
         )
+        if self.policy.target_python >= (3, 13) and effects & (
+            WRITES_FRAME_STATE | EXECUTES_ARBITRARY_PYTHON | callback_effects
+        ):
+            # PEP 667 permits a callback to replace a live optimized binding.
+            # Truth, descriptor and iterator callbacks obey the same boundary.
+            self._capture_pending_binding_reads()
         if effects & (
             WRITES_GLOBAL_NAMESPACE
             | WRITES_FRAME_STATE
             | EXECUTES_ARBITRARY_PYTHON
             | callback_effects
         ):
-            state_id = self._widen_module_bindings(state_id)
+            state_id = self._widen_exposed_bindings(state_id)
         callback_boundary = bool(
             effects & (EXECUTES_ARBITRARY_PYTHON | callback_effects)
         )
@@ -3185,6 +3214,29 @@ class _Analyzer:
         )
 
     def eval_expr(
+        self, node: ast.expr, state_id: int, scope: _Scope
+    ) -> _ExpressionResult:
+        if self._binding_read_scopes:
+            return self._eval_expr(node, state_id, scope)
+        self._binding_read_scopes.append({})
+        try:
+            return self._eval_expr(node, state_id, scope)
+        finally:
+            self._binding_read_scopes.pop()
+
+    def _capture_pending_binding_reads(self, slot: int | None = None) -> None:
+        for reads in self._binding_read_scopes:
+            if slot is None:
+                captured = tuple(key for keys in reads.values() for key in keys)
+                reads.clear()
+            else:
+                captured = reads.pop(slot, ())
+            for key in captured:
+                fact = self.expressions[key]
+                if not fact.binding_capture_required:
+                    self.expressions[key] = replace(fact, binding_capture_required=True)
+
+    def _eval_expr(
         self, node: ast.expr, state_id: int, scope: _Scope
     ) -> _ExpressionResult:
         observation_before = self._namespace_observation_epoch
@@ -3739,6 +3791,16 @@ class _Analyzer:
             owner_token = self._next_owner_token
             self._next_owner_token += 1
         self._record_state(state_id)
+        if isinstance(node, ast.Name):
+            key = self._node_key(node)
+            fact = self.expressions[key]
+            slot = self._slot_for_name(scope, node.id)
+            if (
+                slot is not None
+                and fact.name_lookup == "lexical"
+                and not fact.binding_capture_required
+            ):
+                self._binding_read_scopes[-1].setdefault(slot, set()).add(key)
         return _ExpressionResult(
             state_id,
             identities,
@@ -4053,6 +4115,7 @@ class _Analyzer:
         ] = []
         releases_previous = False
         for slot, value, static_value, result, owner_token in bindings:
+            self._capture_pending_binding_reads(slot)
             previous_binding = self.states._binding_resolution(state_id, slot).public()
             self.states.binding_lookups += 1
             previous = previous_binding.identities
@@ -4548,10 +4611,26 @@ class _Analyzer:
     def _exec_statement(
         self, node: ast.stmt, state_id: int, scope: _Scope
     ) -> PythonCompletionFlow[int]:
+        self._binding_read_scopes.append({})
+        try:
+            return self._exec_statement_with_reads(node, state_id, scope)
+        finally:
+            self._binding_read_scopes.pop()
+
+    def _exec_statement_with_reads(
+        self, node: ast.stmt, state_id: int, scope: _Scope
+    ) -> PythonCompletionFlow[int]:
         effects = NO_EFFECTS
         if isinstance(
             node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith, ast.Match)
         ):
+            self._module_import_flow_required = True
+        elif isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+            alias.name == "*" or python_import_binding(alias) in _METADATA_NAMES
+            for alias in node.names
+        ):
+            # Import bindings can replace the relative-import anchor just as
+            # assignments do. Do not elide the source-ordered flow projection.
             self._module_import_flow_required = True
         elif isinstance(node, ast.Assign) and any(
             self._target_may_write_import_metadata(target) for target in node.targets
@@ -4662,7 +4741,7 @@ class _Analyzer:
                     state_id, _IMPORT_EXECUTION_INVALID_MEMBERS
                 )
             for alias in node.names:
-                bound = alias.asname or alias.name.split(".", 1)[0]
+                bound = python_import_binding(alias)
                 identity_module = (
                     alias.name if alias.asname else alias.name.split(".", 1)[0]
                 )
@@ -4695,7 +4774,7 @@ class _Analyzer:
                     state_id, _IMPORT_EXECUTION_INVALID_MEMBERS
                 )
             if any(alias.name == "*" for alias in node.names):
-                state_id = self._widen_module_bindings(state_id)
+                state_id = self._widen_exposed_bindings(state_id)
             for alias in node.names:
                 if alias.name == "*":
                     continue
@@ -5055,7 +5134,7 @@ class _Analyzer:
 
         def widen(header: int) -> int:
             return self.states.invalidate_members(
-                self._widen_module_bindings(header), ALL_INVALID_MEMBERS
+                self._widen_exposed_bindings(header), ALL_INVALID_MEMBERS
             )
 
         def terminal_release_effects() -> EffectMask:
@@ -5668,6 +5747,7 @@ def analyze_python_bindings(
 ) -> PythonBindingIndex:
     """Analyze an AST through the canonical content-addressed index cache."""
 
+    resolve_python_private_names(tree)
     return _cached_binding_index(lambda: tree, source_digest, policy)
 
 
@@ -5713,6 +5793,7 @@ def analyze_python_binding_facts(
     policy: PythonBindingFlowPolicy = PythonBindingFlowPolicy(),
 ) -> PythonBindingFacts:
     """Query shared lexical facts without computing an unused import context."""
+    resolve_python_private_names(tree)
     return _binding_analysis(lambda: tree, source_digest, policy).facts
 
 
@@ -5726,8 +5807,8 @@ def analyze_python_source_bindings(
 
     digest = python_source_digest(source)
     return _cached_binding_index(
-        lambda: ast.parse(
-            source, filename=filename, feature_version=policy.target_python
+        lambda: resolve_python_private_names(
+            ast.parse(source, filename=filename, feature_version=policy.target_python)
         ),
         digest,
         policy,

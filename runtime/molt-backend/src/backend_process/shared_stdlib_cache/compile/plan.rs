@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use super::super::super::config::{DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_STDLIB_BATCH_SIZE};
 use super::super::super::native_batch::{
-    ExternalFunctionDeclarations, external_function_declarations, partition_functions_for_batches,
-    resolved_batch_op_budget_limit, resolved_batch_size_limit,
+    ExternalFunctionDeclarations, external_function_declarations, resolved_batch_op_budget_limit,
+    resolved_batch_size_limit,
 };
 
 pub(super) struct StdlibBatchPlan {
@@ -24,7 +24,7 @@ impl StdlibBatchPlan {
             .into_iter()
             .filter(|func| !func.is_extern)
             .collect();
-        let batches = partition_functions_for_batches(
+        let batches = super::stable_batches::stable_stdlib_batches(
             body_functions,
             stdlib_batch_size(),
             stdlib_batch_ops_budget(),
@@ -35,19 +35,6 @@ impl StdlibBatchPlan {
             module_context,
             batches,
         }
-    }
-
-    pub(super) fn total_batches(&self) -> usize {
-        self.batches.len()
-    }
-
-    pub(super) fn into_only_batch_with_context(
-        mut self,
-    ) -> (
-        Vec<molt_backend::FunctionIR>,
-        molt_backend::NativeBackendModuleContext,
-    ) {
-        (self.batches.pop().unwrap_or_default(), self.module_context)
     }
 }
 

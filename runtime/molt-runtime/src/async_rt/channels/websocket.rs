@@ -1256,19 +1256,13 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                     }
                 }
             }
+            let mut deadline_bits = None;
             if let Some(val) = timeout {
                 if val == 0.0 {
                     return raise_exception::<i64>(_py, "TimeoutError", "timed out");
                 }
                 let deadline = monotonic_now_secs(_py) + val;
-                let deadline_bits = MoltObject::from_float(deadline).bits();
-                if payload_len >= 3 {
-                    // SAFETY: payload length check guarantees index 2 exists.
-                    dec_ref_bits(_py, unsafe { *payload_ptr.add(2) });
-                    // SAFETY: payload length check guarantees index 2 exists.
-                    unsafe { *payload_ptr.add(2) = deadline_bits };
-                    inc_ref_bits(_py, deadline_bits);
-                }
+                deadline_bits = Some(MoltObject::from_float(deadline).bits());
             }
             if !ws_is_native(ws) {
                 return raise_exception::<i64>(_py, "RuntimeError", "websocket wait unavailable");
@@ -1287,8 +1281,10 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             if let Err(err) = register_result {
                 return raise_os_error::<i64>(_py, err, "ws_wait");
             }
-            // SAFETY: header points at mutable state for this awaitable object.
-            crate::object::object_set_state(obj_ptr, 1);
+            // SAFETY: timeout admission guarantees slot two exists when a deadline is present.
+            unsafe {
+                crate::async_rt::io_poller::publish_registered_wait(_py, obj_ptr, deadline_bits)
+            };
             return pending_bits_i64();
         }
         if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
@@ -1373,19 +1369,13 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                     }
                 }
             }
+            let mut deadline_bits = None;
             if let Some(val) = timeout {
                 if val == 0.0 {
                     return raise_exception::<i64>(_py, "TimeoutError", "timed out");
                 }
                 let deadline = monotonic_now_secs(_py) + val;
-                let deadline_bits = MoltObject::from_float(deadline).bits();
-                if payload_len >= 3 {
-                    // SAFETY: payload length check guarantees index 2 exists.
-                    dec_ref_bits(_py, unsafe { *payload_ptr.add(2) });
-                    // SAFETY: payload length check guarantees index 2 exists.
-                    unsafe { *payload_ptr.add(2) = deadline_bits };
-                    inc_ref_bits(_py, deadline_bits);
-                }
+                deadline_bits = Some(MoltObject::from_float(deadline).bits());
             }
             let Some(handle) = ws_host_handle(ws) else {
                 return raise_exception::<i64>(
@@ -1407,8 +1397,10 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                     ),
                 );
             }
-            // SAFETY: header points at mutable state for this awaitable object.
-            crate::object::object_set_state(obj_ptr, 1);
+            // SAFETY: timeout admission guarantees slot two exists when a deadline is present.
+            unsafe {
+                crate::async_rt::io_poller::publish_registered_wait(_py, obj_ptr, deadline_bits)
+            };
             return pending_bits_i64();
         }
         if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {

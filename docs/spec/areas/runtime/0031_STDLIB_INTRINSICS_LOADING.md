@@ -19,6 +19,10 @@ checklist for new or modified stdlib shims.
   runtime registry; a callable with that spelling is not admission evidence.
 - Do not create alternative registries, hidden loaders, or import-time side
   effects that bypass the canonical loader.
+- Optional resolution distinguishes an unavailable provider from a raised
+  exception. Allocation and lookup failures preserve their exception through
+  builtin dispatch and module lookup. Name arguments remain borrowed: the
+  resolver retains them across callback-capable work and releases them on exit.
 
 ## Dynamic callable closure
 
@@ -97,6 +101,45 @@ its own actively initializing namespace. Published values win, and a completed
 dictionary miss remains a miss. Exception class cache lookup never mutates the
 Python namespace, so even constructing/raising a deleted exception cannot
 resurrect its binding.
+
+## Runtime Registry
+
+One runtime registry dictionary backs intrinsic resolution. The first module
+namespace materializes it (native: one lazy resolver callable; WASM: every
+manifest intrinsic the app resolver admits, under its canonical and `_molt_`
+spellings) and anchors that namespace in runtime state. Every later namespace
+binds the same dictionary as `_molt_intrinsics`; nothing rebuilds or copies it
+per module.
+
+`require_intrinsic`, `load_intrinsic`, the native lookup helper,
+name-dispatched builtin calls and runtime builtin lookup share one resolution.
+Admission never comes from the registry: the canonical spec (canonical name or
+explicit `_molt_` alias), the raw non-callable ABI list and the installed app
+resolver's executable address decide it first. The registry only decides
+reuse. When the canonical spelling and every requested/alias spelling bind one
+exact builtin function with that executable address, the spec arity, the
+positional call ABI, exactly the canonical `__defaults__` and an unmutated
+callable shape, resolution returns it without allocating Molt heap objects or
+writing. Resolver-name handling may still allocate Rust storage. Reuse
+checks the live fields defined by `FunctionBindingField`, including direct
+function-dictionary writes; a setter-only mutation stamp is insufficient.
+Otherwise
+the valid canonical materialization, or a fresh one, is bound under every
+spelling in one bounded transition (`dict_bind_string_entries`): hashing,
+probing (including Python equality of same-hash keys of another kind) and
+capacity reservation precede a commit that neither allocates nor calls Python,
+a failure leaves the registry unchanged, and displaced values are released
+only after the whole binding commits.
+
+Registry edits stay authoritative. Deleting a spelling, binding a non-callable
+or another executable identity, or mutating a materialization's defaults or
+signature leads to republication, never reuse; a replaced value is never
+returned. Unbinding the anchor's registry stops publication and is never
+refilled; namespaces created afterwards materialize their own private registry.
+A resolution that must not publish (compiled `BUILTIN_FUNC`
+materialization, which may attach its own metadata) receives a private
+callable and never reads the registry. Whole-namespace staging remains only
+for the unbounded `builtins` seeding.
 
 ## Checklist
 

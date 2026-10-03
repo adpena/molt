@@ -165,20 +165,13 @@ default_int_handler = _MOLT_SIGNAL_DEFAULT_INT_HANDLER
 
 def signal(sig: int, handler: object) -> object:
     """Set the action for the given signal."""
-    signum = int(sig)
-    old_handler = _MOLT_SIGNAL_SIGNAL(signum, handler)
-    if signum == SIGINT and old_handler == SIG_DFL:
-        return default_int_handler
-    return old_handler
+    return _MOLT_SIGNAL_SIGNAL(int(sig), handler)
 
 
 def getsignal(sig: int) -> object:
     """Return the current action for the given signal."""
-    signum = int(sig)
-    current = _MOLT_SIGNAL_GETSIGNAL(signum)
-    if signum == SIGINT and current == SIG_DFL:
-        return default_int_handler
-    return current
+    # The runtime owns SIGINT's `default_int_handler` disposition.
+    return _MOLT_SIGNAL_GETSIGNAL(int(sig))
 
 
 def raise_signal(sig: int) -> None:

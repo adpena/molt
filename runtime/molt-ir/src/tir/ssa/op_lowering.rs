@@ -348,6 +348,11 @@ impl<'a> SsaContext<'a> {
             attrs,
             source_span: None,
         };
+        // A source call's typed operand custody is aligned with `args`,
+        // which are exactly the call's operands.
+        if let Some(custody) = &op.argument_custody {
+            tir_op.set_argument_custody(custody);
+        }
         self.stamp_source_identity(&mut tir_op, op_idx);
         tir_op
     }

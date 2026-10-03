@@ -1887,18 +1887,45 @@ pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
     })
 }
 
-/// `os.sysconf_names` — returns flat list [name_str, value_int, ...] of common POSIX sysconf names
+#[cfg(any(unix, target_arch = "wasm32"))]
+fn alloc_sysconf_names(
+    py: &CoreGilToken,
+    names: impl ExactSizeIterator<Item = (&'static str, i64)>,
+) -> u64 {
+    let mut entries = Vec::with_capacity(names.len() * 2);
+    for (name, value) in names {
+        let string = alloc_string(py, name.as_bytes());
+        if string.is_null() {
+            for bits in entries {
+                dec_ref_bits(py, bits);
+            }
+            return raise_exception::<_>(py, "MemoryError", "out of memory");
+        }
+        entries.push(MoltObject::from_ptr(string).bits());
+        entries.push(MoltObject::from_int(value).bits());
+    }
+    let list = alloc_list(py, &entries);
+    for bits in entries {
+        dec_ref_bits(py, bits);
+    }
+    if list.is_null() {
+        return raise_exception::<_>(py, "MemoryError", "out of memory");
+    }
+    MoltObject::from_ptr(list).bits()
+}
+
+/// Target-owned sysconf names, or None when this target has no sysconf API.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_sysconf_names() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         #[cfg(target_arch = "wasm32")]
         {
-            // Return an empty list on WASM — Python side builds dict from it
-            let list_ptr = alloc_list(_py, &[]);
-            if list_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            MoltObject::from_ptr(list_ptr).bits()
+            alloc_sysconf_names(
+                _py,
+                WASM_SYSCONF_ENTRIES
+                    .iter()
+                    .map(|&(name, key, _)| (name, key)),
+            )
         }
         #[cfg(unix)]
         {
@@ -1930,38 +1957,11 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
                 ("SC_BC_STRING_MAX", libc::_SC_BC_STRING_MAX),
                 ("SC_EXPR_NEST_MAX", libc::_SC_EXPR_NEST_MAX),
             ];
-            let mut entries: Vec<u64> = Vec::with_capacity(names.len() * 2);
-            for (name_str, val) in names {
-                let s_ptr = alloc_string(_py, name_str.as_bytes());
-                if s_ptr.is_null() {
-                    for e in &entries {
-                        dec_ref_bits(_py, *e);
-                    }
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                }
-                entries.push(MoltObject::from_ptr(s_ptr).bits());
-                entries.push(MoltObject::from_int(*val as i64).bits());
-            }
-            let list_ptr = alloc_list(_py, &entries);
-            // dec_ref the string entries (ints are inline, no dec_ref needed)
-            for (i, e) in entries.iter().enumerate() {
-                if i % 2 == 0 {
-                    // string entries at even indices
-                    dec_ref_bits(_py, *e);
-                }
-            }
-            if list_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            MoltObject::from_ptr(list_ptr).bits()
+            alloc_sysconf_names(_py, names.iter().map(|&(name, key)| (name, i64::from(key))))
         }
         #[cfg(all(not(unix), not(target_arch = "wasm32")))]
         {
-            let list_ptr = alloc_list(_py, &[]);
-            if list_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            MoltObject::from_ptr(list_ptr).bits()
+            MoltObject::none().bits()
         }
     })
 }

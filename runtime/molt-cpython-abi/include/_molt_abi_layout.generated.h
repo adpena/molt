@@ -420,26 +420,23 @@ _MOLT_ABI_SASSERT(sizeof(((Py_buffer *)0)->ndim) == 4u, "layout drift: width of 
 
 /* PyMemoryViewObject  <-  abi_types.rs */
 #if SIZEOF_VOID_P == 4
-_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 584u, "layout drift: sizeof(PyMemoryViewObject) != 584 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 568u, "layout drift: sizeof(PyMemoryViewObject) != 568 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, view) == 8u, "layout drift: offsetof(PyMemoryViewObject, view) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, base) == 52u, "layout drift: offsetof(PyMemoryViewObject, base) != 52");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_shape) == 56u, "layout drift: offsetof(PyMemoryViewObject, ob_shape) != 56");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_strides) == 312u, "layout drift: offsetof(PyMemoryViewObject, ob_strides) != 312");
-_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_format) == 568u, "layout drift: offsetof(PyMemoryViewObject, ob_format) != 568");
 #elif SIZEOF_LONG == 4
-_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 1144u, "layout drift: sizeof(PyMemoryViewObject) != 1144 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 1128u, "layout drift: sizeof(PyMemoryViewObject) != 1128 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, view) == 16u, "layout drift: offsetof(PyMemoryViewObject, view) != 16");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, base) == 96u, "layout drift: offsetof(PyMemoryViewObject, base) != 96");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_shape) == 104u, "layout drift: offsetof(PyMemoryViewObject, ob_shape) != 104");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_strides) == 616u, "layout drift: offsetof(PyMemoryViewObject, ob_strides) != 616");
-_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_format) == 1128u, "layout drift: offsetof(PyMemoryViewObject, ob_format) != 1128");
 #else
-_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 1144u, "layout drift: sizeof(PyMemoryViewObject) != 1144 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 1128u, "layout drift: sizeof(PyMemoryViewObject) != 1128 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, view) == 16u, "layout drift: offsetof(PyMemoryViewObject, view) != 16");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, base) == 96u, "layout drift: offsetof(PyMemoryViewObject, base) != 96");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_shape) == 104u, "layout drift: offsetof(PyMemoryViewObject, ob_shape) != 104");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_strides) == 616u, "layout drift: offsetof(PyMemoryViewObject, ob_strides) != 616");
-_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_format) == 1128u, "layout drift: offsetof(PyMemoryViewObject, ob_format) != 1128");
 #endif
 
 /* PyTupleObject  <-  abi_types.rs */
@@ -550,18 +547,6 @@ _MOLT_ABI_SASSERT(offsetof(PySliceObject, stop) == 24u, "layout drift: offsetof(
 _MOLT_ABI_SASSERT(offsetof(PySliceObject, step) == 32u, "layout drift: offsetof(PySliceObject, step) != 32");
 #endif
 
-/* PyDictProxyObject  <-  abi_types.rs */
-#if SIZEOF_VOID_P == 4
-_MOLT_ABI_SASSERT(sizeof(PyDictProxyObject) == 12u, "layout drift: sizeof(PyDictProxyObject) != 12 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
-_MOLT_ABI_SASSERT(offsetof(PyDictProxyObject, mapping) == 8u, "layout drift: offsetof(PyDictProxyObject, mapping) != 8");
-#elif SIZEOF_LONG == 4
-_MOLT_ABI_SASSERT(sizeof(PyDictProxyObject) == 24u, "layout drift: sizeof(PyDictProxyObject) != 24 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
-_MOLT_ABI_SASSERT(offsetof(PyDictProxyObject, mapping) == 16u, "layout drift: offsetof(PyDictProxyObject, mapping) != 16");
-#else
-_MOLT_ABI_SASSERT(sizeof(PyDictProxyObject) == 24u, "layout drift: sizeof(PyDictProxyObject) != 24 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
-_MOLT_ABI_SASSERT(offsetof(PyDictProxyObject, mapping) == 16u, "layout drift: offsetof(PyDictProxyObject, mapping) != 16");
-#endif
-
 /* PyGenericAliasObject  <-  abi_types.rs */
 #if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyGenericAliasObject) == 16u, "layout drift: sizeof(PyGenericAliasObject) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
@@ -626,6 +611,129 @@ _MOLT_ABI_SASSERT(offsetof(_PyLongValue, ob_digit) == 8u, "layout drift: offseto
 _MOLT_ABI_SASSERT(sizeof(_PyLongValue) == 16u, "layout drift: sizeof(_PyLongValue) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(_PyLongValue, lv_tag) == 0u, "layout drift: offsetof(_PyLongValue, lv_tag) != 0");
 _MOLT_ABI_SASSERT(offsetof(_PyLongValue, ob_digit) == 8u, "layout drift: offsetof(_PyLongValue, ob_digit) != 8");
+#endif
+
+/* PyDescrObject  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
+_MOLT_ABI_SASSERT(sizeof(PyDescrObject) == 20u, "layout drift: sizeof(PyDescrObject) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyDescrObject, d_type) == 8u, "layout drift: offsetof(PyDescrObject, d_type) != 8");
+_MOLT_ABI_SASSERT(offsetof(PyDescrObject, d_name) == 12u, "layout drift: offsetof(PyDescrObject, d_name) != 12");
+_MOLT_ABI_SASSERT(offsetof(PyDescrObject, d_qualname) == 16u, "layout drift: offsetof(PyDescrObject, d_qualname) != 16");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyDescrObject) == 40u, "layout drift: sizeof(PyDescrObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyDescrObject, d_type) == 16u, "layout drift: offsetof(PyDescrObject, d_type) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyDescrObject, d_name) == 24u, "layout drift: offsetof(PyDescrObject, d_name) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyDescrObject, d_qualname) == 32u, "layout drift: offsetof(PyDescrObject, d_qualname) != 32");
+#else
+_MOLT_ABI_SASSERT(sizeof(PyDescrObject) == 40u, "layout drift: sizeof(PyDescrObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyDescrObject, d_type) == 16u, "layout drift: offsetof(PyDescrObject, d_type) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyDescrObject, d_name) == 24u, "layout drift: offsetof(PyDescrObject, d_name) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyDescrObject, d_qualname) == 32u, "layout drift: offsetof(PyDescrObject, d_qualname) != 32");
+#endif
+
+/* PyMethodDescrObject  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
+_MOLT_ABI_SASSERT(sizeof(PyMethodDescrObject) == 28u, "layout drift: sizeof(PyMethodDescrObject) != 28 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMethodDescrObject, d_method) == 20u, "layout drift: offsetof(PyMethodDescrObject, d_method) != 20");
+_MOLT_ABI_SASSERT(offsetof(PyMethodDescrObject, vectorcall) == 24u, "layout drift: offsetof(PyMethodDescrObject, vectorcall) != 24");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyMethodDescrObject) == 56u, "layout drift: sizeof(PyMethodDescrObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMethodDescrObject, d_method) == 40u, "layout drift: offsetof(PyMethodDescrObject, d_method) != 40");
+_MOLT_ABI_SASSERT(offsetof(PyMethodDescrObject, vectorcall) == 48u, "layout drift: offsetof(PyMethodDescrObject, vectorcall) != 48");
+#else
+_MOLT_ABI_SASSERT(sizeof(PyMethodDescrObject) == 56u, "layout drift: sizeof(PyMethodDescrObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMethodDescrObject, d_method) == 40u, "layout drift: offsetof(PyMethodDescrObject, d_method) != 40");
+_MOLT_ABI_SASSERT(offsetof(PyMethodDescrObject, vectorcall) == 48u, "layout drift: offsetof(PyMethodDescrObject, vectorcall) != 48");
+#endif
+
+/* PyGetSetDescrObject  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
+_MOLT_ABI_SASSERT(sizeof(PyGetSetDescrObject) == 24u, "layout drift: sizeof(PyGetSetDescrObject) != 24 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyGetSetDescrObject, d_getset) == 20u, "layout drift: offsetof(PyGetSetDescrObject, d_getset) != 20");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyGetSetDescrObject) == 48u, "layout drift: sizeof(PyGetSetDescrObject) != 48 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyGetSetDescrObject, d_getset) == 40u, "layout drift: offsetof(PyGetSetDescrObject, d_getset) != 40");
+#else
+_MOLT_ABI_SASSERT(sizeof(PyGetSetDescrObject) == 48u, "layout drift: sizeof(PyGetSetDescrObject) != 48 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyGetSetDescrObject, d_getset) == 40u, "layout drift: offsetof(PyGetSetDescrObject, d_getset) != 40");
+#endif
+
+/* PyMemberDescrObject  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
+_MOLT_ABI_SASSERT(sizeof(PyMemberDescrObject) == 24u, "layout drift: sizeof(PyMemberDescrObject) != 24 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMemberDescrObject, d_member) == 20u, "layout drift: offsetof(PyMemberDescrObject, d_member) != 20");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyMemberDescrObject) == 48u, "layout drift: sizeof(PyMemberDescrObject) != 48 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMemberDescrObject, d_member) == 40u, "layout drift: offsetof(PyMemberDescrObject, d_member) != 40");
+#else
+_MOLT_ABI_SASSERT(sizeof(PyMemberDescrObject) == 48u, "layout drift: sizeof(PyMemberDescrObject) != 48 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMemberDescrObject, d_member) == 40u, "layout drift: offsetof(PyMemberDescrObject, d_member) != 40");
+#endif
+
+/* PyWrapperBase  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
+_MOLT_ABI_SASSERT(sizeof(struct wrapperbase) == 28u, "layout drift: sizeof(struct wrapperbase) != 28 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, name) == 0u, "layout drift: offsetof(struct wrapperbase, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, offset) == 4u, "layout drift: offsetof(struct wrapperbase, offset) != 4");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, function) == 8u, "layout drift: offsetof(struct wrapperbase, function) != 8");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, wrapper) == 12u, "layout drift: offsetof(struct wrapperbase, wrapper) != 12");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, doc) == 16u, "layout drift: offsetof(struct wrapperbase, doc) != 16");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, flags) == 20u, "layout drift: offsetof(struct wrapperbase, flags) != 20");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, name_strobj) == 24u, "layout drift: offsetof(struct wrapperbase, name_strobj) != 24");
+_MOLT_ABI_SASSERT(sizeof(((struct wrapperbase *)0)->offset) == 4u, "layout drift: width of struct wrapperbase.offset != 4");
+_MOLT_ABI_SASSERT(sizeof(((struct wrapperbase *)0)->flags) == 4u, "layout drift: width of struct wrapperbase.flags != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(struct wrapperbase) == 56u, "layout drift: sizeof(struct wrapperbase) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, name) == 0u, "layout drift: offsetof(struct wrapperbase, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, offset) == 8u, "layout drift: offsetof(struct wrapperbase, offset) != 8");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, function) == 16u, "layout drift: offsetof(struct wrapperbase, function) != 16");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, wrapper) == 24u, "layout drift: offsetof(struct wrapperbase, wrapper) != 24");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, doc) == 32u, "layout drift: offsetof(struct wrapperbase, doc) != 32");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, flags) == 40u, "layout drift: offsetof(struct wrapperbase, flags) != 40");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, name_strobj) == 48u, "layout drift: offsetof(struct wrapperbase, name_strobj) != 48");
+_MOLT_ABI_SASSERT(sizeof(((struct wrapperbase *)0)->offset) == 4u, "layout drift: width of struct wrapperbase.offset != 4");
+_MOLT_ABI_SASSERT(sizeof(((struct wrapperbase *)0)->flags) == 4u, "layout drift: width of struct wrapperbase.flags != 4");
+#else
+_MOLT_ABI_SASSERT(sizeof(struct wrapperbase) == 56u, "layout drift: sizeof(struct wrapperbase) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, name) == 0u, "layout drift: offsetof(struct wrapperbase, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, offset) == 8u, "layout drift: offsetof(struct wrapperbase, offset) != 8");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, function) == 16u, "layout drift: offsetof(struct wrapperbase, function) != 16");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, wrapper) == 24u, "layout drift: offsetof(struct wrapperbase, wrapper) != 24");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, doc) == 32u, "layout drift: offsetof(struct wrapperbase, doc) != 32");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, flags) == 40u, "layout drift: offsetof(struct wrapperbase, flags) != 40");
+_MOLT_ABI_SASSERT(offsetof(struct wrapperbase, name_strobj) == 48u, "layout drift: offsetof(struct wrapperbase, name_strobj) != 48");
+_MOLT_ABI_SASSERT(sizeof(((struct wrapperbase *)0)->offset) == 4u, "layout drift: width of struct wrapperbase.offset != 4");
+_MOLT_ABI_SASSERT(sizeof(((struct wrapperbase *)0)->flags) == 4u, "layout drift: width of struct wrapperbase.flags != 4");
+#endif
+
+/* PyWrapperDescrObject  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
+_MOLT_ABI_SASSERT(sizeof(PyWrapperDescrObject) == 28u, "layout drift: sizeof(PyWrapperDescrObject) != 28 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyWrapperDescrObject, d_base) == 20u, "layout drift: offsetof(PyWrapperDescrObject, d_base) != 20");
+_MOLT_ABI_SASSERT(offsetof(PyWrapperDescrObject, d_wrapped) == 24u, "layout drift: offsetof(PyWrapperDescrObject, d_wrapped) != 24");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyWrapperDescrObject) == 56u, "layout drift: sizeof(PyWrapperDescrObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyWrapperDescrObject, d_base) == 40u, "layout drift: offsetof(PyWrapperDescrObject, d_base) != 40");
+_MOLT_ABI_SASSERT(offsetof(PyWrapperDescrObject, d_wrapped) == 48u, "layout drift: offsetof(PyWrapperDescrObject, d_wrapped) != 48");
+#else
+_MOLT_ABI_SASSERT(sizeof(PyWrapperDescrObject) == 56u, "layout drift: sizeof(PyWrapperDescrObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyWrapperDescrObject, d_base) == 40u, "layout drift: offsetof(PyWrapperDescrObject, d_base) != 40");
+_MOLT_ABI_SASSERT(offsetof(PyWrapperDescrObject, d_wrapped) == 48u, "layout drift: offsetof(PyWrapperDescrObject, d_wrapped) != 48");
+#endif
+
+/* PyMethodWrapperObject  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
+_MOLT_ABI_SASSERT(sizeof(PyMethodWrapperObject) == 16u, "layout drift: sizeof(PyMethodWrapperObject) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMethodWrapperObject, descr) == 8u, "layout drift: offsetof(PyMethodWrapperObject, descr) != 8");
+_MOLT_ABI_SASSERT(offsetof(PyMethodWrapperObject, self_) == 12u, "layout drift: offsetof(PyMethodWrapperObject, self_) != 12");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyMethodWrapperObject) == 32u, "layout drift: sizeof(PyMethodWrapperObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMethodWrapperObject, descr) == 16u, "layout drift: offsetof(PyMethodWrapperObject, descr) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyMethodWrapperObject, self_) == 24u, "layout drift: offsetof(PyMethodWrapperObject, self_) != 24");
+#else
+_MOLT_ABI_SASSERT(sizeof(PyMethodWrapperObject) == 32u, "layout drift: sizeof(PyMethodWrapperObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMethodWrapperObject, descr) == 16u, "layout drift: offsetof(PyMethodWrapperObject, descr) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyMethodWrapperObject, self_) == 24u, "layout drift: offsetof(PyMethodWrapperObject, self_) != 24");
 #endif
 
 /* PyType_Slot  <-  abi_types.rs */

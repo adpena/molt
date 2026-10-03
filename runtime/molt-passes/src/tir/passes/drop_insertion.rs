@@ -1,51 +1,64 @@
 //! RC drop insertion (RC drop-insertion substrate, design 20, Phase 3).
 //!
-//! Inserts `DecRef` ops at every owned value's last use and `IncRef` ops before
-//! suspension points for values that survive across a yield. This is the
+//! Inserts `DecRef` ops at every owned value's lifetime end and `IncRef` ops
+//! at borrowed publication boundaries, including suspension returns. This is the
 //! compiler pass that closes molt's whole-program expression-value leak: the
 //! runtime allocates every heap result with `ref_count = 1` and (before this
 //! pass) never decremented it for expression temporaries.
 //!
-//! Runs `Mutates::Cfg`: it inserts `DecRef`/`IncRef` ops within blocks and MAY
-//! SPLIT a critical edge (a fresh block carrying an edge-exact `IncRef`) for the
-//! mixed-ownership-phi retain (§5 below). `DecRef`/`IncRef` carry no exception
-//! edge, and the edge-split inserts only an unconditional `Branch` — but because
-//! the block set/edges CAN change, the pass declares `Cfg` so the manager
-//! recomputes CFG-sensitive analyses for the following `refcount_elim_post`.
+//! Runs `Mutates::Cfg`: it inserts `DecRef`/`IncRef` ops within blocks, MAY
+//! SPLIT an edge (a fresh block carrying edge-exact retains and releases) for
+//! an arc whose ownership differs from its source's other arcs, and gives a
+//! check a landing block for its exceptional retains and releases.
+//! `DecRef`/`IncRef` carry no exception edge, and a split inserts only an
+//! unconditional `Branch` — but because the block set/edges CAN change, the pass
+//! declares `Cfg` so the manager recomputes CFG-sensitive analyses for the
+//! following `refcount_elim_post`.
 //!
 //! ## Ownership transfer at phi (block-arg) boundaries — the two-sided contract
 //!
-//! TIR uses MLIR block args as phis: a predecessor's terminator passes a value
-//! that binds the successor's block arg on entry. A droppable (heap, function-
-//! owned) block arg is treated as carrying ONE owned `+1`; the pass drops it
-//! where it dies and TRANSFERS it (no drop) where it is forwarded. Soundness
-//! requires BOTH halves of the transfer to be exact — the two over-release
-//! classes the round-2/round-3 review exposed:
+//! TIR uses MLIR block args as phis. A predecessor's terminator passes a value
+//! that binds the successor's block arg on entry, and a raising
+//! `CheckException` passes its operands to its handler's block args. A
+//! `TryStart` registers its region: it keeps the handler reachable, but control
+//! never leaves through it, so it binds nothing. A droppable (heap,
+//! function-owned) block arg carries ONE owned `+1`; the pass drops it where it
+//! dies and TRANSFERS it (no drop) where it is forwarded. `availability.rs`
+//! keeps the custody of every such arc in one place, and both halves of each
+//! transfer read it:
 //!
-//! * **Incoming side (§5, the `before_term_incref` / edge-split retain).** Every
-//!   incoming edge of an owned phi must deliver an owned `+1`. An edge delivering
-//!   a BORROWED value (a transparent alias of a `+0` parameter, or an owned value
-//!   whose single `+1` is needed elsewhere too) is RETAINED on that edge. Without
-//!   it, the phi's drop releases the caller's borrow → UAF (the loop-accumulator
-//!   `x = base; while …: x = x + base` and the if-arm `x = a if c else …`).
-//! * **Outgoing side (§3 transfer exclusion).** A value PASSED as a branch arg
-//!   into a phi must NOT also be edge-dropped at the join OR in a descendant
-//!   block while the phi remains live: its ownership moved into the block arg,
-//!   which is released by the phi's own last-use drop. Liveness reports the
-//!   forwarded value dead-in to the join (its successor-side identity is the
-//!   distinct block-arg SSA value), so the edge-dying rule would otherwise drop it
-//!   there, or later when the old source root appears dead, AND at the phi's last
-//!   use → double-free.
+//! * **Incoming side (§5 and §2b retains).** Every incoming arc of an owned phi
+//!   must deliver an owned `+1`. An arc delivering a BORROWED value (a
+//!   transparent alias of a `+0` parameter, or an owned value whose single `+1`
+//!   is needed elsewhere too) is RETAINED on that arc: before the terminator or
+//!   on a split edge for a branch, and in the landing block for a check.
+//!   Without it, the phi's drop releases the caller's borrow → UAF (the
+//!   loop-accumulator `x = base; while …: x = x + base` and the if-arm
+//!   `x = a if c else …`).
+//! * **Outgoing side (moved roots).** A value MOVED into a phi must NOT also be
+//!   released at the join, at the handler, or in a descendant block: the block
+//!   arg owns it now and releases it at its own last use, on entry when nothing
+//!   reads it, or at its lexical boundary. Liveness reports the forwarded value
+//!   dead-in to the target (its successor-side identity is the distinct
+//!   block-arg SSA value) while its definition still reaches there, so a
+//!   release placed on definition availability alone drops it there AND where
+//!   the phi is released → double-free. Custody reports a moved root unowned
+//!   until its definition runs again.
 //!
 //! ## Ownership model (design 20 §1)
 //!
 //! Every op that returns a new heap reference returns it **owned** (`rc += 1`):
 //! the current SSA holder is responsible for exactly one dec-ref before the value
-//! goes out of scope. Operands are **borrowed** (the callee never decrefs its
-//! args). So the drop rule is: at a value's last use, the holder releases its
-//! ref — unless the last use itself transfers ownership (a Return value, a branch
-//! arg passed to a successor block arg, or an operand the value-range / repr
-//! filter proved carries no heap reference).
+//! goes out of scope. Operands are **borrowed** unless the op takes them: a frame
+//! home store or a call that frees its CallArgs builder consumes one, and a
+//! source Python call instruction adopts its arguments (`transfers.rs`). So the
+//! drop rule is: at a value's last use, the holder releases its ref — unless the
+//! last use itself transfers ownership (a Return value, a branch arg passed to a
+//! successor block arg, a taking op that takes the root's own +1, or an operand
+//! the value-range / repr filter proved carries no heap reference). A taking
+//! position that cannot take the root's own +1 is retained right before the op.
+//! A frame binding view (a home store's or load's result, or a block argument
+//! carrying only views) holds no reference, so it is never released.
 //!
 //! ## What is dropped
 //!
@@ -54,8 +67,9 @@
 //! * `v` is heap-carrying (NOT a [`TirLivenessResult::is_raw_scalar`] — raw i64 /
 //!   bool / float carriers hold no refcount; dropping them would pass a raw
 //!   register to `molt_dec_ref_obj`).
-//! * `v` is not a function parameter (parameters are borrowed from the caller per
-//!   the ABI; the caller owns and drops them).
+//! * `v` is not a borrowed parameter (the caller owns and drops it). A
+//!   parameter whose declared custody is `Transferred` is function-owned and a
+//!   Python binding: lexical custody releases it at its frame boundary.
 //!
 //! ## Placement (design 20 §2.4–§2.7)
 //!
@@ -68,31 +82,42 @@
 //!   that successor. This avoids edge-splitting (a CFG mutation); the elim pass
 //!   hoists the common case. Done by: for each block `B`, for each value live-in
 //!   to `B`'s predecessors but dead in `B`, drop at `B`'s entry.
-//! * **Loop-carried** (§2.7): a back-edge that passes a NEW value to a header
-//!   block arg leaves the PREVIOUS iteration's value dead. The previous value is
-//!   the header block arg itself (the phi); if it is not used after the point the
-//!   new value is computed, drop it before the back-edge branch. This is the
-//!   "consumer releases the slot" rule (CPython's `STORE_FAST`-on-overwrite).
-//! * **Exception edges** (§2.6): `CheckException` successors are ordinary CFG
-//!   successors here; a value live at the throw point but dead on a handler path
-//!   is dropped at the handler's entry by the edge-dying rule.
+//! * **Dead block args** (§1c): an owned block arg that nothing in its block
+//!   reads is released on entry, once on every path: joins, handlers and loop
+//!   headers alike. A loop header phi is an ordinary block arg; its previous
+//!   value dies at its last use, on entry when unread, or on the arc into the
+//!   body when only the exit reads it (§2.7).
+//! * **Lexical custody**: a Python-bound local and an explicitly released root
+//!   keep their objects to a Python boundary rather than their last use, and a
+//!   block arg that takes one of them inherits that boundary. The root is
+//!   released before a Return it reaches owned on every entry, or on the split
+//!   arc into a join it does not reach owned the same way. That includes the
+//!   back edge that rebinds a lexical loop phi (CPython's `STORE_FAST` release
+//!   on overwrite).
+//! * **Exception edges** (§2.6): liveness enters each `CheckException` at the
+//!   observation, not at the block terminator. After ordinary placement,
+//!   `exception_edges.rs` gives a landing block to each observation whose
+//!   normal continuation still needs an owner that the handler path does not
+//!   name, or whose payload needs a retained handler arg. The landing retains
+//!   and releases on that edge only, then branches to the original handler.
+//!   `availability.rs` decides where any RC operation may name a root.
 //!
 //! ## Suspension points (design 20 §2.9)
 //!
-//! For each `StateYield` / `Yield` /
-//! `YieldFrom`, every heap-carrying value live ACROSS the yield (live-out of the
-//! block at the yield, used after a resume) is `IncRef`'d immediately before the
-//! yield: the suspended coroutine frame now owns its own reference, which the
-//! frame finalizer releases on teardown.
+//! Terminal lowering exposes `StateYield` and `StateTransition` as explicit
+//! state writes, polls, branches, wait registration and ordinary Return exits.
+//! Persistence is owned by frame ClosureStore/ClosureLoad, not by a second
+//! backend retain/release lane. Each poll invocation releases local owners and
+//! transfers its result using the same rules as any other function activation.
 //!
 //! ## Borrow inference (design 20 §3.2)
 //!
-//! If `v`'s last use is as an operand to a `Call` / `CallMethod` / `CallBuiltin`
-//! and `v` is dead after the call, the callee borrows `v` for the call's
-//! duration and the caller drops at last use — which is exactly the call site.
-//! Inserting `DecRef(v)` right after the call is correct and is what the
-//! straight-line rule does; there is no separate IncRef to elide here (molt's ABI
-//! is borrow-args, so no IncRef was ever needed around the call). The borrow
+//! If `v`'s last use is as a borrowed operand to a `Call` / `CallMethod` /
+//! `CallBuiltin` and `v` is dead after the call, the callee borrows `v` for the
+//! call's duration and the caller drops at last use — which is exactly the call
+//! site. Inserting `DecRef(v)` right after the call is correct and is what the
+//! straight-line rule does; a borrowing call needs no IncRef around it. An
+//! adopted operand instead moves or is retained (`transfers.rs`). The borrow
 //! inference therefore reduces to: drop after the call, never before — which the
 //! last-use placement already does. Positive Python named-owner provenance
 //! (`bound_local`) or an explicit delete boundary overrides last-use placement
@@ -117,52 +142,68 @@
 //!    the ownership lattice classifies as non-owning is a no-incref
 //!    bit-passthrough or no-heap marker, so it is excluded from droppability:
 //!    releasing it would double-free operand 0 or drop a non-ref carrier.
-//! 2. **TerminatorOnly dominance** — an edge-dying drop at a successor `B` is
-//!    placed only when the value's def-block dominates `B` in the
-//!    **terminator-only** CFG (the view codegen enforces). The *full*-CFG
-//!    dominator would admit a value defined mid-block after a `CheckException`
-//!    as "dominating" that op's handler, but the exception edge leaves before
-//!    the def → use-before-def in codegen. (Observed otherwise as the LLVM
-//!    verifier "Instruction does not dominate all uses!" abort.)
+//! 2. **Program-point availability** — an RC operation names a root only where
+//!    the root's definition reaches on every path and the root's name still owns
+//!    its object there. The first includes an exception edge that leaves a block
+//!    before the definition (`availability.rs`, over `ProgramPointDominance`).
+//!    Block dominance errs both ways. The *full*-CFG tree lets a definition below
+//!    a `CheckException` "dominate" its handler. The terminator-only tree ignores
+//!    the exception entries of a mixed block, such as the exit that `raise; jump
+//!    exit` shares with every check. The second excludes every point that some
+//!    path reaches after the root moved into a block argument, such as the
+//!    handler argument a check's payload binds, or after an explicit release or
+//!    consuming use of it. A release boundary that one entry reaches without the
+//!    root moves to the normal arcs that still own it, and landings release it
+//!    on exceptional entries. (Otherwise a use-before-def, observed as the LLVM
+//!    verifier "Instruction does not dominate all uses!" abort, or a double
+//!    release, observed as `invalid object header before dec_ref`.)
 //! 3. **Python lifetime release boundaries** — a root released by `DelBoundary` /
 //!    `DeleteVar` / pre-existing `DecRef`, statement finalizer release, or
 //!    `store_var` scope cleanup is path-authoritative and is never edge-dropped
-//!    at a join. The OpsOnly edge-dying form has one block-entry drop for all
-//!    incoming paths; adding it beside a path-conditioned Python rebind/delete or
-//!    later scope-exit boundary can release the same local owner twice.
+//!    at a join, nor is a block arg that took such a root's object. The OpsOnly
+//!    edge-dying form has one block-entry drop for all incoming paths; adding it
+//!    beside a path-conditioned Python rebind/delete or later scope-exit
+//!    boundary can release the same local owner twice.
 //! 4. **Conditionally-valid iterator results** — an `IterNextUnboxed` value
-//!    result (from the generated result-validity table) is valid ONLY on the
-//!    not-done branch; its slot carries a non-owned `None` sentinel on the
-//!    exhaustion edge. It is NEVER
-//!    edge-dropped (and never IncRef'd onto a phi edge); the body straight-line
-//!    rule releases it on the valid path.
-//! 5. **State-machine gate** — the pass bails on full-function RC insertion for
-//!    functions with generator/async `StateSwitch` / `StateTransition` /
-//!    `StateYield` control flow (a `_poll` dispatcher re-enters
-//!    `state_resume_*` blocks carrying none of the normal-flow values), in
-//!    addition to `try`/`except` regions. Exception transport drops have their
-//!    own idempotency marker so the handler-safe CreationRef/MatchRef releases
-//!    can still be inserted before the full-function bail without pretending
-//!    native's whole value-tracking RC substrate has been retired.
-//! 6. **Backend conditioning** — drop insertion is wired into the shared
-//!    pipeline for LLVM / WASM / native Cranelift / Luau. Native suppresses its
-//!    legacy value-tracking RC substrate on `drop_inserted` functions, so TIR
-//!    drops are the single RC authority for activated functions; Luau consumes
-//!    the same shared facts as checked GC no-ops. See
+//!    result (from the generated result-validity table) is initialized ONLY
+//!    below its not-done edge; on the exhaustion edge its slot holds stale
+//!    bits. Validity is a program-point fact. `OwnershipRootFacts` records the
+//!    initialized region: the not-done target, when that edge is its sole
+//!    entry. Point-sensitive consumers release or retain the value only inside
+//!    that region, never on the exhaustion edge: entry and arc releases, phi
+//!    retains and exceptional landings. An arc that does not initialize it
+//!    binds no obligation. Consumers that would make it a Python lifetime
+//!    authority still exclude it wholesale: `DelBoundary` normalization and
+//!    Python-bound local stores.
+//! 5. **Activation ownership** — suspension becomes an ordinary Return before
+//!    analysis. Resume dispatch does not carry SSA owners from earlier calls;
+//!    explicit closure storage owns persistence. Program-point availability
+//!    includes dispatch and exceptional entries. High-level yields surviving
+//!    frame lowering fail at this boundary instead of inventing frame retains.
+//! 6. **Backend conditioning** — drop insertion runs for every target plan
+//!    that claims deterministic Python lifetimes (LLVM / WASM / native
+//!    Cranelift). Native suppresses its legacy value-tracking RC substrate
+//!    on `drop_inserted` functions, so TIR drops are the single RC authority
+//!    for activated functions. GC-managed Luau and the Rust and MLIR source
+//!    targets claim no such lifetimes and do not activate this pass. See
 //!    `pass_manager::target_uses_tir_drop_insertion`.
 //!
 //! ## Diagnostics
 //!
 //! `MOLT_DEBUG_DROP=<substr>` (or `=ALL`) writes a per-function dump of the
 //! post-insertion block/op shape with per-operand repr tags to
-//! `<artifact_root>/drop/<func>.txt`, including a `BAILED:` line for functions
-//! the activation gate skipped. The instrument every optimization lands with.
+//! `<artifact_root>/drop/<func>.txt`. Activation and handler paths use the same
+//! dump and ownership authority as ordinary functions.
 
+mod activation;
 mod arcs;
 mod audit;
+mod availability;
+mod exception_edges;
 mod exception_region;
 mod remap;
 mod runner;
+mod transfers;
 mod util;
 
 /// The function-level attr the pass sets (round-tripped to the native backend as
@@ -178,3 +219,4 @@ pub const DROP_INSERTED_ATTR: &str = "drop_inserted";
 pub const EXCEPTION_REGION_DROPS_INSERTED_ATTR: &str = "exception_region_drops_inserted";
 
 pub use self::runner::run;
+pub(crate) use self::runner::frame_clear;

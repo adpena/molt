@@ -76,9 +76,14 @@ pub extern "C" fn molt_list_from_range(start_bits: u64, stop_bits: u64, step_bit
                     let mut out = Vec::with_capacity(len_usize);
                     let mut cur = start;
                     for idx in 0..len_usize {
-                        out.push(MoltObject::from_int(cur).bits());
+                        // Full-range boxing: a range value outside the inline
+                        // window is a heap int, which `from_int` would truncate.
+                        out.push(int_bits_from_i64(_py, cur));
                         if idx + 1 < len_usize {
                             let Some(next) = cur.checked_add(step) else {
+                                for &bits in &out {
+                                    dec_ref_bits(_py, bits);
+                                }
                                 let out_bits = list_from_iter_bits(_py, range_bits)
                                     .unwrap_or_else(|| MoltObject::none().bits());
                                 dec_ref_bits(_py, range_bits);
@@ -89,6 +94,9 @@ pub extern "C" fn molt_list_from_range(start_bits: u64, stop_bits: u64, step_bit
                     }
                     dec_ref_bits(_py, range_bits);
                     let list_ptr = alloc_list(_py, out.as_slice());
+                    for &bits in &out {
+                        dec_ref_bits(_py, bits);
+                    }
                     return if list_ptr.is_null() {
                         MoltObject::none().bits()
                     } else {
@@ -194,13 +202,16 @@ pub extern "C" fn molt_range_index(range_bits: u64, val_bits: u64) -> u64 {
                 let Some(value) = range_value_at_index_i64(start, stop, step, idx) else {
                     break;
                 };
-                let elem_bits = MoltObject::from_int(value).bits();
-                let Some(eq) = (unsafe { eq_bool_from_bits(_py, elem_bits, val_bits) }) else {
+                // Full-range boxing, as `range.count` boxes its candidates.
+                let elem_bits = int_bits_from_i64(_py, value);
+                let eq_opt = unsafe { eq_bool_from_bits(_py, elem_bits, val_bits) };
+                dec_ref_bits(_py, elem_bits);
+                let Some(eq) = eq_opt else {
                     return MoltObject::none().bits();
                 };
                 if eq {
                     if let Ok(i) = i64::try_from(idx) {
-                        return MoltObject::from_int(i).bits();
+                        return int_bits_from_i64(_py, i);
                     }
                     return int_bits_from_bigint(_py, BigInt::from(idx));
                 }
@@ -459,9 +470,32 @@ pub extern "C" fn molt_reversed_builtin(seq_bits: u64) -> u64 {
 }
 
 pub(crate) unsafe fn reversed_new_impl(_py: &PyToken<'_>, seq_bits: u64) -> u64 {
+    unsafe { reversed_impl(_py, seq_bits, false) }
+}
+
+pub(crate) extern "C" fn builtin_reversed_slot(seq_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { unsafe { reversed_impl(py, seq_bits, true) } })
+}
+
+unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) -> u64 {
     unsafe {
         let obj = obj_from_bits(seq_bits);
         if let Some(ptr) = obj.as_ptr() {
+            if !builtin_only
+                && crate::object::ops_list::list_storage_ptr(seq_bits).is_some()
+                && !crate::object::iterable::builtin_receiver(_py, ptr)
+            {
+                if let Some(method) =
+                    crate::builtins::attr::lookup_special_method(_py, seq_bits, b"__reversed__")
+                {
+                    let result = call_callable0(_py, method);
+                    dec_ref_bits(_py, method);
+                    return result;
+                }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+            }
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_RANGE {
                 let Some((start, stop, step)) = range_components_bigint(ptr) else {
@@ -776,7 +810,41 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         || type_id == TYPE_ID_DICT_VALUES_VIEW
                         || type_id == TYPE_ID_DICT_ITEMS_VIEW
                         || type_id == TYPE_ID_RANGE
+                        || type_id == TYPE_ID_MEMORYVIEW
                     {
+                        if type_id == TYPE_ID_MEMORYVIEW {
+                            // memory_iter validates rank and format syntax at construction;
+                            // scalar format support belongs to the first element read.
+                            let ndim = memoryview_ndim(ptr);
+                            if ndim == 0 {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "TypeError",
+                                    "invalid indexing of 0-dim memory",
+                                );
+                            }
+                            if ndim != 1 {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "NotImplementedError",
+                                    "multi-dimensional sub-views are not implemented",
+                                );
+                            }
+                            let format =
+                                string_obj_to_owned(obj_from_bits(memoryview_format_bits(ptr)))
+                                    .unwrap_or_default();
+                            let code = format.strip_prefix('@').unwrap_or(&format);
+                            if code.len() != 1 {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "NotImplementedError",
+                                    &format!("memoryview: unsupported format {format}"),
+                                );
+                            }
+                            if memoryview_released(ptr) {
+                                return raise_released_memoryview(_py);
+                            }
+                        }
                         let total = std::mem::size_of::<MoltHeader>()
                             + std::mem::size_of::<u64>()
                             + std::mem::size_of::<usize>()
@@ -867,6 +935,16 @@ pub extern "C" fn molt_iter_checked(iter_bits: u64) -> u64 {
     })
 }
 
+/// Publish exhaustion before retiring either owned field. Finalizers may
+/// recursively advance this iterator, so callable retirement is the gate.
+unsafe fn call_iter_finish(py: &PyToken<'_>, ptr: *mut u8) {
+    let none = MoltObject::none().bits();
+    let callable = unsafe { std::ptr::replace(ptr.cast::<u64>(), none) };
+    dec_ref_bits(py, callable);
+    let sentinel =
+        unsafe { std::ptr::replace(ptr.add(std::mem::size_of::<u64>()).cast::<u64>(), none) };
+    dec_ref_bits(py, sentinel);
+}
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -895,24 +973,40 @@ pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> 
 pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let obj = obj_from_bits(obj_bits);
-            let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__aiter__") else {
+            let Some(method) =
+                crate::builtins::attr::lookup_async_special_method(_py, obj_bits, b"__aiter__")
+            else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let msg = format!(
+                    "'{}' object is not async iterable",
+                    type_name(_py, obj_from_bits(obj_bits))
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            };
+            let iterator = call_callable0(_py, method);
+            dec_ref_bits(_py, method);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, iterator);
                 return MoltObject::none().bits();
-            };
-            let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) else {
-                dec_ref_bits(_py, name_bits);
-                let msg = format!("'{}' object is not async iterable", type_name(_py, obj));
+            }
+            // Admission observes the type slot without binding its descriptor.
+            // __anext__ is looked up only when the next operation executes.
+            let valid = crate::builtins::attr::has_special_method(_py, iterator, b"__anext__");
+            if exception_pending(_py) {
+                dec_ref_bits(_py, iterator);
+                return MoltObject::none().bits();
+            }
+            if !valid {
+                let msg = format!(
+                    "aiter() returned not an async iterator of type '{}'",
+                    type_name(_py, obj_from_bits(iterator))
+                );
+                dec_ref_bits(_py, iterator);
                 return raise_exception::<_>(_py, "TypeError", &msg);
-            };
-            let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, obj_ptr, name_bits) else {
-                dec_ref_bits(_py, name_bits);
-                let msg = format!("'{}' object is not async iterable", type_name(_py, obj));
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            };
-            dec_ref_bits(_py, name_bits);
-            let res = call_callable0(_py, call_bits);
-            dec_ref_bits(_py, call_bits);
-            res
+            }
+            iterator
         }
     })
 }
@@ -1129,22 +1223,9 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
         if let Some(ptr) = maybe_ptr_from_bits(iter_bits) {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_GENERATOR {
-                    let res_bits = molt_generator_send(iter_bits, MoltObject::none().bits());
-                    if exception_pending(_py) {
-                        return res_bits;
-                    }
-                    let res_obj = obj_from_bits(res_bits);
-                    if let Some(res_ptr) = res_obj.as_ptr()
-                        && object_type_id(res_ptr) == TYPE_ID_TUPLE
-                        && let Some((_, done_bits)) = crate::object::seq_access::tuple_pair(res_ptr)
-                    {
-                        let done = is_truthy(_py, obj_from_bits(done_bits));
-                        if done {
-                            let closed_bits = MoltObject::from_bool(true).bits();
-                            *(ptr.add(GEN_CLOSED_OFFSET) as *mut u64) = closed_bits;
-                        }
-                    }
-                    return res_bits;
+                    // Send owns completion, including terminal binding release.
+                    // Iterator dispatch must not publish a second closed state.
+                    return molt_generator_send(iter_bits, MoltObject::none().bits());
                 }
                 if object_type_id(ptr) == TYPE_ID_GLOB_ITER {
                     // Lazy glob iterator: advance the native streaming state by
@@ -1237,22 +1318,66 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 if object_type_id(ptr) == TYPE_ID_CALL_ITER {
                     let slot_ptr = ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8;
                     let call_bits = call_iter_callable_bits(ptr);
-                    let sentinel_bits = call_iter_sentinel_bits(ptr);
+                    if obj_from_bits(call_bits).is_none() {
+                        cached_pair_clear(_py, slot_ptr);
+                        return generator_done_tuple(_py, MoltObject::none().bits());
+                    }
+                    inc_ref_bits(_py, call_bits);
                     let val_bits = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
                     if exception_pending(_py) {
                         dec_ref_bits(_py, val_bits);
+                        let exception = molt_exception_last();
+                        let stop = crate::builtins::exceptions::exception_matches_builtin_name(
+                            _py,
+                            exception,
+                            "StopIteration",
+                        );
+                        if stop {
+                            clear_exception(_py);
+                            call_iter_finish(_py, ptr);
+                        }
+                        dec_ref_bits(_py, exception);
                         cached_pair_clear(_py, slot_ptr);
-                        return MoltObject::none().bits();
+                        return if stop {
+                            generator_done_tuple(_py, MoltObject::none().bits())
+                        } else {
+                            MoltObject::none().bits()
+                        };
                     }
-                    if obj_eq(_py, obj_from_bits(val_bits), obj_from_bits(sentinel_bits)) {
+                    // The callable can recursively exhaust this same iterator.
+                    // Reload its sentinel only after that call has completed.
+                    let sentinel_bits = call_iter_sentinel_bits(ptr);
+                    if !obj_from_bits(call_iter_callable_bits(ptr)).is_none() {
+                        inc_ref_bits(_py, sentinel_bits);
+                        let outcome = crate::object::ops_compare::compare_object_eq_bool(
+                            _py,
+                            obj_from_bits(sentinel_bits),
+                            obj_from_bits(val_bits),
+                        );
+                        dec_ref_bits(_py, sentinel_bits);
+                        match outcome {
+                            crate::object::ops_compare::CompareBoolOutcome::True => {
+                                call_iter_finish(_py, ptr);
+                                dec_ref_bits(_py, val_bits);
+                                cached_pair_clear(_py, slot_ptr);
+                                return generator_done_tuple(_py, MoltObject::none().bits());
+                            }
+                            crate::object::ops_compare::CompareBoolOutcome::Error => {
+                                dec_ref_bits(_py, val_bits);
+                                cached_pair_clear(_py, slot_ptr);
+                                return MoltObject::none().bits();
+                            }
+                            crate::object::ops_compare::CompareBoolOutcome::False
+                            | crate::object::ops_compare::CompareBoolOutcome::NotComparable => {}
+                        }
+                    } else {
                         dec_ref_bits(_py, val_bits);
                         cached_pair_clear(_py, slot_ptr);
                         return generator_done_tuple(_py, MoltObject::none().bits());
                     }
                     let done_bits = MoltObject::from_bool(false).bits();
-                    let out_bits =
-                        cached_pair_return(_py, slot_ptr, val_bits, done_bits, true, false);
-                    return out_bits;
+                    return cached_pair_return(_py, slot_ptr, val_bits, done_bits, true, false);
                 }
                 if object_type_id(ptr) == TYPE_ID_MAP {
                     let func_bits = map_func_bits(ptr);
@@ -1722,6 +1847,34 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 }
                 if let Some(target_ptr) = target_obj.as_ptr() {
                     let target_type = object_type_id(target_ptr);
+                    if target_type == TYPE_ID_MEMORYVIEW {
+                        // Shape is immutable. Exhaustion precedes released/unsupported
+                        // element checks, matching memoryiter_next even after callbacks.
+                        let len = memoryview_shape(target_ptr)
+                            .unwrap_or(&[])
+                            .first()
+                            .copied()
+                            .unwrap_or(0);
+                        if idx >= len as usize {
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
+                        }
+                        iter_set_index(ptr, idx + 1);
+                        let value = crate::object::ops::molt_getitem_builtin(
+                            target_bits,
+                            MoltObject::from_int(idx as i64).bits(),
+                        );
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, value);
+                            return MoltObject::none().bits();
+                        }
+                        return iter_return_cached(_py, ptr, value, false, true);
+                    }
                     if target_type == TYPE_ID_WEAK_CONTAINER_STATE {
                         return match weak_container_iter_advance(_py, ptr, target_ptr) {
                             Ok(Some(value)) => iter_return_cached(_py, ptr, value, false, true),
@@ -1886,10 +2039,12 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                             if let Some(value) =
                                 range_value_at_index_i64(start_i64, stop_i64, step_i64, idx as i128)
                             {
-                                let val_bits = MoltObject::from_int(value).bits();
+                                // Owned: a value outside the inline window is a
+                                // heap int, which `from_int` would truncate.
+                                let val_bits = int_bits_from_i64(_py, value);
                                 let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
                                 iter_set_index(ptr, next_idx);
-                                return iter_return_cached(_py, ptr, val_bits, false, false);
+                                return iter_return_cached(_py, ptr, val_bits, false, true);
                             }
                             let len = range_len_i128(start_i64, stop_i64, step_i64);
                             let len_usize = usize::try_from(len).unwrap_or(ITER_EXHAUSTED);
@@ -2164,7 +2319,9 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
                         if let Some(value) =
                             range_value_at_index_i64(start_i64, stop_i64, step_i64, idx as i128)
                         {
-                            let val_bits = MoltObject::from_int(value).bits();
+                            // Owned, full range (a heap int outside the inline
+                            // window); zero allocation for inline values.
+                            let val_bits = int_bits_from_i64(_py, value);
                             *value_out = val_bits;
                             let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
                             iter_set_index(ptr, next_idx);
@@ -2386,24 +2543,21 @@ pub unsafe extern "C" fn molt_iter_next_dict_items(
 pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let obj = obj_from_bits(obj_bits);
-            let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__anext__") else {
-                return MoltObject::none().bits();
-            };
-            let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) else {
-                dec_ref_bits(_py, name_bits);
-                let msg = format!("'{}' object is not an async iterator", type_name(_py, obj));
+            let Some(method) =
+                crate::builtins::attr::lookup_async_special_method(_py, obj_bits, b"__anext__")
+            else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let msg = format!(
+                    "'{}' object is not an async iterator",
+                    type_name(_py, obj_from_bits(obj_bits))
+                );
                 return raise_exception::<_>(_py, "TypeError", &msg);
             };
-            let Some(call_bits) = attr_lookup_ptr(_py, obj_ptr, name_bits) else {
-                dec_ref_bits(_py, name_bits);
-                let msg = format!("'{}' object is not an async iterator", type_name(_py, obj));
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            };
-            dec_ref_bits(_py, name_bits);
-            let res = call_callable0(_py, call_bits);
-            dec_ref_bits(_py, call_bits);
-            res
+            let result = call_callable0(_py, method);
+            dec_ref_bits(_py, method);
+            result
         }
     })
 }

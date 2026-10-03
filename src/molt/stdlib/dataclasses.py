@@ -1,8 +1,7 @@
 """Dataclasses for Molt.
 
-Supports both compile-time recognition (the frontend marks classes with
-``__molt_dataclass__ = True``) and runtime decoration of arbitrary user
-classes. The synthesis logic below is the single source of truth for both
+Supports both compile-time recognition and runtime decoration of arbitrary
+user classes through canonical dataclass field metadata. The synthesis logic below is the single source of truth for both
 paths: it walks ``cls.__annotations__`` to discover fields, installs
 ``__init__`` / ``__repr__`` / ``__eq__`` / ``__hash__`` / order dunders
 onto the class via ``setattr``, and honours ``slots`` / ``frozen`` /
@@ -407,28 +406,20 @@ def _dataclass_repr(self) -> str:
     return _MOLT_DATACLASSES_REPR(self)
 
 
-def _dataclass_eq(self, other: object):
-    result = _MOLT_DATACLASSES_EQ(self, other)
-    if result is None:
-        return NotImplemented
-    return result
+def _dataclass_eq_factory(compare_names):
+    def __eq__(self, other: object):
+        return _MOLT_DATACLASSES_EQ(self, other, compare_names)
+
+    return __eq__
 
 
-def _dataclass_order(self, other: object, op):
+def _dataclass_order(self, other: object, compare_names, op):
     if other.__class__ is not self.__class__:
         return NotImplemented
-    fields_map = self.__class__.__dataclass_fields__
-    values = [
-        getattr(self, field_obj.name)
-        for field_obj in fields_map.values()
-        if field_obj._field_type is _FIELD and field_obj.compare
-    ]
-    other_values = [
-        getattr(other, field_obj.name)
-        for field_obj in fields_map.values()
-        if field_obj._field_type is _FIELD and field_obj.compare
-    ]
-    return op(tuple(values), tuple(other_values))
+    return op(
+        tuple(getattr(self, name) for name in compare_names),
+        tuple(getattr(other, name) for name in compare_names),
+    )
 
 
 def _dataclass_hash(self) -> int:
@@ -551,12 +542,6 @@ def _molt_apply_dataclass(
     slots: bool,
     weakref_slot: bool,
 ):
-    # Mark the class as a molt dataclass so downstream introspection (and any
-    # cooperating frontend lowering) sees the same flag whether the class was
-    # produced via compile-time recognition, ``make_dataclass``, or runtime
-    # decoration of an arbitrary user class.
-    if not getattr(cls, "__molt_dataclass__", False):
-        cls.__molt_dataclass__ = True
     if order and not eq:
         raise ValueError("eq must be true if order is true")
     if weakref_slot and not slots:
@@ -586,17 +571,6 @@ def _molt_apply_dataclass(
                 fields[name] = field_obj
 
     annotations = getattr(cls, "__annotations__", {}) or {}
-    # PEP 749 (Python 3.14+): annotations may be deferred via __annotate__.
-    # If __annotations__ is empty but __annotate__ exists, call it to
-    # eagerly evaluate and cache the annotations.
-    if not annotations:
-        annotate_fn = getattr(cls, "__annotate__", None)
-        if annotate_fn is not None:
-            try:
-                annotations = annotate_fn(1)  # FORMAT_VALUE = 1
-                cls.__annotations__ = annotations
-            except Exception:
-                annotations = {}
     kw_only_marker = kw_only
     for name, annotation in annotations.items():
         if _is_kw_only(annotation):
@@ -667,26 +641,32 @@ def _molt_apply_dataclass(
         or cls.__dict__.get("__repr__") is object.__repr__
     ):
         cls.__repr__ = _dataclass_repr
+    if eq or order:
+        compare_names = tuple(
+            field_obj.name
+            for field_obj in fields.values()
+            if field_obj._field_type is _FIELD and field_obj.compare
+        )
     if eq and (
         "__eq__" not in cls.__dict__ or cls.__dict__.get("__eq__") is object.__eq__
     ):
-        cls.__eq__ = _dataclass_eq
+        cls.__eq__ = _dataclass_eq_factory(compare_names)
     if order:
         if "__lt__" not in cls.__dict__:
             cls.__lt__ = lambda self, other: _dataclass_order(
-                self, other, lambda a, b: a < b
+                self, other, compare_names, lambda a, b: a < b
             )
         if "__le__" not in cls.__dict__:
             cls.__le__ = lambda self, other: _dataclass_order(
-                self, other, lambda a, b: a <= b
+                self, other, compare_names, lambda a, b: a <= b
             )
         if "__gt__" not in cls.__dict__:
             cls.__gt__ = lambda self, other: _dataclass_order(
-                self, other, lambda a, b: a > b
+                self, other, compare_names, lambda a, b: a > b
             )
         if "__ge__" not in cls.__dict__:
             cls.__ge__ = lambda self, other: _dataclass_order(
-                self, other, lambda a, b: a >= b
+                self, other, compare_names, lambda a, b: a >= b
             )
 
     hash_obj = cls.__dict__.get("__hash__", MISSING)
@@ -728,8 +708,6 @@ def _molt_apply_dataclass(
     flags = 0
     if frozen:
         flags |= 0x1
-    if eq:
-        flags |= 0x2
     if repr:
         flags |= 0x4
     if slots:

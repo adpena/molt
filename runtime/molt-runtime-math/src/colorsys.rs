@@ -38,7 +38,7 @@ fn coerce_real_f64(_py: &PyToken, val_bits: u64) -> Option<f64> {
         {
             let float_name_bits = intern_static_name(_py, b"__float__");
             if let Some(call_bits) =
-                unsafe { attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) }
+                unsafe { lookup_special_method(_py, ptr, float_name_bits) }
             {
                 let res_bits = call_callable0(_py, call_bits);
                 dec_ref_bits(_py, call_bits);
@@ -62,7 +62,7 @@ fn coerce_real_f64(_py: &PyToken, val_bits: u64) -> Option<f64> {
             }
             let index_name_bits = intern_static_name(_py, b"__index__");
             if let Some(call_bits) =
-                unsafe { attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) }
+                unsafe { lookup_special_method(_py, ptr, index_name_bits) }
             {
                 let res_bits = call_callable0(_py, call_bits);
                 dec_ref_bits(_py, call_bits);

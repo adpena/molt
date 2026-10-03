@@ -47,73 +47,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::Shr => self.emit_bitwise(op, "rshift"),
 
             // -- Boolean --
-            OpCode::And | OpCode::Or => {
-                // Frontend BoolOp lowering uses And/Or ops to produce the
-                // selected operand value inside already-structured control flow.
-                // At this stage we must preserve Python operand-selection
-                // semantics, not bitwise semantics.
-                let result_id = op.results[0];
-                let lhs = self.resolve(op.operands[0]);
-                let rhs = self.resolve(op.operands[1]);
-                let lhs_ty = self
-                    .value_types
-                    .get(&op.operands[0])
-                    .cloned()
-                    .unwrap_or(TirType::DynBox);
-                let rhs_ty = self
-                    .value_types
-                    .get(&op.operands[1])
-                    .cloned()
-                    .unwrap_or(TirType::DynBox);
-                let lhs_i64 = self.ensure_i64(lhs);
-                let truthy_fn = self.backend.module.get_function("molt_is_truthy").unwrap();
-                let truthy = self
-                    .backend
-                    .builder
-                    .build_call(truthy_fn, &[lhs_i64.into()], "truthy")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value();
-                let cond_i1 = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        truthy,
-                        self.backend.context.i64_type().const_zero(),
-                        "boolop_cond",
-                    )
-                    .unwrap();
-                let lhs_bits = self.materialize_dynbox_bits(lhs, &lhs_ty);
-                let rhs_bits = self.materialize_dynbox_bits(rhs, &rhs_ty);
-                let selected = if op.opcode == OpCode::And {
-                    self.backend
-                        .builder
-                        .build_select(cond_i1, rhs_bits, lhs_bits, "bool_and")
-                        .unwrap()
-                } else {
-                    self.backend
-                        .builder
-                        .build_select(cond_i1, lhs_bits, rhs_bits, "bool_or")
-                        .unwrap()
-                };
-                if crate::tir::op_kinds_generated::opcode_result_mints_owned_selected_operand_table(
-                    op.opcode,
-                ) {
-                    let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-                    self.backend
-                        .builder
-                        .build_call(
-                            inc_fn,
-                            &[selected.into_int_value().into()],
-                            "boolop_selected_inc_ref",
-                        )
-                        .unwrap();
-                }
-                self.values.insert(result_id, selected);
-                self.value_types.insert(result_id, TirType::DynBox);
-            }
+            OpCode::And | OpCode::Or => self.emit_boolean_selection(op),
             OpCode::Bool => {
                 let result_id = op.results[0];
                 let operand_id = op.operands[0];
@@ -287,13 +221,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 //
                 // SINGLE SOURCE OF TRUTH (the drift the `CopyLowering` classifier
                 // forbids). The drop-insertion pass releases exactly the `Copy`s
-                // whose `_original_kind` is a `CopyLowering::FreshValue`
-                // (`alias_analysis::copy_kind_mints_fresh_owned_ref`). If such a
+                // whose `_original_kind` is a `CopyLowering::OwnedValue`
+                // (`alias_analysis::copy_kind_mints_owned_value`). If such a
                 // fresh-owned producer reached codegen as a silent operand-0
                 // passthrough, the result would (a) be the wrong value AND (b)
                 // alias operand 0 — which the drop pass then DOUBLE-FREES. The gate
                 // therefore consults that classifier on every fatal so the table
-                // and the backend cannot drift: a `FreshValue` reaching here is the
+                // and the backend cannot drift: a `OwnedValue` reaching here is the
                 // forbidden drift (a fresh-value op missing its explicit LLVM arm),
                 // and the diagnostic names it as such; any other `_original_kind`
                 // gets the general terminal message with operand/result counts.
@@ -305,7 +239,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     if crate::tir::passes::alias_analysis::copy_kind_reaches_no_incref_passthrough(
                         Some(kind),
                     ) {
-                        // Not a `FreshValue` (a transparent-alias / inert-marker
+                        // Not a `OwnedValue` (a transparent-alias / inert-marker
                         // kind whose `molt_<kind>` intrinsic is also absent): the
                         // partner's general terminal state. Still fail loud — an
                         // unhandled `_original_kind` is never a sound passthrough.
@@ -321,7 +255,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             op.results.len(),
                         ));
                     } else {
-                        // A `CopyLowering::FreshValue` reached the passthrough: the
+                        // A `CopyLowering::OwnedValue` reached the passthrough: the
                         // exact classifier?backend drift this gate exists to catch.
                         self.record_fatal(format!(
                             "fresh-value SimpleIR op `{kind}` (operands={}, \
@@ -329,7 +263,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                              lowering it as a copy of operand 0 would silently \
                              miscompile AND make the result alias operand 0 (a \
                              drop-insertion double-free); it is in \
-                             `alias_analysis::copy_kind_mints_fresh_owned_ref` so it \
+                             `alias_analysis::copy_kind_mints_owned_value` so it \
                              MUST have a `lower_preserved_simpleir_op` arm (the \
                              classifier and the LLVM lowering have drifted)",
                             op.operands.len(),
@@ -415,20 +349,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() < 2 {
                     return;
                 }
-                let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let index_bits = self.materialize_dynbox_operand(op.operands[1]);
                 let ord_at_fn = self.ensure_runtime_i64_fn("molt_ord_at", 2);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(ord_at_fn, &[obj_bits.into(), index_bits.into()], "ord_at")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                let args = [
+                    RuntimeArg::Operand(op.operands[0]),
+                    RuntimeArg::Operand(op.operands[1]),
+                ];
+                self.emit_borrowed_runtime_call(
+                    op,
+                    ord_at_fn,
+                    &args,
+                    Self::canonical_boxed_return("molt_ord_at", 2),
+                    "ord_at",
+                    "ord_at",
+                );
             }
 
             // Raw boxed frame allocation is not implemented. In particular,
@@ -446,7 +379,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // -- BuildList: [item0, item1, ...] --
-            // Strategy: list_builder_new(capacity) + append + finish.
+            // Borrow the fixed operand range for one constructor transaction.
             OpCode::BuildList => self.emit_build_list(op),
 
             // -- BuildDict: {k0: v0, k1: v1, ...} --
@@ -477,50 +410,41 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::StateSwitch => self.emit_state_switch(),
             OpCode::ClosureLoad => self.emit_closure_load(op),
             OpCode::ClosureStore => self.emit_closure_store(op),
-            OpCode::StateYield => self.emit_state_yield(op),
-            OpCode::StateTransition => self.emit_state_transition(op),
+            OpCode::FrameContextSet => self.emit_frame_context_set(op),
+            OpCode::StateYield | OpCode::StateTransition => panic!(
+                "{}: the shared terminal drop pass must expose it as explicit activation exits before LLVM emission",
+                self.func.name
+            ),
+            OpCode::StateSet => self.emit_state_set(op),
+            OpCode::IsPending => self.emit_is_pending(op),
+            OpCode::TaskWait => self.emit_task_wait(op),
             OpCode::Yield => self.emit_yield(op),
             OpCode::YieldFrom => self.emit_yield_from(op),
             OpCode::Raise => {
-                let exc = self.resolve(op.operands[0]);
-                let exc_i64 = self.ensure_i64(exc);
-                let raise_fn = self.backend.module.get_function("molt_raise").unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(raise_fn, &[exc_i64.into()], "raise")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if !op.results.is_empty() {
-                    self.values.insert(op.results[0], result);
-                    self.value_types.insert(op.results[0], TirType::DynBox);
-                }
+                // `molt_raise` borrows the exception object and returns the
+                // immortal None with that exception pending.
+                let raise_fn = self.ensure_runtime_i64_fn("molt_raise", 1);
+                self.emit_borrowed_runtime_call(
+                    op,
+                    raise_fn,
+                    &[RuntimeArg::Operand(op.operands[0])],
+                    RuntimeResultCustody::Unowned,
+                    "raise",
+                    "raise",
+                );
             }
 
             // -- WarnStderr: side-effecting diagnostic emit --
             OpCode::WarnStderr => {
-                let msg = self.resolve(op.operands[0]);
-                let msg_i64 = self.ensure_i64(msg);
-                let warn_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_warn_stderr")
-                    .unwrap();
-                self.backend
-                    .builder
-                    .build_call(warn_fn, &[msg_i64.into()], "warn_stderr")
-                    .unwrap();
-                if let Some(&result_id) = op.results.first() {
-                    let none_val: BasicValueEnum<'ctx> = self
-                        .backend
-                        .context
-                        .i64_type()
-                        .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
-                        .into();
-                    self.values.insert(result_id, none_val);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                let warn_fn = self.ensure_runtime_void_fn("molt_warn_stderr", 1);
+                self.emit_borrowed_runtime_call(
+                    op,
+                    warn_fn,
+                    &[RuntimeArg::Operand(op.operands[0])],
+                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::Void),
+                    "warn_stderr",
+                    "warn_stderr",
+                );
             }
 
             // -- ExceptionPending: read the runtime exception-pending flag as
@@ -561,25 +485,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //    its `== 0` compare (baked literal vs live read).  Non-foldable:
             //    it observes mutable runtime state, so the read always survives.
             OpCode::FunctionDefaultsVersion => {
-                let ver_fn = self.ensure_runtime_i64_fn("molt_function_defaults_version", 1);
-                let func_val = op
+                let func_id = *op
                     .operands
                     .first()
-                    .and_then(|id| self.values.get(id).copied())
-                    .expect("FunctionDefaultsVersion operand not materialized");
-                let raw = self
-                    .backend
-                    .builder
-                    .build_call(ver_fn, &[func_val.into()], "func_defaults_version")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, raw);
-                    // Returns a NaN-boxed inline int; the consuming `== 0`
-                    // compare routes through the boxed-int equality path.
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                    .expect("FunctionDefaultsVersion requires a function operand");
+                let ver_fn = self.ensure_runtime_i64_fn("molt_function_defaults_version", 1);
+                // Returns a NaN-boxed inline int; the consuming `== 0` compare
+                // routes through the boxed-int equality path.
+                self.emit_borrowed_runtime_call(
+                    op,
+                    ver_fn,
+                    &[RuntimeArg::Operand(func_id)],
+                    Self::canonical_boxed_return("molt_function_defaults_version", 1),
+                    "function_defaults_version",
+                    "func_defaults_version",
+                );
             }
 
             // -- CheckException: inspect the current exception state --
@@ -668,17 +588,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::Import => {
                 let result_id = op.results[0];
                 let import_fn = self.ensure_runtime_i64_fn("molt_module_import", 1);
-                let import = |this: &mut Self, name_i64: inkwell::values::IntValue<'ctx>| {
-                    this.backend
-                        .builder
-                        .build_call(import_fn, &[name_i64.into()], "import")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic()
-                };
                 let result = if let Some(&name_id) = op.operands.first() {
-                    let name_i64 = self.materialize_dynbox_operand(name_id);
-                    import(self, name_i64)
+                    self.borrowed_runtime_call_value(
+                        import_fn,
+                        &[RuntimeArg::Operand(name_id)],
+                        false,
+                        "import",
+                        "import",
+                    )
                 } else {
                     let module_name = ["module", "s_value", "_var"]
                         .iter()
@@ -692,189 +609,70 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                                 self.func.name
                             )
                         });
-                    self.with_owned_name(module_name, import)
+                    self.with_owned_name(module_name, |this, name_i64| {
+                        this.backend
+                            .builder
+                            .build_call(import_fn, &[name_i64.into()], "import")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .unwrap_basic()
+                    })
+                    .into_int_value()
                 };
-                self.values.insert(result_id, result);
+                self.values.insert(result_id, result.into());
                 self.value_types.insert(result_id, TirType::DynBox);
             }
 
             // -- ImportFrom: from module import name --
             // operands: [module, attr_name]
-            OpCode::ImportFrom => {
-                let result = self.call_runtime_2_boxed(
-                    "molt_module_get_attr",
-                    op.operands[0],
-                    op.operands[1],
-                );
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            OpCode::ImportFrom => self.emit_module_runtime_call(op, "molt_module_get_attr", 2),
 
             // -- ModuleCacheGet: module-cache lookup by name --
             // operands: [module_name]
-            OpCode::ModuleCacheGet => {
-                let result_id = op.results[0];
-                let get_fn = self.ensure_runtime_i64_fn("molt_module_cache_get", 1);
-                let name_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(get_fn, &[name_bits.into()], "module_cache_get")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                self.values.insert(result_id, result);
-                self.value_types.insert(result_id, TirType::DynBox);
-            }
+            OpCode::ModuleCacheGet => self.emit_module_runtime_call(op, "molt_module_cache_get", 1),
 
             // -- ModuleCacheSet: module-cache mutation by name --
             // operands: [module_name, module]
-            OpCode::ModuleCacheSet => {
-                let set_fn = self.ensure_runtime_i64_fn("molt_module_cache_set", 2);
-                let name_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let module_bits = self.materialize_dynbox_operand(op.operands[1]);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(
-                        set_fn,
-                        &[name_bits.into(), module_bits.into()],
-                        "module_cache_set",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            OpCode::ModuleCacheSet => self.emit_module_runtime_call(op, "molt_module_cache_set", 2),
 
             // -- ModuleCacheDel: module-cache deletion by name --
             // operands: [module_name]
-            OpCode::ModuleCacheDel => {
-                let del_fn = self.ensure_runtime_i64_fn("molt_module_cache_del", 1);
-                let name_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(del_fn, &[name_bits.into()], "module_cache_del")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            OpCode::ModuleCacheDel => self.emit_module_runtime_call(op, "molt_module_cache_del", 1),
 
             // -- ModuleGetAttr: module attribute read --
             // operands: [module, attr_name]
-            OpCode::ModuleGetAttr => {
-                let result = self.call_runtime_2_boxed(
-                    "molt_module_get_attr",
-                    op.operands[0],
-                    op.operands[1],
-                );
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            OpCode::ModuleGetAttr => self.emit_module_runtime_call(op, "molt_module_get_attr", 2),
 
             // -- ModuleImportFrom: `from M import name` binding --
             // operands: [module, attr_name]. CPython IMPORT_FROM semantics:
             // ImportError (not AttributeError) on miss, with a sys.modules
             // submodule fallback (see molt_module_import_from).
             OpCode::ModuleImportFrom => {
-                let result = self.call_runtime_2_boxed(
-                    "molt_module_import_from",
-                    op.operands[0],
-                    op.operands[1],
-                );
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.emit_module_runtime_call(op, "molt_module_import_from", 2)
             }
 
             // -- ModuleGetGlobal: CPython-style module global lookup --
             // operands: [module, global_name]
             OpCode::ModuleGetGlobal => {
-                let result = self.call_runtime_2_boxed(
-                    "molt_module_get_global",
-                    op.operands[0],
-                    op.operands[1],
-                );
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.emit_module_runtime_call(op, "molt_module_get_global", 2)
             }
 
             // -- ModuleGetName: module name/attribute lookup helper --
             // operands: [module, attr_name]
-            OpCode::ModuleGetName => {
-                let result = self.call_runtime_2_boxed(
-                    "molt_module_get_name",
-                    op.operands[0],
-                    op.operands[1],
-                );
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            OpCode::ModuleGetName => self.emit_module_runtime_call(op, "molt_module_get_name", 2),
 
             // -- ModuleSetAttr: module attribute mutation --
-            // operands: [module, attr_name, value]
-            OpCode::ModuleSetAttr => {
-                let set_fn = self.ensure_runtime_i64_fn("molt_module_set_attr", 3);
-                let module_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let attr_bits = self.materialize_dynbox_operand(op.operands[1]);
-                let val_bits = self.materialize_dynbox_operand(op.operands[2]);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(
-                        set_fn,
-                        &[module_bits.into(), attr_bits.into(), val_bits.into()],
-                        "module_set_attr",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            // operands: [module, attr_name, value]; the module dict retains the
+            // value, so a box minted for a raw value is released after the store.
+            OpCode::ModuleSetAttr => self.emit_module_runtime_call(op, "molt_module_set_attr", 3),
 
             // -- ModuleDelGlobal: CPython-style module global deletion --
             // operands: [module, global_name]
             OpCode::ModuleDelGlobal => {
-                let result = self.call_runtime_2_boxed(
-                    "molt_module_del_global",
-                    op.operands[0],
-                    op.operands[1],
-                );
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.emit_module_runtime_call(op, "molt_module_del_global", 2)
             }
             OpCode::ModuleDelGlobalIfPresent => {
-                let result = self.call_runtime_2_boxed(
-                    "molt_module_del_global_if_present",
-                    op.operands[0],
-                    op.operands[1],
-                );
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.emit_module_runtime_call(op, "molt_module_del_global_if_present", 2)
             }
 
             // -- SCF dialect ops --
@@ -919,21 +717,36 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&class_id) = op.operands.first() else {
                     panic!("{:?} requires class operand", op.opcode);
                 };
-                let class_bits = self.materialize_dynbox_operand(class_id);
                 let new_fn = self.ensure_runtime_i64_fn("molt_object_new_bound", 1);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(new_fn, &[class_bits.into()], "object_new_bound")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.emit_borrowed_runtime_call(
+                    op,
+                    new_fn,
+                    &[RuntimeArg::Operand(class_id)],
+                    Self::canonical_boxed_return("molt_object_new_bound", 1),
+                    "object_new_bound",
+                    "object_new_bound",
+                );
             }
             OpCode::StateBlockStart | OpCode::StateBlockEnd => {}
         }
+    }
+
+    /// Module and import operations are positional boxed runtime calls with
+    /// canonical rows: every operand is borrowed through one custody and the
+    /// owned result is bound or released.
+    fn emit_module_runtime_call(&mut self, op: &TirOp, symbol: &str, arity: usize) {
+        let callee = self.ensure_runtime_i64_fn(symbol, arity);
+        let args: Vec<RuntimeArg<'ctx>> = op.operands[..arity]
+            .iter()
+            .map(|&operand| RuntimeArg::Operand(operand))
+            .collect();
+        self.emit_borrowed_runtime_call(
+            op,
+            callee,
+            &args,
+            Self::canonical_boxed_return(symbol, arity),
+            "module_call",
+            symbol,
+        );
     }
 }

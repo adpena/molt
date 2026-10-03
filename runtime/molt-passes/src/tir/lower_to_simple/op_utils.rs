@@ -52,6 +52,17 @@ pub(super) fn annotate_lowered_op(
         Some(AttrValue::Bool(true))
     );
     opir.async_work_poll = tir_op.opcode != OpCode::CheckException && tir_op.is_async_work_poll();
+    // A source call's typed operand custody is aligned with its operands,
+    // which the call's lowering emits as `args`, in order.
+    if let Some(custody) = tir_op.argument_custody() {
+        assert_eq!(
+            opir.args.as_ref().map(Vec::len),
+            Some(custody.len()),
+            "`{}` lowered with operands misaligned from its argument custody",
+            opir.kind
+        );
+        opir.argument_custody = Some(custody);
+    }
     // Result-lifetime facts are TIR attrs, not opcode-local syntax. Preserve
     // them through every TIR -> SimpleIR custody boundary so native's
     // optimize-roundtrip -> terminal-drop relift sees the same finalizer facts

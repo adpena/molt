@@ -32,22 +32,23 @@
 //! closed=16) and `offset >= 48` are the generator's captured params + spilled
 //! locals.
 //!
-//! The fused form is the explicit state machine the backend would have built,
-//! but with the consumer body interleaved and the frame promoted to SSA:
+//! The fused form is the generator's own control flow, with the consumer body
+//! spliced in at the yield and the frame promoted to SSA (`slots.rs`):
 //!
 //! ```text
-//!   preheader: br dispatch(slot_inits..., state=ENTRY)
-//!   dispatch(slot_phis..., state_phi):
-//!       switch state_phi -> [seg_0, resume_1, ..., resume_{n-1}, exhausted]
-//!   seg_K (the code from after yield K-1 through yield K):
-//!       ... cloned P ops (closure_load(slot)->phi, closure_store(slot,v)->thread) ...
-//!       elem = pair[0]; IncRef(elem)
-//!       br consumer(elem, updated_slots..., next_state_K)
-//!   consumer(elem, slot_phis..., ret_state):
+//!   preheader: p_i = <the frame's reference to generator argument i>
+//!       ... cloned P ops: closure_load(slot) -> a copy of the slot's reaching
+//!           definition; closure_store(slot, v) -> v is the slot's new
+//!           definition; a join its stores reach takes the slot as a block
+//!           argument ...
+//!   yield site (P's yield block, up to the yield):
+//!       elem = pair[0]; br consumer
+//!   consumer:
 //!       <original consumer body using elem>
-//!       br dispatch(slot_phis..., ret_state)     // continue
+//!       br post_yield            // continue
 //!       (or br loop_exit on break)
-//!   exhausted: br loop_exit
+//!   post_yield: <P's code after the yield>
+//!   exhausted return: br loop_exit
 //! ```
 //!
 //! The control slots (send/throw/closed) are eliminated: the recognition
@@ -62,9 +63,16 @@
 //! leaves the IR byte-identical (the generator stays Tier D — heap frame +
 //! runtime `molt_generator_send`, which is correct and preserved). The splice is
 //! followed by `verify_function` and a `run_pipeline` re-run (which itself
-//! verifies). One explicit `IncRef(elem)` per yield site replicates the `+1`
-//! ownership the eliminated `IterNext` calling convention delivered. No other RC
-//! op is added or removed.
+//! verifies).
+//!
+//! Fusion runs before the terminal drop plane and places no reference
+//! operation: DropInsertion owns every reference of the fused body (design 20
+//! §1.2). The element is the owned result of `Index(pair, 0)`, as the eliminated
+//! `IterNext` pair's element was. Each promoted read replaces a `ClosureLoad`,
+//! whose result was owned, and keeps that reference through
+//! `ownership_lattice_min::Replacements`. So do the frame's own references: each
+//! promoted store's to the value it stored, and each parameter slot's to its
+//! argument. A join argument owns what its edges move or retain into it.
 //!
 //! Phase 1 scope (doc 26): single- and multi-yield generators with no
 //! `YieldFrom`, no real exception HANDLER region (`has_exception_handlers()`),
@@ -75,6 +83,7 @@ mod attrs;
 mod clone;
 mod driver;
 mod recognize;
+mod slots;
 mod splice;
 mod types;
 mod wire;
@@ -93,7 +102,7 @@ pub(in crate::tir::passes::generator_fusion) use self::recognize::{
     collect_fusion_candidates, is_poll_fusable,
 };
 pub(in crate::tir::passes::generator_fusion) use self::splice::apply_fusion;
-pub(in crate::tir::passes::generator_fusion) use self::types::{FusionCandidate, SlotInfo};
+pub(in crate::tir::passes::generator_fusion) use self::types::FusionCandidate;
 
 /// Byte size of the generator control header. Frame offsets `< GEN_CONTROL_BYTES`
 /// are the control slots — `GEN_SEND_OFFSET=0` (the `.send()` value),

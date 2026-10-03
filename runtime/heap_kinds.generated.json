@@ -19,9 +19,9 @@
     {
       "acyclic_capability": "none",
       "acyclic_slots": {},
-      "cycle": "never",
+      "cycle": "dynamic",
       "drop": "string",
-      "edges": "none",
+      "edges": "dynamic",
       "external_gc": "none",
       "id": 200,
       "layout": "inline",
@@ -29,7 +29,7 @@
       "name": "STRING",
       "publication": "python",
       "shape": "fixed",
-      "track": "never",
+      "track": "native_subtype",
       "weakref": "deny"
     },
     {
@@ -37,23 +37,23 @@
       "acyclic_slots": {},
       "cycle": "always",
       "drop": "list",
-      "edges": "dynamic",
+      "edges": "shape",
       "external_gc": "none",
       "id": 201,
-      "layout": "vec_bits",
+      "layout": "object",
       "metrics": "list",
       "name": "LIST",
       "publication": "python",
-      "shape": "fixed",
+      "shape": "class",
       "track": "always",
-      "weakref": "deny"
+      "weakref": "class"
     },
     {
       "acyclic_capability": "none",
       "acyclic_slots": {},
-      "cycle": "never",
+      "cycle": "dynamic",
       "drop": "none",
-      "edges": "none",
+      "edges": "dynamic",
       "external_gc": "none",
       "id": 202,
       "layout": "inline",
@@ -61,7 +61,7 @@
       "name": "BYTES",
       "publication": "python",
       "shape": "fixed",
-      "track": "never",
+      "track": "native_subtype",
       "weakref": "deny"
     },
     {
@@ -179,9 +179,9 @@
     {
       "acyclic_capability": "none",
       "acyclic_slots": {},
-      "cycle": "never",
+      "cycle": "dynamic",
       "drop": "bytearray",
-      "edges": "none",
+      "edges": "dynamic",
       "external_gc": "none",
       "id": 211,
       "layout": "vec_u8",
@@ -189,7 +189,7 @@
       "name": "BYTEARRAY",
       "publication": "python",
       "shape": "fixed",
-      "track": "never",
+      "track": "native_subtype",
       "weakref": "deny"
     },
     {
@@ -329,22 +329,6 @@
     {
       "acyclic_capability": "none",
       "acyclic_slots": {},
-      "cycle": "never",
-      "drop": "none",
-      "edges": "none",
-      "external_gc": "none",
-      "id": 220,
-      "layout": "inline",
-      "metrics": "none",
-      "name": "INTARRAY",
-      "publication": "python",
-      "shape": "fixed",
-      "track": "never",
-      "weakref": "deny"
-    },
-    {
-      "acyclic_capability": "none",
-      "acyclic_slots": {},
       "cycle": "always",
       "drop": "function",
       "edges": "fixed",
@@ -379,14 +363,14 @@
       "acyclic_slots": {},
       "cycle": "always",
       "drop": "module",
-      "edges": "fixed",
+      "edges": "shape",
       "external_gc": "none",
       "id": 223,
-      "layout": "module",
+      "layout": "object",
       "metrics": "none",
       "name": "MODULE",
       "publication": "python",
-      "shape": "fixed",
+      "shape": "class",
       "track": "always",
       "weakref": "allow"
     },
@@ -537,9 +521,9 @@
     {
       "acyclic_capability": "none",
       "acyclic_slots": {},
-      "cycle": "never",
+      "cycle": "dynamic",
       "drop": "none",
-      "edges": "none",
+      "edges": "dynamic",
       "external_gc": "none",
       "id": 234,
       "layout": "inline",
@@ -547,7 +531,7 @@
       "name": "COMPLEX",
       "publication": "python",
       "shape": "fixed",
-      "track": "never",
+      "track": "native_subtype",
       "weakref": "deny"
     },
     {
@@ -946,6 +930,22 @@
       "shape": "fixed",
       "track": "always",
       "weakref": "deny"
+    },
+    {
+      "acyclic_capability": "none",
+      "acyclic_slots": {},
+      "cycle": "always",
+      "drop": "none",
+      "edges": "dynamic",
+      "external_gc": "none",
+      "id": 259,
+      "layout": "fixed_bits",
+      "metrics": "none",
+      "name": "FRAME_BINDINGS",
+      "publication": "python",
+      "shape": "fixed",
+      "track": "always",
+      "weakref": "deny"
     }
   ],
   "object_shapes": [
@@ -981,30 +981,6 @@
     },
     {
       "family": "task",
-      "id": 5,
-      "name": "ASYNCIO_WAIT",
-      "resource_slot0": "none"
-    },
-    {
-      "family": "task",
-      "id": 6,
-      "name": "ASYNCIO_GATHER",
-      "resource_slot0": "none"
-    },
-    {
-      "family": "task",
-      "id": 7,
-      "name": "ASYNCIO_WAIT_FOR",
-      "resource_slot0": "none"
-    },
-    {
-      "family": "task",
-      "id": 8,
-      "name": "ASYNCIO_TIMER_HANDLE",
-      "resource_slot0": "none"
-    },
-    {
-      "family": "task",
       "id": 9,
       "name": "ASYNCIO_FD_WATCHER",
       "resource_slot0": "none"
@@ -1013,12 +989,6 @@
       "family": "task",
       "id": 10,
       "name": "ASYNCIO_SERVER_ACCEPT_LOOP",
-      "resource_slot0": "none"
-    },
-    {
-      "family": "task",
-      "id": 11,
-      "name": "ASYNCIO_READY_RUNNER",
       "resource_slot0": "none"
     },
     {
@@ -1220,6 +1190,18 @@
       "resource_slot0": "none"
     },
     {
+      "family": "types",
+      "id": 74,
+      "name": "TYPES_FRAME",
+      "resource_slot0": "none"
+    },
+    {
+      "family": "types",
+      "id": 75,
+      "name": "TYPES_FRAME_LOCALS_PROXY",
+      "resource_slot0": "none"
+    },
+    {
       "family": "itertools",
       "id": 96,
       "name": "ITERTOOLS_CHAIN",
@@ -1348,6 +1330,7 @@
   ],
   "retired_ids": [
     205,
+    220,
     231
   ],
   "schema_version": 1,

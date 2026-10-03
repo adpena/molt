@@ -275,6 +275,7 @@ os_pipe = "1.2"
 libloading = { version = "0.8", optional = true }
 
 [dev-dependencies]
+molt-cpython-abi-test-support = { path = "../molt-cpython-abi-test-support" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", features = ["runtime-test-support"] }
 cc = "1"
@@ -288,6 +289,7 @@ getrandom_legacy = { package = "getrandom", version = "0.2", features = ["js"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",

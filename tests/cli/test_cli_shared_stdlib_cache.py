@@ -1561,6 +1561,7 @@ def test_shared_stdlib_cache_matches_key_requires_present_matching_contract(
 def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    stub_compiler_admission(monkeypatch)
     project_root = tmp_path
     cache_root = project_root / ".molt_cache"
     home_bin = tmp_path / "molt-home" / "bin"
@@ -1620,7 +1621,7 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     )
     monkeypatch.setattr(cli_backend_binary, "_codesign_binary", lambda _path: None)
     monkeypatch.setattr(
-        cli_backend_binary, "_run_cargo_with_sccache_retry", fake_run_cargo
+        cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo
     )
     monkeypatch.setattr(
         cli_backend_binary,
@@ -2924,12 +2925,11 @@ def test_backend_binary_identity_and_daemon_selection_reject_preserved_metadata_
 ) -> None:
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_bytes(b"old-binary")
-    monkeypatch.setattr(
-        BACKEND_EXECUTION, "_cargo_target_root", lambda _root: tmp_path / "target"
-    )
     before = cli._backend_binary_identity(backend_bin)
-    daemon_before = BACKEND_EXECUTION._backend_daemon_freshness_inputs(
-        tmp_path, backend_bin
+    monkeypatch.setattr(BACKEND_EXECUTION, "_cache_tooling_fingerprint", lambda: "tooling")
+    daemon_before = BACKEND_EXECUTION._backend_daemon_config_digest(
+        tmp_path, "release", backend_bin=backend_bin,
+        env={"MOLT_BACKEND_COMPILER_FINGERPRINT": "admitted"},
     )
     metadata = backend_bin.stat()
     if replace:
@@ -2941,12 +2941,12 @@ def test_backend_binary_identity_and_daemon_selection_reject_preserved_metadata_
     assert backend_bin.stat().st_size == metadata.st_size
     os.utime(backend_bin, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
     after = cli._backend_binary_identity(backend_bin)
-    daemon_after = BACKEND_EXECUTION._backend_daemon_freshness_inputs(
-        tmp_path, backend_bin
+    daemon_after = BACKEND_EXECUTION._backend_daemon_config_digest(
+        tmp_path, "release", backend_bin=backend_bin,
+        env={"MOLT_BACKEND_COMPILER_FINGERPRINT": "admitted"},
     )
     assert before != after
-    assert daemon_before["backend_bin"] == before
-    assert daemon_after["backend_bin"] == after
+    assert daemon_before != daemon_after
 
 
 def test_backend_features_for_target_single_source_of_truth() -> None:

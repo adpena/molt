@@ -9,6 +9,7 @@ layout, namespace, and dataclass construction authority.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_private_names import python_definition_name
 from typing import Literal, cast
 
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -16,7 +17,6 @@ from molt.compiler_analysis.python_inlining import (
     inline_expression_is_frame_independent,
 )
 from molt.frontend._types import (
-    GEN_CLOSED_OFFSET,
     GEN_CONTROL_SIZE,
     MethodInfo,
     MethodDescriptor,
@@ -259,6 +259,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         self, class_node: ast.ClassDef, item: ast.FunctionDef
     ) -> MethodInfo:
         method_name = item.name
+        method_qualname = self._definition_qualname(item)
         descriptor, property_update = self._class_method_descriptor(class_node, item)
         property_field = None
         if descriptor == "property":
@@ -272,7 +273,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             return_hint = return_hint[1:-1]
         if return_hint == "Self":
             return_hint = class_node.name
-        method_symbol = self._function_symbol(f"{class_node.name}_{method_name}")
+        method_symbol = self._function_symbol(
+            f"{class_node.name}_{method_name}", kind=FunctionKind.GENERATOR
+        )
         self._record_func_default_specs(method_symbol, item.args)
         poll_symbol = f"{method_symbol}_poll"
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(item.args)
@@ -290,7 +293,8 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(self._cached_free_vars_raw(item))
         )
-        cell_vars = self._callable_cell_vars(item)
+        cell_plan = self._callable_cell_plan(item)
+        cell_vars = cell_plan.cellvars
         has_return = self._function_contains_return(item)
         frame_plan = stateful_function_frame_plan(
             kind=FunctionKind.GENERATOR,
@@ -328,19 +332,21 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             returns=item.returns,
         ):
             func_spill = self._spill_async_value(func_val)
-        varnames = self._collect_varnames_for_body(
+        name_layout = self._collect_callable_name_layout(
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
             kwonly_params=kwonly_names,
             vararg=vararg,
             varkw=varkw,
             body=item.body,
+            free_vars=free_vars,
+            cell_vars=cell_vars,
         )
         self._emit_function_metadata(
             func_val,
             code_symbol=poll_symbol,
-            name=method_name,
-            qualname=self._qualname_for_def(method_name),
+            name=python_definition_name(item),
+            qualname=method_qualname,
             trace_lineno=item.lineno,
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
@@ -351,7 +357,8 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             kw_default_exprs=[],
             docstring=ast.get_docstring(item, clean=False),
             execution_kind=FunctionKind.GENERATOR,
-            varnames=varnames,
+            varnames=list(name_layout.varnames),
+            code_names=list(name_layout.names),
             freevars=free_vars,
             cellvars=cell_vars,
         )
@@ -401,14 +408,18 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
         self._init_scope_async_locals(arg_nodes)
-        self._prebox_scope_cell_vars(cell_vars)
+        self._prebox_scope_cell_vars(
+            cell_plan.captured, private_cells=cell_plan.private
+        )
         if self.type_hint_policy == "check":
             for arg in arg_nodes:
                 hint = self.explicit_type_hints.get(arg.arg)
                 if hint is not None:
                     self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
         self._publish_python_frame_context()
-        self._push_qualname(method_name, True)
+        self._push_qualname(
+            python_definition_name(item), True, qualname=method_qualname
+        )
         try:
             for stmt in item.body:
                 self.visit(stmt)
@@ -420,15 +431,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             if not self._ends_with_return_jump():
                 none_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                closed = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", GEN_CLOSED_OFFSET, closed],
-                        result=MoltValue("none"),
-                    )
-                )
                 done = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
                 pair = MoltValue(self.next_var(), type_hint="tuple")
@@ -438,22 +440,13 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
             none_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            closed = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", GEN_CLOSED_OFFSET, closed],
-                    result=MoltValue("none"),
-                )
-            )
             done = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
             pair = MoltValue(self.next_var(), type_hint="tuple")
             self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
             self._emit_normal_return_terminator(pair)
         self._spill_async_temporaries()
-        gen_public_locals = self._async_locals_public_entries()
+        locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
         closure_size = self._task_closure_size(
             frame_plan.payload_slots,
             include_gen_control=frame_plan.include_gen_control,
@@ -468,26 +461,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             **frame_plan.callable_task_metadata(closure_size),
         }
         func_val.type_hint = frame_plan.function_type_hint(closure_size)
-        names_vals: list[MoltValue] = []
-        offsets_vals: list[MoltValue] = []
-        for local_name, offset in gen_public_locals:
-            name_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=[local_name], result=name_val))
-            offset_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[offset], result=offset_val))
-            names_vals.append(name_val)
-            offsets_vals.append(offset_val)
-        names_tuple = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_NEW", args=names_vals, result=names_tuple))
-        offsets_tuple = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_NEW", args=offsets_vals, result=offsets_tuple))
-        self.emit(
-            MoltOp(
-                kind="GEN_LOCALS_REGISTER",
-                args=[poll_symbol, names_tuple, offsets_tuple],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_stateful_locals_register(locals_layout, poll_symbol)
         method_attr = func_val
         return {
             "func": func_val,
@@ -509,6 +483,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         self, class_node: ast.ClassDef, item: ast.FunctionDef
     ) -> MethodInfo:
         method_name = item.name
+        method_qualname = self._definition_qualname(item)
         descriptor, property_update = self._class_method_descriptor(class_node, item)
         property_field = None
         if descriptor == "property":
@@ -533,7 +508,8 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(self._cached_free_vars_raw(item))
         )
-        cell_vars = self._callable_cell_vars(item)
+        cell_plan = self._callable_cell_plan(item)
+        cell_vars = cell_plan.cellvars
 
         func_hint = f"Func:{method_symbol}"
         if has_closure:
@@ -562,19 +538,21 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             returns=item.returns,
         ):
             func_spill = self._spill_async_value(func_val)
-        varnames = self._collect_varnames_for_body(
+        name_layout = self._collect_callable_name_layout(
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
             kwonly_params=kwonly_names,
             vararg=vararg,
             varkw=varkw,
             body=item.body,
+            free_vars=free_vars,
+            cell_vars=cell_vars,
         )
-        self._emit_function_metadata(
+        code_slots = self._emit_function_metadata(
             func_val,
             code_symbol=method_symbol,
-            name=method_name,
-            qualname=self._qualname_for_def(method_name),
+            name=python_definition_name(item),
+            qualname=method_qualname,
             trace_lineno=item.lineno,
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
@@ -584,7 +562,8 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             default_exprs=[],
             kw_default_exprs=[],
             docstring=ast.get_docstring(item, clean=False),
-            varnames=varnames,
+            varnames=list(name_layout.varnames),
+            code_names=list(name_layout.names),
             freevars=free_vars,
             cellvars=cell_vars,
         )
@@ -608,6 +587,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             type_facts_name=f"{class_node.name}.{method_name}",
             needs_return_slot=False,
             has_exception_handlers=self._body_has_exception_handlers(item.body),
+            code_slots=code_slots,
         )
         self.parameter_bindings = parameter_bindings
         if has_closure:
@@ -652,24 +632,18 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 hint = self.explicit_type_hints.get(arg.arg)
                 if hint is not None:
                     self._emit_guard_type(self.locals[arg.arg], hint)
-        self._prebox_scope_cell_vars(cell_vars)
+        self._prebox_scope_cell_vars(
+            cell_plan.captured, private_cells=cell_plan.private
+        )
         # Class-method lowering retains its existing all-local boxing policy,
         # now backed by the runtime's dedicated closure-cell primitive.
         for name in sorted(self.scope_assigned):
             self._box_local(name)
-        for arg in arg_nodes:
-            pval = self.locals.get(arg.arg)
-            if pval is not None and arg.arg not in self.boxed_locals:
-                self.emit(
-                    MoltOp(
-                        kind="STORE_VAR",
-                        args=[pval],
-                        result=MoltValue("none"),
-                        metadata={"var": arg.arg},
-                    )
-                )
+        self._emit_frame_home_prologue([arg.arg for arg in arg_nodes])
         self._publish_python_frame_context()
-        self._push_qualname(method_name, True)
+        self._push_qualname(
+            python_definition_name(item), True, qualname=method_qualname
+        )
         try:
             for stmt in item.body:
                 self.visit(stmt)
@@ -682,9 +656,11 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 self._emit_return_value(res)
             self._emit_return_label()
         elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
+            # Falling off the end is a return, with the same exception-stack
+            # exit as an explicit one.
             res = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-            self._emit_normal_return_terminator(res)
+            self._emit_return_value(res)
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
         self.current_class = prev_class
@@ -738,6 +714,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         self, class_node: ast.ClassDef, item: ast.AsyncFunctionDef
     ) -> MethodInfo:
         method_name = item.name
+        method_qualname = self._definition_qualname(item)
         descriptor, property_update = self._class_method_descriptor(class_node, item)
         is_async_gen = function_contains_yield(item)
         if is_async_gen:
@@ -746,6 +723,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             if async_generator_contains_return_value(item):
                 raise SyntaxError("'return' with value in async generator")
             method_name = item.name
+            method_qualname = self._definition_qualname(item)
             property_field = None
             return_hint = self._annotation_to_hint(item.returns)
             if (
@@ -756,7 +734,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 return_hint = return_hint[1:-1]
             if return_hint == "Self":
                 return_hint = class_node.name
-            method_symbol = self._function_symbol(f"{class_node.name}_{method_name}")
+            method_symbol = self._function_symbol(
+                f"{class_node.name}_{method_name}", kind=FunctionKind.ASYNC_GENERATOR
+            )
             poll_symbol = f"{method_symbol}_poll"
             self._record_func_default_specs(poll_symbol, item.args)
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
@@ -776,7 +756,8 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             free_vars, free_var_hints, closure_val, has_closure = (
                 self._capture_lexical_closure(self._cached_free_vars_raw(item))
             )
-            cell_vars = self._callable_cell_vars(item)
+            cell_plan = self._callable_cell_plan(item)
+            cell_vars = cell_plan.cellvars
             has_return = self._function_contains_return(item)
             frame_plan = stateful_function_frame_plan(
                 kind=FunctionKind.ASYNC_GENERATOR,
@@ -830,14 +811,18 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._init_scope_async_locals(arg_nodes)
-            self._prebox_scope_cell_vars(cell_vars)
+            self._prebox_scope_cell_vars(
+                cell_plan.captured, private_cells=cell_plan.private
+            )
             if self.type_hint_policy == "check":
                 for arg in arg_nodes:
                     hint = self.explicit_type_hints.get(arg.arg)
                     if hint is not None:
                         self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
             self._publish_python_frame_context()
-            self._push_qualname(method_name, True)
+            self._push_qualname(
+                python_definition_name(item), True, qualname=method_qualname
+            )
             try:
                 for stmt in item.body:
                     self.visit(stmt)
@@ -849,15 +834,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 if not self._ends_with_return_jump():
                     none_val = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                    closed = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
-                    self.emit(
-                        MoltOp(
-                            kind="STORE_CLOSURE",
-                            args=["self", GEN_CLOSED_OFFSET, closed],
-                            result=MoltValue("none"),
-                        )
-                    )
                     done = MoltValue(self.next_var(), type_hint="bool")
                     self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
                     pair = MoltValue(self.next_var(), type_hint="tuple")
@@ -869,22 +845,13 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
                 none_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                closed = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", GEN_CLOSED_OFFSET, closed],
-                        result=MoltValue("none"),
-                    )
-                )
                 done = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
                 pair = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
                 self._emit_normal_return_terminator(pair)
             self._spill_async_temporaries()
-            asyncgen_public_locals = self._async_locals_public_entries()
+            locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
             closure_size = self._task_closure_size(
                 frame_plan.payload_slots,
                 include_gen_control=frame_plan.include_gen_control,
@@ -918,19 +885,21 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 returns=item.returns,
             ):
                 func_spill = self._spill_async_value(func_val)
-            varnames = self._collect_varnames_for_body(
+            name_layout = self._collect_callable_name_layout(
                 posonly_params=posonly_names,
                 pos_or_kw_params=pos_or_kw_names,
                 kwonly_params=kwonly_names,
                 vararg=vararg,
                 varkw=varkw,
                 body=item.body,
+                free_vars=free_vars,
+                cell_vars=cell_vars,
             )
             self._emit_function_metadata(
                 func_val,
                 code_symbol=poll_symbol,
-                name=method_name,
-                qualname=self._qualname_for_def(method_name),
+                name=python_definition_name(item),
+                qualname=method_qualname,
                 trace_lineno=item.lineno,
                 posonly_params=posonly_names,
                 pos_or_kw_params=pos_or_kw_names,
@@ -941,30 +910,12 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 kw_default_exprs=[],
                 docstring=ast.get_docstring(item, clean=False),
                 execution_kind=FunctionKind.ASYNC_GENERATOR,
-                varnames=varnames,
+                varnames=list(name_layout.varnames),
+                code_names=list(name_layout.names),
                 freevars=free_vars,
                 cellvars=cell_vars,
             )
-            names_vals: list[MoltValue] = []
-            offsets_vals: list[MoltValue] = []
-            for local_name, offset in asyncgen_public_locals:
-                name_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[local_name], result=name_val))
-                offset_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[offset], result=offset_val))
-                names_vals.append(name_val)
-                offsets_vals.append(offset_val)
-            names_tuple = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=names_vals, result=names_tuple))
-            offsets_tuple = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=offsets_vals, result=offsets_tuple))
-            self.emit(
-                MoltOp(
-                    kind="ASYNCGEN_LOCALS_REGISTER",
-                    args=[poll_symbol, names_tuple, offsets_tuple],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_stateful_locals_register(locals_layout, poll_symbol)
             if func_spill is not None:
                 func_val = self._reload_async_value(func_spill, func_val.type_hint)
 
@@ -985,6 +936,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 "property_update": property_update,
             }
         method_name = item.name
+        method_qualname = self._definition_qualname(item)
         property_field = None
         return_hint = self._annotation_to_hint(item.returns)
         if (
@@ -995,7 +947,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             return_hint = return_hint[1:-1]
         if return_hint == "Self":
             return_hint = class_node.name
-        method_symbol = self._function_symbol(f"{class_node.name}_{method_name}")
+        method_symbol = self._function_symbol(
+            f"{class_node.name}_{method_name}", kind=FunctionKind.ASYNC
+        )
         poll_symbol = f"{method_symbol}_poll"
         self._record_func_default_specs(poll_symbol, item.args)
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(item.args)
@@ -1013,7 +967,8 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(self._cached_free_vars_raw(item))
         )
-        cell_vars = self._callable_cell_vars(item)
+        cell_plan = self._callable_cell_plan(item)
+        cell_vars = cell_plan.cellvars
         has_return = self._function_contains_return(item)
         frame_plan = stateful_function_frame_plan(
             kind=FunctionKind.ASYNC,
@@ -1066,14 +1021,18 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
         self._init_scope_async_locals(arg_nodes)
-        self._prebox_scope_cell_vars(cell_vars)
+        self._prebox_scope_cell_vars(
+            cell_plan.captured, private_cells=cell_plan.private
+        )
         if self.type_hint_policy == "check":
             for arg in arg_nodes:
                 hint = self.explicit_type_hints.get(arg.arg)
                 if hint is not None:
                     self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
         self._publish_python_frame_context()
-        self._push_qualname(method_name, True)
+        self._push_qualname(
+            python_definition_name(item), True, qualname=method_qualname
+        )
         try:
             for stmt in item.body:
                 self.visit(stmt)
@@ -1090,6 +1049,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
             self._emit_normal_return_terminator(res)
         self._spill_async_temporaries()
+        locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
         closure_size = self._task_closure_size(
             frame_plan.payload_slots,
             include_gen_control=frame_plan.include_gen_control,
@@ -1123,19 +1083,21 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             returns=item.returns,
         ):
             func_spill = self._spill_async_value(func_val)
-        varnames = self._collect_varnames_for_body(
+        name_layout = self._collect_callable_name_layout(
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
             kwonly_params=kwonly_names,
             vararg=vararg,
             varkw=varkw,
             body=item.body,
+            free_vars=free_vars,
+            cell_vars=cell_vars,
         )
         self._emit_function_metadata(
             func_val,
             code_symbol=poll_symbol,
-            name=method_name,
-            qualname=self._qualname_for_def(method_name),
+            name=python_definition_name(item),
+            qualname=method_qualname,
             trace_lineno=item.lineno,
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
@@ -1146,10 +1108,12 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             kw_default_exprs=[],
             docstring=ast.get_docstring(item, clean=False),
             execution_kind=FunctionKind.ASYNC,
-            varnames=varnames,
+            varnames=list(name_layout.varnames),
+            code_names=list(name_layout.names),
             freevars=free_vars,
             cellvars=cell_vars,
         )
+        self._emit_stateful_locals_register(locals_layout, poll_symbol)
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
 

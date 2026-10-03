@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pytest
 
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
-from molt.frontend._types import BUILTIN_TYPE_TAGS
+from molt.frontend._types import BUILTIN_TYPE_TAGS, CodeSlotDeclaration
 from molt.frontend.lowering.function_lifecycle import FunctionLifecycleMixin
 from tools.check_ir_structure import verify_frontend_tir
 
@@ -26,13 +26,11 @@ def compile_source(source, target=(3, 14)):
     ["super(int, 1)", "super(*(int, 1))", "super(type=int, object=1)", "super(**{})"],
 )
 def test_explicit_super_uses_ordinary_call_dispatch(expression, target):
-    # Exercise the named dispatch without a module binding index as well as the
-    # assembled frontend. Both paths must acquire the callee and evaluate args.
+    # Exercise module and function scope through their real semantic analysis.
+    # Expanded calls require the module's argument plan before lowering.
     generator = SimpleTIRGenerator(target_python=target)
-    result = generator.visit(ast.parse(expression, mode="eval").body)
-    assert result is not None
-    call = assert_explicit_super_arguments(generator.current_ops, expression)
-    assert call.result == result
+    generator.visit(ast.parse(expression))
+    assert_explicit_super_arguments(generator.current_ops, expression)
     assert not runtime_calls(generator.current_ops, "molt_super_from_frame")
     compiled, _ = compile_source(f"def probe(): return {expression}\n", target)
     ops = super_consumer_ops(compiled)
@@ -166,17 +164,35 @@ def test_builtin_consumer_requires_the_actual_preceding_callee_definition(kind):
 def publications(ops: list[MoltOp]) -> list[FramePublication]:
     producers = {op.result.name: op for op in ops}
     result = []
-    for index in runtime_calls(ops, "molt_frame_context_set"):
-        _, argument, kind, class_cell = ops[index].args
+    for index, op in enumerate(ops):
+        if op.kind != "FRAME_CONTEXT_SET":
+            continue
+        argument, kind, class_cell = op.args
         assert isinstance(argument, MoltValue)
         assert isinstance(kind, MoltValue)
         assert isinstance(class_cell, MoltValue)
         kind_op = producers[kind.name]
         assert kind_op.kind == "CONST"
-        assert kind_op.args[0] in (0, 1, 2)
+        # 3: a synchronous frame's argument zero is its first code slot's home.
+        assert kind_op.args[0] in (0, 1, 2, 3)
         result.append(FramePublication(index, argument, kind_op.args[0], class_cell))
     assert result, "the executing function never published its semantic frame"
     return result
+
+
+def home_stores(ops: list[MoltOp], slot: int, kind: str = "FRAME_HOME_STORE") -> list[int]:
+    return [
+        index
+        for index, op in enumerate(ops)
+        if op.kind == kind and op.metadata == {"slot": slot}
+    ]
+
+
+def assert_home_argument_zero(ops: list[MoltOp], frame: FramePublication) -> None:
+    """Kind 3 carries no value: super() reads code slot 0 when it runs."""
+    assert frame.kind == 3
+    producer = next(op for op in ops if op.result == frame.argument)
+    assert producer.kind == "CONST_NONE"
 
 
 def super_consumer_ops(
@@ -196,8 +212,12 @@ def storage_owner(ops: list[MoltOp], value: MoltValue) -> tuple[object, ...]:
     producer = next((op for op in ops if op.result.name == value.name), None)
     if producer is None:
         return ("parameter", value.name)
+    if producer.kind in {"BINDING_ALIAS", "IDENTITY_ALIAS"}:
+        return storage_owner(ops, producer.args[0])
     if producer.kind == "LOAD_VAR":
         return ("local", producer.metadata["var"])
+    if producer.kind in {"FRAME_HOME_STORE", "FRAME_HOME_LOAD"}:
+        return ("frame-home", producer.metadata["slot"])
     if producer.kind == "LOAD_CLOSURE":
         return ("task", producer.args[0], producer.args[1])
     return ("value", value.name)
@@ -221,24 +241,44 @@ def frame_before(ops: list[MoltOp], index: int) -> FramePublication:
 def test_argzero_is_source_positional_not_transport_or_keyword(signature, expected):
     node = ast.parse(f"def function({signature}): pass").body[0]
     assert FunctionLifecycleMixin._python_first_positional_arg(node.args) == expected
-    generator, _ = compile_source(f"def function({signature}): return super()\n")
+    source = f"def function({signature}): return super()\n"
+    generator, _ = compile_source(source)
     ops = super_consumer_ops(generator)
     frame = publications(ops)[0]
-    assert frame.kind == (0 if expected is None else 1)
     if expected is None:
+        assert frame.kind == 0
         assert (
             next(op for op in ops if op.result == frame.argument).kind == "CONST_NONE"
         )
     else:
-        assert storage_owner(ops, frame.argument)[-1] == expected
+        assert_home_argument_zero(ops, frame)
+        # Code slot 0, CPython's localsplus[0], is the positional parameter.
+        code = next(
+            const
+            for const in compile(source, "<argzero>", "exec").co_consts
+            if hasattr(const, "co_varnames")
+        )
+        assert code.co_varnames[0] == expected
+        store = ops[home_stores(ops, 0)[0]]
+        assert storage_owner(ops, store.args[0])[-1] == expected
 
 
 def test_source_frame_argument_is_reset_and_restored():
     generator = SimpleTIRGenerator()
-    generator.start_function("outer", params=["receiver"], python_first_arg="receiver")
+    generator.start_function(
+        "outer",
+        params=["receiver"],
+        python_first_arg="receiver",
+        code_slots=CodeSlotDeclaration(("receiver",), ("receiver",), (), ()),
+    )
     generator.python_frame_context_active = True
     saved = generator._capture_function_state()
-    generator.start_function("poll", params=["self"], compiler_params={"self"})
+    generator.start_function(
+        "poll",
+        params=["self"],
+        compiler_params={"self"},
+        code_slots=CodeSlotDeclaration((), (), (), ()),
+    )
     assert generator.current_python_first_arg is None
     assert not generator.python_frame_context_active
     generator._restore_function_state(saved)
@@ -277,18 +317,22 @@ def test_pep709_super_reads_shadowed_slot_and_restores_owner():
     )
     ops = super_consumer_ops(generator)
     inner_call, outer_call = builtin_calls(ops)
-    inner = frame_before(ops, inner_call)
-    outer = frame_before(ops, outer_call)
-    entry = publications(ops)[0]
-    assert inner.kind == outer.kind == entry.kind == 1
-    assert storage_owner(ops, outer.argument) == storage_owner(ops, entry.argument)
-    assert storage_owner(ops, inner.argument) != storage_owner(ops, entry.argument)
-    # The shadow publication is the actual loop-target value, and its scoped
-    # STORE_VAR/STORE_CLOSURE follows publication before releasing an old value.
-    assert any(
-        op.kind in {"STORE_VAR", "STORE_CLOSURE"} and inner.argument in op.args
-        for op in ops[inner.index + 1 : inner_call]
+    # One publication: argument zero is code slot 0, which the comprehension's
+    # binding takes over and then gives back, so no scope republishes it.
+    (entry,) = publications(ops)
+    assert_home_argument_zero(ops, entry)
+    (take,) = home_stores(ops, 0, "FRAME_HOME_TAKE")
+    restores = [
+        index
+        for index in home_stores(ops, 0)
+        if ops[index].args == [ops[take].result]
+    ]
+    assert len(restores) == 2, "normal and exceptional exits both give it back"
+    shadow = next(
+        index for index in home_stores(ops, 0) if take < index and index not in restores
     )
+    assert entry.index < take < shadow < inner_call < min(restores)
+    assert max(restores) < outer_call
 
 
 def test_real_generator_super_reads_hidden_iterator_not_enclosing_self():
@@ -406,7 +450,7 @@ def test_class_name_target_does_not_replace_frame_cell(outer_super):
     assert not any("genexpr_" in fn["name"] for fn in ir["functions"])
 
 
-def test_argument_replacement_and_deletion_publish_before_releasing_old_storage():
+def test_argument_replacement_and_deletion_write_only_the_home():
     generator, _ = compile_source(
         "def frame(receiver, replacement):\n"
         "    receiver = replacement\n"
@@ -414,39 +458,16 @@ def test_argument_replacement_and_deletion_publish_before_releasing_old_storage(
         "    return super()\n"
     )
     ops = super_consumer_ops(generator)
-    frames = publications(ops)
-    assert all(frame.kind == 1 for frame in frames)
-    delete_index = next(
-        index for index, op in enumerate(ops) if op.kind == "DELETE_VAR"
-    )
-    delete = ops[delete_index]
-    deletion = frame_before(ops, delete_index)
-    assert deletion.argument == delete.args[0]
-    assert next(op for op in ops if op.result == deletion.argument).kind == "MISSING"
-    replacements = [
-        (index, op)
-        for index, op in enumerate(ops[:delete_index])
-        if op.kind == "STORE_VAR"
-        and op.metadata.get("var") == "receiver"
-        and op.args[0] != frames[0].argument
-    ]
-    assert replacements
-    replacement_index, replacement = replacements[-1]
-    publication = frame_before(ops, replacement_index)
-    alias = next(op for op in ops if op.result == replacement.args[0])
-    assert alias.kind == "BINDING_ALIAS"
-    assert alias.args == [publication.argument]
-    assert (
-        frames[0].index
-        < publication.index
-        < replacement_index
-        < deletion.index
-        < delete_index
-    )
-    # The eventual runtime super consumer sees the missing marker, not the
-    # original argument or a snapshot loaded before deletion.
-    consumer = builtin_calls(ops)[0]
-    assert frame_before(ops, consumer).argument == deletion.argument
+    # super() reads argument zero from its home when it runs, so it sees the
+    # deletion without any republication or snapshot.
+    (entry,) = publications(ops)
+    assert_home_argument_zero(ops, entry)
+    parameter, replacement = home_stores(ops, 0)
+    (clear,) = home_stores(ops, 0, "FRAME_HOME_CLEAR")
+    (consumer,) = builtin_calls(ops)
+    assert parameter < entry.index < replacement < clear < consumer
+    assert storage_owner(ops, ops[parameter].args[0])[-1] == "receiver"
+    assert not any(op.kind in {"DELETE_VAR", "DEL_BOUNDARY"} for op in ops)
 
 
 def test_captured_argument_publishes_the_real_mutable_cell_and_class_cell():
@@ -459,9 +480,13 @@ def test_captured_argument_publishes_the_real_mutable_cell_and_class_cell():
     )
     ops = super_consumer_ops(generator)
     frames = publications(ops)
-    assert all(frame.kind == 2 for frame in frames)
-    cell = frames[0].argument
-    cell_producer = next(op for op in ops if op.result == cell)
+    for frame in frames:
+        assert_home_argument_zero(ops, frame)
+    # Code slot 0's home holds the receiver's real cell, whose contents
+    # super() reads; the frame reaches the cell through the home's view.
+    (home,) = home_stores(ops, 0, "FRAME_HOME_CELL")
+    cell = ops[home].result
+    cell_producer = next(op for op in ops if op.result == ops[home].args[0])
     assert cell.type_hint == "cell"
     assert cell_producer.kind == "CALL"
     assert cell_producer.args[0] == "molt_cell_new"
@@ -484,10 +509,17 @@ def test_captured_argument_publishes_the_real_mutable_cell_and_class_cell():
         if ops[index].args[1] == cell
     ]
     assert writes
+    # The replacement parameter's value, read through its own home's view.
+    (replacement_home,) = home_stores(ops, 1)
+    assert storage_owner(ops, ops[replacement_home].args[0])[-1] == "replacement"
+    # A source read is an independent captured value, not the entry store's
+    # SSA result. It must read this parameter's live local or canonical home.
     assert any(
-        storage_owner(ops, write.args[2])[-1] == "replacement" for write in writes
+        storage_owner(ops, write.args[2])
+        in {("local", "replacement"), ("frame-home", 1)}
+        for write in writes
     )
-    assert all(frame.argument == cell for frame in frames)
+    assert all(not write.args[2].borrows_binding for write in writes)
     # __class__ travels as the closure tuple's cell, not molt_cell_get(cell)'s
     # current class object. Subsequent cell replacement must remain visible.
     class_cell = frames[0].class_cell
@@ -549,15 +581,14 @@ def test_class_namespace_prefix_suffix_and_both_exits_use_correct_frame_owner():
         frame for frame in frames if writes[-1][0] < frame.index < cleanup_index
     )
     exceptional_restore = next(frame for frame in frames if frame.index > cleanup_index)
-    assert normal_restore.kind == exceptional_restore.kind == 1
-    assert storage_owner(ops, normal_restore.argument) == storage_owner(
-        ops, exceptional_restore.argument
-    )
+    # Both exits restore the method's own argument zero: its first home.
+    assert_home_argument_zero(ops, normal_restore)
+    assert_home_argument_zero(ops, exceptional_restore)
     assert ops[normal_restore.index + 1].kind == "JUMP"
     assert ops[exceptional_restore.index + 1].kind == "JUMP"
     assert ops[normal_restore.index + 1].args != ops[exceptional_restore.index + 1].args
     for consumer in builtin_calls(ops):
-        assert frame_before(ops, consumer).kind == 1
+        assert frame_before(ops, consumer).kind == 3
 
 
 def assert_resume_frame_ownership(ops: list[MoltOp], required_boundaries: set[str]):
@@ -711,11 +742,14 @@ def test_annotation_evaluator_publishes_versioned_argument_and_real_class_cell(
     frames = publications(ops)
     assert len(frames) == 1
     frame = frames[0]
-    assert frame.kind == (1 if target >= (3, 14) else 0)
     definitions = {op.result.name: op for op in ops}
     if target >= (3, 14):
-        assert frame.argument.name == "format"
+        # PEP 649/749: `format` is the evaluator's first code slot.
+        assert_home_argument_zero(ops, frame)
+        (store,) = home_stores(ops, 0)
+        assert ops[store].args[0].name == "format"
     else:
+        assert frame.kind == 0
         assert definitions[frame.argument.name].kind == "CONST_NONE"
     body_start = next(index for index, op in enumerate(ops) if op.kind == "DICT_NEW")
     assert frame.index < body_start
@@ -821,8 +855,10 @@ def test_annotation_format_transport_is_not_a_source_binding(scope, kind, expres
     frames = publications(ops)
     assert len(frames) == 1
     frame = frames[0]
-    assert frame.kind == 1
-    assert frame.argument == MoltValue("format", type_hint="Any")
+    assert_home_argument_zero(ops, frame)
+    # The evaluator's own `format` parameter binds code slot 0 at entry.
+    parameter = ops[home_stores(ops, 0)[0]]
+    assert parameter.args[0] == MoltValue("format", type_hint="Any")
     # Even a class-owned "format" descriptor/namespace hook is a body lookup,
     # never an operand of the mandatory entry publication.
     assert all(
@@ -830,7 +866,9 @@ def test_annotation_format_transport_is_not_a_source_binding(scope, kind, expres
     )
     pairs = [op for op in ops if op.kind == "TUPLE_NEW" and len(op.args) == 2]
     assert pairs
-    assert all(op.args[0] != frame.argument for op in pairs)
+    assert all(
+        op.args[0].name not in {"format", parameter.result.name} for op in pairs
+    )
 
 
 def test_source_argument_named_like_closure_transport_keeps_its_binding():
@@ -839,17 +877,22 @@ def test_source_argument_named_like_closure_transport_keeps_its_binding():
     )
     ops = super_consumer_ops(generator)
     frame = publications(ops)[0]
-    assert frame.kind == 1
-    assert frame.argument.name != "__molt_closure__"
-    assert frame.argument != frame.class_cell
+    assert_home_argument_zero(ops, frame)
+    # Code slot 0 binds the source argument, never the closure transport.
+    parameter = ops[home_stores(ops, 0)[0]]
+    assert parameter.args[0].name != "__molt_closure__"
+    assert parameter.args[0] != frame.class_cell
 
 
 def test_explicit_evaluator_argument_identity_resets_and_restores():
     generator = SimpleTIRGenerator()
     argument = MoltValue("format", type_hint="int")
-    generator.start_function("evaluator", params=["format"], python_first_arg=argument)
+    slots = CodeSlotDeclaration(("format",), ("format",), (), ())
+    generator.start_function(
+        "evaluator", params=["format"], python_first_arg=argument, code_slots=slots
+    )
     saved = generator._capture_function_state()
-    generator.start_function("other", params=["format"])
+    generator.start_function("other", params=["format"], code_slots=slots)
     assert generator.current_python_first_arg is None
     generator._restore_function_state(saved)
     assert generator.current_python_first_arg is argument
@@ -866,14 +909,16 @@ def test_evaluator_format_validation_uses_generic_comparison_and_exact_false(sou
     )
     ops = function["ops"]
     frame = publications(ops)[0]
+    # The guard reads the evaluator's `format` binding: code slot 0's view.
+    argument = ops[home_stores(ops, 0)[0]].result
     comparisons = [
         (index, op)
         for index, op in enumerate(ops)
-        if op.kind == "GT" and op.args[0] == frame.argument
+        if op.kind == "GT" and op.args[0] == argument
     ]
     assert len(comparisons) == 1
     index, comparison = comparisons[0]
-    assert frame.argument.type_hint == comparison.result.type_hint == "Any"
+    assert argument.type_hint == comparison.result.type_hint == "Any"
     assert frame.index < index
     limit = next(op for op in ops if op.result == comparison.args[1])
     assert limit.kind == "CONST" and limit.args == [2]
@@ -887,7 +932,7 @@ def test_evaluator_format_validation_uses_generic_comparison_and_exact_false(sou
     assert branch.args == [identities[0].result]
     assert ops[index + 1].kind == "CHECK_EXCEPTION"
     assert not any(op.kind == "BOOL" and op.args == [comparison.result] for op in ops)
-    assert not any(op.kind in {"EQ", "NE"} and frame.argument in op.args for op in ops)
+    assert not any(op.kind in {"EQ", "NE"} and argument in op.args for op in ops)
     serialized = next(fn for fn in ir["functions"] if fn["name"] == name)
     guards = [
         op
@@ -896,3 +941,67 @@ def test_evaluator_format_validation_uses_generic_comparison_and_exact_false(sou
     ]
     assert len(guards) == 1
     assert not guards[0].get("fast_int") and not guards[0].get("fast_float")
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def outer(value):\n    return lambda: value\n",
+        "def outer(value):\n    def inner():\n        return value\n    return inner\n",
+        "class Base:\n    def method(self):\n        return 1\n"
+        "class Derived(Base):\n    def method(self):\n        return super().method()\n",
+        "def outer(value):\n    def inner():\n        yield value\n    return inner\n",
+        "def outer(value):\n    async def inner():\n        return value\n    return inner\n",
+    ],
+)
+def test_compiled_code_slot_publishes_complete_function_metadata(source, target):
+    # Publication caches the runtime plan from the code object's final lexical
+    # layout and execution flags. A free-only closure exposes an early publish:
+    # its provisional co_varnames has no slots, but its final co_freevars does.
+    generator, _ = compile_source(source, target)
+    checked = 0
+    for function in generator.funcs_map.values():
+        ops = function["ops"]
+        for position, op in enumerate(ops):
+            if op.kind != "CODE_SLOT_SET":
+                continue
+            metadata = [
+                index
+                for index, candidate in enumerate(ops)
+                if candidate.kind == "CALL"
+                and candidate.args[0] == "molt_function_init_metadata_packed"
+                and candidate.args[3] == op.args[0]
+            ]
+            if metadata:
+                assert len(metadata) == 1
+                assert metadata[0] < position
+                checked += 1
+    assert checked >= 2
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def probe():\n    yield 1\n",
+        "def probe():\n    yield 1\n    return 2\n",
+        "probe = lambda: (yield 1)\n",
+        "probe = (value for value in (1, 2))\n",
+        "async def probe():\n    yield 1\n",
+        "class Owner:\n    def probe(self):\n        yield 1\n",
+        "class Owner:\n    async def probe(self):\n        yield 1\n",
+    ],
+)
+def test_stateful_completion_is_owned_by_the_runtime(source, target):
+    from molt.frontend._types import GEN_CLOSED_OFFSET
+
+    # Publishing this flag in generated code skips the runtime's single
+    # terminal transition, which clears or retires the activation's bindings.
+    generator, _ = compile_source(source, target)
+    assert any("stateful_frame_plan" in function for function in generator.funcs_map.values())
+    for function in generator.funcs_map.values():
+        assert not any(
+            op.kind == "STORE_CLOSURE" and op.args[1] == GEN_CLOSED_OFFSET
+            for op in function["ops"]
+        )

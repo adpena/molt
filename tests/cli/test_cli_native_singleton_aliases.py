@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from pathlib import Path
 
 from molt.cli import native_link_command
@@ -32,7 +34,7 @@ def _plan(monkeypatch, tmp_path: Path, platform: str) -> NativeLinkPlan:
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda _runtime_lib, **_kwargs: [],
+        lambda _runtime_lib, **_kwargs: SimpleNamespace(flags=(), verify=lambda: None),
     )
     monkeypatch.setattr(
         native_link_command,

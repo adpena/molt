@@ -68,6 +68,81 @@ def test_mutation_version_avoids_hashing_and_detects_restored_timestamps(
         identity.verify_stable_regular_file_identity(version, label="payload")
 
 
+@pytest.mark.parametrize("operation", ["capture", "verify"])
+def test_expected_path_stat_is_checked_without_repeating_the_opening_lookup(
+    tmp_path, monkeypatch, operation
+):
+    path = tmp_path / "payload"
+    path.write_bytes(b"captured")
+    captured = identity.stable_regular_file_identity(path, label="payload")
+    expected = path.lstat()
+    lookups = []
+    lstat = Path.lstat
+
+    def counted(candidate, *args, **kwargs):
+        if candidate == path:
+            lookups.append(candidate)
+        return lstat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", counted)
+    if operation == "capture":
+        assert (
+            identity.stable_regular_file_identity(
+                path, label="payload", expected_path_stat=expected
+            )
+            == captured
+        )
+    else:
+        identity.verify_stable_regular_file_identity(
+            captured, label="payload", expected_path_stat=expected
+        )
+    # Both fresh opened-path and closing-path checks remain mandatory.
+    assert lookups == [path, path]
+
+
+@pytest.mark.parametrize("operation", ["capture", "verify"])
+def test_expected_path_stat_rejects_a_different_snapshot_generation(
+    tmp_path, operation
+):
+    path = tmp_path / "payload"
+    path.write_bytes(b"original")
+    expected = path.lstat()
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"original")
+    os.utime(replacement, ns=(expected.st_atime_ns, expected.st_mtime_ns))
+    os.replace(replacement, path)
+    # The current generation is stable; only the supplied tree row is stale.
+    current = identity.stable_regular_file_identity(path, label="payload")
+    with pytest.raises(identity.StableRegularFileChangedError, match="changed"):
+        if operation == "capture":
+            identity.stable_regular_file_identity(
+                path, label="payload", expected_path_stat=expected
+            )
+        else:
+            identity.verify_stable_regular_file_identity(
+                current, label="payload", expected_path_stat=expected
+            )
+
+
+def test_expected_path_stat_keeps_the_handle_mutation_fence(tmp_path, monkeypatch):
+    path = tmp_path / "payload"
+    path.write_bytes(b"original")
+    expected = path.lstat()
+    hash_stream = identity._sha256_stream
+
+    def mutate_after_hash(stream):
+        digest = hash_stream(stream)
+        path.write_bytes(b"modified")
+        os.utime(path, ns=(expected.st_atime_ns, expected.st_mtime_ns))
+        return digest
+
+    monkeypatch.setattr(identity, "_sha256_stream", mutate_after_hash)
+    with pytest.raises(identity.StableRegularFileChangedError, match="changed"):
+        identity.stable_regular_file_identity(
+            path, label="payload", expected_path_stat=expected
+        )
+
+
 def test_capture_rejects_short_source_read(tmp_path, monkeypatch):
     path = tmp_path / "source.py"
     path.write_bytes(b"print('captured')\n")
@@ -484,6 +559,51 @@ def test_verified_executable_probe_reuses_and_fences_captured_generation(tmp_pat
             pass
 
 
+@pytest.mark.parametrize("change", ["none", "rewrite", "replace", "symlink"])
+def test_path_fence_names_only_the_captured_generation(tmp_path, change):
+    path = tmp_path / "input.py"
+    path.write_bytes(b"before")
+    captured = identity.stable_regular_file_identity(path, label="input")
+    before = path.lstat()
+    if change == "rewrite":
+        path.write_bytes(b"after!")
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif change == "replace":
+        replacement = tmp_path / "replacement.py"
+        replacement.write_bytes(b"before")
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.replace(replacement, path)
+    elif change == "symlink":
+        other = tmp_path / "other.py"
+        other.write_bytes(b"before")
+        path.unlink()
+        try:
+            path.symlink_to(other)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+    assert identity.stable_regular_file_path_is_current(captured, path.lstat()) is (
+        change == "none"
+    )
+
+
+def test_snapshot_discard_never_unlinks_a_replacement(tmp_path):
+    source = tmp_path / "source"
+    source.write_bytes(b"payload")
+    owned = identity.snapshot_stable_regular_file(
+        source, tmp_path / "owned", label="payload"
+    )
+    owned.discard()
+    assert not (tmp_path / "owned").exists()
+    replaced = identity.snapshot_stable_regular_file(
+        source, tmp_path / "replaced", label="payload"
+    )
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"payload")
+    os.replace(replacement, tmp_path / "replaced")
+    replaced.discard()
+    assert (tmp_path / "replaced").read_bytes() == b"payload"
+
+
 @pytest.mark.parametrize("data", [b"#define VALUE 42\n", b"--export=example\n"])
 def test_resource_custody_does_not_claim_native_executable_admission(tmp_path, data):
     from molt.cli.runtime_cargo_plan import (
@@ -503,3 +623,46 @@ def test_resource_custody_does_not_claim_native_executable_admission(tmp_path, d
     resources.verify()
     with pytest.raises(ValueError, match="native executable, not a script"):
         CargoExecutableCustody.capture("tool/final_linker", path)
+
+
+@pytest.mark.parametrize("mutation", ["rewrite", "replace"])
+def test_observed_reader_rejects_a_new_generation_before_yield(tmp_path, mutation):
+    path = tmp_path / "payload"
+    path.write_bytes(b"before")
+    observed = identity.stable_regular_file_identity(path, label="fixture")
+    metadata = path.stat()
+    if mutation == "replace":
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(b"before")
+        replacement.replace(path)
+    else:
+        path.write_bytes(b"after!")
+    os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    with pytest.raises(ValueError, match="changed since identity capture"):
+        with identity.open_stable_regular_file(
+            path, label="fixture", observed=observed
+        ):
+            pytest.fail("changed generation escaped its opened-handle fence")
+
+
+def test_bounded_capture_never_issues_an_unbounded_read(tmp_path, monkeypatch):
+    path = tmp_path / "metadata"
+    path.write_bytes(b"small")
+    original = identity.open_stable_regular_file
+    reads = []
+
+    class GrowingStream:
+        def read(self, size=-1):
+            reads.append(size)
+            assert size == 9
+            return b"x" * size
+
+    @contextmanager
+    def growing_open(path, **kwargs):
+        with original(path, **kwargs) as opened:
+            yield replace(opened, stream=GrowingStream())
+
+    monkeypatch.setattr(identity, "open_stable_regular_file", growing_open)
+    with pytest.raises(ValueError, match="exceeds size limit"):
+        identity.capture_stable_regular_file(path, label="fixture", max_bytes=8)
+    assert reads == [9]

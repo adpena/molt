@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sysconfig
 
 
 MOLT_SOURCE_ROOT_ENV = "MOLT_SOURCE_ROOT"
@@ -30,6 +31,42 @@ def compiler_source_root_override() -> Path | None:
     return resolve_path_override(MOLT_SOURCE_ROOT_ENV)
 
 
+# Install-scheme data location of a platform wheel's release bundle.
+PACKAGED_DISTRIBUTION_PATH = ("share", "molt", "distribution")
+
+
+def packaged_distribution_root() -> Path | None:
+    """Return the release bundle a platform wheel installed beside this package.
+
+    Only the install scheme that owns this executing package is consulted, so a
+    nearby checkout or another environment is never adopted. The bundle is
+    admitted by content in ``compiler_distribution``, never trusted by path.
+    """
+    package_parent = os.path.normcase(str(Path(__file__).resolve().parent.parent))
+    for scheme in sysconfig.get_scheme_names():
+        try:
+            paths = sysconfig.get_paths(scheme)
+        except KeyError:
+            continue
+        libraries = {
+            os.path.normcase(os.path.realpath(paths[key]))
+            for key in ("purelib", "platlib")
+            if key in paths
+        }
+        if package_parent not in libraries or "data" not in paths:
+            continue
+        root = Path(paths["data"]).joinpath(*PACKAGED_DISTRIBUTION_PATH)
+        if root.exists() or root.is_symlink():
+            return root
+    return None
+
+
 def compiler_source_root() -> Path:
     """Return compiler inputs, never a writable artifact or guest-project root."""
-    return compiler_source_root_override() or _DEFAULT_COMPILER_SOURCE_ROOT
+    override = compiler_source_root_override()
+    if override is not None:
+        return override
+    packaged = packaged_distribution_root()
+    return (
+        packaged / "source" if packaged is not None else _DEFAULT_COMPILER_SOURCE_ROOT
+    )

@@ -19,10 +19,11 @@ from molt.toolchain_identity import (
     capture_stable_regular_file,
 )
 
-SCHEMA = "molt.verified-subset.v1"
+SCHEMA = "molt.verified-subset.v2"
 _POLICY_KEYS = frozenset(
     {
         "schema",
+        "build_profiles",
         "reference_cpython",
         "differential_suites",
         "excluded_verification_scopes",
@@ -31,7 +32,7 @@ _POLICY_KEYS = frozenset(
 _FALLBACK_POLICY = "error"
 _ABI = "cpython-language"
 _CONCURRENCY = "gil"
-_SUPPORTED_BACKENDS = ("native", "wasm")
+_SUPPORTED_BACKENDS = ("llvm", "native", "wasm")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,7 @@ class VerifiedSubsetPolicy:
     abi: str
     concurrency: str
     backends: tuple[str, ...]
+    build_profiles: tuple[str, ...]
     suites: tuple[VerifiedSubsetSuite, ...]
 
     @property
@@ -76,6 +78,7 @@ class VerifiedSubsetCoordinate:
     arch: str
     rust_target: str
     runner: str
+    build_profile: str
 
     def as_record(self) -> dict[str, str]:
         return {
@@ -89,6 +92,7 @@ class VerifiedSubsetCoordinate:
             "arch": self.arch,
             "rust_target": self.rust_target,
             "runner": self.runner,
+            "build_profile": self.build_profile,
         }
 
 
@@ -179,6 +183,11 @@ def capture_verified_subset_policy(
         raise ValueError(
             "generated release Python versions drifted from TargetPythonVersion"
         )
+    build_profiles = _exact_string_list(
+        document.get("build_profiles"), field="build_profiles"
+    )
+    if build_profiles != ("dev", "release"):
+        raise ValueError("verified-subset build_profiles must cover dev and release")
     suites = _exact_suite_list(document.get("differential_suites"))
     policy_root = path.resolve(strict=True).parents[1]
     for suite in suites:
@@ -235,6 +244,7 @@ def capture_verified_subset_policy(
         abi=_ABI,
         concurrency=_CONCURRENCY,
         backends=_SUPPORTED_BACKENDS,
+        build_profiles=build_profiles,
         suites=suites,
     )
     return policy, identity
@@ -264,30 +274,33 @@ def verified_subset_coordinates(
         for python_version in resolved_policy.python_versions:
             python_tag = python_version.replace(".", "")
             for backend in resolved_policy.backends:
-                coordinate_id = (
-                    f"{target['id']}-py{python_tag}-{resolved_policy.abi}-"
-                    f"{resolved_policy.concurrency}-{backend}"
-                )
-                coordinates.append(
-                    VerifiedSubsetCoordinate(
-                        id=coordinate_id,
-                        python=python_version,
-                        reference_python=reference_by_minor[python_version],
-                        abi=resolved_policy.abi,
-                        backend=backend,
-                        concurrency=resolved_policy.concurrency,
-                        platform=str(target["platform"]),
-                        arch=str(target["arch"]),
-                        rust_target=str(target["rust_target"]),
-                        runner=str(target["runner"]),
+                for build_profile in resolved_policy.build_profiles:
+                    coordinate_id = (
+                        f"{target['id']}-py{python_tag}-{resolved_policy.abi}-"
+                        f"{resolved_policy.concurrency}-{backend}-{build_profile}"
                     )
-                )
+                    coordinates.append(
+                        VerifiedSubsetCoordinate(
+                            id=coordinate_id,
+                            python=python_version,
+                            reference_python=reference_by_minor[python_version],
+                            abi=resolved_policy.abi,
+                            backend=backend,
+                            build_profile=build_profile,
+                            concurrency=resolved_policy.concurrency,
+                            platform=str(target["platform"]),
+                            arch=str(target["arch"]),
+                            rust_target=str(target["rust_target"]),
+                            runner=str(target["runner"]),
+                        )
+                    )
     coordinates.sort(key=lambda item: item.id)
     ids = [coordinate.id for coordinate in coordinates]
     expected_count = (
         len(_release_target_records())
         * len(resolved_policy.python_versions)
         * len(resolved_policy.backends)
+        * len(resolved_policy.build_profiles)
     )
     if len(coordinates) != expected_count or ids != sorted(set(ids)):
         raise ValueError("verified-subset coordinate closure is not exact")

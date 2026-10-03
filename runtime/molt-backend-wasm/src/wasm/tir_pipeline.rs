@@ -45,6 +45,14 @@ pub(super) fn run_tir_pipeline(
         run.cached_tir
     };
 
+    // Newly outlined transport enters the same ownership phase as its body.
+    crate::tir::pipeline_cache::partition_cached_functions_before_drops(
+        ir,
+        &mut cached_tir,
+        target_info,
+        super::compile_pipeline::split_wasm_megafunctions,
+    );
+
     // WASM links the whole program into one module: there is no shared-stdlib
     // external partition, so every body is locally owned and the inliner is
     // unconstrained. Cache custody, module assembly, module-phase execution,

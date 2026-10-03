@@ -1,6 +1,7 @@
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::function_frame::WasmFunctionFrame;
+use crate::wasm::local_analysis::ValueOccupancy;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::{ConstantCache, box_int, stable_ic_site_id};
@@ -23,12 +24,21 @@ enum LocalAccessKind {
 /// event answers the actual question: retain the current epoch only when its
 /// next event is a read; a definition first means the old slot contents are
 /// dead. Stateful/jumpful emitters build this over their exact path slice.
-pub(in crate::wasm::op_loop) struct CallRetentionLiveness {
+/// A read that is next only in linear order (for example on a sibling branch)
+/// says nothing about a shared local, so the frame's exact storage occupancy
+/// must also place the value across the call.
+pub(in crate::wasm::op_loop) struct CallRetentionLiveness<'a> {
     accesses: BTreeMap<String, Vec<(usize, LocalAccessKind)>>,
+    base_idx: usize,
+    occupancy: Option<&'a ValueOccupancy>,
 }
 
-impl CallRetentionLiveness {
-    pub(in crate::wasm::op_loop) fn for_region(ops: &[OpIR]) -> Self {
+impl<'a> CallRetentionLiveness<'a> {
+    pub(in crate::wasm::op_loop) fn for_region(
+        ops: &[OpIR],
+        base_idx: usize,
+        occupancy: Option<&'a ValueOccupancy>,
+    ) -> Self {
         let mut accesses: BTreeMap<String, Vec<(usize, LocalAccessKind)>> = BTreeMap::new();
         for (op_idx, op) in ops.iter().enumerate() {
             visit_simple_ir_reads(op, |read| {
@@ -48,7 +58,11 @@ impl CallRetentionLiveness {
                 }
             });
         }
-        Self { accesses }
+        Self {
+            accesses,
+            base_idx,
+            occupancy,
+        }
     }
 
     fn current_epoch_is_read_later(&self, name: &str, op_idx: usize) -> bool {
@@ -56,15 +70,25 @@ impl CallRetentionLiveness {
             return false;
         };
         let next = accesses.partition_point(|(access_idx, _)| *access_idx <= op_idx);
-        accesses
-            .get(next)
-            .is_some_and(|(_, kind)| *kind == LocalAccessKind::Read)
+        // The operation's own results begin a new epoch once it returns.
+        let redefined_here = accesses[..next]
+            .iter()
+            .rev()
+            .take_while(|(access_idx, _)| *access_idx == op_idx)
+            .any(|(_, kind)| *kind == LocalAccessKind::Definition);
+        !redefined_here
+            && accesses
+                .get(next)
+                .is_some_and(|(_, kind)| *kind == LocalAccessKind::Read)
+            && self
+                .occupancy
+                .is_none_or(|occupancy| occupancy.occupies_operation(name, self.base_idx + op_idx))
     }
 }
 
 pub(super) fn collect_live_object_locals_for_call(
     locals: &WasmFrameLocals,
-    liveness: &CallRetentionLiveness,
+    liveness: &CallRetentionLiveness<'_>,
     op_idx: usize,
     out_name: Option<&String>,
 ) -> Vec<u32> {
@@ -184,18 +208,17 @@ pub(super) fn emit_pending_exception_return(
     func: &mut Function,
     const_cache: &ConstantCache,
     frame: &WasmFunctionFrame,
-    import_ids: &TrackedImportIds,
-    reloc_enabled: bool,
+    return_depth: u32,
 ) {
     const_cache.emit_none(func);
-    frame.emit_const_anchor_releases(func, import_ids, reloc_enabled);
-    func.instruction(&Instruction::Return);
+    frame.emit_return(func, return_depth);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{CallRetentionLiveness, collect_live_object_locals_for_call};
     use crate::OpIR;
+    use crate::wasm::local_analysis::ValueOccupancy;
     use crate::wasm::{WasmFrameLocalKind, WasmFrameLocals, WasmFrameSyntheticLocal};
     use crate::wasm_abi_generated::WasmConstLiteralPayload;
 
@@ -208,6 +231,23 @@ mod tests {
         }
     }
 
+    fn linear_region(ops: &[OpIR]) -> CallRetentionLiveness<'static> {
+        CallRetentionLiveness::for_region(ops, 0, None)
+    }
+
+    fn exact_occupancy(name: &str, params: &[&str], ops: &[OpIR]) -> ValueOccupancy {
+        let function = crate::FunctionIR {
+            name: name.to_string(),
+            params: params.iter().map(|param| param.to_string()).collect(),
+            ops: ops.to_vec(),
+            ..crate::FunctionIR::default()
+        };
+        crate::wasm::local_analysis::analyze_local_variables(&function)
+            .storage
+            .into_occupancy()
+            .expect("plain frames plan exact storage")
+    }
+
     #[test]
     fn call_retention_uses_typed_local_kind_not_name_shape() {
         let mut locals = WasmFrameLocals::new();
@@ -216,7 +256,7 @@ mod tests {
         locals.insert("__multi_ret_0".to_string(), 2);
         locals.insert(WasmFrameLocals::NONE_NAME.to_string(), 3);
 
-        let liveness = CallRetentionLiveness::for_region(&[
+        let liveness = linear_region(&[
             op("call", Some("result"), &[]),
             op(
                 "tuple_new",
@@ -254,7 +294,7 @@ mod tests {
             &mut local_count,
         );
 
-        let liveness = CallRetentionLiveness::for_region(&[
+        let liveness = linear_region(&[
             op("call", Some("result"), &[]),
             op(
                 "tuple_new",
@@ -272,7 +312,7 @@ mod tests {
     fn call_retention_exempts_every_dead_sink_alias_by_physical_kind() {
         let mut locals = WasmFrameLocals::new();
         locals.insert_dead_sink_alias("dead_result".to_string(), 0);
-        let liveness = CallRetentionLiveness::for_region(&[
+        let liveness = linear_region(&[
             op("call", Some("result"), &[]),
             op("print", None, &["dead_result"]),
         ]);
@@ -294,7 +334,7 @@ mod tests {
 
         let mut redefine = op("store_var", None, &["incoming"]);
         redefine.var = Some("redefined".to_string());
-        let liveness = CallRetentionLiveness::for_region(&[
+        let liveness = linear_region(&[
             op("call", Some("result"), &[]),
             op("const", Some("future"), &[]),
             redefine,
@@ -302,5 +342,50 @@ mod tests {
         ]);
 
         assert!(collect_live_object_locals_for_call(&locals, &liveness, 0, None).is_empty());
+    }
+
+    #[test]
+    fn call_retention_requires_exact_occupancy_across_the_call() {
+        let mut bind = op("store_var", None, &["value"]);
+        bind.var = Some("held".to_string());
+        let mut call = op("call", Some("raw"), &["value"]);
+        call.s_value = Some("molt_int_as_i64".to_string());
+        let ops = vec![
+            bind,
+            op("if", None, &["cond"]),
+            // The then-path releases `held` before the call; its next read in
+            // linear order belongs to the else-path, unreachable from here.
+            op("dec_ref", None, &["held"]),
+            call,
+            op("ret", None, &["raw"]),
+            op("else", None, &[]),
+            op("ret", None, &["held"]),
+            op("end_if", None, &[]),
+        ];
+        let occupancy = exact_occupancy("sibling_release", &["cond", "value"], &ops);
+        let mut locals = WasmFrameLocals::new();
+        locals.insert("held".to_string(), 0);
+        assert_eq!(
+            collect_live_object_locals_for_call(&locals, &linear_region(&ops), 3, None),
+            vec![0],
+            "the next linear read alone would retain a released value"
+        );
+        let exact = CallRetentionLiveness::for_region(&ops, 0, Some(&occupancy));
+        assert!(collect_live_object_locals_for_call(&locals, &exact, 3, None).is_empty());
+
+        // A value that survives the call is still retained.
+        let mut keep = op("store_var", None, &["value"]);
+        keep.var = Some("kept".to_string());
+        let mut call = op("call", Some("raw"), &["value"]);
+        call.s_value = Some("molt_int_as_i64".to_string());
+        let ops = vec![keep, call, op("ret", None, &["kept"])];
+        let occupancy = exact_occupancy("live_across", &["value"], &ops);
+        let mut locals = WasmFrameLocals::new();
+        locals.insert("kept".to_string(), 0);
+        let exact = CallRetentionLiveness::for_region(&ops, 0, Some(&occupancy));
+        assert_eq!(
+            collect_live_object_locals_for_call(&locals, &exact, 1, None),
+            vec![0]
+        );
     }
 }

@@ -525,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
         receipt_destination = release_receipt.prepare_receipt_destination(
             repo_root=REPO_ROOT,
             receipt_path=args.receipt,
+            observe_audit_engine=True,
             source_sha=args.source_sha,
         )
     except ValueError as exc:
@@ -538,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
             receipt = release_receipt.build_receipt(
                 kind=release_receipt.KIND_DEGRADE_TO_SLOW_GATE,
                 source_sha=receipt_destination.source_sha,
+                audit_engine=receipt_destination.audit_engine,
                 status=status,
                 argv=raw_argv,
                 tool_path=Path(__file__),

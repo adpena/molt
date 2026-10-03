@@ -1,4 +1,4 @@
-use super::super::super::super::builder_ops::{BuilderFinish, emit_sequence_builder_from_args};
+use super::super::super::super::builder_ops::{WordRangeConstructor, emit_word_range_constructor};
 use super::super::super::super::result_sink::{finish_owned_local_result, store_runtime_result};
 use super::super::AggregateRuntimeContext;
 use crate::OpIR;
@@ -21,14 +21,18 @@ fn emit_tuple_new(func: &mut Function, op: &OpIR, ctx: &AggregateRuntimeContext<
     let empty_args: Vec<String> = Vec::new();
     let args = op.args.as_ref().unwrap_or(&empty_args);
     let out = locals.op_result_or_sink_slot(op);
-    emit_sequence_builder_from_args(
+    emit_word_range_constructor(
         func,
         args,
         out,
+        WordRangeConstructor {
+            import: crate::wasm_abi_generated::WasmRuntimeImport::TupleFromValues,
+            leading: &[],
+            trailing: &[],
+        },
         import_ids,
         locals,
         reloc_enabled,
-        BuilderFinish::Tuple,
     );
     finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
 }

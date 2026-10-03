@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Any
+from molt.cli.build_results import _finish_build_input_custody
 from molt.cli.native_link_plan import NativeArtifactKind
 from molt.cli.wasm_codegen_layout import prepare_wasm_codegen_layout
 
@@ -278,6 +279,7 @@ def emit_pipeline_fact_graph(
     emit_json: Callable[[dict[str, Any], bool], None],
     json_payload: Callable[..., dict[str, Any]],
     entry_override_env: str,
+    finalize_inputs: Callable[[], None] | None = None,
 ) -> int:
     request = resolve_request_output_path(request, build_roots.project_root)
     try:
@@ -307,7 +309,11 @@ def emit_pipeline_fact_graph(
             json_output=json_output,
             backend_daemon_config_digest=build_preamble.backend_daemon_config_digest,
             warnings=build_preamble.warnings,
+            backend_bin=runtime_context.backend_bin,
             backend_compiler_fingerprint=(runtime_context.backend_compiler_fingerprint),
+            native_runtime_codegen_binding=(
+                runtime_context.runtime_state.native_runtime_codegen_binding
+            ),
             start_daemon=False,
         )
         if dispatch_error is not None:
@@ -333,6 +339,9 @@ def emit_pipeline_fact_graph(
         )
         if fact_graph_error is not None:
             return fact_graph_error
+        custody_error = _finish_build_input_custody(finalize_inputs)
+        if custody_error is not None:
+            return fail(custody_error, json_output, command="build")
         if json_output:
             emit_json(
                 json_payload(

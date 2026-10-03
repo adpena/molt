@@ -1,15 +1,15 @@
 use crate::builtins::functions::runtime_callable_target_ptr;
+use crate::call::ExceptionBaselineGuard;
 use crate::object::layout::{
-    CodeExecutionKind, code_execution_kind, function_call_target_ptr, function_code_bits,
+    CodeExecutionKind, EntryCustody, code_execution_kind, function_call_target_ptr,
+    function_code_bits, function_entry_custody,
 };
 use crate::object::ops::string_obj_to_owned;
 use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, PyToken, TYPE_ID_CODE,
-    TYPE_ID_FUNCTION, TYPE_ID_TUPLE, exception_pending, exception_stack_baseline_get,
-    exception_stack_baseline_set, function_arity, function_attr_bits,
-    function_execution_closure_bits, function_fn_ptr, function_name_bits, function_trampoline_ptr,
-    header_from_obj_ptr, intern_static_name, molt_exception_clear, obj_from_bits, object_type_id,
-    profile_hit, raise_exception, runtime_state, type_name,
+    TYPE_ID_FUNCTION, exception_pending, function_arity, function_execution_closure_bits,
+    function_fn_ptr, function_name_bits, function_trampoline_ptr, header_from_obj_ptr,
+    molt_exception_clear, obj_from_bits, object_type_id, profile_hit, raise_exception, type_name,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -117,25 +117,15 @@ fn fixed_arity_trampoline_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 #[inline]
-pub(crate) fn fixed_arity_call_requires_trampoline(
+fn fixed_arity_call_requires_trampoline(
     fn_ptr: u64,
     tramp_ptr: u64,
     task_trampoline_needed: bool,
 ) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let direct_target = wasm_direct_call_table_idx(fn_ptr);
-        should_force_trampoline_for_fixed_arity_call(
-            direct_target,
-            tramp_ptr,
-            task_trampoline_needed,
-        )
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        should_force_trampoline_for_fixed_arity_call(fn_ptr, tramp_ptr, task_trampoline_needed)
-    }
+    let direct_target = wasm_direct_call_table_idx(fn_ptr);
+    should_force_trampoline_for_fixed_arity_call(direct_target, tramp_ptr, task_trampoline_needed)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -291,24 +281,6 @@ fn assert_no_pending_on_success_enabled() -> bool {
     })
 }
 
-struct ExceptionBaselineGuard {
-    prev: usize,
-}
-
-impl ExceptionBaselineGuard {
-    fn new() -> Self {
-        Self {
-            prev: exception_stack_baseline_get(),
-        }
-    }
-}
-
-impl Drop for ExceptionBaselineGuard {
-    fn drop(&mut self) {
-        exception_stack_baseline_set(self.prev);
-    }
-}
-
 unsafe fn enforce_no_pending_on_success(_py: &PyToken<'_>, result: u64, context: &str) -> u64 {
     if !assert_no_pending_on_success_enabled() || !exception_pending(_py) {
         return result;
@@ -366,27 +338,6 @@ unsafe fn raise_call_arity_mismatch(
 }
 
 #[inline]
-unsafe fn maybe_bind_fixed_positional_call(
-    _py: &PyToken<'_>,
-    func_bits: u64,
-    func_ptr: *mut u8,
-    args: &[u64],
-) -> Option<u64> {
-    unsafe {
-        if crate::call::bind::function_fixed_positional_call_needs_binding(
-            _py,
-            func_ptr,
-            args.len(),
-        ) {
-            return Some(crate::call::bind::call_function_obj_via_positional_bind(
-                _py, func_bits, args,
-            ));
-        }
-        None
-    }
-}
-
-#[inline]
 unsafe fn maybe_call_function_obj_trampoline(
     _py: &PyToken<'_>,
     func_bits: u64,
@@ -431,7 +382,7 @@ unsafe fn maybe_call_function_obj_trampoline(
     None
 }
 
-pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_bits: u64) -> u64 {
+unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits: u64) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
         let _baseline_guard = ExceptionBaselineGuard::new();
@@ -442,18 +393,14 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(_py, func_bits, func_ptr, &[arg0_bits])
+        if let Some(res) =
+            maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[arg0_bits])
         {
             return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 1 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 1);
-        }
-        if let Some(res) =
-            maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[arg0_bits])
-        {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -620,23 +567,81 @@ pub(crate) unsafe fn function_has_variadic_trampoline(func_ptr: *mut u8) -> bool
     }
 }
 
-/// Read canonical function metadata without interning, allocation, hashing
-/// callbacks, or rich equality.
+/// Binder metadata shared by mutation admission and callable-shape guards.
+/// Dictionary writes can bypass attribute setters, so a mutation stamp alone
+/// does not establish that these fields still have their published values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FunctionBindingField {
+    Defaults,
+    KeywordDefaults,
+    ArgumentNames,
+    PositionalOnly,
+    KeywordOnlyNames,
+    Varargs,
+    VarKeywords,
+    BindKind,
+}
+
+impl FunctionBindingField {
+    pub(crate) const ALL: [Self; 8] = [
+        Self::Defaults,
+        Self::KeywordDefaults,
+        Self::ArgumentNames,
+        Self::PositionalOnly,
+        Self::KeywordOnlyNames,
+        Self::Varargs,
+        Self::VarKeywords,
+        Self::BindKind,
+    ];
+
+    pub(crate) const fn metadata_field(
+        self,
+    ) -> crate::object::function_metadata::FunctionMetadataField {
+        use crate::object::function_metadata::FunctionMetadataField as Field;
+        match self {
+            Self::Defaults => Field::Defaults,
+            Self::KeywordDefaults => Field::KeywordDefaults,
+            Self::ArgumentNames => Field::ArgumentNames,
+            Self::PositionalOnly => Field::PositionalOnly,
+            Self::KeywordOnlyNames => Field::KeywordOnlyNames,
+            Self::Varargs => Field::Varargs,
+            Self::VarKeywords => Field::VarKeywords,
+            Self::BindKind => Field::BindKind,
+        }
+    }
+
+    pub(crate) const fn name(self) -> &'static [u8] {
+        self.metadata_field().name().as_bytes()
+    }
+
+    pub(crate) fn from_name(name: &[u8]) -> Option<Self> {
+        Self::ALL.into_iter().find(|field| field.name() == name)
+    }
+}
+
+/// Defaults are admitted separately; other typed binder fields must be absent.
+/// Public dictionary entries cannot alter the executable binding contract.
+pub(crate) unsafe fn function_has_default_only_binding_metadata(
+    _py: &PyToken<'_>,
+    func_ptr: *mut u8,
+) -> bool {
+    unsafe {
+        FunctionBindingField::ALL.into_iter().all(|field| {
+            field == FunctionBindingField::Defaults
+                || crate::object::function_metadata::metadata_bits(func_ptr, field.name()).is_none()
+        })
+    }
+}
+
+/// Read canonical typed metadata without allocating or consulting __dict__.
+/// Published code signature facts override their pre-publication setup fields.
 pub(crate) unsafe fn function_metadata_bits(
-    py: &PyToken<'_>,
+    _py: &PyToken<'_>,
     func_ptr: *mut u8,
     name: &[u8],
 ) -> u64 {
     unsafe {
-        if let Some(bits) =
-            crate::object::layout::function_code_signature_metadata_bits(func_ptr, name)
-        {
-            return bits;
-        }
-        let dictionary = crate::function_dict_bits(func_ptr);
-        obj_from_bits(dictionary)
-            .as_ptr()
-            .and_then(|ptr| crate::object::ops::dict_get_str_bytes_borrowed(py, ptr, name))
+        crate::object::function_metadata::metadata_bits(func_ptr, name)
             .unwrap_or_else(|| crate::MoltObject::none().bits())
     }
 }
@@ -649,26 +654,14 @@ pub(crate) unsafe fn commit_function_metadata_change(
     user: bool,
 ) {
     unsafe {
-        if user
-            && matches!(
-                name,
-                b"__defaults__"
-                    | b"__kwdefaults__"
-                    | b"__molt_arg_names__"
-                    | b"__molt_posonly__"
-                    | b"__molt_kwonly_names__"
-                    | b"__molt_vararg__"
-                    | b"__molt_varkw__"
-                    | b"__molt_bind_kind__"
-            )
-        {
+        if user && FunctionBindingField::from_name(name).is_some() {
             crate::object::layout::bump_function_mutation_version(func_ptr);
         }
         crate::call::bind::refresh_function_requires_binder_flag(py, func_ptr);
     }
 }
 
-pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
+unsafe fn call_function_obj_bound0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
         let _baseline_guard = ExceptionBaselineGuard::new();
@@ -679,15 +672,12 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(_py, func_bits, func_ptr, &[]) {
+        if let Some(res) = maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[]) {
             return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 0 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 0);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[]) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -828,7 +818,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
     }
 }
 
-pub(crate) unsafe fn call_function_obj2(
+unsafe fn call_function_obj_bound2(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -845,18 +835,13 @@ pub(crate) unsafe fn call_function_obj2(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         if let Some(res) =
-            maybe_bind_fixed_positional_call(_py, func_bits, func_ptr, &[arg0_bits, arg1_bits])
+            maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[arg0_bits, arg1_bits])
         {
             return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 2 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 2);
-        }
-        if let Some(res) =
-            maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[arg0_bits, arg1_bits])
-        {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -947,7 +932,7 @@ pub(crate) unsafe fn call_function_obj2(
     }
 }
 
-pub(crate) unsafe fn call_function_obj3(
+unsafe fn call_function_obj_bound3(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -964,7 +949,7 @@ pub(crate) unsafe fn call_function_obj3(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -975,14 +960,6 @@ pub(crate) unsafe fn call_function_obj3(
         let arity = function_arity(func_ptr);
         if arity != 3 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 3);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(
-            _py,
-            func_bits,
-            func_ptr,
-            &[arg0_bits, arg1_bits, arg2_bits],
-        ) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -1063,7 +1040,7 @@ pub(crate) unsafe fn call_function_obj3(
     }
 }
 
-pub(crate) unsafe fn call_function_obj4(
+unsafe fn call_function_obj_bound4(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -1081,7 +1058,7 @@ pub(crate) unsafe fn call_function_obj4(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -1092,14 +1069,6 @@ pub(crate) unsafe fn call_function_obj4(
         let arity = function_arity(func_ptr);
         if arity != 4 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 4);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(
-            _py,
-            func_bits,
-            func_ptr,
-            &[arg0_bits, arg1_bits, arg2_bits, arg3_bits],
-        ) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -1182,7 +1151,7 @@ pub(crate) unsafe fn call_function_obj4(
     }
 }
 
-unsafe fn call_function_obj5(
+unsafe fn call_function_obj_bound5(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -1201,7 +1170,7 @@ unsafe fn call_function_obj5(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -1212,14 +1181,6 @@ unsafe fn call_function_obj5(
         let arity = function_arity(func_ptr);
         if arity != 5 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 5);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(
-            _py,
-            func_bits,
-            func_ptr,
-            &[arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits],
-        ) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -1323,7 +1284,7 @@ unsafe fn call_function_obj5(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn call_function_obj6(
+unsafe fn call_function_obj_bound6(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -1343,7 +1304,7 @@ unsafe fn call_function_obj6(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -1356,16 +1317,6 @@ unsafe fn call_function_obj6(
         let arity = function_arity(func_ptr);
         if arity != 6 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 6);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(
-            _py,
-            func_bits,
-            func_ptr,
-            &[
-                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
-            ],
-        ) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -1481,7 +1432,7 @@ unsafe fn call_function_obj6(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn call_function_obj7(
+unsafe fn call_function_obj_bound7(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -1502,7 +1453,7 @@ unsafe fn call_function_obj7(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -1515,16 +1466,6 @@ unsafe fn call_function_obj7(
         let arity = function_arity(func_ptr);
         if arity != 7 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 7);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(
-            _py,
-            func_bits,
-            func_ptr,
-            &[
-                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
-            ],
-        ) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -1647,7 +1588,7 @@ unsafe fn call_function_obj7(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn call_function_obj8(
+unsafe fn call_function_obj_bound8(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -1669,7 +1610,7 @@ unsafe fn call_function_obj8(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -1683,17 +1624,6 @@ unsafe fn call_function_obj8(
         let arity = function_arity(func_ptr);
         if arity != 8 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 8);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(
-            _py,
-            func_bits,
-            func_ptr,
-            &[
-                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
-                arg7_bits,
-            ],
-        ) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -1822,7 +1752,7 @@ unsafe fn call_function_obj8(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn call_function_obj9(
+unsafe fn call_function_obj_bound9(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -1845,7 +1775,7 @@ unsafe fn call_function_obj9(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -1859,17 +1789,6 @@ unsafe fn call_function_obj9(
         let arity = function_arity(func_ptr);
         if arity != 9 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 9);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(
-            _py,
-            func_bits,
-            func_ptr,
-            &[
-                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
-                arg7_bits, arg8_bits,
-            ],
-        ) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -2012,7 +1931,7 @@ unsafe fn call_function_obj9(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn call_function_obj10(
+unsafe fn call_function_obj_bound10(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -2036,7 +1955,7 @@ unsafe fn call_function_obj10(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -2050,17 +1969,6 @@ unsafe fn call_function_obj10(
         let arity = function_arity(func_ptr);
         if arity != 10 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 10);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(
-            _py,
-            func_bits,
-            func_ptr,
-            &[
-                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
-                arg7_bits, arg8_bits, arg9_bits,
-            ],
-        ) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -2229,7 +2137,7 @@ unsafe fn call_function_obj10(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn call_function_obj11(
+unsafe fn call_function_obj_bound11(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -2254,7 +2162,7 @@ unsafe fn call_function_obj11(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -2268,17 +2176,6 @@ unsafe fn call_function_obj11(
         let arity = function_arity(func_ptr);
         if arity != 11 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 11);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(
-            _py,
-            func_bits,
-            func_ptr,
-            &[
-                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
-                arg7_bits, arg8_bits, arg9_bits, arg10_bits,
-            ],
-        ) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -2465,7 +2362,7 @@ unsafe fn call_function_obj11(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn call_function_obj12(
+unsafe fn call_function_obj_bound12(
     _py: &PyToken<'_>,
     func_bits: u64,
     arg0_bits: u64,
@@ -2491,7 +2388,7 @@ unsafe fn call_function_obj12(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
-        if let Some(res) = maybe_bind_fixed_positional_call(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -2505,17 +2402,6 @@ unsafe fn call_function_obj12(
         let arity = function_arity(func_ptr);
         if arity != 12 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 12);
-        }
-        if let Some(res) = maybe_call_function_obj_trampoline(
-            _py,
-            func_bits,
-            func_ptr,
-            &[
-                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
-                arg7_bits, arg8_bits, arg9_bits, arg10_bits, arg11_bits,
-            ],
-        ) {
-            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
@@ -2709,12 +2595,84 @@ unsafe fn call_function_obj12(
     }
 }
 
+/// How a runtime invocation's argument references reach a compiled entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ArgumentTransfer {
+    /// The caller keeps its references: runtime helpers, callbacks, the C-API
+    /// and every other runtime-originated call. An adopting entry receives
+    /// references of its own.
+    Borrowed,
+    /// A call instruction's adopted references move into an adopting entry,
+    /// or stay locally owned while a C extension borrows them.
+    Moved,
+}
+
+/// Moved argument references that no entry has taken over yet. A failure
+/// before entry, or a borrowing C callback's return, releases each exactly
+/// once in frame order without replacing either pending error channel.
+struct PendingMove<'a, 'py> {
+    py: &'a PyToken<'py>,
+    args: &'a [u64],
+}
+
+impl PendingMove<'_, '_> {
+    /// The entry now owns every reference.
+    fn into_entry(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for PendingMove<'_, '_> {
+    fn drop(&mut self) {
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            for &bits in self.args {
+                crate::dec_ref_bits(self.py, bits);
+            }
+        });
+    }
+}
+
+/// The runtime's borrowed lane into a compiled Python entry: every
+/// runtime-originated invocation of a compiled function reaches it through
+/// this trampoline call, and the caller keeps its references.
 pub(crate) unsafe fn call_function_obj_trampoline(
     _py: &PyToken<'_>,
     func_bits: u64,
     args: &[u64],
 ) -> u64 {
+    unsafe { invoke_function_trampoline(_py, func_bits, args, ArgumentTransfer::Borrowed) }
+}
+
+/// Consume a call instruction's adopted argument references. `args` are the
+/// entry's already-bound Python arguments. An adopting entry takes ownership;
+/// a C extension borrows them until this transport releases them. The caller
+/// never releases them, including when the call fails before entry.
+pub(crate) unsafe fn call_function_obj_moved(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    args: &[u64],
+) -> u64 {
+    unsafe { invoke_function_trampoline(_py, func_bits, args, ArgumentTransfer::Moved) }
+}
+
+/// Whether `func_bits` is a function whose direct entry adopts its Python
+/// arguments, so that a caller holding owned references may move them in.
+pub(crate) unsafe fn function_bits_adopt_arguments(func_bits: u64) -> bool {
+    obj_from_bits(func_bits).as_ptr().is_some_and(|ptr| unsafe {
+        object_type_id(ptr) == TYPE_ID_FUNCTION
+            && function_entry_custody(ptr) == EntryCustody::Adopting
+    })
+}
+
+unsafe fn invoke_function_trampoline(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    args: &[u64],
+    transfer: ArgumentTransfer,
+) -> u64 {
     unsafe {
+        // Constructed only on the moved lane: dropping it releases the moves.
+        let pending = (transfer == ArgumentTransfer::Moved).then(|| PendingMove { py: _py, args });
         profile_hit(_py, &CALL_DISPATCH_COUNT);
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
@@ -2724,63 +2682,43 @@ pub(crate) unsafe fn call_function_obj_trampoline(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
+        // Published C wrappers use an admitted trampoline. External positional
+        // calls must acquire C execution custody before reaching that entry.
+        // The shared C dispatcher owns its one recursion/frame activation;
+        // intercept before constructing either guard or transferring arguments.
+        if !crate::concurrency::execution::current_thread_has_c_extension_execution_context()
+            && let Some(result) =
+                crate::cpython_abi_hooks::try_call_cext(_py, func_ptr, args, &[], &[])
+        {
+            return result;
+        }
+        let adopting = function_entry_custody(func_ptr) == EntryCustody::Adopting;
+        // C arguments are borrowed regardless of how they reached this call.
+        // Recognize only moved borrowing entries here: already-admitted,
+        // borrowed calls keep the generated native/WASM trampoline hot path.
+        let moved_cext =
+            pending.is_some() && !adopting && crate::cpython_abi_hooks::is_cext_callable(func_ptr);
+        if pending.is_some() && !adopting && !moved_cext {
+            return raise_exception::<_>(
+                _py,
+                "SystemError",
+                "moved call arguments require an adopting entry",
+            );
+        }
         trace_function_vec_call(_py, func_ptr, args, "trampoline");
         let arity = function_arity(func_ptr);
         if arity != args.len() as u64 && !function_has_variadic_trampoline(func_ptr) {
-            // Arity mismatch: the caller provided a different number of args
-            // than the function's stored arity.  Instead of immediately
-            // erroring, try to resolve via __defaults__ (for too-few args) or
-            // fall back to the full argument-binding path (for too-many args
-            // or when defaults are insufficient).
-            //
-            // This handles the WASM dispatch case where a user function with
-            // keyword default arguments (e.g. `def f(a, b, lo=0, hi=100)`)
-            // is called through the trampoline path with only the required
-            // positional args — the previous code raised immediately without
-            // consulting __defaults__.
-            let n = args.len();
-            let Some(a) = usize::try_from(arity).ok() else {
-                return raise_exception::<_>(
-                    _py,
-                    "OverflowError",
-                    "function arity exceeds the active address space",
-                );
-            };
-            if n < a {
-                // Try to pad missing args from __defaults__ tuple.
-                let defaults_bits = function_attr_bits(
-                    _py,
-                    func_ptr,
-                    intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.defaults_name,
-                        b"__defaults__",
-                    ),
-                );
-                if let Some(dbits) = defaults_bits
-                    && !obj_from_bits(dbits).is_none()
-                    && let Some(def_ptr) = obj_from_bits(dbits).as_ptr()
-                    && object_type_id(def_ptr) == TYPE_ID_TUPLE
-                {
-                    let defaults = crate::object::seq_access::pin_tuple(_py, def_ptr)
-                        .expect("type-checked defaults tuple must be pinnable");
-                    let n_defaults = defaults.len();
-                    let missing = a - n;
-                    if missing <= n_defaults {
-                        let mut padded = Vec::with_capacity(a);
-                        padded.extend_from_slice(args);
-                        let start = n_defaults - missing;
-                        padded.extend(defaults.iter().take(n_defaults).skip(start).copied());
-                        // Recurse with the padded args — arity now matches.
-                        return call_function_obj_trampoline(_py, func_bits, &padded);
-                    }
-                }
+            // C conventions own their arity diagnostics. Recognize them only
+            // on this cold mismatch path; valid admitted borrowed calls keep
+            // the generated transport without an executable-identity lookup.
+            if let Some(result) =
+                crate::cpython_abi_hooks::try_call_cext(_py, func_ptr, args, &[], &[])
+            {
+                return result;
             }
-            // Could not resolve the mismatch via __defaults__.
-            // Return a clear arity mismatch error. The __defaults__ fast path
-            // handles the common case; varargs/kwargs dispatch is handled by
-            // the CallArgs path which is entered from a different call site.
-            return raise_call_arity_mismatch(_py, func_ptr, a as u64, n as u64);
+            // Both borrowed and moved transport contain already-bound ABI
+            // slots. Defaults and keyword binding belong only to the binder.
+            return raise_call_arity_mismatch(_py, func_ptr, arity, args.len() as u64);
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let tramp_ptr = crate::builtins::functions::normalize_runtime_trampoline_ptr(
@@ -2798,6 +2736,24 @@ pub(crate) unsafe fn call_function_obj_trampoline(
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
         else {
             return crate::MoltObject::none().bits();
+        };
+        // Nothing fails between here and the entry. An adopting entry owns one
+        // reference to each Python argument: moved ones are the instruction's,
+        // borrowed ones are retained here, the borrowed lane's only retain.
+        let _borrowed_moves = match pending {
+            Some(pending) if adopting => {
+                pending.into_entry();
+                None
+            }
+            None if adopting => {
+                for &bits in args {
+                    crate::inc_ref_bits(_py, bits);
+                }
+                None
+            }
+            // A C callback borrows moved operands. Keep their existing owner
+            // alive through the callback and preserve its error on release.
+            pending => pending,
         };
         #[cfg(target_arch = "wasm32")]
         if matches!(
@@ -2877,8 +2833,33 @@ pub(crate) unsafe fn call_function_obj_trampoline(
     }
 }
 
+/// Runtime-originated fixed-arity calls contain Python arguments. They use
+/// the same receiver admission and signature binding as vector calls; matching
+/// the machine arity does not prove that an argument vector is already bound.
+macro_rules! raw_function_call {
+    ($name:ident $(, $arg:ident)*) => {
+        #[inline]
+        pub(crate) unsafe fn $name(py: &PyToken<'_>, function: u64, $($arg: u64),*) -> u64 {
+            unsafe { call_function_obj_vec(py, function, &[$($arg),*]) }
+        }
+    };
+}
+
+#[cfg(test)]
+raw_function_call!(call_function_obj0);
+raw_function_call!(call_function_obj1, arg0);
+raw_function_call!(call_function_obj2, arg0, arg1);
+raw_function_call!(call_function_obj3, arg0, arg1, arg2);
+#[cfg(test)]
+raw_function_call!(call_function_obj4, arg0, arg1, arg2, arg3);
+
 pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, args: &[u64]) -> u64 {
     unsafe {
+        if !crate::builtins::functions::native_callable::admit_native_callable(_py, func_bits, args)
+        {
+            return crate::MoltObject::none().bits();
+        }
+
         let func_obj = obj_from_bits(func_bits);
         if let Some(func_ptr) = func_obj.as_ptr()
             && object_type_id(func_ptr) == TYPE_ID_FUNCTION
@@ -2888,12 +2869,16 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
                 args.len(),
             )
         {
-            return crate::call::bind::call_function_obj_via_positional_bind(_py, func_bits, args);
+            return crate::call::bind::call_bind_borrowed(_py, func_bits, None, args, &[], &[]);
         }
         call_function_obj_bound_vec(_py, func_bits, args)
     }
 }
 
+/// Execute the binder's ABI slots without interpreting them as Python arguments.
+/// Receiver validation and binding must have happened before this boundary.
+/// Fixed arity, packed native `(args, kwargs)`, and compiled frame slots share
+/// this transport, but never use slot count to infer admission.
 pub(crate) unsafe fn call_function_obj_bound_vec(
     _py: &PyToken<'_>,
     func_bits: u64,
@@ -2921,36 +2906,58 @@ pub(crate) unsafe fn call_function_obj_bound_vec(
         if task_trampoline_needed {
             return call_function_obj_trampoline(_py, func_bits, args);
         }
+        if let Some(func_ptr) = func_obj.as_ptr()
+            && object_type_id(func_ptr) == TYPE_ID_FUNCTION
+            && (13..=16).contains(&args.len())
+            && function_arity(func_ptr) == args.len() as u64
+            && function_execution_closure_bits(func_ptr) == 0
+            && function_trampoline_ptr(func_ptr) == 0
+            && function_entry_custody(func_ptr) == EntryCustody::Borrowing
+        {
+            // Retain native direct ABI widths through 16 (WASM through 13)
+            // for runtime-created
+            // functions without a compiled trampoline. Admission and
+            // packing are already complete, including native descriptors.
+            return crate::object::ops_builtins::molt_call_func_direct(
+                _py,
+                function_fn_ptr(func_ptr),
+                args,
+                0,
+                func_bits,
+            );
+        }
         match args.len() {
-            0 => call_function_obj0(_py, func_bits),
-            1 => call_function_obj1(_py, func_bits, args[0]),
-            2 => call_function_obj2(_py, func_bits, args[0], args[1]),
-            3 => call_function_obj3(_py, func_bits, args[0], args[1], args[2]),
-            4 => call_function_obj4(_py, func_bits, args[0], args[1], args[2], args[3]),
-            5 => call_function_obj5(_py, func_bits, args[0], args[1], args[2], args[3], args[4]),
-            6 => call_function_obj6(
+            0 => call_function_obj_bound0(_py, func_bits),
+            1 => call_function_obj_bound1(_py, func_bits, args[0]),
+            2 => call_function_obj_bound2(_py, func_bits, args[0], args[1]),
+            3 => call_function_obj_bound3(_py, func_bits, args[0], args[1], args[2]),
+            4 => call_function_obj_bound4(_py, func_bits, args[0], args[1], args[2], args[3]),
+            5 => call_function_obj_bound5(
+                _py, func_bits, args[0], args[1], args[2], args[3], args[4],
+            ),
+            6 => call_function_obj_bound6(
                 _py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5],
             ),
-            7 => call_function_obj7(
+            7 => call_function_obj_bound7(
                 _py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
             ),
-            8 => call_function_obj8(
+            8 => call_function_obj_bound8(
                 _py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7],
             ),
-            9 => call_function_obj9(
+            9 => call_function_obj_bound9(
                 _py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8],
             ),
-            10 => call_function_obj10(
+            10 => call_function_obj_bound10(
                 _py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8], args[9],
             ),
-            11 => call_function_obj11(
+            11 => call_function_obj_bound11(
                 _py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8], args[9], args[10],
             ),
-            12 => call_function_obj12(
+            12 => call_function_obj_bound12(
                 _py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8], args[9], args[10], args[11],
             ),
@@ -3305,6 +3312,743 @@ mod tests {
         });
     }
 
+    // An adopting entry owns one reference to its argument: it records the
+    // count it observes, then releases its own reference as its frame would.
+    #[cfg(not(target_arch = "wasm32"))]
+    static ADOPTED_ARGUMENT_REFS: std::sync::atomic::AtomicU32 =
+        std::sync::atomic::AtomicU32::new(0);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    extern "C" fn adopting_trampoline(_closure: u64, argv_ptr: u64, _argc: u64) -> i64 {
+        let arg = unsafe { *(argv_ptr as *const u64) };
+        ADOPTED_ARGUMENT_REFS.store(ref_count(arg), std::sync::atomic::Ordering::SeqCst);
+        crate::molt_dec_ref_obj(arg);
+        MoltObject::none().bits() as i64
+    }
+
+    // The borrowed lane retains for an adopting entry, the moved lane hands the
+    // instruction's reference over, and a moved call that never reaches its
+    // entry releases each moved reference exactly once. Treating the entry as
+    // borrowing would under-release on the borrowed lane; releasing after a
+    // moved call, or forgetting the failure, would unbalance the moved lane.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn adopting_entries_own_one_reference_on_the_borrowed_and_moved_lanes() {
+        use std::sync::atomic::Ordering::SeqCst;
+        init();
+        crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                fixed_arity_returns_first_param as *const () as usize as u64,
+                1,
+            );
+            assert!(!func_ptr.is_null());
+            let func_bits = MoltObject::from_ptr(func_ptr).bits();
+            unsafe {
+                crate::object::layout::function_set_trampoline_ptr(
+                    func_ptr,
+                    adopting_trampoline as *const () as usize as u64,
+                );
+                assert_eq!(
+                    crate::object::layout::function_publish_entry_custody(
+                        func_ptr,
+                        crate::object::layout::EntryCustody::Adopting,
+                    ),
+                    Ok(())
+                );
+            }
+            let list_ptr = alloc_list(_py, &[int(1)]);
+            assert!(!list_ptr.is_null());
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+            let baseline = ref_count(list_bits);
+
+            let result =
+                unsafe { super::call_function_obj_trampoline(_py, func_bits, &[list_bits]) };
+            assert!(obj_from_bits(result).is_none());
+            assert_eq!(ADOPTED_ARGUMENT_REFS.load(SeqCst), baseline + 1);
+            assert_eq!(ref_count(list_bits), baseline);
+
+            crate::molt_inc_ref_obj(list_bits);
+            let result = unsafe { super::call_function_obj_moved(_py, func_bits, &[list_bits]) };
+            assert!(obj_from_bits(result).is_none());
+            assert_eq!(ADOPTED_ARGUMENT_REFS.load(SeqCst), baseline + 1);
+            assert_eq!(ref_count(list_bits), baseline);
+
+            crate::molt_inc_ref_obj(list_bits);
+            crate::molt_inc_ref_obj(list_bits);
+            let result =
+                unsafe { super::call_function_obj_moved(_py, func_bits, &[list_bits, list_bits]) };
+            assert!(obj_from_bits(result).is_none());
+            assert!(crate::exception_pending(_py));
+            let _ = crate::molt_exception_clear();
+            assert_eq!(ref_count(list_bits), baseline);
+
+            dec_ref_bits(_py, list_bits);
+            dec_ref_bits(_py, func_bits);
+        });
+    }
+
+    #[derive(Default)]
+    struct CextDispatchObservation {
+        calls: usize,
+        recursion_depth: usize,
+        frame_depth: usize,
+        execution_context: bool,
+        positional: usize,
+        keywords: usize,
+        fail: bool,
+        raised: u64,
+    }
+
+    thread_local! {
+        static CEXT_DISPATCH: std::cell::RefCell<CextDispatchObservation> =
+            std::cell::RefCell::new(CextDispatchObservation::default());
+    }
+
+    unsafe extern "C" fn cext_dispatch_probe(
+        _receiver: *mut molt_cpython_abi::abi_types::PyObject,
+        args: *mut *mut molt_cpython_abi::abi_types::PyObject,
+        count: molt_cpython_abi::abi_types::Py_ssize_t,
+        names: *mut molt_cpython_abi::abi_types::PyObject,
+    ) -> *mut molt_cpython_abi::abi_types::PyObject {
+        use molt_cpython_abi::api::{numbers, refcount, sequences};
+        let fail = CEXT_DISPATCH.with(|state| {
+            let mut state = state.borrow_mut();
+            state.calls += 1;
+            state.recursion_depth = crate::state::recursion::recursion_depth();
+            state.frame_depth = crate::FRAME_STACK.with(|stack| stack.borrow().len());
+            state.execution_context =
+                crate::concurrency::execution::current_thread_has_c_extension_execution_context();
+            state.positional = count as usize;
+            state.keywords = if names.is_null() {
+                0
+            } else {
+                unsafe { sequences::PyTuple_Size(names) as usize }
+            };
+            state.fail
+        });
+        if fail {
+            crate::with_gil(|py| {
+                crate::raise_exception::<u64>(&py, "ValueError", "C dispatch failure");
+                CEXT_DISPATCH.with(|state| {
+                    state.borrow_mut().raised = crate::molt_exception_last_pending();
+                });
+            });
+            return std::ptr::null_mut();
+        }
+        unsafe {
+            if count == 0 {
+                numbers::PyLong_FromLongLong(197)
+            } else {
+                // A real argument alias exercises both C and runtime result custody.
+                let result = *args;
+                refcount::Py_INCREF(result);
+                result
+            }
+        }
+    }
+
+    unsafe fn cext_dispatch_function_for(target: *const (), flags: std::os::raw::c_int) -> u64 {
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        let name = b"dispatch_probe";
+        unsafe {
+            (molt_cpython_abi::hooks::hooks_or_stubs().register_c_function)(
+                crate::provenance::abi::expose_function_address(target),
+                flags,
+                MoltObject::none().bits(),
+                false,
+                MoltObject::none().bits(),
+                name.as_ptr(),
+                name.len(),
+            )
+        }
+    }
+
+    unsafe fn cext_dispatch_function() -> u64 {
+        use molt_cpython_abi::abi_types::{METH_FASTCALL, METH_KEYWORDS};
+        unsafe {
+            cext_dispatch_function_for(
+                cext_dispatch_probe as *const (),
+                METH_FASTCALL | METH_KEYWORDS,
+            )
+        }
+    }
+
+    unsafe extern "C" fn cext_dispatch_noargs(
+        receiver: *mut molt_cpython_abi::abi_types::PyObject,
+        _args: *mut molt_cpython_abi::abi_types::PyObject,
+    ) -> *mut molt_cpython_abi::abi_types::PyObject {
+        unsafe { cext_dispatch_probe(receiver, std::ptr::null_mut(), 0, std::ptr::null_mut()) }
+    }
+
+    unsafe extern "C" fn cext_dispatch_one(
+        receiver: *mut molt_cpython_abi::abi_types::PyObject,
+        mut arg: *mut molt_cpython_abi::abi_types::PyObject,
+    ) -> *mut molt_cpython_abi::abi_types::PyObject {
+        unsafe { cext_dispatch_probe(receiver, &raw mut arg, 1, std::ptr::null_mut()) }
+    }
+
+    fn assert_cext_dispatch(recursion: usize, frames: usize, positional: usize, keywords: usize) {
+        CEXT_DISPATCH.with(|state| {
+            let state = state.borrow();
+            assert_eq!(state.calls, 1);
+            assert_eq!(state.recursion_depth, recursion + 1);
+            // C wrappers have no compiled Python frame slot.
+            assert_eq!(state.frame_depth, frames);
+            assert!(state.execution_context);
+            assert_eq!(state.positional, positional);
+            assert_eq!(state.keywords, keywords);
+        });
+        assert_eq!(crate::state::recursion::recursion_depth(), recursion);
+        assert_eq!(
+            crate::FRAME_STACK.with(|stack| stack.borrow().len()),
+            frames
+        );
+    }
+
+    unsafe fn cext_bound_call(py: &crate::PyToken<'_>, func_bits: u64, args: &[u64]) -> u64 {
+        unsafe {
+            match args.len() {
+                0 => super::call_function_obj_bound0(py, func_bits),
+                1 => super::call_function_obj_bound1(py, func_bits, args[0]),
+                2 => super::call_function_obj_bound2(py, func_bits, args[0], args[1]),
+                3 => super::call_function_obj_bound3(py, func_bits, args[0], args[1], args[2]),
+                4 => super::call_function_obj_bound4(
+                    py, func_bits, args[0], args[1], args[2], args[3],
+                ),
+                5 => super::call_function_obj_bound5(
+                    py, func_bits, args[0], args[1], args[2], args[3], args[4],
+                ),
+                6 => super::call_function_obj_bound6(
+                    py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5],
+                ),
+                7 => super::call_function_obj_bound7(
+                    py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                ),
+                8 => super::call_function_obj_bound8(
+                    py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                    args[7],
+                ),
+                9 => super::call_function_obj_bound9(
+                    py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                    args[7], args[8],
+                ),
+                10 => super::call_function_obj_bound10(
+                    py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                    args[7], args[8], args[9],
+                ),
+                11 => super::call_function_obj_bound11(
+                    py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                    args[7], args[8], args[9], args[10],
+                ),
+                12 => super::call_function_obj_bound12(
+                    py, func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                    args[7], args[8], args[9], args[10], args[11],
+                ),
+                _ => super::call_function_obj_trampoline(py, func_bits, args),
+            }
+        }
+    }
+
+    #[test]
+    fn cext_positional_family_and_keywords_own_one_invocation() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil(|py| unsafe {
+            use crate::concurrency::execution::{
+                RuntimeExecutionGuard, current_thread_has_c_extension_execution_context,
+            };
+            let function = cext_dispatch_function();
+            assert_ne!(function, 0);
+            let list = alloc_list(&py, &[]);
+            assert!(!list.is_null());
+            let value = MoltObject::from_ptr(list).bits();
+            // The first borrowed C view owns one stable runtime hold.
+            // Measure per-call balance only after that canonical publication.
+            let view = molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(value);
+            assert!(!view.is_null());
+            let baseline = ref_count(value);
+            let recursion = crate::state::recursion::recursion_depth();
+            let frames = crate::FRAME_STACK.with(|stack| stack.borrow().len());
+            assert!(!current_thread_has_c_extension_execution_context());
+            for admitted in [false, true] {
+                let _execution = admitted.then(RuntimeExecutionGuard::enter);
+                for width in 0..=13 {
+                    let args = vec![value; width];
+                    for lane in 0..4 {
+                        CEXT_DISPATCH.with(|state| *state.borrow_mut() = Default::default());
+                        let result = match lane {
+                            0 => cext_bound_call(&py, function, &args),
+                            1 => super::call_function_obj_bound_vec(&py, function, &args),
+                            2 => super::call_function_obj_vec(&py, function, &args),
+                            _ => super::call_function_obj_trampoline(&py, function, &args),
+                        };
+                        assert!(!crate::exception_pending(&py));
+                        assert_eq!(result, if width == 0 { int(197) } else { value });
+                        assert_cext_dispatch(recursion, frames, width, 0);
+                        assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                        dec_ref_bits(&py, result);
+                        assert_eq!(ref_count(value), baseline);
+                    }
+                }
+                // Keyword binding must use the same dispatcher without an outer activation.
+                CEXT_DISPATCH.with(|state| *state.borrow_mut() = Default::default());
+                let builder = crate::molt_callargs_new(1, 1);
+                assert_ne!(builder, 0);
+                let key = string_bits("named");
+                crate::molt_callargs_push_pos(builder, value);
+                crate::molt_callargs_push_kw(builder, key, value);
+                let result = crate::molt_call_bind(function, builder);
+                assert_eq!(result, value);
+                assert!(!crate::exception_pending(&py));
+                assert_cext_dispatch(recursion, frames, 1, 1);
+                assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                dec_ref_bits(&py, result);
+                dec_ref_bits(&py, key);
+                assert_eq!(ref_count(value), baseline);
+            }
+            assert!(!current_thread_has_c_extension_execution_context());
+            dec_ref_bits(&py, value);
+            dec_ref_bits(&py, function);
+        });
+    }
+
+    #[test]
+    fn cext_fixed_bound_arms_preserve_c_convention_arity_errors() {
+        use crate::concurrency::execution::{
+            RuntimeExecutionGuard, current_thread_has_c_extension_execution_context,
+        };
+        use molt_cpython_abi::abi_types::{METH_NOARGS, METH_O, PyExc_TypeError};
+        use molt_cpython_abi::api::{errors, refcount, strings, typeobj};
+
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil(|py| unsafe {
+            for (flags, target, width, expected) in [
+                (
+                    METH_NOARGS,
+                    cext_dispatch_noargs as *const (),
+                    1,
+                    "dispatch_probe() takes no arguments (1 given)",
+                ),
+                (
+                    METH_O,
+                    cext_dispatch_one as *const (),
+                    0,
+                    "dispatch_probe() takes exactly one argument (0 given)",
+                ),
+                (
+                    METH_O,
+                    cext_dispatch_one as *const (),
+                    2,
+                    "dispatch_probe() takes exactly one argument (2 given)",
+                ),
+            ] {
+                let function = cext_dispatch_function_for(target, flags);
+                assert_ne!(function, 0);
+                let args = [int(10), int(20)];
+                for admitted in [false, true] {
+                    let _execution = admitted.then(RuntimeExecutionGuard::enter);
+                    CEXT_DISPATCH.with(|state| *state.borrow_mut() = Default::default());
+                    // Call private fixed arms directly: the public vector entry
+                    // can intercept the trampoline before these arms are reached.
+                    let result = cext_bound_call(&py, function, &args[..width]);
+                    dec_ref_bits(&py, result);
+                    CEXT_DISPATCH.with(|state| assert_eq!(state.borrow().calls, 0));
+                    {
+                        let error =
+                            refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert!(
+                            !error.as_ptr().is_null(),
+                            "flags={flags:#x}, admitted={admitted}"
+                        );
+                        let class = refcount::OwnedPyObject::from_owned(typeobj::PyObject_Type(
+                            error.as_ptr(),
+                        ));
+                        assert_eq!(class.as_ptr(), (&raw mut PyExc_TypeError).cast());
+                        let message = refcount::OwnedPyObject::from_owned(typeobj::PyObject_Str(
+                            error.as_ptr(),
+                        ));
+                        assert!(!message.as_ptr().is_null());
+                        let text = strings::PyUnicode_AsUTF8(message.as_ptr());
+                        assert!(!text.is_null());
+                        assert_eq!(
+                            std::ffi::CStr::from_ptr(text).to_bytes(),
+                            expected.as_bytes(),
+                            "flags={flags:#x}, admitted={admitted}",
+                        );
+                    }
+                    assert!(errors::PyErr_Occurred().is_null());
+                    assert!(!crate::exception_pending(&py));
+                    assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                }
+                dec_ref_bits(&py, function);
+            }
+            assert!(!current_thread_has_c_extension_execution_context());
+        });
+    }
+
+    #[test]
+    fn cext_moved_arguments_remain_owned_through_success_and_exact_failure() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil(|py| unsafe {
+            use crate::concurrency::execution::{
+                RuntimeExecutionGuard, current_thread_has_c_extension_execution_context,
+            };
+            let function = cext_dispatch_function();
+            assert_ne!(function, 0);
+            let list = alloc_list(&py, &[]);
+            assert!(!list.is_null());
+            let value = MoltObject::from_ptr(list).bits();
+            // The first borrowed C view owns one stable runtime hold.
+            // Measure per-call balance only after that canonical publication.
+            let view = molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(value);
+            assert!(!view.is_null());
+            let baseline = ref_count(value);
+            let recursion = crate::state::recursion::recursion_depth();
+            let frames = crate::FRAME_STACK.with(|stack| stack.borrow().len());
+            assert!(!current_thread_has_c_extension_execution_context());
+            for admitted in [false, true] {
+                let _execution = admitted.then(RuntimeExecutionGuard::enter);
+                for fail in [false, true] {
+                    CEXT_DISPATCH.with(|state| {
+                        *state.borrow_mut() = CextDispatchObservation {
+                            fail,
+                            ..Default::default()
+                        };
+                    });
+                    // The same object occupies two separately owned operands.
+                    crate::inc_ref_bits(&py, value);
+                    crate::inc_ref_bits(&py, value);
+                    let result = super::call_function_obj_moved(&py, function, &[value, value]);
+                    assert_cext_dispatch(recursion, frames, 2, 0);
+                    assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                    if fail {
+                        assert!(crate::exception_pending(&py));
+                        let raised = CEXT_DISPATCH.with(|state| state.borrow().raised);
+                        let pending = crate::molt_exception_last_pending();
+                        assert_ne!(raised, 0);
+                        assert_eq!(
+                            pending, raised,
+                            "argument cleanup replaced the callback error"
+                        );
+                        crate::molt_exception_clear();
+                        molt_cpython_abi::api::errors::PyErr_Clear();
+                        dec_ref_bits(&py, raised);
+                        dec_ref_bits(&py, pending);
+                    } else {
+                        assert!(!crate::exception_pending(&py));
+                        assert_eq!(result, value);
+                    }
+                    dec_ref_bits(&py, result);
+                    assert_eq!(ref_count(value), baseline);
+                }
+                // The C borrowing rule does not authorize moved input to arbitrary
+                // borrowing functions, which are not identified by the C trampoline.
+                let ordinary = crate::builtins::functions::alloc_runtime_function_obj(
+                    &py,
+                    identity_returns_owned_arg as *const () as usize as u64,
+                    1,
+                );
+                assert!(!ordinary.is_null());
+                let ordinary = MoltObject::from_ptr(ordinary).bits();
+                crate::inc_ref_bits(&py, value);
+                let result = super::call_function_obj_moved(&py, ordinary, &[value]);
+                assert!(crate::exception_pending(&py));
+                let pending = crate::molt_exception_last_pending();
+                assert_eq!(
+                    crate::builtins::exceptions::exception_class(&py, pending)
+                        .unwrap()
+                        .bits(),
+                    crate::builtins::exceptions::exception_type_bits_from_name(&py, "SystemError"),
+                );
+                crate::molt_exception_clear();
+                molt_cpython_abi::api::errors::PyErr_Clear();
+                dec_ref_bits(&py, pending);
+                dec_ref_bits(&py, result);
+                dec_ref_bits(&py, ordinary);
+                assert_eq!(ref_count(value), baseline);
+            }
+            assert!(!current_thread_has_c_extension_execution_context());
+            dec_ref_bits(&py, value);
+            dec_ref_bits(&py, function);
+        });
+    }
+
+    // An ordinary call owns its callable. A temporary bound method ends before
+    // its function runs, so at entry the receiver's only references are the
+    // test's and the frame's `self`. A lane that kept the method until the
+    // call returned would show one more, and a lane that forgot to release it
+    // would leave the receiver and the function retained afterwards.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn an_adopted_bound_method_ends_before_its_function_runs() {
+        use std::sync::atomic::Ordering::SeqCst;
+        init();
+        crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                fixed_arity_returns_first_param as *const () as usize as u64,
+                1,
+            );
+            assert!(!func_ptr.is_null());
+            let func_bits = MoltObject::from_ptr(func_ptr).bits();
+            unsafe {
+                crate::object::layout::function_set_trampoline_ptr(
+                    func_ptr,
+                    adopting_trampoline as *const () as usize as u64,
+                );
+                assert_eq!(
+                    crate::object::layout::function_publish_entry_custody(
+                        func_ptr,
+                        crate::object::layout::EntryCustody::Adopting,
+                    ),
+                    Ok(())
+                );
+            }
+            let receiver_ptr = alloc_list(_py, &[int(1)]);
+            assert!(!receiver_ptr.is_null());
+            let receiver_bits = MoltObject::from_ptr(receiver_ptr).bits();
+            let baseline = ref_count(receiver_bits);
+            let function_baseline = ref_count(func_bits);
+            let method_ptr =
+                crate::object::builders::alloc_bound_method_obj(_py, func_bits, receiver_bits);
+            assert!(!method_ptr.is_null());
+            let method_bits = MoltObject::from_ptr(method_ptr).bits();
+            assert_eq!(ref_count(receiver_bits), baseline + 1);
+
+            // The call adopts the method's only reference.
+            let result = unsafe { crate::call::bind::call_owned_arguments(_py, method_bits, &[]) };
+            assert!(obj_from_bits(result).is_none());
+            assert!(!crate::exception_pending(_py));
+            assert_eq!(ADOPTED_ARGUMENT_REFS.load(SeqCst), baseline + 1);
+            assert_eq!(ref_count(receiver_bits), baseline);
+            assert_eq!(ref_count(func_bits), function_baseline);
+
+            dec_ref_bits(_py, receiver_bits);
+            dec_ref_bits(_py, func_bits);
+        });
+    }
+
+    #[test]
+    fn runtime_invocation_family_restores_baseline_without_clearing_exception() {
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
+        static ENTRIES: AtomicUsize = AtomicUsize::new(0);
+        static RAISED: AtomicU64 = AtomicU64::new(0);
+        extern "C" fn changes_baseline_and_raises() -> u64 {
+            crate::with_gil_entry_nopanic!(py, {
+                ENTRIES.fetch_add(1, SeqCst);
+                crate::exception_stack_baseline_set(0);
+                let result = crate::raise_exception::<u64>(py, "ValueError", "callback failure");
+                // Retain the callback's actual exception independently of pending state.
+                RAISED.store(crate::molt_exception_last_pending(), SeqCst);
+                result
+            })
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let _baseline = crate::call::ExceptionBaselineGuard::new();
+                let address = changes_baseline_and_raises as *const () as usize as u64;
+                let pointer =
+                    crate::builtins::functions::alloc_runtime_function_obj(py, address, 0);
+                assert!(!pointer.is_null());
+                let function = MoltObject::from_ptr(pointer).bits();
+                let empty: [u64; 0] = [];
+                for lane in 0..5 {
+                    ENTRIES.store(0, SeqCst);
+                    crate::exception_stack_baseline_set(1);
+                    let result = match lane {
+                        0 => super::call_function_obj0(py, function),
+                        1 => super::call_function_obj_vec(py, function, &[]),
+                        2 => crate::molt_call_func_fast0(function),
+                        3 => crate::molt_guarded_call(address, empty.as_ptr(), 0),
+                        _ => crate::molt_guarded_call_obj(address, empty.as_ptr(), 0, function),
+                    };
+                    assert_eq!(ENTRIES.load(SeqCst), 1, "lane {lane} did not invoke once");
+                    assert_eq!(crate::exception_stack_baseline_get(), 1, "lane {lane}");
+                    assert!(
+                        crate::exception_pending(py),
+                        "lane {lane} erased the exception"
+                    );
+                    let raised = RAISED.swap(0, SeqCst);
+                    let pending = crate::molt_exception_last_pending();
+                    assert_eq!(
+                        pending, raised,
+                        "lane {lane} replaced the callback exception"
+                    );
+                    assert_eq!(
+                        crate::builtins::exceptions::exception_class(py, pending)
+                            .unwrap()
+                            .bits(),
+                        crate::builtins::exceptions::exception_type_bits_from_name(
+                            py,
+                            "ValueError"
+                        ),
+                        "lane {lane} changed the exception class"
+                    );
+                    crate::molt_exception_clear();
+                    dec_ref_bits(py, raised);
+                    dec_ref_bits(py, pending);
+                    dec_ref_bits(py, result);
+                }
+                dec_ref_bits(py, function);
+            }
+        });
+    }
+
+    #[test]
+    fn borrowed_dispatch_binds_defaults_before_wide_fixed_abi_execution() {
+        extern "C" fn last_of_thirteen(
+            _a: u64,
+            _b: u64,
+            _c: u64,
+            _d: u64,
+            _e: u64,
+            _f: u64,
+            _g: u64,
+            _h: u64,
+            _i: u64,
+            _j: u64,
+            _k: u64,
+            _l: u64,
+            last: u64,
+        ) -> i64 {
+            identity_returns_owned_arg(last)
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    last_of_thirteen as *const () as usize as u64,
+                    13,
+                );
+                assert!(!function_ptr.is_null());
+                let function = MoltObject::from_ptr(function_ptr).bits();
+                let value_ptr = alloc_list(py, &[int(31)]);
+                assert!(!value_ptr.is_null());
+                let value = MoltObject::from_ptr(value_ptr).bits();
+                let defaults_ptr = alloc_tuple(py, &[value]);
+                assert!(!defaults_ptr.is_null());
+                let defaults = MoltObject::from_ptr(defaults_ptr).bits();
+                set_function_metadata_attr(py, function_ptr, b"__defaults__", defaults);
+                let baseline = ref_count(value);
+                let mut arguments = vec![int(1); 12];
+                for supplied in [12, 13] {
+                    if supplied == 13 {
+                        arguments.push(value);
+                    }
+                    let result = crate::molt_call_func_dispatch(
+                        function,
+                        arguments.as_ptr() as u64,
+                        arguments.len() as u64,
+                        0,
+                    );
+                    assert!(!crate::exception_pending(py));
+                    assert_eq!(result, value);
+                    assert_eq!(ref_count(value), baseline + 1);
+                    dec_ref_bits(py, result);
+                    assert_eq!(ref_count(value), baseline);
+                }
+                for bits in [function, defaults, value] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn descriptor_calls_bind_python_arguments_before_packed_abi_execution() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let none = MoltObject::none().bits();
+                let getter_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    identity_returns_owned_arg as *const () as usize as u64,
+                    1,
+                );
+                assert!(!getter_ptr.is_null());
+                let getter = MoltObject::from_ptr(getter_ptr).bits();
+                let property_ptr = crate::alloc_property_obj(py, none, none, none);
+                assert!(!property_ptr.is_null());
+                let property = MoltObject::from_ptr(property_ptr).bits();
+                let init = crate::builtins::methods::builtin_class_method_bits(
+                    py,
+                    crate::builtin_classes(py).property,
+                    "__init__",
+                )
+                .unwrap();
+                let get = crate::builtins::methods::builtin_class_method_bits(
+                    py,
+                    crate::builtin_classes(py).property,
+                    "__get__",
+                )
+                .unwrap();
+                let set_name = crate::builtins::methods::builtin_class_method_bits(
+                    py,
+                    crate::builtin_classes(py).property,
+                    "__set_name__",
+                )
+                .unwrap();
+
+                // Two visible arguments happen to equal the native packed ABI
+                // arity. They still require binding into (args, kwargs).
+                let result = super::call_function_obj2(py, init, property, getter);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(result, none);
+                assert_eq!(crate::property_get_bits(property_ptr), getter);
+                dec_ref_bits(py, result);
+
+                let receiver_ptr = alloc_list(py, &[int(7)]);
+                assert!(!receiver_ptr.is_null());
+                let receiver = MoltObject::from_ptr(receiver_ptr).bits();
+                let baseline = ref_count(receiver);
+                let result = super::call_function_obj2(py, get, property, receiver);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(result, receiver);
+                assert_eq!(ref_count(receiver), baseline + 1);
+                dec_ref_bits(py, result);
+                assert_eq!(ref_count(receiver), baseline);
+
+                // Class construction invokes the bound special method with
+                // owner/name; neither the owner nor packed tuple is its self.
+                let bound = crate::builtins::attr::descriptor_bind(
+                    py,
+                    set_name,
+                    Some(crate::builtin_classes(py).property),
+                    Some(property),
+                )
+                .unwrap();
+                let name = string_bits("field");
+                let result = crate::call::bind::call_bind_borrowed(
+                    py,
+                    bound,
+                    None,
+                    &[crate::builtin_classes(py).object, name],
+                    &[],
+                    &[],
+                );
+                assert!(!crate::exception_pending(py));
+                assert_eq!(result, none);
+                assert_eq!(
+                    crate::object::layout::property_name_bits(property_ptr),
+                    name
+                );
+                dec_ref_bits(py, result);
+
+                // Public None is a supplied receiver, not the __get__ sentinel.
+                let result = super::call_function_obj2(py, get, none, receiver);
+                assert!(crate::exception_pending(py));
+                crate::molt_exception_clear();
+                dec_ref_bits(py, result);
+                assert_eq!(ref_count(receiver), baseline);
+                for bits in [bound, property, getter, receiver, name] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
+
     #[test]
     fn fixed_arity_type_constructor_builtins_route_visible_args_through_binder() {
         init();
@@ -3332,7 +4076,7 @@ mod tests {
                 );
                 assert!(
                     unsafe {
-                        crate::call::bind::function_fixed_positional_call_needs_binding(
+                        crate::call::bind::function_raw_positional_call_needs_binding(
                             _py, func_ptr, 4,
                         )
                     },

@@ -16,7 +16,7 @@ use crate::tir::exception_regions::{
 };
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    opcode_requires_async_work_poll_after_table, simpleir_kind_is_call_graph_user_call,
+    opcode_requires_async_work_poll_after_table, simpleir_kind_requires_async_work_poll_after,
 };
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -26,100 +26,23 @@ use super::PassStats;
 use super::check_exception_elim::classify::{
     const_int_values, op_clears_pending_exception, op_may_raise,
 };
+#[cfg(test)]
+use super::exception_observation::is_deferred_finally_observer;
+use super::exception_observation::{
+    FINALLY_PENDING_OBSERVER, PostOperationObservation, check_label, post_operation_observation,
+};
 
 fn is_call_return_poll(op: &TirOp) -> bool {
     opcode_requires_async_work_poll_after_table(op.opcode)
         || (op.opcode == OpCode::Copy
             && matches!(
                 op.attrs.get("_original_kind"),
-                Some(AttrValue::Str(kind)) if simpleir_kind_is_call_graph_user_call(kind)
+                Some(AttrValue::Str(kind)) if simpleir_kind_requires_async_work_poll_after(kind)
             ))
 }
 
 fn mark_poll(op: &mut TirOp) -> bool {
     op.mark_async_work_poll()
-}
-
-fn check_label(op: &TirOp) -> Option<i64> {
-    if op.opcode != OpCode::CheckException {
-        return None;
-    }
-    match op.attrs.get("value") {
-        Some(AttrValue::Int(label)) => Some(*label),
-        _ => None,
-    }
-}
-
-const FINALLY_PENDING_OBSERVER: &str = "exception_finally_pending_observer";
-
-fn is_deferred_finally_observer(op: &TirOp) -> bool {
-    op.opcode == OpCode::Copy
-        && matches!(
-            op.attrs.get("_original_kind"),
-            Some(AttrValue::Str(kind)) if kind == FINALLY_PENDING_OBSERVER
-        )
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum PostCallObservation {
-    Check(BlockId, usize),
-    DeferredFinally(BlockId, usize),
-}
-
-/// Locate the frontend-authored exception observation for a call boundary.
-///
-/// Optimization and CFG construction may separate a call from its original
-/// payload-bearing `CheckException` or split the observation into a unique
-/// unconditional successor block. Traverse only operations the canonical
-/// check-elimination oracle proves cannot raise or clear pending state, plus
-/// unconditional fallthrough. Never cross another call, lexical transfer,
-/// conditional edge, or cycle and incorrectly let one later check service two
-/// semantic boundaries.
-fn post_call_observation(
-    func: &TirFunction,
-    block_id: BlockId,
-    call_index: usize,
-    target: Option<i64>,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    value_types: &HashMap<ValueId, TirType>,
-    const_ints: &HashMap<ValueId, i64>,
-) -> Option<PostCallObservation> {
-    let mut current = block_id;
-    let mut start = call_index + 1;
-    let mut visited = BTreeSet::new();
-    loop {
-        if !visited.insert(current) {
-            return None;
-        }
-        let block = func.blocks.get(&current)?;
-        for (index, op) in block.ops.iter().enumerate().skip(start) {
-            if op.opcode == OpCode::CheckException {
-                if op.is_async_work_poll() && check_label(op).is_none() {
-                    return Some(PostCallObservation::Check(current, index));
-                }
-                return check_label(op)
-                    .filter(|label| target.is_none() || target == Some(*label))
-                    .map(|_| PostCallObservation::Check(current, index));
-            }
-            if is_deferred_finally_observer(op) {
-                return Some(PostCallObservation::DeferredFinally(current, index));
-            }
-            if crate::tir::dominators::is_exception_transfer_edge(op.opcode)
-                || op_clears_pending_exception(op)
-                || op_may_raise(value_types, const_ints, op)
-            {
-                return None;
-            }
-        }
-        let Terminator::Branch { target, .. } = &block.terminator else {
-            return None;
-        };
-        if predecessors.get(target).map(Vec::as_slice) != Some(&[current]) {
-            return None;
-        }
-        current = *target;
-        start = 0;
-    }
 }
 
 /// Find the payload-bearing observation that services a loop backedge when
@@ -345,10 +268,10 @@ fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacement
     }
 }
 
-fn observation_is_marked(func: &TirFunction, observation: PostCallObservation) -> bool {
+fn observation_is_marked(func: &TirFunction, observation: PostOperationObservation) -> bool {
     let (block, index) = match observation {
-        PostCallObservation::Check(block, index)
-        | PostCallObservation::DeferredFinally(block, index) => (block, index),
+        PostOperationObservation::Check(block, index)
+        | PostOperationObservation::DeferredFinally(block, index) => (block, index),
     };
     func.blocks[&block].ops[index].is_async_work_poll()
 }
@@ -361,7 +284,7 @@ pub(crate) fn is_materialized(func: &TirFunction) -> bool {
     let mut analyses = AnalysisManager::new();
     let plan = placement_plan(func, &mut analyses);
     let calls_ready = plan.call_sites.iter().all(|(block, index, target)| {
-        post_call_observation(
+        post_operation_observation(
             func,
             *block,
             *index,
@@ -401,7 +324,7 @@ pub(crate) fn loop_only_poll_sites(
         .call_sites
         .iter()
         .filter_map(|(block, index, target)| {
-            match post_call_observation(
+            match post_operation_observation(
                 func,
                 *block,
                 *index,
@@ -410,7 +333,7 @@ pub(crate) fn loop_only_poll_sites(
                 &plan.value_types,
                 &plan.const_ints,
             ) {
-                Some(PostCallObservation::Check(block, index)) => Some((block, index)),
+                Some(PostOperationObservation::Check(block, index)) => Some((block, index)),
                 _ => None,
             }
         })
@@ -503,7 +426,7 @@ pub(crate) fn materialize_before_ssa(
     };
 
     for (block, index, target) in &plan.call_sites {
-        match post_call_observation(
+        match post_operation_observation(
             preview,
             *block,
             *index,
@@ -512,8 +435,8 @@ pub(crate) fn materialize_before_ssa(
             &plan.value_types,
             &plan.const_ints,
         ) {
-            Some(PostCallObservation::Check(..)) => {}
-            Some(PostCallObservation::DeferredFinally(observer_block, observer_index)) => {
+            Some(PostOperationObservation::Check(..)) => {}
+            Some(PostOperationObservation::DeferredFinally(observer_block, observer_index)) => {
                 let prepared_index = preview.blocks[&observer_block].ops[observer_index]
                     .source_op_index()
                     .expect("deferred-finally observer lost its prepared SimpleIR position");
@@ -630,7 +553,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let plan = placement_plan(func, am);
     for (block_id, index, target) in plan.call_sites {
-        let observation = post_call_observation(
+        let observation = post_operation_observation(
             func,
             block_id,
             index,
@@ -639,12 +562,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             &plan.value_types,
             &plan.const_ints,
         );
-        if let Some(PostCallObservation::Check(existing_block, existing_index)) = observation {
+        if let Some(PostOperationObservation::Check(existing_block, existing_index)) = observation {
             let block = func.blocks.get_mut(&existing_block).unwrap();
             stats.attrs_changed += usize::from(mark_poll(&mut block.ops[existing_index]));
             continue;
         }
-        if let Some(PostCallObservation::DeferredFinally(observer_block, observer_index)) =
+        if let Some(PostOperationObservation::DeferredFinally(observer_block, observer_index)) =
             observation
         {
             let observer = &mut func.blocks.get_mut(&observer_block).unwrap().ops[observer_index];
@@ -1144,6 +1067,138 @@ mod tests {
     }
 
     #[test]
+    fn typed_frame_publication_preserves_resume_exception_dispatch() {
+        // The retained async-comprehension resume path: publication and task
+        // cleanup run while StopAsyncIteration is deliberately pending. They
+        // must reach the authored matcher before any transferring work poll.
+        // Keep the synchronous loop before the resume entry: a state-dispatch
+        // edge into its body would bypass the header and prevent domination,
+        // so it would not exercise the natural-loop backedge poll contract.
+        let ir: FunctionIR = serde_json::from_value(serde_json::json!({
+            "return_abi": "value", "name": "frame_publication_resume", "execution_context": "local",
+            "params": ["self", "keep_running", "awaitable"],
+            "param_types": ["Any", "bool", "Any"],
+            "ops": [
+                {"kind": "trace_enter_slot", "value": 1},
+                {"kind": "state_switch"},
+                {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
+                {"kind": "check_exception", "value": 70},
+                {"kind": "loop_start"},
+                {"kind": "loop_break_if_false", "args": ["keep_running"]},
+                {"kind": "check_exception", "value": 70},
+                {"kind": "loop_continue"},
+                {"kind": "loop_end"},
+                {"kind": "state_label", "value": 80},
+                {"kind": "const", "value": 80, "out": "pending"},
+                {"kind": "const", "value": 152, "out": "slot"},
+                {"kind": "state_transition", "value": 81,
+                 "args": ["awaitable", "slot", "pending"], "out": "ready"},
+                {"kind": "const_none", "out": "frame_none"},
+                {"kind": "const", "value": 0, "out": "argument_kind"},
+                {"kind": "frame_context_set", "args": ["frame_none", "argument_kind", "frame_none"]},
+                {"kind": "closure_store", "args": ["self", "frame_none"], "value": 152},
+                {"kind": "closure_load", "args": ["self"], "value": 152, "out": "cleanup"},
+                {"kind": "exception_last", "out": "pending_exception"},
+                {"kind": "exception_match_builtin", "args": ["pending_exception"],
+                 "s_value": "StopAsyncIteration", "value": 9, "out": "is_stop"},
+                {"kind": "if", "args": ["is_stop"]},
+                {"kind": "exception_clear"},
+                {"kind": "end_if"},
+                {"kind": "check_exception", "value": 70},
+                {"kind": "trace_exit"},
+                {"kind": "ret_void"},
+                {"kind": "label", "value": 70},
+                {"kind": "trace_exit"},
+                {"kind": "ret_void"}
+            ]
+        }))
+        .unwrap();
+        crate::validate_simple_ir(&crate::ir::SimpleIR {
+            functions: vec![ir.clone()],
+            profile: None,
+        })
+        .expect("resume fixture obeys executable frame/transport admission");
+
+        fn assert_publication_reaches_matcher(func: &TirFunction) {
+            let (mut block_id, mut index) = func
+                .blocks
+                .values()
+                .find_map(|block| {
+                    block
+                        .ops
+                        .iter()
+                        .position(|op| op.opcode == OpCode::FrameContextSet)
+                        .map(|index| (block.id, index + 1))
+                })
+                .expect("frame publication survives optimization");
+            let mut visited = BTreeSet::new();
+            loop {
+                assert!(
+                    visited.insert(block_id),
+                    "cycle before explicit pending matcher"
+                );
+                let block = &func.blocks[&block_id];
+                for op in &block.ops[index..] {
+                    assert!(
+                        !op.is_async_work_poll(),
+                        "publication stole pending exception: {op:?}"
+                    );
+                    assert_ne!(
+                        op.opcode,
+                        OpCode::CheckException,
+                        "publication must not add an implicit exception transfer"
+                    );
+                    if matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
+                        if kind == "exception_match_builtin")
+                    {
+                        return;
+                    }
+                }
+                match &block.terminator {
+                    Terminator::Branch { target, .. } => {
+                        block_id = *target;
+                        index = 0;
+                    }
+                    other => panic!("publication did not reach authored matcher: {other:?}"),
+                }
+            }
+        }
+
+        for target in [
+            crate::tir::target_info::TargetInfo::native_release_fast(),
+            crate::tir::target_info::TargetInfo::wasm_release_fast(),
+            crate::tir::target_info::TargetInfo::llvm_release_fast(),
+        ] {
+            let mut func = crate::tir::lower_from_simple::lower_to_tir_for_target(&ir, &target);
+            assert_publication_reaches_matcher(&func);
+            let mut am = AnalysisManager::new();
+            let plan = placement_plan(&func, &mut am);
+            assert_eq!(
+                plan.call_sites.len(),
+                1,
+                "only the actual work call is a call-return site"
+            );
+            assert!(
+                !plan.latch_sites.is_empty(),
+                "loop backedge must remain a poll site"
+            );
+            run_verified(&mut func);
+            crate::tir::type_refine::refine_types(&mut func);
+            crate::tir::passes::run_pipeline(&mut func, &target);
+            assert_publication_reaches_matcher(&func);
+            assert!(
+                func.blocks
+                    .values()
+                    .flat_map(|block| &block.ops)
+                    .filter(|op| op.is_async_work_poll())
+                    .count()
+                    >= 2,
+                "genuine call and backedge polls must survive optimization"
+            );
+        }
+    }
+
+    #[test]
     fn generated_call_returns_and_loop_backedges_share_one_poll_marker() {
         let mut func = TirFunction::new(
             "polls".into(),
@@ -1278,7 +1333,7 @@ mod tests {
         let const_ints = const_int_values(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_call_observation(
+            post_operation_observation(
                 &func,
                 entry,
                 0,
@@ -1291,7 +1346,7 @@ mod tests {
             "a later call is a hard semantic boundary"
         );
         assert_eq!(
-            post_call_observation(
+            post_operation_observation(
                 &func,
                 entry,
                 1,
@@ -1300,7 +1355,7 @@ mod tests {
                 &value_types,
                 &const_ints,
             ),
-            Some(PostCallObservation::Check(entry, 2))
+            Some(PostOperationObservation::Check(entry, 2))
         );
     }
 
@@ -1334,7 +1389,7 @@ mod tests {
         let const_ints = const_int_values(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_call_observation(
+            post_operation_observation(
                 &func,
                 entry,
                 0,
@@ -1343,7 +1398,7 @@ mod tests {
                 &value_types,
                 &const_ints,
             ),
-            Some(PostCallObservation::Check(observer, 0))
+            Some(PostOperationObservation::Check(observer, 0))
         );
 
         func.blocks
@@ -1353,7 +1408,7 @@ mod tests {
             .insert(0, call());
         assert_valid(&func);
         assert_eq!(
-            post_call_observation(
+            post_operation_observation(
                 &func,
                 entry,
                 0,
@@ -1383,7 +1438,7 @@ mod tests {
         assert_valid(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_call_observation(
+            post_operation_observation(
                 &func,
                 entry,
                 0,

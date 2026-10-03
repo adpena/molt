@@ -287,6 +287,7 @@ fn wasm_lir_fast_plan_records_escaped_callable_reason() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,

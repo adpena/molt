@@ -2,6 +2,21 @@ use super::*;
 
 impl RustBackend {
     pub(super) fn emit_op_builtin_func(&mut self, op: &OpIR) {
+        if op
+            .builtin_name
+            .as_deref()
+            .and_then(molt_ir::python_builtin_callables_generated::python_builtin_callable)
+            .is_some()
+        {
+            // compile_checked already rejects builtin_func through the shared
+            // FALLIBLE_PROTOCOL capability. Keep private emission honest too:
+            // a fixed Arc function cannot substitute a captured public binding.
+            self.emit_unsupported_op(
+                op,
+                "public builtin lookup requires captured namespace and mapping exception custody",
+            );
+            return;
+        }
         let out = || out_var(op);
         let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
             if hoisted.contains(out_name) {

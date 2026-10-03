@@ -3,6 +3,7 @@ pub mod bolt;
 pub mod cache;
 pub mod call_facts;
 pub mod call_graph;
+pub mod call_sites;
 pub mod drop_phase;
 pub mod exception_regions;
 pub mod fact_graph;

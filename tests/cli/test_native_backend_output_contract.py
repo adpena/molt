@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.cli.native_link_test_support import transport_codegen_binding
+
 import json
 from pathlib import Path
 
@@ -14,7 +16,9 @@ from molt.cli.native_link_plan import NativeArtifactKind
 
 @pytest.mark.parametrize("kind", list(NativeArtifactKind))
 @pytest.mark.parametrize("probe", [False, True])
-def test_native_output_kind_is_explicit_in_full_and_probe_requests(kind, probe):
+def test_native_output_kind_is_explicit_in_full_and_probe_requests(
+    tmp_path, kind, probe
+):
     contract = resolve_backend_artifact_contract(
         target="native",
         emit_mode="obj" if kind is NativeArtifactKind.OBJECT else "bin",
@@ -35,6 +39,11 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(kind, probe):
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
         probe_cache_only=probe,
+        native_runtime_codegen_binding=transport_codegen_binding(
+            tmp_path / "runtime-transport"
+        )
+        if contract.is_native
+        else None,
     )
     assert error is None
     assert payload is not None
@@ -140,6 +149,11 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
         function_cache_key="function-key",
         config_digest=None,
         timeout=None,
+        native_runtime_codegen_binding=transport_codegen_binding(
+            tmp_path / "runtime-transport"
+        )
+        if contract.is_native
+        else None,
     )
     assert result.ok, result.error
     assert len(jobs) == 2

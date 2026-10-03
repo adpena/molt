@@ -1,26 +1,4 @@
 use super::*;
-use wtf8::Wtf8;
-
-fn exception_dict_attr_bits(_py: &PyToken<'_>, ptr: *mut u8, name: &[u8]) -> Option<u64> {
-    let dict_bits = unsafe { exception_dict_bits(ptr) };
-    if obj_from_bits(dict_bits).is_none() || dict_bits == 0 {
-        return None;
-    }
-    let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
-    unsafe {
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return None;
-        }
-        let key_bits = attr_name_bits_from_bytes(_py, name)?;
-        let out = dict_get_in_place(_py, dict_ptr, key_bits);
-        dec_ref_bits(_py, key_bits);
-        out
-    }
-}
-
-fn oserror_root_name(name: &str) -> bool {
-    matches!(name, "OSError" | "EnvironmentError" | "IOError")
-}
 
 fn errno_is_shutdown(errno: i64) -> bool {
     #[cfg(all(not(windows), not(target_arch = "wasm32")))]
@@ -119,15 +97,15 @@ pub(super) unsafe fn oserror_fields_from_args(
     class_bits: u64,
     args_bits: u64,
 ) -> OSErrorFields {
-    let none = MoltObject::none().bits();
+    let missing = exception_field_missing_bits();
     let mut fields = OSErrorFields {
         errno_value: None,
-        errno_bits: none,
-        strerror_bits: none,
-        filename_bits: none,
-        filename2_bits: none,
+        errno_bits: missing,
+        strerror_bits: missing,
+        filename_bits: missing,
+        filename2_bits: missing,
         #[cfg(windows)]
-        winerror_bits: none,
+        winerror_bits: missing,
         characters_written_bits: None,
     };
     let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
@@ -141,7 +119,7 @@ pub(super) unsafe fn oserror_fields_from_args(
     let exact_blocking = class_bits != 0 && class_bits == blocking_type;
     unsafe {
         crate::object::seq_access::with_borrowed(args_ptr, |elems| {
-            if elems.len() < 2 {
+            if !(2..=5).contains(&elems.len()) {
                 return;
             }
             fields.errno_bits = elems[0];
@@ -151,7 +129,7 @@ pub(super) unsafe fn oserror_fields_from_args(
                 if exact_blocking && elems.len() == 3 && oserror_integral_i64(_py, third).is_some()
                 {
                     fields.characters_written_bits = Some(third);
-                } else {
+                } else if !obj_from_bits(third).is_none() {
                     fields.filename_bits = third;
                 }
             }
@@ -164,7 +142,10 @@ pub(super) unsafe fn oserror_fields_from_args(
                     fields.errno_bits = int_bits_from_i64(_py, errno);
                 }
             }
-            if let Some(&filename2) = elems.get(4) {
+            if !exception_field_is_missing(fields.filename_bits)
+                && let Some(&filename2) = elems.get(4)
+                && !obj_from_bits(filename2).is_none()
+            {
                 fields.filename2_bits = filename2;
             }
         });
@@ -196,7 +177,7 @@ pub(super) fn oserror_stored_args(
             {
                 stored[0] = fields.errno_bits;
             }
-            let truncate = fields.filename_bits != none;
+            let truncate = !exception_field_is_missing(fields.filename_bits);
             let len = if truncate { 2 } else { args.len() };
             let changed = truncate || stored[0] != args[0];
             (len, changed)
@@ -314,7 +295,7 @@ pub(super) fn unicode_error_fields_from_args(
         let (encoding_bits, mut object_bits, start_bits, end_bits, reason_bits, object_idx) =
             match kind {
                 UnicodeErrorKind::Translate => (
-                    MoltObject::none().bits(),
+                    exception_field_missing_bits(),
                     elems[0],
                     elems[1],
                     elems[2],
@@ -424,10 +405,10 @@ pub(crate) fn alloc_exception_from_class_bits(
         let mut oserror_layout = false;
         if issubclass_bits(class_bits, oserror_bits) {
             oserror_layout = true;
-            let name = string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr)))
-                .expect("exception class must have a string name");
             let fields = oserror_fields_from_args(_py, class_bits, args_bits);
-            if oserror_root_name(&name)
+            // CPython promotes errno only for the canonical exact OSError.
+            // Aliases already share that identity; names on subclasses are mutable.
+            if class_bits == oserror_bits
                 && let Some(errno_val) = fields.errno_value
                 && let Some(subclass) = oserror_subclass_for_errno(errno_val)
             {
@@ -449,11 +430,6 @@ pub(crate) fn alloc_exception_from_class_bits(
             args_bits
         };
         let msg_bits = exception_message_for_storage(_py, class_bits, stored_args_bits);
-        if !exception_message_storage_is_valid(_py, class_bits, msg_bits) {
-            dec_ref_bits(_py, args_bits);
-            dec_ref_bits(_py, stored_args_bits);
-            return std::ptr::null_mut();
-        }
         let none_bits = MoltObject::none().bits();
         let mut ptr = alloc_exception_obj(_py, class_bits, msg_bits, stored_args_bits, none_bits);
         if !ptr.is_null()
@@ -469,85 +445,40 @@ pub(crate) fn alloc_exception_from_class_bits(
     }
 }
 
-fn exception_args_vec(ptr: *mut u8) -> Vec<u64> {
-    unsafe {
-        let args_bits = exception_args_bits(ptr);
-        if exception_args_is_lazy_single(args_bits) {
-            return vec![exception_args_payload_bits(ptr)];
-        }
-        let args_obj = obj_from_bits(args_bits);
-        if let Some(args_ptr) = args_obj.as_ptr() {
-            let type_id = object_type_id(args_ptr);
-            if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                return crate::object::seq_access::with_borrowed(args_ptr, |items| items.to_vec());
-            }
-        }
-        if args_obj.is_none() {
-            Vec::new()
-        } else {
-            vec![args_bits]
-        }
-    }
-}
-
-fn exception_class_name(ptr: *mut u8) -> String {
-    unsafe {
-        let class_ptr = obj_from_bits(object_class_bits(ptr))
-            .as_ptr()
-            .expect("exception object must have a class edge");
-        string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr)))
-            .expect("exception class must have a string name")
-    }
-}
-
-pub(crate) fn format_exception(_py: &PyToken<'_>, ptr: *mut u8) -> String {
-    let kind = exception_class_name(ptr);
-    let args = exception_args_vec(ptr);
-    if args.is_empty() {
-        return format!("{kind}()");
-    }
-    if args.len() == 1 {
-        let arg_repr = format_obj(_py, obj_from_bits(args[0]));
-        return format!("{kind}({arg_repr})");
-    }
-    let args_repr = format_obj(_py, obj_from_bits(unsafe { exception_args_bits(ptr) }));
-    format!("{kind}{args_repr}")
-}
-
 pub(crate) fn format_exception_with_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> String {
-    // CPython displays chained exceptions recursively: context first,
-    // then a separator, then the current exception.
-    let suppress = unsafe { exception_suppress_bits(ptr) };
-    let suppress_context = is_truthy(_py, obj_from_bits(suppress));
-    if !suppress_context {
-        let cause_bits = unsafe { exception_cause_bits(ptr) };
-        let context_bits = unsafe { exception_context_bits(ptr) };
-        if let Some(cause_ptr) = obj_from_bits(cause_bits).as_ptr() {
-            if unsafe { object_type_id(cause_ptr) } == TYPE_ID_EXCEPTION {
-                let mut chain = format_exception_with_traceback(_py, cause_ptr);
-                chain.push_str(
-                    "\nThe above exception was the direct cause of the following exception:\n\n",
-                );
-                chain.push_str(&format_single_exception(_py, ptr));
-                return chain;
+    let mut rendered = String::new();
+    let ok = with_saved_raised_exception(_py, || {
+        let Some(chain) = crate::object::ops_sys::traceback_exception_chain(
+            _py,
+            MoltObject::from_ptr(ptr).bits(),
+        ) else {
+            return false;
+        };
+        for index in (0..chain.len()).rev() {
+            if index + 1 < chain.len() {
+                rendered.push('\n');
+                rendered.push_str(chain[index + 1].separator.expect("linked exception"));
             }
-        } else if let Some(ctx_ptr) = obj_from_bits(context_bits).as_ptr()
-            && unsafe { object_type_id(ctx_ptr) } == TYPE_ID_EXCEPTION
-        {
-            let mut chain = format_exception_with_traceback(_py, ctx_ptr);
-            chain.push_str(
-                "\nDuring handling of the above exception, another exception occurred:\n\n",
-            );
-            chain.push_str(&format_single_exception(_py, ptr));
-            return chain;
+            let ptr = obj_from_bits(chain[index].value.bits())
+                .as_ptr()
+                .expect("admitted exception");
+            rendered.push_str(&format_single_exception(_py, ptr));
+            if exception_pending(_py) {
+                return false;
+            }
         }
-    }
-    format_single_exception(_py, ptr)
+        true
+    });
+    if ok { rendered } else { String::new() }
 }
 
 fn format_single_exception(_py: &PyToken<'_>, ptr: *mut u8) -> String {
     let mut out = String::new();
-    if let Some(trace) = format_traceback(_py, ptr) {
+    let trace = match format_traceback(_py, ptr) {
+        Ok(trace) => trace,
+        Err(_) => return out,
+    };
+    if let Some(trace) = trace {
         out.push_str(&trace);
     } else {
         // No traceback object attached — emit a minimal CPython-compatible
@@ -556,22 +487,30 @@ fn format_single_exception(_py: &PyToken<'_>, ptr: *mut u8) -> String {
         // by runtime intrinsics, not Python-level raise statements.
         out.push_str("Traceback (most recent call last):\n");
         if let Some((file, line, name, col, end_col)) = frame_stack_top_info(_py) {
-            let source = crate::object::ops_sys::traceback_source_line_native(_py, &file, line);
+            let source =
+                crate::object::ops_sys::traceback_source_line_native(_py, file.as_bytes(), line);
             let frame = crate::object::ops_sys::TracebackPayloadFrame {
-                filename: file,
+                filename: file.into_bytes(),
                 lineno: line,
                 end_lineno: line,
                 colno: col,
                 end_colno: end_col,
-                name,
+                name: name.into_bytes(),
                 line: source,
             };
-            out.push_str(&crate::object::ops_sys::traceback_payload_format_frame(
-                _py, &frame,
-            ));
+            let rendered = match crate::object::ops_sys::traceback_payload_format_frame(_py, &frame)
+            {
+                Ok(rendered) => rendered,
+                Err(_) => return String::new(),
+            };
+            out.push_str(&String::from_utf8_lossy(&rendered));
         }
     }
-    let kind = exception_class_name(ptr);
+    let Some(storage) = ExceptionStorage::for_exception(_py, MoltObject::from_ptr(ptr).bits())
+    else {
+        return String::new();
+    };
+    let kind = storage.class_name();
     let message = format_exception_message(_py, ptr);
     if message.is_empty() {
         out.push_str(&kind);
@@ -581,188 +520,45 @@ fn format_single_exception(_py: &PyToken<'_>, ptr: *mut u8) -> String {
     out
 }
 
-pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> String {
-    let class_bits = unsafe { object_class_bits(ptr) };
-    let kind = exception_class_name(ptr);
-    let exception_bits = MoltObject::from_ptr(ptr).bits();
-    if exception_matches_builtin_name(_py, exception_bits, "UnicodeDecodeError")
-        && let Some(msg) = format_unicode_decode_error(_py, ptr)
-    {
-        return msg;
-    }
-    if exception_matches_builtin_name(_py, exception_bits, "UnicodeEncodeError")
-        && let Some(msg) = format_unicode_encode_error(_py, ptr)
-    {
-        return msg;
-    }
-    if kind == "HTTPError"
-        && let (Some(code_bits), Some(msg_bits)) = (
-            exception_dict_attr_bits(_py, ptr, b"code"),
-            exception_dict_attr_bits(_py, ptr, b"msg"),
-        )
-    {
-        let code = format_obj_str(_py, obj_from_bits(code_bits));
-        let msg = format_obj_str(_py, obj_from_bits(msg_bits));
-        return format!("HTTP Error {code}: {msg}");
-    }
-    if (kind == "URLError" || kind == "ContentTooShortError")
-        && let Some(reason_bits) = exception_dict_attr_bits(_py, ptr, b"reason")
-    {
-        let reason = format_obj_str(_py, obj_from_bits(reason_bits));
-        return format!("<urlopen error {reason}>");
-    }
-    let base_group_bits = builtin_classes(_py).base_exception_group;
-    if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
-        let msg_bits = exception_group_message_bits(_py, ptr);
-        let msg = format_obj_str(_py, obj_from_bits(msg_bits));
-        let mut count = 0usize;
-        if let Some(ex_bits) = exception_group_exceptions_bits(_py, ptr)
-            && let Some(ex_ptr) = obj_from_bits(ex_bits).as_ptr()
-        {
-            unsafe {
-                let type_id = object_type_id(ex_ptr);
-                if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                    count = crate::object::seq_access::len(ex_ptr);
-                }
-            }
+/// Diagnostics may render while the same exception is pending. The existing
+/// raised-state transaction clears that input during dispatch and restores its
+/// exact owner on success; a callback failure remains the new pending error.
+pub(crate) fn format_exception_message(py: &PyToken<'_>, ptr: *mut u8) -> String {
+    String::from_utf8_lossy(&format_exception_message_bytes(py, ptr)).into_owned()
+}
+
+pub(crate) fn format_exception_message_bytes(py: &PyToken<'_>, ptr: *mut u8) -> Vec<u8> {
+    let mut rendered = Vec::new();
+    with_saved_raised_exception(py, || {
+        let bits = molt_exception_message(MoltObject::from_ptr(ptr).bits());
+        if exception_pending(py) {
+            dec_ref_bits(py, bits);
+            return false;
         }
-        let suffix = if count == 1 {
-            "1 sub-exception".to_string()
-        } else {
-            format!("{count} sub-exceptions")
-        };
-        if msg.is_empty() {
-            return format!(" ({suffix})");
-        }
-        return format!("{msg} ({suffix})");
-    }
-    let args = exception_args_vec(ptr);
-    if args.is_empty() {
-        return String::new();
-    }
-    if exception_matches_builtin_name(_py, exception_bits, "KeyError") && args.len() == 1 {
-        return format_obj(_py, obj_from_bits(args[0]));
-    }
-    if args.len() == 1 {
-        return format_obj_str(_py, obj_from_bits(args[0]));
-    }
-    format_obj_str(_py, obj_from_bits(unsafe { exception_args_bits(ptr) }))
+        rendered =
+            crate::object::ops_format::string_obj_bytes(obj_from_bits(bits)).unwrap_or_default();
+        dec_ref_bits(py, bits);
+        !exception_pending(py)
+    });
+    rendered
 }
 
-fn format_unicode_decode_error(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
-    let encoding_bits =
-        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeEncoding)? };
-    let object_bits =
-        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeObject)? };
-    let start = unsafe {
-        exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeStart)? as isize as i64
-    };
-    let end = unsafe {
-        exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeEnd)? as isize as i64
-    };
-    let reason_bits =
-        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeReason)? };
-    let encoding = string_obj_to_owned(obj_from_bits(encoding_bits))?;
-    let reason = string_obj_to_owned(obj_from_bits(reason_bits))?;
-    if start < 0 || end < 0 {
-        return None;
-    }
-    let start = start as usize;
-    let end = end as usize;
-    if end <= start {
-        return None;
-    }
-    if end == start + 1 {
-        let obj = obj_from_bits(object_bits);
-        let ptr = obj.as_ptr()?;
-        let bytes = unsafe { bytes_like_slice(ptr) }?;
-        if start >= bytes.len() {
-            return None;
-        }
-        let byte = bytes[start];
-        return Some(format!(
-            "'{encoding}' codec can't decode byte 0x{byte:02x} in position {start}: {reason}"
-        ));
-    }
-    let end_pos = end.saturating_sub(1);
-    Some(format!(
-        "'{encoding}' codec can't decode bytes in position {start}-{end_pos}: {reason}"
-    ))
-}
-
-fn unicode_escape_codepoint(code: u32) -> String {
-    if code <= 0xFF {
-        format!("\\x{code:02x}")
-    } else if code <= 0xFFFF {
-        format!("\\u{code:04x}")
-    } else {
-        format!("\\U{code:08x}")
-    }
-}
-
-fn wtf8_from_bytes(bytes: &[u8]) -> &Wtf8 {
-    // SAFETY: Molt string bytes are constructed as well-formed WTF-8.
-    unsafe { &*(bytes as *const [u8] as *const Wtf8) }
-}
-
-fn wtf8_codepoint_at_index(bytes: &[u8], idx: usize) -> Option<u32> {
-    wtf8_from_bytes(bytes)
-        .code_points()
-        .nth(idx)
-        .map(|cp| cp.to_u32())
-}
-
-fn format_unicode_encode_error(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
-    let encoding_bits =
-        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeEncoding)? };
-    let object_bits =
-        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeObject)? };
-    let start = unsafe {
-        exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeStart)? as isize as i64
-    };
-    let end = unsafe {
-        exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeEnd)? as isize as i64
-    };
-    let reason_bits =
-        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeReason)? };
-    let encoding = string_obj_to_owned(obj_from_bits(encoding_bits))?;
-    let reason = string_obj_to_owned(obj_from_bits(reason_bits))?;
-    if start < 0 || end < 0 {
-        return None;
-    }
-    let start = start as usize;
-    let end = end as usize;
-    if end <= start {
-        return None;
-    }
-    let obj = obj_from_bits(object_bits);
-    let ptr = obj.as_ptr()?;
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_STRING {
-            return None;
-        }
-        let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-        if end == start + 1 {
-            let code = wtf8_codepoint_at_index(bytes, start)?;
-            let escaped = unicode_escape_codepoint(code);
-            return Some(format!(
-                "'{encoding}' codec can't encode character '{escaped}' in position {start}: {reason}"
-            ));
-        }
-    }
-    let end_pos = end.saturating_sub(1);
-    Some(format!(
-        "'{encoding}' codec can't encode characters in position {start}-{end_pos}: {reason}"
-    ))
-}
-
-fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
-    let trace_bits = unsafe { exception_trace_bits(ptr) };
+fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Result<Option<String>, u64> {
+    let trace = exception_field(
+        _py,
+        MoltObject::from_ptr(ptr).bits(),
+        ExceptionFieldSlot::Traceback,
+    )
+    .ok_or_else(|| MoltObject::none().bits())?;
+    let trace_bits = trace.bits();
     if obj_from_bits(trace_bits).is_none() {
-        return None;
+        return Ok(None);
     }
     let was_lazy = traceback_payload_is_lazy(trace_bits);
     let mut payload = crate::object::ops_sys::traceback_payload_from_source(_py, trace_bits, None);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
     if !was_lazy {
         // The eager traceback path historically records a precise raise-site
         // span outside the traceback object. Apply it to the innermost frame
@@ -781,12 +577,14 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             frame.end_colno = saved_col.1;
         }
         // The synthetic molt_main wrapper is not a Python traceback frame.
-        payload.retain(|frame| !(frame.filename == "<module>" && frame.name == "<module>"));
+        payload.retain(|frame| !(frame.filename == b"<module>" && frame.name == b"<module>"));
     }
     if payload.is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut out = String::from("Traceback (most recent call last):\n");
-    out.extend(crate::object::ops_sys::traceback_payload_to_formatted_entries(_py, &payload));
-    Some(out)
+    for entry in crate::object::ops_sys::traceback_payload_to_formatted_entries(_py, &payload)? {
+        out.push_str(&String::from_utf8_lossy(&entry));
+    }
+    Ok(Some(out))
 }

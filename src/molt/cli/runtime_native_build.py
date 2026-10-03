@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.runtime_build_python import BuildPythonAdmission, build_python_scope
+
 import json
 import os
 import re
@@ -10,30 +12,17 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import (
-    Any,
-    Collection,
-    Mapping,
-    Sequence,
-    cast,
-)
+from typing import Collection, Mapping, Sequence
 
-from molt.cli.artifact_state import (
-    _artifact_state_path_for_build_state_root,
-    _build_state_root,
-    _canonical_build_state_root,
-    _canonical_target_root,
-    _maybe_hydrate_artifact_from_canonical_target,
-    _runtime_fingerprint_path,
-)
+from molt.cargo_execution_policy import source_build_disabled_reason
+from molt.cli.artifact_state import _build_state_root, _canonical_target_root
 from molt.cli.atomic_io import (
-    _atomic_copy_file,
     _atomic_write_json,
 )
 from molt.cli.build_locks import _build_lock
 from molt.cli.cargo_execution import (
-    CargoPlanExecutionError,
     CargoExecutionResult,
+    CargoPlanExecutionError,
     _build_slot,
     _cargo_build_env,
     _run_resolved_cargo_plan,
@@ -44,19 +33,21 @@ from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
 )
 from molt.cli.diagnostic_text import strip_terminal_decoration
+from molt.cli.installed_runtime import (
+    InstalledRuntimeCell,
+    admit_installed_native_runtime,
+    installed_native_runtime_identity,
+    reuse_installed_native_admission,
+    select_installed_native_runtime,
+)
 from molt.cli.models import (
     _NativeRuntimeBuildFailure,
     _RuntimeArtifactState,
 )
-from molt.cli.native_link_custody import (
-    NativeLinkCustodyError,
-    copy_native_link_custody_archive,
-)
+from molt.cli.native_link_custody import NativeLinkCustodyError
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
-    native_link_dependency_manifest_path,
     read_native_link_dependency_manifest,
-    write_native_link_dependency_manifest,
 )
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
@@ -65,45 +56,27 @@ from molt.cli.runtime_build_identity import (
     RuntimeBuildIdentity,
     require_native_runtime_staticlib_identity,
     resolve_native_runtime_build_identity,
-    runtime_build_fingerprint,
-    runtime_build_tooling_authority,
 )
+from molt.cli.runtime_cargo_plan import RuntimeCargoPlan, resolve_runtime_cargo_plan
 from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
     _runtime_cargo_features,
     runtime_cargo_feature_for_profile,
     runtime_fingerprint_features_for_profile,
 )
-from molt.cli.runtime_fingerprints import (
-    _read_runtime_fingerprint,
-    _refresh_runtime_fingerprint_metadata,
-    _runtime_artifact_fingerprint_matches,
-    _runtime_fingerprint_metadata_needs_refresh,
-    _write_runtime_fingerprint,
+from molt.cli.runtime_native_generation import (
+    NativeRuntimeGeneration,
+    native_runtime_generation_path,
+    publish_native_runtime_generation,
+    read_native_runtime_generation,
 )
 from molt.cli.runtime_paths import (
     _cargo_profile_dir,
     _cargo_target_root,
     _runtime_cargo_scratch_lib_path,
 )
-from molt.cli.static_archive_identity import (
-    StaticArchiveIdentityError,
-    artifact_content_identity,
-)
-from molt.cli.runtime_cargo_plan import RuntimeCargoPlan, resolve_runtime_cargo_plan
 
-_RuntimeLibSessionKey = tuple[
-    str,
-    str,
-    str,
-    str,
-    str | None,
-    str,
-    tuple[str, ...],
-    tuple[str | None, str | None, str | None, str | None],
-]
 
-_RUNTIME_LIB_VERIFIED: set[_RuntimeLibSessionKey] = set()
 _NATIVE_RUNTIME_READY_EXECUTOR: ThreadPoolExecutor | None = None
 _NATIVE_RUNTIME_EVIDENCE_TEXT_LIMIT = 256 * 1024
 _NATIVE_RUNTIME_SUMMARY_LIMIT = 2_000
@@ -322,6 +295,10 @@ def _record_native_runtime_failure(
             attempt_count=execution_attempt_count,
             retry_reason=execution_retry_reason,
         )
+        if runtime_state.build_python_admission is not None:
+            runtime_state.build_python_admission.record_failure(
+                runtime_state.native_runtime_build_failure
+            )
     return False
 
 
@@ -413,7 +390,7 @@ def _ensure_runtime_lib_ready(
     )
 
 
-def _ensure_native_runtime_lib_ready_before_link(
+def _ensure_native_runtime_lib_ready_for_codegen(
     runtime_state: _RuntimeArtifactState,
     *,
     target_triple: str | None,
@@ -454,39 +431,96 @@ def _ensure_native_runtime_lib_ready_before_link(
     return ready and runtime_state.native_runtime_build_identity is not None
 
 
-def _runtime_lib_verified_session_key(
+def _ensure_native_runtime_lib_ready_before_link(
+    runtime_state: _RuntimeArtifactState,
     *,
-    project_root: Path,
-    runtime_lib: Path,
-    fingerprint_path: Path,
-    cargo_profile: str,
     target_triple: str | None,
-    rustflags: str,
-    fingerprint_features: tuple[str, ...],
-    fingerprint: Mapping[str, object] | None,
-) -> _RuntimeLibSessionKey | None:
-    if fingerprint is None:
-        return None
-    raw_identity = tuple(
-        fingerprint.get(field)
-        for field in ("hash", "rustc", "inputs_digest", "meta_digest")
-    )
-    if not isinstance(raw_identity[0], str) or not raw_identity[0]:
-        return None
-    identity = cast(
-        tuple[str | None, str | None, str | None, str | None],
-        tuple(value if isinstance(value, str) else None for value in raw_identity),
-    )
-    return (
-        os.fspath(project_root),
-        os.fspath(runtime_lib),
-        os.fspath(fingerprint_path),
-        cargo_profile,
-        target_triple,
-        rustflags,
-        fingerprint_features,
-        identity,
-    )
+    json_output: bool,
+    runtime_cargo_profile: str,
+    molt_root: Path,
+    cargo_timeout: float | None,
+    diagnostics_enabled: bool,
+    phase_starts: dict[str, float],
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
+    resolved_modules: set[str] | frozenset[str] | None = None,
+) -> bool:
+    """Revalidate codegen's generation; never select or build a replacement.
+
+    A source checkout admits the archive and manifest against the original
+    live codegen binding, then recaptures every current runtime, configuration,
+    toolchain input through a fresh Cargo plan and verifies the operation's
+    isolated Python admission; generation fences then close again. Installed Molt
+    re-derives only the cell selection for this request and fences the retained
+    generation this operation already admitted. The shipped cell is never
+    admitted again beneath compiled code; the final link consumes the admitted
+    generation's receipt and custody.
+    """
+    del cargo_timeout, resolved_modules
+    if diagnostics_enabled and "runtime_setup" not in phase_starts:
+        phase_starts["runtime_setup"] = time.perf_counter()
+    binding = runtime_state.native_runtime_codegen_binding
+    admission = runtime_state.installed_native_admission
+    try:
+        if binding is None:
+            raise ValueError("native runtime has no admitted codegen generation")
+        if (
+            runtime_state.runtime_lib != binding.runtime_lib
+            or runtime_state.native_runtime_build_identity != binding.build_identity
+            or runtime_state.runtime_lib_ready_future is not None
+        ):
+            raise ValueError("native runtime selection changed after code generation")
+        binding.verify()
+        installed = select_installed_native_runtime(
+            molt_root,
+            target_triple=target_triple,
+            cargo_profile=runtime_cargo_profile,
+            stdlib_profile=stdlib_profile,
+            extra_runtime_features=runtime_state.extra_runtime_features,
+        )
+        if installed is not None or admission is not None:
+            if (
+                installed is None
+                or admission is None
+                or admission.archive != binding.archive
+                or admission.build_identity != binding.build_identity
+            ):
+                raise ValueError(
+                    "native runtime selection changed after code generation"
+                )
+            reuse_installed_native_admission(installed, admission)
+        else:
+            read_native_link_dependency_manifest(
+                binding.runtime_lib,
+                cargo_profile=runtime_cargo_profile,
+                target_triple=target_triple,
+                runtime_build_identity=binding.build_identity,
+            )
+            current = current_native_runtime_build_identity(
+                molt_root,
+                binding.runtime_lib,
+                target_triple=target_triple,
+                cargo_profile=runtime_cargo_profile,
+                stdlib_profile=stdlib_profile,
+                extra_runtime_features=runtime_state.extra_runtime_features,
+                build_python_admission=runtime_state.build_python_admission,
+            )
+            binding.verify()
+            if current != binding.build_identity:
+                raise ValueError(
+                    "native runtime inputs changed after code generation; "
+                    "refusing to link against a different runtime"
+                )
+    except (OSError, ValueError, NativeLinkDependencyManifestError) as exc:
+        # A failed generation must not authorize any later link attempt.
+        runtime_state.revoke_native_runtime_admission()
+        return _record_native_runtime_failure(
+            runtime_state,
+            project_root=molt_root,
+            stage="codegen-link-admission",
+            summary=f"Native runtime codegen admission failed: {exc}",
+            emit_diagnostic=not json_output,
+        )
+    return True
 
 
 def _native_runtime_cargo_command(
@@ -498,7 +532,7 @@ def _native_runtime_cargo_command(
     concrete_stdlib_feature: str,
     target_triple: str | None,
 ) -> list[str]:
-    """Return the one exact Cargo command used for build and manifest refresh."""
+    """Return the exact Cargo command for a complete native runtime generation."""
     cmd = [
         "cargo",
         "rustc",
@@ -548,32 +582,6 @@ def _native_runtime_cargo_command(
     return cmd
 
 
-def _native_link_manifest_matches(
-    runtime_lib: Path,
-    *,
-    cargo_profile: str,
-    target_triple: str | None,
-    runtime_build_identity: RuntimeBuildIdentity,
-) -> bool:
-    try:
-        read_native_link_dependency_manifest(
-            runtime_lib,
-            cargo_profile=cargo_profile,
-            target_triple=target_triple,
-            runtime_build_identity=runtime_build_identity,
-        )
-    except NativeLinkDependencyManifestError:
-        return False
-    return True
-
-
-def _runtime_archives_semantically_match(left: Path, right: Path) -> bool:
-    try:
-        return artifact_content_identity(left) == artifact_content_identity(right)
-    except (OSError, StaticArchiveIdentityError):
-        return False
-
-
 def _runtime_build_identity_for_plan(
     project_root: Path,
     *,
@@ -583,8 +591,8 @@ def _runtime_build_identity_for_plan(
     runtime_features: tuple[str, ...],
     cargo_command: Sequence[str],
     cargo_plan: RuntimeCargoPlan,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeBuildIdentity:
-    cargo_plan.verify()
     return resolve_native_runtime_build_identity(
         project_root,
         env=env,
@@ -593,8 +601,8 @@ def _runtime_build_identity_for_plan(
         runtime_features=runtime_features,
         cargo_command=cargo_command,
         artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
-        publication_authority=runtime_build_tooling_authority(project_root),
         cargo_plan=cargo_plan,
+        build_python_admission=build_python_admission,
     )
 
 
@@ -610,11 +618,9 @@ class _NativeRuntimeBuildPlan:
     runtime_state: _RuntimeArtifactState | None
     cargo_plan: RuntimeCargoPlan
     fingerprint_features: tuple[str, ...]
-    fingerprint_path: Path
-    stored_fingerprint: dict[str, Any] | None
-    fingerprint: dict[str, Any]
     build_identity: RuntimeBuildIdentity
-    session_key: _RuntimeLibSessionKey | None
+    candidates: tuple[NativeRuntimeGeneration, ...]
+    build_python_admission: BuildPythonAdmission | None = None
 
     @property
     def cmd(self) -> list[str]:
@@ -648,7 +654,7 @@ class _NativeRuntimeBuildPlan:
     def record_timeout_failure(
         self, error: subprocess.TimeoutExpired, *, stage: str, label: str
     ) -> bool:
-        """Retain partial output from either exact-plan Cargo entrypoint."""
+        """Retain partial output from the exact-plan Cargo build."""
         stdout = _text_output(error.stdout)
         stderr = _text_output(error.stderr)
         summary = _native_runtime_first_error(
@@ -668,111 +674,15 @@ class _NativeRuntimeBuildPlan:
             emit_diagnostic=not self.json_output,
         )
 
-    @property
-    def lock_name(self) -> str:
-        return f"runtime.{self.cargo_profile}.{self.target_triple or 'native'}"
-
-    def manifest_matches(self) -> bool:
-        return _native_link_manifest_matches(
-            self.runtime_lib,
-            cargo_profile=self.cargo_profile,
-            target_triple=self.target_triple,
-            runtime_build_identity=self.build_identity,
-        )
-
-    def refresh_manifest(self) -> bool:
-        """Refresh provenance through the plan's exact no-op-capable Cargo run."""
-        try:
-            with _build_slot() as _slot:
-                result = _run_resolved_cargo_plan(
-                    self.cargo_plan,
-                    timeout=self.cargo_timeout,
-                    json_output=self.json_output,
-                    label="Runtime native-link manifest refresh",
-                )
-        except subprocess.TimeoutExpired as exc:
-            return self.record_timeout_failure(
-                exc,
-                stage="native-link-manifest-refresh",
-                label="Runtime native-link manifest refresh",
-            )
-        except (OSError, ValueError) as exc:
-            return self.record_execution_failure(
-                exc, stage="native-link-manifest-refresh"
-            )
-        if result.returncode != 0:
-            summary = _native_runtime_first_error(
-                cargo_stdout=result.stdout,
-                cargo_stderr=result.stderr,
-                fallback=f"Cargo exited with code {result.returncode}",
-            )
-            if not self.json_output:
-                print(summary, file=sys.stderr)
+    def build_permitted(self) -> bool:
+        if reason := source_build_disabled_reason("Native runtime"):
             return _record_native_runtime_failure(
                 self.runtime_state,
                 project_root=self.project_root,
-                stage="native-link-manifest-refresh",
-                summary=summary,
+                stage="rebuild-policy",
+                summary=reason,
                 command=self.cmd,
-                cargo_stdout=result.stdout,
-                cargo_stderr=result.stderr,
-                returncode=result.returncode,
-                cargo_result=result,
-            )
-        cargo_runtime_lib = _runtime_cargo_scratch_lib_path(
-            self.runtime_lib, self.target_triple
-        )
-        if not _runtime_archives_semantically_match(
-            self.runtime_lib, cargo_runtime_lib
-        ):
-            summary = (
-                "Cargo refreshed the native-link manifest but changed the selected "
-                "runtime archive members"
-            )
-            if not self.json_output:
-                print(
-                    "Runtime native-link manifest refresh produced an archive that "
-                    "does not match the selected runtime artifact.",
-                    file=sys.stderr,
-                )
-            return _record_native_runtime_failure(
-                self.runtime_state,
-                project_root=self.project_root,
-                stage="native-link-manifest-refresh",
-                summary=summary,
-                command=self.cmd,
-                cargo_stdout=result.stdout,
-                cargo_stderr=result.stderr,
-                returncode=result.returncode,
-                cargo_result=result,
-            )
-        if not self.identity_is_current(
-            stage="native-link-manifest-refresh-identity-stability"
-        ):
-            return False
-        try:
-            write_native_link_dependency_manifest(
-                result.stdout,
-                cargo_stderr=result.stderr,
-                runtime_lib=self.runtime_lib,
-                cargo_profile=self.cargo_profile,
-                target_triple=self.target_triple,
-                runtime_build_identity=self.build_identity,
-            )
-        except (OSError, NativeLinkDependencyManifestError) as exc:
-            summary = f"Failed to publish runtime native-link manifest: {exc}"
-            if not self.json_output:
-                print(summary, file=sys.stderr)
-            return _record_native_runtime_failure(
-                self.runtime_state,
-                project_root=self.project_root,
-                stage="native-link-manifest-publication",
-                summary=summary,
-                command=self.cmd,
-                cargo_stdout=result.stdout,
-                cargo_stderr=result.stderr,
-                returncode=result.returncode,
-                cargo_result=result,
+                emit_diagnostic=not self.json_output,
             )
         return True
 
@@ -785,9 +695,11 @@ class _NativeRuntimeBuildPlan:
             runtime_features=self.fingerprint_features,
             cargo_command=self.cmd,
             cargo_plan=self.cargo_plan,
+            build_python_admission=self.build_python_admission,
         )
 
     def identity_is_current(self, *, stage: str) -> bool:
+        started = time.perf_counter()
         try:
             current = self.resolve_build_identity()
         except (OSError, ValueError) as exc:
@@ -800,6 +712,10 @@ class _NativeRuntimeBuildPlan:
                 stage=stage,
                 summary=summary,
                 command=self.cmd,
+            )
+        finally:
+            _record_runtime_build_stage_ms(
+                self.stage_timings_ms, "runtime_lib_identity_publication", started
             )
         if current != self.build_identity:
             summary = (
@@ -817,14 +733,46 @@ class _NativeRuntimeBuildPlan:
             )
         return True
 
-    def accept(self, *, stage: str) -> bool:
-        if not self.identity_is_current(stage=stage):
-            return False
+    def accept(self, generation: NativeRuntimeGeneration) -> bool:
+        """Reuse the operation's input capture and fence its admitted generation."""
+        try:
+            if generation.build_identity != self.build_identity:
+                raise ValueError("native runtime generation has another build identity")
+            generation.verify()
+        except (OSError, ValueError) as exc:
+            return _record_native_runtime_failure(
+                self.runtime_state,
+                project_root=self.project_root,
+                stage="generation-admission",
+                summary=f"Native runtime generation admission failed: {exc}",
+                command=self.cmd,
+                emit_diagnostic=not self.json_output,
+            )
         if self.runtime_state is not None:
-            self.runtime_state.native_runtime_build_identity = self.build_identity
-        if self.session_key is not None:
-            _RUNTIME_LIB_VERIFIED.add(self.session_key)
+            self.runtime_state.runtime_lib = generation.runtime_lib
+            self.runtime_state.native_runtime_build_identity = generation.build_identity
         return True
+
+
+def _native_runtime_generation_candidates(
+    runtime_lib: Path,
+    *,
+    project_root: Path,
+    cargo_profile: str,
+    target_triple: str | None,
+) -> tuple[NativeRuntimeGeneration, ...]:
+    canonical = _canonical_target_root(project_root)
+    if target_triple:
+        canonical /= target_triple
+    canonical = canonical / _cargo_profile_dir(cargo_profile) / runtime_lib.name
+    candidates = []
+    for coordinate in dict.fromkeys((runtime_lib, canonical)):
+        generation = read_native_runtime_generation(
+            coordinate, cargo_profile=cargo_profile, target_triple=target_triple
+        )
+        if generation is not None:
+            candidates.append(generation)
+    return tuple(candidates)
 
 
 def _prepare_native_runtime_build(
@@ -839,9 +787,11 @@ def _prepare_native_runtime_build(
     extra_runtime_features: Sequence[str] | None,
     stage_timings_ms: dict[str, float] | None,
     runtime_state: _RuntimeArtifactState | None,
+    read_generations: bool = True,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> _NativeRuntimeBuildPlan | None:
     if runtime_state is not None:
-        runtime_state.native_runtime_build_identity = None
+        runtime_state.revoke_native_runtime_admission()
         runtime_state.native_runtime_build_failure = None
     runtime_features = tuple(
         dict.fromkeys(
@@ -888,15 +838,22 @@ def _prepare_native_runtime_build(
             summary=summary,
         )
         return None
-    rustflags = "\x1f".join(cargo_plan.rustflags)
-    fingerprint_path = _runtime_fingerprint_path(
-        project_root, runtime_lib, cargo_profile, target_triple
-    )
     started = time.perf_counter()
-    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
-    _record_runtime_build_stage_ms(
-        stage_timings_ms, "runtime_lib_read_fingerprint", started
+    candidates = (
+        _native_runtime_generation_candidates(
+            runtime_lib,
+            project_root=project_root,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+        )
+        if read_generations
+        else ()
     )
+    _record_runtime_build_stage_ms(
+        stage_timings_ms, "runtime_lib_generation_read", started
+    )
+    # Candidate bytes are admitted first. This fresh capture is their current
+    # expectation, never an expectation copied from a stored receipt.
     started = time.perf_counter()
     try:
         build_identity = _runtime_build_identity_for_plan(
@@ -907,6 +864,7 @@ def _prepare_native_runtime_build(
             runtime_features=fingerprint_features,
             cargo_command=cmd,
             cargo_plan=cargo_plan,
+            build_python_admission=build_python_admission,
         )
     except (OSError, ValueError) as exc:
         summary = f"Failed to compute exact runtime native build identity: {exc}"
@@ -920,19 +878,8 @@ def _prepare_native_runtime_build(
             command=cmd,
         )
         return None
-    fingerprint = runtime_build_fingerprint(build_identity)
     _record_runtime_build_stage_ms(
-        stage_timings_ms, "runtime_lib_compute_fingerprint", started
-    )
-    session_key = _runtime_lib_verified_session_key(
-        project_root=project_root,
-        runtime_lib=runtime_lib,
-        fingerprint_path=fingerprint_path,
-        cargo_profile=cargo_profile,
-        target_triple=target_triple,
-        rustflags=rustflags,
-        fingerprint_features=fingerprint_features,
-        fingerprint=fingerprint,
+        stage_timings_ms, "runtime_lib_identity_initial", started
     )
     return _NativeRuntimeBuildPlan(
         runtime_lib=runtime_lib,
@@ -945,11 +892,9 @@ def _prepare_native_runtime_build(
         runtime_state=runtime_state,
         cargo_plan=cargo_plan,
         fingerprint_features=fingerprint_features,
-        fingerprint_path=fingerprint_path,
-        stored_fingerprint=stored_fingerprint,
-        fingerprint=fingerprint,
         build_identity=build_identity,
-        session_key=session_key,
+        build_python_admission=build_python_admission,
+        candidates=candidates,
     )
 
 
@@ -961,13 +906,25 @@ def current_native_runtime_build_identity(
     cargo_profile: str,
     stdlib_profile: str | None,
     extra_runtime_features: Sequence[str] | None = None,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeBuildIdentity:
     """Resolve the exact current native-runtime build-plan identity.
 
     Artifact consumers use this authority instead of accepting a receipt's
-    stored identity as its own expectation.
+    stored identity as its own expectation. For installed Molt the shipped
+    cell's canonical receipt is that authority; no Cargo plan is resolved.
+    A build operation's final link reuses its installed admission instead.
     """
 
+    installed = select_installed_native_runtime(
+        project_root,
+        target_triple=target_triple,
+        cargo_profile=cargo_profile,
+        stdlib_profile=stdlib_profile,
+        extra_runtime_features=extra_runtime_features,
+    )
+    if installed is not None:
+        return installed_native_runtime_identity(installed, runtime_lib)
     plan = _prepare_native_runtime_build(
         runtime_lib,
         target_triple,
@@ -979,6 +936,8 @@ def current_native_runtime_build_identity(
         extra_runtime_features=extra_runtime_features,
         stage_timings_ms=None,
         runtime_state=None,
+        read_generations=False,
+        build_python_admission=build_python_admission,
     )
     if plan is None:
         raise ValueError("cannot resolve the current native-runtime build identity")
@@ -990,219 +949,37 @@ def current_native_runtime_build_identity(
     )
 
 
-def _reuse_native_runtime_under_lock(
-    plan: _NativeRuntimeBuildPlan,
-) -> bool | None:
-    if plan.stored_fingerprint is None:
-        started = time.perf_counter()
-        plan.stored_fingerprint = _read_runtime_fingerprint(plan.fingerprint_path)
-        _record_runtime_build_stage_ms(
-            plan.stage_timings_ms,
-            "runtime_lib_reread_fingerprint_in_lock",
-            started,
-        )
-    started = time.perf_counter()
-    matches = _runtime_artifact_fingerprint_matches(
-        plan.runtime_lib,
-        plan.fingerprint,
-        plan.fingerprint_path,
-        require_artifact_digest=True,
-    )
-    _record_runtime_build_stage_ms(
-        plan.stage_timings_ms, "runtime_lib_artifact_match", started
-    )
-    if not matches:
-        return None
-    if _runtime_fingerprint_metadata_needs_refresh(
-        plan.stored_fingerprint, plan.fingerprint
-    ):
-        try:
-            _refresh_runtime_fingerprint_metadata(
-                plan.fingerprint_path, plan.fingerprint
-            )
-        except (OSError, ValueError) as exc:
-            return _record_native_runtime_failure(
-                plan.runtime_state,
-                project_root=plan.project_root,
-                stage="fingerprint-refresh",
-                summary=f"Failed to refresh runtime fingerprint metadata: {exc}",
-                command=plan.cmd,
-                emit_diagnostic=not plan.json_output,
-            )
-    if not plan.manifest_matches() and not plan.refresh_manifest():
-        return False
-    return plan.accept(stage="cache-admission-identity-stability")
-
-
-def _hydrate_native_runtime_under_lock(
-    plan: _NativeRuntimeBuildPlan,
-) -> bool | None:
-    canonical_target_root = _canonical_target_root(plan.project_root)
-    profile_dir = _cargo_profile_dir(plan.cargo_profile)
-    canonical_runtime_lib = canonical_target_root / profile_dir / plan.runtime_lib.name
-    if plan.target_triple:
-        canonical_runtime_lib = (
-            canonical_target_root
-            / plan.target_triple
-            / profile_dir
-            / plan.runtime_lib.name
-        )
-    target_label = (
-        (plan.target_triple or "native").replace(os.sep, "_").replace(":", "_")
-    )
-    canonical_fingerprint_path = _artifact_state_path_for_build_state_root(
-        _canonical_build_state_root(plan.project_root),
-        canonical_runtime_lib,
-        subdir="runtime_fingerprints",
-        stem_suffix=f"{plan.cargo_profile}.{target_label}",
-        extension="fingerprint",
-    )
-    started = time.perf_counter()
-    hydrated = _maybe_hydrate_artifact_from_canonical_target(
-        artifact=plan.runtime_lib,
-        fingerprint=plan.fingerprint,
-        fingerprint_path=plan.fingerprint_path,
-        candidate_artifact=canonical_runtime_lib,
-        candidate_fingerprint_path=canonical_fingerprint_path,
-        require_artifact_digest=True,
-    )
-    _record_runtime_build_stage_ms(
-        plan.stage_timings_ms, "runtime_lib_canonical_hydrate", started
-    )
-    if not hydrated:
-        return None
-    try:
-        manifest = read_native_link_dependency_manifest(
-            canonical_runtime_lib,
-            cargo_profile=plan.cargo_profile,
-            target_triple=plan.target_triple,
-            runtime_build_identity=plan.build_identity,
-        )
-        custody = manifest.get("custody")
-        if not isinstance(custody, Mapping):
-            raise NativeLinkDependencyManifestError(
-                "canonical native-link manifest has no custody authority"
-            )
-        copy_native_link_custody_archive(
-            canonical_runtime_lib,
-            plan.runtime_lib,
-            cast(Mapping[str, object], custody),
-        )
-        _atomic_copy_file(
-            native_link_dependency_manifest_path(canonical_runtime_lib),
-            native_link_dependency_manifest_path(plan.runtime_lib),
-        )
-        read_native_link_dependency_manifest(
-            plan.runtime_lib,
-            cargo_profile=plan.cargo_profile,
-            target_triple=plan.target_triple,
-            runtime_build_identity=plan.build_identity,
-        )
-        manifest_ready = True
-    except (OSError, NativeLinkCustodyError, NativeLinkDependencyManifestError) as exc:
-        _record_native_runtime_failure(
-            None,
-            project_root=plan.project_root,
-            stage="canonical-hydration-rejection",
-            summary=f"Rejected canonical native-link hydration; refreshing from exact Cargo plan: {exc}",
-            command=plan.cmd,
-            emit_diagnostic=True,
-        )
-        manifest_ready = False
-    if not manifest_ready and not plan.refresh_manifest():
-        return False
-    return plan.accept(stage="hydration-admission-identity-stability")
-
-
 def _publish_native_runtime_build(
     plan: _NativeRuntimeBuildPlan,
     build: CargoExecutionResult,
 ) -> bool:
-    cargo_runtime_lib = _runtime_cargo_scratch_lib_path(
-        plan.runtime_lib, plan.target_triple
-    )
-    if cargo_runtime_lib != plan.runtime_lib:
-        if not cargo_runtime_lib.exists():
-            summary = (
-                "Cargo reported a successful runtime build but the staticlib "
-                f"artifact is missing: {cargo_runtime_lib}"
-            )
-            if not plan.json_output:
-                print(
-                    f"Runtime build succeeded but archive is missing: {cargo_runtime_lib}",
-                    file=sys.stderr,
-                )
-            return _record_native_runtime_failure(
-                plan.runtime_state,
-                project_root=plan.project_root,
-                stage="cargo-artifact",
-                summary=summary,
-                command=plan.cmd,
-                cargo_stdout=build.stdout,
-                cargo_stderr=build.stderr,
-                returncode=build.returncode,
-                cargo_result=build,
-            )
-        try:
-            _atomic_copy_file(cargo_runtime_lib, plan.runtime_lib)
-        except OSError as exc:
-            summary = (
-                f"Failed to materialize runtime archive alias {plan.runtime_lib}: {exc}"
-            )
-            if not plan.json_output:
-                print(summary, file=sys.stderr)
-            return _record_native_runtime_failure(
-                plan.runtime_state,
-                project_root=plan.project_root,
-                stage="artifact-publication",
-                summary=summary,
-                command=plan.cmd,
-                cargo_stdout=build.stdout,
-                cargo_stderr=build.stderr,
-                returncode=build.returncode,
-                cargo_result=build,
-            )
-    if not plan.identity_is_current(
-        stage="native-link-manifest-publication-identity-stability"
-    ):
-        return False
+    started = time.perf_counter()
     try:
-        write_native_link_dependency_manifest(
-            build.stdout,
-            cargo_stderr=build.stderr,
-            runtime_lib=plan.runtime_lib,
-            cargo_profile=plan.cargo_profile,
-            target_triple=plan.target_triple,
-            runtime_build_identity=plan.build_identity,
-        )
-    except (OSError, NativeLinkDependencyManifestError) as exc:
-        summary = f"Failed to publish runtime native-link manifest: {exc}"
-        if not plan.json_output:
-            print(summary, file=sys.stderr)
-        return _record_native_runtime_failure(
-            plan.runtime_state,
-            project_root=plan.project_root,
-            stage="native-link-manifest-publication",
-            summary=summary,
-            command=plan.cmd,
+        generation = publish_native_runtime_generation(
+            plan.runtime_lib,
+            source_archive=_runtime_cargo_scratch_lib_path(
+                plan.runtime_lib, plan.target_triple
+            ),
             cargo_stdout=build.stdout,
             cargo_stderr=build.stderr,
-            returncode=build.returncode,
-            cargo_result=build,
+            cargo_profile=plan.cargo_profile,
+            target_triple=plan.target_triple,
+            build_identity=plan.build_identity,
+            inputs_are_current=lambda: plan.identity_is_current(
+                stage="generation-publication-identity-stability"
+            ),
         )
-    try:
-        plan.fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_runtime_fingerprint(
-            plan.fingerprint_path,
-            plan.fingerprint,
-            artifact=plan.runtime_lib,
-        )
-    except (OSError, ValueError) as exc:
+    except (
+        OSError,
+        ValueError,
+        NativeLinkCustodyError,
+        NativeLinkDependencyManifestError,
+    ) as exc:
         return _record_native_runtime_failure(
             plan.runtime_state,
             project_root=plan.project_root,
-            stage="fingerprint-publication",
-            summary=f"Failed to publish runtime fingerprint metadata: {exc}",
+            stage="generation-publication",
+            summary=f"Failed to publish native runtime generation: {exc}",
             command=plan.cmd,
             cargo_stdout=build.stdout,
             cargo_stderr=build.stderr,
@@ -1210,15 +987,21 @@ def _publish_native_runtime_build(
             cargo_result=build,
             emit_diagnostic=not plan.json_output,
         )
-    return plan.accept(stage="build-admission-identity-stability")
+    finally:
+        _record_runtime_build_stage_ms(
+            plan.stage_timings_ms, "runtime_lib_generation_publish", started
+        )
+    return generation is not None and plan.accept(generation)
 
 
 def _build_native_runtime_under_lock(plan: _NativeRuntimeBuildPlan) -> bool:
+    if not plan.build_permitted():
+        return False
     if not plan.json_output:
         message = (
             "Building optimized runtime (first time only)..."
-            if not plan.runtime_lib.exists()
-            else "Runtime sources changed; rebuilding runtime..."
+            if not native_runtime_generation_path(plan.runtime_lib).exists()
+            else "Runtime generation does not match current build inputs; running Cargo..."
         )
         print(message, file=sys.stderr)
     try:
@@ -1260,9 +1043,44 @@ def _build_native_runtime_under_lock(plan: _NativeRuntimeBuildPlan) -> bool:
             returncode=build.returncode,
             cargo_result=build,
         )
-    if not plan.identity_is_current(stage="post-cargo-identity-stability"):
-        return False
+
     return _publish_native_runtime_build(plan, build)
+
+
+def _admit_installed_native_runtime(
+    cell: InstalledRuntimeCell,
+    runtime_lib: Path,
+    *,
+    project_root: Path,
+    json_output: bool,
+    runtime_state: _RuntimeArtifactState | None,
+) -> bool:
+    """Admit the shipped cell selected for this build; installed Molt never builds.
+
+    This is the operation's one content admission; code generation and final
+    link reuse it through ``runtime_state.installed_native_admission``.
+    """
+    try:
+        if runtime_lib != cell.runtime_lib:
+            raise ValueError(
+                "selected native runtime path is not the installed cell's retained "
+                "generation"
+            )
+        admission = admit_installed_native_runtime(cell)
+        if admission.runtime_lib != runtime_lib:
+            raise ValueError("installed native runtime retention changed generation")
+    except (OSError, ValueError) as exc:
+        return _record_native_runtime_failure(
+            runtime_state,
+            project_root=project_root,
+            stage="installed-runtime-admission",
+            summary=f"Installed native runtime admission failed: {exc}",
+            emit_diagnostic=not json_output,
+        )
+    if runtime_state is not None:
+        runtime_state.installed_native_admission = admission
+        runtime_state.native_runtime_build_identity = admission.build_identity
+    return True
 
 
 def _ensure_runtime_lib(
@@ -1279,40 +1097,66 @@ def _ensure_runtime_lib(
     runtime_state: _RuntimeArtifactState | None = None,
 ) -> bool:
     del resolved_modules
-    plan = _prepare_native_runtime_build(
-        runtime_lib,
-        target_triple,
-        json_output,
-        cargo_profile,
-        project_root,
-        cargo_timeout,
-        stdlib_profile=stdlib_profile,
-        extra_runtime_features=extra_runtime_features,
-        stage_timings_ms=stage_timings_ms,
-        runtime_state=runtime_state,
-    )
-    if plan is None:
-        return False
-    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1" and runtime_lib.exists():
-        if plan.manifest_matches():
-            return plan.accept(stage="skip-admission-identity-stability")
-        with _build_lock(project_root, plan.lock_name):
-            return (
-                plan.accept(stage="skip-refresh-admission-identity-stability")
-                if plan.refresh_manifest()
-                else False
-            )
-    if (
-        plan.session_key is not None
-        and plan.session_key in _RUNTIME_LIB_VERIFIED
-        and plan.manifest_matches()
+    try:
+        installed = select_installed_native_runtime(
+            project_root,
+            target_triple=target_triple,
+            cargo_profile=cargo_profile,
+            stdlib_profile=stdlib_profile,
+            extra_runtime_features=extra_runtime_features,
+        )
+    except ValueError as exc:
+        if runtime_state is not None:
+            runtime_state.revoke_native_runtime_admission()
+        return _record_native_runtime_failure(
+            runtime_state,
+            project_root=project_root,
+            stage="installed-runtime-selection",
+            summary=str(exc),
+            emit_diagnostic=not json_output,
+        )
+    if installed is not None:
+        if runtime_state is not None:
+            runtime_state.revoke_native_runtime_admission()
+            runtime_state.native_runtime_build_failure = None
+        return _admit_installed_native_runtime(
+            installed,
+            runtime_lib,
+            project_root=project_root,
+            json_output=json_output,
+            runtime_state=runtime_state,
+        )
+    # Wait before the transaction captures inputs. A queued producer must never
+    # admit a candidate against an expectation captured before its lock wait.
+    with (
+        build_python_scope(runtime_state) as build_python_admission,
+        _build_lock(
+            project_root, f"runtime.{cargo_profile}.{target_triple or 'native'}"
+        ),
     ):
-        return plan.accept(stage="session-cache-admission-identity-stability")
-    with _build_lock(project_root, plan.lock_name):
-        reuse = _reuse_native_runtime_under_lock(plan)
-        if reuse is not None:
-            return reuse
-        hydrate = _hydrate_native_runtime_under_lock(plan)
-        if hydrate is not None:
-            return hydrate
-        return _build_native_runtime_under_lock(plan)
+        plan = _prepare_native_runtime_build(
+            runtime_lib,
+            target_triple,
+            json_output,
+            cargo_profile,
+            project_root,
+            cargo_timeout,
+            stdlib_profile=stdlib_profile,
+            extra_runtime_features=extra_runtime_features,
+            stage_timings_ms=stage_timings_ms,
+            runtime_state=runtime_state,
+            build_python_admission=build_python_admission,
+        )
+        if plan is None:
+            build_python_admission.record_failure()
+            return False
+        for generation in plan.candidates:
+            if generation.build_identity == plan.build_identity:
+                accepted = plan.accept(generation)
+                if not accepted:
+                    build_python_admission.record_failure()
+                return accepted
+        built = _build_native_runtime_under_lock(plan)
+        if not built:
+            build_python_admission.record_failure()
+        return built

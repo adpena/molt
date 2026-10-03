@@ -503,7 +503,7 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
     assert "_STRUCTURAL_CLASSIFIER_FNS" not in audit
     structural_fn = audit.split("def structural_kinds_from_registry", maxsplit=1)[
         1
-    ].split("def extract_vec_reduction_ops", maxsplit=1)[0]
+    ].split("\n\n@dataclass", maxsplit=1)[0]
     assert "extract_rust_str_slice_const" not in structural_fn
 
 
@@ -512,6 +512,13 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     data = gen.load_table()
     shapes = {row["kind"]: row for row in data["simpleir_op_shape"]}
     assert {kind: row["operands"] for kind, row in shapes.items()} == {
+        "frame_context_set": 3,
+        "frame_home_store": 1,
+        "frame_home_cell": 1,
+        "frame_home_private_cell": 1,
+        "frame_home_load": 0,
+        "frame_home_take": 0,
+        "frame_home_clear": 0,
         "code_new": 9,
         "code_slot_set": 2,
         "code_slots_init": 0,
@@ -519,8 +526,30 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
         "bytearray_fill_range": 4,
     }
     assert all("requires_result" not in shape for shape in shapes.values())
-    for kind in ("code_slot_set", "code_slots_init", "trace_enter_slot"):
+    homes = (
+        "frame_home_store",
+        "frame_home_cell",
+        "frame_home_private_cell",
+        "frame_home_load",
+        "frame_home_take",
+        "frame_home_clear",
+    )
+    for kind in ("code_slot_set", "code_slots_init", "trace_enter_slot", *homes):
         assert shapes[kind]["value_rule"] == "nonnegative"
+    # A home store adopts its only operand and leaves a non-owning view; a
+    # load is a view; a take and locals() own their results. None is inert:
+    # a store or clear releases the binding it displaces.
+    stores = {"frame_home_store", "frame_home_cell", "frame_home_private_cell"}
+    views = stores | {"frame_home_load"}
+    assert set(data["classifier_binding_view"]) == views
+    assert views | {"frame_home_clear"} <= set(data["classifier_transparent_alias"])
+    assert {"frame_home_take", "frame_locals"} <= set(data["classifier_owned_value"])
+    assert not set(homes) & set(data["classifier_inert_marker"])
+    assert {
+        row["kind"]: row["consumed_operand"]
+        for row in data["consuming_kind"]
+        if row["kind"] in homes
+    } == dict.fromkeys(stores, 0)
     rendered = gen.render_rs(data)
     assert "pub const SIMPLEIR_OP_SHAPES" in rendered
     assert "pub fn simpleir_op_shape" in rendered
@@ -743,7 +772,7 @@ def test_generated_classifier_matches_table() -> None:
     data = gen.load_table()
 
     gen_fresh = set(
-        audit.extract_matches_macro(OUT_RS, "copy_kind_mints_fresh_owned_ref_table")
+        audit.extract_matches_macro(OUT_RS, "copy_kind_mints_owned_value_table")
     )
     gen_owned_alias = set(
         audit.extract_matches_macro(OUT_RS, "copy_kind_mints_owned_alias_ref_table")
@@ -759,8 +788,8 @@ def test_generated_classifier_matches_table() -> None:
     gen_no_heap = set(
         audit.extract_matches_macro(OUT_RS, "copy_kind_is_explicit_no_heap_move_table")
     )
-    assert gen_fresh == set(data["classifier_fresh_value"]), (
-        "generated fresh-value table drifted from classifier_fresh_value"
+    assert gen_fresh == set(data["classifier_owned_value"]), (
+        "generated fresh-value table drifted from classifier_owned_value"
     )
     assert gen_owned_alias == set(data["classifier_owned_alias"]), (
         "generated owned-alias table drifted from classifier_owned_alias"
@@ -878,12 +907,11 @@ def test_audit_sources_backend_vocab_from_registry() -> None:
         table_spellings.update(row.get("aliases", []))
 
     assert res.mapper_kinds == table_spellings
-    assert res.fresh_value == set(data["classifier_fresh_value"])
+    assert res.owned_value == set(data["classifier_owned_value"])
     assert res.owned_alias == set(data["classifier_owned_alias"])
     assert res.inert_marker == set(data["classifier_inert_marker"])
     assert res.transparent_alias == set(data["classifier_transparent_alias"])
     assert res.no_heap_move == set(data["classifier_no_heap_move"])
-    assert set(res.fresh_value_prefixes) == set(data["classifier_fresh_value_prefixes"])
 
 
 def test_audit_native_arms_include_extracted_op_family_authority() -> None:
@@ -929,12 +957,10 @@ def test_audit_llvm_decomposition_sources_real_coverage_authorities() -> None:
         assert row.llvm_runtime_fallback_eligible
         assert row.llvm_covered
 
-    for kind in (
-        "vec_sum_int_range_iter_trusted",
-        "vec_sum_float_range_iter_trusted",
-    ):
+    for kind in ("vec_sum", "vec_prod", "vec_min", "vec_max"):
         row = res.rows[kind]
-        assert row.llvm_vec_table
+        assert row.llvm_runtime_fallback_eligible
+        assert not row.llvm_dedicated_arm
         assert row.llvm_covered
 
     inplace_matmul = res.rows["inplace_matmul"]
@@ -1040,13 +1066,11 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
     local_impure = {
         "Alloc",
         "BuildList",
+        "BuildSlice",
         "BuildTuple",
-        "CheckedAdd",
-        "CheckedMul",
         "CheckException",
         "ExceptionPending",
         "FunctionDefaultsVersion",
-        "ModuleCacheGet",
         "StackAlloc",
     }
     assert {
@@ -1099,7 +1123,7 @@ def test_opcode_arbitrary_heap_effect_validation_is_fail_loud(tmp_path: Path) ->
     invalid_type = _mutate_opcode_field(
         source,
         "CheckedAdd",
-        "may_access_arbitrary_heap = false",
+        "may_access_arbitrary_heap = true",
         'may_access_arbitrary_heap = "no"',
     )
     assert invalid_type != source
@@ -1204,107 +1228,68 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
     assert "OpCode::ConstInt\n                | OpCode::ConstBigInt" not in verify
 
 
-def test_call_roles_delegate_to_generated_tables() -> None:
-    """Call graph and CallFacts opcode/kind membership is registry-owned."""
+def test_call_sites_share_effect_authority() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
     call_graph = _read_rs_module_cluster(tir_path("call_graph.rs"))
     call_facts = _read_rs_module_cluster(tir_path("call_facts.rs"))
-
-    expected_roles = {
-        "Call": "user_call",
-        "CallMethod": "dynamic_method",
-        "CallMethodIc": "dynamic_method",
-        "CallSuperMethodIc": "dynamic_method",
-        "CallBuiltin": "runtime_builtin",
-        "Copy": "copy_original_kind",
-    }
-    assert {row["opcode"]: row["role"] for row in data["call_opcode_roles"]} == (
-        expected_roles
-    )
-    expected_user_call_kinds = [
-        "call",
-        "call_func",
-        "call_internal",
-        "call_indirect",
-        "call_bind",
-        "call_function",
-        "call_guarded",
-        "call_method",
-        "invoke_ffi",
+    call_sites = _read_rs_module_cluster(tir_path("call_sites.rs"))
+    assert "call_opcode_roles" not in data
+    assert "call_graph_user_call_kinds" not in data
+    assert "CallOpcodeRole" not in rendered
+    assert "opcode_call_role_table" not in rendered
+    for consumer in (call_graph, call_facts):
+        assert "FunctionCallSites::for_function(func)" in consumer
+        assert "opcode_call_role_table" not in consumer
+    assert "op_effects_with_types(op, &exact)" in call_sites
+    assert "extract_exact_scalar_map(func)" in call_sites
+    assert "load_purity_at(position, op)" in call_sites
+    assert "slots.stores.contains_key(&position)" in call_sites
+    for row in data["opcode"]:
+        assert type(row["may_call_python"]) is bool
+    rows = {row["name"]: row for row in data["opcode"]}
+    for name in ("Add", "CheckedAdd", "CheckedMul", "FloorDiv", "Neg", "Pos", "Bool",
+                 "Eq", "In", "LoadAttr", "StoreAttr", "Index", "StoreIndex", "DecRef",
+                 "DeleteVar", "ClosureStore", "FrameContextSet", "BuildDict", "ModuleCacheGet", "Copy"):
+        assert rows[name]["may_call_python"], name
+    for name in ("Alloc", "IncRef", "BuildTuple", "BuildList", "BuildSlice", "AllocTask",
+                 "StateSet", "ClosureLoad", "TryStart", "CheckException", "Is"):
+        assert not rows[name]["may_call_python"], name
+    assert data["callback_free_copy_kinds"] == [
+        "call_async", "guard_bool", "guard_dict_shape", "guard_float", "guard_int",
+        "guard_layout", "guard_none", "guard_str", "guard_tag", "guard_type",
+        "line", "missing", "nop", "print_newline",
     ]
-    assert data["call_graph_user_call_kinds"] == expected_user_call_kinds
-    assert data["exception_check_kinds"] == [
-        "check_exception",
-        "async_work_poll",
+    for kind in ("trace_enter_slot", "trace_exit"):
+        assert kind not in data["classifier_inert_marker"]
+        assert kind in data["classifier_transparent_alias"]
+        assert kind not in data["callback_free_copy_kinds"]
+    effects = _read_rs_module_cluster(tir_path("passes/effects.rs"))
+    assert "copy_kind_is_inert_marker_table" not in effects
+    assert "copy_kind_is_explicit_no_heap_move_table" not in effects
+    assert data["async_work_poll_after_kinds"] == [
+        "builtin_func", "call", "call_func", "call_internal", "call_indirect", "call_bind",
+        "call_function", "call_guarded", "call_method", "invoke_ffi",
     ]
-
-    role_block = rendered.split("fn opcode_call_role_table")[1].split(
-        "fn simpleir_kind_is_call_graph_user_call"
-    )[0]
-    role_variant = {
-        "user_call": "UserCall",
-        "dynamic_method": "DynamicMethod",
-        "runtime_builtin": "RuntimeBuiltin",
-        "copy_original_kind": "CopyOriginalKind",
-    }
-    for opcode, role in expected_roles.items():
-        assert (
-            f"OpCode::{opcode} => CallOpcodeRole::{role_variant[role]}," in role_block
-        )
-    assert "OpCode::AllocTask => CallOpcodeRole::NotCall," in role_block
-
-    kind_block = rendered.split("fn simpleir_kind_is_call_graph_user_call")[1].split(
-        "fn opcode_fixed_result_count_table"
-    )[0]
-    for kind in expected_user_call_kinds:
-        assert f'"{kind}"' in kind_block
-    for excluded in ("gpu_thread_id", "gpu_barrier", "call_builtin", "range_new"):
-        assert f'"{excluded}"' not in kind_block
-
-    exception_check_block = rendered.split("fn simpleir_kind_is_exception_check")[
-        1
-    ].split("fn simpleir_kind_is_async_work_poll")[0]
-    assert '"check_exception" | "async_work_poll"' in exception_check_block
-
-    assert "opcode_call_role_table" in call_graph
-    assert "simpleir_kind_is_call_graph_user_call" in call_graph
-    assert "opcode_call_role_table" in call_facts
-    assert "fn is_call_kind" not in call_graph
-    assert "fn is_call_op" not in call_facts
-    assert "OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin" not in call_facts
+    assert "simpleir_kind_requires_async_work_poll_after" in rendered
 
 
-def test_call_role_validation_rejects_drift() -> None:
+def test_callback_effect_validation_requires_independent_explicit_fact(tmp_path: Path) -> None:
     gen = _gen()
-    data = gen.load_table()
-    opcodes = {row["name"] for row in data["opcode"]}
-
-    bad_role = json.loads(json.dumps(data))
-    bad_role["call_opcode_roles"].append(
-        {"opcode": "AllocTask", "role": "copy_original_kind"}
-    )
-    try:
-        gen._validate_call_opcode_roles(bad_role, opcodes)
-    except gen.OpKindTableError as exc:
-        assert "copy_original_kind is reserved for OpCode::Copy" in str(exc)
-    else:
-        raise AssertionError("bad call opcode role was accepted")
-
-    mapper_opcode_by_spelling = {}
-    for row in data["kind"]:
-        for spelling in [row["canonical"], *row.get("aliases", [])]:
-            mapper_opcode_by_spelling[spelling] = row["mapper_opcode"]
-
-    bad_kind = json.loads(json.dumps(data))
-    bad_kind["call_graph_user_call_kinds"].append("call_builtin")
-    try:
-        gen._validate_call_graph_user_call_kinds(bad_kind, mapper_opcode_by_spelling)
-    except gen.OpKindTableError as exc:
-        assert "maps to OpCode::CallBuiltin" in str(exc)
-    else:
-        raise AssertionError("call_builtin was accepted as a user-call kind")
+    source = TABLE.read_text(encoding="utf-8")
+    for old, new, error in [
+        ('may_call_python = true', '', "may_call_python.*bool"),
+        ('may_call_python = true', 'may_call_python = "yes"', "may_call_python.*bool"),
+    ]:
+        table = tmp_path / "callback_effect.toml"
+        table.write_text(_mutate_opcode_field(source, "Add", old, new), encoding="utf-8")
+        with pytest.raises(gen.OpKindTableError, match=error):
+            gen.load_table(table)
+    table.write_text(_mutate_opcode_field(source, "Is", 'may_call_python = false',
+                                         'may_call_python = true'), encoding="utf-8")
+    with pytest.raises(gen.OpKindTableError, match="callbacks require impure arbitrary-heap"):
+        gen.load_table(table)
 
 
 def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
@@ -1350,6 +1335,7 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
         "get_attr_generic_obj",
         "get_attr_name",
         "guarded_field_get",
+        "guarded_load",
         "load",
         "load_attr",
         "store_attr",
@@ -1379,7 +1365,7 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
 
     preserve_block = rendered.split(
         "fn simpleir_kind_preserves_original_kind_for_ssa", maxsplit=1
-    )[1].split("fn copy_kind_mints_fresh_owned_ref_table", maxsplit=1)[0]
+    )[1].split("fn copy_kind_mints_owned_value_table", maxsplit=1)[0]
     for kind in expected_original_kind:
         assert f'"{kind}"' in preserve_block
     for kind in (
@@ -1645,6 +1631,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
             "CheckedMul": ["i64", "bool"],
             "IterNextUnboxed": ["operand", "bool"],
             "ExceptionPending": ["bool"],
+            "IsPending": ["bool"],
         }
     )
     table = {
@@ -1719,7 +1706,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         assert stale not in value_proves_body
 
     infer_body = type_refine.split("fn infer_result_types_with_attrs", 1)[1].split(
-        "fn fresh_value_kind_result_type", 1
+        "fn owned_value_kind_result_type", 1
     )[0]
     assert table_name in infer_body
     assert "OpCode::ConstInt => Some(TirType::I64)" not in infer_body
@@ -1771,7 +1758,6 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
         "CallMethod": "call_return_type",
         "CallMethodIc": "call_return_type",
         "CallSuperMethodIc": "call_return_type",
-        "CallBuiltin": "call_builtin_return_type",
         "TypeGuard": "type_guard",
         "Copy": "copy_original_kind",
     }
@@ -1815,7 +1801,6 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
     attr_variant = {
         "object_type_hint": "ObjectTypeHint",
         "call_return_type": "CallReturnType",
-        "call_builtin_return_type": "CallBuiltinReturnType",
         "type_guard": "TypeGuard",
         "copy_original_kind": "CopyOriginalKind",
     }
@@ -1860,10 +1845,14 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
     assert "opcode_type_refine_operand_type_rule_table(opcode)" in production
     assert "attr_result_type_override(op.opcode, &op.attrs, &op.operands)" in production
     override_body = _rust_fn_body(production, "fn attr_result_type_override")
-    assert "builtin_call_view(opcode, attrs, operands)" in override_body
+    # Public callable spelling cannot establish a return type. Copy-lifted
+    # runtime primitives use their shared representation and result authorities.
+    assert "builtin_call_view(" not in override_body
+    assert "container_constructor_result_type" in override_body
+    assert "copy_kind_raw_carrier_type" in override_body
     infer_body = production.split("fn infer_single_result_type_with_attrs", maxsplit=1)[
         1
-    ].split("fn fresh_value_kind_result_type", maxsplit=1)[0]
+    ].split("fn owned_value_kind_result_type", maxsplit=1)[0]
     assert "attr_result_type_override(opcode, attrs, operand_types)" in infer_body
     assert "match opcode {" not in infer_body
     assert "OpCode::Add | OpCode::InplaceAdd" not in infer_body
@@ -2131,7 +2120,6 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
         "BuildList": "fixed_literal",
         "BuildTuple": "fixed_literal",
         "Mul": "list_repeat",
-        "CallBuiltin": "len_call",
         "Copy": "len_call",
     }
     assert {
@@ -3145,8 +3133,6 @@ def test_local_only_operand_authority_is_generated_and_fail_closed() -> None:
     expected = {
         "Is",
         "IsNot",
-        "CheckedAdd",
-        "CheckedMul",
         "IncRef",
         "DecRef",
         "DeleteVar",
@@ -3206,6 +3192,7 @@ def test_alias_rc_barrier_predicate_delegates_to_generated_table() -> None:
         "CheckException",
         "ClosureLoad",
         "ClosureStore",
+        "FrameContextSet",
         "Raise",
         "StateSwitch",
         "StateTransition",
@@ -3414,7 +3401,7 @@ def test_lowered_state_machine_body_opcodes_delegate_to_generated_table() -> Non
 
     table_block = rendered.split("fn opcode_is_lowered_state_machine_body_table")[
         1
-    ].split("fn opcode_is_drop_insertion_suspension_point_table")[0]
+    ].split("fn opcode_is_drop_insertion_return_deferral_barrier_table")[0]
     for row in data["opcode"]:
         expected_bool = "true" if row["name"] in expected else "false"
         assert f"OpCode::{row['name']} => {expected_bool}," in table_block
@@ -3440,37 +3427,31 @@ def test_lowered_state_machine_body_opcodes_delegate_to_generated_table() -> Non
     assert "OpCode::" not in body
 
 
-def test_drop_insertion_suspension_points_delegate_to_generated_table() -> None:
-    """Drop insertion's suspension retain points have one opcode authority."""
+def test_drop_insertion_exposes_activation_exits_before_ownership_analysis() -> None:
+    """Suspension ends an invocation; shared ownership sees explicit Returns."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    drop_insertion = tir_path("passes/drop_insertion/util.rs").read_text(
-        encoding="utf-8"
-    )
-
-    expected = {
-        "StateYield",
-        "Yield",
-        "YieldFrom",
-    }
-    assert set(data["drop_insertion_suspension_point_opcodes"]) == expected
-    assert expected < set(data["state_machine_opcodes"])
-    assert {"AllocTask", "StateSwitch", "StateTransition"}.isdisjoint(expected)
-
-    table_block = rendered.split("fn opcode_is_drop_insertion_suspension_point_table")[
-        1
-    ].split("fn opcode_is_drop_insertion_return_deferral_barrier_table")[0]
-    for row in data["opcode"]:
-        expected_bool = "true" if row["name"] in expected else "false"
-        assert f"OpCode::{row['name']} => {expected_bool}," in table_block
-
-    table_name = "opcode_is_drop_insertion_suspension_point_table"
-    assert table_name in drop_insertion
-    body = _rust_fn_body(drop_insertion, "fn is_suspension_point(")
-    assert f"{table_name}(opcode)" in body
-    assert "matches!" not in body
-    assert "OpCode::" not in body
+    runner = tir_path("passes/drop_insertion/runner.rs").read_text(encoding="utf-8")
+    activation = tir_path("passes/drop_insertion/activation.rs").read_text(encoding="utf-8")
+    assert "drop_insertion_suspension_point_opcodes" not in data
+    assert "opcode_is_drop_insertion_suspension_point_table" not in rendered
+    assert "is_suspension_point" not in runner
+    activation_call = runner.index("super::activation::expose_activation_exits(func)")
+    assert activation_call < runner.index("OwnershipRootFacts::compute(func, &aliases)")
+    assert activation_call < runner.index("compute_liveness_in_domain(func, &aliases, &raw_scalars)")
+    assert activation_call < runner.index("PythonLifetimeFacts::compute(func, &aliases)")
+    body = _rust_fn_body(activation, "fn expose_activation_exits(")
+    assert "OpCode::Yield | OpCode::YieldFrom" in body
+    assert "high-level suspension must be lowered before activation ownership" in body
+    assert "OpCode::StateYield | OpCode::StateTransition" in body
+    assert body.count("Terminator::Return") == 2
+    assert "values: op.operands" in body
+    assert "values: vec![result]" in body
+    assert "make_op(OpCode::IsPending, vec![result])" in body
+    assert "make_op(OpCode::ClosureStore, vec![frame, result])" in body
+    assert "OpCode::IncRef" not in body
+    assert "OpCode::DecRef" not in body
 
 
 def test_drop_insertion_return_deferral_barriers_delegate_to_generated_table() -> None:
@@ -3488,7 +3469,7 @@ def test_drop_insertion_return_deferral_barriers_delegate_to_generated_table() -
     expected = {"DecRef", "Free", "IncRef"}
     assert set(data["drop_insertion_return_deferral_barrier_opcodes"]) == expected
     assert "DelBoundary" not in expected
-    assert expected.isdisjoint(data["drop_insertion_suspension_point_opcodes"])
+    assert expected.isdisjoint(data["lowered_state_machine_body_opcodes"])
 
     table_block = rendered.split(
         "fn opcode_is_drop_insertion_return_deferral_barrier_table"
@@ -4827,8 +4808,9 @@ def test_frontend_effect_classes_match_generated_authority() -> None:
     }:
         assert py.FRONTEND_EFFECT_CLASS[callback_control] == "control"
         assert py.FRONTEND_ARBITRARY_HEAP_EFFECT[callback_control]
-    assert not py.FRONTEND_ARBITRARY_HEAP_EFFECT["MODULE_CACHE_GET"]
-    for kind in ("LIST_NEW", "TUPLE_NEW"):
+    # Public module mappings can invoke user equality/hash callbacks.
+    assert py.FRONTEND_ARBITRARY_HEAP_EFFECT["MODULE_CACHE_GET"]
+    for kind in ("LIST_NEW", "TUPLE_NEW", "SLICE_NEW"):
         assert py.FRONTEND_ARBITRARY_HEAP_EFFECT[kind] is False
     for kind in ("DICT_NEW", "SET_NEW"):
         assert py.FRONTEND_ARBITRARY_HEAP_EFFECT[kind] is True
@@ -5017,6 +4999,8 @@ def test_primitive_operator_projections_cover_every_exact_case() -> None:
     cases = primitive_effect_cases(data)
     governed = {opcode for case in cases for opcode in case.opcodes}
     assert governed == {
+        "CheckedAdd",
+        "CheckedMul",
         "Add",
         "Sub",
         "Mul",
@@ -5103,6 +5087,7 @@ def test_binary_image_analysis_consumes_generated_allocation_sets() -> None:
 
     for generated_name in (
         "BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS",
+        "BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS",
         "BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS",
         "BINARY_IMAGE_REF_RETAIN_KINDS",
         "BINARY_IMAGE_REF_RELEASE_KINDS",
@@ -5274,7 +5259,7 @@ def test_audit_separates_boxed_contracts_from_dedicated_machine_constants() -> N
     dedicated, _ = runtime_import_abi_facts(include_fixed=False)
     for symbol, arity in (
         ("molt_alloc_class", 2),
-        ("molt_asyncgen_locals_register", 3),
+        ("molt_stateful_locals_register", 3),
         ("molt_asyncgen_new", 1),
         ("molt_function_closure_bits", 1),
     ):
@@ -5312,7 +5297,7 @@ def test_render_detects_classifier_mutation() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     mutated = json.loads(json.dumps(data))
-    mutated["classifier_fresh_value"].append("zzz_synthetic_kind")
+    mutated["classifier_owned_value"].append("zzz_synthetic_kind")
     assert gen.render_rs(mutated) != rendered
     mutated = json.loads(json.dumps(data))
     mutated["classifier_owned_alias"].append("zzz_synthetic_alias")
@@ -5324,7 +5309,7 @@ def test_render_detects_classifier_mutation() -> None:
 #    the #58 Owned/Borrowed/Raw/Consumed lattice). The per-OpCode `Borrowed`
 #    default is EXHAUSTIVE over the enum; the per-spelling consume override
 #    ([[consuming_kind]]) replaces the old drop_insertion.rs hand consume list
-#    behind the ownership-module `op_consumed_operand_root`. These tests pin the
+#    behind the ownership-module `op_transferred_operands`. These tests pin the
 #    render + the fail-loud classification
 #    discipline + the byte-identical CallArgs consume semantics.
 # ---------------------------------------------------------------------------
@@ -5346,37 +5331,22 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
     `opcode_operand_ownership_table` (EXHAUSTIVE over the enum — the kill for a
     new opcode silently inheriting an unstated borrow/consume assumption). The
     seed is uniformly `Borrowed` (molt's callee-borrows-args ABI, design 20 §1.2)
-    EXCEPT the two interior-borrowing reads `LoadAttr`/`Index` and the
-    storage value operands' container-absorb finalizer boundary."""
+    except consuming operations and storage operands' container-absorb boundary."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
 
     # The table region for opcode_operand_ownership_table, bounded by the next fn.
     region = _re_search(rendered, "fn opcode_operand_ownership_table").split(
-        "fn opcode_borrows_source_operand"
+        "fn opcode_container_absorbed_operand"
     )[0]
     region_tokens = _rust_tokens(region)
-    # The behavior-preserving seed (ladder #73): every opcode is `all_borrowed`
-    # EXCEPT the two interior-borrowing reads and the explicit DecRef consume.
-    # `LoadAttr` interior-borrows its single operand; `Index` interior-borrows
-    # operand 0 (the container) and merely borrows operand 1 (the key).
-    interior = {
-        "LoadAttr": ["interior_borrow_keepalive"],
-        "Index": ["interior_borrow_keepalive", "borrowed"],
-    }
     container_absorb = {
         "StoreIndex": ["borrowed", "borrowed", "container_absorb"],
         "ModuleSetAttr": ["borrowed", "borrowed", "container_absorb"],
     }
     consumed = {"DecRef"}
     expected_arm = {
-        "LoadAttr": "OpCode::LoadAttr => OperandOwnership::InteriorBorrowKeepAlive,",
-        "Index": (
-            "OpCode::Index => match operand_idx { "
-            "0 => OperandOwnership::InteriorBorrowKeepAlive, "
-            "_ => OperandOwnership::Borrowed, },"
-        ),
         "StoreIndex": (
             "OpCode::StoreIndex => match operand_idx { "
             "0 => OperandOwnership::Borrowed, "
@@ -5393,16 +5363,7 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
     }
     for row in data["opcode"]:
         name = row["name"]
-        if name in interior:
-            assert row["operand_ownership"] == interior[name], (
-                f"{name} interior-borrow seed drifted: {row['operand_ownership']!r} "
-                f"!= {interior[name]!r} (ladder #73 must stay byte-identical to the "
-                "op_borrow_source LoadAttr|Index→operand-0 fact)"
-            )
-            assert _rust_tokens(expected_arm[name]) in region_tokens, (
-                f"opcode_operand_ownership_table missing/incorrect {name} arm"
-            )
-        elif name in container_absorb:
+        if name in container_absorb:
             assert row["operand_ownership"] == container_absorb[name], (
                 f"{name} container-absorb seed drifted: {row['operand_ownership']!r} "
                 f"!= {container_absorb[name]!r}"
@@ -5438,7 +5399,6 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
         "    Borrowed,\n"
         "    Consumed,\n"
         "    Transferred,\n"
-        "    InteriorBorrowKeepAlive,\n"
         "    ContainerAbsorb,\n"
         "    ConditionalValidOnlyOnEdge,\n"
         "    NoOperand,\n"
@@ -5448,7 +5408,7 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
 
 def test_consuming_kind_table_renders_callargs_consume() -> None:
     """The `[[consuming_kind]]` rows render into `kind_consumed_operand_table`
-    with the EXACT `op_consumed_operand_root` semantics: `call_bind` /
+    with the EXACT CallArgs-builder semantics: `call_bind` /
     `call_indirect` consume the LAST operand (`arity.checked_sub(1)`), every
     other spelling consumes none (`_ => None`)."""
     gen = _gen()
@@ -5457,33 +5417,209 @@ def test_consuming_kind_table_renders_callargs_consume() -> None:
     region = _re_search(rendered, "fn kind_consumed_operand_table")
 
     consuming = {row["kind"]: row["consumed_operand"] for row in data["consuming_kind"]}
-    # The migration's behavior-preserving seed: exactly the two CallArgs forms.
-    assert consuming == {"call_bind": "last", "call_indirect": "last"}, (
-        "consuming_kind drifted from the op_consumed_operand_root seed "
+    # The two CallArgs forms free their builder, the last operand; a frame-home
+    # store hands the value it stores (operand 0) to the frame's home.
+    assert consuming == {
+        "call_bind": "last",
+        "call_indirect": "last",
+        "frame_home_store": 0,
+        "frame_home_cell": 0,
+        "frame_home_private_cell": 0,
+    }, (
+        "consuming_kind drifted from the CallArgs-builder seed "
         f"(call_bind/call_indirect → last): {consuming}"
     )
     for kind, sel in consuming.items():
-        assert sel == "last"
-        assert f'"{kind}" => arity.checked_sub(1),' in region, (
-            f"kind_consumed_operand_table missing the {kind} → last arm"
+        arm = (
+            f'"{kind}" => arity.checked_sub(1),'
+            if sel == "last"
+            else f'"{kind}" => Some({sel}),'
+        )
+        assert arm in region, (
+            f"kind_consumed_operand_table missing the {kind} → {sel} arm"
         )
     assert "_ => None," in region
 
 
-def test_consuming_kinds_are_known_mapper_spellings() -> None:
+def test_consuming_kinds_are_known_consuming_spellings() -> None:
     """Every `[[consuming_kind]]` spelling must be a real mapper spelling
-    (canonical or alias of a [[kind]] row). A consume override on an unknown
-    spelling silently never fires — the exact C6 double-free it must retire."""
+    (canonical or alias of a [[kind]] row), or a Copy-lifted spelling whose
+    operation owns what it consumes: an inert marker with no surviving result, a
+    binding view of the frame home it stores into, or a fresh value that takes
+    it into its result. A consume override on an unknown spelling silently never
+    fires — the exact C6 double-free it must retire."""
     gen = _gen()
     data = gen.load_table()
     spellings: set[str] = set()
     for row in data["kind"]:
         spellings.add(row["canonical"])
         spellings.update(row.get("aliases", []))
+    spellings.update(data.get("classifier_inert_marker", []))
+    spellings.update(data.get("classifier_binding_view", []))
+    spellings.update(data.get("classifier_owned_value", []))
     for row in data["consuming_kind"]:
         assert row["kind"] in spellings, (
-            f"consuming_kind {row['kind']!r} is not a [[kind]] mapper spelling"
+            f"consuming_kind {row['kind']!r} is not a consuming spelling"
         )
+
+
+def test_consuming_kind_admits_copy_lifted_storage_owners_only() -> None:
+    """A Copy-lifted spelling may consume an operand when its operation moves
+    the reference into storage the operation owns: an inert marker with no
+    surviving result, a declared binding view (a frame home store, whose result
+    views the home it stored into), or a fresh value that takes it into its own
+    result. The one taking query reads such a row like any other. Any other
+    transparent Copy (a borrowed getter), an owned alias or a no-heap move names
+    the operand's object without declaring storage that owns it, so a consume
+    row on one fails generation, as does a selector past the spelling's declared
+    operands."""
+    gen = _gen()
+    data = gen.load_table()
+    owner: dict[str, str] = {}
+    for row in data["kind"]:
+        owner[row["canonical"]] = row["canonical"]
+        for alias in row.get("aliases", []):
+            owner[alias] = row["canonical"]
+    base = json.loads(json.dumps(data))
+    base["classifier_inert_marker"].append("synthetic_storing_marker")
+    base["classifier_transparent_alias"].append("synthetic_home_store")
+    base["classifier_transparent_alias"].append("synthetic_borrowed_getter")
+    base.setdefault("classifier_binding_view", []).append("synthetic_home_store")
+    base["classifier_owned_value"].append("synthetic_moving_builder")
+    base["simpleir_op_shape"].append(
+        {
+            "kind": "synthetic_home_store",
+            "family": "execution_frame",
+            "operands": 1,
+            "value_rule": "nonnegative",
+        }
+    )
+    gen._validate_binding_views(base)
+    for good in (
+        {"kind": "synthetic_home_store", "consumed_operand": "last"},
+        {"kind": "synthetic_home_store", "consumed_operand": 0},
+        {"kind": "synthetic_storing_marker", "consumed_operand": 0},
+        {"kind": "synthetic_moving_builder", "consumed_operand": 0},
+    ):
+        mutated = json.loads(json.dumps(base))
+        mutated["consuming_kind"].append(good)
+        gen._validate_consuming_kinds(mutated, owner)
+        region = _re_search(gen.render_rs(mutated), "fn kind_consumed_operand_table").split(
+            "pub fn", 1
+        )[0]
+        assert f'"{good["kind"]}" =>' in region, good
+    for bad in (
+        {"kind": "binding_alias", "consumed_operand": 0},
+        {"kind": "synthetic_borrowed_getter", "consumed_operand": "last"},
+        {"kind": "identity_alias", "consumed_operand": 0},
+        {"kind": "synthetic_home_store", "consumed_operand": 1},
+    ):
+        mutated = json.loads(json.dumps(base))
+        mutated["consuming_kind"].append(bad)
+        try:
+            gen._validate_consuming_kinds(mutated, owner)
+        except gen.OpKindTableError:
+            continue
+        raise AssertionError(f"consuming_kind row {bad} must be rejected")
+
+
+def test_source_call_kinds_render_and_reject_malformed_rows() -> None:
+    """`[[source_call_kind]]` rows render `kind_source_call_first_adopted_operand`
+    and `kind_source_call_callable_operand`, the tables SimpleIR admission reads
+    to accept typed `argument_custody`. Runtime entries, FFI and builtins get no
+    row. A row on an unknown spelling, one whose borrowed prefix is longer than a
+    `super()` class, or one whose callable could never be adopted fails
+    generation."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    adopted = _re_search(rendered, "fn kind_source_call_first_adopted_operand").split(
+        "pub fn", 1
+    )[0]
+    callables = _re_search(rendered, "fn kind_source_call_callable_operand").split(
+        "pub fn", 1
+    )[0]
+    rows = {row["kind"]: row for row in data["source_call_kind"]}
+    for kind, row in rows.items():
+        assert f'"{kind}" => Some({row["first_adopted_operand"]}),' in adopted, kind
+        if "callable_operand" in row:
+            assert f'"{kind}" => Some({row["callable_operand"]}),' in callables, kind
+        else:
+            assert f'"{kind}"' not in callables, kind
+    assert "_ => None," in adopted
+    assert "_ => None," in callables
+    assert not {"invoke_ffi", "call_builtin", "call_function"} & rows.keys()
+    assert {"call_func", "call_bind"} <= {
+        kind for kind, row in rows.items() if "callable_operand" in row
+    }
+    owner: dict[str, str] = {}
+    for row in data["kind"]:
+        owner[row["canonical"]] = row["canonical"]
+        for alias in row.get("aliases", []):
+            owner[alias] = row["canonical"]
+    gen._validate_source_call_kinds(data, owner)
+    for bad in (
+        {"kind": "zzz_not_a_real_kind", "first_adopted_operand": 0},
+        {"kind": "call_func", "first_adopted_operand": 2},
+        {"kind": "call_func", "first_adopted_operand": True},
+        {"kind": "call_func", "first_adopted_operand": 0, "callable_operand": 1},
+        {"kind": "call_func", "first_adopted_operand": 1, "callable_operand": 0},
+    ):
+        mutated = json.loads(json.dumps(data))
+        mutated["source_call_kind"] = [bad]
+        try:
+            gen._validate_source_call_kinds(mutated, owner)
+        except gen.OpKindTableError:
+            continue
+        raise AssertionError(f"source_call_kind row {bad} must be rejected")
+
+
+def test_binding_views_render_and_stay_non_owning() -> None:
+    """`classifier_binding_view` renders `copy_kind_is_binding_view_table`, the
+    fact `OwnershipRootFacts` reads to keep frame binding views, and the block
+    arguments that carry only them, out of every release. The generated table
+    matches the declared set (an empty set renders a never-matching arm). A view
+    must sit in the explicit transparent-alias bucket and in no bucket that
+    mints, moves or marks a reference, or generation fails."""
+    gen = _gen()
+    audit = _audit()
+    data = gen.load_table()
+    declared = set(data.get("classifier_binding_view", []))
+    generated = set(
+        audit.extract_matches_macro(OUT_RS, "copy_kind_is_binding_view_table")
+    ) - {"\\0__never__"}
+    assert generated == declared, (
+        "generated binding-view table drifted from classifier_binding_view"
+    )
+    gen._validate_binding_views(data)
+    base = json.loads(json.dumps(data))
+    base["classifier_transparent_alias"].append("synthetic_home_load")
+    base.setdefault("classifier_binding_view", []).append("synthetic_home_load")
+    gen._validate_binding_views(base)
+    region = _re_search(gen.render_rs(base), "fn copy_kind_is_binding_view_table").split(
+        "pub fn", 1
+    )[0]
+    assert '"synthetic_home_load"' in region
+    rejected = []
+    for bucket in (
+        "classifier_owned_value",
+        "classifier_owned_alias",
+        "classifier_exception_creation_ref",
+        "classifier_inert_marker",
+        "classifier_no_heap_move",
+    ):
+        mutated = json.loads(json.dumps(base))
+        mutated[bucket].append("synthetic_home_load")
+        rejected.append((f"also in {bucket}", mutated))
+    mutated = json.loads(json.dumps(base))
+    mutated["classifier_transparent_alias"].remove("synthetic_home_load")
+    rejected.append(("outside classifier_transparent_alias", mutated))
+    for reason, mutated in rejected:
+        try:
+            gen._validate_binding_views(mutated)
+        except gen.OpKindTableError:
+            continue
+        raise AssertionError(f"a binding view {reason} must be rejected")
 
 
 def test_container_absorbing_kind_table_renders_storage_boundaries() -> None:
@@ -5521,7 +5657,7 @@ def test_result_finalizer_source_kind_table_renders_list_pop_boundary() -> None:
         for row in data["result_finalizer_source_kind"]
     }
     assert result_sources == {"list_pop": 0}
-    assert "list_pop" in set(data["classifier_fresh_value"])
+    assert "list_pop" in set(data["classifier_owned_value"])
     assert '"list_pop" => Some(0),' in region
     assert "_ => None," in region
 
@@ -5538,7 +5674,13 @@ def test_result_absorption_tables_render_container_authority() -> None:
     kind_region = _re_search(rendered, "fn kind_result_absorbs_operand_ownership_table")
 
     truthy = {row["name"] for row in data["opcode"] if row["result_absorbs_operands"]}
-    assert truthy == {"BuildList", "BuildDict", "BuildTuple", "BuildSet"}
+    assert truthy == {
+        "BuildList",
+        "BuildDict",
+        "BuildTuple",
+        "BuildSet",
+        "BuildSlice",
+    }
     for name in truthy:
         assert f"OpCode::{name} => true," in opcode_region
     for row in data["opcode"]:
@@ -5552,6 +5694,7 @@ def test_result_absorption_tables_render_container_authority() -> None:
         "frozenset_new",
         "list_new",
         "set_new",
+        "slice_new",
         "tuple_new",
     }
     for kind in absorbing:
@@ -5650,6 +5793,14 @@ def test_execution_frame_and_introspection_requirements_are_distinct() -> None:
     rendered = gen.render_rs(data)
 
     execution_frames = {
+        "frame_context_set",
+        "frame_home_cell",
+        "frame_home_clear",
+        "frame_home_load",
+        "frame_home_private_cell",
+        "frame_home_store",
+        "frame_home_take",
+        "frame_locals",
         "frame_locals_set",
         "line",
         "trace_enter_slot",
@@ -5816,8 +5967,7 @@ def test_defined_function_reference_authority_is_distinct_and_generated() -> Non
         "call_indirect",
         "alloc_task",
         "call_async",
-        "asyncgen_locals_register",
-        "gen_locals_register",
+        "stateful_locals_register",
         "task_new",
         "generator_send",
         "call_func",
@@ -6260,7 +6410,7 @@ def test_absorbing_kinds_remain_copy_fresh_spellings_not_aliases() -> None:
     for row in data["kind"]:
         mapper_spellings.add(row["canonical"])
         mapper_spellings.update(row.get("aliases", []))
-    fresh = set(data["classifier_fresh_value"])
+    fresh = set(data["classifier_owned_value"])
 
     for row in data["absorbing_kind"]:
         kind = row["kind"]
@@ -6330,34 +6480,36 @@ def test_ownership_lattice_delegates_conditional_result_validity_to_generated_ta
 
 
 def test_drop_insertion_delegates_consume_to_generated_table() -> None:
-    """Consumed-operand ownership must live in the ownership lattice module.
+    """Adopted-operand ownership must live in the ownership lattice module.
 
-    DropInsertion may ask for the consumed root, but it must not own generated
-    table reads or a hand-maintained CallArgs-builder spelling list."""
+    DropInsertion may ask which operands an op adopts, but it must not own
+    generated table reads, a hand-maintained CallArgs-builder spelling list, or
+    a private reading of call-site custody."""
     drop = _read_rs_module_cluster(tir_path("passes/drop_insertion.rs"))
     ownership = _read_rs_module_cluster(tir_path("passes/ownership_lattice_min.rs"))
 
-    assert "op_consumed_operand_root" in drop, (
-        "drop_insertion.rs must import the ownership-module consume query"
+    assert "op_transferred_operands" in drop, (
+        "drop_insertion.rs must import the ownership-module adoption query"
     )
     assert "op_result_absorbs_operand_ownership" in drop, (
         "drop_insertion.rs must import the ownership-module absorption query"
     )
-    assert "fn op_consumed_operand_root(" not in drop, (
-        "drop_insertion.rs must not define its own consumed-operand helper"
+    assert "fn op_transferred_operands(" not in drop, (
+        "drop_insertion.rs must not define its own adopted-operand helper"
     )
     for forbidden in (
         "kind_consumed_operand_table",
         "opcode_operand_ownership_table",
         "OperandOwnership",
+        "operand_custody(",
     ):
         assert forbidden not in drop, (
-            f"drop_insertion.rs must not own the generated consume authority: {forbidden}"
+            f"drop_insertion.rs must not own the adoption authority: {forbidden}"
         )
-    # Extract the `fn op_consumed_operand_root(...) { ... }` body by brace-matching
+    # Extract the `fn op_transferred_operands(...) { ... }` body by brace-matching
     # from the signature to its closing brace.
-    marker = "fn op_consumed_operand_root("
-    assert marker in ownership, "op_consumed_operand_root not found"
+    marker = "fn op_transferred_operands("
+    assert marker in ownership, "op_transferred_operands not found"
     start = ownership.index(marker)
     brace = ownership.index("{", start)
     depth = 0
@@ -6375,17 +6527,20 @@ def test_drop_insertion_delegates_consume_to_generated_table() -> None:
     # authority is now the generated table the body delegates to).
     assert '"call_bind"' not in body and '"call_indirect"' not in body, (
         "the hand-coded call_bind/call_indirect consume literals must be deleted "
-        "from op_consumed_operand_root (now sourced from generated ownership facts)"
+        "from op_transferred_operands (now sourced from generated ownership facts)"
     )
     assert "kind_consumed_operand_table" in body, (
-        "op_consumed_operand_root's body must call kind_consumed_operand_table"
+        "op_transferred_operands's body must call kind_consumed_operand_table"
     )
     # Both generated authorities must be wired (the per-OpCode floor is the
     # council's primary `opcode_operand_ownership_table` deliverable — it must be
-    # load-bearing, not dead code).
+    # load-bearing, not dead code), beside the typed call-site custody.
     assert "opcode_operand_ownership_table" in body, (
-        "op_consumed_operand_root must also consult the per-OpCode floor "
+        "op_transferred_operands must also consult the per-OpCode floor "
         "opcode_operand_ownership_table (the unified operand-ownership query)"
+    )
+    assert "operand_custody(" in body, (
+        "op_transferred_operands must read the call site's typed operand custody"
     )
 
 
@@ -6399,8 +6554,14 @@ def test_drop_insertion_delegates_conditional_result_validity_to_ownership_latti
     assert "fn op_result_is_conditionally_valid_only_on_edge(" not in drop
     assert "opcode_result_is_conditionally_valid_only_on_edge" not in drop
     assert "OwnershipRootFacts::compute(func, &aliases)" in drop
-    assert "OwnershipLattice::compute_with_root_facts(" in drop
-    assert "ownership_lattice.is_conditionally_valid_result_root(canon(v))" in drop
+    assert "OwnershipLattice::compute(func, &aliases)" in drop
+    assert "drop_eligibility.is_conditionally_valid_result_root(r)" in drop
+    lattice = _read_rs_module_cluster(tir_path("passes/ownership_lattice_min.rs"))
+    eligibility = lattice[lattice.index("impl<'a> DropEligibility<'a>") :]
+    projection = _rust_fn_body(eligibility, "fn is_conditionally_valid_result_root(")
+    assert "self.root_facts" in projection
+    assert ".is_conditionally_valid_result_root(self.root(value))" in projection
+    assert "self.root_facts.conditionally_valid_region(root)" in drop
     assert ".conditionally_valid_result_values()" not in drop
     assert ".conditionally_valid_result_roots()" not in drop
     assert "OpCode::IterNextUnboxed" not in drop_prod.replace(
@@ -6423,7 +6584,7 @@ def test_drop_insertion_separates_named_lifetimes_from_finalizer_facts() -> None
     marker = "let named_owner_roots ="
     assert marker in drop, "named-owner lifetime consumer not found"
     region = drop[
-        drop.index(marker) : drop.index("let has_suspension", drop.index(marker))
+        drop.index(marker) : drop.index("let mut accepted:", drop.index(marker))
     ]
     assert (
         "python_lifetime_facts.return_boundary_candidate_roots(&drop_eligibility)"
@@ -6448,7 +6609,7 @@ def test_drop_insertion_consumes_non_owning_copy_roots_from_ownership_lattice() 
     drop = _read_rs_module_cluster(tir_path("passes/drop_insertion.rs"))
     lattice = _read_rs_module_cluster(tir_path("passes/ownership_lattice_min.rs"))
     assert "non_owning_copy_results" not in drop
-    assert "copy_kind_mints_fresh_owned_ref" not in drop
+    assert "copy_kind_mints_owned_value" not in drop
     assert "let mints_fresh =" not in drop
     assert "OwnershipRootFacts::compute(func, &aliases)" in drop
     assert "DropEligibility::new(" in drop
@@ -6512,8 +6673,10 @@ def test_drop_insertion_delegates_droppable_predicate_to_drop_eligibility() -> N
     assert "raw_scalars.contains" not in drop
     assert "live.is_raw_scalar(v)" not in drop
     assert "DropEligibility::new(" in drop
-    assert "&live.raw_scalars" in drop
-    assert "drop_eligibility.is_raw_scalar_root(canon(v))" in drop
+    assert "let raw_scalars = compute_raw_scalars(func);" in drop
+    assert "DropEligibility::new(&aliases, &ownership_root_facts, &raw_scalars)" in drop
+    assert "compute_liveness_in_domain(func, &aliases, &raw_scalars)" in drop
+    assert "eligibility.is_raw_scalar_root(root)" in drop
     assert "drop_eligibility.is_droppable(" in drop
     assert _rust_pub_decl(lattice, "struct", "DropEligibility")
     assert _rust_pub_fn(lattice, "is_raw_scalar_root")
@@ -6526,7 +6689,18 @@ def test_drop_insertion_consumes_python_lifetime_facts_from_ownership_lattice() 
     lattice = _read_rs_module_cluster(tir_path("passes/ownership_lattice_min.rs"))
     assert "PythonLifetimeFacts::compute(" in drop
     assert "let python_boundary_roots" not in drop
-    assert "let explicit_release_roots" not in drop
+    assert "let explicit_release_roots = python_lifetime_facts.explicit_release_roots();" in drop
+    assert ".flat_map(explicit_release_values)" not in drop
+    assert "fn explicit_release_values(" not in drop
+    assert "opcode_explicit_release_operands_table" not in drop
+    assert _rust_pub_fn(lattice, "explicit_release_roots")
+    release_projection = _rust_fn_body(lattice, "fn explicit_release_values(")
+    assert "opcode_explicit_release_operands_table(op.opcode, op.operands.len())" in release_projection
+    assert "OpCode::" not in release_projection
+    lifetime_impl = lattice[lattice.index("impl PythonLifetimeFacts {") :]
+    lifetime_compute = _rust_fn_body(lifetime_impl, "fn compute(")
+    assert "explicit_release_values(op)" in lifetime_compute
+    assert ".map(|value| aliases.root(value))" in lifetime_compute
     assert "let mut bound_roots" not in drop
     assert 'k == "store_var" || k == "load_var"' not in drop
     assert ".local_store_roots()" not in drop
@@ -6649,21 +6823,16 @@ def test_operand_ownership_mandatory_fail_loud() -> None:
 
 
 def test_operand_ownership_rejects_bad_value() -> None:
-    """A malformed `operand_ownership` (bad string / bad list leaf) is a hard
-    error — a typo must never silently degrade to a borrow/consume assumption, or
-    a dropped keepalive (the round-6 interior-borrow UAF). The borrow-of leaf
-    `interior_borrow_keepalive` is LIST-ONLY: it is NOT a valid uniform shorthand
-    (an op that interior-borrows one operand still borrows the rest)."""
+    """Malformed and retired operand-custody categories fail generation."""
     gen = _gen()
     for bad in (
         "borrowed",
         "all_owned",
         "consume",
         ["borrowed", "moved"],
-        # interior_borrow_keepalive is reachable only via a per-position list;
-        # neither the bare leaf nor an `all_*` form of it is a valid shorthand.
         "interior_borrow_keepalive",
         "all_interior_borrow_keepalive",
+        ["interior_borrow_keepalive"],
         7,
     ):
         try:
@@ -6674,14 +6843,13 @@ def test_operand_ownership_rejects_bad_value() -> None:
             raise AssertionError(
                 f"operand_ownership={bad!r} must raise OpKindTableError"
             )
-    # The valid shapes must pass, including a per-position list that carries the
-    # interior-borrow leaf alongside a plain borrowed operand (the `Index` shape).
+    # Container absorption remains a distinct per-position custody fact.
     for good in (
         "all_borrowed",
         "all_consumed",
         ["borrowed", "consumed"],
-        ["interior_borrow_keepalive"],
-        ["interior_borrow_keepalive", "borrowed"],
+        ["container_absorb"],
+        ["borrowed", "container_absorb"],
     ):
         gen._validate_operand_ownership("SynthOp", good)
 
@@ -6712,100 +6880,6 @@ def test_consuming_kind_rejects_unknown_spelling_fail_loud() -> None:
         )
 
 
-# --- Interior-borrow keepalive (design 27 §1.5 borrow-of edge; ladder #73) -----
-# The `interior_borrow_keepalive` operand-ownership leaf is the borrow-of fact: a
-# per-position operand whose backing store the op's result interior-borrows (the
-# `LoadAttr`/`Index` source — the round-6 `Counter._handle` UAF). It renders into
-# `opcode_borrows_source_operand`, the single declarative authority `op_borrow_source`
-# (alias_analysis.rs) reads, REPLACING the hand-coded `LoadAttr | Index` match.
-# These tests pin the seed (byte-identical), the render, and the consumer migration.
-
-
-def test_borrows_source_operand_renders_loadattr_and_index() -> None:
-    """The `interior_borrow_keepalive` rows render into
-    `opcode_borrows_source_operand` with the design-27 §1.5 borrow-of seed:
-    `LoadAttr`/`Index` borrow into operand 0, every other op into none. This is
-    the behavior-preserving migration of `op_borrow_source` (the prior hardcoded
-    `LoadAttr | Index => operands.first()`) — and the first construction of
-    `OperandOwnership::InteriorBorrowKeepAlive` by a generated TABLE (not just
-    `from_str`), the ladder-#73 deliverable."""
-    gen = _gen()
-    data = gen.load_table()
-    rendered = gen.render_rs(data)
-    region = _re_search(rendered, "fn opcode_borrows_source_operand").split(
-        "fn opcode_result_absorbs_operand_ownership_table"
-    )[0]
-
-    # The toml seed: exactly LoadAttr/Index carry interior_borrow_keepalive at
-    # position 0 (byte-identical to op_borrow_source's LoadAttr|Index→operand-0).
-    borrows = {
-        row["name"]: gen._borrows_source_operand_index(row["operand_ownership"])
-        for row in data["opcode"]
-    }
-    interior = {k: v for k, v in borrows.items() if v is not None}
-    assert interior == {"LoadAttr": 0, "Index": 0}, (
-        "opcode_borrows_source_operand drifted from the op_borrow_source seed "
-        f"(LoadAttr/Index → operand 0): {interior}"
-    )
-    assert "OpCode::LoadAttr => Some(0)," in region
-    assert "OpCode::Index => Some(0)," in region
-    # Exhaustive fall-through: every non-interior-borrow op → None.
-    assert "_ => None," in region
-    # `OrdAt` is a fused i64 read (a scalar copied out, NOT a reference into the
-    # container) — it must NOT be in the table (the round-6 explicit exclusion).
-    assert "OpCode::OrdAt =>" not in region, (
-        "OrdAt produces an i64 code point, not an interior borrow — it owes no "
-        "keepalive and must stay off the borrows-source table"
-    )
-    # `InteriorBorrowKeepAlive` is constructed by the generated operand-ownership
-    # table now — GENUINELY LIVE, not a `from_str`-only forward-compat variant.
-    own_region = _re_search(rendered, "fn opcode_operand_ownership_table").split(
-        "fn opcode_borrows_source_operand"
-    )[0]
-    assert "OperandOwnership::InteriorBorrowKeepAlive" in own_region, (
-        "opcode_operand_ownership_table must construct InteriorBorrowKeepAlive "
-        "(the ladder-#73 deliverable: the first real InteriorBorrowKeepAlive consumer)"
-    )
-
-
-def test_op_borrow_source_delegates_to_generated_table() -> None:
-    """alias_analysis.rs's `op_borrow_source` must DELEGATE to the generated
-    `opcode_borrows_source_operand` (no hand-maintained `OpCode::LoadAttr |
-    OpCode::Index` match in its body). This is the council's 'migrate one consumer
-    + delete one duplicate fact' proof for the interior-borrow keepalive (ladder
-    #73): the borrow-of fact lives in op_kinds.toml, read by the single authority.
-
-    Scoped to the FUNCTION BODY (not the whole file) so the legitimate LoadAttr /
-    Index references elsewhere in alias_analysis.rs (load-purity classification,
-    the borrow-provenance unit-test fixtures) are not mistaken for the deleted
-    hand-coded match."""
-    alias = _read_rs_module_cluster(tir_path("passes/alias_analysis.rs"))
-    marker = "fn op_borrow_source("
-    assert marker in alias, "op_borrow_source not found"
-    start = alias.index(marker)
-    brace = alias.index("{", start)
-    depth = 0
-    end = brace
-    for i in range(brace, len(alias)):
-        if alias[i] == "{":
-            depth += 1
-        elif alias[i] == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    body = alias[start:end]
-    # The duplicate borrow-of hand list must be gone from the function (the only
-    # authority is now the generated table the body delegates to).
-    assert "OpCode::LoadAttr" not in body and "OpCode::Index" not in body, (
-        "the hand-coded LoadAttr|Index borrow-of match must be deleted from "
-        "op_borrow_source (now sourced from opcode_borrows_source_operand)"
-    )
-    assert "opcode_borrows_source_operand" in body, (
-        "op_borrow_source's body must call the generated opcode_borrows_source_operand"
-    )
-
-
 def test_render_detects_operand_ownership_mutation() -> None:
     """Mutating an operand-ownership classification must change the render (so the
     freshness guard catches a forgotten regeneration)."""
@@ -6823,17 +6897,6 @@ def test_render_detects_operand_ownership_mutation() -> None:
     mutated2["consuming_kind"].append({"kind": "call", "consumed_operand": 0})
     assert gen.render_rs(mutated2) != rendered, (
         "adding a consuming_kind row did not change the render"
-    )
-
-    # Flipping the interior-borrow seed (the borrow-of fact) must change the
-    # render too — the freshness guard protects the round-6 keepalive.
-    mutated3 = json.loads(json.dumps(data))
-    for row in mutated3["opcode"]:
-        if row["name"] == "LoadAttr":
-            row["operand_ownership"] = "all_borrowed"
-    assert gen.render_rs(mutated3) != rendered, (
-        "dropping LoadAttr's interior_borrow_keepalive did not change the render "
-        "(would silently re-open the round-6 interior-borrow UAF)"
     )
 
     mutated4 = json.loads(json.dumps(data))
@@ -7291,3 +7354,117 @@ def test_fuzz_and_primitive_effect_shapes_cannot_override_operand_authority() ->
     bad["primitive_operator_effect_cases"][0]["operands"].pop()
     with pytest.raises(gen.OpKindTableError, match="canonical fixed operand_arity"):
         primitive_effect_cases(bad)
+
+
+def test_frame_publication_has_effects_without_a_call_return_poll_role() -> None:
+    data = _gen().load_table()
+    opcode = next(row for row in data["opcode"] if row["name"] == "FrameContextSet")
+    assert opcode["may_throw"] and opcode["side_effecting"]
+    assert opcode["purity"] == "impure"
+    assert opcode["operand_arity"] == 3 and opcode["result_arity"] == "zero"
+    assert opcode["operand_ownership"] == "all_borrowed"
+    assert "FrameContextSet" not in data["async_work_poll_after_opcodes"]
+    assert "FrameContextSet" in data["alias_rc_barrier_opcodes"]
+    kind = next(row for row in data["kind"] if row["canonical"] == "frame_context_set")
+    assert kind["backend_service_symbol"] == "molt_frame_context_set"
+
+
+def test_backend_service_symbols_are_unique_exact_kind_owned_facts(
+    tmp_path: Path,
+) -> None:
+    gen = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+    declaration = 'backend_service_symbol = "molt_frame_context_set"'
+    for replacement in [
+        'backend_service_symbol = "molt_frame_context_set "',
+        "backend_service_symbol = 42",
+    ]:
+        table = tmp_path / "bad_service.toml"
+        table.write_text(source.replace(declaration, replacement, 1), encoding="utf-8")
+        with pytest.raises(gen.OpKindTableError, match="exact runtime symbol"):
+            gen.load_table(table)
+    table = tmp_path / "duplicate_service.toml"
+    table.write_text(
+        source.replace(
+            'canonical = "closure_store"',
+            'canonical = "closure_store"\n' + declaration,
+            1,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(gen.OpKindTableError, match="already belongs"):
+        gen.load_table(table)
+
+
+def test_fresh_result_ownership_requires_exact_kind():
+    from tools import gen_op_kinds as gen
+
+    data = gen.load_table()
+    fresh = set(data["classifier_owned_value"])
+    assert {"vec_sum", "vec_prod", "vec_min", "vec_max"} <= fresh
+    assert "vec_unknown" not in fresh
+    assert "classifier_owned_value_prefixes" not in data
+    assert "FRESH_VALUE_PREFIXES" not in OUT_RS.read_text()
+
+
+def test_retired_fresh_result_prefix_configuration_is_rejected(tmp_path):
+    from tools import gen_op_kinds as gen
+
+    candidate = tmp_path / "op_kinds.toml"
+    candidate.write_text(
+        'classifier_owned_value_prefixes = ["vec_"]\n' + TABLE.read_text(),
+        encoding="utf-8",
+    )
+    with pytest.raises(gen.OpKindTableError, match="retired"):
+        gen.load_table(candidate)
+
+
+def test_owned_builtin_lookup_is_not_an_allocation_or_name_alias() -> None:
+    from molt.compiler_analysis.backend_ir import backend_ir_allocation_categories
+
+    data = _gen().load_table()
+    py = _load_generated_py()
+    assert "builtin_func" in data["classifier_owned_value"]
+    assert "builtin_func" not in data["classifier_owned_alias"]
+    assert "builtin_func" not in data["classifier_no_heap_move"]
+    assert "Copy" not in data["escape_alloc_site_opcodes"]
+    for name in (None, "len", "molt_len"):
+        op = {"kind": "builtin_func", "s_value": "molt_len", "out": "result"}
+        if name is not None:
+            op.update(builtin_name=name, args=["name"])
+        categories = backend_ir_allocation_categories(op)
+        assert "owned_value_root" in categories
+        assert "heap_alloc_root" not in categories
+    assert "builtin_func" in py.BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS
+    for acquired in ("builtin_func", "frame_locals", "get_attr_name_default", "list_pop"):
+        assert acquired not in py.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS
+
+
+
+@pytest.mark.parametrize("bucket", [
+    "classifier_owned_alias", "classifier_inert_marker",
+    "classifier_transparent_alias", "classifier_no_heap_move",
+])
+def test_copy_result_custody_rejects_contradictory_class_membership(tmp_path, bucket):
+    source = TABLE.read_text(encoding="utf-8")
+    candidate = tmp_path / "contradictory_custody.toml"
+    source = source.replace(bucket + " = [", bucket + ' = ["builtin_func",', 1)
+    candidate.write_text(source, encoding="utf-8")
+    with pytest.raises(_gen().OpKindTableError, match="Copy result custody"):
+        _gen().load_table(candidate)
+
+
+def test_runtime_aliases_share_first_class_result_custody():
+    data = _gen().load_table()
+    mapped = {
+        spelling: row["mapper_opcode"]
+        for row in data["kind"] if "mapper_opcode" in row
+        for spelling in [row["canonical"], *row.get("aliases", [])]
+    }
+    for kind, opcode in {
+        "binop_floor_div": "FloorDiv", "unary_neg": "Neg",
+        "unary_pos": "Pos", "guarded_load": "LoadAttr",
+    }.items():
+        assert mapped[kind] == opcode
+        assert kind not in data["classifier_owned_value"]
+    assert "guarded_load" in data["ssa_original_kind_preserving_kinds"]

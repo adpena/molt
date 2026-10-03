@@ -12,7 +12,16 @@ from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
-from molt.frontend._types import BUILTIN_FUNC_SPECS, _builtin_func_abi_arity
+from molt.frontend._types import (
+    BUILTIN_FUNC_SPECS,
+    CodeSlotDeclaration,
+    _builtin_func_abi_arity,
+)
+
+
+def _parameter_slots(*parameters: str) -> CodeSlotDeclaration:
+    """The code slots of a synthetic synchronous frame binding only parameters."""
+    return CodeSlotDeclaration(parameters, parameters, (), ())
 
 
 def _op_field(op: dict[str, object] | MoltOp, field: str) -> object:
@@ -35,6 +44,44 @@ def _value_name(value: object) -> object:
     if isinstance(value, MoltValue):
         return value.name
     return value
+
+
+@pytest.mark.parametrize("target", [(3, 13), (3, 14)])
+@pytest.mark.parametrize("scope", ["sync", "generator", "async"])
+def test_frame_proxy_exposure_invalidates_all_local_lowering_facts(target, scope):
+    prefix = "async " if scope == "async" else ""
+    action = "yield" if scope == "generator" else "return"
+    tree = ast.parse(
+        f"{prefix}def owner(effect):\n"
+        "    value = [1]\n"
+        "    effect()\n"
+        f"    {action} value\n"
+    )
+    target_read = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and node.id == "value"
+        and isinstance(node.ctx, ast.Load)
+    )
+    observed = []
+
+    class ObserveLoad(SimpleTIRGenerator):
+        def visit_Name(self, node):
+            value = super().visit_Name(node)
+            if node is target_read:
+                observed.append(
+                    (
+                        value.type_hint,
+                        value.exact_class,
+                        self._container_elem_hint(value),
+                    )
+                )
+            return value
+
+    generator = ObserveLoad(target_python=target)
+    generator.visit(tree)
+    assert observed == [("Any", None, None)]
 
 
 @pytest.mark.parametrize(
@@ -212,6 +259,54 @@ def test_builtin_expansion_uses_shared_call_assembly(name: str, expansion: str) 
     assert any(op["kind"] in {"call_bind", "call_indirect"} for op in ops)
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "memoryview()",
+        "memoryview(value, value)",
+        "memoryview(object=value)",
+        "memoryview(value, object=effect())",
+        "memoryview(obj=value)",
+        "memoryview(object=value, extra=effect())",
+    ],
+)
+@pytest.mark.parametrize("binding", ["bare", "imported", "aliased"])
+def test_memoryview_argument_contract_reaches_runtime(expression: str, binding: str) -> None:
+    callee = "view" if binding == "aliased" else "memoryview"
+    prefix = "" if binding == "bare" else f"from builtins import memoryview as {callee}\n"
+    ir = compile_to_tir(prefix + f"def f(value, effect):\n    return {expression.replace('memoryview', callee)}\n")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    # Positional CALL_FUNC dispatches type objects through call_type_via_bind;
+    # keywords use CALL_BIND. Both preserve the actual class constructor.
+    assert any(op["kind"] in {"call_func", "call_bind", "call_indirect"} for op in ops)
+    assert not any(op["kind"] in {"memoryview_new", "builtin_type"} for op in ops)
+    targets = _module_attr_accesses(ops, "module_get_global", callee)
+    assert targets
+    assert any(op["kind"] in {"call_func", "call_bind", "call_indirect"} and op["args"][0] in targets for op in ops)
+    # Explicit keyword expressions remain executable even when the binder will
+    # reject the call. The differential fixture verifies their observable order.
+    if "effect()" in expression:
+        assert sum(op["kind"] in {"call_func", "call_bind", "call_indirect"} for op in ops) >= 2
+
+
+@pytest.mark.parametrize("expression,name", [
+    ("pow()", "pow"), ("pow(value)", "pow"),
+    ("pow(value, value, value, effect())", "pow"),
+    ("pow(base=value, exp=effect())", "pow"),
+    ("round()", "round"), ("round(value, value, effect())", "round"),
+    ("round(number=value, ndigits=effect())", "round"),
+])
+def test_numeric_builtin_signature_errors_reach_the_actual_callable(expression, name):
+    ir = compile_to_tir(f"def f(value, effect):\n    return {expression}\n")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    targets = _module_attr_accesses(ops, "module_get_global", name)
+    assert targets
+    assert any(op["kind"] in {"call_func", "call_bind", "call_indirect"} and op["args"][0] in targets for op in ops)
+    assert not any(op["kind"] in {"pow", "pow_mod", "round", "builtin_func"} for op in ops)
+    if "effect()" in expression:
+        _positional_call(ops, _local_reads(ops, "effect"), 0, parameters=("effect",))
+
+
 def test_frontend_builtin_func_specs_are_wasm_manifest_backed() -> None:
     for func_id, spec in BUILTIN_FUNC_SPECS.items():
         assert hasattr(builtins, func_id), func_id
@@ -249,6 +344,17 @@ def test_globals_callable_uses_canonical_builtin_without_local_wrappers(
     )
     if chunked:
         assert len(generator.module_chunk_symbols) > 1
+    for function in functions:
+        constants = {
+            op["out"]: op.get("s_value")
+            for op in function["ops"]
+            if op["kind"] == "const_str" and "out" in op
+        }
+        assert not any(
+            op["kind"] == "module_cache_get"
+            and constants.get(op["args"][0]) == module_name
+            for op in function["ops"]
+        ), "lexical globals must not reacquire their owner through sys.modules"
 
 
 def test_code_names_match_cpython_without_losing_function_qualnames() -> None:
@@ -590,19 +696,14 @@ def test_function_import_transaction_uses_active_globals() -> None:
 
 
 @pytest.mark.parametrize("name", ["globals", "vars", "dir"])
-def test_frame_builtin_references_share_named_callable_materialization(
-    name: str,
-) -> None:
+def test_frame_builtin_references_load_the_live_namespace(name: str) -> None:
     generator = SimpleTIRGenerator(module_name="frame_builtin")
     value = generator.visit(ast.Name(id=name, ctx=ast.Load()))
     op = next(op for op in generator.current_ops if op.result == value)
-    assert op.kind == "BUILTIN_FUNC"
-    assert op.args[:2] == [
-        BUILTIN_FUNC_SPECS[name].runtime,
-        _builtin_func_abi_arity(BUILTIN_FUNC_SPECS[name]),
-    ]
-    assert op.metadata["builtin_name"] == name
-    assert not any(op.kind == "FUNC_NEW" for op in generator.current_ops)
+    assert op.kind == "MODULE_GET_GLOBAL"
+    definitions = {op.result.name: op for op in generator.current_ops if op.result is not None}
+    assert definitions[op.args[1].name].args == [name]
+    assert not any(op.kind in {"BUILTIN_FUNC", "FUNC_NEW"} for op in generator.current_ops)
 
 
 def test_former_globals_wrapper_name_is_an_ordinary_user_frame() -> None:
@@ -614,6 +715,21 @@ def test_former_globals_wrapper_name_is_an_ordinary_user_frame() -> None:
         name for name in generator.funcs_map if "__molt_globals_builtin__" in name
     )
     assert generator._function_needs_frame_trace(name)
+
+
+def test_synthesized_dir_sorting_does_not_acquire_a_public_sorted_binding() -> None:
+    generator = SimpleTIRGenerator(module_name="dir_internal_sort")
+    result = generator._try_emit_named_call(ast.parse("dir()", mode="eval").body, False)
+    call = next(op for op in generator.current_ops if op.result == result)
+    assert call.kind == "CALL" and call.args[0] == "molt_sorted_builtin"
+    assert not any(op.kind == "BUILTIN_FUNC" for op in generator.current_ops)
+    keys, key, reverse = call.args[1:]
+    definitions = {
+        op.result.name: op for op in generator.current_ops if op.result is not None
+    }
+    assert definitions[keys.name].kind == "DICT_KEYS"
+    assert definitions[key.name].kind == "CONST_NONE"
+    assert definitions[reverse.name].args == [False]
 
 
 @pytest.mark.parametrize("name", ["print", "len", "abs", "sorted", "sum"])
@@ -861,11 +977,23 @@ def _local_import_reads(
 
 
 def _local_reads(ops: list[dict[str, object]], name: str) -> set[str]:
-    return {name} | {
-        op["out"]
-        for op in ops
-        if op.get("kind") == "load_var" and op.get("var") == name
-    }
+    reads = {name}
+    homes: dict[int, object] = {}
+    for op in ops:
+        kind = op.get("kind")
+        if kind == "load_var" and op.get("var") == name:
+            reads.add(op["out"])
+        elif kind == "frame_home_store":
+            homes[op["value"]] = op["args"][0]
+            # A store returns the published binding's borrowed view, which
+            # straight-line reads can use without a subsequent home load.
+            if op["args"][0] in reads:
+                reads.add(op["out"])
+        elif kind == "frame_home_clear":
+            homes.pop(op["value"], None)
+        elif kind == "frame_home_load" and homes.get(op["value"]) in reads:
+            reads.add(op["out"])
+    return reads
 
 
 def _positional_call(
@@ -901,7 +1029,9 @@ def _bound_positional_args(
     """Retained binders must carry only supplied positionals of the actual callee."""
     assert targets
     (call,) = (
-        op for op in ops if op.get("kind") == "call_bind" and op["args"][0] in targets
+        op for op in ops
+        if op.get("kind") in {"call_bind", "call_indirect"}
+        and op["args"][0] in targets
     )
     assert len(call["args"]) == 2
     builder = call["args"][1]
@@ -963,6 +1093,20 @@ def test_unknown_tobytes_with_order_stays_dynamic_method_call() -> None:
     )
     assert not any(op["kind"].startswith("callargs_") for op in ops)
     assert all(op.get("kind") != "memoryview_tobytes" for op in ops)
+
+
+@pytest.mark.parametrize("keyword", ["order", "unexpected"])
+def test_typed_memoryview_tobytes_keeps_keyword_expression(keyword):
+    ir = compile_to_tir(f"def f(view: memoryview, effect):\n    return view.tobytes({keyword}=effect())\n")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    (attribute,) = [op for op in ops if op["kind"] == "get_attr_generic_obj" and op.get("s_value") == "tobytes"]
+    assert attribute["args"][0] in _local_reads(ops, "view")
+    effect = _positional_call(ops, _local_reads(ops, "effect"), 0, parameters=("effect",))
+    (call,) = [op for op in ops if op["kind"] == "call_indirect" and op["args"][0] == attribute["out"]]
+    (push,) = [op for op in ops if op["kind"] == "callargs_push_kw" and op["args"][0] == call["args"][1]]
+    assert push["args"][2] == effect["out"]
+    assert ops.index(attribute) < ops.index(effect) < ops.index(push) < ops.index(call)
+    assert not any(op["kind"] == "memoryview_tobytes" for op in ops)
 
 
 def _has_static_call(main_ops: list[dict[str, object]], symbol: str) -> bool:
@@ -1114,11 +1258,13 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
         if op.get("kind") == "label" and op.get("value") == normal_label
     )
     assert handler_idx < exception_last_idx < normal_idx
-    match_ops = [op for op in func_ops if op.get("kind") == "exception_match_builtin"]
-    assert match_ops
-    assert match_ops[0]["s_value"] == "ValueError"
-    assert match_ops[0]["value"] == 5
-    assert not any(op.get("kind") == "exception_class" for op in func_ops)
+    # The handler is a Python expression, including when spelled ValueError.
+    assert any(
+        op.get("kind") == "builtin_func"
+        and op.get("s_value") == "molt_exception_match_handler"
+        for op in func_ops
+    )
+    assert not any(op.get("kind") == "exception_match_builtin" for op in func_ops)
     assert not any(op.get("kind") == "context_depth" for op in func_ops)
     assert not any(op.get("kind") == "context_unwind_to" for op in func_ops)
 
@@ -1579,7 +1725,6 @@ def test_invalidated_builtin_acquisition_keeps_mutable_lookup_name(
 @pytest.mark.parametrize(
     "runtime_name",
     [
-        "molt_type_of_borrowed",
         "molt_dict_getitem_borrowed",
         "molt_list_getitem_borrowed",
         "molt_tuple_getitem_borrowed",
@@ -1950,12 +2095,129 @@ def test_generator_lambda_definition_publishes_final_task_layout() -> None:
     assert definition["task_closure_size"] >= max(offsets) + 8
 
 
+def test_stateful_locals_register_publishes_one_typed_layout_for_every_kind() -> None:
+    source = (
+        "def outer(captured):\n"
+        "    def gen(x, y=2, *rest, k=3, **kw):\n"
+        "        body = x + y\n"
+        "        def inner():\n"
+        "            return body, x\n"
+        "        yield captured, inner\n"
+        "    async def coro(x, *, k=3):\n"
+        "        body = captured\n"
+        "        return body\n"
+        "    async def agen(x):\n"
+        "        yield x\n"
+        "    return gen, coro, agen, (value for value in captured)\n"
+    )
+    gen = SimpleTIRGenerator(module_name="stateful_locals_layout")
+    gen.visit(ast.parse(source))
+    ops = [op for func in gen.to_json()["functions"] for op in func["ops"]]
+    kinds = {op.get("kind") for op in ops}
+    assert not kinds & {"gen_locals_register", "asyncgen_locals_register"}
+    registrations = [op for op in ops if op.get("kind") == "stateful_locals_register"]
+    task_kinds = {
+        op["s_value"]: op["task_kind"]
+        for op in ops
+        if op.get("kind") in {"func_new", "func_new_closure"} and "task_kind" in op
+    }
+    registered = [op["s_value"] for op in registrations]
+    # Every stateful callable, coroutines and generator expressions included,
+    # publishes exactly one layout through the single registration op.
+    assert sorted(registered) == sorted(task_kinds)
+    assert all(len(op["args"]) == 2 for op in registrations)
+    layouts = {
+        symbol: gen.funcs_map[symbol]["stateful_locals_layout"] for symbol in registered
+    }
+
+    def by_parameters(names: tuple[str, ...]):
+        matches = [
+            (symbol, layout)
+            for symbol, layout in layouts.items()
+            if tuple(slot.name for slot in layout.slots if slot.parameter) == names
+        ]
+        assert len(matches) == 1, names
+        return matches[0]
+
+    symbol, layout = by_parameters(("x", "y", "rest", "k", "kw"))
+    plan = gen.funcs_map[symbol]["stateful_frame_plan"]
+    assert task_kinds[symbol] == "generator"
+    assert [slot.offset for slot in layout.slots if slot.parameter] == [
+        plan.async_locals_base + 8 * index for index in range(5)
+    ]
+    assert {slot.name for slot in layout.slots if slot.cell >= 0} == {"x", "body"}
+    assert {slot.name for slot in layout.slots if not slot.parameter} == {
+        "body",
+        "inner",
+    }
+    assert layout.free_vars == ("captured",)
+    assert layout.wire_layout() == (
+        5,
+        tuple(slot.offset for slot in layout.slots),
+        tuple(slot.cell for slot in layout.slots),
+        plan.async_closure_offset,
+    )
+
+    symbol, layout = by_parameters(("x", "k"))
+    assert task_kinds[symbol] == "coroutine"
+    assert layout.free_vars == ("captured",)
+    assert [slot.name for slot in layout.slots if not slot.parameter] == ["body"]
+    assert all(slot.cell == -1 for slot in layout.slots)
+
+    symbol, layout = by_parameters(("x",))
+    assert task_kinds[symbol] == "async_generator"
+    assert layout.free_vars == ()
+    assert layout.closure_offset is None
+
+    symbol, layout = by_parameters((".0",))
+    assert task_kinds[symbol] == "generator"
+    assert layout.slots[0].name == ".0"
+
+
+def test_stateful_locals_layout_is_the_constructor_payload_projection() -> None:
+    from molt.frontend._types import GEN_CONTROL_SIZE
+    from molt.frontend.sema.funcmeta import FunctionKind, stateful_function_frame_plan
+
+    plan = stateful_function_frame_plan(
+        kind=FunctionKind.GENERATOR,
+        poll_symbol="opaque_poll",
+        param_count=1,
+        has_closure=False,
+        gen_control_size=GEN_CONTROL_SIZE,
+    )
+    base = plan.async_locals_base
+    layout = plan.public_locals_layout(
+        public_slots=[("local", base + 8), ("x", base)],
+        parameter_names=["x"],
+        cell_names=["local"],
+        free_vars=[],
+    )
+    assert layout.wire_names() == ("x", "local")
+    assert layout.wire_layout() == (1, (base, base + 8), (-1, 0), None)
+    with pytest.raises(ValueError, match="constructor payload"):
+        plan.public_locals_layout(
+            public_slots=[("x", base + 8)],
+            parameter_names=["x"],
+            cell_names=[],
+            free_vars=[],
+        )
+    with pytest.raises(ValueError, match="closure slot"):
+        plan.public_locals_layout(
+            public_slots=[("x", base)],
+            parameter_names=["x"],
+            cell_names=[],
+            free_vars=["free"],
+        )
+
+
 def test_stateful_scope_and_alias_hints_use_frame_plan_not_symbol_spelling() -> None:
     from molt.frontend._types import GEN_CONTROL_SIZE
     from molt.frontend.sema.funcmeta import FunctionKind, stateful_function_frame_plan
 
     gen = SimpleTIRGenerator(module_name="opaque_scope")
-    gen.start_function("ordinary_poll", needs_return_slot=True)
+    gen.start_function(
+        "ordinary_poll", needs_return_slot=True, code_slots=_parameter_slots()
+    )
     assert not gen.is_async()
     assert gen.return_slot is None
     for kind in (
@@ -2063,61 +2325,43 @@ def test_function_task_definition_requires_complete_typed_layout(
         gen.map_ops_to_json([definition], function_name="probe")
 
 
-def test_frontend_intrinsic_function_objects_carry_manifest_defaults() -> None:
+def test_frontend_intrinsic_function_objects_use_runtime_default_authority() -> None:
     source = (
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "from _intrinsics import load_intrinsic, runtime_active\n"
         "length_hint = _require_intrinsic('molt_operator_length_hint')\n"
     )
     gen = SimpleTIRGenerator(module_name="intrinsic_defaults_probe")
     gen.visit(ast.parse(source))
-
     ops = [op for func in gen.funcs_map.values() for op in func["ops"]]
-    const_str_by_var = {
-        op.result.name: op.args[0]
-        for op in ops
-        if op.kind == "CONST_STR" and isinstance(op.args[0], str)
+    handles = {
+        op.args[0]: (op.args[1], op.result) for op in ops if op.kind == "BUILTIN_FUNC"
     }
-    builtin_index = next(
-        idx
-        for idx, op in enumerate(ops)
-        if op.kind == "BUILTIN_FUNC"
-        and len(op.args) == 3
-        and op.args[:2] == ["molt_operator_length_hint", 2]
-        and isinstance(op.args[2], MoltValue)
-        and const_str_by_var.get(op.args[2].name) == "molt_operator_length_hint"
-        and op.metadata == {"builtin_name": "molt_operator_length_hint"}
-    )
-    func_var = ops[builtin_index].result
-    tuple_vars = {
-        op.result.name
-        for op in ops[builtin_index + 1 :]
-        if op.kind == "TUPLE_NEW"
-        and len(op.args) == 1
-        and isinstance(op.args[0], MoltValue)
-    }
-
-    assert any(
+    for name, arity in {
+        "molt_require_intrinsic_runtime": 2,
+        "molt_load_intrinsic_runtime": 2,
+        "molt_runtime_active_runtime": 0,
+        "molt_operator_length_hint": 2,
+    }.items():
+        assert handles[name][0] == arity
+    assert not any(
         op.kind == "SETATTR_GENERIC_OBJ"
-        and op.args[0] == func_var
-        and op.args[1] == "__defaults__"
-        and isinstance(op.args[2], MoltValue)
-        and op.args[2].name in tuple_vars
-        for op in ops[builtin_index + 1 :]
-    )
+        and op.args[1] in {"__defaults__", "__kwdefaults__"}
+        for op in ops
+    ), "native callable construction must not mutate its public attributes"
 
 
 @pytest.mark.parametrize(
     ("name", "runtime_name"), [("open", "molt_open_builtin"), ("len", "molt_len")]
 )
-def test_python_builtin_func_serializes_metadata_name_operand(
+def test_python_builtin_func_serializes_public_lookup_without_metadata_mutation(
     name: str, runtime_name: str
 ) -> None:
-    import builtins
-
     gen = SimpleTIRGenerator(module_name="open_builtin_metadata_probe")
-    # Test explicit wrapper publication, not a Python reference: source-level
-    # open must capture the actual namespace binding before its arguments.
-    gen._emit_builtin_function(name)
+    # Public references acquire the namespace binding. Its provider published
+    # metadata already; a user replacement must not receive builtin metadata.
+    value = gen._emit_builtin_function(name)
+    assert value.type_hint == "Any"
     gen._emit_function_exception_handler()
     main_ops = next(
         func["ops"]
@@ -2141,16 +2385,63 @@ def test_python_builtin_func_serializes_metadata_name_operand(
     assert builtin["s_value"] == runtime_name
     assert len(builtin.get("args") or []) == 1
     assert const_str[builtin["args"][0]] == name
-    metadata = next(
-        op
-        for op in main_ops
-        if op.get("kind") == "call"
+    assert not any(
+        op.get("kind") == "call"
         and op.get("s_value") == "molt_function_init_metadata_packed"
         and op["args"][0] == builtin["out"]
+        for op in main_ops
+    ), "a public lookup cannot overwrite the resolved object's metadata"
+
+
+@pytest.mark.parametrize("public_lookup", [True, False])
+@pytest.mark.parametrize(
+    ("expression", "expanded"),
+    [("probe([1])", False), ("probe(value=[1])", False), ("probe(*[[1]])", True)],
+)
+def test_public_builtin_source_calls_keep_custody_while_runtime_references_borrow(
+    public_lookup: bool, expression: str, expanded: bool
+) -> None:
+    class ProbeReference(SimpleTIRGenerator):
+        def visit_Name(self, node):
+            if node.id == "probe" and isinstance(node.ctx, ast.Load):
+                if public_lookup:
+                    return self._emit_builtin_function("len")
+                return self._emit_runtime_function("molt_len", 1)
+            return super().visit_Name(node)
+
+        def visit_Call(self, node):
+            result = super().visit_Call(node)
+            if isinstance(node.func, ast.Name) and node.func.id == "probe":
+                self.probe_result = result
+            return result
+
+    # Both references declare the same machine entry. Only the public lookup
+    # can produce a replacement Python callable that adopts source operands.
+    # Run the source-call visitor and serialization, including builder forms.
+    generator = ProbeReference(module_name="builtin_source_custody")
+    generator.visit(ast.parse(expression))
+    result = generator.probe_result
+    ops = next(
+        function["ops"]
+        for function in generator.to_json()["functions"]
+        if function["name"] == "molt_main"
     )
-    packed = next(op for op in main_ops if op.get("out") == metadata["args"][1])
-    assert packed["kind"] == "tuple_new"
-    assert const_str[packed["args"][2]] == getattr(builtins, name).__module__
+    (reference,) = [
+        op
+        for op in ops
+        if op["kind"] == "builtin_func" and op.get("s_value") == "molt_len"
+    ]
+    assert reference["builtin_name"] == ("len" if public_lookup else "molt_len")
+    (call,) = [op for op in ops if op.get("out") == result.name]
+    assert call["kind"] in {"call_func", "call_bind", "call_indirect"}
+    assert call["args"][0] == reference["out"]
+    if public_lookup:
+        expected = ["transferred"] * len(call["args"])
+        if expanded:
+            expected[0] = "borrowed"
+        assert call["argument_custody"] == expected
+    else:
+        assert "argument_custody" not in call
 
 
 def test_non_phi_or_with_call_avoids_list_cell_result_plumbing() -> None:
@@ -2580,7 +2871,9 @@ def test_locals_calls_share_live_frame_custody_for_every_target(
     assert len(lookups) == 2
     for target in lookups:
         _positional_call(ops, {target}, 0)
-    assert sum(op["kind"] == "dict_new" for op in ops) == 1
+    # A synchronous frame's bindings are its homes, which the builtin reads:
+    # the frontend allocates no locals cache and mirrors no store into one.
+    assert not any(op["kind"] in ("dict_new", "frame_locals_set") for op in ops)
 
 
 @pytest.mark.parametrize(
@@ -2647,37 +2940,32 @@ def test_imported_counter_list_constructor_uses_global_binding_path() -> None:
     assert all(op.get("kind") != "object_new_bound" for op in main_ops)
 
 
-def test_local_module_counter_list_constructor_uses_intrinsic_handle_path() -> None:
+@pytest.mark.parametrize("from_import", [False, True])
+def test_local_counter_constructor_and_index_use_live_python_protocol(
+    from_import: bool,
+) -> None:
     gen = SimpleTIRGenerator(
         known_classes=_counter_known_classes(),
         known_modules={"collections"},
         stdlib_allowlist={"collections"},
     )
+    import_stmt = (
+        "from collections import Counter" if from_import else "import collections"
+    )
+    target = "Counter" if from_import else "collections.Counter"
     gen.visit(
         ast.parse(
-            "def probe():\n"
-            "    import collections\n"
-            '    words = ["a", "b", "a"]\n'
-            "    c = collections.Counter(words)\n"
+            f"def probe():\n    {import_stmt}\n"
+            f"    c = {target}(['a', 'b', 'a'])\n    return c['a']\n"
         )
     )
-    main_ops = next(
-        func["ops"]
-        for func in gen.to_json()["functions"]
-        if func["name"] == "__main____probe"
+    ops = gen.funcs_map["__main____probe"]["ops"]
+    assert any(op.kind in {"CALL_BIND", "CALL_FUNC"} for op in ops)
+    assert any(op.kind == "INDEX" for op in ops)
+    assert not any(op.kind == "OBJECT_NEW_BOUND" for op in ops)
+    assert not any(
+        op.kind == "GETATTR_GENERIC_OBJ" and "_handle" in op.args for op in ops
     )
-
-    assert any(
-        op.get("kind") == "builtin_func"
-        and op.get("s_value") == "molt_counter_from_iterable"
-        for op in main_ops
-    )
-    assert any(op.get("kind") == "object_new_bound" for op in main_ops)
-    assert any(
-        op.get("kind") == "set_attr_generic_obj" and op.get("s_value") == "_handle"
-        for op in main_ops
-    )
-    assert all(op.get("kind") != "call_bind" for op in main_ops)
 
 
 @pytest.mark.parametrize(
@@ -3379,15 +3667,12 @@ def test_counter_operation_respects_live_callable_binding(
         if func["name"] == ("__main____probe" if local else "molt_main")
     )
 
-    if expression == 'c["a"]' and local:
-        assert any(
-            op.get("kind") == "builtin_func"
-            and op.get("s_value") == "molt_counter_getitem"
-            for op in main_ops
+    if expression == 'c["a"]':
+        live_receiver = (
+            _local_reads(main_ops, "c")
+            if local
+            else _module_attr_accesses(main_ops, "module_get_global", "c")
         )
-        assert all(op.get("kind") != "index" for op in main_ops)
-    elif expression == 'c["a"]':
-        live_receiver = _module_attr_accesses(main_ops, "module_get_global", "c")
         assert live_receiver
         assert any(
             op.get("kind") == "index" and op["args"][0] in live_receiver
@@ -3530,8 +3815,8 @@ def test_deferred_user_class_ctor_does_not_inherit_lexical_finalizer_fact() -> N
     assert all(op.get("kind") != "object_new_bound" for op in make_ops)
 
 
-def test_delete_function_local_releases_previous_binding_after_missing_store() -> None:
-    ir = compile_to_tir(
+def test_delete_function_local_is_released_by_its_home() -> None:
+    source = (
         "class Item:\n"
         "    def __del__(self):\n"
         "        pass\n"
@@ -3541,37 +3826,30 @@ def test_delete_function_local_releases_previous_binding_after_missing_store() -
         "    del item\n"
         "    return 0\n"
     )
+    ir = compile_to_tir(source)
     ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "__main____run"
     )
+    (code,) = [
+        const
+        for const in compile(source, "<delete>", "exec").co_consts
+        if isinstance(const, CodeType) and const.co_name == "run"
+    ]
+    slot = code.co_varnames.index("item")
 
-    missing_defs = {
-        op["out"]
-        for op in ops
-        if op.get("kind") == "missing" and isinstance(op.get("out"), str)
-    }
-    load_idx, old_var = next(
-        (idx, op["out"])
-        for idx, op in reversed(list(enumerate(ops)))
-        if op.get("kind") == "load_var"
-        and op.get("var") == "item"
-        and isinstance(op.get("out"), str)
+    store_idx = next(
+        idx
+        for idx, op in enumerate(ops)
+        if op.get("kind") == "frame_home_store" and op.get("value") == slot
     )
-    delete_idx, delete_args = next(
-        (idx, op.get("args") or [])
-        for idx, op in enumerate(ops[load_idx + 1 :], start=load_idx + 1)
-        if op.get("kind") == "delete_var"
-        and op.get("var") == "item"
-        and len(op.get("args") or []) == 2
-        and (op.get("args") or [None])[0] in missing_defs
-    )
-
-    assert load_idx < delete_idx
-    assert delete_args[1] == old_var
-    assert all(
-        op.get("kind") != "store_var" or op.get("var") != "item"
-        for op in ops[load_idx + 1 : delete_idx + 1]
-    )
+    (clear_idx,) = [
+        idx for idx, op in enumerate(ops) if op.get("kind") == "frame_home_clear"
+    ]
+    # The binding's home releases it, after the store that bound it; compiled
+    # code keeps no second owner to release.
+    assert ops[clear_idx]["value"] == slot
+    assert store_idx < clear_idx
+    assert not any(op.get("kind") in {"delete_var", "del_boundary"} for op in ops)
 
 
 def test_delete_nonlocal_cell_releases_previous_binding_after_missing_store() -> None:
@@ -4004,7 +4282,10 @@ def _admitted_sum_reduction(
     """Exercise reducer lowering only after exact builtin-call admission."""
     gen = SimpleTIRGenerator()
     gen.start_function(
-        "admitted_sum", params=list(parameters), param_types=["Any"] * len(parameters)
+        "admitted_sum",
+        params=list(parameters),
+        param_types=["Any"] * len(parameters),
+        code_slots=_parameter_slots(*parameters),
     )
     for parameter in parameters:
         gen.locals[parameter] = MoltValue(parameter, type_hint="Any")
@@ -4014,10 +4295,10 @@ def _admitted_sum_reduction(
 
 
 def test_admitted_sum_generator_expr_lowers_as_full_consumption_reducer() -> None:
-    gen, result = _admitted_sum_reduction("sum(v for v in data if v % 2 == 0)", "data")
+    gen, result = _admitted_sum_reduction("sum(1 for v in data if v % 2 == 0)", "data")
     ops = gen.current_ops
 
-    assert result.type_hint == "Any"
+    assert result.type_hint == "int"
     assert any(op.kind == "LOOP_START" for op in ops)
     assert any(op.kind == "ADD" for op in ops)
     assert not any(
@@ -4028,7 +4309,9 @@ def test_admitted_sum_generator_expr_lowers_as_full_consumption_reducer() -> Non
 
 
 def test_admitted_sum_listcomp_lowers_as_full_consumption_reducer() -> None:
-    gen, _ = _admitted_sum_reduction("sum([v * 2 for v in data if v > 3])", "data")
+    gen, _ = _admitted_sum_reduction(
+        "sum([(v is None) * 2 for v in data if v > 3])", "data"
+    )
     ops = gen.current_ops
 
     assert any(op.kind == "LOOP_START" for op in ops)
@@ -4050,7 +4333,9 @@ def test_admitted_sum_listcomp_lowers_as_full_consumption_reducer() -> None:
 
 
 def test_admitted_sum_generator_expr_tuple_target_lowers_inline() -> None:
-    gen, _ = _admitted_sum_reduction("sum(a * b for a, b in pairs if a > 2)", "pairs")
+    gen, _ = _admitted_sum_reduction(
+        "sum((a in b) * 3 for a, b in pairs if a > 2)", "pairs"
+    )
     ops = gen.current_ops
 
     assert any(op.kind == "UNPACK_SEQUENCE" for op in ops)
@@ -4061,6 +4346,37 @@ def test_admitted_sum_generator_expr_tuple_target_lowers_inline() -> None:
         or (op.metadata or {}).get("task_kind") == "generator"
         for op in ops
     )
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "sum(v for v in data)",
+        "sum([v * 2 for v in data])",
+        "sum(v / 2 for v in data if v)",
+        "sum(1.5 for v in data)",
+    ],
+)
+def test_admitted_sum_of_items_not_proven_exact_ints_is_not_a_running_total(
+    expression: str,
+) -> None:
+    # Builtin sum() compensates float additions (CPython 3.12+) where an
+    # explicit `+=` loop rounds each one: a running total is sum()'s result
+    # only when every item is an exact int. Anything else calls sum() itself.
+    gen = SimpleTIRGenerator()
+    gen.start_function(
+        "admitted_sum",
+        params=["data"],
+        param_types=["Any"],
+        code_slots=_parameter_slots("data"),
+    )
+    gen.locals["data"] = MoltValue("data", type_hint="Any")
+    node = ast.parse(expression, mode="eval").body
+    assert isinstance(node, ast.Call)
+    emitted = len(gen.current_ops)
+    assert gen._try_emit_inline_sum_genexpr(node) is None
+    # Declining evaluates nothing: the call lowering evaluates the iterable once.
+    assert len(gen.current_ops) == emitted
 
 
 def test_sum_generator_expr_with_start_calls_live_binding_with_generator_frame() -> (
@@ -4127,11 +4443,16 @@ def test_sum_generator_expr_with_start_calls_live_binding_with_generator_frame()
 
 def test_admitted_sum_generator_expr_target_shadow_does_not_leak() -> None:
     gen = SimpleTIRGenerator()
-    gen.start_function("admitted_sum_shadow", params=["data"], param_types=["Any"])
+    gen.start_function(
+        "admitted_sum_shadow",
+        params=["data"],
+        param_types=["Any"],
+        code_slots=_parameter_slots("data"),
+    )
     gen.locals["data"] = MoltValue("data", type_hint="Any")
     outer = MoltValue("outer_v", type_hint="int")
     gen.locals["v"] = outer
-    node = ast.parse("sum(v for v in data)", mode="eval").body
+    node = ast.parse("sum(v is None for v in data)", mode="eval").body
     assert isinstance(node, ast.Call)
 
     gen._emit_sum_call("sum", node, needs_bind=False)
@@ -4149,7 +4470,12 @@ def test_admitted_any_all_generator_expr_use_scalar_result_slots(name: str) -> N
     # Exercise the reducer after callable admission, not by assuming that an
     # unbound source spelling in a deferred function proves builtin identity.
     gen = SimpleTIRGenerator()
-    gen.start_function("admitted_reduction", params=["data"], param_types=["Any"])
+    gen.start_function(
+        "admitted_reduction",
+        params=["data"],
+        param_types=["Any"],
+        code_slots=_parameter_slots("data"),
+    )
     gen.locals["data"] = MoltValue("data", type_hint="Any")
     node = ast.parse(f"{name}(v for v in data)", mode="eval").body
     assert isinstance(node, ast.Call)
@@ -4657,3 +4983,251 @@ def test_getattr_without_default_preserves_live_binding_and_two_arguments() -> N
     assert not any(
         op.get("kind") in {"get_attr_name", "get_attr_name_default"} for op in func_ops
     ), func_ops
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "async def probe(anext):\n    return await anext(value=42)\n",
+        "async def probe(value):\n    anext = value\n    return await anext(value=42)\n",
+        "anext = replacement\nasync def probe():\n    return await anext(value=42)\n",
+        "from helpers import completed as anext\nasync def probe():\n    return await anext(value=42)\n",
+    ],
+)
+def test_await_anext_uses_live_callable_and_keyword_binder(binding: str) -> None:
+    gen = SimpleTIRGenerator(
+        module_name="main",
+        known_modules={"helpers", "main"},
+        stdlib_allowlist={"helpers"},
+    )
+    gen.visit(ast.parse(binding))
+    ops = next(
+        function["ops"]
+        for function in gen.to_json()["functions"]
+        if function["name"] == "main__probe_poll"
+    )
+    definitions = {op["out"]: op for op in ops if "out" in op}
+    keyword_builders = {
+        op["args"][0]
+        for op in ops
+        if op["kind"] == "callargs_push_kw"
+        and definitions[op["args"][1]].get("s_value") == "value"
+    }
+    assert keyword_builders
+    assert any(
+        op["kind"] == "call_indirect" and op["args"][1] in keyword_builders
+        for op in ops
+    )
+    assert not any(op["kind"] in {"anext", "call_async"} for op in ops)
+
+
+def test_except_builtin_spelling_uses_local_handler_value() -> None:
+    ir = compile_to_tir(
+        "def probe(ValueError, error):\n"
+        "    try:\n        raise error\n"
+        "    except ValueError:\n        return 'caught'\n"
+    )
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____probe")
+    handlers = _local_reads(ops, "ValueError")
+    matchers = {
+        op["out"]
+        for op in ops
+        if op["kind"] == "builtin_func"
+        and op.get("s_value") == "molt_exception_match_handler"
+    }
+    assert any(
+        op["kind"] == "call_func"
+        and op["args"][0] in matchers
+        and op["args"][2] in handlers
+        for op in ops
+    )
+    assert not any(op["kind"] == "exception_match_builtin" for op in ops)
+
+
+@pytest.mark.parametrize(
+    "hint", ["list", "tuple", "dict", "range", "iter", "generator", "async_iter"]
+)
+def test_async_iterator_acquisition_keeps_runtime_protocol_for_every_hint(
+    hint: str,
+) -> None:
+    gen = SimpleTIRGenerator()
+    value = MoltValue("value", type_hint=hint)
+    result = gen._emit_aiter(value)
+    assert result is not value
+    acquisition = next(op for op in gen.current_ops if op.result is result)
+    assert acquisition.kind == "AITER"
+    assert acquisition.args == [value]
+
+
+def test_async_for_termination_matches_canonical_exception_class() -> None:
+    ir = compile_to_tir(
+        "async def probe(values):\n    async for value in values:\n        pass\n"
+    )
+    ops = next(
+        fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____probe_poll"
+    )
+    matches = [op for op in ops if op["kind"] == "exception_match_builtin"]
+    assert len(matches) == 2
+    assert {op["s_value"] for op in matches} == {"StopAsyncIteration"}
+    assert not any(op["kind"] == "exception_kind" for op in ops)
+
+
+def test_await_operand_uses_shared_runtime_protocol() -> None:
+    gen = SimpleTIRGenerator()
+    value = MoltValue("value", type_hint="Any")
+    result = gen._emit_awaitable_transform(value)
+    handles = {
+        op.result.name
+        for op in gen.current_ops
+        if op.kind == "BUILTIN_FUNC" and op.args[0] == "molt_get_awaitable"
+    }
+    assert any(
+        op.kind == "CALL_FUNC"
+        and op.args[0].name in handles
+        and op.args[1] is value
+        and op.result is result
+        for op in gen.current_ops
+    )
+    assert not any(
+        op.kind in {"HASATTR_NAME", "GETATTR_NAME"} for op in gen.current_ops
+    )
+
+
+@pytest.mark.parametrize("module_name", ["molt_init_example", "namespace_probe"])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_python_frames_do_not_inherit_module_roles_from_symbol_spelling(
+    module_name, chunked
+):
+    from molt.cli.module_cache import _module_lowering_local_reference_issue
+
+    generator = SimpleTIRGenerator(
+        module_name=module_name,
+        target_python=(3, 14),
+        module_chunking=chunked,
+        module_chunk_max_ops=1,
+    )
+    generator.visit(
+        ast.parse("""
+marker = "lexical"
+generated_lambda = lambda value: ("generated-lambda", value)
+generated_expression = (value for value in (1, 2))
+def lambda_1(value):
+    return "source-lambda", value
+def genexpr_1(value):
+    return "source-genexpr", value
+class MethodOwner:
+    def probe(self, value):
+        return "method", value
+def MethodOwner_probe(value):
+    return "module", value
+def molt_init_probe(value):
+    global marker
+    marker = value
+    del marker
+    return globals(), locals()["value"]
+def molt_module_chunk_1(value):
+    raise ValueError(value)
+def __molt_module_chunk_1(value):
+    class Annotated:
+        if value:
+            field: int = 1
+    return Annotated
+""")
+    )
+    functions = generator.to_json()["functions"]
+    assert _module_lowering_local_reference_issue(module_name, functions) is None
+    selected = {
+        "molt_init_probe",
+        "molt_module_chunk_1",
+        "__molt_module_chunk_1",
+        "lambda_1",
+        "genexpr_1",
+    }
+    checked = set()
+    for function in functions:
+        name = function["name"]
+        if name == "molt_main" or name in generator.module_chunk_symbols:
+            continue
+        assert not any(op["kind"] == "module_cache_del" for op in function["ops"]), (
+            "Python function failure must not unpublish its defining module",
+            name,
+        )
+        source_name = generator.func_symbol_names.get(name)
+        if source_name in selected:
+            assert any(op["kind"] == "trace_enter_slot" for op in function["ops"]), name
+            checked.add(source_name)
+    assert checked == selected
+    assert (
+        sum(
+            generator.func_symbol_names.get(function["name"]) == "<lambda>"
+            for function in functions
+        )
+        == 1
+    )
+    assert (
+        sum(
+            generator.func_symbol_names.get(function["name"]) == "MethodOwner_probe"
+            for function in functions
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize("kind", ["async", "generator", "async_generator"])
+@pytest.mark.parametrize("stateful_first", [False, True])
+def test_stateful_poll_symbols_do_not_overwrite_source_functions(kind, stateful_first):
+    definitions = {
+        "async": "async def probe(value): return value",
+        "generator": "def probe(value): yield value",
+        "async_generator": "async def probe(value): yield value",
+    }
+    stateful = definitions[kind]
+    ordinary = "def probe_poll(value): return ('ordinary', value)"
+    source = "\n".join((stateful, ordinary) if stateful_first else (ordinary, stateful))
+    generator = SimpleTIRGenerator(module_name="symbol_ownership")
+    generator.visit(ast.parse(source))
+    functions = generator.to_json()["functions"]
+    ordinary_bodies = [
+        function
+        for function in functions
+        if generator.func_symbol_names.get(function["name"]) == "probe_poll"
+    ]
+    stateful_bodies = [
+        function
+        for function in functions
+        if generator.funcs_map[function["name"]].get("stateful_frame_plan") is not None
+    ]
+    assert len(ordinary_bodies) == len(stateful_bodies) == 1
+    assert ordinary_bodies[0]["name"] != stateful_bodies[0]["name"]
+    assert ordinary_bodies[0]["params"] == ["value"]
+    assert stateful_bodies[0]["params"] == ["self"]
+
+
+def test_repeated_source_definition_retains_each_callable_body():
+    generator = SimpleTIRGenerator(module_name="symbol_redefinition")
+    generator.visit(
+        ast.parse("""
+async def probe(value):
+    return "first", value
+saved = probe
+def probe_poll(value):
+    return "ordinary-poll", value
+def probe(value):
+    return "second", value
+""")
+    )
+    functions = generator.to_json()["functions"]
+    assert (
+        sum(
+            generator.func_symbol_names.get(function["name"]) == "probe"
+            for function in functions
+        )
+        == 2
+    )
+    assert (
+        sum(
+            generator.func_symbol_names.get(function["name"]) == "probe_poll"
+            for function in functions
+        )
+        == 1
+    )

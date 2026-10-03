@@ -9,6 +9,7 @@ pub mod block_versioning;
 pub mod branchless_count;
 pub mod canonicalize;
 pub mod check_exception_elim;
+mod exception_observation;
 pub mod copy_prop;
 pub mod counted_loop;
 pub mod dce;

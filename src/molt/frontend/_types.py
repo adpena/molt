@@ -35,7 +35,10 @@ if TYPE_CHECKING:
     # _TrackedOpsList's `owner` is the assembled generator. Imported under
     # TYPE_CHECKING only: there is no runtime import cycle back into __init__.
     from molt.frontend import SimpleTIRGenerator
-    from molt.frontend.sema.funcmeta import StatefulFunctionFramePlan
+    from molt.frontend.sema.funcmeta import (
+        StatefulFunctionFramePlan,
+        StatefulLocalsLayout,
+    )
 
 
 @dataclass
@@ -48,12 +51,54 @@ class MoltValue:
     # Exact identity is a temporal fact.  A callback or other invalidating
     # boundary advances the generator token, making already-held values stale.
     exact_class_token: int | None = None
+    # A value read from an activation slot, without an independent reference.
+    # Transparent expression joins preserve this storage fact; heap-producing
+    # operations and explicit BINDING_ALIAS captures own their result instead.
+    borrows_binding: bool = False
 
 
 @dataclass(frozen=True)
 class ExactClassFact:
     class_id: str
     token: int
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSlotDeclaration:
+    """Immutable projection of a code object's public local/cell/free tables.
+
+    Every local keeps its index, including PEP 709 locals that also occur in
+    ``cellvars``. Only cells absent from ``varnames`` need another slot. Free
+    variables follow these slots. A logical cell does not imply that every
+    source point physically stores a cell: an inlined comprehension saves and
+    restores its enclosing binding. Storage publication carries that fact.
+    """
+
+    parameters: tuple[str, ...]
+    varnames: tuple[str, ...]
+    cellvars: tuple[str, ...]
+    freevars: tuple[str, ...]
+    _slots: tuple[str, ...] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.varnames[: len(self.parameters)] != self.parameters:
+            raise ValueError("code slot parameters must prefix co_varnames")
+        locals_ = set(self.varnames)
+        object.__setattr__(
+            self,
+            "_slots",
+            self.varnames
+            + tuple(name for name in self.cellvars if name not in locals_)
+            + self.freevars,
+        )
+
+    def slots(self) -> tuple[str, ...]:
+        return self._slots
+
+    def release_order(self, target_python: tuple[int, int]) -> range:
+        """CPython clears upwards through 3.13, downwards from 3.14."""
+        count = len(self._slots)
+        return range(count - 1, -1, -1) if target_python >= (3, 14) else range(count)
 
 
 class AsyncFrameSlotRole(StrEnum):
@@ -369,29 +414,7 @@ class BuiltinFuncSpec:
     kw_defaults: tuple[ast.expr | None, ...] = ()
     module: str = "builtins"
     bind_kind: int | None = None
-
-
-@dataclass(frozen=True)
-class FormatLiteral:
-    text: str
-
-
-@dataclass(frozen=True)
-class FormatField:
-    key: int | str
-    rest: list[tuple[bool, int | str]]
-    conversion: str | None
-    format_spec: list["FormatToken"] | None
-
-
-FormatToken = FormatLiteral | FormatField
-
-
-@dataclass
-class FormatParseState:
-    next_auto: int = 0
-    used_auto: bool = False
-    used_manual: bool = False
+    text_signature: str | None = None
 
 
 GEN_SEND_OFFSET = 0
@@ -600,39 +623,49 @@ _MOLT_MISSING = ast.Name(id="__molt_missing__", ctx=ast.Load())
 _MOLT_CLOSURE_PARAM = "__molt_closure__"
 _MOLT_MODULE_CHUNK_PARAM = "__molt_module_obj__"
 _MOLT_MODULE_CHUNK_PREFIX = "molt_module_chunk"
-MOLT_BIND_KIND_OPEN = 1
+# Fixed all-named Clinic binding, selected by sealed callable metadata.
+MOLT_BIND_KIND_CLINIC_NAMED = 1
 
 BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
-    "isinstance": BuiltinFuncSpec("molt_isinstance", ("obj", "classinfo")),
-    "issubclass": BuiltinFuncSpec("molt_issubclass", ("sub", "classinfo")),
-    "len": BuiltinFuncSpec("molt_len", ("obj",)),
-    "hash": BuiltinFuncSpec("molt_hash_builtin", ("obj",)),
-    "ord": BuiltinFuncSpec("molt_ord", ("obj",)),
-    "chr": BuiltinFuncSpec("molt_chr", ("obj",)),
-    "abs": BuiltinFuncSpec("molt_abs_builtin", ("obj",)),
-    "ascii": BuiltinFuncSpec("molt_ascii_from_obj", ("obj",)),
-    "bin": BuiltinFuncSpec("molt_bin_builtin", ("obj",)),
-    "oct": BuiltinFuncSpec("molt_oct_builtin", ("obj",)),
-    "hex": BuiltinFuncSpec("molt_hex_builtin", ("obj",)),
-    "divmod": BuiltinFuncSpec("molt_divmod_builtin", ("a", "b")),
-    "repr": BuiltinFuncSpec("molt_repr_builtin", ("obj",)),
+    "isinstance": BuiltinFuncSpec("molt_isinstance", ("obj", "classinfo"), text_signature='($module, obj, class_or_tuple, /)'),
+    "issubclass": BuiltinFuncSpec("molt_issubclass", ("sub", "classinfo"), text_signature='($module, cls, class_or_tuple, /)'),
+    "len": BuiltinFuncSpec("molt_len", ("obj",), text_signature='($module, obj, /)'),
+    "hash": BuiltinFuncSpec("molt_hash_builtin", ("obj",), text_signature='($module, obj, /)'),
+    "ord": BuiltinFuncSpec("molt_ord", ("obj",), text_signature='($module, c, /)'),
+    "chr": BuiltinFuncSpec("molt_chr", ("obj",), text_signature='($module, i, /)'),
+    "abs": BuiltinFuncSpec("molt_abs_builtin", ("obj",), text_signature='($module, x, /)'),
+    "ascii": BuiltinFuncSpec("molt_ascii_from_obj", ("obj",), text_signature='($module, obj, /)'),
+    "bin": BuiltinFuncSpec("molt_bin_builtin", ("obj",), text_signature='($module, number, /)'),
+    "oct": BuiltinFuncSpec("molt_oct_builtin", ("obj",), text_signature='($module, number, /)'),
+    "hex": BuiltinFuncSpec("molt_hex_builtin", ("obj",), text_signature='($module, number, /)'),
+    "divmod": BuiltinFuncSpec("molt_divmod_builtin", ("a", "b"), text_signature='($module, x, y, /)'),
+    "repr": BuiltinFuncSpec("molt_repr_builtin", ("obj",), text_signature='($module, obj, /)'),
     "format": BuiltinFuncSpec(
         "molt_format_builtin",
         ("value",),
         (ast.Constant(""),),
         pos_or_kw_params=("format_spec",),
-    ),
-    "callable": BuiltinFuncSpec("molt_callable_builtin", ("obj",)),
-    "id": BuiltinFuncSpec("molt_id", ("obj",)),
+     text_signature="($module, value, format_spec='', /)"),
+    "callable": BuiltinFuncSpec("molt_callable_builtin", ("obj",), text_signature='($module, obj, /)'),
+    "id": BuiltinFuncSpec("molt_id", ("obj",), text_signature='($module, obj, /)'),
     "enumerate": BuiltinFuncSpec(
         "molt_enumerate_builtin", ("iterable", "start"), (_MOLT_MISSING,)
+    , text_signature='(iterable, start=0)'),
+    "pow": BuiltinFuncSpec(
+        "molt_pow_mod",
+        (),
+        (ast.Constant(None),),
+        pos_or_kw_params=("base", "exp", "mod"),
+        bind_kind=MOLT_BIND_KIND_CLINIC_NAMED,
+        text_signature="($module, /, base, exp, mod=None)",
     ),
     "round": BuiltinFuncSpec(
         "molt_round_builtin",
         (),
         (_MOLT_MISSING,),
         pos_or_kw_params=("number", "ndigits"),
-    ),
+        bind_kind=MOLT_BIND_KIND_CLINIC_NAMED,
+     text_signature='($module, /, number, ndigits=None)'),
     "iter": BuiltinFuncSpec("molt_iter_checked", ("obj",)),
     "map": BuiltinFuncSpec("molt_map_builtin", ("func",), vararg="iterables"),
     "filter": BuiltinFuncSpec("molt_filter_builtin", ("func", "iterable")),
@@ -643,15 +676,15 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         kwonly_params=("strict",),
         kw_defaults=(ast.Constant(False),),
     ),
-    "reversed": BuiltinFuncSpec("molt_reversed_builtin", ("seq",)),
-    "any": BuiltinFuncSpec("molt_any_builtin", ("iterable",)),
-    "all": BuiltinFuncSpec("molt_all_builtin", ("iterable",)),
+    "reversed": BuiltinFuncSpec("molt_reversed_builtin", ("seq",), text_signature='(sequence, /)'),
+    "any": BuiltinFuncSpec("molt_any_builtin", ("iterable",), text_signature='($module, iterable, /)'),
+    "all": BuiltinFuncSpec("molt_all_builtin", ("iterable",), text_signature='($module, iterable, /)'),
     "sum": BuiltinFuncSpec(
         "molt_sum_builtin",
         ("iterable",),
         (ast.Constant(0),),
         pos_or_kw_params=("start",),
-    ),
+     text_signature='($module, iterable, /, start=0)'),
     "min": BuiltinFuncSpec(
         "molt_min_builtin",
         (),
@@ -670,7 +703,7 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         "molt_sorted_builtin",
         ("iterable", "key", "reverse"),
         defaults=(ast.Constant(None), ast.Constant(False)),
-    ),
+     text_signature='($module, iterable, /, *, key=None, reverse=False)'),
     # CPython: dir([object]) uses the caller's locals() when called with no args.
     # Lower as a single-arg runtime call with an explicit MOLT_MISSING sentinel
     # default so the runtime can detect the no-arg case cheaply.
@@ -698,26 +731,26 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
             "opener",
         ),
         module="_io",
-        bind_kind=MOLT_BIND_KIND_OPEN,
-    ),
+        bind_kind=MOLT_BIND_KIND_CLINIC_NAMED,
+     text_signature="($module, /, file, mode='r', buffering=-1, encoding=None,\n     errors=None, newline=None, closefd=True, opener=None)"),
     "next": BuiltinFuncSpec(
         "molt_next_builtin", ("iterator", "default"), (_MOLT_MISSING,)
     ),
-    "aiter": BuiltinFuncSpec("molt_aiter", ("obj",)),
+    "aiter": BuiltinFuncSpec("molt_aiter", ("obj",), text_signature='($module, async_iterable, /)'),
     "anext": BuiltinFuncSpec(
         "molt_anext_builtin", ("aiter", "default"), (_MOLT_MISSING,)
-    ),
+    , text_signature='($module, aiterator, default=<unrepresentable>, /)'),
     "getattr": BuiltinFuncSpec(
         "molt_getattr_builtin", ("obj", "name", "default"), (_MOLT_MISSING,)
     ),
-    "setattr": BuiltinFuncSpec("molt_set_attr_name", ("obj", "name", "value")),
-    "delattr": BuiltinFuncSpec("molt_del_attr_name", ("obj", "name")),
-    "hasattr": BuiltinFuncSpec("molt_has_attr_name", ("obj", "name")),
+    "setattr": BuiltinFuncSpec("molt_set_attr_name", ("obj", "name", "value"), text_signature='($module, obj, name, value, /)'),
+    "delattr": BuiltinFuncSpec("molt_del_attr_name", ("obj", "name"), text_signature='($module, obj, name, /)'),
+    "hasattr": BuiltinFuncSpec("molt_has_attr_name", ("obj", "name"), text_signature='($module, obj, name, /)'),
     "compile": BuiltinFuncSpec(
         "molt_compile_builtin",
         ("source", "filename", "mode", "flags", "dont_inherit", "optimize"),
         (ast.Constant(0), ast.Constant(False), ast.Constant(-1)),
-    ),
+     text_signature='($module, /, source, filename, mode, flags=0,\n        dont_inherit=False, optimize=-1, *, _feature_version=-1)'),
     "print": BuiltinFuncSpec(
         "molt_print_builtin",
         (),
@@ -730,11 +763,11 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
             ast.Constant(None),
             ast.Constant(False),
         ),
-    ),
+     text_signature="($module, /, *args, sep=' ', end='\\n', file=None, flush=False)"),
     # CPython parity: vars() is equivalent to locals() with no arguments.
     "vars": BuiltinFuncSpec("molt_vars_builtin", ("obj",), (_MOLT_MISSING,)),
-    "globals": BuiltinFuncSpec("molt_globals_builtin", ()),
-    "locals": BuiltinFuncSpec("molt_locals_builtin", ()),
+    "globals": BuiltinFuncSpec("molt_globals_builtin", (), text_signature='($module, /)'),
+    "locals": BuiltinFuncSpec("molt_locals_builtin", (), text_signature='($module, /)'),
     "__import__": BuiltinFuncSpec(
         "molt_importlib_import_transaction",
         (),
@@ -745,7 +778,8 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
             ast.Constant(0),
         ),
         pos_or_kw_params=("name", "globals", "locals", "fromlist", "level"),
-    ),
+        bind_kind=MOLT_BIND_KIND_CLINIC_NAMED,
+     text_signature='($module, /, name, globals=None, locals=None, fromlist=(),\n           level=0)'),
 }
 
 # ── intrinsic arity lookup (compile-time optimisation) ────────────
@@ -755,7 +789,6 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
 
 _INTRINSIC_ARITY_CACHE: dict[str, int] | None = None
 _INTRINSIC_SYMBOL_CACHE: dict[str, str] | None = None
-_INTRINSIC_DEFAULTS_CACHE: dict[str, tuple[object, ...]] | None = None
 
 
 def _intrinsic_signature_paths() -> list[Path]:
@@ -791,34 +824,6 @@ def _split_intrinsic_params(params_str: str) -> list[str]:
     if current.strip():
         parts.append(current.strip())
     return [p for p in parts if p and not p.startswith("*")]
-
-
-def _intrinsic_param_default_expr(param: str) -> str | None:
-    depth = 0
-    for idx, ch in enumerate(param):
-        if ch in "([{":
-            depth += 1
-        elif ch in ")]}":
-            depth -= 1
-        elif ch == "=" and depth == 0:
-            return param[idx + 1 :].strip()
-    return None
-
-
-def _intrinsic_literal_default(default_expr: str, intrinsic_name: str) -> object | None:
-    if default_expr == "...":
-        return Ellipsis
-    if default_expr == "None":
-        return None
-    if default_expr == "True":
-        return True
-    if default_expr == "False":
-        return False
-    if default_expr.lstrip("-").isdigit():
-        return int(default_expr)
-    raise RuntimeError(
-        f"unsupported concrete default for {intrinsic_name}: {default_expr!r}"
-    )
 
 
 def _iter_intrinsic_signatures() -> Iterable[tuple[str, list[str]]]:
@@ -884,39 +889,6 @@ def _builtin_func_abi_arity(spec: BuiltinFuncSpec) -> int:
     return manifest_arity
 
 
-def _ensure_intrinsic_defaults_cache() -> dict[str, tuple[object, ...]]:
-    """Return runtime-name -> trailing concrete default tuple for intrinsics."""
-    global _INTRINSIC_DEFAULTS_CACHE
-    if _INTRINSIC_DEFAULTS_CACHE is None:
-        cache: dict[str, tuple[object, ...]] = {}
-        for name, params in _iter_intrinsic_signatures():
-            parsed: list[object | None] = []
-            has_default: list[bool] = []
-            for param in params:
-                default_expr = _intrinsic_param_default_expr(param)
-                if default_expr is None:
-                    parsed.append(None)
-                    has_default.append(False)
-                    continue
-                value = _intrinsic_literal_default(default_expr, name)
-                if value is Ellipsis:
-                    parsed.append(None)
-                    has_default.append(False)
-                    continue
-                parsed.append(value)
-                has_default.append(True)
-            if not any(has_default):
-                continue
-            first = has_default.index(True)
-            if not all(has_default[first:]):
-                raise RuntimeError(
-                    f"concrete defaults for {name} must form a trailing positional suffix"
-                )
-            cache.setdefault(name, tuple(parsed[first:]))
-        _INTRINSIC_DEFAULTS_CACHE = cache
-    return _INTRINSIC_DEFAULTS_CACHE
-
-
 def _ensure_intrinsic_symbol_cache() -> dict[str, str]:
     """Return the cached intrinsic name -> canonical runtime symbol map."""
     global _INTRINSIC_SYMBOL_CACHE
@@ -953,15 +925,6 @@ def _intrinsic_arity_exact(runtime_name: str) -> int | None:
     return _ensure_intrinsic_arity_cache().get(runtime_name)
 
 
-def _intrinsic_defaults_exact(runtime_name: str) -> tuple[object, ...]:
-    """Return concrete trailing defaults for *runtime_name*, if any."""
-    defaults = _ensure_intrinsic_defaults_cache()
-    return defaults.get(
-        runtime_name,
-        defaults.get(_canonical_intrinsic_runtime_name(runtime_name), ()),
-    )
-
-
 def _intrinsic_arity(runtime_name: str) -> int:
     """Return the parameter count for *runtime_name*.
 
@@ -971,36 +934,6 @@ def _intrinsic_arity(runtime_name: str) -> int:
     """
     arity = _intrinsic_arity_exact(runtime_name)
     return 0 if arity is None else arity
-
-
-@dataclass(frozen=True)
-class IntrinsicHandleClassConstructorSpec:
-    type_hint: str
-    handle_attr: str
-    empty_intrinsic: str
-    iterable_intrinsic: str
-    iterable_types: frozenset[str]
-    getitem_intrinsic: str | None = None
-    len_intrinsic: str | None = None
-
-
-INTRINSIC_HANDLE_CLASS_CONSTRUCTORS: dict[
-    tuple[str, str], IntrinsicHandleClassConstructorSpec
-] = {
-    ("collections", "Counter"): IntrinsicHandleClassConstructorSpec(
-        type_hint="counter",
-        handle_attr="_handle",
-        empty_intrinsic="molt_counter_new",
-        iterable_intrinsic="molt_counter_from_iterable",
-        iterable_types=frozenset({"list", "tuple"}),
-        getitem_intrinsic="molt_counter_getitem",
-        len_intrinsic="molt_counter_len",
-    ),
-}
-
-INTRINSIC_HANDLE_CLASS_CONSTRUCTORS_BY_TYPE: dict[
-    str, IntrinsicHandleClassConstructorSpec
-] = {spec.type_hint: spec for spec in INTRINSIC_HANDLE_CLASS_CONSTRUCTORS.values()}
 
 
 @dataclass(frozen=True)
@@ -1089,7 +1022,6 @@ class ClassInfo(TypedDict, total=False):
     static: bool
     dataclass: bool
     frozen: bool
-    eq: bool
     repr: bool
     slots: bool
     dataclass_params: dict[str, bool]
@@ -1113,6 +1045,7 @@ class FuncInfo(TypedDict):
     ops: list[MoltOp]
     frame_entry_failure_label: NotRequired[int]
     stateful_frame_plan: NotRequired[StatefulFunctionFramePlan]
+    stateful_locals_layout: NotRequired[StatefulLocalsLayout]
     source_module_publication: NotRequired[SourceModulePublication]
 
 
@@ -1222,10 +1155,6 @@ __all__ = [
     "MidendEnvConfig",
     "ActiveException",
     "BuiltinFuncSpec",
-    "FormatLiteral",
-    "FormatField",
-    "FormatToken",
-    "FormatParseState",
     "GEN_SEND_OFFSET",
     "GEN_THROW_OFFSET",
     "GEN_CLOSED_OFFSET",
@@ -1243,22 +1172,16 @@ __all__ = [
     "_MOLT_CLOSURE_PARAM",
     "_MOLT_MODULE_CHUNK_PARAM",
     "_MOLT_MODULE_CHUNK_PREFIX",
-    "MOLT_BIND_KIND_OPEN",
+    "MOLT_BIND_KIND_CLINIC_NAMED",
     "BUILTIN_FUNC_SPECS",
     "_INTRINSIC_ARITY_CACHE",
     "_INTRINSIC_SYMBOL_CACHE",
-    "_INTRINSIC_DEFAULTS_CACHE",
     "_builtin_func_abi_arity",
     "_ensure_intrinsic_arity_cache",
     "_ensure_intrinsic_symbol_cache",
-    "_ensure_intrinsic_defaults_cache",
     "_canonical_intrinsic_runtime_name",
     "_intrinsic_arity_exact",
-    "_intrinsic_defaults_exact",
     "_intrinsic_arity",
-    "IntrinsicHandleClassConstructorSpec",
-    "INTRINSIC_HANDLE_CLASS_CONSTRUCTORS",
-    "INTRINSIC_HANDLE_CLASS_CONSTRUCTORS_BY_TYPE",
     "TryScope",
     "MethodInfo",
     "ClassInfo",

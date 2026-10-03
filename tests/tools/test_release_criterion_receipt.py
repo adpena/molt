@@ -19,6 +19,29 @@ from tools import verified_subset
 from tools.compat import comparison, test_policy
 
 
+@pytest.fixture(scope="module")
+def observed_runtime_closure() -> dict[str, object]:
+    from tests.tools.receipt_engine_fixtures import observed_runtime_closure as capture
+
+    return capture()
+
+
+@pytest.fixture(autouse=True)
+def reuse_observed_runtime_for_schema_tests(
+    monkeypatch: pytest.MonkeyPatch, observed_runtime_closure: dict[str, object]
+) -> None:
+    # These tests validate immutable receipt bytes and producer custody, not the
+    # OS image-census implementation. Observe one real typed snapshot per module;
+    # the canonical runtime identity suite owns image/file mutation tests.
+    from tools import receipt_toolchain
+
+    monkeypatch.setattr(
+        receipt_toolchain,
+        "capture_current_python_runtime",
+        lambda: copy.deepcopy(observed_runtime_closure),
+    )
+
+
 SOURCE_SHA = "a" * 40
 GENERATED_AT = "2026-08-14T12:00:00Z"
 VALIDATION_NOW = dt.datetime(2026, 8, 14, 12, 1, tzinfo=dt.timezone.utc)
@@ -213,6 +236,7 @@ def _verified_execution(
         }
     return {
         "backend": backend,
+        "profiles": verified_subset.execution_profiles(coordinate.build_profile),
         "ci": {
             "job": "coordinate",
             "provider": "github-actions",
@@ -269,9 +293,11 @@ def _verified_receipt(
     *,
     expected_failure: bool = False,
     raw_status: str = "pass",
+    backend: str = "native",
 ) -> tuple[receipt.Receipt, verified_authority.VerifiedSubsetCoordinate]:
     policy = verified_authority.load_verified_subset_policy()
-    coordinate = verified_authority.verified_subset_coordinates(policy)[0]
+    coordinate = next(cell for cell in verified_authority.verified_subset_coordinates(policy)
+                      if cell.backend == backend)
     projection = _verified_projection(
         coordinate,
         expected_failure=expected_failure,
@@ -902,3 +928,271 @@ def test_fail_closed_gate_emits_registry_counts_without_text_sniffing(
         captured["facts"]["class_counts"].values()  # type: ignore[index,union-attr]
     )
     assert captured["input_paths"] == [fail_closed_gate.REGISTRY_PATH]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "wrong", "malformed"])
+def test_verified_receipt_profiles_cannot_be_absent_or_disagree_with_coordinate(
+    monkeypatch, mutation
+):
+    payload, _ = _verified_receipt(monkeypatch)
+    execution = payload["facts"]["execution"]
+    if mutation == "missing":
+        del execution["profiles"]
+    elif mutation == "wrong":
+        execution["profiles"] = verified_subset.execution_profiles("release")
+    else:
+        execution["profiles"]["build"] = []
+    assert any("execution" in item for item in _validate_verified(payload))
+
+
+@pytest.mark.parametrize("kind", sorted(receipt.KINDS - {receipt.KIND_VERIFIED_SUBSET}))
+def test_structural_receipt_records_observed_audit_engine(
+    tmp_path: Path, kind: str
+) -> None:
+    payload = _valid_receipt(tmp_path, kind)
+    from tools.receipt_toolchain import observe_python_audit_engine
+
+    assert payload["producer"]["audit_engine"] == observe_python_audit_engine()
+    assert payload["producer"]["audit_engine"]["executable"]["sha256"]
+
+
+@pytest.mark.parametrize("bad", [None, {}, {"kind": "python-audit-engine-v1"}])
+def test_structural_receipt_rejects_missing_or_untyped_engine(
+    tmp_path: Path, bad: object
+) -> None:
+    payload = _valid_receipt(tmp_path, receipt.KIND_CANONICALIZATION_CONTRACT)
+    payload["producer"]["audit_engine"] = bad
+    problems = receipt.validate_receipt(
+        payload,
+        expected_kind=receipt.KIND_CANONICALIZATION_CONTRACT,
+        expected_source_sha=SOURCE_SHA,
+        repo_root=tmp_path,
+        now=VALIDATION_NOW,
+    )
+    assert any("audit engine" in problem for problem in problems)
+
+
+def test_structural_receipt_rejects_engine_replacement_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kind = receipt.KIND_CANONICALIZATION_CONTRACT
+    payload = _valid_receipt(tmp_path, kind)
+    destination = receipt.ReceiptDestination(
+        tmp_path,
+        tmp_path / "receipt.json",
+        SOURCE_SHA,
+        payload["producer"]["audit_engine"],
+    )
+    monkeypatch.setattr(receipt, "assert_clean_source", lambda **kwargs: destination)
+    replacement = copy.deepcopy(payload["producer"]["audit_engine"])
+    replacement["executable"]["sha256"] = "f" * 64
+    monkeypatch.setattr(receipt, "observe_python_audit_engine", lambda: replacement)
+    with pytest.raises(ValueError, match="interpreter identity changed"):
+        receipt.write_receipt(payload, destination)
+    assert not destination.output_path.exists()
+
+
+def test_structural_receipt_rejects_replaced_preflight_engine_even_if_writer_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _valid_receipt(tmp_path, receipt.KIND_CANONICALIZATION_CONTRACT)
+    original = copy.deepcopy(payload["producer"]["audit_engine"])
+    original["executable"]["sha256"] = "f" * 64
+    destination = receipt.ReceiptDestination(
+        tmp_path, tmp_path / "receipt.json", SOURCE_SHA, original
+    )
+    monkeypatch.setattr(receipt, "assert_clean_source", lambda **kwargs: destination)
+    with pytest.raises(
+        ValueError, match="interpreter identity changed during observation"
+    ):
+        receipt.write_receipt(payload, destination)
+    assert not destination.output_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("size", True),
+        ("size", 0),
+        ("sha256", "0" * 63),
+        ("sha256", "A" * 64),
+        ("entrypoint", "../python"),
+        ("content_filename", "C:python.exe"),
+    ],
+)
+def test_structural_engine_rejects_malformed_executable_identity(
+    tmp_path: Path, field: str, bad: object
+) -> None:
+    payload = _valid_receipt(tmp_path, receipt.KIND_CANONICALIZATION_CONTRACT)
+    payload["producer"]["audit_engine"]["executable"][field] = bad
+    problems = receipt.validate_receipt(
+        payload,
+        expected_kind=receipt.KIND_CANONICALIZATION_CONTRACT,
+        expected_source_sha=SOURCE_SHA,
+        repo_root=tmp_path,
+        now=VALIDATION_NOW,
+    )
+    assert any("audit engine executable" in problem for problem in problems)
+
+
+def test_structural_engine_rejects_forged_unknown_observations(tmp_path: Path) -> None:
+    payload = _valid_receipt(tmp_path, receipt.KIND_CANONICALIZATION_CONTRACT)
+    payload["producer"]["audit_engine"]["rustc"] = {"version": "1.96.1"}
+    problems = receipt.validate_receipt(
+        payload,
+        expected_kind=receipt.KIND_CANONICALIZATION_CONTRACT,
+        expected_source_sha=SOURCE_SHA,
+        repo_root=tmp_path,
+        now=VALIDATION_NOW,
+    )
+    assert any("audit engine must contain exactly" in problem for problem in problems)
+
+
+def test_structural_engine_binds_base_interpreter_beyond_venv_launcher(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tools import receipt_toolchain
+
+    launcher = tmp_path / "launcher.exe"
+    engine = tmp_path / "engine.exe"
+    launcher.write_bytes(b"same venv launcher")
+    engine.write_bytes(b"specific interpreter image")
+    monkeypatch.setattr(receipt_toolchain.sys, "executable", str(launcher))
+    monkeypatch.setattr(receipt_toolchain.sys, "_base_executable", str(engine))
+    observation = receipt_toolchain.observe_python_audit_engine()
+    assert (
+        observation["executable"]["sha256"]
+        != observation["command_executable"]["sha256"]
+    )
+    assert observation["executable"]["content_filename"] == "engine.exe"
+    assert observation["command_executable"]["content_filename"] == "launcher.exe"
+
+
+def test_structural_engine_rejects_unobserved_runtime_closure(tmp_path: Path) -> None:
+    payload = _valid_receipt(tmp_path, receipt.KIND_CANONICALIZATION_CONTRACT)
+    payload["producer"]["audit_engine"]["runtime_closure"] = None
+    problems = receipt.validate_receipt(
+        payload,
+        expected_kind=receipt.KIND_CANONICALIZATION_CONTRACT,
+        expected_source_sha=SOURCE_SHA,
+        repo_root=tmp_path,
+        now=VALIDATION_NOW,
+    )
+    assert any("runtime_closure is invalid" in problem for problem in problems)
+
+
+def test_structural_engine_rejects_base_image_not_owned_by_runtime(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_receipt(tmp_path, receipt.KIND_CANONICALIZATION_CONTRACT)
+    payload["producer"]["audit_engine"]["executable"]["sha256"] = "f" * 64
+    problems = receipt.validate_receipt(
+        payload,
+        expected_kind=receipt.KIND_CANONICALIZATION_CONTRACT,
+        expected_source_sha=SOURCE_SHA,
+        repo_root=tmp_path,
+        now=VALIDATION_NOW,
+    )
+    assert any("observed runtime base image" in problem for problem in problems)
+
+
+def test_structural_engine_preflight_seal_survives_nested_inventory_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _valid_receipt(tmp_path, receipt.KIND_CANONICALIZATION_CONTRACT)
+    engine = payload["producer"]["audit_engine"]
+    destination = receipt.ReceiptDestination(
+        tmp_path,
+        tmp_path / "receipt.json",
+        SOURCE_SHA,
+        engine,
+        receipt.canonical_json_sha256(engine),
+    )
+    # A mutable inventory shared with a downstream consumer is not an immutable
+    # preflight observation. Simulate replacement of the venv command wrapper,
+    # while the actual runtime base remains unchanged and structurally valid.
+    engine["command_executable"]["sha256"] = "f" * 64
+    monkeypatch.setattr(receipt, "assert_clean_source", lambda **kwargs: destination)
+    monkeypatch.setattr(
+        receipt, "observe_python_audit_engine", lambda: copy.deepcopy(engine)
+    )
+    with pytest.raises(ValueError, match="preflight identity seal changed"):
+        receipt.write_receipt(payload, destination)
+    assert not destination.output_path.exists()
+
+
+def test_structural_schema_matches_unpatched_producer_and_zero_proof_debt_baseline():
+    from tools import structural_audit
+
+    metrics = structural_audit.ratchet_metrics([])
+    baseline = json.loads(
+        (
+            Path(__file__).resolve().parents[2] / "tools/structural_audit_baseline.json"
+        ).read_text()
+    )
+    assert set(metrics) == receipt.STRUCTURAL_AUDIT_METRICS
+    assert set(baseline) == receipt.STRUCTURAL_AUDIT_METRICS
+    assert metrics["rust_backend_rejection_applicability_total"] == 0
+    assert baseline["rust_backend_rejection_applicability_total"] == 0
+
+
+def test_unpatched_structural_scan_metrics_validate_with_real_receipt_consumer(
+    tmp_path,
+):
+    from tools import structural_audit
+
+    kind = receipt.KIND_STRUCTURAL_AUDIT
+    _write(tmp_path / "src/molt/actual_debt.py", "# TODO(compiler): fixture debt\n")
+    payload = _valid_receipt(tmp_path, kind)
+    findings = structural_audit.run_all(tmp_path)
+    metrics = structural_audit.ratchet_metrics(findings)
+    baseline = payload["facts"]["baseline_metrics"]
+    regressed = sorted(key for key in metrics if metrics[key] > baseline[key])
+    assert "debt_markers_total" in regressed
+    payload["facts"].update(
+        metrics=metrics,
+        findings_count=len(findings),
+        regressed_metrics=regressed,
+        improved_metrics=[],
+    )
+    payload["status"] = receipt.STATUS_FAIL
+    assert (
+        receipt.validate_receipt(
+            payload,
+            expected_kind=kind,
+            expected_source_sha=SOURCE_SHA,
+            repo_root=tmp_path,
+            now=VALIDATION_NOW,
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize("backend", ["llvm", "native", "wasm"])
+def test_verified_receipt_accepts_exact_backend_identity(monkeypatch, backend):
+    payload, coordinate = _verified_receipt(monkeypatch, backend=backend)
+    assert coordinate.backend == backend
+    assert _validate_verified(payload) == ()
+
+
+@pytest.mark.parametrize("mutation", ["native-label", "node-runner", "wasm-object", "extra-field", "missing-runner"])
+def test_llvm_receipt_rejects_backend_identity_substitution(monkeypatch, mutation):
+    payload, _ = _verified_receipt(monkeypatch, backend="llvm")
+    identity = payload["facts"]["execution"]["backend"]
+    if mutation == "native-label":
+        identity["backend"] = "native"
+    elif mutation == "node-runner":
+        identity["runner"] = "node-wasi"
+    elif mutation == "wasm-object":
+        identity.update(backend="wasm", runner="node-wasi", binary_name="node", binary_sha256="2" * 64, version="v24.16.0")
+    elif mutation == "extra-field":
+        identity["binary_sha256"] = "2" * 64
+    else:
+        del identity["runner"]
+    assert any("execution.backend" in problem for problem in _validate_verified(payload))
+
+
+def test_wasm_receipt_rejects_process_identity(monkeypatch):
+    payload, _ = _verified_receipt(monkeypatch, backend="wasm")
+    payload["facts"]["execution"]["backend"] = {"backend": "wasm", "runner": "process"}
+    assert any("execution.backend" in problem for problem in _validate_verified(payload))

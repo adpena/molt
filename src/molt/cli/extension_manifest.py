@@ -11,6 +11,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any, Mapping
 
 from molt.capability_policy import split_capability_tokens
+from molt.source_root import compiler_source_root
 from molt.exact_json import string_keyed_mapping
 from molt.file_hashing import _sha256_file
 from molt.cli.models import _ExternalNativeCallableExport
@@ -33,7 +34,6 @@ from molt.native_callable_exports import (
 
 _ABI_VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?$")
 _MOLT_C_API_VERSION_RE = re.compile(r"^\d+(?:\.\d+){0,2}$")
-_CURRENT_MOLT_C_API_VERSION = "4"
 _WHEEL_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.]+")
 _WHEEL_VERSION_RE = re.compile(r"[^A-Za-z0-9._]+")
 _PYTHON_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -538,17 +538,39 @@ def _extension_binary_suffix(target_triple: str | None = None) -> str:
 def _default_molt_c_api_version(molt_root: Path) -> str:
     header = molt_root / "include" / "molt" / "molt.h"
     try:
-        text = header.read_text()
-    except OSError:
-        return _CURRENT_MOLT_C_API_VERSION
-    match = re.search(
-        r"^\s*#\s*define\s+MOLT_C_API_VERSION\s+([0-9]+)u?\s*$",
-        text,
-        flags=re.MULTILINE,
-    )
-    if match is None:
-        return _CURRENT_MOLT_C_API_VERSION
-    return match.group(1)
+        text = header.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"cannot read C-API version authority: {header}") from exc
+    # Match the runtime build projection: one whole-line decimal u32 literal.
+    definitions = [
+        words for line in text.splitlines()
+        if (words := line.split())[:2] == ["#define", "MOLT_C_API_VERSION"]
+    ]
+    if len(definitions) != 1 or len(definitions[0]) != 3:
+        raise ValueError(f"C-API version authority is malformed: {header}")
+    literal = definitions[0][2]
+    if re.fullmatch(r"[0-9]+u?", literal) is None:
+        raise ValueError(f"C-API version authority is malformed: {header}")
+    try:
+        version = int(literal.removesuffix("u"))
+    except ValueError as exc:
+        raise ValueError(f"C-API version authority is malformed: {header}") from exc
+    if version > 0xFFFFFFFF:
+        raise ValueError(f"C-API version authority exceeds u32: {header}")
+    return str(version)
+
+
+def _compiled_c_api_version_errors(version: str, current: str) -> list[str]:
+    # Syntax errors belong to the existing version grammar diagnostics.
+    if _MOLT_C_API_VERSION_RE.fullmatch(version) is None:
+        return []
+    if int(version.split(".", 1)[0]) != int(current.split(".", 1)[0]):
+        return [
+            "extension C-API layout major mismatch: "
+            f"artifact declares {version}, runtime requires {current}; "
+            "rebuild the extension against this runtime"
+        ]
+    return []
 
 
 def _wheel_filename_tags(path: Path) -> tuple[str, str, str] | None:
@@ -615,6 +637,12 @@ def _validate_extension_manifest(
         manifest_abi = ""
     else:
         manifest_abi = manifest_abi.strip()
+        try:
+            current_abi = _default_molt_c_api_version(compiler_source_root())
+        except ValueError as exc:
+            errors.append(str(exc))
+        else:
+            errors.extend(_compiled_c_api_version_errors(manifest_abi, current_abi))
 
     capabilities_value = manifest.get("capabilities")
     manifest_capabilities: list[str] = []

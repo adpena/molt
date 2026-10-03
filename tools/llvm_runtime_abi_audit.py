@@ -553,9 +553,6 @@ def run_audit(root: Path = ROOT) -> AuditResult:
     runtime_roots = runtime_src_roots(root)
     frontend = audit_op_kinds.extract_frontend_kinds(root=root)
     dedicated = audit_op_kinds.extract_llvm_preserved_op_kinds(root=root)
-    dedicated |= audit_op_kinds.extract_vec_reduction_ops(
-        root / audit_op_kinds.LLVM_VEC_REDUCTIONS_RS.relative_to(ROOT)
-    )
     preserved_kinds = frontend.all - mapped_tir_kinds(op_kinds) - dedicated
     exports = runtime_exports(runtime_roots)
     aliases = runtime_type_aliases(runtime_roots)

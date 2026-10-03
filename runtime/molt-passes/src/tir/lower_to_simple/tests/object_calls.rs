@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn call_argument_form_survives_tir_roundtrip() {
+    for (wire, expected) in [
+        (None, molt_ir::CallArgumentForm::Stack),
+        (Some("expanded"), molt_ir::CallArgumentForm::Expanded),
+    ] {
+        let simple: FunctionIR = serde_json::from_value(serde_json::json!({
+            "name": "call_form", "params": ["callee"], "return_abi": "value",
+            "ops": [
+                {"kind": "callargs_new", "out": "builder", "s_value": wire},
+                {"kind": "call_bind", "out": "result", "args": ["callee", "builder"]},
+                {"kind": "ret", "args": ["result"]}
+            ]
+        }))
+        .unwrap();
+        let tir = lower_to_tir(&simple);
+        let builder = tir
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .find(|op| {
+                op.attrs.get("_original_kind") == Some(&AttrValue::Str("callargs_new".into()))
+            })
+            .expect("builder survives lifting");
+        assert_eq!(builder.call_argument_form().unwrap(), expected);
+        let lowered = lower_to_simple_ir(&tir);
+        let builder = lowered.iter().find(|op| op.kind == "callargs_new").unwrap();
+        assert_eq!(builder.call_argument_form().unwrap(), expected);
+        assert_eq!(builder.s_value.as_deref(), wire);
+    }
+}
+
+#[test]
 fn builtin_roundtrip_uses_the_shared_named_and_dynamic_argument_contract() {
     for (attrs, count, expected_kind, expected_name) in [
         (
@@ -113,6 +145,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -695,6 +728,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 

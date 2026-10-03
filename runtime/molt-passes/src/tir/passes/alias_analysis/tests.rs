@@ -25,236 +25,6 @@ fn op_kind(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>, kind: 
     o
 }
 
-/// Every `OpCode` variant — kept exhaustive by `assert_opcode_listed`, so a
-/// newly-added opcode forces a deliberate barrier classification.
-fn all_opcodes() -> Vec<OpCode> {
-    use OpCode::*;
-    vec![
-        Add,
-        CheckedAdd,
-        CheckedMul,
-        Sub,
-        Mul,
-        InplaceAdd,
-        InplaceSub,
-        InplaceMul,
-        Div,
-        FloorDiv,
-        Mod,
-        Pow,
-        Neg,
-        Pos,
-        Eq,
-        Ne,
-        Lt,
-        Le,
-        Gt,
-        Ge,
-        Is,
-        IsNot,
-        In,
-        NotIn,
-        BitAnd,
-        BitOr,
-        BitXor,
-        BitNot,
-        Shl,
-        Shr,
-        And,
-        Or,
-        Not,
-        Bool,
-        Alloc,
-        StackAlloc,
-        ObjectNewBound,
-        Free,
-        LoadAttr,
-        StoreAttr,
-        DelAttr,
-        Index,
-        StoreIndex,
-        DelIndex,
-        DeleteVar,
-        Call,
-        CallMethod,
-        CallMethodIc,
-        CallSuperMethodIc,
-        CallBuiltin,
-        OrdAt,
-        BoxVal,
-        UnboxVal,
-        TypeGuard,
-        IncRef,
-        DecRef,
-        DelBoundary,
-        BuildList,
-        BuildDict,
-        BuildTuple,
-        BuildSet,
-        BuildSlice,
-        GetIter,
-        IterNext,
-        IterNextUnboxed,
-        UnpackSequence,
-        ForIter,
-        AllocTask,
-        StateSwitch,
-        StateTransition,
-        StateYield,
-        ClosureLoad,
-        ClosureStore,
-        Yield,
-        YieldFrom,
-        Raise,
-        CheckException,
-        ExceptionPending,
-        FunctionDefaultsVersion,
-        TryStart,
-        TryEnd,
-        StateBlockStart,
-        StateBlockEnd,
-        ConstInt,
-        ConstBigInt,
-        ConstFloat,
-        ConstStr,
-        ConstBool,
-        ConstNone,
-        ConstBytes,
-        Copy,
-        Import,
-        ImportFrom,
-        ModuleCacheGet,
-        ModuleCacheSet,
-        ModuleCacheDel,
-        ModuleGetAttr,
-        ModuleImportFrom,
-        ModuleGetGlobal,
-        ModuleGetName,
-        ModuleSetAttr,
-        ModuleDelGlobal,
-        ModuleDelGlobalIfPresent,
-        WarnStderr,
-        ScfIf,
-        ScfFor,
-        ScfWhile,
-        ScfYield,
-    ]
-}
-
-fn assert_opcode_listed(opcode: OpCode) {
-    use OpCode::*;
-    match opcode {
-        Add
-        | CheckedAdd
-        | CheckedMul
-        | Sub
-        | Mul
-        | InplaceAdd
-        | InplaceSub
-        | InplaceMul
-        | Div
-        | FloorDiv
-        | Mod
-        | Pow
-        | Neg
-        | Pos
-        | Eq
-        | Ne
-        | Lt
-        | Le
-        | Gt
-        | Ge
-        | Is
-        | IsNot
-        | In
-        | NotIn
-        | BitAnd
-        | BitOr
-        | BitXor
-        | BitNot
-        | Shl
-        | Shr
-        | And
-        | Or
-        | Not
-        | Bool
-        | Alloc
-        | StackAlloc
-        | ObjectNewBound
-        | Free
-        | LoadAttr
-        | StoreAttr
-        | DelAttr
-        | Index
-        | StoreIndex
-        | DelIndex
-        | DeleteVar
-        | Call
-        | CallMethod
-        | CallMethodIc
-        | CallSuperMethodIc
-        | CallBuiltin
-        | OrdAt
-        | BoxVal
-        | UnboxVal
-        | TypeGuard
-        | IncRef
-        | DecRef
-        | DelBoundary
-        | BuildList
-        | BuildDict
-        | BuildTuple
-        | BuildSet
-        | BuildSlice
-        | GetIter
-        | IterNext
-        | IterNextUnboxed
-        | UnpackSequence
-        | ForIter
-        | AllocTask
-        | StateSwitch
-        | StateTransition
-        | StateYield
-        | ClosureLoad
-        | ClosureStore
-        | Yield
-        | YieldFrom
-        | Raise
-        | CheckException
-        | ExceptionPending
-        | FunctionDefaultsVersion
-        | TryStart
-        | TryEnd
-        | StateBlockStart
-        | StateBlockEnd
-        | ConstInt
-        | ConstBigInt
-        | ConstFloat
-        | ConstStr
-        | ConstBool
-        | ConstNone
-        | ConstBytes
-        | Copy
-        | Import
-        | ImportFrom
-        | ModuleCacheGet
-        | ModuleCacheSet
-        | ModuleCacheDel
-        | ModuleGetAttr
-        | ModuleImportFrom
-        | ModuleGetGlobal
-        | ModuleGetName
-        | ModuleSetAttr
-        | ModuleDelGlobal
-        | ModuleDelGlobalIfPresent
-        | WarnStderr
-        | ScfIf
-        | ScfFor
-        | ScfWhile
-        | ScfYield => {}
-    }
-}
-
 // ── The OLD four barrier lists, reproduced verbatim as oracles ─────────
 
 const OLD_REFCOUNT_BARRIER_OPCODES: &[OpCode] = &[
@@ -330,17 +100,10 @@ fn old_dse_may_observe(op: &TirOp, root: ValueId, aliases: &AliasUnionFind) -> b
 
 // ── Superset proofs ────────────────────────────────────────────────────
 
-#[test]
-fn opcode_enum_is_exhaustively_listed() {
-    for op in all_opcodes() {
-        assert_opcode_listed(op);
-    }
-}
-
 /// `is_rc_barrier ⊇ refcount_elim::is_barrier` for EVERY opcode.
 #[test]
 fn rc_barrier_is_conservative_superset_of_old_refcount_list() {
-    for opcode in all_opcodes() {
+    for &opcode in crate::tir::op_kinds_generated::ALL_OPCODES {
         if old_refcount_is_barrier(opcode) {
             assert!(
                 opcode_is_rc_barrier(opcode),
@@ -377,7 +140,7 @@ fn dse_observe_is_conservative_superset_of_old_may_observe() {
         escape: HashMap::new(),
         alloc_roots: HashSet::new(),
     };
-    for opcode in all_opcodes() {
+    for &opcode in crate::tir::op_kinds_generated::ALL_OPCODES {
         // Aliasing case: op uses `root`.
         let aliasing = op(opcode, vec![root], vec![ValueId(50)]);
         let old = old_dse_may_observe(&aliasing, root, &res.aliases);
@@ -400,6 +163,7 @@ fn arbitrary_heap_effect_observes_roots_absent_from_operands() {
         OpCode::ModuleGetAttr,
         OpCode::ModuleGetName,
         OpCode::ModuleImportFrom,
+        OpCode::FrameContextSet,
     ] {
         let callback = op(opcode, vec![ValueId(40), ValueId(41)], vec![ValueId(42)]);
         assert!(
@@ -818,8 +582,6 @@ fn copy_lowering_classes_are_total_and_disjoint() {
     ];
     let inert = [
         Some("line"),
-        Some("trace_enter_slot"),
-        Some("trace_exit"),
         Some("missing"),
         Some("nop"),
         Some("guard_layout"),
@@ -831,10 +593,11 @@ fn copy_lowering_classes_are_total_and_disjoint() {
         Some("guard_none"),
     ];
     // The fresh-value kinds the drop pass releases independently. Each MUST
-    // classify FreshValue (incl. the review's double-free root `slice` and the
+    // classify OwnedValue (incl. the review's double-free root `slice` and the
     // generator-iterator `iter`) AND must NOT be allowed to reach the benign
     // no-incref passthrough.
     let fresh = [
+        Some("builtin_func"),
         Some("slice"),
         Some("slice_new"),
         Some("string_format"),
@@ -866,11 +629,20 @@ fn copy_lowering_classes_are_total_and_disjoint() {
         Some("tuple_new"),
         Some("string_join"),
         Some("staticmethod_new"),
-        Some("vec_sum_i64"),
+        // range()'s bound conversion mints an owned exact int.
+        Some("operator_index"),
+        // Fused-loop kernels: each returns a fresh owned result tuple.
+        Some("vec_sum"),
+        Some("vec_prod"),
+        Some("vec_min"),
+        Some("vec_max"),
+        Some("string_split_ws_dict_inc"),
+        Some("string_split_sep_dict_inc"),
+        Some("dict_str_int_inc"),
     ];
     let owned_alias = [Some("binding_alias")];
     // FAIL-CLOSED: an unrecognized future kind classifies as TransparentAlias
-    // (leak-safe), NOT FreshValue — so the drop pass never double-frees it.
+    // (leak-safe), NOT OwnedValue — so the drop pass never double-frees it.
     let unknown_fail_closed = [Some("some_brand_new_kind_v2"), Some("promise_new")];
 
     for k in alias {
@@ -898,12 +670,12 @@ fn copy_lowering_classes_are_total_and_disjoint() {
     for k in fresh {
         assert_eq!(
             classify_copy_kind(k),
-            CopyLowering::FreshValue,
+            CopyLowering::OwnedValue,
             "{k:?} mints a fresh owned value"
         );
         assert!(
             !copy_kind_reaches_no_incref_passthrough(k),
-            "{k:?} must NOT reach the benign passthrough — a FreshValue that fell \
+            "{k:?} must NOT reach the benign passthrough — a OwnedValue that fell \
              through would alias operand 0 and be double-freed by drop insertion"
         );
     }
@@ -935,7 +707,7 @@ fn copy_lowering_classes_are_total_and_disjoint() {
 /// `_original_kind = "slice"` (the `s[-5:]` subscript) must NOT be unioned into
 /// its source operand's alias root. If it were treated as a transparent alias,
 /// the drop pass would drop the slice and its source as one group — but they
-/// are two independent owned references on a correct (FreshValue) backend.
+/// are two independent owned references on a correct (OwnedValue) backend.
 #[test]
 fn slice_subscript_copy_is_a_fresh_value_not_an_alias() {
     let mut func = TirFunction::new(
@@ -1057,7 +829,8 @@ fn region_of_gates_coarse_regions_on_arbitrary_heap_effects() {
     );
     assert_eq!(dynamic.region_of(&module_callback), MemRegion::GenericHeap);
     let cache_get = op(OpCode::ModuleCacheGet, vec![ValueId(0)], vec![ValueId(2)]);
-    assert_eq!(dynamic.region_of(&cache_get), MemRegion::ModuleDict);
+    assert_eq!(dynamic.region_of(&cache_get), MemRegion::GenericHeap);
+    assert!(dynamic.may_observe_slot(&cache_get, ValueId(9)));
 
     let exact = AliasAnalysisResult {
         exact_scalar_types: HashMap::from([(ValueId(0), TirType::I64), (ValueId(1), TirType::I64)]),
@@ -1097,7 +870,7 @@ fn allocation_callback_boundaries_preserve_only_independent_slot_facts() {
         );
     }
 
-    for opcode in [OpCode::BuildList, OpCode::BuildTuple] {
+    for opcode in [OpCode::BuildList, OpCode::BuildTuple, OpCode::BuildSlice] {
         let capturing_allocation = op(opcode, vec![stored_root], vec![ValueId(2)]);
         assert!(
             res.may_observe_slot(&capturing_allocation, stored_root),
@@ -1262,9 +1035,9 @@ fn base_and_derived_metadata_cannot_disambiguate_one_physical_field() {
 /// A `Copy` is classified by whether it touches heap memory: a pure SSA
 /// move (no `_original_kind`) and the inert debug / source-location / guard
 /// markers are `ScalarRegister`; an opaque passthrough carrier stays the
-/// conservative `GenericHeap`. This is the keystone that stops a `line` /
-/// `trace_exit` marker `Copy` from spuriously clobbering the memory version
-/// between a constructor's field stores and the field loads (S5-2d).
+/// conservative `GenericHeap`. Lifecycle trace operations are effectful:
+/// entry acquires public namespaces and exit releases frame-owned references.
+/// They invalidate memory and exact-slot history despite non-owning results.
 #[test]
 fn copy_region_pure_and_inert_markers_are_scalar() {
     let res = empty_res();
@@ -1292,8 +1065,6 @@ fn copy_region_pure_and_inert_markers_are_scalar() {
     // Inert debug / source-location / sentinel / guard markers: no heap.
     for kind in [
         "line",
-        "trace_enter_slot",
-        "trace_exit",
         "missing",
         "nop",
         "guard_layout",
@@ -1586,103 +1357,69 @@ fn field_may_alias_matrix() {
     assert!(unknown0.may_alias(&MemRegion::LocalAllocation { root: ValueId(9) }));
 }
 
-/// Borrow provenance (design 20 interior-borrow keepalive). A `LoadAttr` /
-/// `Index` result records its source object's alias root; a use of the result
-/// keeps the source alive. `OrdAt` (an i64-producing fused read) does NOT.
 #[test]
-fn borrow_provenance_records_loadattr_and_index_sources() {
-    use crate::tir::blocks::Terminator;
-    use crate::tir::function::TirFunction;
-    use crate::tir::ops::{Dialect, TirOp};
-    use crate::tir::types::TirType;
-
-    fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
-        TirOp {
-            dialect: Dialect::Molt,
-            opcode,
-            operands,
-            results,
-            attrs: AttrDict::new(),
-            source_span: None,
-        }
+fn fresh_result_ownership_is_not_inferred_from_operation_spelling() {
+    for kind in ["vec_unknown", "vec_sum_i64", "vec_sum_extension"] {
+        assert_eq!(
+            classify_copy_kind(Some(kind)),
+            CopyLowering::TransparentAlias
+        );
     }
-
-    let mut func = TirFunction::new(
-        "bp".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let obj = func.fresh_value();
-    let h = func.fresh_value(); // LoadAttr(obj)
-    let cont = func.fresh_value();
-    let key = func.fresh_value();
-    let elem = func.fresh_value(); // Index(cont, key)
-    let ch = func.fresh_value(); // OrdAt(cont, key) — i64, no borrow
-    let entry = func.entry_block;
-    {
-        let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(op(OpCode::LoadAttr, vec![obj], vec![h]));
-        b.ops.push(op(OpCode::Index, vec![cont, key], vec![elem]));
-        b.ops.push(op(OpCode::OrdAt, vec![cont, key], vec![ch]));
-        b.terminator = Terminator::Return { values: vec![] };
+    for kind in ["vec_sum", "vec_prod", "vec_min", "vec_max"] {
+        assert_eq!(classify_copy_kind(Some(kind)), CopyLowering::OwnedValue);
     }
-    let aliases = build_alias_union_find(&func);
-    let canon = |v: ValueId| aliases.root(v);
-    let bp = build_borrow_provenance(&func, &aliases);
-    assert!(!bp.is_empty());
-    // The LoadAttr result keeps `obj` alive.
-    assert_eq!(bp.keepalive_roots(h, &canon), vec![aliases.root(obj)]);
-    // The Index result keeps the container alive.
-    assert_eq!(bp.keepalive_roots(elem, &canon), vec![aliases.root(cont)]);
-    // `OrdAt` produces a scalar code point — no borrow keepalive.
-    assert!(bp.keepalive_roots(ch, &canon).is_empty());
-    // A non-borrow value (the container itself) has no keepalive sources.
-    assert!(bp.keepalive_roots(cont, &canon).is_empty());
 }
 
-/// Borrow provenance is TRANSITIVE: `h2 = LoadAttr(h1); h1 = LoadAttr(obj)` —
-/// a use of `h2` keeps BOTH `h1` and `obj` alive (a chained interior borrow).
 #[test]
-fn borrow_provenance_is_transitive() {
-    use crate::tir::blocks::Terminator;
-    use crate::tir::function::TirFunction;
-    use crate::tir::ops::{Dialect, TirOp};
-    use crate::tir::types::TirType;
-
-    fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
-        TirOp {
-            dialect: Dialect::Molt,
-            opcode,
-            operands,
-            results,
-            attrs: AttrDict::new(),
-            source_span: None,
-        }
+fn runtime_copy_custody_preserves_borrowed_unpublished_and_move_results() {
+    for kind in [
+        "dict_set",
+        "dict_update_missing",
+        "frame_home_load",
+        "frame_home_store",
+        "function_closure_bits",
+        "alloc_class",
+        "const_ellipsis",
+        "const_not_implemented",
+        "cast",
+        "widen",
+    ] {
+        assert_eq!(
+            classify_copy_kind(Some(kind)),
+            CopyLowering::TransparentAlias,
+            "{kind}"
+        );
+        assert!(!copy_kind_mints_owned_value(kind), "{kind}");
     }
-
-    let mut func = TirFunction::new(
-        "bpt".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let obj = func.fresh_value();
-    let h1 = func.fresh_value();
-    let h2 = func.fresh_value();
-    let entry = func.entry_block;
-    {
-        let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(op(OpCode::LoadAttr, vec![obj], vec![h1]));
-        b.ops.push(op(OpCode::LoadAttr, vec![h1], vec![h2]));
-        b.terminator = Terminator::Return { values: vec![] };
+    for kind in [
+        "dict_get",
+        "class_new",
+        "list_int_new",
+        "gen_send",
+        "json_parse",
+        "call_async",
+        "list_append",
+    ] {
+        assert_eq!(
+            classify_copy_kind(Some(kind)),
+            CopyLowering::OwnedValue,
+            "{kind}"
+        );
+        assert!(!copy_kind_is_explicit_no_heap_move(Some(kind)), "{kind}");
     }
-    let aliases = build_alias_union_find(&func);
-    let canon = |v: ValueId| aliases.root(v);
-    let bp = build_borrow_provenance(&func, &aliases);
-    let mut roots = bp.keepalive_roots(h2, &canon);
-    roots.sort_by_key(|r| r.0);
-    let mut expected = vec![aliases.root(h1), aliases.root(obj)];
-    expected.sort_by_key(|r| r.0);
-    assert_eq!(roots, expected, "h2 must keep both h1 and obj alive");
+}
+
+#[test]
+fn trace_lifecycle_is_nonowning_but_observes_arbitrary_heap() {
+    let res = empty_res();
+    for kind in ["trace_enter_slot", "trace_exit"] {
+        assert_eq!(
+            classify_copy_kind(Some(kind)),
+            CopyLowering::TransparentAlias
+        );
+        let trace = op_kind(OpCode::Copy, vec![], vec![], kind);
+        assert_eq!(res.region_of(&trace), MemRegion::GenericHeap);
+        assert!(res.may_observe_slot(&trace, ValueId(99)));
+        assert!(!crate::tir::op_kinds_generated::copy_kind_is_inert_marker_table(kind));
+    }
 }

@@ -15,6 +15,7 @@ fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -22,7 +23,6 @@ fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
 
     let analysis = analyze_native_backend_ir(
         &ir,
-        true,
         molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
     );
 
@@ -48,6 +48,7 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -55,7 +56,6 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
 
     let analysis = analyze_native_backend_ir(
         &ir,
-        true,
         molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
     );
 
@@ -71,13 +71,13 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
 /// module context (cross-batch) and the batch's LOCAL scan  never a replace
 /// (design-20 finding #3C activation). A module context built from a
 /// different function set (e.g. the stdlib cache) does NOT carry a
-/// closure/task/leaf defined only in this batch; replacing the local scan
+/// closure/task defined only in this batch; replacing the local scan
 /// dropped it, so a `call_guarded` to that closure skipped env extraction and
 /// the callee received a garbage closure (`'object' is not subscriptable`).
 
 #[test]
 fn effective_metadata_unions_module_context_with_local_scan() {
-    // A module context that knows ONLY a stdlib closure / task / leaf.
+    // A module context that knows ONLY a stdlib closure / task.
     let mut stdlib_funcs = vec![FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "contextlib___inner".to_string(),
@@ -92,6 +92,7 @@ fn effective_metadata_unions_module_context_with_local_scan() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }];
     let ctx = SimpleBackend::prepare_module_context(&mut stdlib_funcs);
@@ -117,7 +118,7 @@ fn effective_metadata_unions_module_context_with_local_scan() {
     assert!(merged_none.contains("app__inner"));
     assert_eq!(merged_none.len(), 1);
 
-    // Same union contract for task kinds and leaf functions.
+    // Same union contract for task kinds. Callback facts are finalized locally.
     let mut local_tasks = BTreeMap::new();
     local_tasks.insert("app_poll".to_string(), TrampolineKind::Coroutine);
     let merged_tasks = merge_task_kinds(Some(&ctx), local_tasks);
@@ -125,11 +126,6 @@ fn effective_metadata_unions_module_context_with_local_scan() {
         merged_tasks.get("app_poll"),
         Some(&TrampolineKind::Coroutine)
     );
-    let mut local_leaves = BTreeSet::new();
-    local_leaves.insert("app_leaf".to_string());
-    let merged_leaves = merge_leaf_functions(Some(&ctx), local_leaves);
-    assert!(merged_leaves.contains("app_leaf"));
-    assert!(merged_leaves.contains("contextlib___inner"));
 }
 
 #[test]
@@ -148,6 +144,7 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -163,6 +160,7 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
     ];
@@ -171,8 +169,12 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
 
     assert_eq!(context.function_arities.get("helper"), Some(&2));
     assert_eq!(context.function_has_ret.get("helper"), Some(&true));
-    assert!(context.leaf_functions.contains("helper"));
-    assert!(context.leaf_functions.contains("helper_poll"));
+    assert!(
+        serde_json::to_value(&context)
+            .unwrap()
+            .get("leaf_functions")
+            .is_none()
+    );
 }
 
 #[test]
@@ -191,6 +193,7 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -205,6 +208,7 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
     ];
@@ -256,4 +260,84 @@ fn prepare_module_context_bounds_bodies_before_freezing_added_linkage_rows() {
         assert_eq!(abi.source_signature, function.function_signature().unwrap());
     }
     context.validate_function_linkage_abis(&functions).unwrap();
+}
+
+#[test]
+fn shared_context_cannot_override_final_lifetime_callback_facts() {
+    let provider = FunctionIR {
+        name: "released_local".into(),
+        params: vec!["owned".into()],
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        ops: vec![OpIR {
+            kind: "ret_void".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut early = vec![provider.clone()];
+    let context = SimpleBackend::prepare_module_context(&mut early);
+    assert!(
+        serde_json::to_value(&context)
+            .unwrap()
+            .get("leaf_functions")
+            .is_none()
+    );
+
+    // Lifetime finalization can add this callback after the ABI context was
+    // frozen. The final-body authority must observe it for batched builds too.
+    let mut finalized = provider;
+    finalized.ops.insert(
+        0,
+        OpIR {
+            kind: "drop_inserted".into(),
+            ..Default::default()
+        },
+    );
+    finalized.ops.insert(
+        0,
+        OpIR {
+            kind: "dec_ref".into(),
+            args: Some(vec!["owned".into()]),
+            ..Default::default()
+        },
+    );
+    let mut pure = FunctionIR {
+        name: "pure_local".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        ops: vec![OpIR {
+            kind: "ret_void".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut unfinalized = pure.clone();
+    unfinalized.name = "unfinalized_local".into();
+    let mut exception_only = pure.clone();
+    exception_only.name = "exception_only_local".into();
+    exception_only.ops.insert(
+        0,
+        OpIR {
+            kind: "exception_region_drops_inserted".into(),
+            ..Default::default()
+        },
+    );
+    pure.ops.insert(
+        0,
+        OpIR {
+            kind: "drop_inserted".into(),
+            ..Default::default()
+        },
+    );
+    let ir = SimpleIR {
+        functions: vec![finalized, pure, unfinalized, exception_only],
+        profile: None,
+    };
+    let analysis = analyze_native_backend_ir(
+        &ir,
+        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
+    );
+    assert!(!analysis.leaf_functions.contains("released_local"));
+    assert!(analysis.leaf_functions.contains("pure_local"));
+    assert!(!analysis.leaf_functions.contains("unfinalized_local"));
+    assert!(!analysis.leaf_functions.contains("exception_only_local"));
 }

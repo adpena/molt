@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_private_names import python_source_field
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -41,11 +43,15 @@ LAZY_INTRINSIC_CALL_NAMES = frozenset({"_lazy_intrinsic"})
 STDLIB_PROBE_INTRINSIC = "molt_stdlib_probe"
 
 
-def is_fail_closed_import_policy_gate(text: str) -> bool:
+def is_fail_closed_import_policy_gate(text: str | bytes) -> bool:
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return False
+    return _is_fail_closed_import_policy_gate_tree(tree)
+
+
+def _is_fail_closed_import_policy_gate_tree(tree: ast.Module) -> bool:
     body = list(tree.body)
     if (
         body
@@ -78,11 +84,15 @@ def _call_name(node: ast.expr) -> str | None:
     return None
 
 
-def intrinsic_names_from_source(source: str) -> frozenset[str]:
+def intrinsic_names_from_source(source: str | bytes) -> frozenset[str]:
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return frozenset()
+    return _intrinsic_names_from_tree(tree)
+
+
+def _intrinsic_names_from_tree(tree: ast.Module) -> frozenset[str]:
 
     intrinsic_names: set[str] = set()
     for node in ast.walk(tree):
@@ -109,19 +119,30 @@ def intrinsic_names_from_source(source: str) -> frozenset[str]:
 
 def module_required_intrinsic_names(path: Path) -> frozenset[str]:
     try:
-        source = path.read_text(encoding="utf-8")
+        source = path.read_bytes()
     except Exception:
         return frozenset()
     return intrinsic_names_from_source(source)
 
 
-def stdlib_module_intrinsic_status_from_source(source: str, path_name: str) -> str:
+def stdlib_module_intrinsic_status_from_source(
+    source: str | bytes, path_name: str
+) -> str:
     if path_name == "_intrinsics.py":
         return STATUS_INTRINSIC
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return STATUS_PYTHON_ONLY
+    return _stdlib_module_intrinsic_status_from_tree(tree, path_name)
 
-    intrinsic_names = intrinsic_names_from_source(source)
+
+def _stdlib_module_intrinsic_status_from_tree(tree: ast.Module, path_name: str) -> str:
+    if path_name == "_intrinsics.py":
+        return STATUS_INTRINSIC
+    intrinsic_names = _intrinsic_names_from_tree(tree)
     if not intrinsic_names:
-        if is_fail_closed_import_policy_gate(source):
+        if _is_fail_closed_import_policy_gate_tree(tree):
             return STATUS_POLICY_GATE
         return STATUS_PYTHON_ONLY
     if intrinsic_names == {STDLIB_PROBE_INTRINSIC}:
@@ -131,14 +152,14 @@ def stdlib_module_intrinsic_status_from_source(source: str, path_name: str) -> s
 
 def stdlib_module_intrinsic_status(path: Path) -> str:
     try:
-        source = path.read_text(encoding="utf-8")
+        source = path.read_bytes()
     except Exception:
         return STATUS_PYTHON_ONLY
     return stdlib_module_intrinsic_status_from_source(source, path.name)
 
 
 @dataclass(frozen=True)
-class StdlibPrivateFacadeBinding:
+class StdlibFacadeBinding:
     export_name: str
     owner_module: str | None
     imported_name: str
@@ -148,10 +169,10 @@ class StdlibPrivateFacadeBinding:
 
 
 @dataclass(frozen=True)
-class StdlibPrivateFacadeEvidence:
+class StdlibFacadeEvidence:
     """Pure forwarding syntax, not proof of symbol existence or runtime parity."""
 
-    bindings: tuple[StdlibPrivateFacadeBinding, ...]
+    bindings: tuple[StdlibFacadeBinding, ...]
 
     @property
     def owners(self) -> frozenset[str]:
@@ -181,7 +202,15 @@ class StdlibModuleImportEvidence:
     source_path: Path
     proven_modules: frozenset[str]
     unresolved_sites: tuple[tuple[int, StaticImportRequest, StaticImportPlan], ...]
-    private_facade: StdlibPrivateFacadeEvidence | None
+    facade: StdlibFacadeEvidence | None
+
+
+@dataclass(frozen=True)
+class StdlibModuleIntrinsicFacts:
+    """One source generation's facts, before graph-dependent classification."""
+
+    status: str
+    import_evidence: StdlibModuleImportEvidence
 
 
 @dataclass(frozen=True)
@@ -189,14 +218,14 @@ class StdlibIntrinsicClassification:
     statuses: Mapping[str, str]
     import_evidence: Mapping[str, StdlibModuleImportEvidence]
 
-    def private_facades_payload(self) -> list[dict[str, object]]:
+    def facades_payload(self) -> list[dict[str, object]]:
         return [
             {
                 "module": module_name,
                 "path": str(evidence.source_path),
                 "status": self.statuses.get(module_name),
                 "reason": (
-                    "pure-private-reexport"
+                    "pure-reexport"
                     if self.statuses.get(module_name) == STATUS_INTRINSIC_SUPPORT
                     else None
                 ),
@@ -214,7 +243,7 @@ class StdlibIntrinsicClassification:
                 ],
             }
             for module_name, evidence in sorted(self.import_evidence.items())
-            if (facade := evidence.private_facade) is not None
+            if (facade := evidence.facade) is not None
         ]
 
     def unresolved_imports_payload(self) -> list[dict[str, object]]:
@@ -234,16 +263,12 @@ class StdlibIntrinsicClassification:
         ]
 
 
-def _pure_private_facade_imports(
-    module_name: str, tree: ast.Module
-) -> tuple[ast.ImportFrom, ...] | None:
+def _pure_facade_imports(tree: ast.Module) -> tuple[ast.ImportFrom, ...] | None:
     """Recognize a literal forwarding subset of the existing import AST.
 
     No export evaluation or alternate import resolution belongs here. Anything
     outside this subset remains subject to the existing non-facade rules.
     """
-    if not _is_private_support_module(module_name):
-        return None
     body = list(tree.body)
     if (
         body
@@ -267,6 +292,21 @@ def _pure_private_facade_imports(
             if alias.name == "*" or alias.asname is not None:
                 return None
             future_bindings.add(alias.name)
+    if not body:
+        return None
+    # Providers can own target-dependent export lists. Forwarding support
+    # depends on every resolved owner, never public/private module spelling.
+    # This recognizes syntax only; import execution still validates exports.
+    if all(isinstance(node, ast.ImportFrom) for node in body):
+        for node in body:
+            for alias in node.names:
+                binding = alias.asname or alias.name
+                if binding in future_bindings or (
+                    binding.startswith("__") and binding.endswith("__")
+                    and binding != "__all__"
+                ):
+                    return None
+        return tuple(body)
     if len(body) < 2:
         return None
     declaration = body.pop()
@@ -310,13 +350,27 @@ def stdlib_module_import_evidence(
     *,
     target_python: TargetPythonVersion,
 ) -> StdlibModuleImportEvidence:
+    return stdlib_module_intrinsic_facts(
+        module_name, path, target_python=target_python
+    ).import_evidence
+
+
+def stdlib_module_intrinsic_facts(
+    module_name: str,
+    path: Path,
+    *,
+    target_python: TargetPythonVersion,
+    source: str | bytes | None = None,
+) -> StdlibModuleIntrinsicFacts:
     try:
-        source = path.read_text(encoding="utf-8")
+        if source is None:
+            source = path.read_bytes()
     except (OSError, UnicodeError) as exc:
         raise UnresolvedStaticImportError(
             f"stdlib intrinsic import evidence ({module_name}: {path}, "
             f"Python {target_python.short}) cannot read source: {exc}"
         ) from exc
+
     try:
         tree = _parse_source_for_target(
             source,
@@ -329,6 +383,21 @@ def stdlib_module_import_evidence(
             f"Python {target_python.short}) cannot parse source: {exc.msg}"
         ) from exc
 
+    return StdlibModuleIntrinsicFacts(
+        _stdlib_module_intrinsic_status_from_tree(tree, path.name),
+        _stdlib_module_import_evidence_from_tree(
+            module_name, path, tree, target_python=target_python
+        ),
+    )
+
+
+def _stdlib_module_import_evidence_from_tree(
+    module_name: str,
+    path: Path,
+    tree: ast.Module,
+    *,
+    target_python: TargetPythonVersion,
+) -> StdlibModuleImportEvidence:
     imports: set[str] = set()
     unresolved_sites: list[tuple[int, StaticImportRequest, StaticImportPlan]] = []
     base_context = ModuleImportContext(
@@ -337,8 +406,8 @@ def stdlib_module_import_evidence(
         target_python=target_python.feature_version,
     )
     import_flow = analyze_module_import_flow(tree, base_context)
-    facade_imports = _pure_private_facade_imports(module_name, tree)
-    facade_bindings: list[StdlibPrivateFacadeBinding] = []
+    facade_imports = _pure_facade_imports(tree)
+    facade_bindings: list[StdlibFacadeBinding] = []
 
     def contexts_for(node: ast.AST) -> tuple[ModuleImportContext, ...]:
         return tuple(
@@ -364,7 +433,9 @@ def stdlib_module_import_evidence(
             StaticImportRequest.statement(
                 node.module or "",
                 level=node.level,
-                fromlist=tuple(alias.name for alias in node.names),
+                fromlist=tuple(
+                    python_source_field(alias, "name") for alias in node.names
+                ),
             ),
         )
         if facade_imports is not None and node in facade_imports:
@@ -383,7 +454,7 @@ def stdlib_module_import_evidence(
                 else None
             )
             facade_bindings.extend(
-                StdlibPrivateFacadeBinding(
+                StdlibFacadeBinding(
                     alias.asname or alias.name, owner, alias.name, node.lineno
                 )
                 for alias in node.names
@@ -393,7 +464,7 @@ def stdlib_module_import_evidence(
         frozenset(imports),
         tuple(unresolved_sites),
         (
-            StdlibPrivateFacadeEvidence(tuple(facade_bindings))
+            StdlibFacadeEvidence(tuple(facade_bindings))
             if facade_imports is not None
             else None
         ),
@@ -445,23 +516,15 @@ def _closed_intrinsic_statuses(
     module_graph: Mapping[str, Path],
     statuses: Mapping[str, str],
     *,
-    target_python: TargetPythonVersion,
+    import_evidence: Mapping[str, StdlibModuleImportEvidence],
 ) -> StdlibIntrinsicClassification:
     closed = dict(statuses)
-    evidence_by_module = {
-        module_name: stdlib_module_import_evidence(
-            module_name,
-            path,
-            target_python=target_python,
-        )
-        for module_name, path in module_graph.items()
-        if path and path.suffix == ".py"
-    }
+    evidence_by_module = dict(import_evidence)
     for module_name, evidence in evidence_by_module.items():
-        facade = evidence.private_facade
+        facade = evidence.facade
         if facade is None:
             continue
-        bindings: list[StdlibPrivateFacadeBinding] = []
+        bindings: list[StdlibFacadeBinding] = []
         for binding in facade.bindings:
             candidate = (
                 f"{binding.owner_module}.{binding.imported_name}"
@@ -479,7 +542,7 @@ def _closed_intrinsic_statuses(
         # base and that child, never an invented owner.Symbol graph entry. Use
         # the full graph so non-Python children without status fail closed too.
         evidence_by_module[module_name] = replace(
-            evidence, private_facade=StdlibPrivateFacadeEvidence(tuple(bindings))
+            evidence, facade=StdlibFacadeEvidence(tuple(bindings))
         )
     imports_by_module = {
         name: evidence.proven_modules for name, evidence in evidence_by_module.items()
@@ -492,7 +555,7 @@ def _closed_intrinsic_statuses(
                 continue
             if closed.get(module_name) != STATUS_PYTHON_ONLY:
                 continue
-            facade = evidence_by_module[module_name].private_facade
+            facade = evidence_by_module[module_name].facade
             if facade is not None:
                 if facade.resolved and all(
                     owner in evidence_by_module
@@ -536,7 +599,11 @@ def same_package_intrinsic_import_closure(
     closed = _closed_intrinsic_statuses(
         module_graph,
         statuses,
-        target_python=target_python,
+        import_evidence={
+            name: stdlib_module_import_evidence(name, path, target_python=target_python)
+            for name, path in module_graph.items()
+            if path and path.suffix == ".py"
+        },
     )
     return frozenset(
         module_name
@@ -549,14 +616,21 @@ def classify_stdlib_module_statuses(
     module_graph: Mapping[str, Path],
     *,
     target_python: TargetPythonVersion,
+    facts_provider: Callable[[str, Path], StdlibModuleIntrinsicFacts] | None = None,
 ) -> StdlibIntrinsicClassification:
-    statuses = {
-        module_name: stdlib_module_intrinsic_status(path)
+    facts = {
+        module_name: (
+            facts_provider(module_name, path)
+            if facts_provider is not None
+            else stdlib_module_intrinsic_facts(
+                module_name, path, target_python=target_python
+            )
+        )
         for module_name, path in module_graph.items()
         if path and path.suffix == ".py"
     }
     return _closed_intrinsic_statuses(
         module_graph,
-        statuses,
-        target_python=target_python,
+        {name: fact.status for name, fact in facts.items()},
+        import_evidence={name: fact.import_evidence for name, fact in facts.items()},
     )

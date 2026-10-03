@@ -42,8 +42,9 @@ use super::analysis::{
     StrictReachable,
 };
 use super::function::TirFunction;
+use super::op_kinds_generated::SimpleIrRuntimeRequirements;
 use super::passes::{self, PassStats};
-use super::target_info::{TargetInfo, TargetKind};
+use super::target_info::TargetInfo;
 
 fn trace_func_enabled(name: &str) -> bool {
     std::env::var("MOLT_TIR_TRACE_FUNC")
@@ -72,11 +73,17 @@ fn function_op_count(func: &TirFunction) -> usize {
 ///   raw/heap representation blocker is pinned by
 ///   `reachable_heap_incoming_poisons_raw_loop_phi`, so the shared TIR drop
 ///   plane is now the native RC authority as well.
-const fn target_uses_tir_drop_insertion(target: TargetKind) -> bool {
-    match target {
-        TargetKind::Llvm | TargetKind::Wasm | TargetKind::NativeCranelift => true,
-        TargetKind::Luau | TargetKind::Rust | TargetKind::Mlir => false,
-    }
+///
+/// Activation reads the target plan's claim rather than a backend list: the
+/// pass runs exactly where the plan claims deterministic Python lifetimes, the
+/// generated `DETERMINISTIC_LIFETIME` runtime capability. The drop plane is
+/// also the one consumer of parameter and argument custody (design 20 §1.6),
+/// so custody moves references on exactly the targets that claim Python
+/// lifetimes. The `Rust` and `Mlir` source targets claim none either.
+const fn target_uses_tir_drop_insertion(target_info: &TargetInfo) -> bool {
+    target_info
+        .supported_runtime_semantics
+        .contains(SimpleIrRuntimeRequirements::DETERMINISTIC_LIFETIME)
 }
 
 /// How a pass may mutate the function — drives analysis invalidation.
@@ -475,8 +482,8 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         // MemGVN consumes MemorySSA (built on the physical Field alias
         // regions) to forward stores into proven-pure typed-slot loads and dedup
         // redundant loads. Placed AFTER dead_store_elim so it sees the final set
-        // of live stores, and its replacement IncRef is final (refcount_elim has
-        // already run). OpsOnly: replaces a load with IncRef+Copy in place.
+        // of live stores. OpsOnly: replaces a load with a Copy in place, an
+        // owned alias that keeps the load's reference unless the value is raw.
         pass("mem_gvn", OpsOnly, |f, am, _tti| {
             passes::mem_gvn::run(f, am)
         }),
@@ -597,7 +604,7 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
         // fixes the mutation class. (The straight-line / edge-dying / suspension
         // insertions remain pure op additions that carry no exception edge.)
         pass("drop_insertion", Cfg, |f, am, tti| {
-            if target_uses_tir_drop_insertion(tti.target) {
+            if target_uses_tir_drop_insertion(tti) {
                 passes::drop_insertion::run(f, am)
             } else {
                 PassStats {
@@ -607,7 +614,7 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
             }
         }),
         pass("refcount_elim_post", OpsOnly, |f, am, tti| {
-            if target_uses_tir_drop_insertion(tti.target) {
+            if target_uses_tir_drop_insertion(tti) {
                 passes::refcount_elim::run_post_drop(f, am)
             } else {
                 PassStats {
@@ -1255,5 +1262,61 @@ mod tests {
         let mut func = exception_match_ref_without_reachable_pop_function();
         let pm = build_drop_pipeline(TargetInfo::native_release_fast());
         let _ = pm.run_inner(&mut func, true);
+    }
+
+    /// Parameter custody is a lifetime fact whose one consumer is the drop
+    /// plane. The plane runs on the target plan's deterministic-lifetime claim,
+    /// not on a backend list: a transferred parameter is released on exactly the
+    /// plans that claim Python lifetimes, and a plan without the claim gets no
+    /// target-dead release, whichever backend it names.
+    #[test]
+    fn drop_plane_activation_follows_the_deterministic_lifetime_claim() {
+        use crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements as Requirement;
+        let releases = |target_info: TargetInfo| {
+            let mut func = TirFunction::new(
+                "owns_parameter".into(),
+                vec![TirType::DynBox],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            func.set_parameter_custody(&[molt_ir::ParameterCustody::Transferred]);
+            let entry = func.entry_block;
+            let parameter = func.blocks[&entry].args[0].id;
+            let block = func.blocks.get_mut(&entry).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Call,
+                operands: vec![parameter],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            });
+            block.terminator = Terminator::Return { values: vec![] };
+            build_drop_pipeline(target_info).run(&mut func);
+            func.blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .filter(|op| op.opcode == OpCode::DecRef && op.operands == [parameter])
+                .count()
+        };
+        let mut withdrawn = TargetInfo::native_release_fast();
+        withdrawn.supported_runtime_semantics = withdrawn
+            .supported_runtime_semantics
+            .difference(Requirement::DETERMINISTIC_LIFETIME);
+        for (target_info, expected) in [
+            (TargetInfo::native_release_fast(), 1),
+            (TargetInfo::wasm_release_fast(), 1),
+            (TargetInfo::llvm_release_fast(), 1),
+            (withdrawn, 0),
+            (TargetInfo::luau_release_fast(), 0),
+            (TargetInfo::rust_release_fast(), 0),
+            (TargetInfo::mlir_release_fast(), 0),
+        ] {
+            let plan = format!(
+                "{:?} claiming {:?}",
+                target_info.target, target_info.supported_runtime_semantics
+            );
+            assert_eq!(releases(target_info), expected, "{plan}");
+        }
     }
 }

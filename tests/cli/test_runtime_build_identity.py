@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import os
 import hashlib
-import subprocess
-from collections.abc import Sequence
-from typing import Any
 import json
 import shutil
 import sys
@@ -16,6 +13,7 @@ import pytest
 
 from molt import toolchain_identity
 from molt.cli import runtime_build_identity as identity
+from molt.cli import runtime_native_build
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
     RUNTIME_WASM_COMBINED_ARTIFACTS,
@@ -36,7 +34,13 @@ def runtime_receipt() -> dict[str, object]:
     return runtime_identity_manifest()
 
 
-def _test_plan(root: Path, env: dict[str, str], *, response_path: Path | None = None):
+def _test_plan(
+    root: Path,
+    env: dict[str, str],
+    *,
+    response_path: Path | None = None,
+    target_triple: str | None = "wasm32-wasip1",
+):
     link_args = (
         ("--", "-C", "link-arg=@" + str(response_path))
         if response_path is not None
@@ -48,11 +52,10 @@ def _test_plan(root: Path, env: dict[str, str], *, response_path: Path | None = 
         cargo_command=(
             sys.executable,
             "rustc",
-            "--target",
-            "wasm32-wasip1",
+            *(("--target", target_triple) if target_triple else ()),
             *link_args,
         ),
-        requested_target="wasm32-wasip1",
+        requested_target=target_triple,
         host_target="test-host",
     )
 
@@ -100,7 +103,6 @@ def _resolve(
     response_path: Path | None = None,
     extra_env: dict[str, str] | None = None,
     artifact_selection: RuntimeArtifactSelection = RUNTIME_WASM_COMBINED_ARTIFACTS,
-    publication_digest: str = "test-publication-authority",
     runtime_features: tuple[str, ...] = ("stdlib_micro",),
 ) -> identity.RuntimeBuildIdentity:
     archive_root = root / "archives"
@@ -127,9 +129,39 @@ def _resolve(
             "RUSTC_WORKSPACE_WRAPPER": "",
         }
     )
+    if kind == "native":
+        env.update(
+            {
+                f"{name}_test-host": sys.executable
+                for name in ("CC", "CXX", "AR", "RANLIB")
+            }
+        )
     env.update(extra_env or {})
     env["RUSTFLAGS"] = base_rustflags
-    plan = _test_plan(root, env, response_path=response_path)
+    target = None if kind == "native" else "wasm32-wasip1"
+    plan = _test_plan(root, env, response_path=response_path, target_triple=target)
+    if kind == "native":
+        return runtime_native_build._runtime_build_identity_for_plan(
+            root,
+            env=plan.environment,
+            cargo_plan=plan,
+            cargo_profile=profile,
+            target_triple=target,
+            runtime_features=runtime_features,
+            cargo_command=plan.command,
+        )
+    if kind == "cpython-abi":
+        return identity.resolve_wasm_cpython_abi_build_identity(
+            root,
+            env=plan.environment,
+            cargo_plan=plan,
+            cargo_profile=profile,
+            target_triple="wasm32-wasip1",
+            rustflags=base_rustflags,
+            cargo_command=plan.command,
+            artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
+            wasi_sysroot=sysroot,
+        )
     shared, reloc = identity.resolve_wasm_runtime_build_family_identities(
         root,
         env=plan.environment,
@@ -140,11 +172,6 @@ def _resolve(
         base_rustflags=base_rustflags,
         cargo_command=plan.command,
         producer_artifact_selection=artifact_selection,
-        publication_authority={
-            "schema": "molt.runtime-wasm-publication-authority.v1",
-            "digest": canonical_json_sha256(publication_digest),
-            "files": [],
-        },
         members=(
             identity.RuntimeBuildMemberPlan(
                 kind="shared",
@@ -186,7 +213,7 @@ def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(
         identity,
         "_python_identity",
-        lambda _env: build_python_identity_fixture(),
+        lambda _env, **_kwargs: build_python_identity_fixture(),
     )
     (tmp_path / "Cargo.toml").write_text(
         '[profile.release-output]\ninherits = "release"\n[profile.dev-fast]\ninherits = "dev"\n',
@@ -195,6 +222,13 @@ def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     source = tmp_path / "runtime" / "src"
     source.mkdir(parents=True)
     (source / "lib.rs").write_text("pub fn runtime() {}\n", encoding="utf-8")
+    tooling = tmp_path / "runtime-planner.py"
+    tooling.write_text("# runtime planning authority\n", encoding="utf-8")
+    monkeypatch.setattr(
+        identity,
+        "runtime_build_tooling_paths",
+        lambda root: (root / "runtime-planner.py",),
+    )
     sysroot = tmp_path / "wasi-sysroot"
     (sysroot / "include").mkdir(parents=True)
     (sysroot / "include" / "errno.h").write_text("#define WASI_ERRNO 1\n")
@@ -221,10 +255,15 @@ def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     monkeypatch.setattr(
         identity,
-        "_rust_toolchain_resources",
-        lambda **_kwargs: {
+        "_cargo_crate_source_closure",
+        lambda *, project_root, **_kwargs: (project_root / "runtime" / "src",),
+    )
+    monkeypatch.setattr(
+        cargo_plans.RuntimeCargoPlan,
+        "rust_resource_identity",
+        lambda cargo_plan: {
             "host_triple": "test-host",
-            "selected_target": "wasm32-wasip1",
+            "selected_target": cargo_plan.target,
             "content": {
                 "digest": "0" * 64,
                 "file_count": 0,
@@ -236,6 +275,45 @@ def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         raising=True,
     )
     return tmp_path
+
+
+@pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
+def test_resolvers_own_one_source_and_tooling_observation_per_call(
+    identity_root: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    observations: list[tuple[str, ...]] = []
+    real_capture = identity.RuntimeTreeIndex.capture
+
+    def capture(cls, roots):
+        labels = tuple(label for label, _path in roots)
+        if any(label.startswith(("source/", "runtime-tooling/")) for label in labels):
+            observations.append(labels)
+        return real_capture(roots)
+
+    monkeypatch.setattr(identity.RuntimeTreeIndex, "capture", classmethod(capture))
+
+    def resolve():
+        return _resolve(identity_root, kind=kind, publication="tree-observation")
+
+    before = resolve()
+    assert observations == [
+        ("source/runtime/src", "runtime-tooling/runtime-planner.py")
+    ]
+    # A separate live admission must see files introduced after the first one.
+    (identity_root / "runtime/src/new.rs").write_bytes(b"new source input")
+    after_source = resolve()
+    assert len(observations) == 2
+    assert before.compile_digest != after_source.compile_digest
+    assert (
+        before.payload["family"]["publication_authority"]
+        == after_source.payload["family"]["publication_authority"]
+    )
+    (identity_root / "runtime-planner.py").write_bytes(b"new publication input")
+    after_tooling = resolve()
+    assert len(observations) == 3
+    assert after_source.compile_digest == after_tooling.compile_digest
+    assert after_source.family_digest != after_tooling.family_digest
+    assert observations == [observations[0]] * 3
 
 
 def test_identity_roundtrips_and_shared_reloc_form_one_family(
@@ -367,15 +445,17 @@ def test_publication_authority_content_is_family_identity_input(
         identity_root,
         kind="reloc",
         publication="relocatable-runtime-publication-v2",
-        publication_digest="a" * 64,
+    )
+    (identity_root / "runtime-planner.py").write_text(
+        "# changed runtime planning authority\n", encoding="utf-8"
     )
     after = _resolve(
         identity_root,
         kind="reloc",
         publication="relocatable-runtime-publication-v2",
-        publication_digest="b" * 64,
     )
 
+    assert before.compile_digest == after.compile_digest
     assert before.family_digest != after.family_digest
     assert before.digest != after.digest
 
@@ -441,7 +521,7 @@ def test_runtime_identity_uses_shared_exact_json_authority() -> None:
         == hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     )
     assert identity._digest(payload) == canonical_json_sha256(payload)
-    with pytest.raises(ValueError, match="Out of range float values"):
+    with pytest.raises(ValueError, match="non-finite JSON number"):
         identity._digest({"invalid": float("nan")})
 
 
@@ -525,12 +605,12 @@ def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
     unrelated = tmp_path / "src/molt/cli/frontend_pipeline.py"
     unrelated.write_text("# unrelated 1\n", encoding="utf-8")
 
-    before = identity.runtime_build_tooling_authority(tmp_path)
+    _, before = identity._capture_runtime_build_trees(tmp_path, ())
     unrelated.write_text("# unrelated 2\n", encoding="utf-8")
-    after_unrelated = identity.runtime_build_tooling_authority(tmp_path)
+    _, after_unrelated = identity._capture_runtime_build_trees(tmp_path, ())
     owned = tmp_path / identity._RUNTIME_BUILD_TOOLING_RELPATHS[0]
     owned.write_text("# runtime authority changed\n", encoding="utf-8")
-    after_owned = identity.runtime_build_tooling_authority(tmp_path)
+    _, after_owned = identity._capture_runtime_build_trees(tmp_path, ())
 
     assert before["schema"] == "molt.runtime-build-tooling-authority.v2"
     assert before["file_count"] == len(authority_paths)
@@ -929,42 +1009,58 @@ def test_tree_identity_is_deterministic_across_parallel_completion_order(
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
-    for index in range(12):
-        (source / f"{index:02}.rs").write_bytes(bytes([index]) * (index + 1))
+    file_count = 4 * identity._TREE_HASH_BATCH_SIZE + 1
+    for index in range(file_count):
+        (source / f"{index:04}.rs").write_bytes(bytes([index % 256]) * (index + 1))
     original = identity._hash_tree_input_file
     monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 1)
     serial = identity._tree_identity((("runtime/source", source),), require_all=True)
     monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 4)
 
     def forward(file: identity._TreeInputFile) -> str:
-        time.sleep((11 - int(file.path.stem)) * 0.0005)
+        time.sleep((file_count - 1 - int(file.path.stem)) * 0.00001)
         return original(file)
 
     monkeypatch.setattr(identity, "_hash_tree_input_file", forward)
     first = identity._tree_identity((("runtime/source", source),), require_all=True)
 
     def reverse(file: identity._TreeInputFile) -> str:
-        time.sleep(int(file.path.stem) * 0.0005)
+        time.sleep(int(file.path.stem) * 0.00001)
         return original(file)
 
     monkeypatch.setattr(identity, "_hash_tree_input_file", reverse)
     second = identity._tree_identity((("runtime/source", source),), require_all=True)
 
     assert serial == first == second
-    assert first["file_count"] == 12
+    assert first["file_count"] == file_count
 
 
+@pytest.mark.parametrize(
+    "file_count,expected_futures,expected_pending",
+    [(3, 6, 3), (6 * identity._TREE_HASH_BATCH_SIZE + 7, 14, 6)],
+)
 def test_tree_identity_parallel_scheduler_bounds_in_flight_futures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    file_count: int,
+    expected_futures: int,
+    expected_pending: int,
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
-    for index in range(20):
-        (source / f"{index:02}.rs").write_text(
+    for index in range(file_count):
+        (source / f"{index:04}.rs").write_text(
             f"pub const VALUE_{index}: usize = {index};\n", encoding="utf-8"
         )
     pending_sizes: list[int] = []
+    submitted = 0
     original_wait = identity.wait
+
+    class ObservedExecutor(identity.ThreadPoolExecutor):
+        def submit(self, *args, **kwargs):
+            nonlocal submitted
+            submitted += 1
+            return super().submit(*args, **kwargs)
 
     def observed_wait(futures: object, **kwargs: object) -> object:
         pending_sizes.append(len(futures))  # type: ignore[arg-type]
@@ -972,12 +1068,39 @@ def test_tree_identity_parallel_scheduler_bounds_in_flight_futures(
 
     monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 3)
     monkeypatch.setattr(identity, "wait", observed_wait)
+    monkeypatch.setattr(identity, "ThreadPoolExecutor", ObservedExecutor)
 
     result = identity._tree_identity((("runtime/source", source),), require_all=True)
 
-    assert result["file_count"] == 20
+    assert result["file_count"] == file_count
+    # Both passes batch large closures and keep small closures parallel.
+    assert submitted == expected_futures
     assert pending_sizes
-    assert max(pending_sizes) == 6
+    assert max(pending_sizes) == expected_pending
+
+
+def test_tree_identity_batched_capture_rejects_late_file_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    for index in range(2 * identity._TREE_HASH_BATCH_SIZE + 1):
+        (source / f"{index:04}.rs").write_bytes(b"before")
+    victim = source / f"{identity._TREE_HASH_BATCH_SIZE + 3:04}.rs"
+    original = identity._hash_tree_input_file
+
+    def mutate_before_open(file: identity._TreeInputFile) -> str:
+        if file.path == victim:
+            before = victim.stat()
+            victim.write_bytes(b"after!")
+            os.utime(victim, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return original(file)
+
+    monkeypatch.setattr(identity, "_hash_tree_input_file", mutate_before_open)
+    monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 2)
+
+    with pytest.raises(ValueError, match="changed while hashing"):
+        identity._tree_identity((("runtime/source", source),), require_all=True)
 
 
 def test_tree_identity_workers_are_cpu_memory_file_and_policy_bounded(
@@ -1035,8 +1158,9 @@ def test_tree_identity_rejects_same_size_mutation_during_hash(
         identity._tree_identity((("runtime/source", source),), require_all=True)
 
 
+@pytest.mark.parametrize("restore_mtime", [False, True])
 def test_tree_identity_rejects_mutation_after_enumeration_before_open(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore_mtime: bool
 ) -> None:
     source = tmp_path / "source.bin"
     source.write_bytes(b"before")
@@ -1047,7 +1171,12 @@ def test_tree_identity_rejects_mutation_after_enumeration_before_open(
         file.path.write_bytes(b"after!")
         os.utime(
             file.path,
-            ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000),
+            ns=(
+                before.st_atime_ns,
+                before.st_mtime_ns
+                if restore_mtime
+                else before.st_mtime_ns + 1_000_000_000,
+            ),
         )
         return original(file)
 
@@ -1301,7 +1430,9 @@ def test_portable_manifest_is_evidence_not_live_capture_authority(
         python["identity_sha256"] = canonical_json_sha256(
             {key: value for key, value in python.items() if key != "identity_sha256"}
         )
-        monkeypatch.setattr(identity, "_python_identity", lambda _env: python)
+        monkeypatch.setattr(
+            identity, "_python_identity", lambda _env, **_kwargs: python
+        )
     after = _resolve(
         identity_root, kind="shared", publication="strip-final-link-metadata-v1"
     )
@@ -1398,207 +1529,364 @@ def test_toolchain_manifest_concurrent_publication_is_atomic(
     assert final.digest in {first.digest, second.digest}
 
 
+class _SessionInput:
+    def __init__(self, owner):
+        self.owner = owner
+        self.closed = False
+
+    def write(self, request):
+        assert request == "verify\n"
+        self.owner.verifications += 1
+        if self.owner.verify is not None:
+            self.owner.verify()
+        self.owner.lines.put(self.owner.digest + "\n")
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.closed = True
+        self.owner.closed = True
+        self.owner.lines.put("")
+
+
+class _SessionOutput:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def readline(self, limit):
+        return self.owner.lines.get(timeout=5)
+
+    def close(self):
+        pass
+
+
+class _CaptureSession:
+    def __init__(self, payload):
+        import queue
+
+        self.lines = queue.Queue()
+        self.selection = {
+            "schema": "molt-python-startup-selection-v1",
+            "native": {"paths": ["original"]},
+        }
+        self.fresh_selection = self.selection
+        self.fresh_calls = []
+        self.lines.put(
+            json.dumps({"runtime": payload, "startup_selection": self.selection}) + "\n"
+        )
+        self.terminal = False
+        self.digest = payload["runtime_closure_sha256"]
+        self.stdin = _SessionInput(self)
+        self.stdout = _SessionOutput(self)
+        self.closed = False
+        self.returncode = None
+        self.verifications = 0
+        self.verify = None
+
+    def poll(self):
+        return self.returncode
+
+
+@pytest.fixture
+def python_session(tmp_path, monkeypatch, runtime_receipt):
+    from molt.cli import runtime_build_python as admission
+
+    selected = tmp_path / "selected-python.exe"
+    selected.write_bytes(b"selected-interpreter-launcher")
+    session = _CaptureSession(runtime_receipt)
+    calls = []
+
+    class Executor:
+        def start_guarded(self, command, **kwargs):
+            calls.append((command, kwargs))
+            return session
+
+        def run(self, command, **kwargs):
+            from types import SimpleNamespace
+
+            session.fresh_calls.append((command, kwargs))
+            return SimpleNamespace(stdout=json.dumps(session.fresh_selection))
+
+        def wait_owned(self, process, **kwargs):
+            assert process is session
+            assert process.closed
+            process.returncode = process.returncode or 0
+            process.terminal = True
+            return process.returncode
+
+    monkeypatch.setattr(
+        admission.process_guard, "source_command_executor", lambda _prefix: Executor()
+    )
+    return admission, selected, session, calls
+
+
 def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_receipt: dict[str, object]
-) -> None:
-    executable = tmp_path / "selected-python.exe"
-    executable.write_bytes(b"selected-interpreter-launcher")
+    python_session, runtime_receipt
+):
+    admission, selected, session, calls = python_session
     environment = {
-        "MOLT_BUILD_PYTHON": str(executable),
+        "MOLT_BUILD_PYTHON": str(selected),
         "PYTHON": "ignored-python",
-        "PATH": "untrusted-search-path",
+        "PATH": "captured-path",
     }
-    observed: list[tuple[tuple[str, ...], dict[str, Any]]] = []
-
-    def run(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        observed.append((tuple(argv), kwargs))
-        return subprocess.CompletedProcess(
-            argv, 0, stdout=json.dumps(runtime_receipt), stderr=""
-        )
-
-    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
-    result = identity._python_identity(environment)
-
-    assert result["runtime"] == runtime_receipt
-    assert (
-        result["selected_executable"]["sha256"]
-        == hashlib.sha256(b"selected-interpreter-launcher").hexdigest()
+    with admission.BuildPythonAdmission() as owner:
+        first = identity._python_identity(environment, admission=owner)
+        first["runtime"]["version"] = "caller mutation"
+        second = identity._python_identity(environment, admission=owner)
+    assert session.closed
+    assert session.verifications == 1
+    assert len(session.fresh_calls) == 1
+    assert session.fresh_calls[0][0][-1] == "--runtime-selection"
+    assert session.fresh_calls[0][1]["env"] == environment
+    assert len(calls) == 1
+    assert second["runtime"] == runtime_receipt
+    assert second["identity_sha256"] == canonical_json_sha256(
+        {key: value for key, value in second.items() if key != "identity_sha256"}
     )
-    assert result["logical_name"] == "build_python"
-    assert result["identity_sha256"] == canonical_json_sha256(
-        {key: value for key, value in result.items() if key != "identity_sha256"}
-    )
-    assert observed == [
-        (
-            (
-                str(executable),
-                "-B",
-                "-I",
-                "-S",
-                str(
-                    Path(identity.__file__).resolve().parents[1]
-                    / "python_environment_identity.py"
-                ),
-                "--capture-runtime",
-                "--hash-workers",
-                "4",
-            ),
-            {
-                "check": False,
-                "capture_output": True,
-                "text": True,
-                "encoding": "utf-8",
-                "env": environment,
-                "timeout": 30,
-                "memory_guard_prefix": None,
-            },
-        )
+    assert calls[0][0] == [
+        str(selected),
+        "-B",
+        "-I",
+        "-S",
+        str(
+            Path(identity.__file__).resolve().parents[1]
+            / "python_environment_identity.py"
+        ),
+        "--capture-runtime",
+        "--runtime-session",
+        "--hash-workers",
+        "4",
     ]
-    assert schema._SCHEMA == "molt.runtime-build-member-identity.v3"
-    assert schema._TOOLCHAIN_MANIFEST_SCHEMA == "molt.runtime-toolchain-content.v3"
+    assert calls[0][1]["env"] == environment
+    with pytest.raises(ValueError, match="revoked"):
+        owner.capture(environment)
 
 
 @pytest.mark.parametrize(
-    "corruption", ["malformed", "duplicate-root", "duplicate-node", "nonfinite"]
+    "change", ["interpreter", "same-size-restored-mtime", "loader-policy", "exit"]
+)
+def test_build_python_admission_rejects_changed_selection_without_restart(
+    python_session, tmp_path, change
+):
+    admission, selected, session, calls = python_session
+    environment = {"MOLT_BUILD_PYTHON": str(selected), "PATH": "original"}
+    owner = admission.BuildPythonAdmission()
+    owner.capture(environment)
+    before = selected.stat()
+    if change == "interpreter":
+        alternate = tmp_path / "alternate.exe"
+        alternate.write_bytes(selected.read_bytes())
+        environment["MOLT_BUILD_PYTHON"] = str(alternate)
+    elif change == "same-size-restored-mtime":
+        selected.write_bytes(b"x" * before.st_size)
+        os.utime(selected, ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif change == "loader-policy":
+        environment["PATH"] = "changed"
+    else:
+        session.returncode = 7
+    with pytest.raises(ValueError):
+        owner.capture(environment)
+    assert session.closed
+    assert len(calls) == 1
+    with pytest.raises(ValueError, match="revoked"):
+        owner.capture(environment)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["malformed", "duplicate-root", "duplicate-node", "nonfinite", "invalid-receipt"],
 )
 def test_python_identity_rejects_ambiguous_probe_json(
-    monkeypatch: pytest.MonkeyPatch, runtime_receipt: dict[str, object], corruption: str
-) -> None:
+    python_session, runtime_receipt, corruption
+):
+    admission, selected, session, _calls = python_session
     output = json.dumps(runtime_receipt)
     if corruption == "malformed":
         output = "{not-json"
     elif corruption == "duplicate-root":
         output = '{"schema":"discarded-duplicate",' + output[1:]
     elif corruption == "duplicate-node":
-        assert '"size": 1' in output
         output = output.replace('"size": 1', '"size": 1, "size": 1', 1)
-    else:
+    elif corruption == "nonfinite":
         output = "NaN"
-    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
-    monkeypatch.setattr(
-        identity.process_guard,
-        "run_completed_command",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 0, stdout=output, stderr=""
-        ),
-    )
-    with pytest.raises(ValueError, match="probe emitted invalid JSON"):
-        identity._python_identity({})
+    else:
+        output = "{}"
+    session.lines.get_nowait()
+    if corruption in {"duplicate-root", "duplicate-node"}:
+        output = (
+            '{"runtime":'
+            + output
+            + ',"startup_selection":'
+            + json.dumps(session.selection)
+            + "}"
+        )
+    session.lines.put(output + "\n")
+    with pytest.raises(ValueError):
+        identity._python_identity({"MOLT_BUILD_PYTHON": str(selected)})
+    assert session.closed
 
 
-def test_python_identity_validates_receipt_after_successful_probe(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
-    monkeypatch.setattr(
-        identity.process_guard,
-        "run_completed_command",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 0, stdout="{}", stderr=""
-        ),
-    )
-    with pytest.raises(ValueError, match="runtime closure shape is invalid"):
-        identity._python_identity({})
+def test_python_identity_failed_close_revokes_admission(python_session):
+    admission, selected, session, calls = python_session
+    owner = admission.BuildPythonAdmission()
+    env = {"MOLT_BUILD_PYTHON": str(selected)}
+    owner.capture(env)
+    session.returncode = 9
+    with pytest.raises(ValueError, match="exit 9"):
+        owner.close()
+    with pytest.raises(ValueError, match="revoked"):
+        owner.capture(env)
+    assert len(calls) == 1
 
 
-@pytest.mark.parametrize(
-    "stdout,stderr,detail",
-    [
-        ("ignored stdout", " loader closure missing \n", "loader closure missing"),
-        (" unresolved import \n", "", "unresolved import"),
-        ("", "", "probe failed"),
-    ],
-)
-def test_python_identity_preserves_probe_failure_signal(
-    monkeypatch: pytest.MonkeyPatch, stdout: str, stderr: str, detail: str
-) -> None:
-    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
-    monkeypatch.setattr(
-        identity.process_guard,
-        "run_completed_command",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 7, stdout=stdout, stderr=stderr
-        ),
-    )
-    with pytest.raises(ValueError, match=detail):
-        identity._python_identity({})
+def test_python_identity_timeout_revokes_without_retry(python_session, monkeypatch):
+    admission, selected, session, calls = python_session
+    session.lines.get_nowait()
+    monkeypatch.setattr(admission, "_RESPONSE_TIMEOUT", 0.001)
+    owner = admission.BuildPythonAdmission()
+    with pytest.raises(ValueError, match="timed out"):
+        owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    assert session.closed
+    assert len(calls) == 1
+    with pytest.raises(ValueError, match="revoked"):
+        owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
 
 
-def test_python_identity_preserves_timeout_without_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    timeout = subprocess.TimeoutExpired([sys.executable, "--capture-runtime"], 30)
-    calls = 0
+def test_build_python_scope_borrows_only_live_operation_owner(python_session):
+    from types import SimpleNamespace
 
-    def run(_argv: Sequence[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        nonlocal calls
-        calls += 1
-        raise timeout
-
-    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
-    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
-    with pytest.raises(subprocess.TimeoutExpired) as failure:
-        identity._python_identity({})
-    assert failure.value is timeout
-    assert calls == 1
+    admission, selected, session, calls = python_session
+    state = SimpleNamespace(build_python_admission=None)
+    environment = {"MOLT_BUILD_PYTHON": str(selected)}
+    with admission.build_python_scope(state) as owner:
+        first = owner.capture(environment)
+        with admission.build_python_scope(state) as borrowed:
+            assert borrowed is owner
+            assert borrowed.capture(environment) == first
+        assert not session.closed
+    assert session.closed
+    assert state.build_python_admission is None
+    assert len(calls) == 1
 
 
 def test_python_identity_unresolved_interpreter_never_spawns_probe(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(identity, "_command_path", lambda *_args: None)
-    monkeypatch.setattr(
-        identity.process_guard,
-        "run_completed_command",
-        lambda *_args, **_kwargs: pytest.fail(
-            "unresolved interpreter must not execute"
-        ),
-    )
-    with pytest.raises(ValueError, match="build Python is unresolved"):
-        identity._python_identity({})
+    python_session, tmp_path
+):
+    _admission, _selected, _session, calls = python_session
+    with pytest.raises(ValueError, match="unavailable"):
+        identity._python_identity({"MOLT_BUILD_PYTHON": str(tmp_path / "missing")})
+    assert not calls
 
 
 @pytest.mark.slow
 def test_python_identity_live_content_probe() -> None:
-    """Native integration owns the actual isolated scanner/consumer boundary."""
-    result = identity._python_identity(
-        {**os.environ, "MOLT_BUILD_PYTHON": sys.executable}
-    )
-    runtime = validate_python_runtime_identity(result["runtime"])
+    """The real guarded child retains its context through two phase boundaries."""
+    from molt.cli.runtime_build_python import BuildPythonAdmission
+
+    environment = {**os.environ, "MOLT_BUILD_PYTHON": sys.executable}
+    with BuildPythonAdmission() as owner:
+        first = owner.capture(environment)
+        assert owner.capture(environment) == first
+    runtime = validate_python_runtime_identity(first["runtime"])
     assert runtime["file_nodes"]
     assert runtime["native_dependency_closure"]["status"] == "closed"
-    assert result["selected_executable"][
+    assert first["selected_executable"][
         "sha256"
     ] == toolchain_identity.stable_file_sha256(
         Path(sys.executable), label="test Python executable"
     )
 
 
-@pytest.mark.parametrize("mutation", ["rewrite", "replace", "restore-bytes"])
-def test_python_identity_binds_launcher_generation_across_probe(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runtime_receipt: dict[str, object],
-    mutation: str,
-) -> None:
-    executable = tmp_path / "python.exe"
-    executable.write_bytes(b"before")
-    before = executable.stat()
+@pytest.mark.parametrize("change", ["launcher-environment", "new-native-provider"])
+def test_build_python_admission_observes_fresh_startup_selection(
+    python_session, change
+):
+    admission, selected, session, calls = python_session
+    env = {"MOLT_BUILD_PYTHON": str(selected), "LD_LIBRARY_PATH": "same-directory"}
+    owner = admission.BuildPythonAdmission()
+    owner.capture(env)
+    if change == "launcher-environment":
+        env["MOLT_REAL_PYTHON"] = "different-python"
+    session.fresh_selection = {
+        "schema": "molt-python-startup-selection-v1",
+        "native": {"paths": ["different-provider"]},
+    }
+    with pytest.raises(ValueError, match="fresh startup selection changed"):
+        owner.capture(env)
+    assert len(calls) == 1
+    assert session.fresh_calls[0][1]["env"] == env
+    assert session.verifications == 0
+    assert owner.terminal
 
-    def run(argv, **_kwargs):
-        if mutation == "replace":
-            replacement = tmp_path / "replacement.exe"
-            replacement.write_bytes(b"before")
-            replacement.replace(executable)
-        else:
-            executable.write_bytes(b"after!")
-            if mutation == "restore-bytes":
-                executable.write_bytes(b"before")
-            os.utime(executable, ns=(before.st_atime_ns, before.st_mtime_ns))
-        return subprocess.CompletedProcess(
-            argv, 0, stdout=json.dumps(runtime_receipt), stderr=""
-        )
 
-    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
-    with pytest.raises(ValueError, match="changed"):
-        identity._python_identity({"MOLT_BUILD_PYTHON": str(executable)})
+def test_build_python_admission_verifies_content_after_fresh_selection(python_session):
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    env = {"MOLT_BUILD_PYTHON": str(selected)}
+    owner.capture(env)
+
+    def reject_changed_content():
+        assert len(session.fresh_calls) == 1
+        raise ValueError("retained file generation changed")
+
+    session.verify = reject_changed_content
+    with pytest.raises(ValueError, match="file generation changed"):
+        owner.capture(env)
+
+
+def test_build_python_cleanup_retains_owner_and_primary_exception(
+    python_session, monkeypatch, capsys
+):
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    original_stdout = session.stdout
+
+    def blocked_wait(*args, **kwargs):
+        raise RuntimeError("guardian still owns live child")
+
+    def forbidden_close():
+        raise AssertionError("must not close a potentially reader-locked stream")
+
+    monkeypatch.setattr(owner._executor, "wait_owned", blocked_wait)
+    monkeypatch.setattr(original_stdout, "close", forbidden_close)
+    primary = LookupError("primary operation failed")
+    with pytest.raises(LookupError) as caught:
+        with owner:
+            raise primary
+    assert caught.value is primary
+    assert owner._process is session
+    assert not owner.terminal
+    assert owner.cleanup_failure.admission is owner
+    assert "guardian still owns live child" in primary.__notes__[0]
+    assert json.loads(capsys.readouterr().err)["kind"] == "build-python-cleanup-failure"
+    monkeypatch.setattr(original_stdout, "close", lambda: None)
+
+    def terminal_wait(*args, **kwargs):
+        session.terminal = True
+        session.returncode = 0
+        return 0
+
+    monkeypatch.setattr(owner._executor, "wait_owned", terminal_wait)
+    owner.close()
+    assert owner.terminal
+
+
+def test_build_python_cleanup_preserves_recorded_failure(
+    python_session, monkeypatch, capsys
+):
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+
+    def failed_operation():
+        with owner:
+            owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+            session.returncode = 9
+            owner.record_failure("Cargo failed with its recorded diagnostic")
+            return False
+
+    assert failed_operation() is False
+    diagnostic = json.loads(capsys.readouterr().err)
+    assert "Cargo failed" in diagnostic["primary_failure"]
+    assert "exit 9" in diagnostic["error"]

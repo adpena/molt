@@ -11,14 +11,16 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use crate::ir::ExecutionContextPolicy;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
-use crate::tir::dominators::is_simple_exception_transfer_kind;
+use crate::tir::dominators::{
+    exception_edge_binds_handler_arguments, is_simple_exception_transfer_kind,
+};
 use crate::tir::op_kinds_generated::{
-    SimpleIrCallTargetRole, SimpleIrVerifierRegionRole, simpleir_call_target_role,
-    simpleir_kind_is_repoll, simpleir_kind_is_return_terminator, simpleir_kind_is_suspend,
-    simpleir_kind_is_terminator, simpleir_kind_is_verifier_label_definition,
-    simpleir_kind_is_verifier_label_reference, simpleir_kind_is_verifier_loop_scoped,
-    simpleir_kind_is_verifier_phi, simpleir_kind_is_wasm_stateful_dispatch,
-    simpleir_verifier_region_role,
+    SimpleIrCallTargetRole, SimpleIrVerifierRegionRole, kind_to_opcode_table,
+    simpleir_call_target_role, simpleir_kind_is_repoll, simpleir_kind_is_return_terminator,
+    simpleir_kind_is_suspend, simpleir_kind_is_terminator,
+    simpleir_kind_is_verifier_label_definition, simpleir_kind_is_verifier_label_reference,
+    simpleir_kind_is_verifier_loop_scoped, simpleir_kind_is_verifier_phi,
+    simpleir_kind_is_wasm_stateful_dispatch, simpleir_verifier_region_role,
 };
 use crate::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 
@@ -534,8 +536,12 @@ fn op_edges(ops: &[OpIR]) -> Vec<Vec<LogicalEdge>> {
         // TRY_START describes handler reachability for verification, not a
         // runtime pending-state observation. LOOP_END's exit is likewise a
         // conservative verifier join; actual execution takes its latch.
-        let executable = !((ops[source].kind == "try_start" && role == EdgeRole::Exception)
-            || (ops[source].kind == "loop_end" && role == EdgeRole::LoopExit));
+        let executable = match role {
+            EdgeRole::Exception => kind_to_opcode_table(&ops[source].kind)
+                .is_some_and(exception_edge_binds_handler_arguments),
+            EdgeRole::LoopExit => ops[source].kind != "loop_end",
+            _ => true,
+        };
         let execution_role = role;
         if let Some((start, alternate)) = if_by_end.get(&target) {
             role = match alternate {
@@ -911,6 +917,7 @@ mod tests {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
             }],
             profile: None,

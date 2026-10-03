@@ -288,8 +288,10 @@ def test_project_config_static_import_dme_keeps_compile_scope_in_image_closure(
 
 
 def test_wrapper_build_cache_input_uses_static_import_closure_plan(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", lambda **_kwargs: "compiler")
+    monkeypatch.setattr(cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "tooling")
     entry = tmp_path / "app.py"
     package = tmp_path / "pkg"
     runtime = package / "runtime"
@@ -327,8 +329,10 @@ def test_wrapper_build_cache_input_uses_static_import_closure_plan(
 
 
 def test_wrapper_build_cache_identity_tracks_dead_module_elimination(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", lambda **_kwargs: "compiler")
+    monkeypatch.setattr(cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "tooling")
     entry = tmp_path / "app.py"
     entry.write_text("value = 'entry'\n")
     resolved, error = _resolve_entry(tmp_path, file_path=str(entry))

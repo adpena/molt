@@ -1,9 +1,8 @@
 use super::*;
 use crate::builtins::attr::{
-    DescriptorMutation, DescriptorMutationOutcome, class_own_slot_field_offset, descriptor_call1,
+    DescriptorMutation, DescriptorMutationOutcome, class_inferred_field_offset, descriptor_call1,
     descriptor_call2, descriptor_mutate,
 };
-use crate::builtins::types::class_model::object_set_class;
 
 unsafe fn readonly_descriptor_metadata(
     py: &PyToken<'_>,
@@ -94,15 +93,6 @@ unsafe fn dispatch_custom_mutation(
     }
 }
 
-#[inline]
-fn finish_exception_publication(_py: &PyToken<'_>, result: Result<(), &'static str>) -> u64 {
-    match result {
-        Ok(()) => MoltObject::none().bits(),
-        Err(_) if exception_pending(_py) => MoltObject::none().bits(),
-        Err(message) => raise_exception::<u64>(_py, "SystemError", message),
-    }
-}
-
 /// Translate protocol-level mutation outcomes at the attribute boundary, where
 /// the owner and attribute name needed by CPython-compatible diagnostics live.
 /// `None` means the class entry is not a data descriptor and ordinary storage
@@ -119,6 +109,29 @@ unsafe fn apply_descriptor_mutation(
             Some(MoltObject::none().bits())
         }
         DescriptorMutationOutcome::NotDescriptor => None,
+    }
+}
+
+/// Callable class descriptors share one mutation dispatch. Managed execution
+/// fields retain their typed setters; ordinary attributes, including __dict__,
+/// reach this descriptor tier before dictionary insertion or deletion.
+#[inline]
+unsafe fn mutate_callable_descriptor(
+    py: &PyToken<'_>,
+    object: *mut u8,
+    name: u64,
+    mutation: DescriptorMutation,
+) -> Option<u64> {
+    unsafe {
+        let class =
+            obj_from_bits(type_of_bits(py, MoltObject::from_ptr(object).bits())).as_ptr()?;
+        let descriptor = class_attr_lookup_raw_mro(py, class, name)?;
+        apply_descriptor_mutation(
+            py,
+            descriptor,
+            MoltObject::from_ptr(object).bits(),
+            mutation,
+        )
     }
 }
 
@@ -218,36 +231,42 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     attr_bits,
                     Some(val_bits),
                 );
-                dec_ref_bits(_py, attr_bits);
-                if rc == 0 {
-                    return MoltObject::none().bits();
+                molt_cpython_abi::api::errors::with_preserved_error(|| {
+                    dec_ref_bits(_py, attr_bits)
+                });
+                if rc < 0 {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        _py,
+                        "native attribute assignment",
+                    );
                 }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return attr_error(
-                    _py,
-                    type_name(_py, MoltObject::from_ptr(obj_ptr)),
-                    attr_name,
-                );
+                return MoltObject::none().bits();
             }
             if type_id == TYPE_ID_MODULE {
-                if attr_name == "__class__" {
-                    return object_set_class(_py, obj_ptr, val_bits);
-                }
                 let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
                     return MoltObject::none().bits();
                 };
-                let module_bits = MoltObject::from_ptr(obj_ptr).bits();
-                let res = molt_module_set_attr(module_bits, attr_bits, val_bits);
+                let result = if let Some(class_ptr) =
+                    obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
+                    && dispatch_custom_mutation(
+                        _py,
+                        class_ptr,
+                        obj_ptr,
+                        attr_bits,
+                        DescriptorMutation::Set(val_bits),
+                        CustomMutationDefaultPolicy::InvokeAnyHook,
+                    ) == CustomMutationDispatch::Handled
+                {
+                    MoltObject::none().bits()
+                } else {
+                    object_setattr_raw(_py, obj_ptr, attr_bits, attr_name, val_bits)
+                };
                 dec_ref_bits(_py, attr_bits);
-                return res;
+                return result;
             }
             if type_id == TYPE_ID_TYPE {
                 let class_bits = MoltObject::from_ptr(obj_ptr).bits();
-                if is_builtin_class_bits(_py, class_bits)
-                    || crate::object::class_is_immutable(_py, obj_ptr)
-                {
+                if crate::object::class_is_immutable(_py, obj_ptr) {
                     // CPython: setting an attribute on an immutable builtin type
                     // raises `cannot set '<attr>' attribute of immutable type
                     // '<type>'` (version-stable across 3.12/3.13/3.14).
@@ -294,94 +313,6 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
-                if attr_name == "__name__" || attr_name == "__qualname__" {
-                    let val_obj = obj_from_bits(val_bits);
-                    let is_str = if let Some(val_ptr) = val_obj.as_ptr() {
-                        object_type_id(val_ptr) == TYPE_ID_STRING
-                    } else {
-                        false
-                    };
-                    if !is_str {
-                        let class_label = class_name_for_error(class_bits);
-                        let type_label = type_name(_py, val_obj);
-                        let msg = format!(
-                            "can only assign string to {class_label}.{attr_name}, not '{}'",
-                            type_label
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                    if attr_name == "__name__" {
-                        class_set_name_bits(_py, obj_ptr, val_bits);
-                    } else {
-                        class_set_qualname_bits(_py, obj_ptr, val_bits);
-                    }
-                    class_bump_layout_version(obj_ptr);
-                    return MoltObject::none().bits();
-                }
-                if attr_name == "__annotate__" && pep649_enabled(_py) {
-                    let val_obj = obj_from_bits(val_bits);
-                    if !val_obj.is_none() {
-                        let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(val_bits)));
-                        if !callable_ok {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "__annotate__ must be callable or None",
-                            );
-                        }
-                        class_set_annotations_bits(_py, obj_ptr, 0u64);
-                    }
-                    let dict_bits = class_dict_bits(obj_ptr);
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                        && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    {
-                        let annotate_bits = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.annotate_name,
-                            b"__annotate__",
-                        );
-                        dict_set_in_place(_py, dict_ptr, annotate_bits, val_bits);
-                        if !val_obj.is_none() {
-                            let annotations_bits = intern_static_name(
-                                _py,
-                                &runtime_state(_py).interned.annotations_name,
-                                b"__annotations__",
-                            );
-                            dict_del_in_place(_py, dict_ptr, annotations_bits);
-                        }
-                    }
-                    class_set_annotate_bits(_py, obj_ptr, val_bits);
-                    class_bump_layout_version(obj_ptr);
-                    return MoltObject::none().bits();
-                }
-                if attr_name == "__annotations__" {
-                    let dict_bits = class_dict_bits(obj_ptr);
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                        && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    {
-                        let annotations_bits = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.annotations_name,
-                            b"__annotations__",
-                        );
-                        dict_set_in_place(_py, dict_ptr, annotations_bits, val_bits);
-                        let annotate_bits = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.annotate_name,
-                            b"__annotate__",
-                        );
-                        let none_bits = MoltObject::none().bits();
-                        if pep649_enabled(_py) {
-                            dict_set_in_place(_py, dict_ptr, annotate_bits, none_bits);
-                        }
-                    }
-                    class_set_annotations_bits(_py, obj_ptr, val_bits);
-                    if pep649_enabled(_py) {
-                        class_set_annotate_bits(_py, obj_ptr, MoltObject::none().bits());
-                    }
-                    class_bump_layout_version(obj_ptr);
-                    return MoltObject::none().bits();
-                }
                 let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
                     return MoltObject::none().bits();
                 };
@@ -393,167 +324,6 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 }
                 dec_ref_bits(_py, attr_bits);
                 return attr_error(_py, "type", attr_name);
-            }
-            if type_id == TYPE_ID_EXCEPTION {
-                let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
-                    return MoltObject::none().bits();
-                };
-                let name = string_obj_to_owned(obj_from_bits(attr_bits)).unwrap_or_default();
-                if name == "__class__" {
-                    dec_ref_bits(_py, attr_bits);
-                    return object_set_class(_py, obj_ptr, val_bits);
-                }
-                if let Some(result) = exception_typed_field_replace(
-                    _py,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                    &name,
-                    val_bits,
-                ) {
-                    dec_ref_bits(_py, attr_bits);
-                    return match result {
-                        Ok(()) => MoltObject::none().bits(),
-                        Err(_) if exception_pending(_py) => MoltObject::none().bits(),
-                        Err(message) => raise_exception::<u64>(_py, "AttributeError", message),
-                    };
-                }
-                if name == "__cause__" || name == "__context__" {
-                    let val_obj = obj_from_bits(val_bits);
-                    if !val_obj.is_none() {
-                        let Some(val_ptr) = val_obj.as_ptr() else {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                if name == "__cause__" {
-                                    "exception cause must be an exception or None"
-                                } else {
-                                    "exception context must be an exception or None"
-                                },
-                            );
-                        };
-                        if object_type_id(val_ptr) != TYPE_ID_EXCEPTION {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                if name == "__cause__" {
-                                    "exception cause must be an exception or None"
-                                } else {
-                                    "exception context must be an exception or None"
-                                },
-                            );
-                        }
-                    }
-                    let field = if name == "__cause__" {
-                        ExceptionFieldSlot::Cause
-                    } else {
-                        ExceptionFieldSlot::Context
-                    };
-                    let result = exception_replace_field_bits(
-                        _py,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                        field,
-                        val_bits,
-                    );
-                    dec_ref_bits(_py, attr_bits);
-                    return finish_exception_publication(_py, result);
-                }
-                if name == "args" {
-                    let args_bits = exception_args_from_iterable(_py, val_bits);
-                    if obj_from_bits(args_bits).is_none() {
-                        dec_ref_bits(_py, attr_bits);
-                        return MoltObject::none().bits();
-                    }
-                    let class_bits = object_class_bits(obj_ptr);
-                    let msg_bits = crate::exception_message_for_storage(_py, class_bits, args_bits);
-                    if obj_from_bits(msg_bits).is_none() {
-                        dec_ref_bits(_py, args_bits);
-                        dec_ref_bits(_py, attr_bits);
-                        return MoltObject::none().bits();
-                    }
-                    if !exception_store_args_and_message(_py, obj_ptr, args_bits, msg_bits) {
-                        dec_ref_bits(_py, attr_bits);
-                        return MoltObject::none().bits();
-                    }
-                    dec_ref_bits(_py, attr_bits);
-                    return MoltObject::none().bits();
-                }
-                if name == "__suppress_context__" {
-                    let suppress = is_truthy(_py, obj_from_bits(val_bits));
-                    let result = exception_replace_suppress_context(
-                        _py,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                        suppress,
-                    );
-                    dec_ref_bits(_py, attr_bits);
-                    return finish_exception_publication(_py, result);
-                }
-                if name == "__notes__" {
-                    let result = exception_replace_field_bits(
-                        _py,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                        ExceptionFieldSlot::Notes,
-                        val_bits,
-                    );
-                    dec_ref_bits(_py, attr_bits);
-                    return finish_exception_publication(_py, result);
-                }
-                if name == "__dict__" {
-                    let val_obj = obj_from_bits(val_bits);
-                    let Some(val_ptr) = val_obj.as_ptr() else {
-                        let msg = format!(
-                            "__dict__ must be set to a dictionary, not a '{}'",
-                            type_name(_py, val_obj)
-                        );
-                        dec_ref_bits(_py, attr_bits);
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    };
-                    if object_type_id(val_ptr) != TYPE_ID_DICT {
-                        let msg = format!(
-                            "__dict__ must be set to a dictionary, not a '{}'",
-                            type_name(_py, val_obj)
-                        );
-                        dec_ref_bits(_py, attr_bits);
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                    let result = exception_replace_field_bits(
-                        _py,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                        ExceptionFieldSlot::Dict,
-                        val_bits,
-                    );
-                    dec_ref_bits(_py, attr_bits);
-                    return finish_exception_publication(_py, result);
-                }
-                let mut dict_bits = exception_dict_bits(obj_ptr);
-                if obj_from_bits(dict_bits).is_none() || dict_bits == 0 {
-                    let dict_ptr = alloc_dict_with_pairs(_py, &[]);
-                    if !dict_ptr.is_null() {
-                        dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-                        if exception_replace_field_bits(
-                            _py,
-                            MoltObject::from_ptr(obj_ptr).bits(),
-                            ExceptionFieldSlot::Dict,
-                            dict_bits,
-                        )
-                        .is_err()
-                        {
-                            dec_ref_bits(_py, dict_bits);
-                            dec_ref_bits(_py, attr_bits);
-                            return MoltObject::none().bits();
-                        }
-                        dec_ref_bits(_py, dict_bits);
-                    }
-                }
-                if !obj_from_bits(dict_bits).is_none()
-                    && dict_bits != 0
-                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                {
-                    dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
-                    dec_ref_bits(_py, attr_bits);
-                    return MoltObject::none().bits();
-                }
-                dec_ref_bits(_py, attr_bits);
-                return attr_error(_py, "exception", attr_name);
             }
             if type_id == crate::TYPE_ID_CELL {
                 let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
@@ -574,15 +344,39 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 }
                 return attr_error(_py, "cell", attr_name);
             }
-            if type_id == TYPE_ID_FUNCTION {
-                if attr_name == "__module__"
-                    && let Some(ok) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .set_cfunction_module(MoltObject::from_ptr(obj_ptr).bits(), Some(val_bits))
-                {
-                    if !ok {
-                        crate::cpython_abi_hooks::transfer_pending_cpython_exception();
-                    }
+            if NativeCallableKind::from_class(_py, object_class_bits(obj_ptr)).is_some() {
+                let Some(name) = attr_name_bits_from_bytes(_py, slice) else {
                     return MoltObject::none().bits();
+                };
+                let result = mutate_callable_descriptor(
+                    _py,
+                    obj_ptr,
+                    name,
+                    DescriptorMutation::Set(val_bits),
+                );
+                dec_ref_bits(_py, name);
+                if let Some(result) = result {
+                    return result;
+                }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return attr_error(
+                    _py,
+                    type_name(_py, MoltObject::from_ptr(obj_ptr)),
+                    attr_name,
+                );
+            }
+            if type_id == TYPE_ID_FUNCTION {
+                // Runtime metadata writers retain direct access. Public mutation
+                // follows the sealed Python type, with its writable module member.
+                if !crate::object::field_storage::class_allows_dictionary(_py, obj_ptr) {
+                    return attr_error_with_obj(
+                        _py,
+                        type_name(_py, MoltObject::from_ptr(obj_ptr)),
+                        attr_name,
+                        MoltObject::from_ptr(obj_ptr).bits(),
+                    );
                 }
                 if attr_name == "__code__" {
                     if builtin_classes(_py).is_builtin_callable_class(object_class_bits(obj_ptr)) {
@@ -748,17 +542,19 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
                     return MoltObject::none().bits();
                 };
-                if let Ok(publication) = crate::call::class_init::function_set_attr_bits_deferred(
-                    _py, obj_ptr, attr_bits, val_bits,
-                ) {
-                    crate::call::function::commit_function_metadata_change(
-                        _py,
-                        obj_ptr,
-                        attr_name.as_bytes(),
-                        true,
-                    );
-                    drop(publication);
+                let result = mutate_callable_descriptor(
+                    _py,
+                    obj_ptr,
+                    attr_bits,
+                    DescriptorMutation::Set(val_bits),
+                );
+                if result.is_some() || exception_pending(_py) {
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(_py, attr_bits)
+                    });
+                    return result.unwrap_or(MoltObject::none().bits());
                 }
+                crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits);
                 dec_ref_bits(_py, attr_bits);
                 return MoltObject::none().bits();
             }
@@ -788,35 +584,18 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 dec_ref_bits(_py, attr_bits);
                 return result;
             }
-            if crate::object::heap_kind_has_class_shape(type_id) {
-                let _header = header_from_obj_ptr(obj_ptr);
-                if type_id == TYPE_ID_OBJECT && crate::object::object_poll_fn(obj_ptr) != 0 {
-                    return attr_error_with_obj(
-                        _py,
-                        "object",
-                        attr_name,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                    );
-                }
-                let payload = object_payload_size(obj_ptr);
-                if payload < std::mem::size_of::<u64>() {
-                    return attr_error_with_obj(
-                        _py,
-                        "object",
-                        attr_name,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                    );
-                }
+            if crate::object::heap_kind_has_class_shape(type_id)
+                || crate::object::native_instance::has_fields(obj_ptr)
+                || !crate::object::instance_dict_bits_ptr(obj_ptr).is_null()
+            {
                 let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
                     return MoltObject::none().bits();
                 };
-                let class_bits = object_class_bits(obj_ptr);
-                let mut slots_info = None;
+                let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
                 if class_bits != 0
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
                 {
-                    slots_info = class_slots_info(_py, class_ptr);
                     if dispatch_custom_mutation(
                         _py,
                         class_ptr,
@@ -829,77 +608,10 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         dec_ref_bits(_py, attr_bits);
                         return MoltObject::none().bits();
                     }
-                    if let Some(offset) = class_own_slot_field_offset(_py, class_ptr, attr_bits) {
-                        let res = object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
-                        dec_ref_bits(_py, attr_bits);
-                        return res;
-                    }
-                    if let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
-                        && let Some(result) = apply_descriptor_mutation(
-                            _py,
-                            desc_bits,
-                            instance_bits_for_call(obj_ptr),
-                            DescriptorMutation::Set(val_bits),
-                        )
-                    {
-                        dec_ref_bits(_py, attr_bits);
-                        return result;
-                    }
-                    if attr_name == "__class__" {
-                        dec_ref_bits(_py, attr_bits);
-                        return object_set_class(_py, obj_ptr, val_bits);
-                    }
-                    if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
-                        object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
-                        dec_ref_bits(_py, attr_bits);
-                        return MoltObject::none().bits();
-                    }
                 }
-                if attr_name == "__class__" {
-                    dec_ref_bits(_py, attr_bits);
-                    return object_set_class(_py, obj_ptr, val_bits);
-                }
-                if let Some(info) = slots_info
-                    && !info.allows_dict
-                {
-                    dec_ref_bits(_py, attr_bits);
-                    // A `__slots__` instance with no `__dict__` rejecting an
-                    // attribute that is not one of its slots. CPython 3.13+ adds
-                    // "and no __dict__ for setting new attributes" on the SET path.
-                    let type_label = class_name_for_error(class_bits);
-                    return setattr_no_attr_error_with_obj(
-                        _py,
-                        type_label,
-                        attr_name,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                    );
-                }
-                if attr_name == "__dict__" {
-                    crate::object::field_storage::replace_dictionary(_py, obj_ptr, Some(val_bits));
-                    dec_ref_bits(_py, attr_bits);
-                    return MoltObject::none().bits();
-                }
-                let Some(dict_bits) = crate::object::field_storage::materialize(_py, obj_ptr)
-                else {
-                    dec_ref_bits(_py, attr_bits);
-                    return MoltObject::none().bits();
-                };
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                {
-                    inc_ref_bits(_py, dict_bits);
-                    dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
-                    dec_ref_bits(_py, dict_bits);
-                    dec_ref_bits(_py, attr_bits);
-                    return MoltObject::none().bits();
-                }
+                let result = object_setattr_raw(_py, obj_ptr, attr_bits, attr_name, val_bits);
                 dec_ref_bits(_py, attr_bits);
-                return setattr_no_attr_error_with_obj(
-                    _py,
-                    "object",
-                    attr_name,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                );
+                return result;
             }
             setattr_no_attr_error_with_obj(
                 _py,
@@ -908,6 +620,68 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 MoltObject::from_ptr(obj_ptr).bits(),
             )
         })
+    }
+}
+
+unsafe fn module_delattr_namespace(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    attr_bits: u64,
+    attr_name: &str,
+) -> u64 {
+    unsafe {
+        if attr_name == "__dict__" {
+            return raise_exception::<u64>(_py, "AttributeError", "readonly attribute");
+        }
+        let dict_bits = module_dict_bits(obj_ptr);
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && object_type_id(dict_ptr) == TYPE_ID_DICT
+        {
+            let annotations_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.annotations_name,
+                b"__annotations__",
+            );
+            if crate::object::ops_compare::string_storage_equal(attr_bits, annotations_bits) {
+                if dict_del_in_place(_py, dict_ptr, annotations_bits) {
+                    if pep649_enabled(_py) {
+                        let annotate_bits = intern_static_name(
+                            _py,
+                            &runtime_state(_py).interned.annotate_name,
+                            b"__annotate__",
+                        );
+                        let none_bits = MoltObject::none().bits();
+                        dict_set_in_place(_py, dict_ptr, annotate_bits, none_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(obj_ptr)))
+                    .unwrap_or_default();
+                let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
+                return raise_exception::<_>(_py, "AttributeError", &msg);
+            }
+            let annotate_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.annotate_name,
+                b"__annotate__",
+            );
+            if crate::object::ops_compare::string_storage_equal(attr_bits, annotate_bits)
+                && pep649_enabled(_py)
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "cannot delete __annotate__ attribute",
+                );
+            }
+            if dict_del_in_place(_py, dict_ptr, attr_bits) {
+                return MoltObject::none().bits();
+            }
+        }
+        let module_name =
+            string_obj_to_owned(obj_from_bits(module_name_bits(obj_ptr))).unwrap_or_default();
+        let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
+        return attr_error_with_message(_py, &msg);
     }
 }
 
@@ -925,75 +699,32 @@ pub(crate) unsafe fn del_attr_ptr(
         if type_id == crate::TYPE_ID_FOREIGN {
             let c_ptr = crate::object::foreign::foreign_ptr_from_obj(obj_ptr);
             let rc = molt_cpython_abi::bridge::molt_foreign_setattr(c_ptr, attr_bits, None);
-            if rc == 0 || exception_pending(_py) {
-                return MoltObject::none().bits();
+            if rc < 0 {
+                crate::cpython_abi_hooks::propagate_native_failure(
+                    _py,
+                    "native attribute deletion",
+                );
             }
-            return attr_error(
-                _py,
-                type_name(_py, MoltObject::from_ptr(obj_ptr)),
-                attr_name,
-            );
+            return MoltObject::none().bits();
         }
         if type_id == TYPE_ID_MODULE {
-            let dict_bits = module_dict_bits(obj_ptr);
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            if let Some(class_ptr) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
+                && dispatch_custom_mutation(
+                    _py,
+                    class_ptr,
+                    obj_ptr,
+                    attr_bits,
+                    DescriptorMutation::Delete,
+                    CustomMutationDefaultPolicy::InvokeAnyHook,
+                ) == CustomMutationDispatch::Handled
             {
-                let annotations_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.annotations_name,
-                    b"__annotations__",
-                );
-                if obj_eq(
-                    _py,
-                    obj_from_bits(attr_bits),
-                    obj_from_bits(annotations_bits),
-                ) {
-                    if dict_del_in_place(_py, dict_ptr, annotations_bits) {
-                        if pep649_enabled(_py) {
-                            let annotate_bits = intern_static_name(
-                                _py,
-                                &runtime_state(_py).interned.annotate_name,
-                                b"__annotate__",
-                            );
-                            let none_bits = MoltObject::none().bits();
-                            dict_set_in_place(_py, dict_ptr, annotate_bits, none_bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                    let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(obj_ptr)))
-                        .unwrap_or_default();
-                    let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
-                    return raise_exception::<_>(_py, "AttributeError", &msg);
-                }
-                let annotate_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.annotate_name,
-                    b"__annotate__",
-                );
-                if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(annotate_bits))
-                    && pep649_enabled(_py)
-                {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "cannot delete __annotate__ attribute",
-                    );
-                }
-                if dict_del_in_place(_py, dict_ptr, attr_bits) {
-                    return MoltObject::none().bits();
-                }
+                return MoltObject::none().bits();
             }
-            let module_name =
-                string_obj_to_owned(obj_from_bits(module_name_bits(obj_ptr))).unwrap_or_default();
-            let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
-            return attr_error_with_message(_py, &msg);
+            return object_delattr_raw(_py, obj_ptr, attr_bits, attr_name);
         }
         if type_id == TYPE_ID_TYPE {
             let class_bits = MoltObject::from_ptr(obj_ptr).bits();
-            if is_builtin_class_bits(_py, class_bits)
-                || crate::object::class_is_immutable(_py, obj_ptr)
-            {
+            if crate::object::class_is_immutable(_py, obj_ptr) {
                 // CPython routes `del <builtin_type>.<attr>` through the same
                 // immutable-type guard as set, yielding `cannot set '<attr>'
                 // attribute of immutable type '<type>'` (version-stable).
@@ -1033,53 +764,6 @@ pub(crate) unsafe fn del_attr_ptr(
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if attr_name == "__annotate__" && pep649_enabled(_py) {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "cannot delete __annotate__ attribute",
-                );
-            }
-            if attr_name == "__annotations__" {
-                let dict_bits = class_dict_bits(obj_ptr);
-                let mut removed = false;
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                {
-                    let annotations_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.annotations_name,
-                        b"__annotations__",
-                    );
-                    if dict_del_in_place(_py, dict_ptr, annotations_bits) {
-                        removed = true;
-                    }
-                    if removed && pep649_enabled(_py) {
-                        let annotate_bits = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.annotate_name,
-                            b"__annotate__",
-                        );
-                        let none_bits = MoltObject::none().bits();
-                        dict_set_in_place(_py, dict_ptr, annotate_bits, none_bits);
-                    }
-                }
-                if !removed && class_annotations_bits(obj_ptr) != 0 {
-                    removed = true;
-                }
-                if removed {
-                    class_set_annotations_bits(_py, obj_ptr, 0u64);
-                    if pep649_enabled(_py) {
-                        class_set_annotate_bits(_py, obj_ptr, MoltObject::none().bits());
-                    }
-                    class_bump_layout_version(obj_ptr);
-                    return MoltObject::none().bits();
-                }
-                let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr)))
-                    .unwrap_or_default();
-                let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
-                return raise_exception::<_>(_py, "AttributeError", &msg);
-            }
             if mutate_class_namespace(_py, obj_ptr, attr_bits, attr_name, None)
                 || exception_pending(_py)
             {
@@ -1089,71 +773,6 @@ pub(crate) unsafe fn del_attr_ptr(
                 string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr))).unwrap_or_default();
             let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
             return attr_error_with_message(_py, &msg);
-        }
-        if type_id == TYPE_ID_EXCEPTION {
-            if let Some(result) =
-                exception_typed_field_delete(_py, MoltObject::from_ptr(obj_ptr).bits(), attr_name)
-            {
-                return match result {
-                    Ok(()) => MoltObject::none().bits(),
-                    Err(_) if exception_pending(_py) => MoltObject::none().bits(),
-                    Err(message) => raise_exception::<u64>(_py, "AttributeError", message),
-                };
-            }
-            if attr_name == "__cause__" || attr_name == "__context__" {
-                let field = if attr_name == "__cause__" {
-                    ExceptionFieldSlot::Cause
-                } else {
-                    ExceptionFieldSlot::Context
-                };
-                let result = exception_replace_field_bits(
-                    _py,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                    field,
-                    MoltObject::none().bits(),
-                );
-                if result.is_err() {
-                    return finish_exception_publication(_py, result);
-                }
-                if attr_name == "__cause__" {
-                    let result = exception_replace_suppress_context(
-                        _py,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                        false,
-                    );
-                    if result.is_err() {
-                        return finish_exception_publication(_py, result);
-                    }
-                }
-                return MoltObject::none().bits();
-            }
-            if attr_name == "__suppress_context__" {
-                let result = exception_replace_suppress_context(
-                    _py,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                    false,
-                );
-                return finish_exception_publication(_py, result);
-            }
-            if attr_name == "__notes__" {
-                let result = exception_replace_field_bits(
-                    _py,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                    ExceptionFieldSlot::Notes,
-                    MoltObject::none().bits(),
-                );
-                return finish_exception_publication(_py, result);
-            }
-            let dict_bits = exception_dict_bits(obj_ptr);
-            if !obj_from_bits(dict_bits).is_none()
-                && dict_bits != 0
-                && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                && object_type_id(dict_ptr) == TYPE_ID_DICT
-                && dict_del_in_place(_py, dict_ptr, attr_bits)
-            {
-                return MoltObject::none().bits();
-            }
-            return attr_error(_py, "exception", attr_name);
         }
         if type_id == crate::TYPE_ID_CELL {
             let result =
@@ -1166,7 +785,32 @@ pub(crate) unsafe fn del_attr_ptr(
             }
             return attr_error(_py, "cell", attr_name);
         }
+        if NativeCallableKind::from_class(_py, object_class_bits(obj_ptr)).is_some() {
+            let result =
+                mutate_callable_descriptor(_py, obj_ptr, attr_bits, DescriptorMutation::Delete);
+            if let Some(result) = result {
+                return result;
+            }
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return attr_error(
+                _py,
+                type_name(_py, MoltObject::from_ptr(obj_ptr)),
+                attr_name,
+            );
+        }
         if type_id == TYPE_ID_FUNCTION {
+            // Runtime metadata writers retain direct access. Public mutation
+            // follows the sealed Python type, with its writable module member.
+            if !crate::object::field_storage::class_allows_dictionary(_py, obj_ptr) {
+                return attr_error_with_obj(
+                    _py,
+                    type_name(_py, MoltObject::from_ptr(obj_ptr)),
+                    attr_name,
+                    MoltObject::from_ptr(obj_ptr).bits(),
+                );
+            }
             if attr_name == "__annotate__" && pep649_enabled(_py) {
                 return raise_exception::<_>(
                     _py,
@@ -1181,42 +825,12 @@ pub(crate) unsafe fn del_attr_ptr(
                 }
                 return MoltObject::none().bits();
             }
-            if attr_name == "__module__" {
-                if let Some(ok) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                    .set_cfunction_module(MoltObject::from_ptr(obj_ptr).bits(), None)
-                {
-                    if !ok {
-                        crate::cpython_abi_hooks::transfer_pending_cpython_exception();
-                    }
-                    return MoltObject::none().bits();
-                }
-                // CPython function metadata retains an explicit None after
-                // deletion; falling through to the type descriptor is wrong.
-                let _ = crate::call::class_init::function_set_attr_bits(
-                    _py,
-                    obj_ptr,
-                    attr_bits,
-                    MoltObject::none().bits(),
-                );
-                return MoltObject::none().bits();
+            let result =
+                mutate_callable_descriptor(_py, obj_ptr, attr_bits, DescriptorMutation::Delete);
+            if result.is_some() || exception_pending(_py) {
+                return result.unwrap_or(MoltObject::none().bits());
             }
-            let dict_bits = function_dict_bits(obj_ptr);
-            if dict_bits == 0 {
-                return attr_error(_py, "function", attr_name);
-            }
-            let Some(dict_ptr) = crate::call::class_init::function_ensure_dict(_py, obj_ptr) else {
-                return MoltObject::none().bits();
-            };
-            if let Some(publication) =
-                crate::object::ops::dict_del_deferred(_py, dict_ptr, attr_bits)
-            {
-                crate::call::function::commit_function_metadata_change(
-                    _py,
-                    obj_ptr,
-                    attr_name.as_bytes(),
-                    true,
-                );
-                drop(publication);
+            if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits) {
                 return MoltObject::none().bits();
             }
             if exception_pending(_py) {
@@ -1240,16 +854,11 @@ pub(crate) unsafe fn del_attr_ptr(
             }
             return dataclass_delattr_inner(_py, obj_ptr, attr_bits, attr_name, true);
         }
-        if crate::object::heap_kind_has_class_shape(type_id) {
-            let _header = header_from_obj_ptr(obj_ptr);
-            if type_id == TYPE_ID_OBJECT && crate::object::object_poll_fn(obj_ptr) != 0 {
-                return attr_error(_py, "object", attr_name);
-            }
-            let payload = object_payload_size(obj_ptr);
-            if payload < std::mem::size_of::<u64>() {
-                return attr_error(_py, "object", attr_name);
-            }
-            let class_bits = object_class_bits(obj_ptr);
+        if crate::object::heap_kind_has_class_shape(type_id)
+            || crate::object::native_instance::has_fields(obj_ptr)
+            || !crate::object::instance_dict_bits_ptr(obj_ptr).is_null()
+        {
+            let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
             if class_bits != 0
                 && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE
@@ -1265,41 +874,8 @@ pub(crate) unsafe fn del_attr_ptr(
                 {
                     return MoltObject::none().bits();
                 }
-                if let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
-                    && let Some(result) = apply_descriptor_mutation(
-                        _py,
-                        desc_bits,
-                        instance_bits_for_call(obj_ptr),
-                        DescriptorMutation::Delete,
-                    )
-                {
-                    return result;
-                }
             }
-            if attr_name == "__dict__" {
-                crate::object::field_storage::replace_dictionary(_py, obj_ptr, None);
-                return MoltObject::none().bits();
-            }
-            if class_bits != 0
-                && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
-            {
-                if !crate::object::accessors::object_field_delete_ptr_raw(_py, obj_ptr, offset) {
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return attr_error(_py, "object", attr_name);
-                }
-                return MoltObject::none().bits();
-            }
-            if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits) {
-                return MoltObject::none().bits();
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return attr_error(_py, "object", attr_name);
+            return object_delattr_raw(_py, obj_ptr, attr_bits, attr_name);
         }
         // Final fallthrough: DEL of a missing attribute on a no-`__dict__` heap
         // builtin (str/tuple/bytes/frozenset/...). CPython routes del through the
@@ -1344,17 +920,15 @@ pub(crate) unsafe fn object_setattr_raw(
                 MoltObject::from_ptr(obj_ptr).bits(),
             );
         }
-        let class_bits = object_class_bits(obj_ptr);
+        let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+        let class_ptr = obj_from_bits(class_bits)
+            .as_ptr()
+            .filter(|class| object_type_id(*class) == TYPE_ID_TYPE);
         let mut slots_info = None;
-        if class_bits != 0
-            && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-            && object_type_id(class_ptr) == TYPE_ID_TYPE
-        {
+        if let Some(class_ptr) = class_ptr {
             slots_info = class_slots_info(_py, class_ptr);
-            if let Some(offset) = class_own_slot_field_offset(_py, class_ptr, attr_bits) {
-                return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
-            }
-            if let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
+            let class_attribute = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits);
+            if let Some(desc_bits) = class_attribute
                 && let Some(result) = apply_descriptor_mutation(
                     _py,
                     desc_bits,
@@ -1364,16 +938,22 @@ pub(crate) unsafe fn object_setattr_raw(
             {
                 return result;
             }
-            if attr_name == "__class__" {
-                return object_set_class(_py, obj_ptr, val_bits);
-            }
-            if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
+        }
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if let Some(class_ptr) = class_ptr {
+            if let Some(offset) = class_inferred_field_offset(_py, class_ptr, attr_bits) {
                 return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
             }
         }
-        if let Some(info) = slots_info
-            && !info.allows_dict
-        {
+        if object_type_id(obj_ptr) == TYPE_ID_MODULE {
+            if attr_name == "__dict__" {
+                return raise_exception::<u64>(_py, "AttributeError", "readonly attribute");
+            }
+            return molt_module_set_attr(MoltObject::from_ptr(obj_ptr).bits(), attr_bits, val_bits);
+        }
+        if slots_info.is_none_or(|info| !info.allows_dict) {
             // `__slots__` instance (no `__dict__`) rejecting a non-slot attribute
             // via the `setattr()` builtin path: version-gated no-`__dict__` SET
             // message (3.13+), matching `molt_set_attr_generic`.
@@ -1385,27 +965,8 @@ pub(crate) unsafe fn object_setattr_raw(
                 MoltObject::from_ptr(obj_ptr).bits(),
             );
         }
-        if attr_name == "__dict__" {
-            crate::object::field_storage::replace_dictionary(_py, obj_ptr, Some(val_bits));
-            return MoltObject::none().bits();
-        }
-        let Some(dict_bits) = crate::object::field_storage::materialize(_py, obj_ptr) else {
-            return MoltObject::none().bits();
-        };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && object_type_id(dict_ptr) == TYPE_ID_DICT
-        {
-            inc_ref_bits(_py, dict_bits);
-            dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
-            dec_ref_bits(_py, dict_bits);
-            return MoltObject::none().bits();
-        }
-        setattr_no_attr_error_with_obj(
-            _py,
-            "object",
-            attr_name,
-            MoltObject::from_ptr(obj_ptr).bits(),
-        )
+        crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits);
+        MoltObject::none().bits()
     }
 }
 
@@ -1427,14 +988,14 @@ unsafe fn dataclass_setattr_inner(
             );
         }
         if !desc_ptr.is_null() {
-            let class_bits = object_class_bits(obj_ptr);
+            let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
             if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name)
                 && crate::object::field_storage::field_at_offset(
                     _py,
                     obj_ptr,
                     index * std::mem::size_of::<u64>(),
                 )
-                .is_some_and(|field| field.declared_slot)
+                .is_some_and(|field| field.kind.is_declared_slot())
             {
                 return crate::object::accessors::object_field_set_ptr_raw(
                     _py,
@@ -1455,13 +1016,6 @@ unsafe fn dataclass_setattr_inner(
                 )
             {
                 return result;
-            }
-            if attr_name == "__class__" {
-                return object_set_class(_py, obj_ptr, val_bits);
-            }
-            if attr_name == "__dict__" {
-                crate::object::field_storage::replace_dictionary(_py, obj_ptr, Some(val_bits));
-                return MoltObject::none().bits();
             }
             if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
                 return crate::object::accessors::object_field_set_ptr_raw(
@@ -1486,17 +1040,7 @@ unsafe fn dataclass_setattr_inner(
                 );
             }
         }
-        let Some(dict_bits) = crate::object::field_storage::materialize(_py, obj_ptr) else {
-            return MoltObject::none().bits();
-        };
-        inc_ref_bits(_py, dict_bits);
-        dict_set_in_place(
-            _py,
-            obj_from_bits(dict_bits).as_ptr().unwrap(),
-            attr_bits,
-            val_bits,
-        );
-        dec_ref_bits(_py, dict_bits);
+        crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits);
         MoltObject::none().bits()
     }
 }
@@ -1538,7 +1082,7 @@ pub(crate) unsafe fn object_delattr_raw(
         {
             return attr_error_with_obj(
                 _py,
-                class_name_for_error(object_class_bits(obj_ptr)),
+                class_name_for_error(type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits())),
                 attr_name,
                 obj_bits,
             );
@@ -1547,16 +1091,17 @@ pub(crate) unsafe fn object_delattr_raw(
         if payload < std::mem::size_of::<u64>() {
             return attr_error_with_obj(
                 _py,
-                class_name_for_error(object_class_bits(obj_ptr)),
+                class_name_for_error(type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits())),
                 attr_name,
                 obj_bits,
             );
         }
-        let class_bits = object_class_bits(obj_ptr);
-        if class_bits != 0
-            && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-            && object_type_id(class_ptr) == TYPE_ID_TYPE
-            && let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
+        let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+        let class_attribute = obj_from_bits(class_bits)
+            .as_ptr()
+            .filter(|class| object_type_id(*class) == TYPE_ID_TYPE)
+            .and_then(|class| class_attr_lookup_raw_mro(_py, class, attr_bits));
+        if let Some(desc_bits) = class_attribute
             && let Some(result) = apply_descriptor_mutation(
                 _py,
                 desc_bits,
@@ -1566,14 +1111,16 @@ pub(crate) unsafe fn object_delattr_raw(
         {
             return result;
         }
-        if attr_name == "__dict__" {
-            crate::object::field_storage::replace_dictionary(_py, obj_ptr, None);
+        if exception_pending(_py) {
             return MoltObject::none().bits();
+        }
+        if object_type_id(obj_ptr) == TYPE_ID_MODULE && attr_name == "__dict__" {
+            return raise_exception::<u64>(_py, "AttributeError", "readonly attribute");
         }
         if class_bits != 0
             && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
             && object_type_id(class_ptr) == TYPE_ID_TYPE
-            && let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
+            && let Some(offset) = class_inferred_field_offset(_py, class_ptr, attr_bits)
         {
             if !crate::object::accessors::object_field_delete_ptr_raw(_py, obj_ptr, offset) {
                 if exception_pending(_py) {
@@ -1582,6 +1129,9 @@ pub(crate) unsafe fn object_delattr_raw(
                 return attr_error(_py, class_name_for_error(class_bits), attr_name);
             }
             return MoltObject::none().bits();
+        }
+        if object_type_id(obj_ptr) == TYPE_ID_MODULE {
+            return module_delattr_namespace(_py, obj_ptr, attr_bits, attr_name);
         }
         if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits) {
             return MoltObject::none().bits();
@@ -1620,7 +1170,7 @@ unsafe fn dataclass_delattr_inner(
     unsafe {
         let desc_ptr = dataclass_desc_ptr(obj_ptr);
         if !desc_ptr.is_null() {
-            let class_bits = object_class_bits(obj_ptr);
+            let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
             if class_bits != 0
                 && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE
@@ -1640,10 +1190,6 @@ unsafe fn dataclass_delattr_inner(
                     "TypeError",
                     "cannot delete frozen dataclass field",
                 );
-            }
-            if attr_name == "__dict__" {
-                crate::object::field_storage::replace_dictionary(_py, obj_ptr, None);
-                return MoltObject::none().bits();
             }
             if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
                 if crate::object::accessors::object_field_delete_ptr_raw(
@@ -2129,7 +1675,6 @@ mod function_metadata_tests {
                 for key in [
                     b"__defaults__".as_slice(),
                     b"__kwdefaults__",
-                    b"__molt_vararg__",
                     b"__molt_is_generator__",
                 ] {
                     let key_bits = attr_name_bits_from_bytes(py, key).unwrap();
@@ -2160,10 +1705,7 @@ mod function_metadata_tests {
                         }
                         assert!(!exception_pending(py));
                         calls += 1;
-                        if matches!(
-                            key,
-                            b"__defaults__" | b"__kwdefaults__" | b"__molt_vararg__"
-                        ) {
+                        if matches!(key, b"__defaults__" | b"__kwdefaults__") {
                             version += 1;
                         }
                         assert_eq!(CALLS.load(Ordering::SeqCst), calls);

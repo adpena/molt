@@ -6,13 +6,20 @@ This is frontend proof only; the differential capsule exercises target runtimes.
 from __future__ import annotations
 
 import ast
+import dis
 from typing import Any
 
 import pytest
 
+from molt.compiler_analysis.python_call_arguments import (
+    call_form,
+    collect_module_import_names,
+)
 from molt.frontend import MoltOp, MoltValue
 from molt.frontend._types import AsyncFrameSlot, AsyncFrameSlotRole
+from molt.frontend.lowering.emission_core import EmissionCoreMixin
 from molt.frontend.lowering.local_bindings import LocalBindingMixin
+from molt.frontend.sema import analyze_module
 from molt.frontend.visitors.call_runtime_helpers import CallRuntimeHelperMixin
 
 
@@ -20,6 +27,8 @@ class _ArgumentEmitter(CallRuntimeHelperMixin):
     def __init__(self) -> None:
         self.ops: list[MoltOp] = []
         self.serial = 0
+        # Call lowering reads module facts from sema; these sources import nothing.
+        self._sema = analyze_module(ast.Module(body=[], type_ignores=[]))
 
     def next_var(self) -> str:
         self.serial += 1
@@ -149,7 +158,12 @@ def test_emitted_argument_schedule_matches_cpython(source: str) -> None:
     assert _observe(source, emitted=True) == _observe(source, emitted=False)
 
 
-class _SuspendingArgumentEmitter(_ArgumentEmitter, LocalBindingMixin):
+class _SuspendingArgumentEmitter(_ArgumentEmitter, LocalBindingMixin, EmissionCoreMixin):
+    def __init__(self) -> None:
+        super().__init__()
+        self.try_suppress_depth = None
+        self.try_end_labels: list[int] = []
+
     def is_async(self) -> bool:
         return True
 
@@ -215,3 +229,110 @@ def test_argument_storage_survives_suspension_and_releases_frame_slots(
     expected = [0, 1, 2] if "f(0" in source else [1, 2]
     assert values[result.name] == (expected, {"x": 3, "y": 4})
     assert frame and all(value is None for value in frame.values())
+
+
+def test_suspension_before_the_first_push_parks_no_builder() -> None:
+    call = ast.parse("f(*a, x=await b)", mode="eval").body
+    assert isinstance(call, ast.Call)
+    emitter = _SuspendingArgumentEmitter()
+    builder = emitter._emit_call_args_builder(call)
+    kinds = [op.kind for op in emitter.ops]
+    assert kinds.index("SUSPEND") < kinds.index("CALLARGS_NEW")
+    parked = [op.args[2] for op in emitter.ops if op.kind == "STORE_CLOSURE"]
+    assert parked, "the pending *a operand is parked across the suspension"
+    assert all(value is not builder for value in parked)
+
+
+def test_builder_is_created_at_its_first_push() -> None:
+    """No operand is evaluated between the builder's creation and first push.
+
+    The builder models CPython's value stack for the call. Created before
+    evaluation, it would be older than a pending operand that CPython keeps
+    beneath the kwargs mapping (a deferred sole ``*x``).
+    """
+    for source in (
+        "f(0, *star('s'), k=value('k'))",
+        "f(*star('s'), k=value('k'))",
+        "f(**mapping('m'), x=value('x'))",
+        "f(*star('s'))",
+    ):
+        call = ast.parse(source, mode="eval").body
+        assert isinstance(call, ast.Call)
+        emitter = _ArgumentEmitter()
+        builder = emitter._emit_call_args_builder(call)
+        kinds = [op.kind for op in emitter.ops]
+        assert kinds.count("CALLARGS_NEW") == 1, source
+        created = kinds.index("CALLARGS_NEW")
+        assert emitter.ops[created].result is builder
+        first_push = next(
+            index
+            for index, kind in enumerate(kinds)
+            if kind.startswith("CALLARGS_") and kind != "CALLARGS_NEW"
+        )
+        assert created < first_push, source
+        assert "EVALUATE" not in kinds[created:first_push], source
+    empty = ast.parse("f()", mode="eval").body
+    assert isinstance(empty, ast.Call)
+    emitter = _ArgumentEmitter()
+    builder = emitter._emit_call_args_builder(empty)
+    assert [op.kind for op in emitter.ops] == ["CALLARGS_NEW"]
+    assert emitter.ops[0].result is builder
+
+
+def _cpython_call_forms(source: str) -> list[str]:
+    """The call instructions the host CPython compiler emits for `source`."""
+    forms = []
+    for instruction in dis.get_instructions(compile(source, "<call-form>", "exec")):
+        if instruction.opname == "CALL_FUNCTION_EX":
+            forms.append("expanded")
+        elif instruction.opname in {"CALL", "CALL_KW"}:
+            forms.append("stack")
+    return forms
+
+
+def _arguments(template: str, count: int) -> str:
+    return ", ".join(template.format(index) for index in range(count))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "f(a, b)",
+        "f(*a)",
+        "f(a, *b, k=c)",
+        "f(**k)",
+        f"f({_arguments('a{}', 30)})",
+        f"f({_arguments('a{}', 31)})",
+        f"f({_arguments('k{}=v', 15)})",
+        f"f({_arguments('k{}=v', 16)})",
+        f"obj.m({_arguments('k{}=v', 16)})",
+        f"import mod\nmod.m({_arguments('k{}=v', 16)})",
+        f"obj.m({_arguments('a{}', 30)})",
+        f"obj.m({_arguments('a{}', 31)})",
+        f"if flag:\n    import mod\nmod.m({_arguments('k{}=v', 16)})",
+        f"def g():\n    import mod\nmod.m({_arguments('k{}=v', 16)})",
+    ],
+)
+def test_call_form_matches_the_cpython_compiler(source: str) -> None:
+    """The host CPython compiler is the oracle for CALL vs CALL_FUNCTION_EX,
+    including its stack-use threshold and the module-import method-call rule."""
+    tree = ast.parse(source)
+    imports = collect_module_import_names(tree)
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    assert [
+        call_form(call, module_imports=imports) for call in calls
+    ] == _cpython_call_forms(source)
+
+
+@pytest.mark.parametrize(
+    ("source", "form"),
+    [("f(a, k=b)", "stack"), ("f(*a)", "expanded"), ("f(**k)", "expanded")],
+)
+def test_builder_records_the_call_form(source: str, form: str) -> None:
+    call = ast.parse(source, mode="eval").body
+    assert isinstance(call, ast.Call)
+    emitter = _ArgumentEmitter()
+    builder = emitter._emit_call_args_builder(call)
+    created = next(op for op in emitter.ops if op.kind == "CALLARGS_NEW")
+    assert created.result is builder
+    assert created.metadata == {"call_form": form}

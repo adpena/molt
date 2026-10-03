@@ -53,7 +53,7 @@ name = "molt"
 print(f"<{name}>")              # <molt>
 
 # ── (item in container) → contains : a fresh bool. ──
-# NOT exercised here. `contains` IS classified `FreshValue` by this change's
+# NOT exercised here. `contains` IS classified `OwnedValue` by this change's
 # alias classifier, but on every backend it is lowered through the established
 # membership path (LLVM `emit_containment`; native `molt_*_contains`), NOT
 # through one of the new fresh-value `Copy` arms this split adds. Those existing

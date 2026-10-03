@@ -81,6 +81,22 @@ def test_loads_exact_rejects_duplicate_keys_at_every_depth(payload: str) -> None
         exact_json.loads_exact(payload)
 
 
+@pytest.mark.parametrize("reader", ["loads", "read", "capture"])
+def test_excessive_nesting_uses_the_exact_json_error_contract(
+    tmp_path: Path, reader: str
+) -> None:
+    raw = "[" * 100_000 + "]" * 100_000
+    path = tmp_path / "receipt.json"
+    path.write_text(raw, encoding="utf-8")
+    with pytest.raises(exact_json.ExactJsonError, match="nesting"):
+        if reader == "loads":
+            exact_json.loads_exact(raw)
+        elif reader == "read":
+            exact_json.read_exact(path, max_bytes=len(raw), label="test receipt")
+        else:
+            exact_json.capture_exact(path, max_bytes=len(raw), label="test receipt")
+
+
 @pytest.mark.parametrize(
     "token",
     ("NaN", "Infinity", "-Infinity", "1e9999", "-1e9999", "1.7976931348623159e308"),
@@ -160,6 +176,38 @@ def test_exclusive_publication_never_replaces_an_existing_leaf(
 
     assert staged.read_bytes() == b"candidate"
     assert destination.read_bytes() == b"prior"
+
+
+@pytest.mark.parametrize("separate_parent", [False, True])
+def test_exclusive_publication_preserves_identity_seen_before_durability_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, separate_parent: bool
+) -> None:
+    from molt.toolchain_identity import (
+        stable_regular_file_identity,
+        verify_stable_regular_file_identity,
+    )
+
+    staged = tmp_path / "staged"
+    destination = (tmp_path / "store" if separate_parent else tmp_path) / "published"
+    destination.parent.mkdir(exist_ok=True)
+    staged.write_bytes(b"candidate")
+    observed = []
+    sync = file_publication._sync_publication_parents_after_commit
+
+    def admit_concurrent_reader(source_parent, destination_parent):
+        observed.append(stable_regular_file_identity(destination, label="reader"))
+        sync(source_parent, destination_parent)
+
+    monkeypatch.setattr(
+        file_publication,
+        "_sync_publication_parents_after_commit",
+        admit_concurrent_reader,
+    )
+    file_publication.durable_publish_exclusive(staged, destination)
+    assert observed
+    assert not staged.exists()
+    for identity in observed:
+        verify_stable_regular_file_identity(identity, label="reader after publication")
 
 
 @pytest.mark.parametrize("dangling", [False, True])

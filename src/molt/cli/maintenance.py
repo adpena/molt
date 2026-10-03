@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from molt.source_root import compiler_source_root
 from molt.cli.config_resolution import (
     _resolve_build_config,
     _resolve_capabilities_config,
@@ -22,8 +23,6 @@ def _cli_module() -> Any:
     return importlib.import_module("molt.cli")
 
 
-def _find_molt_root(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._find_molt_root(*args, **kwargs)
 
 
 def _require_molt_root(*args: Any, **kwargs: Any) -> Any:
@@ -91,7 +90,7 @@ def clean(
     extra_paths: Sequence[str] | None = None,
     list_paths: bool = False,
 ) -> int:
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "clean")
     if root_error is not None:
         return root_error

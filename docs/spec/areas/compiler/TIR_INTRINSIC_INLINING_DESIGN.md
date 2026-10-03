@@ -154,7 +154,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 
 | Function | Decl count | Hot? | Notes |
 |----------|-----------|------|-------|
-| `molt_tuple_builder_finish` | 1 | Yes | |
+| `molt_tuple_from_values` | 1 | Yes | Fixed-arity construction from a borrowed word range |
 | `molt_tuple_from_list` | 1 | Low | |
 | `molt_tuple_count` | 1 | Low | |
 | `molt_tuple_index` | 1 | Low | |
@@ -166,8 +166,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_dict_new` | 1 | Yes | |
 | `molt_dict_set` | 2 | **Yes** | |
 | `molt_dict_get` | 1 | **Yes** | |
-| `molt_dict_inc` | 1 | Yes | Counter pattern |
-| `molt_dict_str_int_inc` | 1 | Yes | Specialized word count |
+| `molt_dict_str_int_inc` | 1 | Yes | Fused `d[k] = d.get(k, 0) + delta`; declines to the statement |
 | `molt_dict_pop` | 1 | Moderate | |
 | `molt_dict_setdefault` | 1 | Moderate | |
 | `molt_dict_setdefault_empty_list` | 1 | Moderate | |
@@ -454,8 +453,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 |----------|-----------|------|-------|
 | `molt_asyncgen_new` | 2 | Low | |
 | `molt_asyncgen_shutdown` | 1 | Low | |
-| `molt_asyncgen_locals_register` | 1 | Low | |
-| `molt_gen_locals_register` | 1 | Low | |
+| `molt_stateful_locals_register` | 1 | Low | |
 | `molt_generator_send` | 1 | Moderate | |
 | `molt_generator_throw` | 1 | Low | |
 | `molt_generator_close` | 1 | Low | |
@@ -475,36 +473,16 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_recursion_guard_enter` | 3 | Moderate | |
 | `molt_recursion_guard_exit` | 3 | Moderate | |
 
-#### Vectorized Operations (20 functions)
+#### Vectorized Operations (4 functions)
 
 | Function | Decl count | Hot? | Notes |
 |----------|-----------|------|-------|
-| `molt_vec_sum_int` | 1 | Moderate | Fused sum for int lists |
-| `molt_vec_sum_int_trusted` | 1 | Moderate | |
-| `molt_vec_sum_int_range` | 1 | Moderate | |
-| `molt_vec_sum_int_range_trusted` | 1 | Moderate | |
-| `molt_vec_sum_int_range_iter` | 1 | Moderate | |
-| `molt_vec_sum_int_range_iter_trusted` | 1 | Moderate | |
-| `molt_vec_sum_float` | 1 | Moderate | |
-| `molt_vec_sum_float_trusted` | 1 | Moderate | |
-| `molt_vec_sum_float_range` | 1 | Low | |
-| `molt_vec_sum_float_range_trusted` | 1 | Low | |
-| `molt_vec_sum_float_range_iter` | 1 | Low | |
-| `molt_vec_sum_float_range_iter_trusted` | 1 | Low | |
-| `molt_vec_prod_int` | 1 | Low | |
-| `molt_vec_prod_int_trusted` | 1 | Low | |
-| `molt_vec_prod_int_range` | 1 | Low | |
-| `molt_vec_prod_int_range_trusted` | 1 | Low | |
-| `molt_vec_min_int` | 1 | Low | |
-| `molt_vec_min_int_trusted` | 1 | Low | |
-| `molt_vec_min_int_range` | 1 | Low | |
-| `molt_vec_min_int_range_trusted` | 1 | Low | |
-| `molt_vec_max_int` | 1 | Low | |
-| `molt_vec_max_int_trusted` | 1 | Low | |
-| `molt_vec_max_int_range` | 1 | Low | |
-| `molt_vec_max_int_range_trusted` | 1 | Low | |
+| `molt_vec_sum` | 1 | Moderate | One chunk of a fused `acc += x` loop; `(result, last, count, more)`, the loop runs the rest |
+| `molt_vec_prod` | 1 | Moderate | One chunk of a fused `acc *= x` loop; `(result, last, count, more)`, the loop runs the rest |
+| `molt_vec_min` | 1 | Moderate | One chunk of a fused `if x < acc: acc = x` loop; `(result, last, count, more)`, the loop runs the rest |
+| `molt_vec_max` | 1 | Moderate | One chunk of a fused `if acc < x: acc = x` loop; `(result, last, count, more)`, the loop runs the rest |
 
-#### Serialization (7 functions)
+#### Serialization (6 functions)
 
 | Function | Decl count | Hot? | Notes |
 |----------|-----------|------|-------|
@@ -514,9 +492,8 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_msgpack_parse_scalar_obj` | 2 | Low | |
 | `molt_cbor_parse_scalar` | 1 | Low | |
 | `molt_cbor_parse_scalar_obj` | 2 | Low | |
-| `molt_taq_ingest_line` | 1 | Low | |
 
-#### Miscellaneous (16 functions)
+#### Miscellaneous (15 functions)
 
 | Function | Decl count | Hot? | Notes |
 |----------|-----------|------|-------|
@@ -529,7 +506,6 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_memoryview_new` | 1 | Low | |
 | `molt_memoryview_tobytes` | 1 | Low | |
 | `molt_memoryview_cast` | 1 | Low | |
-| `molt_intarray_from_seq` | 1 | Low | |
 | `molt_buffer2d_new` | 1 | Low | |
 | `molt_buffer2d_get` | 1 | Low | |
 | `molt_buffer2d_set` | 1 | Low | |

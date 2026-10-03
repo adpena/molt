@@ -145,6 +145,21 @@ impl RustBackend {
             "trace_enter_slot" => self.emit_op_trace_enter_slot(op),
             "trace_exit" => self.emit_op_trace_exit(op),
             "frame_locals_set" => self.emit_op_frame_locals_set(op),
+            "frame_home_store" | "frame_home_cell" | "frame_home_private_cell" => {
+                self.emit_op_frame_home_store(op)
+            }
+            "frame_home_load" => self.emit_op_frame_home_load(op),
+            "frame_home_take" => self.emit_op_frame_home_take(op),
+            "frame_home_clear" => self.emit_op_frame_home_clear(op),
+            // `locals()` omits unbound names, which this transpiler does not
+            // represent (as it rejected the missing-aware dict update before).
+            "frame_locals" => self.emit_unsupported_op(
+                op,
+                "locals() needs unbound bindings, which the Rust target does not represent",
+            ),
+            "frame_context_set" => {
+                self.emit_unsupported_op(op, "requires internal execution-frame context custody")
+            }
             "builtin_func" => self.emit_op_builtin_func(op),
             "print" | "builtin_print" => self.emit_op_print(op),
             "len" | "builtin_len" => self.emit_op_len(op),
@@ -207,7 +222,7 @@ impl RustBackend {
             "jump" | "goto" | "br_if" | "branch" | "branch_true" | "branch_false" => {
                 self.emit_op_unstructured_branch(op)
             }
-            "alloc_task" | "block_on" | "asyncgen_locals_register" | "check_exception" => {
+            "alloc_task" | "block_on" | "stateful_locals_register" | "check_exception" => {
                 self.emit_op_runtime_control_gap(op)
             }
             "inc_ref" | "borrow" | "binding_alias" => self.emit_op_inc_ref(op),

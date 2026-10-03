@@ -25,12 +25,16 @@ import tempfile
 import tomllib
 import urllib.request
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, TypeVar
 
 from molt.dx import TOOLCHAINS_DIRNAME
 from molt.source_root import compiler_source_root
+from molt.toolchain_identity import StableRegularFileError, stable_executable_probe
+
+_ToolResult = TypeVar("_ToolResult")
 
 TOOL_RELEASES_PATH = "config/tool_releases.toml"
 TOOL_RELEASES_SCHEMA_VERSION = 2
@@ -445,24 +449,65 @@ def provision_tool(
     return discovered
 
 
-def pinned_executable(name: str, repo_root: Path) -> Path | None:
-    """The provisioned pinned release of ``name`` under this checkout's custody.
-
-    Tools that run WASM artifacts (Node) or inspect them prefer the release the
-    manifest pins over whatever the host PATH carries, so a direct run and a
-    proof-queue lane execute the same binary. ``None`` when the manifest pins
-    no such tool or the release is not provisioned (and attested) under the
-    checkout custody toolchain root; callers then fall back to their host
-    discovery, never to a partially matching install.
-    """
+def discover_pinned_tool(
+    name: str, repo_root: Path | None = None
+) -> ToolDiscovery | None:
+    """Read the one manifest-owned installation, without PATH or network fallback."""
     from molt.dx import checkout_custody
 
-    release = load_tool_releases(repo_root).get(name)
+    root = compiler_source_root() if repo_root is None else repo_root
+    release = load_tool_releases(root).get(name)
     if release is None:
         return None
-    toolchain_root = checkout_custody(repo_root).toolchain_root
-    discovery = discover_tool(release, toolchain_root)
+    return discover_tool(release, checkout_custody(root).toolchain_root)
+
+
+def pinned_executable(name: str, repo_root: Path) -> Path | None:
+    """Return the attested managed executable, if present.
+
+    Optional host consumers such as Node retain their explicit host-selection
+    policy. Compiler validation consumers use require_pinned_tool instead.
+    """
+    discovery = discover_pinned_tool(name, repo_root)
     return None if discovery is None else discovery.executable
+
+
+def require_pinned_tool(
+    name: str, repo_root: Path | None = None
+) -> ToolDiscovery:
+    """Require the managed release; a stale ambient executable is never a substitute."""
+    root = compiler_source_root() if repo_root is None else repo_root
+    discovery = discover_pinned_tool(name, root)
+    if discovery is None:
+        release = tool_release(name, root)
+        raise ToolReleaseError(
+            f"{name} {release.version} is required from attested toolchain custody; "
+            "artifact reuse is disabled until the validator is provisioned. "
+            f"Run python -m molt.tool_releases provision {name} --repo-root "
+            f'"{root}"'
+        )
+    return discovery
+
+
+def run_pinned_tool(
+    name: str,
+    args: Sequence[str],
+    *,
+    run: Callable[..., _ToolResult],
+    repo_root: Path | None = None,
+    **kwargs: Any,
+) -> _ToolResult:
+    """Bind the caller's existing guarded runner to one attested tool generation."""
+    discovery = require_pinned_tool(name, repo_root)
+    try:
+        with stable_executable_probe(
+            discovery.executable, label=f"pinned {name}"
+        ) as (entrypoint, identity):
+            if identity.sha256 != discovery.executable_sha256:
+                raise ToolReleaseError(f"{name} changed after attested discovery")
+            return run([str(entrypoint), *args], **kwargs)
+    except (OSError, StableRegularFileError) as exc:
+        raise ToolReleaseError(f"{name} execution identity failed: {exc}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:

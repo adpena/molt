@@ -115,9 +115,11 @@ fn c_api_tuple_new_size_getitem_setitem() {
         assert_ne!(tuple, 0);
         assert_eq!(PyTuple_Size(tuple), 3);
 
-        // CPython construction slots are NULL until PyTuple_SetItem fills them.
+        // The internal handle API uses the canonical missing singleton. The
+        // public pointer ABI translates it to NULL, not float +0.0 (bits 0).
         let item0 = PyTuple_GetItem(tuple, 0);
-        assert_eq!(item0, 0);
+        assert_eq!(item0, crate::missing_bits(_py));
+        assert!(!exception_pending(_py));
 
         // SetItem steals the ref, so inc_ref the value first.
         let val = MoltObject::from_int(77).bits();
@@ -402,7 +404,7 @@ fn c_api_number_power() {
     crate::with_gil_entry_nopanic!(_py, {
         let a = MoltObject::from_int(2).bits();
         let b = MoltObject::from_int(10).bits();
-        let res = PyNumber_Power(a, b, 0);
+        let res = PyNumber_Power(a, b, MoltObject::none().bits());
         assert_ne!(res, 0);
         assert_eq!(to_i64(obj_from_bits(res)), Some(1024));
         dec_ref_bits(_py, res);
@@ -607,16 +609,19 @@ fn c_api_mapping_keys_values_items() {
 
         let keys = PyMapping_Keys(dict);
         assert_ne!(keys, 0);
+        assert_eq!(PyList_Check(keys), 1);
         assert_eq!(PySequence_Length(keys), 2);
         dec_ref_bits(_py, keys);
 
         let values = PyMapping_Values(dict);
         assert_ne!(values, 0);
+        assert_eq!(PyList_Check(values), 1);
         assert_eq!(PySequence_Length(values), 2);
         dec_ref_bits(_py, values);
 
         let items = PyMapping_Items(dict);
         assert_ne!(items, 0);
+        assert_eq!(PyList_Check(items), 1);
         assert_eq!(PySequence_Length(items), 2);
         dec_ref_bits(_py, items);
 
@@ -1350,12 +1355,29 @@ fn c_api_dict_extended_operations() {
         assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
         let keys = PyDict_Keys(dict);
         assert_ne!(keys, 0);
+        assert_eq!(PyList_Check(keys), 1);
+        assert_eq!(PyList_GetItem(keys, 0), k1);
+        assert_eq!(PyDict_SetItem(dict, MoltObject::from_int(2).bits(), v1), 0);
+        assert_eq!(
+            PyList_Size(keys),
+            1,
+            "C keys must be a snapshot, not a live dict view"
+        );
+        assert_eq!(PyDict_DelItem(dict, MoltObject::from_int(2).bits()), 0);
         dec_ref_bits(_py, keys);
         let vals = PyDict_Values(dict);
         assert_ne!(vals, 0);
+        assert_eq!(PyList_Check(vals), 1);
+        assert_eq!(PyList_GetItem(vals, 0), v1);
         dec_ref_bits(_py, vals);
         let items = PyDict_Items(dict);
         assert_ne!(items, 0);
+        assert_eq!(PyList_Check(items), 1);
+        let pair = PyList_GetItem(items, 0);
+        assert_eq!(PyTuple_Check(pair), 1);
+        assert_eq!(PyTuple_Size(pair), 2);
+        assert_eq!(PyTuple_GetItem(pair, 0), k1);
+        assert_eq!(PyTuple_GetItem(pair, 1), v1);
         dec_ref_bits(_py, items);
 
         let copy = PyDict_Copy(dict);
@@ -1391,6 +1413,88 @@ fn c_api_list_extended_operations() {
     crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, tup);
         dec_ref_bits(_py, list);
+    });
+}
+
+#[test]
+#[ignore = "development component measurement; not release performance acceptance"]
+fn dictionary_snapshot_materialization_components() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        // Run timing with profiling off, and allocation diagnostics separately
+        // with MOLT_PROFILE=1. These counters cover runtime heap objects, not
+        // every native backing allocation or process peak memory.
+        let profiling = crate::profile_enabled(py);
+        let object_allocations = || crate::ALLOC_COUNT.load(Ordering::Relaxed);
+        for size in [64, 4096] {
+            let dict = PyDict_New();
+            for index in 0..size {
+                let value = MoltObject::from_int(index).bits();
+                assert_eq!(PyDict_SetItem(dict, value, value), 0);
+            }
+            for (name, direct, view) in [
+                (
+                    "keys",
+                    PyDict_Keys as extern "C" fn(u64) -> u64,
+                    molt_dict_keys as extern "C" fn(u64) -> u64,
+                ),
+                (
+                    "values",
+                    PyDict_Values as extern "C" fn(u64) -> u64,
+                    molt_dict_values as extern "C" fn(u64) -> u64,
+                ),
+                (
+                    "items",
+                    PyDict_Items as extern "C" fn(u64) -> u64,
+                    molt_dict_items as extern "C" fn(u64) -> u64,
+                ),
+            ] {
+                let materialize = || unsafe {
+                    let source = view(dict);
+                    let result = list_from_iter_bits(py, source).unwrap();
+                    dec_ref_bits(py, source);
+                    result
+                };
+                let expected = materialize();
+                let actual = direct(dict);
+                let equal = crate::molt_eq(actual, expected);
+                assert_eq!(equal, MoltObject::from_bool(true).bits());
+                assert_eq!(PyList_Size(actual), size as isize);
+                dec_ref_bits(py, actual);
+                dec_ref_bits(py, expected);
+                for sample in 0..7 {
+                    let mut timings = [0; 2];
+                    let mut allocations = [0; 2];
+                    for lane in if sample % 2 == 0 { [0, 1] } else { [1, 0] } {
+                        let before = object_allocations();
+                        let start = std::time::Instant::now();
+                        for _ in 0..32 {
+                            let result = if lane == 0 {
+                                materialize()
+                            } else {
+                                direct(dict)
+                            };
+                            assert_ne!(result, 0);
+                            dec_ref_bits(py, result);
+                        }
+                        timings[lane] = start.elapsed().as_nanos();
+                        allocations[lane] = object_allocations() - before;
+                    }
+                    eprintln!(
+                        "dict_snapshot_components size={size} operation={name} sample={sample} repetitions=32 profiling={profiling} view_list_ns={} direct_ns={}",
+                        timings[0], timings[1]
+                    );
+                    if profiling {
+                        eprintln!(
+                            "dict_snapshot_object_allocations size={size} operation={name} sample={sample} repetitions=32 view_list={} direct={}",
+                            allocations[0], allocations[1]
+                        );
+                    }
+                }
+                assert!(!exception_pending(py));
+            }
+            dec_ref_bits(py, dict);
+        }
     });
 }
 

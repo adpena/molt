@@ -45,6 +45,18 @@ try:
     except ValueError as exc:
         print("digits invalid:", type(exc).__name__, "maxdigits" in str(exc))
 
+    class DigitsIndex:
+        def __index__(self):
+            return 700
+
+    for digits in [DigitsIndex(), 2**31 - 1, 2**31, 2**63, 2**80, -(2**40), 700.0]:
+        before = sys.get_int_max_str_digits()
+        try:
+            sys.set_int_max_str_digits(digits)
+            print("digits index:", sys.get_int_max_str_digits())
+        except (TypeError, OverflowError) as exc:
+            print("digits range:", type(exc).__name__, sys.get_int_max_str_digits() == before)
+
     sys.addaudithook(audit_hook)
     sys.audit("molt.audit.check", 7, "x")
     print("audit events:", events)

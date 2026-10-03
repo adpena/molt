@@ -77,57 +77,45 @@ fn importlib_system_module_authority_returns_and_releases_one_owner() {
         assert!(!module_ptr.is_null());
         let module_bits = MoltObject::from_ptr(module_ptr).bits();
         let refcount = || unsafe { (*crate::header_from_obj_ptr(module_ptr)).ref_count_snapshot() };
+        let prior = crate::builtins::exceptions::internals::module_cache(_py)
+            .lock()
+            .unwrap()
+            .remove("sys");
+        crate::builtins::module_table::publish_interpreter_sys_for_test(_py, module_bits);
         let baseline = refcount();
-
-        let prior = {
-            let cache = crate::builtins::exceptions::internals::module_cache(_py);
-            let mut guard = cache.lock().unwrap();
-            let prior = guard.insert("sys".to_string(), module_bits);
-            inc_ref_bits(_py, module_bits);
-            prior
-        };
-        assert_eq!(refcount(), baseline + 1, "module cache owns one edge");
         {
-            let sys = importlib_system_module(_py).expect("cached sys module");
+            let sys = importlib_system_module(_py).expect("interpreter sys module");
             assert_eq!(sys.bits(), module_bits);
-            assert_eq!(refcount(), baseline + 2, "resolver returns one owner");
+            assert_eq!(refcount(), baseline + 1, "resolver returns one owner");
         }
-        assert_eq!(
-            refcount(),
-            baseline + 1,
-            "resolver owner releases on scope exit"
-        );
+        assert_eq!(refcount(), baseline, "resolver releases its owner");
+        let name = crate::attr_name_bits_from_bytes(_py, b"sys").unwrap();
+        crate::builtins::modules::molt_module_cache_del(name);
+        dec_ref_bits(_py, name);
+        if let Some(prior) = prior {
+            crate::builtins::exceptions::internals::module_cache(_py)
+                .lock()
+                .unwrap()
+                .insert("sys".into(), prior);
+        }
 
-        {
-            let cache = crate::builtins::exceptions::internals::module_cache(_py);
-            let mut guard = cache.lock().unwrap();
-            assert_eq!(guard.remove("sys"), Some(module_bits));
-            if let Some(prior) = prior {
-                guard.insert("sys".to_string(), prior);
-            }
-        }
-        dec_ref_bits(_py, module_bits);
-        assert_eq!(refcount(), baseline);
         dec_ref_bits(_py, module_bits);
     });
 }
 
 #[test]
-fn importlib_missing_module_fallback_matches_requested_module_or_parent_only() {
-    assert_eq!(
-        missing_module_name_from_message("No module named 'pkg.child'"),
-        Some("pkg.child")
-    );
-    assert_eq!(
-        missing_module_name_from_message("No module named \"pkg\""),
-        Some("pkg")
-    );
-    assert!(missing_module_matches_import("pkg.child", "pkg.child"));
-    assert!(missing_module_matches_import("pkg", "pkg.child"));
-    assert!(!missing_module_matches_import(
-        "definitely_missing_dependency",
-        "pkg.child"
-    ));
+fn import_attempt_reports_a_resolver_miss_without_manufacturing_an_exception() {
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let name = attr_name_bits_from_bytes(_py, b"molt_absent_import_outcome_probe").unwrap();
+        let outcome = crate::builtins::modules::module_import_attempt(name);
+        assert!(matches!(
+            outcome,
+            Ok(crate::builtins::modules::ModuleImportOutcome::Missing { .. })
+        ));
+        assert!(!exception_pending(_py));
+        dec_ref_bits(_py, name);
+    });
 }
 
 fn bootstrap_module_file() -> String {
@@ -2384,4 +2372,235 @@ fn importlib_metadata_normalize_name_collapses_separator_runs() {
         importlib_metadata_normalize_name("alpha...beta___gamma"),
         "alpha-beta-gamma"
     );
+}
+
+fn loader_identity_class(py: &PyToken<'_>, name: &str, base: u64) -> u64 {
+    let name = alloc_test_string_bits(py, name);
+    let class = crate::molt_class_new(name);
+    crate::molt_class_set_base(class, base);
+    unsafe {
+        crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
+            .expect("seal loader test class");
+    }
+    dec_ref_bits(py, name);
+    assert!(!exception_pending(py));
+    class
+}
+
+fn loader_identity_setattr(py: &PyToken<'_>, object: u64, name: &[u8], value: u64) {
+    let result = unsafe {
+        crate::c_api::molt_object_setattr_bytes(object, name.as_ptr(), name.len() as u64, value)
+    };
+    assert_eq!(result, 0, "{:?}", pending_exception_kind_and_message(py));
+    assert!(!exception_pending(py));
+}
+
+fn loader_identity_class_namespace(py: &PyToken<'_>, class: u64, name: &[u8], value: u64) {
+    // Seed the namespace as a class body does. Setting Type.__class__ through
+    // setattr would instead request a metaclass change.
+    let name_bits = crate::attr_name_bits_from_bytes(py, name).unwrap();
+    unsafe {
+        let ptr = obj_from_bits(class).as_ptr().unwrap();
+        let dict = obj_from_bits(crate::object::layout::class_dict_bits(ptr))
+            .as_ptr()
+            .unwrap();
+        dict_set_in_place(py, dict, name_bits, value);
+        crate::object::layout::class_bump_layout_version(ptr);
+    }
+    dec_ref_bits(py, name_bits);
+    assert!(!exception_pending(py));
+}
+
+extern "C" fn loader_identity_descriptor_failure(_self: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        raise_exception::<_>(py, "RuntimeError", "loader identity descriptor called")
+    })
+}
+
+fn loader_identity_failing_property(py: &PyToken<'_>) -> u64 {
+    let function = crate::builtins::functions::alloc_runtime_function_obj(
+        py,
+        crate::builtins::functions::runtime_fn_addr(
+            "loader_identity_descriptor_failure",
+            loader_identity_descriptor_failure as *const (),
+        ),
+        1,
+    );
+    assert!(!function.is_null());
+    let function_bits = MoltObject::from_ptr(function).bits();
+    let property = crate::object::builders::alloc_property_obj(
+        py,
+        function_bits,
+        MoltObject::none().bits(),
+        MoltObject::none().bits(),
+    );
+    dec_ref_bits(py, function_bits);
+    assert!(!property.is_null());
+    MoltObject::from_ptr(property).bits()
+}
+
+#[test]
+fn extension_loader_admission_uses_class_declaration_not_names_or_descriptors() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::object::class_storage::{ClassDeclaration, class_declares};
+        let spec = extension_spec_bits_for_tests(py, "role_extension", "extension.payload");
+        for name in ["ExtensionFileLoader", "CustomExtensionFileLoaderSuffix"] {
+            let class = loader_identity_class(py, name, builtin_classes(py).object);
+            let property = loader_identity_failing_property(py);
+            loader_identity_class_namespace(py, class, b"__class__", property);
+            dec_ref_bits(py, property);
+            let loader = unsafe { call_callable0(py, class) };
+            loader_identity_setattr(py, spec, b"loader", loader);
+            assert_eq!(
+                importlib_extension_spec_target(py, "role_extension", spec),
+                Ok(None)
+            );
+            assert!(!exception_pending(py), "__class__ must not be evaluated");
+            dec_ref_bits(py, loader);
+            dec_ref_bits(py, class);
+        }
+
+        // There is deliberately no module/class registration. The actual class
+        // and its MRO own the role even when no facade publishes either class.
+        let base = loader_identity_class(py, "Ordinary", builtin_classes(py).object);
+        let child = loader_identity_class(py, "UnrelatedName", base);
+        let loader = unsafe { call_callable0(py, child) };
+        loader_identity_setattr(py, spec, b"loader", loader);
+        assert_eq!(
+            importlib_extension_spec_target(py, "role_extension", spec),
+            Ok(None)
+        );
+        let base_ptr = obj_from_bits(base).as_ptr().unwrap();
+        let before = unsafe { (*header_from_obj_ptr(base_ptr)).ref_count_snapshot() };
+        for _ in 0..2 {
+            let declared = molt_importlib_extension_loader_type_declare(base);
+            assert!(obj_from_bits(declared).is_none());
+            assert!(!exception_pending(py));
+        }
+        assert_eq!(
+            unsafe { (*header_from_obj_ptr(base_ptr)).ref_count_snapshot() },
+            before
+        );
+        assert!(unsafe { class_declares(base_ptr, ClassDeclaration::ExtensionLoader) });
+        assert!(
+            !unsafe {
+                class_declares(
+                    obj_from_bits(child).as_ptr().unwrap(),
+                    ClassDeclaration::ExtensionLoader,
+                )
+            },
+            "inherited facts must not be copied into descendants"
+        );
+        let new_name = alloc_test_string_bits(py, "Renamed");
+        loader_identity_setattr(py, base, b"__name__", new_name);
+        dec_ref_bits(py, new_name);
+        assert_eq!(
+            importlib_extension_spec_target(py, "role_extension", spec),
+            Ok(Some((
+                "role_extension".to_string(),
+                "extension.payload".to_string()
+            )))
+        );
+        loader_identity_setattr(py, spec, b"origin", MoltObject::none().bits());
+        assert!(importlib_extension_spec_target(py, "role_extension", spec).is_err());
+        assert_pending_exception_contains(
+            py,
+            "ImportError",
+            &["extension module path must point to a file"],
+        );
+        for bits in [spec, loader, child, base] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn extension_loader_declaration_preserves_nonstandard_artifact_manifest_admission() {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+        clear_extension_metadata_validation_cache();
+        let tmp = extension_boundary_temp_dir("molt_extension_declared_nonstandard");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("extension.payload");
+        std::fs::write(&path, b"declared-loader-artifact").expect("write artifact");
+        let path_text = path.to_string_lossy().into_owned();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = loader_identity_class(py, "Unrelated", builtin_classes(py).object);
+            molt_importlib_extension_loader_type_declare(class);
+            let loader = unsafe { call_callable0(py, class) };
+            let spec = extension_spec_bits_for_tests(py, "role_extension", &path_text);
+            loader_identity_setattr(py, spec, b"loader", loader);
+            assert!(
+                importlib_enforce_extension_spec_object_boundary(py, "role_extension", spec)
+                    .is_err()
+            );
+            assert_pending_exception_contains(py, "ImportError", &["extension metadata missing"]);
+            write_valid_extension_manifest(
+                &tmp.join("extension_manifest.json"),
+                "role_extension",
+                "extension.payload",
+                &importlib_sha256_file(&path_text).expect("hash extension artifact"),
+            );
+            assert!(
+                importlib_enforce_extension_spec_object_boundary(py, "role_extension", spec)
+                    .is_ok()
+            );
+            assert!(!exception_pending(py));
+            // Same loader identity never grants permission to stale bytes.
+            std::fs::write(&path, b"changed-artifact").expect("mutate artifact");
+            assert!(
+                importlib_enforce_extension_spec_object_boundary(py, "role_extension", spec)
+                    .is_err()
+            );
+            assert_pending_exception_contains(py, "ImportError", &["extension checksum mismatch"]);
+            for bits in [spec, loader, class] {
+                dec_ref_bits(py, bits);
+            }
+        });
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    });
+}
+
+#[test]
+fn extension_spec_origin_suffix_and_descriptor_errors_remain_independent_of_loader_role() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        for path in [
+            "extension.pyd",
+            "extension.so",
+            "extensions.zip/extension.dll",
+            "extension.dylib",
+        ] {
+            let spec = extension_spec_bits_for_tests(py, "role_extension", path);
+            assert_eq!(
+                importlib_extension_spec_target(py, "role_extension", spec),
+                Ok(Some(("role_extension".to_string(), path.to_string())))
+            );
+            dec_ref_bits(py, spec);
+        }
+        let class = loader_identity_class(py, "Spec", builtin_classes(py).object);
+        let property = loader_identity_failing_property(py);
+        loader_identity_setattr(py, class, b"loader", property);
+        dec_ref_bits(py, property);
+        let spec = unsafe { call_callable0(py, class) };
+        let origin = alloc_test_string_bits(py, "extension.payload");
+        loader_identity_setattr(py, spec, b"origin", origin);
+        dec_ref_bits(py, origin);
+        assert!(importlib_extension_spec_target(py, "role_extension", spec).is_err());
+        assert_pending_exception_contains(
+            py,
+            "RuntimeError",
+            &["loader identity descriptor called"],
+        );
+        let result = molt_importlib_extension_loader_type_declare(MoltObject::none().bits());
+        assert!(obj_from_bits(result).is_none());
+        assert_pending_exception_contains(
+            py,
+            "TypeError",
+            &["extension loader declaration requires a type"],
+        );
+        for bits in [spec, class] {
+            dec_ref_bits(py, bits);
+        }
+    });
 }

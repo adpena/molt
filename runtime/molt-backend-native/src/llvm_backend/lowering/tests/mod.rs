@@ -27,6 +27,7 @@ fn test_native_linkage_abi(
             returns_value: return_type.is_some(),
             execution_context: crate::ir::ExecutionContextPolicy::None,
         },
+        parameter_custody: Vec::new(),
         param_types,
         return_type,
     }
@@ -142,10 +143,10 @@ fn make_dummy_lowering<'ctx, 'func>(
         synthetic_block_counter: 0,
         all_llvm_blocks: Vec::new(),
         llvm_pred_map: HashMap::new(),
-        state_resume_blocks: HashMap::new(),
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),
         repr_facts: crate::representation_plan::LlvmReprFacts::default(),
+        frame_homes: None,
     }
 }
 
@@ -217,8 +218,10 @@ fn lower_preserved_kind_ir(
     try_lower_tir_to_llvm(&func, backend).map(|f| f.print_to_string().to_string())
 }
 
+mod activation_exits;
 mod arithmetic;
 mod calls_and_containers;
+mod constructor_operands;
 mod control_flow;
 mod dynamic_attrs;
 mod preserved_ops;

@@ -35,14 +35,14 @@ _thread_current_native_id = _require_intrinsic("molt_thread_current_native_id")
 _thread_registry_active_count = _require_intrinsic("molt_thread_registry_active_count")
 _thread_stack_size_get = _require_intrinsic("molt_thread_stack_size_get")
 _thread_stack_size_set = _require_intrinsic("molt_thread_stack_size_set")
-_signal_raise_signal = _require_intrinsic("molt_signal_raise_signal")
+_signal_set_interrupt = _require_intrinsic("molt_signal_set_interrupt")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-TIMEOUT_MAX: float = 9223372036.0
-"""Maximum timeout value (~292 years), matching CPython's PY_TIMEOUT_MAX / 1e9."""
+TIMEOUT_MAX: float = _require_intrinsic("molt_thread_timeout_max")()
+"""Maximum whole-second timeout for the compiled target's timed-lock API."""
 
 error = RuntimeError
 """The standard _thread.error exception type (alias for RuntimeError)."""
@@ -79,28 +79,6 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def _validate_lock_timeout(timeout: float, blocking: bool) -> float:
-    if timeout is None:
-        raise TypeError(
-            "'NoneType' object cannot be interpreted as an integer or float"
-        )
-    try:
-        timeout_val = float(timeout)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(
-            f"'{type(timeout).__name__}' object cannot be "
-            "interpreted as an integer or float"
-        ) from exc
-    if not blocking:
-        if timeout_val != -1.0:
-            raise ValueError("can't specify a timeout for a non-blocking call")
-    elif timeout_val < 0.0 and timeout_val != -1.0:
-        raise ValueError("timeout value must be a non-negative number")
-    if blocking and timeout_val != -1.0 and timeout_val > TIMEOUT_MAX:
-        raise OverflowError("timestamp out of range for platform time_t")
-    return timeout_val
-
-
 class LockType:
     """Low-level lock object backed by Molt runtime intrinsics."""
 
@@ -121,10 +99,9 @@ class LockType:
         only meaningful when *blocking* is ``True``; a value of ``-1`` means
         wait forever.
         """
-        timeout_val = _validate_lock_timeout(timeout, blocking)
         if self._handle is None:
             raise RuntimeError("lock is not initialized")
-        return bool(_lock_acquire_intrinsic(self._handle, bool(blocking), timeout_val))
+        return bool(_lock_acquire_intrinsic(self._handle, bool(blocking), timeout))
 
     def release(self, _lock_release_intrinsic=_lock_release) -> None:
         """Release the lock."""
@@ -185,10 +162,9 @@ class RLock:
         timeout: float = -1.0,
         _rlock_acquire_intrinsic=_rlock_acquire,
     ) -> bool:
-        timeout_val = _validate_lock_timeout(timeout, blocking)
         if self._handle is None:
             raise RuntimeError("rlock is not initialized")
-        return bool(_rlock_acquire_intrinsic(self._handle, bool(blocking), timeout_val))
+        return bool(_rlock_acquire_intrinsic(self._handle, bool(blocking), timeout))
 
     def release(self, _rlock_release_intrinsic=_rlock_release) -> None:
         if self._handle is None:
@@ -344,13 +320,14 @@ def stack_size(
 
 
 def interrupt_main(
-    signum: int = 2, _signal_raise_signal_intrinsic=_signal_raise_signal
+    signum: int = 2, _signal_set_interrupt_intrinsic=_signal_set_interrupt
 ) -> None:
     """Simulate the effect of a signal arriving in the main thread.
 
-    The default *signum* is ``SIGINT`` (2).
+    The default *signum* is ``SIGINT`` (2). No OS signal is raised; a signal
+    not handled by Python (``SIG_DFL`` or ``SIG_IGN``) is ignored.
     """
-    _signal_raise_signal_intrinsic(int(signum))
+    _signal_set_interrupt_intrinsic(int(signum))
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +354,7 @@ for _name in (
     "_thread_registry_active_count",
     "_thread_stack_size_get",
     "_thread_stack_size_set",
-    "_signal_raise_signal",
+    "_signal_set_interrupt",
 ):
     globals().pop(_name, None)
 

@@ -38,9 +38,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
                 clear_exception(_py);
             }
             if debug_flow {
-                let kind_bits = unsafe { exception_kind_bits(ptr.0) };
-                let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                    .unwrap_or_else(|| "<unknown>".to_string());
+                let kind = exception_diagnostic_name(ptr.0);
                 let rc = unsafe {
                     let header = header_from_obj_ptr(ptr.0);
                     (*header).ref_count_snapshot()
@@ -70,9 +68,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
             clear_exception(_py);
         }
         if debug_flow {
-            let kind_bits = unsafe { exception_kind_bits(ptr.0) };
-            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                .unwrap_or_else(|| "<unknown>".to_string());
+            let kind = exception_diagnostic_name(ptr.0);
             let rc = unsafe {
                 let header = header_from_obj_ptr(ptr.0);
                 (*header).ref_count_snapshot()
@@ -91,64 +87,161 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
     MoltObject::none().bits()
 }
 
-pub(super) fn exception_last_pending_bits(_py: &PyToken<'_>) -> u64 {
-    if emergency_memory_error_pending_for_current() {
-        return MoltObject::none().bits();
+/// Borrow from the canonical pending slot without changing raised state or RC.
+/// The caller holds the GIL and must not invoke Python while using this borrow.
+fn pending_exception_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
+    if emergency_memory_error_pending_for_current()
+        || !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get())
+    {
+        return None;
     }
-    if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
-        if debug_exception_flow() {
-            eprintln!("molt exc last_pending task=0x0 kind=none");
-        }
-        return MoltObject::none().bits();
-    }
-
-    let debug_flow = debug_exception_flow();
     if let Some(task_key) = current_task_key() {
-        let ptr = {
-            let guard = task_last_exceptions(_py).lock().unwrap();
-            match guard.get(&task_key).copied() {
-                Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
-                Some(_) => panic!("owned task exception slot must reference a live exception"),
-                None => None,
-            }
-        };
-        if let Some(ptr) = ptr {
-            let bits = MoltObject::from_ptr(ptr.0).bits();
-            if debug_flow {
-                let kind_bits = unsafe { exception_kind_bits(ptr.0) };
-                let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                    .unwrap_or_else(|| "<unknown>".to_string());
-                eprintln!(
-                    "molt exc last_pending task=0x{:x} kind={} ptr=0x{:x}",
-                    task_key.0 as usize, kind, ptr.0 as usize
-                );
-            }
-            inc_ref_bits(_py, bits);
-            return bits;
+        let guard = task_last_exceptions(_py).lock().unwrap();
+        match guard.get(&task_key).copied() {
+            Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
+            Some(_) => panic!("owned task exception slot must reference a live exception"),
+            None => None,
         }
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
-        return MoltObject::none().bits();
+    } else {
+        thread_last_exception_pending_slot()
     }
+}
 
-    if let Some(ptr) = thread_last_exception_pending_slot() {
+/// Observe the canonical raised slot without taking ownership or materializing
+/// an instance. Emergency state precedes the heap slot just as in take_raised.
+pub(crate) fn pending_exception_matches_type(py: &PyToken<'_>, target: u64) -> bool {
+    pending_exception_slot(py)
+        .is_some_and(|slot| exception_matches_type(py, MoltObject::from_ptr(slot.0).bits(), target))
+}
+
+/// Observe the canonical raised slot without taking ownership or materializing
+/// an instance. Emergency state precedes the heap slot just as in take_raised.
+pub(crate) fn pending_exception_class(
+    _py: &PyToken<'_>,
+) -> molt_cpython_abi::hooks::PendingExceptionClass {
+    use molt_cpython_abi::hooks::PendingExceptionClass;
+    if emergency_memory_error_pending_for_current() {
+        return PendingExceptionClass::EmergencyMemoryError;
+    }
+    match pending_exception_slot(_py) {
+        Some(slot) => unsafe {
+            if object_type_id(slot.0) == TYPE_ID_EXCEPTION {
+                PendingExceptionClass::Class(object_class_bits(slot.0))
+            } else {
+                let native: *mut molt_cpython_abi::abi_types::PyObject =
+                    std::ptr::with_exposed_provenance_mut(
+                        crate::object::foreign::foreign_ptr_from_obj(slot.0),
+                    );
+                PendingExceptionClass::NativeClass((*native).ob_type)
+            }
+        },
+        None => PendingExceptionClass::None,
+    }
+}
+
+pub(super) fn exception_last_pending_bits(_py: &PyToken<'_>) -> u64 {
+    if let Some(ptr) = pending_exception_slot(_py) {
         let bits = MoltObject::from_ptr(ptr.0).bits();
-        if debug_flow {
-            let kind_bits = unsafe { exception_kind_bits(ptr.0) };
-            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                .unwrap_or_else(|| "<unknown>".to_string());
+        if debug_exception_flow() {
+            let kind = exception_diagnostic_name(ptr.0);
             eprintln!(
-                "molt exc last_pending task=0x0 kind={} ptr=0x{:x}",
-                kind, ptr.0 as usize
+                "molt exc last_pending task=0x{:x} kind={} ptr=0x{:x}",
+                current_task_key().map_or(0, |key| key.0 as usize),
+                kind,
+                ptr.0 as usize
             );
         }
         inc_ref_bits(_py, bits);
         return bits;
     }
 
-    if debug_flow {
+    if !emergency_memory_error_pending_for_current() && current_task_key().is_some() {
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+    }
+    if debug_exception_flow() {
         eprintln!("molt exc last_pending task=0x0 kind=none");
     }
     MoltObject::none().bits()
+}
+
+/// Diagnostics observe stored metadata; they never materialize Python messages,
+/// invoke descriptors/formatting hooks, or acquire references whose release can
+/// reenter Python. Unstored messages remain unstored even when tracing is enabled.
+pub(crate) fn pending_exception_diagnostic(_py: &PyToken<'_>) -> Option<(String, String)> {
+    if emergency_memory_error_pending_for_current() {
+        return Some((
+            "MemoryError".into(),
+            "<emergency allocation failure>".into(),
+        ));
+    }
+    let ptr = pending_exception_slot(_py)?;
+    let kind = exception_diagnostic_name(ptr.0);
+    let message = if unsafe { object_type_id(ptr.0) } == TYPE_ID_EXCEPTION {
+        string_obj_to_owned(obj_from_bits(unsafe { exception_msg_bits(ptr.0) }))
+            .unwrap_or_else(|| "<no stored text>".into())
+    } else {
+        "<no stored text>".into()
+    };
+    Some((kind, message))
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn pending_trace_diagnostics_preserve_identity_custody_and_stored_fields() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            assert!(pending_exception_diagnostic(py).is_none());
+            for missing in [false, true] {
+                let exception = if missing {
+                    molt_exception_new_builtin_one(5, MoltObject::from_int(42).bits())
+                } else {
+                    MoltObject::from_ptr(alloc_exception(py, "ValueError", "already stored")).bits()
+                };
+                let ptr = obj_from_bits(exception).as_ptr().expect("exception object");
+                let constructor_missing =
+                    exception_field_is_missing(unsafe { exception_msg_bits(ptr) });
+                molt_raise(exception);
+                let message = unsafe { exception_msg_bits(ptr) };
+                let args = unsafe { exception_args_bits(ptr) };
+                assert_eq!(
+                    exception_field_is_missing(message),
+                    missing,
+                    "constructor_missing={constructor_missing}",
+                );
+                let kind = unsafe { exception_kind_bits(ptr) };
+                let kind_ptr = obj_from_bits(kind).as_ptr().expect("stored class name");
+                let refcount = |ptr| unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
+                let before = (refcount(ptr), refcount(kind_ptr));
+                for _ in 0..3 {
+                    assert_eq!(
+                        pending_exception_diagnostic(py),
+                        Some((
+                            "ValueError".into(),
+                            if missing {
+                                "<no stored text>".into()
+                            } else {
+                                "already stored".into()
+                            }
+                        ))
+                    );
+                    // The guarded proof enables MOLT_TRACE_LINE_PENDING before
+                    // process startup, exercising the actual trace consumer too.
+                    crate::object::ops_builtins::molt_trace_set_line(41);
+                    assert!(exception_pending(py));
+                    assert_eq!(pending_exception_slot(py).unwrap().0, ptr);
+                    assert_eq!(unsafe { exception_msg_bits(ptr) }, message);
+                    assert_eq!(unsafe { exception_args_bits(ptr) }, args);
+                    assert_eq!((refcount(ptr), refcount(kind_ptr)), before);
+                }
+                clear_exception(py);
+                assert!(pending_exception_diagnostic(py).is_none());
+                dec_ref_bits(py, exception);
+            }
+        });
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -168,8 +261,7 @@ pub extern "C" fn molt_exception_active() -> u64 {
             if debug_exception_flow() {
                 let kind = obj_from_bits(bits)
                     .as_ptr()
-                    .map(|ptr| unsafe { exception_kind_bits(ptr) })
-                    .and_then(|kind_bits| string_obj_to_owned(obj_from_bits(kind_bits)))
+                    .map(exception_diagnostic_name)
                     .unwrap_or_else(|| "<unknown>".to_string());
                 eprintln!("molt exc active kind={} bits=0x{:x}", kind, bits);
             }
@@ -193,8 +285,7 @@ pub extern "C" fn molt_exception_current() -> u64 {
             if debug_exception_flow() {
                 let kind = obj_from_bits(bits)
                     .as_ptr()
-                    .map(|ptr| unsafe { exception_kind_bits(ptr) })
-                    .and_then(|kind_bits| string_obj_to_owned(obj_from_bits(kind_bits)))
+                    .map(exception_diagnostic_name)
                     .unwrap_or_else(|| "<unknown>".to_string());
                 eprintln!(
                     "molt exc current source=active kind={} bits=0x{:x}",
@@ -208,8 +299,7 @@ pub extern "C" fn molt_exception_current() -> u64 {
         if debug_exception_flow() {
             let kind = obj_from_bits(bits)
                 .as_ptr()
-                .map(|ptr| unsafe { exception_kind_bits(ptr) })
-                .and_then(|kind_bits| string_obj_to_owned(obj_from_bits(kind_bits)))
+                .map(exception_diagnostic_name)
                 .unwrap_or_else(|| type_name(_py, obj_from_bits(bits)).into_owned());
             eprintln!(
                 "molt exc current source=last kind={} bits=0x{:x}",
@@ -224,13 +314,9 @@ pub extern "C" fn molt_exception_current() -> u64 {
 pub extern "C" fn molt_exception_resolve_captured(captured_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let captured = obj_from_bits(captured_bits);
-        if let Some(ptr) = captured.as_ptr()
-            && unsafe { object_type_id(ptr) == TYPE_ID_EXCEPTION }
-        {
+        if exception_is_instance(_py, captured_bits) {
             if debug_exception_flow() {
-                let kind_bits = unsafe { exception_kind_bits(ptr) };
-                let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                    .unwrap_or_else(|| "<unknown>".to_string());
+                let kind = exception_diagnostic_name(captured.as_ptr().unwrap());
                 eprintln!(
                     "molt exc resolve source=captured kind={} bits=0x{:x}",
                     kind, captured_bits
@@ -243,8 +329,7 @@ pub extern "C" fn molt_exception_resolve_captured(captured_bits: u64) -> u64 {
             if debug_exception_flow() {
                 let kind = obj_from_bits(bits)
                     .as_ptr()
-                    .map(|ptr| unsafe { exception_kind_bits(ptr) })
-                    .and_then(|kind_bits| string_obj_to_owned(obj_from_bits(kind_bits)))
+                    .map(exception_diagnostic_name)
                     .unwrap_or_else(|| "<unknown>".to_string());
                 eprintln!(
                     "molt exc resolve source=active kind={} bits=0x{:x}",
@@ -258,8 +343,7 @@ pub extern "C" fn molt_exception_resolve_captured(captured_bits: u64) -> u64 {
         if debug_exception_flow() {
             let kind = obj_from_bits(bits)
                 .as_ptr()
-                .map(|ptr| unsafe { exception_kind_bits(ptr) })
-                .and_then(|kind_bits| string_obj_to_owned(obj_from_bits(kind_bits)))
+                .map(exception_diagnostic_name)
                 .unwrap_or_else(|| type_name(_py, obj_from_bits(bits)).into_owned());
             eprintln!(
                 "molt exc resolve source=last kind={} bits=0x{:x}",
@@ -274,10 +358,7 @@ pub extern "C" fn molt_exception_resolve_captured(captured_bits: u64) -> u64 {
 pub extern "C" fn molt_exception_enter_handler(captured_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let bits = {
-            let captured = obj_from_bits(captured_bits);
-            if let Some(ptr) = captured.as_ptr()
-                && unsafe { object_type_id(ptr) == TYPE_ID_EXCEPTION }
-            {
+            if exception_is_instance(_py, captured_bits) {
                 inc_ref_bits(_py, captured_bits);
                 captured_bits
             } else if let Some(active_bits) = exception_context_active_bits() {
@@ -307,9 +388,7 @@ pub extern "C" fn molt_exception_clear() -> u64 {
             && !obj_from_bits(cleared_bits).is_none()
             && let Some(ptr) = maybe_ptr_from_bits(cleared_bits)
         {
-            let kind_bits = unsafe { exception_kind_bits(ptr) };
-            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                .unwrap_or_else(|| "<unknown>".to_string());
+            let kind = exception_diagnostic_name(ptr);
             let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);
             let reason_str = reason.unwrap_or("<unset>");
             eprintln!(
@@ -395,6 +474,12 @@ pub extern "C" fn molt_async_work_poll_and_exception_last_pending() -> u64 {
 }
 
 fn service_async_work(_py: &PyToken<'_>) -> bool {
+    // CPython `_Py_HandlePending`: pending Python signal handlers run first,
+    // on the registered main thread only, and a raising handler ends this
+    // safepoint with its exception.
+    if crate::builtins::signal_ext::signal_safepoint(_py) {
+        return true;
+    }
     // Allocation only schedules GC; generated call-return/backedge polls own
     // the safe execution boundary, matching CPython's eval-breaker model.
     // Automatic resource failure is retained as pending GC pressure and
@@ -509,14 +594,7 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
             );
         }
         let Some(ptr) = exc_obj.as_ptr() else {
-            let payload_type = type_name(_py, exc_obj).into_owned();
             if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if exception_handler_active() && payload_type == "object" {
-                // Internal safeguard: control-flow bookkeeping can transiently surface
-                // non-pointer garbage payloads at handler boundaries. Do not convert that
-                // into a user-visible TypeError; let handler unwinding continue.
                 return MoltObject::none().bits();
             }
             return raise_exception::<u64>(
@@ -525,51 +603,34 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
                 "exceptions must derive from BaseException",
             );
         };
-        let mut exc_ptr = ptr;
-        unsafe {
-            match object_type_id(ptr) {
-                TYPE_ID_EXCEPTION => {}
-                TYPE_ID_TYPE => {
-                    let class_bits = MoltObject::from_ptr(ptr).bits();
-                    if !issubclass_bits(class_bits, builtin_classes(_py).base_exception) {
-                        return raise_exception::<u64>(
-                            _py,
-                            "TypeError",
-                            "exceptions must derive from BaseException",
-                        );
-                    }
-                    let inst_bits = call_class_init_with_args(_py, ptr, &[]);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
-                        return MoltObject::none().bits();
-                    };
-                    if object_type_id(inst_ptr) != TYPE_ID_EXCEPTION {
-                        return raise_exception::<u64>(
-                            _py,
-                            "TypeError",
-                            "exceptions must derive from BaseException",
-                        );
-                    }
-                    exc_ptr = inst_ptr;
-                }
-                _ => {
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "exceptions must derive from BaseException",
-                    );
-                }
+        let constructed = if exception_is_instance(_py, exc_bits) {
+            None
+        } else if exception_is_class(_py, exc_bits) {
+            let instance = unsafe { crate::call_callable0(_py, exc_bits) };
+            let instance = ExceptionValue::adopt(_py, instance);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
             }
-        }
+            if !exception_is_instance(_py, instance.bits()) {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "calling exception class did not return a BaseException instance",
+                );
+            }
+            Some(instance)
+        } else {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "exceptions must derive from BaseException",
+            );
+        };
+        let exc_ptr = constructed
+            .as_ref()
+            .map_or(ptr, |value| obj_from_bits(value.bits()).as_ptr().unwrap());
         if debug_exception_flow() || debug_exception_raise() {
-            let kind_bits = unsafe { exception_kind_bits(exc_ptr) };
-            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                .unwrap_or_else(|| "<unknown>".to_string());
+            let kind = exception_diagnostic_name(exc_ptr);
             let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);
             let depth = exception_stack_depth();
             eprintln!(
@@ -608,14 +669,21 @@ pub extern "C" fn molt_exception_report_uncaught(exc_bits: u64) -> u64 {
             eprintln!("RuntimeError: invalid uncaught exception payload");
             return 1;
         };
-        unsafe {
-            if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
-                eprintln!("RuntimeError: uncaught payload is not an exception");
-                return 1;
-            }
+        if !exception_is_instance(_py, exc_bits) {
+            eprintln!("RuntimeError: uncaught payload is not an exception");
+            return 1;
         }
         if exception_matches_builtin_name(_py, exc_bits, "SystemExit") {
             return super::system_exit_code(_py, exc_ptr) as u32 as u64;
+        }
+        // CPython `run_eval_code_obj`: only an exact KeyboardInterrupt makes
+        // the process exit by SIGINT once finalization completes.
+        let keyboard_interrupt = exception_type_bits_from_name(_py, "KeyboardInterrupt");
+        if keyboard_interrupt != 0
+            && exception_class(_py, exc_bits)
+                .is_some_and(|class| class.bits() == keyboard_interrupt)
+        {
+            crate::builtins::signal_ext::signal_note_unhandled_keyboard_interrupt(_py);
         }
         let formatted = format_exception_with_traceback(_py, exc_ptr);
         eprintln!("{formatted}");

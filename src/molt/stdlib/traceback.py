@@ -64,14 +64,14 @@ def _validate_string_list(value: Any, label: str) -> list[str]:
 class FrameSummary:
     def __init__(
         self,
-        *,
         filename: str,
         lineno: int,
-        end_lineno: int,
-        colno: int,
-        end_colno: int,
         name: str,
-        line: str | None,
+        *,
+        end_lineno: int | None = None,
+        colno: int | None = None,
+        end_colno: int | None = None,
+        line: str | None = None,
     ) -> None:
         self.filename = filename
         self.lineno = lineno
@@ -226,8 +226,8 @@ class StackSummary:
                     filename=str(filename),
                     lineno=lineno_i,
                     end_lineno=lineno_i,
-                    colno=0,
-                    end_colno=0,
+                    colno=None,
+                    end_colno=None,
                     name=str(name),
                     line=None if line is None else str(line),
                 )

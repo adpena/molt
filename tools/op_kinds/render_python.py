@@ -82,7 +82,9 @@ def _render_py_binary_image_fact_sets(data: dict) -> str:
             data, set(data.get("escape_alloc_site_opcodes", []))
         )
     )
-    heap_roots.update(data.get("classifier_fresh_value", []))
+    # Result ownership cannot prove a fresh allocation: lookups may acquire
+    # an already published object. Keep this category independent.
+    owned_value_roots = set(data.get("classifier_owned_value", []))
     heap_roots.update(data.get("classifier_exception_creation_ref", []))
     heap_roots.update(row["kind"] for row in data.get("absorbing_kind", []))
 
@@ -139,6 +141,9 @@ def _render_py_binary_image_fact_sets(data: dict) -> str:
     out.append("# sets; preserved Copy spellings stay explicit registry facts.\n")
     out.append(
         _render_py_frozenset("BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS", sorted(heap_roots))
+    )
+    out.append(
+        _render_py_frozenset("BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS", sorted(owned_value_roots))
     )
     out.append(
         _render_py_frozenset("BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS", sorted(stack_roots))

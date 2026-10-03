@@ -84,7 +84,8 @@ impl std::fmt::Display for LoadError {
 /// - `path` must point to a valid CPython 3.12–compatible `.so`.
 /// - The extension must not make assumptions about CPython's memory layout
 ///   beyond what our ABI shim provides.
-/// - Must be called after `init_static_types()` and `init_tag_table()`.
+/// - Runtime extension-initialization hooks must be registered. The loader
+///   enters the canonical process ABI bootstrap without resetting live types.
 pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, LoadError> {
     unsafe {
         load_extension(
@@ -116,8 +117,7 @@ unsafe fn load_extension(
     spec_bits: u64,
     create_only: bool,
 ) -> Result<u64, LoadError> {
-    unsafe { crate::abi_types::init_static_types() };
-    crate::bridge::init_tag_table();
+    crate::bridge::molt_cpython_abi_init();
     let Some(h) = crate::hooks::hooks() else {
         return Err(LoadError::InitContractViolation {
             name: name.to_owned(),

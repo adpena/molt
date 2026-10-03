@@ -181,7 +181,7 @@ def test_mutation_frontier_matches_exhaustive_expiry_across_storage_transitions(
             state = pool.taint_slots(base, 1 << 0)
             state = pool.taint_slots(state, 1 << (far + 1))
         elif mode in {"namespace", "rebound", "join-dirty", "domain-growth"}:
-            state = pool.taint_module_bindings(base)
+            state = pool.taint_exposed_bindings(base)
             if mode == "rebound":
                 state = pool.set_binding(
                     state, 0, OTHER_IDENTITY, result=shape, owner_token=owner
@@ -392,7 +392,7 @@ def test_owner_comparison_and_resolution_follow_late_domain_growth() -> None:
         0,
         ((0, OTHER_IDENTITY, None, result, 7), (4095, OTHER_IDENTITY, None, result, 9)),
     )
-    exposed = pool.taint_module_bindings(base)
+    exposed = pool.taint_exposed_bindings(base)
     assert pool._binding_environments[exposed] is pool._binding_environments[base]
     assert pool.owner_tokens_equal(base, exposed)
     assert pool._binding_resolution(exposed, 0).clean
@@ -534,7 +534,7 @@ def test_storage_diff_does_not_replace_epoch_or_absent_domain_comparison() -> No
     pool = flow._StatePool()
     pool.set_taint_domain((1 << 0) | (1 << 4096))
     base = pool.set_binding(0, 0, INERT, 1, StaticExpressionResult.scalar(1), 9)
-    exposed = pool.taint_module_bindings(base)
+    exposed = pool.taint_exposed_bindings(base)
     assert pool.changed_slots_between(base, exposed) == ()
     assert not pool.equivalent(base, exposed)
     assert not pool.owner_tokens_equal(base, exposed)

@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::tir::simple_def_use::simple_ir_out_result;
 
 /// Single-source kind authority for [`handle_module_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -96,7 +97,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*name_bits]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -123,7 +124,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*name_bits]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -154,7 +155,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             // inc_ref to ensure the caller owns it and dec_ref at last_use
             // doesn't free a module still in sys.modules.
             emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -289,7 +290,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*module_bits, attr_val]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -327,7 +328,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*module_bits, attr_bits]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -369,11 +370,9 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*module_bits, attr_bits]);
-            if let Some(out_name) = op.out.as_ref()
-                && out_name != "none"
-            {
+            if let Some(out_name) = simple_ir_out_result(op) {
                 let res = builder.inst_results(call)[0];
-                def_var_named(&mut *builder, vars, out_name.clone(), res);
+                def_var_named(&mut *builder, vars, out_name, res);
             }
         }
         "module_get_name" => {
@@ -410,7 +409,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*module_bits, attr_bits]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }

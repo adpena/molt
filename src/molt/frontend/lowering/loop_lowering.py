@@ -4,17 +4,43 @@ Move-only extraction from frontend/__init__.py. This lowering authority owns
 iter/range/for/while emission, loop-body control-flow snapshots, loop orelse,
 static-live branch emission, loop guard hoisting/invalidation, and specialized
 loop fast paths shared by statement, comprehension, call, and analysis visitors.
+A fast path reads each binding once, before the loop, where Python reads it
+inside the loop, and trusts cached facts about the binding only where the
+binding analysis proves that source read clean. A fused loop runs a prefix of
+the ordinary loop, in bounded chunks, only where its runtime kernel or guard
+proves, on the values the loop reads, that the chunk runs no Python code. Each
+chunk leaves exactly the bindings and values the loop leaves after those items,
+published before the chunk loop's back edge observes pending asynchronous work,
+and the next chunk rereads them. The ordinary loop then continues from that
+state on the same iterator or index, so nothing is evaluated twice.
 """
 
 from __future__ import annotations
 
 import ast
+from typing import Callable
 
+from molt.compiler_analysis.python_binding_facts import UNBOUND_IDENTITY
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import LoopScope, MoltOp, MoltValue, ScratchCell
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 
 class LoopLoweringMixin(GeneratorMixinBase):
+    # Fused-loop reductions: each takes ``(it, acc, target)``, the loop's own
+    # iterator and the current accumulator and loop target, and returns
+    # ``(result, last, count, more)`` from an exact runtime kernel that consumes
+    # at most one bounded chunk of the iterator.
+    _VECTOR_REDUCTION_OPS = {
+        "sum": "VEC_SUM",
+        "prod": "VEC_PROD",
+        "min": "VEC_MIN",
+        "max": "VEC_MAX",
+    }
+    # A fused byte fill writes at most this many bytes per chunk.
+    _BYTEARRAY_FILL_CHUNK = 1 << 20
+
     def _iterable_is_indexable(self, iterable: MoltValue | None) -> bool:
         if iterable is None:
             return False
@@ -32,24 +58,6 @@ class LoopLoweringMixin(GeneratorMixinBase):
             return False
         # List iteration must observe mutations (e.g., append during iteration).
         return iterable.type_hint != "list"
-
-    def _range_start_expr(self, node: ast.expr) -> ast.expr | None:
-        if isinstance(node, ast.Constant):
-            if isinstance(node.value, int) and node.value > 0:
-                return node
-            return None
-        if isinstance(node, ast.Name):
-            return node
-        return None
-
-    def _subscript_matches(self, node: ast.expr, seq_name: str, idx_name: str) -> bool:
-        if not isinstance(node, ast.Subscript):
-            return False
-        if not isinstance(node.value, ast.Name) or node.value.id != seq_name:
-            return False
-        if isinstance(node.slice, ast.Name) and node.slice.id == idx_name:
-            return True
-        return False
 
     def _emit_iter_loop(
         self,
@@ -317,56 +325,59 @@ class LoopLoweringMixin(GeneratorMixinBase):
 
     def _parse_range_call(
         self, node: ast.AST
-    ) -> tuple[MoltValue, MoltValue, MoltValue, bool] | None:
+    ) -> tuple[MoltValue, MoltValue, MoltValue] | None:
+        """The bounds of a call the binding analysis proves is builtin
+        ``range`` with one to three positional arguments, as exact ints.
+
+        Every argument is evaluated, in order; then, as ``range()`` does, each
+        given bound converts through ``operator.index`` (start, stop, step),
+        raising ``range()``'s own TypeError, and a missing start or step is
+        0 or 1. The zero-step check follows in the consumer. ``None``, with
+        nothing evaluated, for any other expression.
+        """
         if not isinstance(node, ast.Call):
             return None
         if self._specializable_builtin_name(node) != "range":
             return None
-        if len(node.args) > 3:
+        if not 1 <= len(node.args) <= 3 or node.keywords:
             return None
-        if node.keywords:
+        if any(isinstance(arg, ast.Starred) for arg in node.args):
             return None
-        start_val: MoltValue | None = None
-        stop_val: MoltValue | None = None
-        step_val: MoltValue | None = None
-        pos_params: list[str] = []
-        if len(node.args) == 1:
-            pos_params = ["stop"]
-        elif len(node.args) == 2:
-            pos_params = ["start", "stop"]
-        elif len(node.args) == 3:
-            pos_params = ["start", "stop", "step"]
-        for param, arg in zip(pos_params, node.args):
-            val = self.visit(arg)
-            if val is None:
-                return None
-            if param == "start":
-                if start_val is not None:
-                    return None
-                start_val = val
-            elif param == "stop":
-                if stop_val is not None:
-                    return None
-                stop_val = val
-            else:
-                if step_val is not None:
-                    return None
-                step_val = val
-        if stop_val is None:
-            return None
-        if start_val is None:
-            start_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=start_val))
-        if step_val is None:
-            step_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[1], result=step_val))
-        int_like = {"int", "bool"}
-        lowerable = {
-            start_val.type_hint,
-            stop_val.type_hint,
-            step_val.type_hint,
-        }.issubset(int_like)
-        return start_val, stop_val, step_val, lowerable
+        values: list[MoltValue] = []
+        for arg in node.args:
+            value = self.visit(arg)
+            if value is None:
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported range() argument"
+                )
+            values.append(value)
+        bounds = [
+            self._emit_range_bound(arg, value) for arg, value in zip(node.args, values)
+        ]
+        if len(bounds) == 1:
+            start = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=start))
+            bounds.insert(0, start)
+        if len(bounds) == 2:
+            step = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[1], result=step))
+            bounds.append(step)
+        start, stop, step = bounds
+        return start, stop, step
+
+    def _emit_range_bound(self, node: ast.expr, value: MoltValue) -> MoltValue:
+        """``operator.index(value)``: ``range()``'s conversion of one bound to
+        an exact int. A value the analysis proves an exact int converts to
+        itself, and a bool literal to its int; anything else converts here,
+        once, which may call ``__index__``."""
+        if self._builtin_exact_type_from_expr(node) == "int":
+            return value
+        exact = MoltValue(self.next_var(), type_hint="int")
+        if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+            self.emit(MoltOp(kind="CONST", args=[int(node.value)], result=exact))
+        else:
+            self.emit(MoltOp(kind="OPERATOR_INDEX", args=[value], result=exact))
+        return exact
 
     def _emit_range_obj_from_args(
         self, start: MoltValue, stop: MoltValue, step: MoltValue
@@ -717,9 +728,9 @@ class LoopLoweringMixin(GeneratorMixinBase):
             return {}
         guard_map: dict[str, tuple[str, MoltValue, int]] = {}
         for name, expected_class in sorted(candidates.items()):
+            # The guarded object is the binding's current value on loop entry;
+            # a name with no visible binding here is not guarded.
             obj = self._load_local_value(name)
-            if obj is None:
-                obj = self.locals.get(name) or self.globals.get(name)
             if obj is None:
                 continue
             guard = self._emit_layout_guard(obj, expected_class)
@@ -747,17 +758,9 @@ class LoopLoweringMixin(GeneratorMixinBase):
         return condition
 
     def _emit_aiter(self, iterable: MoltValue) -> MoltValue:
-        if iterable.type_hint == "async_iter":
-            return iterable
-        if iterable.type_hint in {
-            "list",
-            "tuple",
-            "dict",
-            "range",
-            "iter",
-            "generator",
-        }:
-            return self._emit_iter_new(iterable)
+        # Even an already-acquired async iterator may return a different object
+        # from its next __aiter__ call. Only an explicit prepared-iterator path
+        # (the generator expression .0 binding) may skip acquisition.
         res = MoltValue(self.next_var(), type_hint="async_iter")
         self.emit(MoltOp(kind="AITER", args=[iterable], result=res))
         return res
@@ -772,6 +775,180 @@ class LoopLoweringMixin(GeneratorMixinBase):
             self._emit_index_loop(node, iterable, loop_break_flag=loop_break_flag)
         else:
             self._emit_iter_loop(node, iterable, loop_break_flag=loop_break_flag)
+
+    def _load_loop_target_value(self, target: ast.Name) -> MoltValue | None:
+        """The loop target's value before the loop, its missing sentinel when
+        unbound. A fused loop binds its target once, after the fact, instead of
+        once per item; its kernel admits that only when releasing this value
+        runs no Python code (no finalizer can observe the reorder). ``None``,
+        with nothing emitted, when no binding is visible here."""
+        return self._load_local_value(target.id, guard_unbound=False)
+
+    def _name_read_definitely_bound(self, node: ast.Name) -> bool:
+        """The binding analysis proves this read finds its name bound, so it
+        cannot raise; with no intervening store it may move to an earlier point
+        without a visible difference.
+
+        A callback may rebind a frame's own fast local (PEP 667) but never
+        delete it, so its binding identities decide. A global, a class
+        namespace entry or a cell a callback may delete, and the analysis keeps
+        an expired binding's identities, so such a read must also be clean.
+        """
+        if self.python_binding_index is None:
+            return False
+        fact = self.python_binding_index.expression_fact(node)
+        if fact is None or fact.identities & UNBOUND_IDENTITY:
+            return False
+        fast_local = (
+            fact.name_lookup == "lexical"
+            and node.id not in self.closure_locals
+            and node.id not in self.free_vars
+        )
+        return fast_local or fact.binding_invalidated is False
+
+    def _emit_tuple_item(
+        self, pair: MoltValue, index: int, type_hint: str
+    ) -> MoltValue:
+        position = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[index], result=position))
+        item = MoltValue(self.next_var(), type_hint=type_hint)
+        self.emit(MoltOp(kind="INDEX", args=[pair, position], result=item))
+        return item
+
+    def _emit_is_exact_builtin(self, value: MoltValue, type_name: str) -> MoltValue:
+        """``type(value) is <builtin type_name>``: true for an exact instance, not
+        a subclass instance. Runs no Python code."""
+        actual = MoltValue(self.next_var(), type_hint="type")
+        self.emit(MoltOp(kind="TYPE_OF", args=[value], result=actual))
+        expected = self._emit_builtin_type_value(type_name)
+        exact = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="IS", args=[actual, expected], result=exact))
+        return exact
+
+    def _emit_fused_branches(
+        self,
+        cond: MoltValue,
+        emit_then: Callable[[], None],
+        emit_else: Callable[[], None] | None = None,
+    ) -> None:
+        """``IF cond: emit_then ELSE: emit_else END_IF`` for branches a fused
+        lowering builds, with ``visit_If``'s flow bookkeeping: a name bound on
+        only one path stays possibly unbound after the join (so a later read
+        still raises UnboundLocalError where the code would), and exact-class
+        facts join over both paths."""
+        self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
+        exact_entry = self._snapshot_live_exact_bindings()
+        exact_entry_token = self.exact_class_token
+        unbound_snapshot = set(self.unbound_check_names)
+        self.control_flow_depth += 1
+        try:
+            emit_then()
+            then_exact = self._snapshot_live_exact_bindings()
+            then_exact_token = self.exact_class_token
+            then_unbound = set(self.unbound_check_names)
+            if emit_else is None:
+                self.unbound_check_names = unbound_snapshot
+                else_exact = exact_entry
+                else_exact_token = exact_entry_token
+            else:
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                self.unbound_check_names = set(unbound_snapshot)
+                self.exact_locals = dict(exact_entry)
+                self.exact_class_token = exact_entry_token
+                emit_else()
+                else_exact = self._snapshot_live_exact_bindings()
+                else_exact_token = self.exact_class_token
+                self.unbound_check_names = then_unbound | set(self.unbound_check_names)
+        finally:
+            self.control_flow_depth -= 1
+        self.exact_locals = self._join_exact_binding_states(
+            then_exact,
+            then_exact_token,
+            else_exact,
+            else_exact_token,
+        )
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+
+    def _emit_iterable_vector_reduction(
+        self,
+        node: ast.For,
+        iterable: MoltValue,
+        *,
+        loop_break_flag: int | ScratchCell | None,
+    ) -> bool:
+        """``for x in seq: acc += x`` (``*=`` and the min/max updates alike)
+        over the loop's evaluated list, tuple or range, whose type hint only
+        selects the fused op: a fused prefix of the loop, then the loop.
+
+        The loop's iterator is acquired once, where the loop acquires it. Each
+        pass of a chunk loop hands the kernel that iterator, the accumulator and
+        the loop target, reread from their bindings, which a signal handler or
+        pending call run at the previous back edge may have rebound; the kernel
+        consumes at most one bounded chunk of items whose update runs no Python
+        code and returns ``(result, last, count, more)``. After a nonempty chunk
+        the loop target and then the accumulator are stored, in the order the
+        loop releases them, before the back edge observes pending work. The
+        chunk loop ends at the iterator's end or at the first item the kernel
+        does not admit, which it leaves unconsumed; the ordinary loop then
+        continues on the same iterator, finding the rest or its end. False,
+        with nothing observable emitted, for any other loop.
+        """
+        reduction = self._match_vector_reduction_loop(node)
+        if reduction is None:
+            reduction = self._match_vector_minmax_loop(node)
+        if (
+            reduction is None
+            or iterable.type_hint not in {"list", "tuple", "range"}
+            or not isinstance(node.target, ast.Name)
+        ):
+            return False
+        acc_name, _, kind = reduction
+        target = node.target
+        # A binding visible here (possibly unbound: its missing sentinel, which
+        # the kernel declines) is readable inside the chunk loop.
+        if self._load_loop_target_value(target) is None:
+            return False
+        if self._load_local_value(acc_name, guard_unbound=False) is None:
+            return False
+        item_hint = self._iteration_element_hint(node, iterable) or "Any"
+        it = self._emit_iter_new(iterable)
+        zero = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+        target_old = self._load_local_value(
+            target.id, guard_unbound=False, binding_invalidated=True
+        )
+        acc = self._load_local_value(
+            acc_name, guard_unbound=False, binding_invalidated=True
+        )
+        assert target_old is not None and acc is not None
+        outcome = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(
+            MoltOp(
+                kind=self._VECTOR_REDUCTION_OPS[kind],
+                args=[it, acc, target_old],
+                result=outcome,
+            )
+        )
+        count = self._emit_tuple_item(outcome, 2, "int")
+        consumed = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="NE", args=[count, zero], result=consumed))
+
+        def publish() -> None:
+            self._emit_assign_target(
+                target, self._emit_tuple_item(outcome, 1, item_hint), None
+            )
+            self._store_local_value(acc_name, self._emit_tuple_item(outcome, 0, "Any"))
+
+        self._emit_fused_branches(consumed, publish)
+        more = self._emit_tuple_item(outcome, 3, "bool")
+        self.emit(
+            MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[more], result=MoltValue("none"))
+        )
+        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        self._emit_iter_loop(node, it, loop_break_flag=loop_break_flag)
+        return True
 
     def _prepare_mutable_control_flow_bindings(self, names: set[str]) -> None:
         if self._class_ns_stack:
@@ -839,69 +1016,73 @@ class LoopLoweringMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def _const_int_from_expr(self, node: ast.expr) -> int | None:
+        """An int literal, or the binding analysis's int constant for a read of
+        a name: joined over every path and iteration reaching the read, and
+        absent once a callback may have rebound the name."""
         if (
             isinstance(node, ast.Constant)
             and isinstance(node.value, int)
             and not isinstance(node.value, bool)
         ):
             return node.value
-        if isinstance(node, ast.Name):
-            value = self.locals.get(node.id)
-            if value is None and self.current_func_name == "molt_main":
-                value = self.globals.get(node.id)
-            if value is not None:
-                return self.const_ints.get(value.name)
+        if isinstance(node, ast.Name) and self.python_binding_index is not None:
+            fact = self.python_binding_index.expression_fact(node)
+            value = None if fact is None else fact.static_value
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
         return None
 
-    def _const_int_for_local(self, name: str) -> int | None:
-        value = self.locals.get(name)
-        if value is None:
-            return 0
-        return self.const_ints.get(value.name)
+    def _unit_increment_read(self, stmt: ast.stmt, name: str) -> ast.Name | None:
+        """The read of ``name`` in ``name += 1`` or ``name = name + 1`` (either
+        operand order) with an int literal ``1``; ``None`` for anything else."""
 
-    def _is_unit_increment(self, stmt: ast.stmt, name: str) -> bool:
+        def is_int_one(expr: ast.expr) -> bool:
+            return (
+                isinstance(expr, ast.Constant)
+                and isinstance(expr.value, int)
+                and not isinstance(expr.value, bool)
+                and expr.value == 1
+            )
+
         if isinstance(stmt, ast.AugAssign):
-            if isinstance(stmt.target, ast.Name) and stmt.target.id == name:
-                return (
-                    isinstance(stmt.op, ast.Add)
-                    and isinstance(stmt.value, ast.Constant)
-                    and stmt.value.value == 1
-                )
-            return False
-        if isinstance(stmt, ast.Assign):
-            if len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
-                return False
-            if stmt.targets[0].id != name:
-                return False
-            if not isinstance(stmt.value, ast.BinOp) or not isinstance(
-                stmt.value.op, ast.Add
-            ):
-                return False
-            left = stmt.value.left
-            right = stmt.value.right
+            target = stmt.target
             if (
-                isinstance(left, ast.Name)
-                and left.id == name
-                and isinstance(right, ast.Constant)
-                and right.value == 1
+                isinstance(target, ast.Name)
+                and target.id == name
+                and isinstance(stmt.op, ast.Add)
+                and is_int_one(stmt.value)
             ):
-                return True
-            if (
-                isinstance(right, ast.Name)
-                and right.id == name
-                and isinstance(left, ast.Constant)
-                and left.value == 1
-            ):
-                return True
-        return False
+                return target
+            return None
+        if not isinstance(stmt, ast.Assign):
+            return None
+        if len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
+            return None
+        if stmt.targets[0].id != name:
+            return None
+        if not isinstance(stmt.value, ast.BinOp) or not isinstance(
+            stmt.value.op, ast.Add
+        ):
+            return None
+        left = stmt.value.left
+        right = stmt.value.right
+        if isinstance(left, ast.Name) and left.id == name and is_int_one(right):
+            return left
+        if isinstance(right, ast.Name) and right.id == name and is_int_one(left):
+            return right
+        return None
 
     def _emit_counted_while(
-        self, index_name: str, bound: int, body: list[ast.stmt]
+        self,
+        index_name: str,
+        start: MoltValue,
+        bound: int,
+        body: list[ast.stmt],
     ) -> None:
-        start = self._load_local_value(index_name)
-        if start is None:
-            start = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=start))
+        """``while index < bound: body; index += 1`` with the index in an
+        induction variable, starting from ``start``, the loop's first read of
+        the index. The matcher proved that nothing in the body can rebind the
+        index, so every later test and increment read is that variable."""
         one = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[1], result=one))
         stop = MoltValue(self.next_var(), type_hint="int")
@@ -916,19 +1097,6 @@ class LoopLoweringMixin(GeneratorMixinBase):
             MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none"))
         )
         self._store_local_value(index_name, idx)
-        # For module-level code, also sync to the module namespace so
-        # that module_get_global bare-name reads inside the loop body see the
-        # current counter value (not the initial value from before the loop).
-        if self.current_func_name == "molt_main" and self.module_obj is not None:
-            key = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=[index_name], result=key))
-            self.emit(
-                MoltOp(
-                    kind="MODULE_SET_ATTR",
-                    args=[self.module_obj, key, idx],
-                    result=MoltValue("none"),
-                )
-            )
         scope = self._visit_loop_body(body, guard_map)
         if scope.needs_latch:
             next_idx = MoltValue(self.next_var(), type_hint="int")
@@ -938,27 +1106,13 @@ class LoopLoweringMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         self._emit_loop_exit(scope)
         self._store_local_value(index_name, idx)
-        if self.current_func_name == "molt_main" and self.module_obj is not None:
-            key2 = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=[index_name], result=key2))
-            self.emit(
-                MoltOp(
-                    kind="MODULE_SET_ATTR",
-                    args=[self.module_obj, key2, idx],
-                    result=MoltValue("none"),
-                )
-            )
 
     def _dict_increment_key_is_single_eval_safe(self, key: ast.expr) -> bool:
         if isinstance(key, (ast.Name, ast.Constant)):
             return True
         if not isinstance(key, ast.Attribute) or not isinstance(key.value, ast.Name):
             return False
-        obj_name = key.value.id
-        obj_value = self.locals.get(obj_name)
-        if obj_value is None and self.current_func_name == "molt_main":
-            obj_value = self.globals.get(obj_name)
-        class_id = self._exact_class_for_name(obj_name)
+        class_id = self._exact_class_for_name(key.value.id)
         class_info = self.classes.get(class_id or "")
         return bool(
             class_info
@@ -966,134 +1120,194 @@ class LoopLoweringMixin(GeneratorMixinBase):
             and key.attr in class_info.get("fields", {})
         )
 
-    def _emit_split_dict_increment_for_loop(self, node: ast.For) -> bool:
+    def _emit_split_dict_increment_for_loop(
+        self, node: ast.For, *, loop_break_flag: int | ScratchCell | None
+    ) -> bool:
+        """``for w in line.split([SEP]): d[w] = d.get(w, 0) + delta`` as one
+        kernel when the loop provably runs no Python code; the kernel checks
+        that on the values the loop reads and binds ``w`` to the last word.
+        Otherwise the ordinary loop runs, calling ``line.split`` itself. The
+        matcher proves every name read here once, before the loop, bound and
+        unwritten by the loop, so the early reads are unobservable. False, with
+        nothing observable emitted, for any other loop."""
         match = self._match_split_dict_increment_for_loop(node)
-        if match is None:
+        if match is None or not isinstance(node.target, ast.Name):
             return False
-        dict_expr, line_expr, sep_expr, delta_expr = match
-        dict_obj = self.visit(dict_expr)
-        line_obj = self.visit(line_expr)
+        dict_read, line_read, sep, delta_expr = match
+        target_old = self._load_loop_target_value(node.target)
+        if target_old is None:
+            return False
+        line_obj = self.visit(line_read)
+        dict_obj = self.visit(dict_read)
         delta_obj = self.visit(delta_expr)
-        if dict_obj is None or line_obj is None or delta_obj is None:
+        if line_obj is None or dict_obj is None or delta_obj is None:
             return False
-        # Keep split+count lanes guarded so deopt/profile tooling can track
-        # dict-shape assumptions explicitly.
-        self._emit_guard_dict_shape(dict_obj)
-        pair = MoltValue(self.next_var(), type_hint="tuple")
-        if sep_expr is None:
+        outcome = MoltValue(self.next_var(), type_hint="tuple")
+        if sep is None:
             self.emit(
                 MoltOp(
                     kind="STRING_SPLIT_WS_DICT_INC",
-                    args=[line_obj, dict_obj, delta_obj],
-                    result=pair,
+                    args=[line_obj, dict_obj, delta_obj, target_old],
+                    result=outcome,
                 )
             )
         else:
-            sep_obj = self.visit(sep_expr)
-            if sep_obj is None:
-                return False
+            sep_obj = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[sep], result=sep_obj))
             self.emit(
                 MoltOp(
                     kind="STRING_SPLIT_SEP_DICT_INC",
-                    args=[line_obj, sep_obj, dict_obj, delta_obj],
-                    result=pair,
+                    args=[line_obj, sep_obj, dict_obj, delta_obj, target_old],
+                    result=outcome,
                 )
             )
+        ok = self._emit_tuple_item(outcome, 1, "bool")
+
+        def bind_last_word() -> None:
+            self._emit_assign_target(
+                node.target, self._emit_tuple_item(outcome, 0, "str"), None
+            )
+
+        def run_the_loop() -> None:
+            iterable = self.visit(node.iter)
+            if iterable is None:
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported iterable in for loop"
+                )
+            self._emit_for_loop(node, iterable, loop_break_flag=loop_break_flag)
+
+        self._emit_fused_branches(ok, bind_last_word, run_the_loop)
+        return True
+
+    def _emit_bytearray_fill_while(
+        self,
+        index: ast.Name,
+        bound: int,
+        container_read: ast.Name,
+        fill: int,
+        emit_loop: Callable[[], None],
+    ) -> None:
+        """``while i < BOUND: buf[i] = FILL; i += 1`` as a fused prefix: chunks
+        of at most ``_BYTEARRAY_FILL_CHUNK`` bytes, each written at once when
+        it provably runs no Python code: ``buf`` an exact bytearray and ``i``
+        an exact int with ``0 <= i < BOUND <= len(buf)``, checked on the values
+        the loop reads, each check only once the previous one makes it run no
+        Python code. After a chunk ``i`` holds the chunk's end, as the loop
+        leaves it, before the chunk loop's back edge observes pending work; the
+        next chunk rereads ``i`` and ``buf``, which that work may have
+        rebound. The ordinary loop then runs from the current ``i``: its test
+        ends it at once after the last chunk, and after a failed check it
+        finishes the loop and reports what the loop reports. The container is
+        read without raising, since the loop reads it only inside the body."""
+        # The test's read of the index is the loop's first read of it.
+        start = self._load_local_value(
+            index.id,
+            binding_invalidated=self._expression_has_invalidated_binding(index),
+        )
+        container = self._load_local_value(container_read.id, guard_unbound=False)
+        if start is None or container is None:
+            emit_loop()
+            return
+        more_slot = f"__molt_fill_more_{self.next_var()}"
+        end_slot = f"__molt_fill_end_{self.next_var()}"
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        one = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[1], result=one))
-        last_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=last_val))
-        has_any = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=has_any))
-        self.emit(MoltOp(kind="IF", args=[has_any], result=MoltValue("none")))
-        self._emit_assign_target(node.target, last_val, None)
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        if node.orelse:
-            self._visit_block(node.orelse)
-        return True
-
-    def _is_taq_header_guard(self, stmt: ast.stmt) -> str | None:
-        if not isinstance(stmt, ast.If):
-            return None
-        if stmt.orelse:
-            return None
-        if not isinstance(stmt.test, ast.Name):
-            return None
-        if len(stmt.body) != 2:
-            return None
-        assign, cont = stmt.body
-        if not isinstance(cont, ast.Continue):
-            return None
-        if not isinstance(assign, ast.Assign):
-            return None
-        if len(assign.targets) != 1 or not isinstance(assign.targets[0], ast.Name):
-            return None
-        if assign.targets[0].id != stmt.test.id:
-            return None
-        if (
-            not isinstance(assign.value, ast.Constant)
-            or assign.value.value is not False
-        ):
-            return None
-        return stmt.test.id
-
-    def _emit_taq_ingest_loop_body(
-        self,
-        body: list[ast.stmt],
-    ) -> bool:
-        match = self._match_taq_ingest_loop_body(body)
-        if match is None:
-            return False
-        header_name, data_name, line_name, _split_name, bucket_expr = match
-        if header_name is not None:
-            header_val = self._load_local_value(header_name)
-            if header_val is None:
-                header_val = self.locals.get(header_name) or self.globals.get(
-                    header_name
-                )
-            if header_val is None:
-                return False
-            self.emit(MoltOp(kind="IF", args=[header_val], result=MoltValue("none")))
-            header_false = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=header_false))
-            self._emit_assign_target(
-                ast.Name(id=header_name, ctx=ast.Store()),
-                header_false,
-                None,
-            )
-            scope = self.loop_scopes[-1]
-            scope.continue_used = True
-            self.emit(
-                MoltOp(
-                    kind="JUMP", args=[scope.continue_label], result=MoltValue("none")
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-        data_val = self._load_local_value(data_name)
-        if data_val is None:
-            data_val = self.locals.get(data_name) or self.globals.get(data_name)
-        if data_val is None:
-            return False
-        line_val = self._load_local_value(line_name)
-        if line_val is None:
-            line_val = self.locals.get(line_name) or self.globals.get(line_name)
-        if line_val is None:
-            return False
-        bucket_val = self.visit(bucket_expr)
-        if bucket_val is None:
-            return False
-        res = MoltValue(self.next_var(), type_hint="bool")
+        stop = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
+        chunk = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[self._BYTEARRAY_FILL_CHUNK], result=chunk))
+        fill_value = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[fill], result=fill_value))
+        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+        start = self._load_local_value(
+            index.id, guard_unbound=False, binding_invalidated=True
+        )
+        container = self._load_local_value(
+            container_read.id, guard_unbound=False, binding_invalidated=True
+        )
+        assert start is not None and container is not None
+        declined = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=declined))
         self.emit(
             MoltOp(
-                kind="TAQ_INGEST_LINE",
-                args=[data_val, line_val, bucket_val],
-                result=res,
+                kind="STORE_VAR",
+                args=[declined],
+                result=MoltValue("none"),
+                metadata={"var": more_slot},
             )
         )
-        return True
+        exact_container = self._emit_is_exact_builtin(container, "bytearray")
+        self.emit(MoltOp(kind="IF", args=[exact_container], result=MoltValue("none")))
+        exact_start = self._emit_is_exact_builtin(start, "int")
+        self.emit(MoltOp(kind="IF", args=[exact_start], result=MoltValue("none")))
+        not_negative = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="LE", args=[zero, start], result=not_negative))
+        runs = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="LT", args=[start, stop], result=runs))
+        length = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="LEN", args=[container], result=length))
+        in_bounds = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="LE", args=[stop, length], result=in_bounds))
+        starts_inside = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="AND", args=[not_negative, runs], result=starts_inside))
+        admitted = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="AND", args=[starts_inside, in_bounds], result=admitted))
+        self.emit(MoltOp(kind="IF", args=[admitted], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="STORE_VAR",
+                args=[stop],
+                result=MoltValue("none"),
+                metadata={"var": end_slot},
+            )
+        )
+        chunk_end = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="ADD", args=[start, chunk], result=chunk_end))
+        short = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="LT", args=[chunk_end, stop], result=short))
+        self.emit(MoltOp(kind="IF", args=[short], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="STORE_VAR",
+                args=[chunk_end],
+                result=MoltValue("none"),
+                metadata={"var": end_slot},
+            )
+        )
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        end = MoltValue(self.next_var(), type_hint="int")
+        self.emit(
+            MoltOp(kind="LOAD_VAR", args=[], result=end, metadata={"var": end_slot})
+        )
+        self.emit(
+            MoltOp(
+                kind="BYTEARRAY_FILL_RANGE",
+                args=[container, start, end, fill_value],
+                result=MoltValue("none"),
+            )
+        )
+        self._store_local_value(index.id, end)
+        self.emit(
+            MoltOp(
+                kind="STORE_VAR",
+                args=[short],
+                result=MoltValue("none"),
+                metadata={"var": more_slot},
+            )
+        )
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        more = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(
+            MoltOp(kind="LOAD_VAR", args=[], result=more, metadata={"var": more_slot})
+        )
+        self.emit(
+            MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[more], result=MoltValue("none"))
+        )
+        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        emit_loop()
 
     def _emit_static_if_live_branch(self, branch: list[ast.stmt]) -> None:
         """Emit only the statically-live branch of a constant `if`.
@@ -1107,19 +1321,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         if branch and not self.is_async():
             assigned = self._collect_assigned_names(branch)
             if self.current_func_name == "molt_main":
-                module_backed = assigned
-                if module_backed:
-                    for name in sorted(module_backed):
-                        existing = self.globals.get(name)
-                        if existing is None:
-                            existing = self.locals.get(name)
-                        if existing is not None and self.module_obj is not None:
-                            self._emit_module_attr_set_on(
-                                self.module_obj, name, existing
-                            )
-                    self.module_global_mutations.update(module_backed)
-                for name in sorted(assigned - module_backed):
-                    self._box_local(name)
+                self._prepare_mutable_control_flow_bindings(assigned)
             else:
                 for name in sorted(assigned):
                     if name not in self.scope_assigned or name in self.closure_locals:
@@ -1183,12 +1385,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         try:
             self.control_flow_depth += 1
             try:
-                if not self.is_async() and self._emit_taq_ingest_loop_body(body):
-                    # The fused data path falls through; its header skip uses
-                    # this same latch, including any counted-loop increment.
-                    scope.body_terminated = False
-                else:
-                    scope.body_terminated = self._visit_block(body)
+                scope.body_terminated = self._visit_block(body)
             finally:
                 self.control_flow_depth -= 1
         finally:

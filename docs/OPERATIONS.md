@@ -157,12 +157,16 @@ Use this section when `python3 tools/check_stdlib_intrinsics.py` fails in CI or
 on-call triage.
 
 For agent triage, add `--json-out <local-report.json>`. The
-`molt.stdlib-intrinsics-audit.v1` report contains `ok`, `analysis_complete`, and
+`molt.stdlib-intrinsics-audit.v2` report contains `ok`, `analysis_complete`, and
 one ordered `diagnostics` list matching the console. Policy failures report all
 evaluated gates in one scan; source or manifest evaluation failures replace any
 stale report with `analysis_complete: false` and no fabricated coverage. Always
 check the exit status and these fields before consuming module counts.
-`private_facades` records static forwarding evidence, not runtime conformance.
+`facades` records static forwarding evidence, not runtime conformance. Public
+and private forwarding modules require all resolved implementation owners to be
+intrinsic-backed. Pure imports can forward a provider's target-dependent
+`__all__`; they do not evaluate exports during classification. Missing owners,
+mixed unproved owners, and unanchored forwarding cycles remain unadmitted.
 `--update-doc` publishes the generated public audit only when every gate passes.
 
 ### Standard First Commands
@@ -535,8 +539,10 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
 - **Backend IR lease custody**: CLI backend dispatch writes request IR as a
   JSON lease under `tmp/backend-ir-leases/` and passes `ir_path`/`--ir-file` to
   daemon and one-shot backends. The lease writer streams JSON directly to disk
-  instead of materializing a second full IR byte buffer, and leases are removed
-  after the compile request completes.
+  instead of materializing a second full IR byte buffer: CPython's C encoder
+  encodes each top-level member, and each element of a top-level array, so only
+  one element's text is resident and the bytes equal `_backend_ir_text`. Leases
+  are removed after the compile request completes.
 - **Daemon warm-hit probe path**: when cache keys are present, the build pipeline now lets the daemon send a probe-only request first and only encodes full IR after a daemon-declared miss. This preserves warm daemon hits without paying full IR encode/send cost on every run.
 - **Daemon socket placement**: sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`, or explicit `MOLT_BACKEND_DAEMON_SOCKET`) so shared/external volumes that do not support Unix sockets do not break daemon startup.
 - **Daemon lifecycle**: with the ordinary persistent target root, daemon logs

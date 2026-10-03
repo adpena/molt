@@ -66,14 +66,31 @@ Status legend:
 | `PySequence_Tuple` | tuple(o) | Missing | - |
 
 ### 2.4 Mapping (PyMapping_*)
+Both C header facades declare and link the ABI mapping owner through
+`include/molt/shared/_container_exports.h`. These rows describe implementation,
+not a claim that every target/version matrix cell has been verified.
+
 | Symbol | Semantics | Status | Notes |
 | --- | --- | --- | --- |
-| `PyMapping_Check` | is mapping? | Missing | - |
-| `PyMapping_Size` | len(o) | Partial | `include/molt/Python.h` maps to `molt_mapping_length`. |
-| `PyMapping_GetItemKey`| o[key] | Partial | `include/molt/Python.h` maps to `molt_mapping_getitem`/`PyMapping_GetItemString`. |
-| `PyMapping_SetItemString`| o[key] = v | Partial | `include/molt/Python.h` maps to `molt_mapping_setitem`. |
-| `PyMapping_Keys` | o.keys() | Partial | `include/molt/Python.h` maps to `molt_mapping_keys`. |
-| `PyMapping_Values` | o.values() | Partial | Header shim calls `values()` and returns the resulting view/list object. |
+| `PyMapping_Check` | mapping protocol inquiry | Partial | Linked ABI owner consults managed protocol facts or native mapping slots. |
+| `PyMapping_Size`, `PyMapping_Length` | mapping length | Partial | Linked ABI mapping-length owner. |
+| `PyMapping_GetItemString` | string-key lookup | Partial | Uses ordinary item access; native `mp_subscript` is honored. |
+| `PyMapping_SetItemString`, `PyMapping_DelItemString` | string-key mutation | Partial | Uses ordinary item assignment/deletion. |
+| `PyMapping_GetOptionalItem` | found/absent/error lookup | Partial | KeyError is absence; other lookup errors propagate. Version availability follows the C-API contract. |
+| `PyMapping_HasKey`, `PyMapping_HasKeyString` | error-suppressing key inquiry | Partial | Returns 0 on lookup failure. |
+| `PyMapping_HasKeyWithError`, `PyMapping_HasKeyStringWithError` | error-reporting key inquiry | Partial | Retains non-KeyError failures. Version availability follows the C-API contract. |
+| `PyMapping_Keys` | list snapshot of keys | Partial | Exact semantic lists retain identity; other method results materialize through their first iterator. |
+| `PyMapping_Values` | list snapshot of values | Partial | Uses the same runtime mapping-result conversion as keys. |
+| `PyMapping_Items` | list snapshot of items | Partial | Uses the same runtime mapping-result conversion as keys. |
+
+`PyDict_*` accessors share the runtime's borrowed backing-storage admission for
+exact dictionaries and managed subclasses. A non-dictionary is distinct from a
+backing-storage error; no-error getters preserve the caller's exception while
+suppressing new failures. Keys/values/items return snapshots. Merge traverses
+backing entries only when the source retains `dict.__iter__`; otherwise it
+uses the source's mapping methods. `_PyDict_GetItem_KnownHash` is the exported
+private supplied-hash lookup: it borrows the result, bypasses hash callbacks,
+and preserves errors while distinguishing a missing key. See the [extension ABI contract](../../contracts/libmolt_extension_abi_contract.md).
 
 ### 2.5 Exceptions (PyErr_*)
 | Symbol | Semantics | Status | Notes |

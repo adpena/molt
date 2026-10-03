@@ -1,9 +1,10 @@
 //! Generated heap-kind lifecycle dispatch.
 //!
 //! The generated kind token is the single dispatch key shared by reference
-//! counting and cyclic GC. `visit_owned_values` is the exhaustive strong-edge
-//! authority, including inline NaN-boxed values for Python introspection;
-//! `visit_owned_edges` is its heap-pointer projection for cyclic GC.
+//! counting and cyclic GC. `visit_payload_owned_values` is the exhaustive
+//! runtime-payload authority, including inline NaN-boxed values. Physical C
+//! owners come from the bridge's mixed-edge visitor. `visit_owned_values` and
+//! `visit_owned_edges` retain their managed-only lifecycle projections.
 //! `clear_cycle_edges`
 //! publishes an empty/cleared state before releasing the mutable subset used to
 //! break cycles; immutable ownership edges remain for terminal deallocation.
@@ -66,11 +67,13 @@ pub(crate) enum DetachedResource {
     /// after every runtime-owned tuple edge has been detached.
     RuntimeView(molt_cpython_abi::bridge::RetiredRuntimeView),
     ListProjection(molt_cpython_abi::bridge::RetiredClearedListProjection),
-    ExceptionProjection(molt_cpython_abi::bridge::RetiredExceptionProjection),
+    OwnedCFields(molt_cpython_abi::bridge::RetiredOwnedCFields),
+    TypeProjection(molt_cpython_abi::bridge::RetiredTypeCycleProjection),
     IoSocket(u64),
     Websocket(u64),
     Native(super::native_handle::DetachedNativeHandle),
     Foreign(usize),
+    NativeBuffer(molt_cpython_abi::api::memory::MemoryViewLease),
     FileHandle {
         identity: usize,
         handle: *mut super::MoltFileHandle,
@@ -197,7 +200,8 @@ impl DetachedEdgeSink {
             let release = || match resource {
                 DetachedResource::RuntimeView(view) => drop(view),
                 DetachedResource::ListProjection(projection) => drop(projection),
-                DetachedResource::ExceptionProjection(projection) => drop(projection),
+                DetachedResource::OwnedCFields(fields) => drop(fields),
+                DetachedResource::TypeProjection(fields) => drop(fields),
                 DetachedResource::IoSocket(bits) => {
                     crate::io_wait_release_detached_resource(py, bits)
                 }
@@ -208,6 +212,7 @@ impl DetachedEdgeSink {
                     super::native_handle::native_handle_release(handle)
                 }
                 DetachedResource::Foreign(pointer) => super::foreign::foreign_release(pointer),
+                DetachedResource::NativeBuffer(lease) => drop(lease),
                 DetachedResource::FileHandle { identity, handle } => unsafe {
                     if !handle.is_null() {
                         super::flush_file_handle_on_drop(py, &mut *handle);
@@ -357,33 +362,51 @@ unsafe fn visit_native_descriptor_values(ptr: *mut u8, visit: &mut dyn FnMut(u64
 #[inline]
 fn child_requires_tracking(ptr: *mut u8) -> bool {
     match heap_track_projection(unsafe { object_type_id(ptr) }) {
-        Some(HeapTrackProjection::Always) => true,
-        Some(
-            HeapTrackProjection::DictDynamic
-            | HeapTrackProjection::ForeignDynamic
-            | HeapTrackProjection::TupleDynamic,
-        ) => unsafe { super::gc::gc_is_tracked(ptr) },
+        // Mutable GC-capable children may acquire a back-edge after insertion.
+        // Only an untracked exact tuple is permanently atomic (CPython's
+        // _PyObject_GC_MAY_BE_TRACKED), not an untracked dictionary.
+        Some(HeapTrackProjection::Always | HeapTrackProjection::DictDynamic) => true,
+        Some(HeapTrackProjection::TupleDynamic) => unsafe {
+            super::native_instance::has_fields(ptr) || super::gc::gc_is_tracked(ptr)
+        },
+        Some(HeapTrackProjection::NativeSubtype) => unsafe {
+            super::native_instance::has_fields(ptr)
+        },
+        Some(HeapTrackProjection::ForeignDynamic) => {
+            let address = unsafe { super::foreign::foreign_ptr_from_obj(ptr) };
+            unsafe { molt_cpython_abi::bridge::molt_foreign_object_is_gc_capable(address) }
+        }
         Some(HeapTrackProjection::Never) | None => false,
     }
 }
 
+pub(crate) fn value_requires_tracking(bits: u64) -> bool {
+    obj_from_bits(bits)
+        .as_ptr()
+        .is_some_and(child_requires_tracking)
+}
+
 /// Compute the current CPython-style dynamic tracking projection.
 ///
-/// New dynamic containers begin conservatively tracked. Mutation/finalization
-/// sites call this after publishing the new contents; immutable tuples are also
-/// reprojected during collection. A false result is valid only while all strong
-/// children are atomic/untracked.
+/// Dynamic containers are scanned at construction or collection, never once per
+/// dictionary write. A false result is valid only while all strong children are
+/// permanently atomic; mutable untracked children still require tracking.
 pub(crate) unsafe fn projected_track_state(py: &PyToken<'_>, ptr: *mut u8) -> bool {
-    let type_id = unsafe { object_type_id(ptr) };
-    match heap_track_projection(type_id).expect("unknown heap kind in track projection") {
+    match heap_track_projection(unsafe { object_type_id(ptr) })
+        .expect("unknown heap kind in track projection")
+    {
         HeapTrackProjection::Never => false,
         HeapTrackProjection::Always => true,
+        HeapTrackProjection::NativeSubtype => unsafe { super::native_instance::has_fields(ptr) },
         HeapTrackProjection::ForeignDynamic => {
             let address = unsafe { super::foreign::foreign_ptr_from_obj(ptr) };
             (unsafe { molt_cpython_abi::bridge::molt_foreign_object_is_gc_capable(address) })
                 && super::gc::native_gc_is_enrolled(address)
         }
         HeapTrackProjection::DictDynamic | HeapTrackProjection::TupleDynamic => {
+            if unsafe { super::native_instance::has_fields(ptr) } {
+                return true;
+            }
             let mut tracked = false;
             unsafe {
                 visit_owned_edges(py, ptr, &mut |child| {
@@ -395,23 +418,35 @@ pub(crate) unsafe fn projected_track_state(py: &PyToken<'_>, ptr: *mut u8) -> bo
     }
 }
 
-/// Side-effect-free, deterministic enumeration of every terminally-owned Python
-/// value. Inline values are retained because `gc.get_referents()` exposes them.
+/// Side-effect-free enumeration of runtime payload ownership, including inline
+/// values. Independently owned physical C fields are visited separately.
 ///
 /// The match is deliberately exhaustive over the generated per-kind token: adding
 /// a heap kind cannot silently inherit an empty traversal lane.
-pub(crate) unsafe fn visit_owned_values(
+pub(crate) unsafe fn visit_payload_owned_values(
     py: &PyToken<'_>,
     ptr: *mut u8,
     visit: &mut dyn FnMut(u64),
 ) {
     unsafe { visit_common_class_edge(ptr, visit) };
+    if unsafe { super::native_instance::has_fields(ptr) } {
+        unsafe { visit_class_shaped_values(py, ptr, visit) };
+    }
     // Activation custody is common sidecar ownership, independent of the task's
     // payload shape or generator/coroutine kind. Preserve alias multiplicity.
     for bits in super::aux_header::object_frame_context_bits(ptr) {
         if bits != 0 {
             visit_bits(bits, visit);
         }
+    }
+    let awaited = super::aux_header::object_frame_awaited_bits(ptr);
+    if awaited != 0 {
+        visit_bits(awaited, visit);
+    }
+    // The frame payload an observer attached to a stateful activation.
+    let frame_bindings = super::aux_header::object_frame_bindings_bits(ptr);
+    if frame_bindings != 0 {
+        visit_bits(frame_bindings, visit);
     }
     let type_id = unsafe { object_type_id(ptr) };
     let handler = heap_lifecycle_handler(type_id).expect("unknown heap kind in traversal");
@@ -427,18 +462,15 @@ pub(crate) unsafe fn visit_owned_values(
                 }
             }
             HeapLifecycleHandler::List => {
-                crate::object::seq_access::with_borrowed(ptr, |items| {
-                    for &bits in items {
-                        visit_bits(bits, visit);
-                    }
-                });
-                if (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
-                    for bits in molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .list_view_handles_for_gc(MoltObject::from_ptr(ptr).bits())
-                    {
-                        visit_bits(bits, visit);
-                    }
+                // Unpublished rollback may reach traversal before prefix allocation.
+                if !super::layout::seq_vec_ptr(ptr).is_null() {
+                    crate::object::seq_access::with_borrowed(ptr, |items| {
+                        for &bits in items {
+                            visit_bits(bits, visit);
+                        }
+                    });
                 }
+                visit_class_shaped_values(py, ptr, visit);
             }
             HeapLifecycleHandler::Tuple => {
                 crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
@@ -467,13 +499,6 @@ pub(crate) unsafe fn visit_owned_values(
                 crate::builtins::exceptions::exception_visit_owned_edges(ptr, |bits| {
                     visit_bits(bits, visit)
                 });
-                if (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
-                    for bits in molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .exception_view_handles_for_gc(MoltObject::from_ptr(ptr).bits())
-                    {
-                        visit_bits(bits, visit);
-                    }
-                }
             }
             HeapLifecycleHandler::WeakContainerState => {
                 super::weak_container::weakcontainer_traverse(ptr, &mut |child| {
@@ -507,13 +532,12 @@ pub(crate) unsafe fn visit_owned_values(
                 visit_bits(super::memoryview_format_bits(ptr), visit);
             }
             HeapLifecycleHandler::Function => {
-                if (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW)
-                    && let Some(bits) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .cfunction_view_handles_for_gc(MoltObject::from_ptr(ptr).bits())
-                {
-                    visit_bits(bits, visit);
+                for field in super::function_metadata::FunctionMetadataField::ALL {
+                    if let Some(bits) = field.load(ptr) {
+                        visit_bits(bits, visit);
+                    }
                 }
-                visit_bits(super::layout::function_dict_bits(ptr), visit);
+                visit_bits(instance_dict_bits(ptr), visit);
                 visit_bits(super::layout::function_annotations_bits(ptr), visit);
                 visit_bits(super::layout::function_annotate_bits(ptr), visit);
                 visit_bits(super::layout::function_code_bits(ptr), visit);
@@ -524,9 +548,10 @@ pub(crate) unsafe fn visit_owned_values(
             HeapLifecycleHandler::BoundMethod => {
                 visit_bits(super::layout::bound_method_func_bits(ptr), visit);
                 visit_bits(super::layout::bound_method_self_bits(ptr), visit);
+                visit_bits(super::layout::bound_method_module_bits(ptr), visit);
             }
             HeapLifecycleHandler::Module => {
-                visit_bits(super::layout::module_dict_bits(ptr), visit);
+                visit_class_shaped_values(py, ptr, visit);
                 visit_bits(super::layout::module_name_bits(ptr), visit);
                 crate::c_api::c_api_module_visit_owned_edge(py, ptr, |bits| {
                     visit_bits(bits, visit)
@@ -603,6 +628,9 @@ pub(crate) unsafe fn visit_owned_values(
                     );
                 }
             }
+            HeapLifecycleHandler::FrameBindings => {
+                crate::builtins::frames::frame_bindings_visit(ptr, visit);
+            }
             HeapLifecycleHandler::ContextManager => {
                 visit_bits(crate::builtins::context::context_payload_bits(ptr), visit);
             }
@@ -615,8 +643,8 @@ pub(crate) unsafe fn visit_owned_values(
                 }
                 let desc = super::dataclass_desc_ptr(ptr);
                 if !desc.is_null() {
-                    for &bits in &(*desc).field_keys {
-                        visit_bits(bits, visit);
+                    for field in &(*desc).field_layout {
+                        visit_bits(field.name, visit);
                     }
                 }
                 visit_bits(super::instance_dict_bits(ptr), visit);
@@ -664,6 +692,9 @@ pub(crate) unsafe fn visit_owned_values(
             HeapLifecycleHandler::FileHandle => {
                 let handle = super::file_handle_ptr(ptr);
                 if !handle.is_null() {
+                    if (*handle).dict_bits != 0 {
+                        visit_bits((*handle).dict_bits, visit);
+                    }
                     visit_bits((*handle).name_bits, visit);
                     visit_bits((*handle).buffer_bits, visit);
                     visit_bits((*handle).mem_bits, visit);
@@ -686,7 +717,6 @@ pub(crate) unsafe fn visit_owned_values(
             HeapLifecycleHandler::String
             | HeapLifecycleHandler::Bytes
             | HeapLifecycleHandler::Bytearray
-            | HeapLifecycleHandler::Intarray
             | HeapLifecycleHandler::Bigint
             | HeapLifecycleHandler::Complex
             | HeapLifecycleHandler::NotImplemented
@@ -708,10 +738,81 @@ pub(crate) unsafe fn visit_owned_values(
     }
 }
 
-/// Heap-pointer projection of [`visit_owned_values`], used by reference-cycle
-/// graph algorithms and dynamic tracking. Keeping the projection here prevents
-/// the collector and Python introspection APIs from growing parallel per-kind
-/// traversal authorities.
+/// Enumerate physical C ownership once, retaining both managed and native edges.
+pub(crate) unsafe fn visit_physical_owned_edges(
+    ptr: *mut u8,
+    visit: &mut dyn FnMut(molt_cpython_abi::NativeGcEdge),
+) {
+    if unsafe { (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW) } {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .visit_physical_owned_edges_for_gc(MoltObject::from_ptr(ptr).bits(), visit);
+    }
+}
+
+/// Callback-free local ownership inventory. Capacity and tracking consumers use
+/// this projection because module-state ownership retires through m_clear/free.
+unsafe fn visit_local_owned_gc_edges(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    visit: &mut dyn FnMut(molt_cpython_abi::NativeGcEdge),
+) {
+    unsafe {
+        visit_payload_owned_values(py, ptr, &mut |bits| {
+            visit(molt_cpython_abi::NativeGcEdge {
+                kind: molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8,
+                reserved: [0; 7],
+                value: bits,
+            })
+        });
+        visit_physical_owned_edges(ptr, visit);
+        if object_type_id(ptr) == super::TYPE_ID_MEMORYVIEW
+            && let Some(lease) = (*super::memoryview_ptr(ptr)).native_lease.as_ref()
+            && let Some(edge) = lease.gc_edge()
+        {
+            visit(edge);
+        }
+    }
+}
+
+/// The complete mixed graph adds extension-owned module state to local owners.
+/// Collection streams it without allocating a per-node edge snapshot; the public
+/// C traversal boundary snapshots and pins it before invoking its visitor.
+pub(crate) unsafe fn visit_owned_gc_edges(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    visit: &mut dyn FnMut(molt_cpython_abi::NativeGcEdge),
+) -> i32 {
+    unsafe {
+        visit_local_owned_gc_edges(py, ptr, visit);
+        if object_type_id(ptr) == super::TYPE_ID_MODULE {
+            return crate::c_api::c_api_module_visit_native_edges(py, ptr, visit);
+        }
+    }
+    0
+}
+
+/// Managed-value projection used by lifecycle capacity and edge-equivalence
+/// consumers. Native physical owners are released by their detached resources,
+/// not represented as fabricated runtime handles in the managed edge sink.
+pub(crate) unsafe fn visit_owned_values(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    visit: &mut dyn FnMut(u64),
+) {
+    unsafe {
+        // Module-state owners retire through a resource callback, never this
+        // managed sink. Capacity/tracking must not invoke extension traversal.
+        visit_local_owned_gc_edges(py, ptr, &mut |edge| {
+            if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8 {
+                visit_bits(edge.value, visit);
+            }
+        });
+    }
+}
+
+/// Heap-pointer projection of [`visit_owned_values`] for managed lifecycle
+/// counting and dynamic tracking. Mixed GC consumes visit_owned_gc_edges so
+/// native and module-state targets retain their physical ownership identity.
 pub(crate) unsafe fn visit_owned_edges(
     py: &PyToken<'_>,
     ptr: *mut u8,
@@ -733,11 +834,17 @@ pub(crate) unsafe fn detached_resource_count(ptr: *mut u8) -> usize {
         unsafe { (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW) }
             && matches!(
                 handler,
-                HeapLifecycleHandler::List | HeapLifecycleHandler::Exception
+                HeapLifecycleHandler::List
+                    | HeapLifecycleHandler::Exception
+                    | HeapLifecycleHandler::Function
+                    | HeapLifecycleHandler::Type
             ),
     );
     projection
         + match handler {
+            HeapLifecycleHandler::Memoryview => {
+                usize::from(unsafe { (*super::memoryview_ptr(ptr)).native_lease.is_some() })
+            }
             HeapLifecycleHandler::NativeHandle
             | HeapLifecycleHandler::Foreign
             | HeapLifecycleHandler::FileHandle => 1,
@@ -796,7 +903,6 @@ pub(crate) unsafe fn terminal_detach_capacity(py: &PyToken<'_>, ptr: *mut u8) ->
 /// function has published every source empty.
 pub(crate) unsafe fn detach_generator_owned_edges(ptr: *mut u8, sink: &mut DetachedEdgeSink) {
     unsafe {
-        let none = MoltObject::none().bits();
         for offset in [
             crate::GEN_SEND_OFFSET,
             crate::GEN_THROW_OFFSET,
@@ -804,7 +910,7 @@ pub(crate) unsafe fn detach_generator_owned_edges(ptr: *mut u8, sink: &mut Detac
             crate::GEN_EXC_DEPTH_OFFSET,
             crate::GEN_YIELD_FROM_OFFSET,
         ] {
-            sink.detach_if_heap((ptr.add(offset) as *mut u64).replace(none));
+            sink.detach_if_heap(super::payload_refs::take(ptr, offset));
         }
         for bits in crate::builtins::exceptions::generator_exception_stack_take(ptr) {
             sink.detach_if_heap(bits);
@@ -815,9 +921,37 @@ pub(crate) unsafe fn detach_generator_owned_edges(ptr: *mut u8, sink: &mut Detac
         let payload_size = super::object_payload_size(ptr);
         debug_assert_eq!(payload_size % std::mem::size_of::<u64>(), 0);
         for offset in (crate::GEN_CONTROL_SIZE..payload_size).step_by(std::mem::size_of::<u64>()) {
-            sink.detach_if_heap((ptr.add(offset) as *mut u64).replace(none));
+            sink.detach_if_heap(super::payload_refs::take(ptr, offset));
         }
     }
+}
+
+/// Close a native coroutine that has never entered its compiled body. The
+/// activation's code identity survives for introspection; captures, namespaces,
+/// delegation and scheduler owners retire through their existing authorities.
+/// Caller owns the coroutine and has verified it is neither started nor running.
+pub(crate) unsafe fn close_unstarted_coroutine(py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    // CPython 3.12/3.13 mark a created coroutine completed without clearing its
+    // frame storage. 3.14 clears that storage during close, before returning.
+    if !crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
+        crate::task_mark_done(py, ptr);
+        return true;
+    }
+    let (edges, resources) = unsafe { terminal_detach_capacity(py, ptr) };
+    let Some(mut sink) = DetachedEdgeSink::try_with_capacities(edges, resources) else {
+        crate::raise_exception::<()>(py, "MemoryError", "cannot retire coroutine activation");
+        return false;
+    };
+    crate::task_mark_done(py, ptr);
+    unsafe {
+        for bits in super::aux_header::object_take_frame_namespaces_bits(ptr) {
+            sink.detach_if_heap(bits);
+        }
+        sink.detach_if_heap(super::aux_header::object_take_frame_awaited_bits(ptr));
+        super::object_shape_clear_cycle_edges(py, ptr, &mut sink);
+    }
+    sink.release_all(py);
+    true
 }
 
 #[inline]
@@ -867,6 +1001,36 @@ unsafe fn clear_wrapper_prefix_edges(py: &PyToken<'_>, ptr: *mut u8, sink: &mut 
 /// Immutable edges and the common class edge stay owned until terminal dealloc.
 #[cfg(test)]
 pub(crate) unsafe fn clear_cycle_edges(py: &PyToken<'_>, ptr: *mut u8) {
+    assert_eq!(unsafe { try_clear_cycle_edges(py, ptr) }, 0);
+}
+
+/// Fallible public single-object clear uses the collector's same detach sink.
+/// Extension clear precedes namespace mutation; detached owners release only
+/// after every local source has published its empty state.
+pub(crate) unsafe fn try_clear_cycle_edges(py: &PyToken<'_>, ptr: *mut u8) -> i32 {
+    let Some(mut sink) = DetachedEdgeSink::try_with_capacities(0, 0) else {
+        crate::raise_exception::<()>(py, "MemoryError", "cannot reserve builtin GC clear edges");
+        return -1;
+    };
+    let status = unsafe { try_clear_cycle_edges_with_sink(py, ptr, &mut sink) };
+    molt_cpython_abi::api::errors::with_preserved_error(|| sink.release_all(py));
+    status
+}
+
+/// Shared public/collector clear boundary. m_clear can reenter and grow local
+/// storage, so reserve against the resulting inventory before detaching it.
+/// Terminal destruction uses the callback-free detach primitive after m_free.
+pub(crate) unsafe fn try_clear_cycle_edges_with_sink(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    sink: &mut DetachedEdgeSink,
+) -> i32 {
+    if unsafe { object_type_id(ptr) } == super::TYPE_ID_MODULE {
+        let status = crate::c_api::c_api_module_clear_native_edges(py, ptr);
+        if status != 0 {
+            return status;
+        }
+    }
     let mut count = 0usize;
     unsafe {
         visit_owned_edges(py, ptr, &mut |_| {
@@ -876,10 +1040,21 @@ pub(crate) unsafe fn clear_cycle_edges(py: &PyToken<'_>, ptr: *mut u8) {
         })
     };
     let resources = unsafe { detached_resource_count(ptr) };
-    let mut sink = DetachedEdgeSink::try_with_capacities(count, resources)
-        .expect("single-object clear edge reservation failed");
-    unsafe { clear_cycle_edges_with_sink(py, ptr, &mut sink) };
-    sink.release_all(py);
+    if !sink.try_ensure_capacities(
+        sink.edges
+            .len()
+            .checked_add(count)
+            .unwrap_or_else(|| std::process::abort()),
+        sink.resources
+            .len()
+            .checked_add(resources)
+            .unwrap_or_else(|| std::process::abort()),
+    ) {
+        crate::raise_exception::<()>(py, "MemoryError", "cannot reserve builtin GC clear edges");
+        return -1;
+    }
+    unsafe { clear_cycle_edges_with_sink(py, ptr, sink) };
+    0
 }
 
 pub(crate) unsafe fn clear_cycle_edges_with_sink(
@@ -908,35 +1083,46 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
     let type_id = unsafe { object_type_id(ptr) };
     let handler = heap_lifecycle_handler(type_id).expect("unknown heap kind in clear");
     unsafe {
+        // A frame object observing an activation takes the bindings over, or its
+        // payload stops reading the task, before any task owner is detached.
+        crate::builtins::frames::activation_detach_frame_bindings(py, ptr, &mut |bits| {
+            sink.detach_if_heap(bits)
+        });
         // Clear the complete context before payload detachment can release owners.
         // Terminal detach uses this same path; a preceding GC clear is idempotent.
         detach(sink, super::aux_header::object_take_frame_context_bits(ptr));
+        sink.detach_if_heap(super::aux_header::object_take_frame_awaited_bits(ptr));
+        if super::native_instance::has_fields(ptr) {
+            clear_class_shaped_edges(py, ptr, sink);
+        }
         if handler == HeapLifecycleHandler::Weakref {
             super::weakref::weakref_object_detach_owned_edges(py, ptr, sink);
         }
         match handler {
             HeapLifecycleHandler::List => {
                 let vec_ptr = super::layout::seq_vec_ptr(ptr);
-                if vec_ptr.is_null() {
-                    return;
+                if !vec_ptr.is_null() {
+                    let mutation_guard = super::backing::tracked_vec_mutation_lock(vec_ptr);
+                    let detached = super::backing::tracked_vec_take_contents(vec_ptr);
+                    let header = &*header_from_obj_ptr(ptr);
+                    let clear_abi = header.has_flag(HEADER_FLAG_HAS_ABI_VIEW);
+                    header.fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
+                    super::backing::tracked_vec_bump_mutation_epoch(vec_ptr);
+                    drop(mutation_guard);
+                    if clear_abi
+                        && let Some(projection) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                            .clear_list_view(MoltObject::from_ptr(ptr).bits())
+                    {
+                        sink.detach_resource(DetachedResource::ListProjection(projection));
+                    }
+                    for &bits in detached.iter().rev() {
+                        sink.detach_if_heap(bits);
+                    }
+                    drop(detached);
                 }
-                let mutation_guard = super::backing::tracked_vec_mutation_lock(vec_ptr);
-                let detached = super::backing::tracked_vec_take_contents(vec_ptr);
-                let header = &*header_from_obj_ptr(ptr);
-                let clear_abi = header.has_flag(HEADER_FLAG_HAS_ABI_VIEW);
-                header.fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
-                super::backing::tracked_vec_bump_mutation_epoch(vec_ptr);
-                drop(mutation_guard);
-                if clear_abi
-                    && let Some(projection) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .clear_list_view(MoltObject::from_ptr(ptr).bits())
-                {
-                    sink.detach_resource(DetachedResource::ListProjection(projection));
-                }
-                for &bits in detached.iter() {
-                    sink.detach_if_heap(bits);
-                }
-                drop(detached);
+                // Fields and the dictionary are independent owners, including
+                // when native prefix allocation failed before publication.
+                clear_class_shaped_edges(py, ptr, sink);
             }
             HeapLifecycleHandler::Dict => {
                 let order = crate::builtins::containers::dict_order_ptr(ptr);
@@ -976,9 +1162,9 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 let detached = crate::builtins::exceptions::exception_detach_owned_edges(ptr);
                 if (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW)
                     && let Some(projection) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .clear_exception_view_fields(MoltObject::from_ptr(ptr).bits())
+                        .clear_owned_c_fields(MoltObject::from_ptr(ptr).bits())
                 {
-                    sink.detach_resource(DetachedResource::ExceptionProjection(projection));
+                    sink.detach_resource(DetachedResource::OwnedCFields(projection));
                 }
                 crate::builtins::exceptions::exception_move_detached_edges(detached, sink);
             }
@@ -1022,20 +1208,58 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 }
             }
             HeapLifecycleHandler::Function => {
-                detach(sink, detach_slots(ptr, [2, 3, 4, 6, 7, 9, 11]));
+                for field in super::function_metadata::FunctionMetadataField::ALL {
+                    sink.detach_if_heap(field.take(ptr));
+                }
+                let dictionary = super::instance_dict_bits_ptr(ptr);
+                sink.detach_if_heap(std::mem::replace(&mut *dictionary, 0));
+                detach(sink, detach_slots(ptr, [3, 4, 6, 7, 9, 11]));
+                if (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW)
+                    && let Some(fields) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .clear_owned_c_fields(MoltObject::from_ptr(ptr).bits())
+                {
+                    sink.detach_resource(DetachedResource::OwnedCFields(fields));
+                }
             }
             HeapLifecycleHandler::Cell => {
                 let old = super::cells::cell_detach_value(ptr, crate::missing_bits(py));
                 sink.detach_if_heap(old);
             }
+            // A binding payload releases what its frame object owns in CPython's
+            // order for the path that ends it: destruction (`frame_dealloc`) or
+            // cycle collection (`frame_tp_clear`). A clear before destruction
+            // leaves nothing for the destruction to release.
+            HeapLifecycleHandler::FrameBindings => {
+                let flags = (*header_from_obj_ptr(ptr)).load_synchronized_flags();
+                let entry = if flags & super::HEADER_FLAG_DEALLOCATING != 0 {
+                    crate::builtins::frames::FrameRelease::Destroy
+                } else {
+                    crate::builtins::frames::FrameRelease::Clear
+                };
+                crate::builtins::frames::frame_bindings_detach(ptr, entry, |bits| {
+                    sink.detach_if_heap(bits)
+                });
+            }
             HeapLifecycleHandler::Module => {
-                detach(sink, detach_slots(ptr, [0, 1]));
-                if let Some(bits) = crate::c_api::c_api_module_detach_on_teardown(py, ptr) {
-                    sink.detach_if_heap(bits);
-                }
+                clear_class_shaped_edges(py, ptr, sink);
+                detach(sink, detach_slots(ptr, [0]));
             }
             HeapLifecycleHandler::Type => {
-                detach(sink, super::class_storage::detach_class_references(ptr));
+                detach(
+                    sink,
+                    super::class_storage::detach_class_references(
+                        ptr,
+                        super::class_storage::ClassReferenceRelease::Cycle,
+                    ),
+                );
+                super::class_refresh_declared_finalizer_flag(py, ptr);
+                // GC clears the semantic MRO/dictionary and their physical C
+                // mirrors together, preserving identity for native owners.
+                if let Some(fields) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .clear_type_view_cycle_edges(MoltObject::from_ptr(ptr).bits())
+                {
+                    sink.detach_resource(DetachedResource::TypeProjection(fields));
+                }
             }
             HeapLifecycleHandler::Dataclass => {
                 let fields = super::dataclass_fields_ptr(ptr);
@@ -1048,7 +1272,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 let detached_keys = if desc.is_null() {
                     Vec::new()
                 } else {
-                    std::mem::take(&mut (*desc).field_keys)
+                    std::mem::take(&mut (*desc).field_layout)
                 };
                 let dict = super::dataclass_dict_bits_ptr(ptr);
                 let detached_dict = if dict.is_null() {
@@ -1060,7 +1284,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                     sink,
                     detached_fields
                         .into_iter()
-                        .chain(detached_keys)
+                        .chain(detached_keys.into_iter().map(|field| field.name))
                         .chain(std::iter::once(detached_dict)),
                 );
             }
@@ -1074,6 +1298,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 let handle = super::file_handle_ptr(ptr);
                 if !handle.is_null() {
                     let detached = [
+                        std::mem::replace(&mut (*handle).dict_bits, 0),
                         std::mem::replace(&mut (*handle).name_bits, MoltObject::none().bits()),
                         std::mem::replace(&mut (*handle).buffer_bits, MoltObject::none().bits()),
                         std::mem::replace(&mut (*handle).mem_bits, MoltObject::none().bits()),
@@ -1086,15 +1311,19 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                     handle,
                 });
             }
+            HeapLifecycleHandler::Tuple => {
+                // Immutable items remain; shared native fields were cleared above.
+            }
+            HeapLifecycleHandler::BoundMethod => {
+                sink.detach_if_heap(super::layout::bound_method_take_module(ptr))
+            }
             // Immutable tracked owners intentionally have no tp_clear. Their edges
             // remain stable and a mutable peer breaks every collectable cycle.
-            HeapLifecycleHandler::Tuple
-            | HeapLifecycleHandler::DictKeysView
+            HeapLifecycleHandler::DictKeysView
             | HeapLifecycleHandler::DictValuesView
             | HeapLifecycleHandler::DictItemsView
             | HeapLifecycleHandler::Slice
             | HeapLifecycleHandler::Memoryview
-            | HeapLifecycleHandler::BoundMethod
             | HeapLifecycleHandler::Super
             | HeapLifecycleHandler::Frozenset
             | HeapLifecycleHandler::Enumerate
@@ -1114,7 +1343,6 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
             | HeapLifecycleHandler::Bytearray
             | HeapLifecycleHandler::Range
             | HeapLifecycleHandler::Buffer2d
-            | HeapLifecycleHandler::Intarray
             | HeapLifecycleHandler::Bigint
             | HeapLifecycleHandler::Complex
             | HeapLifecycleHandler::Callargs
@@ -1162,6 +1390,19 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
         .expect("unknown heap kind in terminal detach");
     unsafe {
         match handler {
+            HeapLifecycleHandler::Module => {
+                if let Some(bits) = crate::c_api::c_api_module_detach_on_teardown(py, ptr) {
+                    sink.detach_if_heap(bits);
+                }
+            }
+            HeapLifecycleHandler::Type => {
+                for bits in super::class_storage::detach_class_references(
+                    ptr,
+                    super::class_storage::ClassReferenceRelease::Terminal,
+                ) {
+                    sink.detach_if_heap(bits);
+                }
+            }
             HeapLifecycleHandler::Tuple => {
                 crate::object::seq_access::detach_tuple_edges(ptr, |bits| {
                     sink.detach_if_heap(bits)
@@ -1190,16 +1431,24 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             | HeapLifecycleHandler::DictItemsView
             | HeapLifecycleHandler::Reversed
             | HeapLifecycleHandler::Union => detach_slots(ptr, [0], sink),
-            HeapLifecycleHandler::BoundMethod
-            | HeapLifecycleHandler::GenericAlias
-            | HeapLifecycleHandler::Filter => detach_slots(ptr, [0, 1], sink),
+            HeapLifecycleHandler::BoundMethod => {
+                for edge in super::layout::bound_method_take_edges(ptr) {
+                    sink.detach_if_heap(edge);
+                }
+            }
+            HeapLifecycleHandler::GenericAlias | HeapLifecycleHandler::Filter => {
+                detach_slots(ptr, [0, 1], sink)
+            }
             HeapLifecycleHandler::Super => detach_slots(ptr, [0, 1, 2], sink),
             HeapLifecycleHandler::Slice | HeapLifecycleHandler::Range => {
                 detach_slots(ptr, [0, 1, 2], sink)
             }
             HeapLifecycleHandler::Memoryview => {
                 let view = super::memoryview_ptr(ptr);
-                let (owner, base) = super::buffer_exports::detach_memoryview_owner(ptr);
+                let (owner, base, native) = super::buffer_exports::detach_memoryview_owner(ptr);
+                if let Some(lease) = native {
+                    sink.detach_resource(DetachedResource::NativeBuffer(lease));
+                }
                 sink.detach_if_heap(owner);
                 sink.detach_if_heap(base);
                 sink.detach_if_heap(std::mem::replace(
@@ -1269,7 +1518,7 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             HeapLifecycleHandler::ListBuilder => {
                 let values = *(ptr as *mut *mut Vec<u64>);
                 if !values.is_null() {
-                    for bits in std::mem::take(&mut *values) {
+                    for bits in std::mem::take(&mut *values).into_iter().rev() {
                         sink.detach_if_heap(bits);
                     }
                 }
@@ -1299,8 +1548,7 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             | HeapLifecycleHandler::Iter
             | HeapLifecycleHandler::Function
             | HeapLifecycleHandler::Cell
-            | HeapLifecycleHandler::Module
-            | HeapLifecycleHandler::Type
+            | HeapLifecycleHandler::FrameBindings
             | HeapLifecycleHandler::Dataclass
             | HeapLifecycleHandler::Generator
             | HeapLifecycleHandler::AsyncGenerator
@@ -1308,7 +1556,6 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             | HeapLifecycleHandler::String
             | HeapLifecycleHandler::Bytes
             | HeapLifecycleHandler::Bytearray
-            | HeapLifecycleHandler::Intarray
             | HeapLifecycleHandler::Bigint
             | HeapLifecycleHandler::Complex
             | HeapLifecycleHandler::NotImplemented

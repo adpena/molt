@@ -35,13 +35,18 @@
 //!   [`crate::tir::ssa`]). An opaque call may reach *any* function (including
 //!   back into this one), so it is conservatively a recursion-capable edge.
 //!
-//! [`OpCode::CallBuiltin`] is deliberately **not** a call edge: it lowers to a
-//! direct runtime-helper call (`range`, `print`, `bool`, …), never to a
-//! user-defined Python function, and the legacy SimpleIR leaf scan likewise does
-//! not treat `call_builtin` as a user-level call. Treating it as an edge would
-//! make the [`CallGraph::leaf_functions`] set a strict *subset* of the legacy
-//! one — under-claiming leaves (a missed optimization), but more importantly it
-//! would diverge from the behavioral baseline this S4 arc must preserve.
+//! [`OpCode::CallBuiltin`] is an opaque call edge. Public names can resolve
+//! to Python replacements, and dedicated runtime primitives may themselves
+//! invoke Python protocols. Acquiring a builtin reference can also invoke a
+//! custom namespace mapping; its preserved kind records the same opaque edge.
+//! Dedicated module namespace reads have the same callback capability:
+//! global lookup admits mapping callbacks, while module attributes, names,
+//! and from-import acquisition admit module attribute callbacks. The same
+//! operation-aware effect authority covers arithmetic, predicates, iteration,
+//! attribute/index mutation, preserved runtime operations, asynchronous-work
+//! observations, and explicit releases. Exact primitive and typed-slot facts
+//! discharge only proved callback paths; impurity alone is not a call edge.
+//! Final native leaf metadata consumes bodies after lifetime/drop finalization.
 //!
 //! ## Generator poll edges
 //!
@@ -60,21 +65,16 @@
 //! a [`CallGraph::leaf_functions`] member. A callee that "makes no call of its
 //! own" cannot start or extend a recursion cycle through itself, so skipping the
 //! guard is sound. [`CallGraph::leaf_functions`] therefore returns exactly the
-//! functions with **no outgoing static-or-opaque call edge** — which is exactly
-//! what the legacy SimpleIR scan computed ("contains no `call` / `call_method` /
-//! … op"). The TIR graph is strictly *more precise* (TIR DCE / devirt may have
-//! removed a call the raw SimpleIR still carried), so the TIR leaf set is a
-//! superset of the legacy one: it may mark *more* functions leaf, never *fewer*,
-//! and never marks a function leaf that actually retains a call. See the
-//! `leaf_*` unit tests.
+//! functions with **no outgoing static-or-opaque call edge**. This includes
+//! mutable builtin dispatch and namespace lookup callbacks omitted by the old
+//! spelling scan. TIR DCE / devirtualization may remove edges, but retained
+//! opaque edges must still prevent recursion-guard elision. See the `leaf_*`
+//! and builtin-dispatch unit tests.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
-use super::call_targets::{direct_call_symbol_for_op, gpu_runtime_result_type_for_op};
+use super::call_sites::{CallSite, CallSiteTarget, FunctionCallSites};
 use super::function::TirModule;
-use super::op_kinds_generated::{
-    CallOpcodeRole, opcode_call_role_table, simpleir_kind_is_call_graph_user_call,
-};
 use super::ops::{AttrValue, OpCode, TirOp};
 
 /// A resolved or unresolved call target referenced by one call-bearing op.
@@ -91,64 +91,14 @@ pub enum CallEdge {
     Opaque,
 }
 
-/// Whether a [`TirOp`] is a call for the purposes of the call graph, and if so,
-/// how its callee resolves against the module's function set.
-///
-/// Returns `None` for non-call ops. The `defined` set is the names of functions
-/// present in this [`TirModule`]; a named callee outside it resolves to
-/// [`CallEdge::Opaque`] (extern / cross-batch).
-fn classify_call_op(op: &TirOp, defined: &BTreeSet<String>) -> Option<CallEdge> {
-    match opcode_call_role_table(op.opcode) {
-        // A first-class `Call`: static-direct when its `s_value` names a defined
-        // function and the preserved source spelling has a direct target role.
-        // Opaque spellings also lift to `Call`; their incidental string is not
-        // a static target, even if it matches a module or GPU runtime symbol.
-        //
-        // EXCEPTION: the gpu_* intrinsics (`gpu_thread_id`, `gpu_barrier`, …)
-        // also lift to `OpCode::Call`, but with a fixed `molt_gpu_*` runtime
-        // symbol as `s_value`. Those are runtime-helper calls (like
-        // `CallBuiltin`), never user Python functions, and the legacy SimpleIR
-        // leaf scan never listed their op kinds as user-level calls. Treating
-        // them as a call edge would spuriously disqualify a gpu-kernel leaf from
-        // leaf-ness and change codegen, so they are NOT edges.
-        CallOpcodeRole::UserCall => {
-            if gpu_runtime_result_type_for_op(op).is_some() {
-                None
-            } else {
-                Some(match direct_call_symbol_for_op(op) {
-                    Some(name) if defined.contains(name) => {
-                        CallEdge::StaticDirect(name.to_string())
-                    }
-                    _ => CallEdge::Opaque,
-                })
-            }
+/// Resolve the shared operation-aware site projection against this module.
+fn classify_call_site(site: &CallSite, defined: &BTreeSet<String>) -> Option<CallEdge> {
+    match &site.target {
+        CallSiteTarget::RuntimePrimitive => None,
+        CallSiteTarget::Direct(name) if defined.contains(name) => {
+            Some(CallEdge::StaticDirect(name.clone()))
         }
-        // Python method dispatch is always dynamic — the receiver's runtime type
-        // selects the implementation. Never statically resolvable here.
-        CallOpcodeRole::DynamicMethod => Some(CallEdge::Opaque),
-        // The SSA-lift fallback: a `Copy` op carrying a call-kind
-        // `_original_kind` is a disguised call the lift had no first-class
-        // opcode for. It lowers back to a real SimpleIR call (`lower_to_simple`),
-        // so it MUST count as a call edge — missing it would mark a function
-        // that actually calls as a leaf (an unsound recursion-guard skip).
-        CallOpcodeRole::CopyOriginalKind => match op.attrs.get("_original_kind") {
-            // Registered direct transport uses the same source-role authority
-            // as first-class calls; opaque spellings cannot borrow a name.
-            Some(AttrValue::Str(kind)) if simpleir_kind_is_call_graph_user_call(kind) => {
-                Some(match direct_call_symbol_for_op(op) {
-                    Some(name) if defined.contains(name) => {
-                        CallEdge::StaticDirect(name.to_string())
-                    }
-                    _ => CallEdge::Opaque,
-                })
-            }
-            _ => None,
-        },
-        // `CallBuiltin` lowers to a runtime-helper call, never to a user Python
-        // function (the legacy SimpleIR leaf scan likewise ignores
-        // `call_builtin`); `AllocTask` is handled separately as a poll-fn
-        // reference, not as a call out of the enclosing function.
-        CallOpcodeRole::RuntimeBuiltin | CallOpcodeRole::NotCall => None,
+        CallSiteTarget::Direct(_) | CallSiteTarget::Opaque => Some(CallEdge::Opaque),
     }
 }
 
@@ -199,11 +149,10 @@ pub struct CallGraph {
 impl CallGraph {
     /// Build the call graph from a lifted [`TirModule`].
     ///
-    /// O(total ops + V + E): one linear scan to collect edges, then Tarjan SCC
-    /// for the recursive set. Mirrors the `eliminate_dead_functions` BFS in its
-    /// edge-collection structure (same op-kind treatment), but over TIR opcodes
-    /// rather than SimpleIR kind strings, and additionally computes SCC /
-    /// bottom-up order / the recursive set the IPO tier needs.
+    /// Computes exact scalar provenance and candidate typed-slot facts once
+    /// per function, then scans operation/terminator callback sites and runs
+    /// Tarjan SCC over the edges. Provenance and slot analysis include fixed
+    /// points; this is not merely a linear opcode spelling scan.
     pub fn build(module: &TirModule) -> CallGraph {
         let defined: BTreeSet<String> = module.functions.iter().map(|f| f.name.clone()).collect();
 
@@ -223,9 +172,13 @@ impl CallGraph {
             let mut any_call = false;
             let mut opaque = false;
 
-            for block in func.blocks.values() {
-                for op in &block.ops {
-                    if let Some(edge) = classify_call_op(op, &defined) {
+            let sites = FunctionCallSites::for_function(func);
+            for (&bid, block) in &func.blocks {
+                for (index, op) in block.ops.iter().enumerate() {
+                    if let Some(edge) = sites
+                        .at((bid, index))
+                        .and_then(|site| classify_call_site(site, &defined))
+                    {
                         any_call = true;
                         match edge {
                             CallEdge::StaticDirect(callee) => {
@@ -243,6 +196,12 @@ impl CallGraph {
                     if let Some(poll) = alloc_task_poll_target(op, &defined) {
                         static_callees.insert(poll);
                     }
+                }
+                // A conditional terminator can execute __bool__/__len__ even
+                // when the block has no Bool operation or result-bearing call.
+                if sites.terminator_at(bid).is_some() {
+                    any_call = true;
+                    opaque = true;
                 }
             }
 
@@ -294,7 +253,7 @@ impl CallGraph {
     }
 
     /// True iff `name` is a function defined in this module — the same
-    /// membership predicate [`classify_call_op`]'s `defined` set encodes (a named
+    /// membership predicate [`classify_call_site`]'s `defined` set encodes (a named
     /// `Call` target resolves to [`CallEdge::StaticDirect`] iff this holds, else
     /// [`CallEdge::Opaque`]). Exposed so the [`CallFacts`](crate::tir::call_facts)
     /// typed-target classifier resolves `StaticDirect` against the *same* truth
@@ -653,35 +612,44 @@ mod tests {
     }
 
     #[test]
-    fn call_builtin_does_not_disqualify_leaf() {
-        // A CallBuiltin (range/print/…) is NOT a user-level call — matches the
-        // legacy SimpleIR scan, which ignores `call_builtin`.
-        let mut f = TirFunction::new(
-            "f".into(),
-            vec![],
-            TirType::None,
-            molt_ir::FunctionReturnAbi::Void,
-        );
-        let entry = f.entry_block;
-        let block = f.blocks.get_mut(&entry).unwrap();
-        block.ops.push(TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::CallBuiltin,
-            operands: vec![],
-            results: vec![],
-            attrs: {
-                let mut a = AttrDict::new();
-                a.insert("name".into(), AttrValue::Str("print".into()));
-                a
-            },
-            source_span: None,
-        });
-        block.terminator = Terminator::Return { values: vec![] };
-        let cg = CallGraph::build(&module(vec![f]));
-        assert!(
-            cg.leaf_functions().contains("f"),
-            "builtin call ≠ user call"
-        );
+    fn builtin_dispatch_and_namespace_acquisition_are_opaque_call_edges() {
+        for opcode in [OpCode::CallBuiltin, OpCode::Copy] {
+            let mut function = TirFunction::new(
+                "f".into(),
+                vec![TirType::Str],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            let argument = function.blocks[&function.entry_block].args[0].id;
+            let result = function.fresh_value();
+            let mut attrs = AttrDict::new();
+            if opcode == OpCode::Copy {
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("builtin_func".into()),
+                );
+                attrs.insert("builtin_name".into(), AttrValue::Str("len".into()));
+            } else {
+                attrs.insert("name".into(), AttrValue::Str("print".into()));
+            }
+            function
+                .blocks
+                .get_mut(&function.entry_block)
+                .unwrap()
+                .ops
+                .push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: vec![argument],
+                    results: vec![result],
+                    attrs,
+                    source_span: None,
+                });
+            let graph = CallGraph::build(&module(vec![function]));
+            assert!(graph.makes_any_call("f"));
+            assert!(graph.has_opaque_call("f"));
+            assert!(!graph.leaf_functions().contains("f"));
+        }
     }
 
     #[test]
@@ -955,7 +923,7 @@ mod tests {
             dialect: Dialect::Molt,
             opcode: OpCode::AllocTask,
             operands: vec![],
-            results: vec![],
+            results: vec![crate::tir::values::ValueId(0)],
             attrs,
             source_span: None,
         });

@@ -3,8 +3,10 @@ from __future__ import annotations
 import functools
 import hashlib
 import os
+import sys
+from collections.abc import MutableMapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast, get_args
 
 from molt.cli.artifact_state import _build_state_subdir_cached
 from molt.cli.artifact_sync import (
@@ -24,6 +26,222 @@ from molt.cli.models import (
 )
 from molt.cli.runtime_paths import _build_state_root
 from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
+from molt import stdlib_intrinsic_policy as _intrinsic_policy
+from molt.compiler_analysis.python_imports import (
+    ImportResolutionError,
+    StaticImportPlan,
+    StaticImportRequest,
+    UnresolvedStaticImportError,
+)
+
+
+def _encode_intrinsic_source_facts(
+    facts: _intrinsic_policy.StdlibModuleIntrinsicFacts,
+) -> dict[str, Any]:
+    evidence = facts.import_evidence
+    return {
+        "status": facts.status,
+        "modules": sorted(evidence.proven_modules),
+        "unresolved": [
+            {
+                "line": line,
+                "name": request.name,
+                "level": request.level,
+                "fromlist": list(request.fromlist),
+                "modules": list(plan.modules),
+                "errors": list(plan.errors),
+                "runtime": plan.requires_runtime,
+                "execution": plan.requires_runtime_execution,
+            }
+            for line, request, plan in evidence.unresolved_sites
+        ],
+        "facade": (
+            [
+                {
+                    "export": binding.export_name,
+                    "owner": binding.owner_module,
+                    "imported": binding.imported_name,
+                    "line": binding.line,
+                }
+                for binding in evidence.facade.bindings
+            ]
+            if evidence.facade is not None
+            else None
+        ),
+    }
+
+
+def _decode_intrinsic_source_facts(
+    payload: Any, path: Path
+) -> _intrinsic_policy.StdlibModuleIntrinsicFacts:
+    """Admit only source facts; graph-resolved facade children are never stored."""
+
+    def strings(value: Any) -> tuple[str, ...]:
+        if not isinstance(value, list) or any(type(item) is not str for item in value):
+            raise ValueError("invalid intrinsic source string sequence")
+        return tuple(value)
+
+    def record(value: Any, keys: set[str]) -> dict[str, Any]:
+        if not isinstance(value, dict) or set(value) != keys:
+            raise ValueError("invalid intrinsic source fact record")
+        return value
+
+    value = record(payload, {"status", "modules", "unresolved", "facade"})
+    if value["status"] not in (
+        _intrinsic_policy.STATUS_INTRINSIC,
+        _intrinsic_policy.STATUS_POLICY_GATE,
+        _intrinsic_policy.STATUS_PROBE_ONLY,
+        _intrinsic_policy.STATUS_PYTHON_ONLY,
+    ):
+        raise ValueError("invalid intrinsic source status")
+    modules = strings(value["modules"])
+    if not isinstance(value["unresolved"], list):
+        raise ValueError("invalid intrinsic unresolved sites")
+    unresolved = []
+    for raw in value["unresolved"]:
+        item = record(
+            raw,
+            {
+                "line",
+                "name",
+                "level",
+                "fromlist",
+                "modules",
+                "errors",
+                "runtime",
+                "execution",
+            },
+        )
+        if (
+            type(item["line"]) is not int
+            or item["line"] < 0
+            or type(item["level"]) is not int
+            or item["level"] < 0
+            or type(item["name"]) is not str
+            or type(item["runtime"]) is not bool
+            or type(item["execution"]) is not bool
+        ):
+            raise ValueError("invalid intrinsic unresolved site")
+        errors = strings(item["errors"])
+        if any(error not in get_args(ImportResolutionError) for error in errors):
+            raise ValueError("invalid intrinsic import error")
+        if not item["runtime"] and not errors:
+            raise ValueError("intrinsic unresolved site has no obligation")
+        unresolved.append(
+            (
+                item["line"],
+                StaticImportRequest.statement(
+                    item["name"],
+                    level=item["level"],
+                    fromlist=strings(item["fromlist"]),
+                ),
+                StaticImportPlan(
+                    strings(item["modules"]),
+                    cast(tuple[ImportResolutionError, ...], errors),
+                    item["runtime"],
+                    item["execution"],
+                ),
+            )
+        )
+    facade = None
+    if value["facade"] is not None:
+        if not isinstance(value["facade"], list) or not value["facade"]:
+            raise ValueError("invalid intrinsic facade")
+        bindings = []
+        for raw in value["facade"]:
+            item = record(raw, {"export", "owner", "imported", "line"})
+            if (
+                type(item["export"]) is not str
+                or type(item["imported"]) is not str
+                or item["owner"] is not None
+                and type(item["owner"]) is not str
+                or type(item["line"]) is not int
+                or item["line"] < 1
+            ):
+                raise ValueError("invalid intrinsic facade binding")
+            bindings.append(
+                _intrinsic_policy.StdlibFacadeBinding(
+                    item["export"], item["owner"], item["imported"], item["line"]
+                )
+            )
+        facade = _intrinsic_policy.StdlibFacadeEvidence(tuple(bindings))
+    return _intrinsic_policy.StdlibModuleIntrinsicFacts(
+        value["status"],
+        _intrinsic_policy.StdlibModuleImportEvidence(
+            path, frozenset(modules), tuple(unresolved), facade
+        ),
+    )
+
+
+@_source_tree_fingerprint_transaction()
+def _stdlib_intrinsic_source_facts(
+    project_root: Path,
+    module_name: str,
+    path: Path,
+    *,
+    target_python: TargetPythonVersion,
+    operation_counts: MutableMapping[str, int] | None = None,
+) -> _intrinsic_policy.StdlibModuleIntrinsicFacts:
+    """Reuse a per-module source analysis, never a resolved graph or verdict."""
+
+    def count(event: str) -> None:
+        if operation_counts is not None:
+            key = f"intrinsic_source_{event}"
+            operation_counts[key] = operation_counts.get(key, 0) + 1
+
+    count("requests")
+    try:
+        snapshot = _module_source.PythonSourceSnapshot.capture(path)
+    except OSError as exc:
+        raise UnresolvedStaticImportError(
+            f"stdlib intrinsic import evidence ({module_name}: {path}, "
+            f"Python {target_python.short}) cannot read source: {exc}"
+        ) from exc
+    cache_path = _import_scan_cache_path(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=path.name == "__init__.py",
+        import_scan_mode="full",
+        target_python=target_python,
+    ).with_suffix(".intrinsic.json")
+    identity = {
+        "schema": "molt.stdlib-intrinsic-source.v2",
+        "source_sha256": snapshot.sha256,
+        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
+        "module_name": module_name,
+        "is_package": path.name == "__init__.py",
+        "target_python": target_python.tag,
+        "parser": [sys.implementation.name, sys.version],
+    }
+    payload = _read_artifact_sync_state(cache_path)
+    if payload is not None and payload.get("identity") == identity:
+        try:
+            facts = _decode_intrinsic_source_facts(payload.get("facts"), path)
+        except ValueError:
+            # A malformed cache is a miss. Source analysis errors still escape.
+            count("rejected")
+        else:
+            count("hits")
+            return facts
+    count("misses")
+    facts = _intrinsic_policy.stdlib_module_intrinsic_facts(
+        module_name, path, target_python=target_python, source=snapshot.content
+    )
+    # The key and result describe the same captured bytes even if the pathname
+    # changes during analysis. A subsequent read admits only its fresh digest.
+    try:
+        _write_artifact_sync_payload(
+            cache_path,
+            {"identity": identity, "facts": _encode_intrinsic_source_facts(facts)},
+        )
+    except OSError as exc:
+        count("publication_failures")
+        print(
+            f"molt: warning: cannot cache intrinsic source facts for {path}: {exc}",
+            file=sys.stderr,
+        )
+    return facts
 
 
 @functools.lru_cache(maxsize=4096)

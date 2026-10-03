@@ -507,11 +507,23 @@ pub extern "C" fn __molt_math_call_callable2(call_bits: u64, arg0: u64, arg1: u6
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64 {
+pub extern "C" fn __molt_math_lookup_special_method(
+    ptr: *mut u8,
+    name_bits: u64,
+    out: *mut u64,
+) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let bits: u64 =
-            unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) }.unwrap_or_default();
-        bits
+        match unsafe {
+            crate::builtins::attr::lookup_special_method_bits(
+                _py, MoltObject::from_ptr(ptr).bits(), name_bits,
+            )
+        } {
+            Some(bits) => {
+                unsafe { *out = bits };
+                1
+            }
+            None => 0,
+        }
     })
 }
 

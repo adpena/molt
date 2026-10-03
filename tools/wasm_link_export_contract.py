@@ -234,10 +234,10 @@ def _ensure_export_by_index(
         export_payload.extend(context["_write_string"](name))
         export_payload.append(kind)
         export_payload.extend(context["_write_varuint"](index))
-        rebuilt_sections.append((7, bytes(export_payload)))
-    rebuilt = context["_build_sections"](rebuilt_sections)
-    canonical = context["_canonicalize_standard_section_order"](rebuilt)
-    return rebuilt if canonical is None else canonical
+        rebuilt_sections = context["_insert_standard_section"](
+            rebuilt_sections, 7, bytes(export_payload)
+        )
+    return context["_build_sections"](rebuilt_sections)
 
 
 def _ensure_defined_memory_export(

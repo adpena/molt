@@ -144,7 +144,15 @@ fn lower_prepared_function_to_lir(
     let return_types = lir_return_types(&refined);
 
     let label_id_map = refined.label_id_map.clone();
+    let container_storage = match repr {
+        LirReprSource::Proven(proven) => {
+            crate::representation_plan::tir_container_storage_facts(&refined, proven)
+        }
+        // Scalar fact extraction must not recursively request scalar proof.
+        LirReprSource::AnalysisFloor => HashMap::new(),
+    };
     LirFunction {
+        container_storage,
         name: refined.name,
         param_names,
         param_types: entry_param_types,

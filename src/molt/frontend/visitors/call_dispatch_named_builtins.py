@@ -14,9 +14,6 @@ from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend._types import MoltOp, MoltValue
 
-from molt.frontend.visitors.call_dispatch_builtin_constructors import (
-    CallNamedBuiltinConstructorDispatchMixin,
-)
 from molt.frontend.visitors.call_dispatch_builtin_fallback import (
     CallNamedBuiltinFallbackDispatchMixin,
 )
@@ -33,7 +30,6 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 class CallNamedBuiltinDispatchMixin(
     CallNamedBuiltinScalarDispatchMixin,
     CallNamedBuiltinIterDispatchMixin,
-    CallNamedBuiltinConstructorDispatchMixin,
     CallNamedBuiltinFallbackDispatchMixin,
     GeneratorMixinBase,
 ):
@@ -75,13 +71,13 @@ class CallNamedBuiltinDispatchMixin(
             parsed = self._parse_range_call(node)
             if parsed is None:
                 return CALL_NOT_HANDLED
-            start, stop, step, _ = parsed
+            start, stop, step = parsed
             return self._emit_range_obj_from_args(start, stop, step)
         if name in {"list", "tuple", "set", "frozenset"} and node.args:
             parsed = self._parse_range_call(node.args[0])
             if parsed is not None:
-                start, stop, step, lowerable = parsed
-                if name == "list" and lowerable:
+                start, stop, step = parsed
+                if name == "list":
                     return self._emit_range_list(start, stop, step)
                 iterable = self._emit_range_obj_from_args(start, stop, step)
             else:
@@ -188,12 +184,15 @@ class CallNamedBuiltinDispatchMixin(
                     Diagnostic.CALL_TARGET, "Unsupported call target"
                 )
             return self._emit_dynamic_call(node, callee)
-        if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
+        if func_id in {"pow", "round"} or any(
+            isinstance(arg, ast.Starred) for arg in node.args
+        ) or any(
             keyword.arg is None for keyword in node.keywords
         ):
-            # Splat cardinality and duplicate/keyword errors belong to the
-            # runtime binder. Individual builtin lowerers only see explicit
-            # arguments; treating a starred operand as one argument is wrong.
+            # Numeric builtin calls retain the actual callable and use its
+            # published argument contract. Splat cardinality and keyword errors
+            # likewise belong to the runtime binder. Individual builtin lowerers
+            # only see explicit arguments; a starred operand is not one argument.
             # Residual user names take the same generic path, without relying
             # on an incomplete builtin-name catalog to establish callability.
             callee = self.visit(node.func)
@@ -205,7 +204,6 @@ class CallNamedBuiltinDispatchMixin(
         for lower in (
             self._try_emit_named_builtin_scalar_call,
             self._try_emit_named_builtin_iter_call,
-            self._try_emit_named_builtin_constructor_call,
             self._try_emit_named_builtin_fallback_call,
         ):
             lowered = lower(node, func_id, needs_bind)

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import sys
 
+from molt.source_root import compiler_source_root
 from molt.dx import DX_ENV_KEYS, DxProject, dx_env_payload, render_env
 from molt.cli.setup_readiness import (
     _build_toolchain_report,
@@ -13,11 +13,10 @@ from molt.cli.setup_readiness import (
 )
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.output import emit_json as _emit_json
-from molt.cli.project_roots import _find_molt_root
 
 
 def _dx_project_from_cwd() -> DxProject:
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     return DxProject(root)
 
 

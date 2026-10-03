@@ -1,5 +1,23 @@
 use super::*;
 
+// Registration must succeed before changing timeout interpretation or releasing
+// a float-subclass timeout whose finalizer can reenter the waiter.
+// The caller owns the payload across release; Some admits reference slot two.
+#[cfg(any(molt_has_net_io, target_arch = "wasm32", test))]
+pub(crate) unsafe fn publish_registered_wait(
+    py: &PyToken<'_>,
+    owner: *mut u8,
+    deadline: Option<u64>,
+) {
+    let previous = deadline.map(|bits| unsafe {
+        crate::object::payload_refs::exchange_owned(py, owner, 2 * std::mem::size_of::<u64>(), bits)
+    });
+    crate::object::object_set_state(owner, 1);
+    if let Some(previous) = previous {
+        dec_ref_bits(py, previous);
+    }
+}
+
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass a valid io-wait awaitable object bits value and ensure the
@@ -60,6 +78,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                         }
                     }
                 }
+                let mut deadline_bits = None;
                 if let Some(val) = timeout {
                     if val == 0.0 {
                         match runtime_state(_py).io_poller().wait_blocking(
@@ -75,12 +94,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                         }
                     }
                     let deadline = monotonic_now_secs(_py) + val;
-                    let deadline_bits = MoltObject::from_float(deadline).bits();
-                    if payload_len >= 3 {
-                        dec_ref_bits(_py, *payload_ptr.add(2));
-                        *payload_ptr.add(2) = deadline_bits;
-                        inc_ref_bits(_py, deadline_bits);
-                    }
+                    deadline_bits = Some(MoltObject::from_float(deadline).bits());
                 }
                 if let Err(err) = runtime_state(_py)
                     .io_poller()
@@ -95,7 +109,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                     }
                     return raise_os_error::<i64>(_py, err, "io_wait");
                 }
-                crate::object::object_set_state(obj_ptr, 1);
+                publish_registered_wait(_py, obj_ptr, deadline_bits);
                 return pending_bits_i64();
             }
             if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
@@ -250,17 +264,13 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                         }
                     }
                 }
+                let mut deadline_bits = None;
                 if let Some(val) = timeout {
                     if val == 0.0 {
                         return raise_exception::<i64>(_py, "TimeoutError", "timed out");
                     }
                     let deadline = monotonic_now_secs(_py) + val;
-                    let deadline_bits = MoltObject::from_float(deadline).bits();
-                    if payload_len >= 3 {
-                        dec_ref_bits(_py, *payload_ptr.add(2));
-                        *payload_ptr.add(2) = deadline_bits;
-                        inc_ref_bits(_py, deadline_bits);
-                    }
+                    deadline_bits = Some(MoltObject::from_float(deadline).bits());
                 }
                 if let Err(err) = runtime_state(_py)
                     .io_poller()
@@ -268,7 +278,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                 {
                     return raise_exception::<i64>(_py, "RuntimeError", &err.to_string());
                 }
-                crate::object::object_set_state(obj_ptr, 1);
+                publish_registered_wait(_py, obj_ptr, deadline_bits);
                 return pending_bits_i64();
             }
             if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
@@ -287,5 +297,104 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
             }
             pending_bits_i64()
         })
+    }
+}
+
+#[cfg(test)]
+mod deadline_publication_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    static OWNER: AtomicU64 = AtomicU64::new(0);
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn timeout_probe(_argument: u64) -> u64 {
+        MoltObject::none().bits()
+    }
+
+    extern "C" fn timeout_released(_weak: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let owner = ptr_from_bits(OWNER.load(Ordering::Relaxed));
+            assert_eq!(
+                crate::object::object_state(owner),
+                1,
+                "callback saw an unregistered wait"
+            );
+            unsafe {
+                assert_eq!(
+                    *owner.cast::<u64>().add(2),
+                    MoltObject::from_float(123.0).bits()
+                );
+                crate::object::payload_refs::store_owned(
+                    py,
+                    owner,
+                    2 * std::mem::size_of::<u64>(),
+                    MoltObject::from_float(456.0).bits(),
+                );
+            }
+            crate::object::object_set_state(owner, 7);
+            CALLS.fetch_add(1, Ordering::Relaxed);
+            MoltObject::none().bits()
+        })
+    }
+
+    fn function(py: &PyToken<'_>, address: *const ()) -> u64 {
+        let ptr = crate::object::builders::alloc_function_obj(
+            py,
+            crate::provenance::abi::expose_function_address(address),
+            1,
+        );
+        assert!(!ptr.is_null());
+        unsafe { crate::object::layout::function_set_call_target_ptr(ptr, address) };
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    #[test]
+    fn payload_reference_wait_deadline_and_registered_state_precede_timeout_release() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let owner = crate::molt_alloc((3 * std::mem::size_of::<u64>()) as u64);
+            let ptr = ptr_from_bits(owner);
+            assert!(!ptr.is_null());
+            let timeout = function(py, timeout_probe as *const ());
+            let hook = function(py, timeout_released as *const ());
+            let class = crate::molt_weakref_reference_type();
+            let weak = crate::molt_weakref_new(class, timeout, hook);
+            dec_ref_bits(py, class);
+            unsafe {
+                for index in 0..3 {
+                    ptr.cast::<u64>()
+                        .add(index)
+                        .write(MoltObject::none().bits());
+                }
+                assert!(crate::object::object_init_state_unpublished(ptr, 0));
+                crate::object::payload_refs::store_owned(
+                    py,
+                    ptr,
+                    2 * std::mem::size_of::<u64>(),
+                    timeout,
+                );
+            }
+            crate::molt_object_publish_initialized(owner);
+            OWNER.store(owner, Ordering::Relaxed);
+            CALLS.store(0, Ordering::Relaxed);
+            unsafe { publish_registered_wait(py, ptr, Some(MoltObject::from_float(123.0).bits())) };
+            assert_eq!(CALLS.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                crate::object::object_state(ptr),
+                7,
+                "outer publication overwrote callback state"
+            );
+            assert_eq!(
+                unsafe { *ptr.cast::<u64>().add(2) },
+                MoltObject::from_float(456.0).bits()
+            );
+            assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
+            OWNER.store(0, Ordering::Relaxed);
+            dec_ref_bits(py, weak);
+            dec_ref_bits(py, hook);
+            dec_ref_bits(py, owner);
+            assert!(!crate::exception_pending(py));
+        });
     }
 }

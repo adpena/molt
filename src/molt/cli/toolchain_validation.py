@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
+from molt.source_root import compiler_source_root
 from molt.cli.atomic_io import _write_json_sidecar
 from molt.cli.backend_diagnostics import _FALSY_ENV_VALUES
 from molt.cli.command_runtime import (
@@ -21,7 +22,9 @@ from molt.cli.models import _MaintenanceStep, _ValidationStep
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
-from molt.cli.project_roots import _find_molt_root, _require_molt_root
+from molt.cli.project_roots import (
+    _require_molt_root,
+)
 from molt.cli import wasm_toolchain
 from molt.compiler_distribution import installed_compiler
 
@@ -31,12 +34,12 @@ from molt.cli.setup_readiness import (
     _required_llvm_backend_pin,
 )
 from molt.llvm_toolchain import llvm_bootstrap_command
+from molt.tool_releases import pinned_executable
 
 _VALIDATE_PROOF_BYPASS_ENV = frozenset(
     {
         "MOLT_SKIP_BINARY_VALIDITY_CHECK",
         "MOLT_SKIP_CARGO_LOCK",
-        "MOLT_SKIP_RUNTIME_REBUILD",
     }
 )
 _VALIDATE_SUITE_CHOICES = (
@@ -55,69 +58,89 @@ def _planned_update_steps(
     include_toolchains: bool,
     include_locks: bool,
     include_manifests: bool,
+    source_checkout: bool = True,
 ) -> tuple[list[_MaintenanceStep], list[str]]:
     steps: list[_MaintenanceStep] = []
     warnings: list[str] = []
 
     if include_toolchains:
-        if shutil.which("rustup"):
-            try:
-                steps.append(
-                    _MaintenanceStep(
-                        "rustup-install-pinned-toolchain",
-                        wasm_toolchain.rustup_toolchain_install_cmd(root),
-                        root,
-                        "toolchain",
-                    )
+        if pinned_executable("wasm-tools", root) is None:
+            steps.append(
+                _MaintenanceStep(
+                    "provision-pinned-wasm-tools",
+                    [
+                        sys.executable, "-m", "molt.tool_releases", "provision",
+                        "wasm-tools", "--repo-root", str(root),
+                    ],
+                    root,
+                    "toolchain",
                 )
-            except wasm_toolchain.RustToolchainContractError as exc:
-                warnings.append(str(exc))
-        else:
-            warnings.append(
-                "rustup is not installed; skipping Rust toolchain refresh steps"
             )
-        if shutil.which("cargo"):
-            cargo_tool_steps: list[tuple[str, str, str]] = [
-                ("wasm-tools", "wasm-tools", "wasm-tools"),
-                ("wasm-pack", "wasm-pack", "wasm-pack"),
-            ]
-            for tool_name, crate_name, command_name in cargo_tool_steps:
-                if shutil.which(command_name):
-                    continue
-                steps.append(
-                    _MaintenanceStep(
-                        f"cargo-install-{tool_name}",
-                        ["cargo", "install", crate_name, "--locked"],
-                        root,
-                        "toolchain",
+        if not source_checkout:
+            # Installed Molt ships its compiler and runtime cells prebuilt; Rust
+            # toolchains and Cargo-installed helpers are source-development tools.
+            warnings.append(
+                "installed Molt does not use or update Rust toolchains; "
+                "refresh the installation with its package manager"
+            )
+        else:
+            if shutil.which("rustup"):
+                try:
+                    steps.append(
+                        _MaintenanceStep(
+                            "rustup-install-pinned-toolchain",
+                            wasm_toolchain.rustup_toolchain_install_cmd(root),
+                            root,
+                            "toolchain",
+                        )
                     )
-                )
-            llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
-            if llvm_major is not None and llvm_toolchain is None:
-                llvm_pin = _required_llvm_backend_pin(root)
-                release = (
-                    llvm_pin.default_release
-                    if llvm_pin is not None
-                    else f"{llvm_major}.1.0"
-                )
-                env_var = (
-                    llvm_pin.env_var
-                    if llvm_pin is not None
-                    else f"LLVM_SYS_{llvm_major * 10 + 1}_PREFIX"
-                )
-                bootstrap_command = (
-                    llvm_bootstrap_command(llvm_pin)
-                    if llvm_pin is not None
-                    else f"python -m tools.bootstrap_llvm --version {release}"
-                )
+                except wasm_toolchain.RustToolchainContractError as exc:
+                    warnings.append(str(exc))
+            else:
                 warnings.append(
-                    "LLVM backend toolchain is missing; run "
-                    f"{bootstrap_command} and set {env_var} to that prefix"
+                    "rustup is not installed; skipping Rust toolchain refresh steps"
                 )
-        else:
-            warnings.append(
-                "cargo is not installed; skipping cargo-installable toolchain helpers"
-            )
+            if shutil.which("cargo"):
+                cargo_tool_steps: list[tuple[str, str, str]] = [
+                    ("wasm-pack", "wasm-pack", "wasm-pack"),
+                ]
+                for tool_name, crate_name, command_name in cargo_tool_steps:
+                    if shutil.which(command_name):
+                        continue
+                    steps.append(
+                        _MaintenanceStep(
+                            f"cargo-install-{tool_name}",
+                            ["cargo", "install", crate_name, "--locked"],
+                            root,
+                            "toolchain",
+                        )
+                    )
+                llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
+                if llvm_major is not None and llvm_toolchain is None:
+                    llvm_pin = _required_llvm_backend_pin(root)
+                    release = (
+                        llvm_pin.default_release
+                        if llvm_pin is not None
+                        else f"{llvm_major}.1.0"
+                    )
+                    env_var = (
+                        llvm_pin.env_var
+                        if llvm_pin is not None
+                        else f"LLVM_SYS_{llvm_major * 10 + 1}_PREFIX"
+                    )
+                    bootstrap_command = (
+                        llvm_bootstrap_command(llvm_pin)
+                        if llvm_pin is not None
+                        else f"python -m tools.bootstrap_llvm --version {release}"
+                    )
+                    warnings.append(
+                        "LLVM backend toolchain is missing; run "
+                        f"{bootstrap_command} and set {env_var} to that prefix"
+                    )
+            else:
+                warnings.append(
+                    "cargo is not installed; skipping cargo-installable toolchain helpers"
+                )
 
     if include_locks:
         steps.extend(
@@ -194,7 +217,7 @@ def update_repo(
     include_locks: bool = True,
     include_manifests: bool = False,
 ) -> int:
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "update")
     if root_error is not None:
         return root_error
@@ -212,6 +235,7 @@ def update_repo(
         include_toolchains=include_toolchains,
         include_locks=include_locks,
         include_manifests=include_manifests,
+        source_checkout=installed_compiler(root) is None,
     )
     step_rows = [
         {
@@ -800,7 +824,7 @@ def validate(
     check_only: bool = False,
     summary_out: str | None = None,
 ) -> int:
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "validate")
     if root_error is not None:
         return root_error

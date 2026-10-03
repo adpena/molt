@@ -1,3 +1,4 @@
+use crate::builtins::functions::native_callable::NativeCallableKind;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::Mutex;
@@ -8,8 +9,8 @@ use molt_obj_model::MoltObject;
 use crate::builtins::methods::not_implemented_bits;
 use crate::builtins::numbers::index_i64_from_obj;
 use crate::builtins::types::{
-    RuntimeClassMethodSpec, RuntimeMethodSignature, SELF_RUNTIME_ARGUMENT_NAMES,
-    init_cached_runtime_class,
+    ClassSemanticPolicy, RuntimeClassMethodSpec, RuntimeMethodSignature,
+    SELF_RUNTIME_ARGUMENT_NAMES, init_cached_runtime_class,
 };
 use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
@@ -111,7 +112,22 @@ impl FunctoolsRuntimeState {
     }
 }
 
+pub(crate) fn functools_runtime_class_roots(
+    py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) -> Vec<u64> {
+    crate::state::cache::cached_runtime_class_roots(py, &state.functools.object_slots())
+}
+
 pub(crate) fn functools_clear_runtime_state(
+    py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) -> bool {
+    let changed = functools_clear_runtime_callbacks(py, state);
+    changed | crate::state::cache::clear_atomic_slots(py, &state.functools.object_slots())
+}
+
+pub(crate) fn functools_clear_runtime_callbacks(
     _py: &PyToken<'_>,
     state: &crate::state::RuntimeState,
 ) -> bool {
@@ -128,7 +144,7 @@ pub(crate) fn functools_clear_runtime_state(
     };
     let changed = !dispatches.is_empty();
     let slots = state.functools.object_slots();
-    let slots_changed = crate::state::cache::clear_atomic_slots(_py, &slots);
+    let slots_changed = crate::state::cache::clear_cached_runtime_callbacks(_py, &slots);
     for dispatch in dispatches.into_values() {
         dispatch.release(_py);
     }
@@ -211,14 +227,14 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::with_signature(
             "__call__",
-            &functools.partial_call_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_partial_call as *const () as usize as u64,
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
             "__repr__",
-            &functools.partial_repr_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_partial_repr as *const () as usize as u64,
             1,
         ),
@@ -227,8 +243,14 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &functools.partial_class,
         "partial",
+        ClassSemanticPolicy::heap(true, true),
         32,
         Some(crate::object::ObjectShapeId::FunctoolsPartial),
+        Some(crate::object::class_storage::ClassSlotPolicy {
+            allows_dict: true,
+            allows_weakref: true,
+            variable_sized: false,
+        }),
         &methods,
     )
 }
@@ -238,37 +260,37 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::fixed(
             "__lt__",
-            &functools.cmpkey_lt_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_lt as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__le__",
-            &functools.cmpkey_le_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_le as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__gt__",
-            &functools.cmpkey_gt_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_gt as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__ge__",
-            &functools.cmpkey_ge_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_ge as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__eq__",
-            &functools.cmpkey_eq_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_eq as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__ne__",
-            &functools.cmpkey_ne_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_ne as *const () as usize as u64,
             2,
         ),
@@ -277,8 +299,10 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &functools.cmpkey_class,
         "_CmpKey",
+        ClassSemanticPolicy::heap(true, false),
         24,
         Some(crate::object::ObjectShapeId::FunctoolsCmpKey),
+        Some(crate::object::class_storage::ClassSlotPolicy::default()),
         &methods,
     )
 }
@@ -288,32 +312,32 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::with_signature(
             "__call__",
-            &functools.lru_call_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_lru_call as *const () as usize as u64,
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
             "__get__",
-            &functools.lru_descriptor_get_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_lru_descriptor_get as *const () as usize as u64,
             3,
         ),
         RuntimeClassMethodSpec::fixed(
             "cache_info",
-            &functools.lru_cache_info_fn,
+            NativeCallableKind::MethodDescriptor,
             crate::molt_functools_lru_cache_info as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             "cache_clear",
-            &functools.lru_cache_clear_fn,
+            NativeCallableKind::MethodDescriptor,
             crate::molt_functools_lru_cache_clear as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             "cache_parameters",
-            &functools.lru_cache_params_fn,
+            NativeCallableKind::MethodDescriptor,
             crate::molt_functools_lru_cache_params as *const () as usize as u64,
             1,
         ),
@@ -322,8 +346,14 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &functools.lru_wrapper_class,
         "_lru_cache_wrapper",
+        ClassSemanticPolicy::heap(true, false),
         64,
         Some(crate::object::ObjectShapeId::FunctoolsLruWrapper),
+        Some(crate::object::class_storage::ClassSlotPolicy {
+            allows_dict: true,
+            allows_weakref: true,
+            variable_sized: false,
+        }),
         &methods,
     )
 }
@@ -332,7 +362,7 @@ fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
     let methods = [RuntimeClassMethodSpec::fixed(
         "__call__",
-        &functools.lru_factory_call_fn,
+        NativeCallableKind::WrapperDescriptor,
         crate::molt_functools_lru_factory_call as *const () as usize as u64,
         2,
     )];
@@ -340,8 +370,10 @@ fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &functools.lru_factory_class,
         "_LruCacheFactory",
+        ClassSemanticPolicy::heap(false, true),
         24,
         Some(crate::object::ObjectShapeId::FunctoolsLruFactory),
+        None,
         &methods,
     )
 }
@@ -351,19 +383,19 @@ fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::fixed(
             "__iter__",
-            &functools.cacheinfo_iter_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cacheinfo_iter as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             "__repr__",
-            &functools.cacheinfo_repr_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cacheinfo_repr as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             "__getattr__",
-            &functools.cacheinfo_getattr_fn,
+            NativeCallableKind::MethodDescriptor,
             crate::molt_functools_cacheinfo_getattr as *const () as usize as u64,
             2,
         ),
@@ -372,8 +404,14 @@ fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &functools.cacheinfo_class,
         "CacheInfo",
+        ClassSemanticPolicy::heap(false, true),
         40,
         Some(crate::object::ObjectShapeId::FunctoolsCacheInfo),
+        Some(crate::object::class_storage::ClassSlotPolicy {
+            allows_dict: false,
+            allows_weakref: false,
+            variable_sized: true,
+        }),
         &methods,
     )
 }
@@ -2232,6 +2270,85 @@ mod tests {
     };
     use crate::{MoltObject, dec_ref_bits, inc_ref_bits, obj_from_bits, runtime_state, to_i64};
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn cached_native_class_families_survive_callback_drain_and_cold_restart() {
+        use crate::builtins::operator::{
+            molt_operator_attrgetter_type, molt_operator_itemgetter_type,
+            molt_operator_methodcaller_type, operator_clear_runtime_callbacks,
+            operator_runtime_class_roots,
+        };
+        use crate::builtins::types::{
+            capsule_class, cell_class, frame_locals_proxy_class, mappingproxy_class, method_class,
+            simplenamespace_class, types_clear_runtime_callbacks, types_runtime_class_roots,
+        };
+
+        for _ in 0..2 {
+            crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+                assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+                crate::with_gil_entry_nopanic!(py, {
+                    let state = runtime_state(py);
+                    let native_types = [
+                        mappingproxy_class(py),
+                        frame_locals_proxy_class(py),
+                        method_class(py),
+                        simplenamespace_class(py),
+                        capsule_class(py),
+                        cell_class(py),
+                    ];
+                    let native_functools =
+                        [partial_class(py), cmpkey_class(py), lru_wrapper_class(py)];
+                    let native_operator = [
+                        molt_operator_itemgetter_type(),
+                        molt_operator_attrgetter_type(),
+                        molt_operator_methodcaller_type(),
+                    ];
+                    let mutable = [lru_factory_class(py), cacheinfo_class(py)];
+                    assert!(!crate::exception_pending(py));
+                    assert!(
+                        native_types
+                            .iter()
+                            .chain(native_functools.iter())
+                            .chain(native_operator.iter())
+                            .chain(mutable.iter())
+                            .all(|&class| class != 0 && obj_from_bits(class).as_ptr().is_some())
+                    );
+
+                    // This is the real pre-retirement callback drain: the old
+                    // all-slots cleanup loses the canonical identities here.
+                    types_clear_runtime_callbacks(py, state);
+                    super::functools_clear_runtime_callbacks(py, state);
+                    operator_clear_runtime_callbacks(py, state);
+                    let type_roots = types_runtime_class_roots(py, state);
+                    let functools_roots = super::functools_runtime_class_roots(py, state);
+                    let operator_roots = operator_runtime_class_roots(py, state);
+                    for class in native_types {
+                        assert!(type_roots.contains(&class));
+                    }
+                    for class in native_functools {
+                        assert!(functools_roots.contains(&class));
+                    }
+                    for class in native_operator {
+                        assert!(operator_roots.contains(&class));
+                    }
+                    for class in mutable {
+                        assert!(!functools_roots.contains(&class));
+                    }
+                    assert_eq!(state.functools.cacheinfo_class.load(Ordering::Acquire), 0);
+                    assert_eq!(state.functools.lru_factory_class.load(Ordering::Acquire), 0);
+                    assert_eq!(partial_class(py), native_functools[0]);
+                    assert_eq!(cmpkey_class(py), native_functools[1]);
+                    assert_eq!(lru_wrapper_class(py), native_functools[2]);
+                    assert_eq!(molt_operator_itemgetter_type(), native_operator[0]);
+                    assert_eq!(molt_operator_attrgetter_type(), native_operator[1]);
+                    assert_eq!(molt_operator_methodcaller_type(), native_operator[2]);
+                    assert!(!crate::exception_pending(py));
+                });
+                // The lifecycle owner now runs the production retirement path,
+                // including static PyDictProxy_Type, before the next cold boot.
+            });
+        }
+    }
 
     #[test]
     fn functools_runtime_state_is_owned_and_clearable() {

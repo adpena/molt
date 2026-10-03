@@ -85,11 +85,16 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
                     .as_deref()
                     .and_then(|args| args.first())
                     .and_then(|name| const_strings.get(name.as_str()).copied());
-                if name.is_none() || name == Some("builtins") {
-                    requirements
-                        .builtin_namespace_trampolines
-                        .extend(builtin_callable_family());
-                }
+                // The public builtin namespace aliases foreign providers;
+                // a provider's own publication exposes only its declarations.
+                // These remain optional profile candidates on every backend.
+                requirements.builtin_namespace_trampolines.extend(
+                    PYTHON_BUILTIN_CALLABLES.iter()
+                        .filter(|spec| name.is_none()
+                            || name == Some("builtins")
+                            || name == Some(spec.python_module))
+                        .map(|spec| (spec.runtime_name.to_owned(), spec.arity)),
+                );
             }
             if matches!(op.kind.as_str(), "const_str" | "builtin_func") {
                 if let Some(name) = op

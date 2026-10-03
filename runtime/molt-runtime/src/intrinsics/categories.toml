@@ -38,6 +38,8 @@ class_decorators = [
     "molt_classmethod_new", "molt_staticmethod_new", "molt_property_new",
 ]
 descriptor_methods = [
+    "molt_module_type_new", "molt_module_init", "molt_module_getattribute",
+    "molt_module_setattr", "molt_module_delattr", "molt_module_dir", "molt_module_repr",
     "molt_staticmethod_type_new", "molt_staticmethod_init",
     "molt_staticmethod_get", "molt_staticmethod_call",
     "molt_classmethod_type_new", "molt_classmethod_init",
@@ -73,7 +75,7 @@ prefixes = [
     "runtime_init", "runtime_shutdown", "sys_set_version_info",
     "print_obj", "print_newline",
     "profile_",
-    "gen_locals", "task_new", "task_register_token_owned",
+    "gen_locals", "get_awaitable", "iterator_throw", "task_new", "task_register_token_owned",
     "stdlib_probe", "import_smoke", "types_bootstrap",
     "abc_bootstrap", "collections_abc_runtime", "builtin_class_lookup",
     "capabilities_",
@@ -126,7 +128,6 @@ prefixes = [
     "ordereddict_",
     "defaultdict_",
     "deque_",
-    "counter_",
     "chainmap_",
 ]
 feature = "stdlib_collections"

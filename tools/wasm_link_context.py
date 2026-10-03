@@ -76,7 +76,9 @@ class WasmExportContext(WasmBinaryContext, WasmSplitContractContext):
     _rename_export_names: Callable[[bytes, dict[str, str]], bytes | None]
     _restore_output_export_aliases: Callable[[bytes], bytes | None]
     _collect_imports: Callable[[bytes], list[WasmImport]]
-    _canonicalize_standard_section_order: Callable[[bytes], bytes | None]
+    _insert_standard_section: Callable[
+        [list[tuple[int, bytes]], int, bytes], list[tuple[int, bytes]]
+    ]
     _ensure_export_by_index: Callable[..., bytes | None]
     _split_artifact_contract_function_symbols: Callable[..., dict[str, str]]
     _function_body_payloads_by_index: Callable[[bytes], dict[int, bytes]]

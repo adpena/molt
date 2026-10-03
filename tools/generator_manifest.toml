@@ -114,7 +114,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_cpython_type_slots.py"
 outputs = [
-  "runtime/molt-cpython-abi/include/_molt_typeslots.generated.h",
+  "include/molt/shared/_molt_typeslots.generated.h",
 ]
 source = "runtime/molt-cpython-abi/src/type_slots.rs + config/cpython_stable_abi_3_12.toml + tools/generator_io.py"
 check_mode = true

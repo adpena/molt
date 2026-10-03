@@ -341,6 +341,7 @@ class PythonExpressionFact:
     module_namespace_observable: bool = False
     truth_effects: EffectMask = 0
     name_lookup: PythonNameLookup = "none"
+    binding_capture_required: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(

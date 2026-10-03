@@ -64,6 +64,7 @@ fn sink_body(
         },
     };
     let function = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "runtime_return_sink".into(),
         param_names: (0..args.len()).map(|index| format!("arg{index}")).collect(),
         param_types: block.args.iter().map(|v| v.ty.clone()).collect(),

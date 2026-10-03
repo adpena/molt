@@ -4,11 +4,8 @@
  * These must be written in C because Rust stable doesn't support exporting
  * variadic extern "C" functions (requires nightly #![feature(c_variadic)]).
  *
- * The heavy logic lives in the Rust side (errors.rs parse_args_inner).
- * These shims convert va_list → a fixed-width array of void* pointers that
- * the Rust implementation can consume without variadic machinery.
- *
- * SIMD optimisations in the Rust side handle the hot-path type dispatch.
+ * errors/arguments.rs owns format grammar, keyword admission and physical
+ * borrowed argument custody. This file only collects va_list addresses.
  */
 
 #include <errno.h>
@@ -27,8 +24,7 @@
  * operations in the C translation unit compiled against the target headers so
  * PyObject_Print has the same provider on native, WASI, and freestanding wasm.
  */
-int molt_capi_write_string(const char *text, FILE *stream) {
-    const size_t length = strlen(text);
+int molt_capi_write_bytes(const unsigned char *text, size_t length, FILE *stream) {
     if (length == 0) {
         return 0;
     }
@@ -66,13 +62,19 @@ typedef struct _object {
     PyTypeObject *ob_type;
 } PyObject;
 
-#define MOLT_VARARG_MAX_ARGS 64
+/* A named function-pointer type also lets target va_arg macros form a pointer
+ * to the requested type without reassembling an abstract C declarator. */
+typedef PyObject *(*MoltBuildValueConverter)(void *);
+
 
 extern PyObject *PyObject_GetAttr(PyObject *op, PyObject *name);
 extern PyObject *PyObject_GetAttrString(PyObject *op, const char *name);
 extern PyObject *PyObject_Call(PyObject *callable, PyObject *args, PyObject *kwargs);
 extern PyObject *PyTuple_New(Py_ssize_t size);
 extern int PyTuple_SetItem(PyObject *op, Py_ssize_t i, PyObject *value);
+extern int PyTuple_Check(PyObject *op);
+extern Py_ssize_t PyTuple_Size(PyObject *op);
+extern PyObject *PyTuple_GetItem(PyObject *op, Py_ssize_t i);
 extern PyObject *PyLong_FromLong(long value);
 extern PyObject *PyLong_FromUnsignedLong(unsigned long value);
 extern PyObject *PyLong_FromLongLong(long long value);
@@ -102,6 +104,9 @@ extern int PyErr_WarnEx(PyObject *category, const char *message, Py_ssize_t stac
 extern void PyErr_SetString(PyObject *exc_type, const char *message);
 extern void PyErr_SetObject(PyObject *exc_type, PyObject *value);
 extern PyObject *PyErr_Occurred(void);
+extern void PyErr_BadInternalCall(void);
+extern PyObject *PyErr_GetRaisedException(void);
+extern void PyErr_SetRaisedException(PyObject *exception);
 extern PyObject *PyErr_NoMemory(void);
 extern void PyErr_WriteUnraisable(PyObject *obj);
 extern void molt_capi_err_format_unraisable(const unsigned char *message, size_t len);
@@ -123,94 +128,31 @@ extern int molt_pyarg_parse_tuple_inner(
     void **outs,
     int n_outs);
 
-/*
- * Count the number of output pointers a format string requires.
- * Stops at ':', ';', or end of string. Optional fields after '|' still have
- * output pointers when present, so collect them for the shared Rust parser.
- */
-static size_t count_format_outs(const char *fmt) {
-    size_t count = 0;
-    for (const char *p = fmt; *p; p++) {
-        char c = *p;
-        if (c == ':' || c == ';') break;
-        switch (c) {
-        case 'O':
-            /* 'O' takes one out; 'O!'/'O&' consume a SECOND vararg (the type
-             * object / converter fn) — the whole reason the O! header-clobber
-             * bug existed was this count omitting it. Skip the modifier char. */
-            count++;
-            if (*(p+1) == '!' || *(p+1) == '&') { count++; p++; }
-            break;
-        case 's': case 'z': case 'y':
-            count++;
-            if (*(p+1) == '#' || *(p+1) == '*') {
-                if (*(p+1) == '#') count++;
-                p++;
-            }
-            break;
-        case 'e':
-            count += 2;
-            if (*(p+1) == 's' || *(p+1) == 't') p++;
-            if (*(p+1) == '#') { count++; p++; }
-            break;
-        case 'w':
-            count++;
-            if (*(p+1) == '*') p++;
-            break;
-        case 'i': case 'l': case 'd': case 'f':
-        case 'p': case 'n': case 'L': case 'K': case 'H':
-        case 'I': case 'k': case 'B': case 'C': case 'b':
-        case 'h': case 'c': case 'S': case 'Y': case 'U': case 'D':
-            count++;
-            break;
-        case '(': case ')': case '|': case '$':
-            break; /* skip grouping / optional-marker / encoding flags */
-        default:
-            break;
-        }
-    }
-    return count;
-}
+extern int molt_pyarg_format_out_count(const char *format);
+extern int molt_pyarg_parse_tuple_keywords_inner(PyObject *args, PyObject *kwargs, const char *format, char **kwlist, void **outs, int n_outs);
 
-/*
- * Collect va_list pointers into a fixed-width array and dispatch to Rust.
- *
- * PERFORMANCE: This function is on the hot path — called for every C extension
- * function entry. The count_format_outs loop is O(format_len) but format
- * strings are short (typically ≤12 chars) and CPU branch-predicted well.
- * The va_arg loop has no branches per iteration (pointer-width reads only).
- */
 static int collect_and_dispatch(
-    PyObject *args,
-    const char *format,
-    va_list ap)
-{
-    size_t n = count_format_outs(format);
+    PyObject *args, PyObject *kwargs, const char *format, char **kwlist, va_list ap) {
+    int count = molt_pyarg_format_out_count(format);
+    if (count < 0) return 0;
+    size_t n = (size_t)count;
+    if (n > SIZE_MAX / sizeof(void *)) { PyErr_NoMemory(); return 0; }
     void **outs = n == 0 ? NULL : (void **)malloc(n * sizeof(*outs));
-    if (n != 0 && outs == NULL) {
-        PyErr_SetString(&PyExc_TypeError, "PyArg_ParseTuple vararg allocation failed");
-        return 0;
-    }
-    for (size_t i = 0; i < n; i++) {
-        outs[i] = va_arg(ap, void *);
-    }
-    int result = molt_pyarg_parse_tuple_inner(args, format, outs, (int)n);
+    if (n != 0 && outs == NULL) { PyErr_NoMemory(); return 0; }
+    for (size_t i = 0; i < n; ++i) outs[i] = va_arg(ap, void *);
+    int result = kwlist == NULL
+        ? molt_pyarg_parse_tuple_inner(args, format, outs, count)
+        : molt_pyarg_parse_tuple_keywords_inner(args, kwargs, format, kwlist, outs, count);
     free(outs);
     return result;
 }
 
 int PyArg_VaParseTupleAndKeywords(
-    PyObject *args,
-    PyObject *kwargs,
-    const char *format,
-    char **kwlist,
-    va_list vargs)
-{
-    (void)kwargs;
-    (void)kwlist;
+    PyObject *args, PyObject *kwargs, const char *format, char **kwlist, va_list vargs) {
+    if (kwlist == NULL) { PyErr_BadInternalCall(); return 0; }
     va_list ap;
     va_copy(ap, vargs);
-    int result = collect_and_dispatch(args, format, ap);
+    int result = collect_and_dispatch(args, kwargs, format, kwlist, ap);
     va_end(ap);
     return result;
 }
@@ -223,7 +165,7 @@ int _PyArg_VaParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs,
 int _PyArg_VaParse_SizeT(PyObject *args, const char *format, va_list vargs) {
     va_list ap;
     va_copy(ap, vargs);
-    int result = collect_and_dispatch(args, format, ap);
+    int result = collect_and_dispatch(args, NULL, format, NULL, ap);
     va_end(ap);
     return result;
 }
@@ -231,7 +173,7 @@ int _PyArg_VaParse_SizeT(PyObject *args, const char *format, va_list vargs) {
 int _PyArg_ParseTuple_SizeT(PyObject *args, const char *format, ...) {
     va_list ap;
     va_start(ap, format);
-    int result = collect_and_dispatch(args, format, ap);
+    int result = collect_and_dispatch(args, NULL, format, NULL, ap);
     va_end(ap);
     return result;
 }
@@ -245,25 +187,94 @@ int _PyArg_ParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs,
     return result;
 }
 
+/* One temporary owner for physical object arguments. Cleanup preserves the
+ * selected exception across arbitrary extension deallocators. */
+static void molt_release_owned_items(PyObject *const *items, Py_ssize_t count) {
+    PyObject *error = PyErr_GetRaisedException();
+    for (Py_ssize_t i = 0; i < count; ++i) {
+        if (items[i] != NULL) Py_DECREF(items[i]);
+    }
+    PyErr_SetRaisedException(error);
+}
+
+typedef struct {
+    PyObject **items;
+    Py_ssize_t len;
+    Py_ssize_t capacity;
+} MoltOwnedObjectVector;
+
+static void molt_owned_vector_clear(MoltOwnedObjectVector *values) {
+    PyObject **items = values->items;
+    Py_ssize_t len = values->len;
+    values->items = NULL;
+    values->len = values->capacity = 0;
+    molt_release_owned_items(items, len);
+    free(items);
+}
+
+/* Consumes item on success AND failure. */
+static int molt_owned_vector_push(MoltOwnedObjectVector *values, PyObject *item) {
+    if (values->len == values->capacity) {
+        size_t limit = (size_t)PTRDIFF_MAX / sizeof(*values->items);
+        size_t capacity = values->capacity == 0 ? 8 : (size_t)values->capacity;
+        if ((size_t)values->len >= limit) {
+            PyErr_NoMemory();
+            molt_release_owned_items(&item, 1);
+            return 0;
+        }
+        capacity = capacity > limit / 2 ? limit : capacity * 2;
+        PyObject **items = (PyObject **)realloc(values->items, capacity * sizeof(*items));
+        if (items == NULL) {
+            PyErr_NoMemory();
+            molt_release_owned_items(&item, 1);
+            return 0;
+        }
+        values->items = items;
+        values->capacity = (Py_ssize_t)capacity;
+    }
+    values->items[values->len++] = item;
+    return 1;
+}
+
+static PyObject *molt_owned_vector_finish(MoltOwnedObjectVector *values, int list) {
+    PyObject *container = list ? PyList_New(values->len) : PyTuple_New(values->len);
+    if (container == NULL) {
+        molt_owned_vector_clear(values);
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < values->len; ++i) {
+        PyObject *item = values->items[i];
+        values->items[i] = NULL;
+        /* Both setters consume item on every path. */
+        int status = list ? PyList_SetItem(container, i, item)
+                          : PyTuple_SetItem(container, i, item);
+        if (status < 0) {
+            molt_owned_vector_clear(values);
+            molt_release_owned_items(&container, 1);
+            return NULL;
+        }
+    }
+    molt_owned_vector_clear(values);
+    return container;
+}
+
 PyObject *PyTuple_Pack(Py_ssize_t n, ...) {
-    if (n < 0 || n > MOLT_VARARG_MAX_ARGS) return NULL;
     PyObject *tuple = PyTuple_New(n);
     if (tuple == NULL) return NULL;
-
     va_list ap;
     va_start(ap, n);
-    for (Py_ssize_t i = 0; i < n; i++) {
+    for (Py_ssize_t i = 0; i < n; ++i) {
         PyObject *item = va_arg(ap, PyObject *);
         if (item == NULL) {
             va_end(ap);
-            Py_DECREF(tuple);
+            if (PyErr_Occurred() == NULL) PyErr_BadInternalCall();
+            molt_release_owned_items(&tuple, 1);
             return NULL;
         }
         Py_INCREF(item);
-        if (PyTuple_SetItem(tuple, i, item) != 0) {
-            Py_DECREF(item);
+        if (PyTuple_SetItem(tuple, i, item) < 0) {
             va_end(ap);
-            Py_DECREF(tuple);
+            molt_release_owned_items(&tuple, 1);
             return NULL;
         }
     }
@@ -273,142 +284,82 @@ PyObject *PyTuple_Pack(Py_ssize_t n, ...) {
 
 static void molt_buildvalue_skip_separators(const char **cursor) {
     while (**cursor == ' ' || **cursor == '\t' || **cursor == '\n' ||
-           **cursor == '\r' || **cursor == ',') {
+           **cursor == '\r' || **cursor == ',' || **cursor == ':') {
         (*cursor)++;
     }
 }
 
 static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap);
 
-static PyObject *molt_buildvalue_parse_tuple(const char **cursor, va_list *ap) {
-    PyObject *items[MOLT_VARARG_MAX_ARGS];
-    Py_ssize_t len = 0;
+/* Consume subsequent N units after a failed build too. Each nested builder
+ * drains its own closing delimiter; the outer builder owns the remaining tail. */
+static void molt_buildvalue_drain(const char **cursor, va_list *ap, char closing) {
+    PyObject *error = PyErr_GetRaisedException();
+    MoltOwnedObjectVector ignored = {NULL, 0, 0};
     for (;;) {
         molt_buildvalue_skip_separators(cursor);
-        if (**cursor == ')') {
-            (*cursor)++;
-            break;
-        }
-        if (**cursor == '\0') {
-            PyErr_SetString(&PyExc_TypeError, "unterminated tuple format in Py_BuildValue");
-            goto error;
-        }
-        if (len >= MOLT_VARARG_MAX_ARGS) {
-            PyErr_SetString(&PyExc_TypeError, "too many Py_BuildValue tuple items");
-            goto error;
-        }
-        items[len] = molt_buildvalue_parse_item(cursor, ap);
-        if (items[len] == NULL) goto error;
-        len++;
-        molt_buildvalue_skip_separators(cursor);
+        if (**cursor == '\0') break;
+        if (closing != '\0' && **cursor == closing) { ++*cursor; break; }
+        PyObject *item = molt_buildvalue_parse_item(cursor, ap);
+        if (item != NULL) (void)molt_owned_vector_push(&ignored, item);
+        /* Each tail conversion runs with a clear error indicator. Keep all
+         * successful objects alive until later converters have finished. */
+        PyObject *secondary = PyErr_GetRaisedException();
+        molt_release_owned_items(&secondary, 1);
     }
-
-    PyObject *tuple = PyTuple_New(len);
-    if (tuple == NULL) goto error;
-    for (Py_ssize_t i = 0; i < len; i++) {
-        if (PyTuple_SetItem(tuple, i, items[i]) != 0) {
-            Py_DECREF(items[i]);
-            for (Py_ssize_t j = i + 1; j < len; j++) Py_DECREF(items[j]);
-            Py_DECREF(tuple);
-            return NULL;
-        }
-        items[i] = NULL;
-    }
-    return tuple;
-
-error:
-    for (Py_ssize_t i = 0; i < len; i++) {
-        if (items[i] != NULL) Py_DECREF(items[i]);
-    }
-    return NULL;
+    molt_owned_vector_clear(&ignored);
+    PyErr_SetRaisedException(error);
 }
 
-static PyObject *molt_buildvalue_parse_list(const char **cursor, va_list *ap) {
-    PyObject *items[MOLT_VARARG_MAX_ARGS];
-    Py_ssize_t len = 0;
+static PyObject *molt_buildvalue_parse_sequence(
+    const char **cursor, va_list *ap, char closing, int list) {
+    MoltOwnedObjectVector values = {NULL, 0, 0};
     for (;;) {
         molt_buildvalue_skip_separators(cursor);
-        if (**cursor == ']') {
-            (*cursor)++;
-            break;
-        }
+        if (**cursor == closing) { ++*cursor; break; }
         if (**cursor == '\0') {
-            PyErr_SetString(&PyExc_TypeError, "unterminated list format in Py_BuildValue");
-            goto error;
-        }
-        if (len >= MOLT_VARARG_MAX_ARGS) {
-            PyErr_SetString(&PyExc_TypeError, "too many Py_BuildValue list items");
-            goto error;
-        }
-        items[len] = molt_buildvalue_parse_item(cursor, ap);
-        if (items[len] == NULL) goto error;
-        len++;
-        molt_buildvalue_skip_separators(cursor);
-    }
-
-    PyObject *list = PyList_New(len);
-    if (list == NULL) goto error;
-    for (Py_ssize_t i = 0; i < len; i++) {
-        if (PyList_SetItem(list, i, items[i]) != 0) {
-            Py_DECREF(items[i]);
-            for (Py_ssize_t j = i + 1; j < len; j++) Py_DECREF(items[j]);
-            Py_DECREF(list);
+            PyErr_SetString(&PyExc_SystemError, "unterminated container in Py_BuildValue");
+            molt_owned_vector_clear(&values);
             return NULL;
         }
-        items[i] = NULL;
+        PyObject *item = molt_buildvalue_parse_item(cursor, ap);
+        if (item == NULL || !molt_owned_vector_push(&values, item)) {
+            molt_buildvalue_drain(cursor, ap, closing);
+            molt_owned_vector_clear(&values);
+            return NULL;
+        }
     }
-    return list;
-
-error:
-    for (Py_ssize_t i = 0; i < len; i++) {
-        if (items[i] != NULL) Py_DECREF(items[i]);
-    }
-    return NULL;
+    return molt_owned_vector_finish(&values, list);
 }
 
 static PyObject *molt_buildvalue_parse_dict(const char **cursor, va_list *ap) {
     PyObject *dict = PyDict_New();
-    if (dict == NULL) return NULL;
+    if (dict == NULL) { molt_buildvalue_drain(cursor, ap, '}'); return NULL; }
     for (;;) {
         molt_buildvalue_skip_separators(cursor);
-        if (**cursor == '}') {
-            (*cursor)++;
+        if (**cursor == '}') { ++*cursor; return dict; }
+        if (**cursor == '\0') {
+            PyErr_SetString(&PyExc_SystemError, "unterminated dict in Py_BuildValue");
             break;
         }
-        if (**cursor == '\0') {
-            PyErr_SetString(&PyExc_TypeError, "unterminated dict format in Py_BuildValue");
-            Py_DECREF(dict);
-            return NULL;
-        }
         PyObject *key = molt_buildvalue_parse_item(cursor, ap);
-        if (key == NULL) {
-            Py_DECREF(dict);
-            return NULL;
-        }
+        if (key == NULL) break;
         molt_buildvalue_skip_separators(cursor);
         if (**cursor == '}' || **cursor == '\0') {
-            PyErr_SetString(&PyExc_TypeError,
-                            "dict format in Py_BuildValue has an odd number of items");
-            Py_DECREF(key);
-            Py_DECREF(dict);
-            return NULL;
+            PyErr_SetString(&PyExc_SystemError, "odd number of dict items in Py_BuildValue");
+            molt_release_owned_items(&key, 1);
+            break;
         }
         PyObject *value = molt_buildvalue_parse_item(cursor, ap);
-        if (value == NULL) {
-            Py_DECREF(key);
-            Py_DECREF(dict);
-            return NULL;
-        }
-        int rc = PyDict_SetItem(dict, key, value);
-        Py_DECREF(key);
-        Py_DECREF(value);
-        if (rc != 0) {
-            Py_DECREF(dict);
-            return NULL;
-        }
-        molt_buildvalue_skip_separators(cursor);
+        if (value == NULL) { molt_release_owned_items(&key, 1); break; }
+        int status = PyDict_SetItem(dict, key, value);
+        PyObject *pair[] = {key, value};
+        molt_release_owned_items(pair, 2);
+        if (status < 0) break;
     }
-    return dict;
+    molt_buildvalue_drain(cursor, ap, '}');
+    molt_release_owned_items(&dict, 1);
+    return NULL;
 }
 
 static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
@@ -420,11 +371,11 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
     }
     if (code == '(') {
         (*cursor)++;
-        return molt_buildvalue_parse_tuple(cursor, ap);
+        return molt_buildvalue_parse_sequence(cursor, ap, ')', 0);
     }
     if (code == '[') {
         (*cursor)++;
-        return molt_buildvalue_parse_list(cursor, ap);
+        return molt_buildvalue_parse_sequence(cursor, ap, ']', 1);
     }
     if (code == '{') {
         (*cursor)++;
@@ -438,9 +389,17 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
         // 'O'/'S'/'U' all take a borrowed PyObject* and return a new
         // reference; the S/U type distinction is advisory in CPython's
         // builder and not enforced here.
+        if (code == 'O' && **cursor == '&') {
+            ++*cursor;
+            MoltBuildValueConverter convert = va_arg(*ap, MoltBuildValueConverter);
+            void *value = va_arg(*ap, void *);
+            PyObject *result = convert(value);
+            if (result == NULL && PyErr_Occurred() == NULL) PyErr_BadInternalCall();
+            return result;
+        }
         PyObject *obj = va_arg(*ap, PyObject *);
         if (obj == NULL) {
-            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue object format received NULL");
+            if (PyErr_Occurred() == NULL) PyErr_BadInternalCall();
             return NULL;
         }
         Py_INCREF(obj);
@@ -449,7 +408,7 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
     case 'N': {
         PyObject *obj = va_arg(*ap, PyObject *);
         if (obj == NULL) {
-            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue 'N' received NULL");
+            if (PyErr_Occurred() == NULL) PyErr_BadInternalCall();
             return NULL;
         }
         return obj;
@@ -552,56 +511,31 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
 }
 
 PyObject *Py_VaBuildValue(const char *format, va_list vargs) {
-    if (format == NULL) {
-        PyErr_SetString(&PyExc_TypeError, "format must not be NULL");
-        return NULL;
-    }
+    if (format == NULL) { PyErr_BadInternalCall(); return NULL; }
     va_list ap;
     va_copy(ap, vargs);
     const char *cursor = format;
-    PyObject *items[MOLT_VARARG_MAX_ARGS];
-    Py_ssize_t len = 0;
-
+    MoltOwnedObjectVector values = {NULL, 0, 0};
     for (;;) {
         molt_buildvalue_skip_separators(&cursor);
         if (*cursor == '\0') break;
-        if (len >= MOLT_VARARG_MAX_ARGS) {
-            PyErr_SetString(&PyExc_TypeError, "too many Py_BuildValue items");
-            goto error;
-        }
-        items[len] = molt_buildvalue_parse_item(&cursor, &ap);
-        if (items[len] == NULL) goto error;
-        len++;
-    }
-    va_end(ap);
-
-    if (len == 0) {
-        Py_INCREF(&Py_None);
-        return &Py_None;
-    }
-    if (len == 1) {
-        return items[0];
-    }
-    PyObject *tuple = PyTuple_New(len);
-    if (tuple == NULL) goto post_va_error;
-    for (Py_ssize_t i = 0; i < len; i++) {
-        if (PyTuple_SetItem(tuple, i, items[i]) != 0) {
-            Py_DECREF(items[i]);
-            for (Py_ssize_t j = i + 1; j < len; j++) Py_DECREF(items[j]);
-            Py_DECREF(tuple);
+        PyObject *item = molt_buildvalue_parse_item(&cursor, &ap);
+        if (item == NULL || !molt_owned_vector_push(&values, item)) {
+            molt_buildvalue_drain(&cursor, &ap, '\0');
+            va_end(ap);
+            molt_owned_vector_clear(&values);
             return NULL;
         }
-        items[i] = NULL;
     }
-    return tuple;
-
-error:
     va_end(ap);
-post_va_error:
-    for (Py_ssize_t i = 0; i < len; i++) {
-        if (items[i] != NULL) Py_DECREF(items[i]);
+    if (values.len <= 1) {
+        PyObject *result = values.len == 1 ? values.items[0] : &Py_None;
+        if (values.len == 1) values.items[0] = NULL;
+        else Py_INCREF(result);
+        molt_owned_vector_clear(&values);
+        return result;
     }
-    return NULL;
+    return molt_owned_vector_finish(&values, 0);
 }
 
 PyObject *Py_BuildValue(const char *format, ...) {
@@ -620,10 +554,22 @@ PyObject *_Py_BuildValue_SizeT(const char *format, ...) {
     return result;
 }
 
+int PyArg_Parse(PyObject *arg, const char *format, ...) {
+    if (arg == NULL) { PyErr_BadInternalCall(); return 0; }
+    PyObject *tuple = PyTuple_Pack(1, arg);
+    if (tuple == NULL) return 0;
+    va_list ap;
+    va_start(ap, format);
+    int result = collect_and_dispatch(tuple, NULL, format, NULL, ap);
+    va_end(ap);
+    molt_release_owned_items(&tuple, 1);
+    return result;
+}
+
 int PyArg_ParseTuple(PyObject *args, const char *format, ...) {
     va_list ap;
     va_start(ap, format);
-    int result = collect_and_dispatch(args, format, ap);
+    int result = collect_and_dispatch(args, NULL, format, NULL, ap);
     va_end(ap);
     return result;
 }
@@ -642,89 +588,51 @@ int PyArg_ParseTupleAndKeywords(
     return result;
 }
 
-int PyArg_UnpackTuple(
-    PyObject *args,
-    const char *name,
-    Py_ssize_t min,
-    Py_ssize_t max,
-    ...)
-{
+int PyArg_UnpackTuple(PyObject *args, const char *name,
+                      Py_ssize_t min, Py_ssize_t max, ...) {
     (void)name;
-    (void)min;
-    if (max < 0 || max > INT_MAX - 2) return 0;
-    int take = (int)max;
-    char *fmt = (char *)malloc((size_t)take + 2);
-    void **outs = take == 0 ? NULL : (void **)malloc((size_t)take * sizeof(*outs));
-    if (fmt == NULL || (take != 0 && outs == NULL)) {
-        free(fmt);
-        free(outs);
-        PyErr_SetString(&PyExc_TypeError, "PyArg_UnpackTuple allocation failed");
+    if (min < 0 || max < min || !PyTuple_Check(args)) {
+        PyErr_BadInternalCall();
         return 0;
     }
-    int i;
-    for (i = 0; i < take; i++) fmt[i] = 'O';
-    fmt[i] = '|';
-    fmt[i+1] = '\0';
+    Py_ssize_t count = PyTuple_Size(args);
+    if (count < 0) return 0;
+    if (count < min || count > max) {
+        PyErr_SetString(&PyExc_TypeError, "incorrect argument count in PyArg_UnpackTuple");
+        return 0;
+    }
     va_list ap;
     va_start(ap, max);
-    for (int j = 0; j < take; j++) {
-        outs[j] = va_arg(ap, void *);
+    for (Py_ssize_t i = 0; i < count; ++i) {
+        PyObject **out = va_arg(ap, PyObject **);
+        PyObject *item = PyTuple_GetItem(args, i);
+        if (out == NULL || item == NULL) {
+            va_end(ap);
+            if (PyErr_Occurred() == NULL) PyErr_BadInternalCall();
+            return 0;
+        }
+        *out = item;
     }
     va_end(ap);
-
-    int result = molt_pyarg_parse_tuple_inner(args, fmt, outs, take);
-    free(outs);
-    free(fmt);
-    return result;
+    return 1;
 }
 
 static PyObject *molt_call_with_collected_args(PyObject *callable, va_list ap) {
-    PyObject *items[MOLT_VARARG_MAX_ARGS];
-    int n = 0;
+    MoltOwnedObjectVector values = {NULL, 0, 0};
     for (;;) {
         PyObject *item = va_arg(ap, PyObject *);
         if (item == NULL) break;
-        if (n >= MOLT_VARARG_MAX_ARGS) return NULL;
-        items[n++] = item;
-    }
-
-    PyObject *tuple = PyTuple_New((Py_ssize_t)n);
-    if (tuple == NULL) return NULL;
-    for (int i = 0; i < n; i++) {
-        Py_INCREF(items[i]);
-        if (PyTuple_SetItem(tuple, (Py_ssize_t)i, items[i]) != 0) {
-            Py_DECREF(items[i]);
-            Py_DECREF(tuple);
+        Py_INCREF(item);
+        if (!molt_owned_vector_push(&values, item)) {
+            molt_owned_vector_clear(&values);
             return NULL;
         }
     }
+    PyObject *tuple = molt_owned_vector_finish(&values, 0);
+    if (tuple == NULL) return NULL;
     PyObject *result = PyObject_Call(callable, tuple, NULL);
-    Py_DECREF(tuple);
+    molt_release_owned_items(&tuple, 1);
     return result;
-}
-
-static int molt_callfunction_format_starts_tuple(const char *format) {
-    if (format == NULL) return 0;
-    while (*format == ' ' || *format == '\t' || *format == '\n' ||
-           *format == '\r' || *format == ',') {
-        format++;
-    }
-    return *format == '(';
-}
-
-static int molt_callfunction_top_level_item_count(const char *format) {
-    if (format == NULL) return 0;
-    const char *cursor = format;
-    int count = 0;
-    while (*cursor != '\0') {
-        molt_buildvalue_skip_separators(&cursor);
-        if (*cursor == '\0') break;
-        if (*cursor == '(') return -1;
-        count++;
-        cursor++;
-        if (*cursor == '#') cursor++;
-    }
-    return count;
 }
 
 /* Shared `PyObject_CallFunction` / `PyObject_CallMethod` argument builder:
@@ -733,28 +641,24 @@ static int molt_callfunction_top_level_item_count(const char *format) {
  * multi-item format is the args tuple itself. Returns a NEW args tuple, or
  * NULL with an exception set. */
 static PyObject *molt_callfunction_build_args(const char *format, va_list ap) {
-    if (format == NULL || format[0] == '\0') {
-        return PyTuple_New(0);
-    }
+    if (format == NULL) return PyTuple_New(0);
+    const char *cursor = format;
+    molt_buildvalue_skip_separators(&cursor);
+    if (*cursor == '\0') return PyTuple_New(0);
     PyObject *built = Py_VaBuildValue(format, ap);
-    if (built == NULL) return NULL;
-
-    int top_level_count = molt_callfunction_top_level_item_count(format);
-    if (molt_callfunction_format_starts_tuple(format) || top_level_count != 1) {
-        return built;
-    }
+    if (built == NULL || PyTuple_Check(built)) return built;
     PyObject *args = PyTuple_Pack(1, built);
-    Py_DECREF(built);
+    molt_release_owned_items(&built, 1);
     return args;
 }
 
 static PyObject *molt_object_call_function_va(
     PyObject *callable, const char *format, va_list ap) {
-    if (callable == NULL) return NULL;
+    if (callable == NULL) { PyErr_BadInternalCall(); return NULL; }
     PyObject *args = molt_callfunction_build_args(format, ap);
     if (args == NULL) return NULL;
     PyObject *result = PyObject_Call(callable, args, NULL);
-    Py_DECREF(args);
+    molt_release_owned_items(&args, 1);
     return result;
 }
 
@@ -775,7 +679,7 @@ PyObject *_PyObject_CallFunction_SizeT(PyObject *callable, const char *format, .
 }
 
 PyObject *PyObject_CallFunctionObjArgs(PyObject *callable, ...) {
-    if (callable == NULL) return NULL;
+    if (callable == NULL) { PyErr_BadInternalCall(); return NULL; }
     va_list ap;
     va_start(ap, callable);
     PyObject *result = molt_call_with_collected_args(callable, ap);
@@ -784,7 +688,7 @@ PyObject *PyObject_CallFunctionObjArgs(PyObject *callable, ...) {
 }
 
 PyObject *PyObject_CallMethodObjArgs(PyObject *callable, PyObject *name, ...) {
-    if (callable == NULL || name == NULL) return NULL;
+    if (callable == NULL || name == NULL) { PyErr_BadInternalCall(); return NULL; }
     PyObject *method = PyObject_GetAttr(callable, name);
     if (method == NULL) return NULL;
 
@@ -792,7 +696,7 @@ PyObject *PyObject_CallMethodObjArgs(PyObject *callable, PyObject *name, ...) {
     va_start(ap, name);
     PyObject *result = molt_call_with_collected_args(method, ap);
     va_end(ap);
-    Py_DECREF(method);
+    molt_release_owned_items(&method, 1);
     return result;
 }
 
@@ -802,7 +706,7 @@ static PyObject *molt_object_call_method_va(
     const char *format,
     va_list ap)
 {
-    if (callable == NULL || name == NULL) return NULL;
+    if (callable == NULL || name == NULL) { PyErr_BadInternalCall(); return NULL; }
     PyObject *method = PyObject_GetAttrString(callable, name);
     if (method == NULL) return NULL;
 
@@ -813,12 +717,12 @@ static PyObject *molt_object_call_method_va(
     PyObject *args = molt_callfunction_build_args(format, ap);
 
     if (args == NULL) {
-        Py_DECREF(method);
+        molt_release_owned_items(&method, 1);
         return NULL;
     }
     PyObject *result = PyObject_Call(method, args, NULL);
-    Py_DECREF(args);
-    Py_DECREF(method);
+    molt_release_owned_items(&args, 1);
+    molt_release_owned_items(&method, 1);
     return result;
 }
 

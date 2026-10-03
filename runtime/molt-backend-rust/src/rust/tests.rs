@@ -123,6 +123,7 @@ fn emitted_stack_clear_preserves_the_nested_execution_baseline() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -155,6 +156,7 @@ fn compile_checked_keeps_ordinary_programs_available() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -376,6 +378,7 @@ fn compile_checked_rejects_async_work_poll_runtime_requirement_without_boundary(
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             }],
             profile: None,
@@ -418,6 +421,7 @@ fn compile_keeps_annotation_functions_when_referenced() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -432,6 +436,7 @@ fn compile_keeps_annotation_functions_when_referenced() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -475,6 +480,7 @@ fn compile_int_from_str_of_obj_records_unsupported_integer_authority() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -508,6 +514,7 @@ fn compile_numeric_equality_does_not_fall_back_for_non_numeric_values() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -547,6 +554,7 @@ fn compile_checked_rejects_untyped_integer_capable_arithmetic_before_emission() 
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -589,6 +597,7 @@ fn compile_checked_rejects_typed_integer_arithmetic_before_emission() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -632,6 +641,7 @@ fn compile_list_append_writes_back_indexed_aliases() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -646,6 +656,7 @@ fn compile_list_append_writes_back_indexed_aliases() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -682,6 +693,7 @@ fn compile_call_method_uses_s_value_method_name() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -717,6 +729,7 @@ fn compile_ord_at_emits_fused_helper() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -788,6 +801,7 @@ fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             }],
             profile: None,
@@ -823,6 +837,7 @@ fn compile_checked_rejects_unsupported_dispatch() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -839,6 +854,58 @@ fn compile_checked_rejects_unsupported_dispatch() {
         err.contains("matmul"),
         "diagnostic must name the op kind, got: {err}"
     );
+}
+
+#[test]
+fn public_builtin_lookup_keeps_existing_pre_source_capability_rejection() {
+    for (public_name, runtime_symbol) in [("len", "molt_len"), ("max", "molt_max_builtin")] {
+        let op = OpIR {
+            kind: "builtin_func".to_string(),
+            s_value: Some(runtime_symbol.to_string()),
+            builtin_name: Some(public_name.to_string()),
+            args: Some(vec!["name".to_string()]),
+            out: Some("selected".to_string()),
+            ..OpIR::default()
+        };
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                name: "namespace_probe".to_string(),
+                params: vec!["name".to_string()],
+                ops: vec![
+                    op.clone(),
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["selected".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let mut backend = RustBackend::new();
+        let error = backend
+            .compile_checked(&ir)
+            .expect_err("Rust has no mapping exception custody");
+        assert!(
+            error.contains("rejected before source generation"),
+            "{error}"
+        );
+        assert!(
+            error.contains("builtin_func")
+                && error.contains("structured catchable Python exceptions"),
+            "{error}"
+        );
+        assert!(backend.output.is_empty() && backend.unsupported_ops.is_empty());
+
+        // Internal source-only fixture entry points cannot fabricate a fixed
+        // callable after bypassing the public admission boundary either.
+        backend.emit_op(&op);
+        assert!(backend.output.is_empty());
+        assert_eq!(backend.unsupported_ops.len(), 1);
+        assert!(backend.unsupported_ops[0].contains("captured namespace"));
+    }
 }
 
 #[test]
@@ -921,6 +988,7 @@ fn compile_boolean_short_circuit_omits_unused_if_parentheses() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1035,6 +1103,7 @@ fn compile_unpack_sequence_uses_exact_arity_runtime_authority() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1128,6 +1197,7 @@ fn compile_unpack_sequence_iterates_unicode_scalars_not_utf8_bytes() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1163,6 +1233,7 @@ fn malformed_simple_ir_unpack_is_reported_not_emitted() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1229,6 +1300,7 @@ fn compile_module_cache_ops_lower_to_runtime_cache() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1271,6 +1343,7 @@ fn compile_checked_rejects_even_i64_sized_bigint_literals() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1315,6 +1388,7 @@ fn compile_checked_rejects_unrepresented_literal_values() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1419,6 +1493,7 @@ fn compile_store_var_and_load_var_use_named_local_storage() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1677,6 +1752,7 @@ fn jump_after_loop_rejects_an_undefined_target_before_emission() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1716,6 +1792,7 @@ fn compile_checked_fails_closed_on_synthetically_unsupported_op() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1750,6 +1827,7 @@ fn compile_checked_fails_closed_without_emitted_value_marker() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1793,6 +1871,7 @@ fn compile_checked_rejects_malformed_callable_family_without_substitute_values()
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,

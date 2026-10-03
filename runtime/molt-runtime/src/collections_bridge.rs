@@ -62,29 +62,6 @@ pub extern "C" fn __molt_collections_raise_key_error_with_key(key_bits: u64) -> 
     crate::with_gil_entry_nopanic!(_py, { raise_key_error_with_key::<u64>(_py, key_bits) })
 }
 
-/// Returns 1 if `key_bits` is hashable, else 0 with a pending TypeError that is
-/// CPython-identical for the given context. `ctx_code`: 0 = bare
-/// (`unhashable type: 'X'`, used for element-counting paths like Counter(iter)
-/// and update(iter)); 2 = dict key (3.14 adds `cannot use 'X' as a dict key
-/// (...)`, used for direct key access / mapping pairs). Lets collections' Counter
-/// reject unhashable keys exactly like CPython — its custom obj_eq registry never
-/// hashes keys, so without this it silently accepted them.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_collections_ensure_key_hashable(key_bits: u64, ctx_code: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let ctx = match ctx_code {
-            2 => crate::object::ops_hash::HashContext::DictKey,
-            1 => crate::object::ops_hash::HashContext::SetElement,
-            _ => crate::object::ops_hash::HashContext::Bare,
-        };
-        if crate::object::ops_hash::ensure_hashable(_py, key_bits, ctx) {
-            1
-        } else {
-            0
-        }
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
@@ -152,22 +129,6 @@ pub extern "C" fn __molt_collections_string_obj_to_owned(
             unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
         }
         None => 0,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_collections_string_data(
-    ptr: *mut u8,
-    out_ptr: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
-    unsafe {
-        if ptr.is_null() || object_type_id(ptr) != TYPE_ID_STRING {
-            return 0;
-        }
-        *out_ptr = string_bytes(ptr);
-        *out_len = string_len(ptr);
-        1
     }
 }
 
@@ -388,11 +349,16 @@ pub extern "C" fn __molt_collections_dict_order_clone(
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_collections_obj_eq(lhs_bits: u64, rhs_bits: u64) -> i32 {
+pub extern "C" fn __molt_collections_compare_eq(lhs_bits: u64, rhs_bits: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(lhs_bits);
         let rhs = obj_from_bits(rhs_bits);
-        if obj_eq(_py, lhs, rhs) { 1 } else { 0 }
+        match crate::object::ops_compare::compare_object_eq_bool(_py, lhs, rhs) {
+            crate::object::ops_compare::CompareBoolOutcome::True => 1,
+            crate::object::ops_compare::CompareBoolOutcome::False
+            | crate::object::ops_compare::CompareBoolOutcome::NotComparable => 0,
+            crate::object::ops_compare::CompareBoolOutcome::Error => -1,
+        }
     })
 }
 

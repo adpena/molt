@@ -14,6 +14,7 @@ fn extern_function(name: &str, arity: usize, returns_value: bool) -> FunctionIR 
         source_file: None,
         is_extern: true,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
 }

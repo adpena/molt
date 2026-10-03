@@ -58,10 +58,10 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
 
 #[test]
 fn typed_field_inline_access_checks_receiver_before_dereferencing() {
-    for kind in ["load", "store"] {
+    for kind in ["load", "guarded_load", "store"] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let is_load = kind == "load";
+        let is_load = matches!(kind, "load" | "guarded_load");
         let mut func = TirFunction::new(
             format!("field_{kind}"),
             vec![TirType::DynBox; if is_load { 1 } else { 2 }],
@@ -369,7 +369,11 @@ fn lower_dynamic_del_attr_name_uses_operand_name() {
 #[test]
 fn lower_preserved_has_attr_name_calls_runtime() {
     let ctx = Context::create();
-    let backend = make_backend(&ctx);
+    let mut backend = make_backend(&ctx);
+    // An exact boxed-ABI kind lowers through the admitted runtime route.
+    backend
+        .runtime_callable_symbols
+        .insert("molt_has_attr_name".into());
     let mut func = TirFunction::new(
         "has_attr_name_preserved".into(),
         vec![],
@@ -478,4 +482,76 @@ fn lower_call_bind_preserves_callargs_builder_abi() {
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
     assert!(ir.contains("molt_call_bind_ic"), "{ir}");
+}
+
+#[test]
+fn call_bind_consumes_its_builder_when_the_callable_box_fails() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "call_bind_builder_custody".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let callable = func.fresh_value();
+    let result = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    let builder = entry.args[0].id;
+    entry.ops.push(const_int_def(callable, i64::MAX));
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Call,
+        operands: vec![callable, builder],
+        results: vec![result],
+        attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str("call_bind".into()))]),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    backend
+        .module
+        .verify()
+        .expect("builder custody must verify");
+    let ir = llvm_fn.print_to_string().to_string();
+    let abort = llvm_fn
+        .get_basic_blocks()
+        .into_iter()
+        .find(|block| {
+            block
+                .get_name()
+                .to_str()
+                .unwrap()
+                .starts_with("call_bind_abort")
+        })
+        .unwrap_or_else(|| panic!("a callable box that can fail joins a failure block: {ir}"));
+    let mut abort_ir = String::new();
+    let mut instruction = abort.get_first_instruction();
+    while let Some(current) = instruction {
+        abort_ir.push_str(&current.print_to_string().to_string());
+        instruction = current.get_next_instruction();
+    }
+    assert!(
+        abort_ir.contains("call void @molt_dec_ref_obj(i64 %0)") && !abort_ir.contains("@molt_call_bind_ic("),
+        "a call skipped by a failed callable box still consumes its builder: {ir}"
+    );
+    assert_eq!(
+        ir.matches("call void @molt_dec_ref_obj(i64 %0)").count(),
+        1,
+        "the builder is released only where the consuming call is skipped: {ir}"
+    );
+    let call = ir
+        .lines()
+        .find(|line| line.contains("call i64 @molt_call_bind_ic("))
+        .unwrap_or_else(|| panic!("{ir}"));
+    assert!(
+        call.trim_end().ends_with("i64 %boxed_int, i64 %0)"),
+        "the callable arrives boxed and the builder unchanged: {ir}"
+    );
+    assert!(
+        !ir.contains("@molt_exception_pending("),
+        "the consuming call observes an exception already pending itself: {ir}"
+    );
 }

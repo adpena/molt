@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,21 @@ def _rust_function(source: str, name: str) -> str:
     return body.split("\n}", 1)[0]
 
 
+def _rust_attributes(source: str, name: str) -> list[str]:
+    """Attributes directly above one uniquely named function or method."""
+    signature = f"fn {name}("
+    assert source.count(signature) == 1, f"expected one owning function {name}"
+    head = source.split(signature, 1)[0].rsplit("\n", 1)[0]
+    attributes: list[str] = []
+    for line in reversed(head.splitlines()):
+        stripped = line.strip()
+        if stripped.startswith("#["):
+            attributes.append(stripped)
+        elif not stripped.startswith("///"):
+            break
+    return attributes
+
+
 def test_generated_outputs_are_byte_exact() -> None:
     gen = _gen()
     rendered = gen.render_all(gen.load_table())
@@ -40,12 +56,13 @@ def test_inventory_preserves_active_ids_and_retires_holes() -> None:
         ("OBJECT", 100)
     ]
     dense = [row["id"] for row in kinds if row["id"] >= 200]
-    assert dense == [value for value in range(200, 259) if value not in (205, 231)]
+    assert dense == [value for value in range(200, 260) if value not in (205, 231)]
     assert next(row for row in kinds if row["name"] == "CELL")["id"] == 258
     by_name = {row["name"]: row for row in kinds}
     assert by_name["WEAKREF"]["id"] == 256
     assert by_name["NATIVE_DESCRIPTOR"]["id"] == 257
-    assert kinds[-1]["name"] == "CELL"
+    assert by_name["FRAME_BINDINGS"]["id"] == 259
+    assert kinds[-1]["name"] == "FRAME_BINDINGS"
 
 
 def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
@@ -115,30 +132,33 @@ def test_cpython_weakref_policy_is_explicit_and_exact() -> None:
     }
     assert {name for name, row in by_name.items() if row["weakref"] == "class"} == {
         "OBJECT",
+        "LIST",
         "FOREIGN",
         "CLASSMETHOD",
         "STATICMETHOD",
         "PROPERTY",
     }
-    for descriptor in ("CLASSMETHOD", "STATICMETHOD", "PROPERTY"):
+    for descriptor in ("LIST", "CLASSMETHOD", "STATICMETHOD", "PROPERTY"):
         assert by_name[descriptor]["layout"] == "object"
         assert by_name[descriptor]["shape"] == "class"
-    for denied in ("LIST", "DICT", "EXCEPTION", "SUPER", "UNION", "NATIVE_DESCRIPTOR"):
+    for denied in ("DICT", "EXCEPTION", "SUPER", "UNION", "NATIVE_DESCRIPTOR"):
         assert by_name[denied]["weakref"] == "deny"
-    # Class-governed is not an unconditional allow: builtin descriptors remain
-    # denied, while user subclasses consult the runtime class-slot authority.
+    # The generated facts enter native construction once. All registration,
+    # including exact builtins, projects the sealed class-owned admission.
+    storage = (ROOT / "runtime/molt-runtime/src/object/class_storage.rs").read_text(
+        encoding="utf-8"
+    )
+    native = _rust_function(storage, "native")
+    assert "heap_weakref_policy(type_id)" in native
+    assert "HeapWeakrefPolicy::Allow" in native
     weakref = (ROOT / "runtime/molt-runtime/src/object/weakref.rs").read_text(
         encoding="utf-8"
     )
     supports = _rust_function(weakref, "object_supports_weakrefs")
-    assert "heap_weakref_policy(type_id)" in supports
-    assert ".unwrap_or(crate::object::HeapWeakrefPolicy::Deny)" in supports
-    assert "!crate::is_builtin_class_bits(_py, class_bits)" in supports
+    assert "heap_weakref_policy" not in supports
+    assert "is_builtin_class_bits" not in supports
     assert "class_slots_info(_py, class_ptr)" in supports
-    assert ".is_none_or(|info| info.allows_weakref)" in supports
-    assert supports.rstrip().endswith(
-        "policy == crate::object::HeapWeakrefPolicy::Allow"
-    )
+    assert ".is_some_and(|info| info.allows_weakref)" in supports
 
 
 def test_cycle_policy_models_cpython_dynamic_container_tracking() -> None:
@@ -473,6 +493,53 @@ def test_terminal_metrics_commit_only_after_no_unwind_resource_teardown() -> Non
     )[0]
     assert "catch_unwind" in guard
     assert "std::process::abort()" in guard
+
+
+def test_refcount_edges_inline_only_the_release_fast_path() -> None:
+    """Every runtime ``dec_ref``/``inc_ref`` call site inlines these edges.
+
+    Rejected-header aborts, C-view bridge transactions, diagnostics and the
+    rc->0 finalize/free transaction stay out of line: an inlined copy of the
+    terminal transaction costs kilobytes of code at every call site.
+    """
+    source = (ROOT / "runtime/molt-runtime/src/object/mod.rs").read_text(
+        encoding="utf-8"
+    )
+    release = _rust_function(source, "dec_ref_ptr_with_validated_type_id")
+    retain = _rust_function(source, "inc_ref_ptr")
+    for edge in (release, retain):
+        for cold in (
+            "eprintln!",
+            "std::env::var",
+            "Backtrace",
+            "GLOBAL_BRIDGE",
+            "run_object_finalizer_in_revival_window",
+            "weakref_clear_for_ptr",
+            "heap_drop_policy",
+        ):
+            assert cold not in edge, f"inlined refcount edge carries {cold}"
+    # The inline(always) header transitions those edges expand stay cold-free.
+    for method in ("retain_owned_mirrored", "release_owned"):
+        assert source.count(f"fn {method}(") == 1
+        body = source.split(f"fn {method}(", 1)[1].split("\n    }\n", 1)[0]
+        assert "eprintln!" not in body and "GLOBAL_BRIDGE" not in body
+    assert "dec_ref_ptr_terminal(" in release
+    for outlined in (
+        "dec_ref_ptr_terminal",
+        "release_abi_view_owner",
+        "retain_owned_abi_view",
+    ):
+        assert "#[inline(never)]" in _rust_attributes(source, outlined)
+    # One cached gate admits the outlined tracers; a knob outside it is dead.
+    knob = re.compile(r"\b((?:trace|debug)_[a-z_]+)\(\)")
+    gate = set(knob.findall(_rust_function(source, "rc_transition_trace_enabled")))
+    for tracer in (
+        "trace_dec_ref_transition",
+        "trace_inc_ref_before",
+        "trace_inc_ref_after",
+    ):
+        used = set(knob.findall(_rust_function(source, tracer)))
+        assert used and used <= gate, f"{tracer} reads knobs outside the gate"
 
 
 def test_opaque_external_custody_is_explicit_not_silently_dynamic() -> None:

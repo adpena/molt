@@ -42,6 +42,15 @@ fn test_hooks_or_stubs_returns_stubs() {
     let tuple_bits = unsafe { (h.alloc_tuple)(3) };
     assert_eq!(tuple_bits, 0);
 
+    assert!(matches!(
+        unsafe { (h.slice_new)(0, 0, 0) }.decode(),
+        DecodedHandleResult::Error
+    ));
+    assert!(matches!(
+        unsafe { (h.slice_item)(0, 0) }.decode(),
+        DecodedHandleResult::Error
+    ));
+
     let dict_bits = unsafe { (h.alloc_dict)() };
     assert_eq!(dict_bits, 0);
 }
@@ -86,7 +95,7 @@ fn test_stub_dict_operations() {
     let len = unsafe { (h.dict_len)(0) };
     assert_eq!(len, 0);
 
-    let val = unsafe { (h.dict_get)(0, 0) };
+    let val = unsafe { (h.dict_get)(0, 0, molt_cpython_abi::hooks::DictHashSource::Compute, 0) };
     assert!(matches!(val.decode(), DecodedHandleResult::Error));
 
     assert_eq!(unsafe { (h.dict_set)(0, 0, 0) }, -1);

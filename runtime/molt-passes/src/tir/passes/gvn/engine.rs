@@ -8,6 +8,8 @@ use crate::tir::op_kinds_generated::{
     GvnNumberingRole, opcode_gvn_numbering_role_table, opcode_gvn_value_key_spec_table,
 };
 use crate::tir::ops::{Dialect, OpCode, TirOp};
+use crate::tir::passes::ownership_lattice_min::Replacements;
+use crate::tir::passes::value_range::ValueRange;
 use crate::tir::values::ValueId;
 
 use super::super::PassStats;
@@ -288,7 +290,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
     }
 
-    // Apply replacements (replace redundant ops with Copy).
+    // Apply replacements (replace redundant ops with Copy). Equal values
+    // are not equal owners: a replaced result keeps the reference it held,
+    // as an owned alias of its leader, unless it is unread, a raw carrier,
+    // or forwarded an operand's object (design 20 §1.2).
+    if replacements.is_empty() {
+        return stats;
+    }
+    let mut owners = Replacements::new(func);
     for (bid, op_idx, leader) in &replacements {
         if let Some(block) = func.blocks.get_mut(bid)
             && *op_idx < block.ops.len()
@@ -304,15 +313,18 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 source_span: None,
             };
             replacement.inherit_source_from(&old);
+            owners.record(&old);
             block.ops[*op_idx] = replacement;
             stats.values_changed += 1;
         }
     }
+    let ranges = am.get::<ValueRange>(func);
+    owners.finish(func, Some(ranges));
 
     // Operand renaming is deferred to copy_prop + DCE.  Direct operand
     // replacement requires per-use dominance checks; the Copy ops emitted
-    // above are sufficient — copy_prop will resolve them, and DCE will
-    // clean up the now-dead original ops.
+    // above are sufficient — copy_prop resolves the transparent ones, and
+    // DCE cleans up the now-dead original ops.
 
     stats
 }

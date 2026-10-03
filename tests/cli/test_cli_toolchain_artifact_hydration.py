@@ -8,7 +8,6 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 from typing import cast
 
@@ -18,17 +17,16 @@ import molt.wasm_artifact as wasm_artifact
 from molt import cli
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import runtime_native_build as RUNTIME_NATIVE_BUILD
-from molt.cli import runtime_paths as RUNTIME_PATHS
+from molt.cli.models import _RuntimeArtifactState
+from molt.cli.runtime_native_generation import publish_native_runtime_generation
 from molt.cli import runtime_wasm_build as RUNTIME_WASM_BUILD
 from molt.cli import runtime_wasm_build_support as RUNTIME_WASM_BUILD_SUPPORT
 from molt.cli import runtime_wasm_build_spec as RUNTIME_WASM_BUILD_SPEC
 from molt.cli.native_link_manifest import (
     native_link_flags_from_manifest,
     read_native_link_dependency_manifest,
-    write_native_link_dependency_manifest,
 )
 from molt.cli.runtime_artifact_selection import RuntimeCrateType
-from molt.cli.runtime_build_identity import runtime_build_fingerprint
 from molt.cli.static_archive_identity import artifact_content_identity
 from tests.cli.native_link_test_support import static_archive_bytes
 from tests.runtime_build_identity_helper import (
@@ -36,11 +34,6 @@ from tests.runtime_build_identity_helper import (
 )
 
 _FAKE_STATICLIB = static_archive_bytes(b"fake-staticlib")
-_NATIVE_RUNTIME_BUILD_IDENTITY = native_runtime_staticlib_identity(
-    cargo_profile="dev-fast",
-    target_triple=None,
-    family_seed="native-artifact-hydration",
-)
 
 # Fixture metadata digest used by runtime fingerprint hydration tests.
 _TEST_RUNTIME_META_DIGEST = "ab" * 32
@@ -430,8 +423,8 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
     identity = native_runtime_staticlib_identity(
         cargo_profile="dev-fast", target_triple="wasm32-wasip1"
     )
-    state_root = target_root / ".molt_state"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    state_root = RUNTIME_WASM_BUILD_SUPPORT._build_state_root(tmp_path)
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SUPPORT,
         "resolve_wasm_cpython_abi_build_identity",
@@ -441,9 +434,6 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         RUNTIME_WASM_BUILD_SUPPORT,
         "resolve_runtime_cargo_plan",
         partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT, "runtime_build_tooling_authority", lambda _root: {}
     )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SUPPORT,
@@ -567,7 +557,6 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
         "resolve_runtime_cargo_plan",
         partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
     )
-    monkeypatch.setattr(support, "runtime_build_tooling_authority", lambda _root: {})
     monkeypatch.setattr(support, "_read_runtime_fingerprint", lambda _path: None)
     monkeypatch.setattr(
         support, "_current_runtime_target_artifact", lambda *_a, **_k: None
@@ -766,72 +755,7 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
     assert os.access(isolated_backend, os.X_OK)
 
 
-def test_ensure_runtime_lib_hydrates_from_canonical_target(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    project_root = tmp_path
-    canonical_target = project_root / "target"
-    isolated_target = project_root / "isolated-target"
-    canonical_runtime = canonical_target / "dev-fast" / "libmolt_runtime.a"
-    isolated_runtime = isolated_target / "dev-fast" / "libmolt_runtime.a"
-    canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
-    canonical_runtime.write_bytes(_FAKE_STATICLIB)
-
-    fingerprint = runtime_build_fingerprint(_NATIVE_RUNTIME_BUILD_IDENTITY)
-    canonical_fp = cli._artifact_state_path_for_build_state_root(
-        cli._canonical_build_state_root(project_root),
-        canonical_runtime,
-        subdir="runtime_fingerprints",
-        stem_suffix="dev-fast.native",
-        extension="fingerprint",
-    )
-    canonical_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(
-        canonical_fp, fingerprint, artifact=canonical_runtime
-    )
-    write_native_link_dependency_manifest(
-        json.dumps(
-            {
-                "reason": "compiler-message",
-                "message": {
-                    "message": "native-static-libs: ",
-                    "level": "note",
-                },
-            }
-        ),
-        runtime_lib=canonical_runtime,
-        cargo_profile="dev-fast",
-        target_triple=None,
-        runtime_build_identity=_NATIVE_RUNTIME_BUILD_IDENTITY,
-    )
-
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
-    monkeypatch.setattr(
-        RUNTIME_NATIVE_BUILD,
-        "_runtime_build_identity_for_plan",
-        lambda *args, **kwargs: _NATIVE_RUNTIME_BUILD_IDENTITY,
-    )
-    monkeypatch.setattr(
-        RUNTIME_NATIVE_BUILD,
-        "_run_resolved_cargo_plan",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("cargo should not run")
-        ),
-    )
-
-    assert RUNTIME_NATIVE_BUILD._ensure_runtime_lib(
-        isolated_runtime,
-        None,
-        True,
-        "dev-fast",
-        project_root,
-        1.0,
-    )
-    assert isolated_runtime.read_bytes() == _FAKE_STATICLIB
-
-
-def test_native_runtime_hydration_carries_portable_dependency_custody(
+def test_canonical_native_generation_keeps_portable_dependency_custody(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -852,21 +776,6 @@ def test_native_runtime_hydration_carries_portable_dependency_custody(
         target_triple=target_triple,
         family_seed="portable-native-hydration",
     )
-    fingerprint = runtime_build_fingerprint(build_identity)
-    canonical_fp = cli._artifact_state_path_for_build_state_root(
-        cli._canonical_build_state_root(project_root),
-        canonical_runtime,
-        subdir="runtime_fingerprints",
-        stem_suffix=f"dev-fast.{target_triple}",
-        extension="fingerprint",
-    )
-    canonical_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(
-        canonical_fp,
-        fingerprint,
-        artifact=canonical_runtime,
-    )
-
     producer = tmp_path / "producer"
     out_dir = producer / "out"
     library_dir = producer / "lib"
@@ -884,14 +793,17 @@ def test_native_runtime_hydration_carries_portable_dependency_custody(
             "out_dir": str(out_dir),
         }
     )
-    write_native_link_dependency_manifest(
-        cargo_stdout,
+    generation = publish_native_runtime_generation(
+        canonical_runtime,
+        source_archive=canonical_runtime,
+        cargo_stdout=cargo_stdout,
         cargo_stderr="note: native-static-libs: -lportable\n",
-        runtime_lib=canonical_runtime,
         cargo_profile="dev-fast",
         target_triple=target_triple,
-        runtime_build_identity=build_identity,
+        build_identity=build_identity,
+        inputs_are_current=lambda: True,
     )
+    assert generation is not None
     shutil.rmtree(producer)
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
@@ -908,6 +820,7 @@ def test_native_runtime_hydration_carries_portable_dependency_custody(
         ),
     )
 
+    state = _RuntimeArtifactState(runtime_lib=isolated_runtime)
     assert RUNTIME_NATIVE_BUILD._ensure_runtime_lib(
         isolated_runtime,
         target_triple,
@@ -915,9 +828,12 @@ def test_native_runtime_hydration_carries_portable_dependency_custody(
         "dev-fast",
         project_root,
         1.0,
+        runtime_state=state,
     )
+    assert state.runtime_lib == generation.runtime_lib
+    assert not isolated_runtime.exists()
     manifest = read_native_link_dependency_manifest(
-        isolated_runtime,
+        state.runtime_lib,
         target_triple=target_triple,
         cargo_profile="dev-fast",
         runtime_build_identity=build_identity,
@@ -925,7 +841,7 @@ def test_native_runtime_hydration_carries_portable_dependency_custody(
     flags = native_link_flags_from_manifest(
         manifest,
         object_format="elf",
-        runtime_lib=isolated_runtime,
+        runtime_lib=state.runtime_lib,
     )
     assert flags[-1] == "-lportable"
     custody_directory = Path(flags[-2][2:])
@@ -933,82 +849,6 @@ def test_native_runtime_hydration_carries_portable_dependency_custody(
     assert (custody_directory / "libportable.a").read_bytes() == (
         b"portable dependency"
     )
-
-
-def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    project_root = tmp_path
-    canonical_target = project_root / "target"
-    isolated_target = project_root / "isolated-target"
-    canonical_runtime = canonical_target / "dev-fast" / "libmolt_runtime.a"
-    isolated_runtime = isolated_target / "dev-fast" / "libmolt_runtime.a"
-    canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
-    canonical_runtime.write_bytes(static_archive_bytes(b"stale"))
-
-    fingerprint = runtime_build_fingerprint(_NATIVE_RUNTIME_BUILD_IDENTITY)
-    canonical_fp = cli._artifact_state_path_for_build_state_root(
-        cli._canonical_build_state_root(project_root),
-        canonical_runtime,
-        subdir="runtime_fingerprints",
-        stem_suffix="dev-fast.native",
-        extension="fingerprint",
-    )
-    canonical_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(
-        canonical_fp, fingerprint, artifact=canonical_runtime
-    )
-    canonical_runtime.write_bytes(static_archive_bytes(b"mutated"))
-    cargo_runs: list[list[str]] = []
-
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
-    monkeypatch.setattr(
-        RUNTIME_NATIVE_BUILD,
-        "_runtime_build_identity_for_plan",
-        lambda *args, **kwargs: _NATIVE_RUNTIME_BUILD_IDENTITY,
-    )
-
-    def fake_run_cargo(
-        plan: RuntimeCargoPlan,
-        *,
-        timeout: float | None,
-        json_output: bool,
-        label: str,
-    ) -> subprocess.CompletedProcess[str]:
-        del timeout, json_output, label
-        cmd = list(plan.command)
-        cargo_runs.append(list(cmd))
-        scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(
-            isolated_runtime, None
-        )
-        scratch_lib.parent.mkdir(parents=True, exist_ok=True)
-        scratch_lib.write_bytes(_FAKE_STATICLIB)
-        cargo_note = json.dumps(
-            {
-                "reason": "compiler-message",
-                "message": {
-                    "message": "native-static-libs: ",
-                    "level": "note",
-                },
-            }
-        )
-        return subprocess.CompletedProcess(cmd, 0, cargo_note + "\n", "")
-
-    monkeypatch.setattr(
-        RUNTIME_NATIVE_BUILD, "_run_resolved_cargo_plan", fake_run_cargo
-    )
-
-    assert RUNTIME_NATIVE_BUILD._ensure_runtime_lib(
-        isolated_runtime,
-        None,
-        True,
-        "dev-fast",
-        project_root,
-        1.0,
-    )
-    assert cargo_runs
-    assert isolated_runtime.read_bytes() == _FAKE_STATICLIB
 
 
 @pytest.mark.parametrize("reloc", (False, True), ids=("shared", "reloc"))

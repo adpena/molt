@@ -1,46 +1,16 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use super::super::super::blocks::BlockId;
 use super::super::super::function::TirFunction;
 use super::super::super::op_kinds_generated::opcode_generator_fusion_poll_role_table;
-use super::super::super::ops::{OpCode, TirOp};
+use super::super::super::ops::{Dialect, OpCode, TirOp};
 use super::super::super::types::TirType;
 use super::super::super::values::ValueId;
-use super::clone::{
-    LocalInit, clone_and_rewrite_poll, const_int_op, const_none_op, local_slot_init_const,
-};
+use super::super::ownership_lattice_min::Replacements;
+use super::clone::clone_and_rewrite_poll;
+use super::slots::{SlotPlan, plan_slots};
 use super::wire::wire_fused_loop;
-use super::{FusionCandidate, FusionStats, GEN_CONTROL_BYTES, SlotInfo, attr_value_int};
-
-#[derive(Clone, Copy)]
-enum SlotInitPlan {
-    CallerValue(ValueId),
-    Int(i64),
-    None,
-}
-
-#[derive(Clone, Copy)]
-struct PlannedSlot {
-    offset: i64,
-    init: SlotInitPlan,
-}
-
-/// Collect the set of USER frame-slot offsets (`>= GEN_CONTROL_BYTES`) the poll
-/// body accesses via `ClosureLoad`/`ClosureStore`, in ascending order.
-fn collect_user_frame_slots(poll: &TirFunction) -> Vec<i64> {
-    let mut slots = BTreeSet::new();
-    for block in poll.blocks.values() {
-        for op in &block.ops {
-            if matches!(op.opcode, OpCode::ClosureLoad | OpCode::ClosureStore)
-                && let Some(off) = attr_value_int(op)
-                && off >= GEN_CONTROL_BYTES
-            {
-                slots.insert(off);
-            }
-        }
-    }
-    slots.into_iter().collect()
-}
+use super::{FusionCandidate, FusionStats};
 
 // ===========================================================================
 // The splice (single-yield-site — the Tier-B keystone)
@@ -53,22 +23,24 @@ fn collect_user_frame_slots(poll: &TirFunction) -> Vec<i64> {
 // loop) and the bare `def g(): ...; yield <expr>` shape. The generator's own
 // control flow becomes the fused loop; the single yield binds the element to the
 // consumer's for-target and runs the consumer body inline; the frame's user
-// slots become loop-carried phis (param slots seeded from the `AllocTask` args,
-// local slots from the poll's entry-block init stores).
+// slots become SSA values of that control flow (`slots.rs`), a parameter slot
+// starting as the frame's reference to its `AllocTask` argument.
 //
 // Multi-yield-SITE generators (sequential `yield a; yield b; ...`) need a
 // return-dispatch over yield-delimited segments — doc-26 Phase-1 Finding #1 —
 // and bail soundly here (the generator stays Tier D: a correct heap frame).
 
 /// Apply the fusion splice for `candidate`. Returns `true` iff the caller was
-/// mutated; `false` on a conservative bail (caller left byte-identical).
+/// mutated; `false` on a conservative bail (caller left byte-identical). A fused
+/// caller is left type-refined, and each promoted read and parameter slot keeps
+/// the reference the elided frame's load or slot held.
 pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
     caller: &mut TirFunction,
     poll: &TirFunction,
     candidate: &FusionCandidate,
     stats: &mut FusionStats,
 ) -> bool {
-    let Some(planned_slots) = preflight_fusion(caller, poll, candidate) else {
+    let Some(plan) = preflight_fusion(caller, poll, candidate) else {
         return false;
     };
 
@@ -79,9 +51,9 @@ pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
     // byte-identical. Successful fusion commits with one move, preserving the
     // exact deterministic id sequence produced by the former in-place path.
     let mut staged = caller.clone();
-    if !apply_fusion_staged(&mut staged, poll, candidate, &planned_slots) {
+    let Some(owners) = apply_fusion_staged(&mut staged, poll, candidate, &plan) else {
         return false;
-    }
+    };
 
     // Keep the commit itself infallible: even debug overflow must be detected
     // before replacing the caller so a panic cannot expose half-committed state.
@@ -96,17 +68,22 @@ pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
     *caller = staged;
     stats.frames_elided = next_frames_elided;
     stats.yield_sites_spliced = next_yield_sites_spliced;
+    // The owners are decided on refined facts, so a slot whose refined range
+    // proves it a raw integer holds no reference and its reads stay plain
+    // copies that the value facts see through.
+    super::super::super::type_refine::refine_types(caller);
+    owners.finish(caller, None);
     true
 }
 
-/// Complete every read-only eligibility and slot-initialization check before
+/// Complete every read-only eligibility check and the frame-slot plan before
 /// allocating the transaction's staging copy. Returning `None` cannot mutate
 /// either the caller or the fusion statistics.
 fn preflight_fusion(
     caller: &TirFunction,
     poll: &TirFunction,
     candidate: &FusionCandidate,
-) -> Option<Vec<PlannedSlot>> {
+) -> Option<SlotPlan> {
     let retired: HashSet<_> = std::iter::once(candidate.cond_block)
         .chain(candidate.loop_header)
         .collect();
@@ -165,76 +142,55 @@ fn preflight_fusion(
         }
     }
 
-    // --- Resolve the AllocTask args (the generator's parameter values, caller
-    //     space) so param slots can be seeded. ---
-    let alloc_args: Vec<ValueId> = caller.blocks[&candidate.alloc_block].ops[candidate.alloc_idx]
+    // --- Promote the frame's user slots to SSA values of the poll's own control
+    //     flow, the first `arity` slots holding the `AllocTask` arguments. A
+    //     slot whose reads cannot be answered soundly bails the whole splice. ---
+    let arity = caller.blocks[&candidate.alloc_block].ops[candidate.alloc_idx]
         .operands
-        .clone();
-
-    // --- Plan each user slot: offset + caller-space init value. A slot whose
-    //     init cannot be resolved soundly bails the whole splice. ---
-    let user_slots = collect_user_frame_slots(poll);
-    let mut planned_slots = Vec::with_capacity(user_slots.len());
-    for &offset in &user_slots {
-        // Param slot? offset == GEN_CONTROL_BYTES + 8*i, i < alloc_args.len().
-        let rel = offset - GEN_CONTROL_BYTES;
-        if rel % 8 != 0 {
-            return None; // non-8-aligned slot — unexpected shape, bail.
-        }
-        let idx = (rel / 8) as usize;
-        if idx < alloc_args.len() {
-            // Parameter slot: init = the AllocTask arg (already a caller value).
-            planned_slots.push(PlannedSlot {
-                offset,
-                init: SlotInitPlan::CallerValue(alloc_args[idx]),
-            });
-            continue;
-        }
-        // Local slot: prove its initializer now, but materialize it only inside
-        // the transaction. Phase 1 supports const/None initialization.
-        let init = match local_slot_init_const(poll, offset) {
-            Some(LocalInit::Int(v)) => SlotInitPlan::Int(v),
-            Some(LocalInit::None_) => SlotInitPlan::None,
-            None => return None, // non-trivial local init — bail (Tier D).
-        };
-        planned_slots.push(PlannedSlot { offset, init });
-    }
-
-    Some(planned_slots)
+        .len();
+    plan_slots(poll, arity)
 }
 
 /// Execute the allocation and CFG-rewrite phase against an unobservable staging
-/// function. `false` discards every mutation made here.
+/// function, returning the replacements whose owners the committed caller
+/// keeps. `None` discards every mutation made here.
 fn apply_fusion_staged(
     caller: &mut TirFunction,
     poll: &TirFunction,
     candidate: &FusionCandidate,
-    planned_slots: &[PlannedSlot],
-) -> bool {
-    let mut slot_infos: Vec<SlotInfo> = Vec::with_capacity(planned_slots.len());
-    // Materialize local init values in the staged caller. These ops are moved to
-    // the cloned preheader after cloning so they dominate the loop-header phis.
+    plan: &SlotPlan,
+) -> Option<Replacements> {
+    let mut owners = Replacements::new(caller);
+    // A parameter slot starts as the frame's reference to its argument: a copy
+    // that keeps that reference, bound at the top of the cloned preheader so it
+    // dominates every read.
+    let bound: Vec<(usize, ValueId)> = {
+        let args = &caller.blocks[&candidate.alloc_block].ops[candidate.alloc_idx].operands;
+        plan.arguments
+            .iter()
+            .map(|&position| (position, args[position]))
+            .collect()
+    };
+    let mut arguments: HashMap<usize, ValueId> = HashMap::new();
     let mut preheader_init_ops: Vec<TirOp> = Vec::new();
-    for planned in planned_slots {
-        let init_caller_val = match planned.init {
-            SlotInitPlan::CallerValue(value) => value,
-            SlotInitPlan::Int(value) => {
-                let fresh = caller.fresh_value();
-                caller.value_types.insert(fresh, TirType::I64);
-                preheader_init_ops.push(const_int_op(fresh, value));
-                fresh
-            }
-            SlotInitPlan::None => {
-                let fresh = caller.fresh_value();
-                caller.value_types.insert(fresh, TirType::None);
-                preheader_init_ops.push(const_none_op(fresh));
-                fresh
-            }
-        };
-        slot_infos.push(SlotInfo {
-            offset: planned.offset,
-            init_caller_val,
+    for (position, argument) in bound {
+        let slot = caller.fresh_value();
+        let ty = caller
+            .value_types
+            .get(&argument)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        caller.value_types.insert(slot, ty);
+        preheader_init_ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![argument],
+            results: vec![slot],
+            attrs: Default::default(),
+            source_span: None,
         });
+        owners.record_held(slot);
+        arguments.insert(position, slot);
     }
 
     // --- Clone + rewrite the poll body into the caller. ---
@@ -251,15 +207,13 @@ fn apply_fusion_staged(
             "generator fusion obsolete-latch plan drifted before rewrite"
         );
     }
-    let Some(clone) = clone_and_rewrite_poll(poll, caller, &slot_infos) else {
-        // The clone bailed (e.g. an unpromotable slot store pattern). The caller
-        // visible to the pass remains untouched because this stage is discarded.
-        return false;
-    };
+    // The clone bails only on a malformed poll. The caller visible to the pass
+    // remains untouched because this stage is discarded.
+    let clone = clone_and_rewrite_poll(poll, caller, plan, &arguments, &mut owners)?;
 
     // --- Wire the fused loop. ---
-    if !wire_fused_loop(caller, candidate, &clone, &slot_infos, preheader_init_ops) {
-        return false;
+    if !wire_fused_loop(caller, candidate, &clone, preheader_init_ops) {
+        return None;
     }
 
     // SSA-validity is an invariant of the splice, not a hope: a malformed splice
@@ -271,5 +225,5 @@ fn apply_fusion_staged(
             candidate.poll_name, caller.name, errors
         );
     }
-    true
+    Some(owners)
 }

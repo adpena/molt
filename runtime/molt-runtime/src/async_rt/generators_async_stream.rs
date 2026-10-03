@@ -63,7 +63,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_read_poll(obj_bits: u64) -> 
             let n_bits = *payload_ptr.add(ASYNCIO_STREAM_READER_READ_SLOT_N);
             let out_bits = molt_stream_reader_read(reader_bits, n_bits);
             if out_bits as i64 != pending_bits_i64() {
-                asyncio_drop_payload_slots(_py, payload_ptr, 3);
+                asyncio_drop_payload_slots::<3>(_py, payload_ptr);
                 return out_bits as i64;
             }
             asyncio_pending_with_wait(
@@ -125,7 +125,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_readline_poll(obj_bits: u64)
             let reader_bits = *payload_ptr.add(ASYNCIO_STREAM_READER_READLINE_SLOT_READER);
             let out_bits = molt_stream_reader_readline(reader_bits);
             if out_bits as i64 != pending_bits_i64() {
-                asyncio_drop_payload_slots(_py, payload_ptr, 2);
+                asyncio_drop_payload_slots::<2>(_py, payload_ptr);
                 return out_bits as i64;
             }
             asyncio_pending_with_wait(
@@ -199,12 +199,12 @@ pub unsafe extern "C" fn molt_asyncio_stream_send_all_poll(obj_bits: u64) -> i64
                 );
             }
             if exception_pending(_py) {
-                asyncio_drop_payload_slots(_py, payload_ptr, 3);
+                asyncio_drop_payload_slots::<3>(_py, payload_ptr);
                 return out_bits as i64;
             }
             let sent = to_i64(obj_from_bits(out_bits)).unwrap_or(-1);
             if sent == 0 {
-                asyncio_drop_payload_slots(_py, payload_ptr, 3);
+                asyncio_drop_payload_slots::<3>(_py, payload_ptr);
                 return MoltObject::none().bits() as i64;
             }
             asyncio_pending_with_wait(

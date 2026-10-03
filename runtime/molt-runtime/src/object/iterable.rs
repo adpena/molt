@@ -64,7 +64,9 @@ pub(crate) fn special_iteration_step(
                         (object_type_id(ptr) == TYPE_ID_EXCEPTION)
                             .then(|| {
                                 crate::builtins::exceptions::exception_typed_field_get(
-                                    py, ptr, "value",
+                                    py,
+                                    ptr,
+                                    molt_obj_model::ExceptionTypedField::StopIterationValue,
                                 )
                                 .and_then(Result::ok)
                             })
@@ -91,7 +93,11 @@ pub(crate) fn special_iteration_step(
 
 pub(crate) unsafe fn builtin_receiver(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     let class = unsafe { object_class_bits(ptr) };
-    class == 0 || is_builtin_class_bits(py, class)
+    class == 0
+        || (is_builtin_class_bits(py, class)
+            && crate::obj_from_bits(class)
+                .as_ptr()
+                .is_some_and(|class| unsafe { crate::object::class_is_immutable(py, class) }))
 }
 
 pub(crate) struct OwnedIterator<'a, 'py> {
@@ -175,6 +181,15 @@ pub(crate) fn length_hint(py: &PyToken<'_>, iterable: u64) -> Option<usize> {
 pub(crate) enum LengthHint {
     Consult,
     Skip,
+}
+
+/// tuple() stopped consulting length hints in CPython 3.14.
+pub(crate) fn tuple_length_hint_policy(py: &PyToken<'_>) -> LengthHint {
+    if crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
+        LengthHint::Skip
+    } else {
+        LengthHint::Consult
+    }
 }
 
 pub(crate) fn collect(py: &PyToken<'_>, iterable: u64, policy: LengthHint) -> Option<Vec<u64>> {

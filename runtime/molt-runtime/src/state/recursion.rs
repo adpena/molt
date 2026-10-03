@@ -1,83 +1,100 @@
-use crate::{RECURSION_DEPTH, RECURSION_LIMIT};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
+use std::marker::PhantomData;
+use std::rc::Rc;
+use std::sync::atomic::Ordering;
 
-/// Global atomic recursion depth counter — avoids TLS on the hot path.
-/// For single-threaded programs, atomic increment/decrement with Relaxed
-/// ordering is essentially free (compiles to a single add/sub instruction).
-static FAST_RECURSION_DEPTH: AtomicUsize = AtomicUsize::new(0);
-static FAST_RECURSION_LIMIT: AtomicUsize =
-    AtomicUsize::new(crate::state::tls::DEFAULT_RECURSION_LIMIT);
+pub(crate) const DEFAULT_RECURSION_LIMIT: usize = 1000;
 
+thread_local! {
+    // Depth belongs to the execution stack, not to the process. A suspended
+    // activation carries no charge while another task executes on this thread.
+    static RECURSION_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+#[inline]
+pub(crate) fn recursion_depth() -> usize {
+    RECURSION_DEPTH.with(Cell::get)
+}
+
+#[inline]
 pub(crate) fn recursion_limit_get() -> usize {
-    FAST_RECURSION_LIMIT.load(Ordering::Relaxed)
+    crate::state::runtime_state::runtime_state_for_gil()
+        .expect("recursion guard requires an active runtime")
+        .recursion_limit
+        .load(Ordering::Relaxed)
 }
 
 pub(crate) fn recursion_limit_set(limit: usize) {
-    FAST_RECURSION_LIMIT.store(limit, Ordering::Relaxed);
-    // Also update TLS for backward compatibility with code that reads it directly
-    RECURSION_LIMIT.with(|cell| cell.set(limit));
+    crate::state::runtime_state::runtime_state_for_gil()
+        .expect("recursion limit requires an active runtime")
+        .recursion_limit
+        .store(limit, Ordering::Relaxed);
 }
 
+#[inline]
 pub(crate) fn recursion_guard_enter() -> bool {
-    let limit = FAST_RECURSION_LIMIT.load(Ordering::Relaxed);
-    let current = FAST_RECURSION_DEPTH.fetch_add(1, Ordering::Relaxed);
-    if current + 1 > limit {
-        // Undo the increment
-        FAST_RECURSION_DEPTH.fetch_sub(1, Ordering::Relaxed);
-        false
-    } else {
-        true
-    }
+    let limit = recursion_limit_get();
+    RECURSION_DEPTH.with(|depth| {
+        let current = depth.get();
+        if current >= limit {
+            false
+        } else {
+            depth.set(current + 1);
+            true
+        }
+    })
 }
 
+#[inline]
 pub(crate) fn recursion_guard_exit() {
-    let prev = FAST_RECURSION_DEPTH.fetch_sub(1, Ordering::Relaxed);
-    if prev == 0 {
-        // Underflow protection: restore to 0
-        FAST_RECURSION_DEPTH.store(0, Ordering::Relaxed);
-    }
+    RECURSION_DEPTH.with(|depth| {
+        depth.set(
+            depth
+                .get()
+                .checked_sub(1)
+                .expect("unbalanced recursion guard exit"),
+        );
+    });
 }
 
-/// Rust call boundaries must release recursion custody on every return path.
-pub(crate) struct RecursionGuard;
+pub(crate) fn assert_thread_recursion_idle() {
+    // TLS may already have been destroyed at shutdown. While live, resetting
+    // an outstanding charge would conceal broken custody.
+    let _ = RECURSION_DEPTH.try_with(|depth| {
+        assert_eq!(
+            depth.get(),
+            0,
+            "thread teardown crossed an active recursion guard"
+        );
+    });
+}
+
+/// Releases on every return path and cannot move to another thread's stack.
+pub(crate) struct RecursionGuard(PhantomData<Rc<()>>);
 
 impl RecursionGuard {
+    #[inline]
     pub(crate) fn enter(py: &crate::PyToken<'_>) -> Option<Self> {
+        Self::enter_with_message(py, "maximum recursion depth exceeded")
+    }
+
+    #[inline]
+    pub(crate) fn enter_with_message(py: &crate::PyToken<'_>, message: &str) -> Option<Self> {
         if recursion_guard_enter() {
-            Some(Self)
+            Some(Self(PhantomData))
         } else {
-            crate::raise_exception::<u64>(py, "RecursionError", "maximum recursion depth exceeded");
+            crate::raise_exception::<u64>(py, "RecursionError", message);
             None
         }
     }
 }
 
 impl Drop for RecursionGuard {
+    #[inline]
     fn drop(&mut self) {
         recursion_guard_exit();
     }
 }
 
-/// Fast-path enter: single atomic fetch_add, no TLS.
-#[inline(always)]
-pub(crate) fn recursion_guard_enter_fast() -> bool {
-    let limit = FAST_RECURSION_LIMIT.load(Ordering::Relaxed);
-    let current = FAST_RECURSION_DEPTH.fetch_add(1, Ordering::Relaxed);
-    if current + 1 > limit {
-        FAST_RECURSION_DEPTH.fetch_sub(1, Ordering::Relaxed);
-        false
-    } else {
-        true
-    }
-}
-
-/// Fast-path exit: single atomic fetch_sub.
-#[inline(always)]
-pub(crate) fn recursion_guard_exit_fast() {
-    FAST_RECURSION_DEPTH.fetch_sub(1, Ordering::Relaxed);
-}
-
-pub(crate) fn sync_fast_depth_to_tls() {
-    let depth = FAST_RECURSION_DEPTH.load(Ordering::Relaxed);
-    RECURSION_DEPTH.with(|cell| cell.set(depth));
-}
+#[cfg(test)]
+mod tests;

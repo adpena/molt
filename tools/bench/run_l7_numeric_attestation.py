@@ -35,6 +35,7 @@ if str(TOOLS_ROOT) not in sys.path:
 import harness_memory_guard  # noqa: E402
 import perf_calibration  # noqa: E402
 from molt.memory_guard_paths import active_guard_marker_dir  # noqa: E402
+from molt.temporary_artifacts import SCRATCH_ENV  # noqa: E402
 
 try:
     from tools.command_execution import CommandExecutor
@@ -276,6 +277,13 @@ _ENVIRONMENT_KEYS = {
     "PYTHON",
 }
 _DYNAMIC_ENVIRONMENT_KEYS = {
+    # These identify one guard instance, not a Rust build configuration. Keep
+    # their owning definitions shared with the actual custody implementation;
+    # execution capsules retain the identities separately.
+    harness_memory_guard.memory_guard.ACTIVE_GUARD_PID_ENV,
+    harness_memory_guard.memory_guard.ACTIVE_GUARD_TOKEN_ENV,
+    harness_memory_guard.memory_guard.ACTIVE_GUARD_MARKER_ENV,
+    SCRATCH_ENV,
     "MOLT_L7_BUILD_FINGERPRINT",
     "MOLT_L7_GIT_COMMIT",
     "MOLT_L7_GIT_DIRTY",

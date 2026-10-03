@@ -1232,34 +1232,69 @@ def _rust_line_is_comment_only(line: str) -> bool:
     )
 
 
+# Rust Pattern_White_Space, including bidi marks absent from Python's \s.
+_RUST_WS_CHARS = "\t\n\v\f\r \x85\u200e\u200f\u2028\u2029"
+_RUST_WS = r"[\t\n\v\f\r \x85\u200e\u200f\u2028\u2029]"
+
+
 def _rust_cfg_test_line_numbers(text: str) -> set[int]:
-    lines = text.splitlines()
+    # Classify actual code, not attributes/braces spoofed inside literals, and
+    # keep physical LF coordinates shared by all Rust lexical consumers.
+    lines = mask_rust_comments_and_strings(text).split("\n")
     test_lines: set[int] = set()
     pending_cfg_test = False
-    test_mod_depth: int | None = None
+    pending_parens = pending_brackets = 0
+    test_depth: int | None = None
     for line_no, line in enumerate(lines, start=1):
-        stripped = line.strip()
-        if test_mod_depth is not None:
+        stripped = line.strip(_RUST_WS_CHARS)
+        if test_depth is not None:
             test_lines.add(line_no)
-            test_mod_depth += line.count("{") - line.count("}")
-            if test_mod_depth <= 0:
-                test_mod_depth = None
+            for index, char in enumerate(line):
+                test_depth += (char == "{") - (char == "}")
+                if test_depth <= 0:
+                    if line[index + 1 :].strip(_RUST_WS_CHARS + ";,"):
+                        test_lines.discard(line_no)
+                    test_depth = None
+                    break
             continue
         if stripped.startswith("#[cfg(test)]"):
             pending_cfg_test = True
+            pending_parens = pending_brackets = 0
             test_lines.add(line_no)
-            continue
+            stripped = stripped[len("#[cfg(test)]") :].strip()
+            if not stripped:
+                continue
         if not pending_cfg_test:
             continue
         test_lines.add(line_no)
-        if re.match(r"(?:pub\s+)?mod\s+tests\b", stripped):
-            test_mod_depth = line.count("{") - line.count("}")
-            if test_mod_depth <= 0:
-                test_mod_depth = 1
-            pending_cfg_test = False
+        if not stripped or stripped.startswith("#"):
             continue
-        if stripped and not stripped.startswith("#"):
-            pending_cfg_test = False
+        for index, char in enumerate(stripped):
+            if char == "(":
+                pending_parens += 1
+            elif char == ")":
+                pending_parens = max(0, pending_parens - 1)
+            elif char == "[":
+                pending_brackets += 1
+            elif char == "]":
+                pending_brackets = max(0, pending_brackets - 1)
+            elif pending_parens == pending_brackets == 0:
+                if char in ";,}":
+                    pending_cfg_test = False
+                    if stripped[index + 1 :].strip(_RUST_WS_CHARS + ";,"):
+                        test_lines.discard(line_no)
+                    break
+                if char == "{":
+                    depth = 0
+                    for end in range(index, len(stripped)):
+                        depth += (stripped[end] == "{") - (stripped[end] == "}")
+                        if depth == 0:
+                            if stripped[end + 1 :].strip(_RUST_WS_CHARS + ";,"):
+                                test_lines.discard(line_no)
+                            break
+                    test_depth = depth if depth > 0 else None
+                    pending_cfg_test = False
+                    break
     return test_lines
 
 
@@ -1294,7 +1329,7 @@ def _rust_line_raises_notimplemented(lines: list[str], index: int) -> bool:
 
 def _rust_stub_surface_hits(text: str) -> list[ImplementationGapHit]:
     hits: list[ImplementationGapHit] = []
-    lines = text.splitlines()
+    lines = text.split("\n")
     test_lines = _rust_cfg_test_line_numbers(text)
     live_text = _blank_lines(lines, test_lines)
     code_without_comments_or_strings = mask_rust_comments_and_strings(live_text)
@@ -1367,23 +1402,47 @@ def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
     return findings
 
 
-def _rust_match_arm_text_before(lines: list[str], call_index: int) -> str:
-    arrow_index: int | None = None
-    floor = max(-1, call_index - 50)
-    for idx in range(call_index, floor, -1):
-        if "=> {" in lines[idx]:
-            arrow_index = idx
-            break
+def _rust_match_arm_text_before(
+    lines: list[str], call_index: int, *, call_end_offset: int | None = None
+) -> str:
+    code = mask_rust_comments_and_strings("\n".join(lines))
+    code_lines = code.split("\n")
+    floor = max(0, call_index - 50)
+    window_start = sum(len(line) + 1 for line in code_lines[:floor])
+    if call_end_offset is None:
+        call_end_offset = sum(len(line) + 1 for line in code_lines[: call_index + 1])
+    anchors = list(
+        re.finditer(
+            rf"=>{_RUST_WS}*(?:\{{|self{_RUST_WS}*\.)",
+            code[window_start:call_end_offset],
+        )
+    )
+    arrow_index = (
+        code.count("\n", 0, window_start + anchors[-1].start()) if anchors else None
+    )
     if arrow_index is None:
         return lines[call_index].strip()
     start = arrow_index
     while start > 0:
-        previous = lines[start - 1].strip()
+        previous = lines[start - 1].strip(_RUST_WS_CHARS)
+        # A completed neighboring arm is not part of this arm's pattern, even
+        # when its first token is another opcode string literal.
+        if "=>" in code_lines[start - 1]:
+            break
+        if not previous:
+            start -= 1
+            continue
         if previous.startswith('"') or previous.startswith('| "'):
             start -= 1
             continue
         break
-    return "\n".join(line.strip() for line in lines[start : arrow_index + 1])
+    arrow_offset = window_start + anchors[-1].start()
+    arrow_line_start = code.rfind("\n", 0, arrow_offset) + 1
+    # Retain literal patterns, but never count a diagnostic/body literal as an op.
+    final_pattern = lines[arrow_index][: arrow_offset - arrow_line_start + 2]
+    return "\n".join(
+        [*(line.strip() for line in lines[start:arrow_index]), final_pattern.strip()]
+    )
 
 
 def _rust_backend_lowering_gap_marker(arm_text: str) -> tuple[str, int]:
@@ -1400,6 +1459,590 @@ def _rust_backend_lowering_gap_marker(arm_text: str) -> tuple[str, int]:
     return "unsupported lowering diagnostic", 1
 
 
+def _rust_self_reference_matches(body: str):
+    # Named self/Self references are lexical candidates, not target/type proofs.
+    # Calls, method values and associated references share whitespace grammar.
+    return re.finditer(
+        rf"\b(?:(?P<instance>self){_RUST_WS}*\.{_RUST_WS}*|Self{_RUST_WS}*::{_RUST_WS}*)"
+        rf"(?:r#)?(?P<name>[A-Za-z_]\w*)(?P<call>{_RUST_WS}*\()?",
+        body,
+    )
+
+
+def _rust_self_reference_names(body: str) -> set[str]:
+    return {match["name"] for match in _rust_self_reference_matches(body)}
+
+
+def _rust_single_self_call(body: str) -> str | None:
+    """Recognize a rejection-only forwarding body, never infer branch semantics."""
+    match = next(_rust_self_reference_matches(body), None)
+    if (
+        match is None
+        or body[: match.start()].strip(_RUST_WS_CHARS)
+        or match["instance"] is None
+        or match["call"] is None
+    ):
+        return None
+    depth = 1
+    cursor = match.end()
+    while cursor < len(body) and depth:
+        depth += (body[cursor] == "(") - (body[cursor] == ")")
+        cursor += 1
+    if depth or body[cursor:].strip(_RUST_WS_CHARS) not in {"", ";"}:
+        return None
+    return match["name"]
+
+
+def _rust_terminal_refusal_push(body: str, fields: set[str]) -> bool:
+    """Recognize the bounded straight-line refusal recorder, not any mutation.
+
+    Extend/insert and pushes followed by clearing are only diagnostic producers.
+    A deferred closure or control-flow body cannot grant a definite path proof.
+    Receiver/type/macro resolution beyond the source-bound recorder is unproven.
+    """
+    if re.search(r"\b(?:if|match|while|for|loop|return|move)\b|\|", body):
+        return False
+    for field in fields:
+        for match in re.finditer(
+            rf"self{_RUST_WS}*\.{_RUST_WS}*{re.escape(field)}{_RUST_WS}*\.{_RUST_WS}*push{_RUST_WS}*\(",
+            body,
+        ):
+            prefix = body[: match.start()]
+            # The actual recorder's string normalization is the only preceding
+            # statement currently proven; other prefixes remain proof debt.
+            if not re.fullmatch(
+                rf"{_RUST_WS}*(?:let{_RUST_WS}+([A-Za-z_]\w*){_RUST_WS}*={_RUST_WS}*\1{_RUST_WS}*\.{_RUST_WS}*into{_RUST_WS}*\({_RUST_WS}*\){_RUST_WS}*;{_RUST_WS}*)?",
+                prefix,
+            ):
+                continue
+            depth = 1
+            for index in range(match.end(), len(body)):
+                if body[index] == "(":
+                    depth += 1
+                elif body[index] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        if any(
+                            macro != "format"
+                            for macro in re.findall(
+                                rf"\b([A-Za-z_]\w*){_RUST_WS}*!",
+                                body[match.end() : index],
+                            )
+                        ):
+                            break
+                        if re.fullmatch(
+                            rf"{_RUST_WS}*;?{_RUST_WS}*", body[index + 1 :]
+                        ):
+                            return True
+                        break
+    return False
+
+
+def _rust_checked_refusal_guards(consumer: str) -> list[re.Match[str]]:
+    """Only a nonempty field guard with immediate Err grants consumer identity."""
+    matches = []
+    for match in re.finditer(
+        rf"if{_RUST_WS}+!{_RUST_WS}*self{_RUST_WS}*\.{_RUST_WS}*([A-Za-z_]\w*){_RUST_WS}*\.{_RUST_WS}*is_empty{_RUST_WS}*\({_RUST_WS}*\){_RUST_WS}*\{{",
+        consumer,
+    ):
+        _, block = _balanced_block(consumer, match.end() - 1)
+        if re.match(rf"\{{{_RUST_WS}*return{_RUST_WS}+Err{_RUST_WS}*\(", block):
+            matches.append(match)
+    return matches
+
+
+def _rust_protocol_surface_admitted(
+    code: str, root_code: str, reachable: set[str], unambiguous: set[str]
+) -> bool:
+    """Bound the publication/whole-state surface independently of body inventory.
+
+    This deliberately fails closed on source shapes outside the recognized
+    private assembly protocol; it is not alias, type, macro or Rust CFG proof.
+    Module resolution (use aliases, #[path], include!, production tests modules),
+    unsafe operations and dynamic/function-pointer dispatch remain unproven.
+    Shared whole-family barriers also cover skipped/ambiguous method bodies.
+    """
+    if len(re.findall(r"\b(?:r#)?compile_checked\b", code)) != 1:
+        return False
+    visibility = rf"\bpub(?:{_RUST_WS}*\((?P<scope>[^)]*)\))?{_RUST_WS}+[^{{}};]*?\bfn{_RUST_WS}+(?:r#)?(?P<name>[A-Za-z_]\w*){_RUST_WS}*[<(]"
+    for surface, root in ((code, False), (root_code, True)):
+        for match in re.finditer(visibility, surface):
+            exposed = root or (match["scope"] or "").strip(_RUST_WS_CHARS) != "super"
+            if exposed and (
+                match["name"] not in unambiguous
+                or match["name"] in reachable - {"compile_checked"}
+            ):
+                return False
+    # Only source-owned, no-argument constructors may create initial state.
+    # Do not exempt arbitrary methods merely because their name is new/default.
+    nonconstructor = list(code)
+    for match in re.finditer(
+        rf"\bfn{_RUST_WS}+(?:new|default){_RUST_WS}*\({_RUST_WS}*\){_RUST_WS}*->{_RUST_WS}*Self{_RUST_WS}*\{{",
+        code,
+    ):
+        end, _ = _balanced_block(code, match.end() - 1)
+        nonconstructor[match.end() - 1 : end] = " " * (end - match.end() + 1)
+    surface = "".join(nonconstructor)
+    constructor = (
+        rf"\b(?:Self|RustBackend|Default){_RUST_WS}*::{_RUST_WS}*(?:r#)?(?:new|default)\b"
+        rf"|<{_RUST_WS}*(?:Self|RustBackend)(?:{_RUST_WS}+as{_RUST_WS}+Default)?{_RUST_WS}*>{_RUST_WS}*::{_RUST_WS}*(?:r#)?(?:new|default)\b"
+    )
+    if re.search(constructor, surface):
+        return False
+    if re.search(
+        rf"\*{_RUST_WS}*\(*{_RUST_WS}*self\b{_RUST_WS}*\)*{_RUST_WS}*=(?!=)", surface
+    ):
+        return False
+    if re.search(
+        rf"\blet{_RUST_WS}+(?:mut{_RUST_WS}+)?[A-Za-z_]\w*{_RUST_WS}*(?::{_RUST_WS}*[^;=]+)?={_RUST_WS}*(?:&{_RUST_WS}*(?:mut{_RUST_WS}*)?\*?{_RUST_WS}*)?self\b(?!{_RUST_WS}*\.)",
+        surface,
+    ):
+        return False
+    # Qualified std/core mem calls and imported free forms share one check;
+    # .take() iterator methods are a distinct operation and remain admitted.
+    mutation = rf"\b(?P<mem_path>(?:(?:std|core){_RUST_WS}*::{_RUST_WS}*)?mem{_RUST_WS}*::{_RUST_WS}*)?(?:take|replace|swap){_RUST_WS}*\("
+    for match in re.finditer(mutation, surface):
+        prefix = surface[: match.start()].rstrip(_RUST_WS_CHARS)
+        if match["mem_path"] is None and prefix.endswith((".", ":")):
+            continue
+        if not re.match(
+            rf"{_RUST_WS}*&{_RUST_WS}*mut{_RUST_WS}+self{_RUST_WS}*\.",
+            surface[match.end() :],
+        ):
+            return False
+    for match in re.finditer(
+        rf"\b(?:Self|RustBackend){_RUST_WS}*::{_RUST_WS}*(?:r#)?([A-Za-z_]\w*){_RUST_WS}*\(",
+        surface,
+    ):
+        if match[1] in reachable and not re.match(
+            rf"{_RUST_WS}*self\b{_RUST_WS}*[,)]", surface[match.end() :]
+        ):
+            return False
+    return True
+
+
+def _rust_refusal_protocol_proven(
+    methods: dict[str, tuple[str, int, str]],
+    fields: set[str],
+    recording: set[str],
+    family_code: str,
+    root_code: str,
+    unambiguous: set[str],
+) -> bool:
+    """Bound the definite-path classification to the checked publication protocol.
+
+    Unknown recovery/reset consumers are diagnostic debt, not a rejection proof.
+    This source contract deliberately recognizes the existing backend boundary;
+    it does not establish arbitrary Rust receiver, alias, macro or CFG semantics.
+    """
+    if len(fields) != 1:
+        return False
+    field = next(iter(fields))
+    field_token = rf"\b(?:r#)?{re.escape(field)}\b"
+    # Whole production text closes unknown signatures/UFCS and destructuring
+    # escapes that a self-call/body inventory cannot safely resolve.
+    if len(re.findall(field_token, family_code)) != 1 + sum(
+        len(re.findall(field_token, body)) for _, _, body in methods.values()
+    ):
+        return False
+    if len(re.findall(r"\b(?:r#)?emit_source\b", family_code)) != 2:
+        return False
+    if re.search(
+        rf"\bpub(?:{_RUST_WS}*\([^)]*\))?{_RUST_WS}+(?:async{_RUST_WS}+)?fn{_RUST_WS}+(?:r#)?emit_source\b",
+        family_code,
+    ):
+        return False
+    declaration = re.search(
+        rf"\bstruct{_RUST_WS}+RustBackend{_RUST_WS}*\{{", family_code
+    )
+    if not declaration:
+        return False
+    _, structure = _balanced_block(family_code, declaration.end() - 1)
+    if not re.search(
+        rf"(?m)^{_RUST_WS}*(?:r#)?{re.escape(field)}{_RUST_WS}*:{_RUST_WS}*Vec{_RUST_WS}*<{_RUST_WS}*String{_RUST_WS}*>{_RUST_WS}*,",
+        structure,
+    ):
+        return False
+    if any(
+        re.search(
+            rf"\basync{_RUST_WS}+fn{_RUST_WS}+(?:r#)?{re.escape(name)}\b", family_code
+        )
+        for name in recording
+    ):
+        return False
+    reachable = set(recording)
+    while True:
+        added = {
+            name
+            for name, (_, _, body) in methods.items()
+            if _rust_self_reference_names(body) & reachable
+        } - reachable
+        if not added:
+            break
+        reachable.update(added)
+    if not _rust_protocol_surface_admitted(
+        family_code, root_code, reachable, unambiguous
+    ):
+        return False
+    access = rf"\bself{_RUST_WS}*\.{_RUST_WS}*(?:r#)?{re.escape(field)}\b"
+    consumer = methods.get("compile_checked", ("", 0, ""))[2]
+    emission = re.search(
+        rf"let{_RUST_WS}+([A-Za-z_]\w*){_RUST_WS}*={_RUST_WS}*self{_RUST_WS}*\.{_RUST_WS}*emit_source{_RUST_WS}*\(",
+        consumer,
+    )
+    guard = next(
+        (
+            match
+            for match in _rust_checked_refusal_guards(consumer)
+            if match[1] == field
+        ),
+        None,
+    )
+    if not emission or not guard or emission.start() >= guard.start():
+        return False
+    if re.search(r"\b(?:return|self)\b", consumer[: emission.start()]):
+        return False
+    depth = 1
+    end = None
+    for index in range(emission.end(), len(consumer)):
+        if consumer[index] == "(":
+            depth += 1
+        elif consumer[index] == ")":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    if end is None or not re.fullmatch(
+        rf"{_RUST_WS}*;{_RUST_WS}*", consumer[end : guard.start()]
+    ):
+        return False
+    guard_end, block = _balanced_block(consumer, guard.end() - 1)
+    if not re.match(rf"\{{{_RUST_WS}*return{_RUST_WS}+Err{_RUST_WS}*\(", block):
+        return False
+    if not re.fullmatch(
+        rf"{_RUST_WS}*Ok{_RUST_WS}*\({_RUST_WS}*{re.escape(emission[1])}{_RUST_WS}*\){_RUST_WS}*",
+        consumer[guard_end:],
+    ):
+        return False
+    entry = methods.get("emit_source", ("", 0, ""))[2]
+    reset = re.search(
+        rf"{access}{_RUST_WS}*\.{_RUST_WS}*clear{_RUST_WS}*\({_RUST_WS}*\){_RUST_WS}*;",
+        entry,
+    )
+    if not reset or not re.fullmatch(rf"{_RUST_WS}*", entry[: reset.start()]):
+        return False
+    if re.search(access, entry[reset.end() :]):
+        return False
+    for name, (_, _, body) in methods.items():
+        tokens = len(re.findall(field_token, body))
+        expected = (
+            2
+            if name == "compile_checked"
+            else 1
+            if name == "emit_source" or name in recording
+            else tokens
+            if name == "new"
+            else 0
+        )
+        if tokens != expected or (name == "new" and tokens > 1):
+            return False
+        if name not in {"new", "default"}:
+            if re.search(
+                rf"\*{_RUST_WS}*self\b{_RUST_WS}*=(?!=)|\b(?:Self|RustBackend){_RUST_WS}*(?::{_RUST_WS}*:{_RUST_WS}*(?:r#)?(?:new|default){_RUST_WS}*\(|\{{)",
+                body,
+            ):
+                return False
+            if re.search(
+                rf"\blet{_RUST_WS}+(?:mut{_RUST_WS}+)?[A-Za-z_]\w*{_RUST_WS}*={_RUST_WS}*(?:&{_RUST_WS}*(?:mut{_RUST_WS}*)?\*?{_RUST_WS}*)?self\b(?!{_RUST_WS}*\.)",
+                body,
+            ):
+                return False
+            for mutation in re.finditer(
+                rf"\b(?:(?:std|core){_RUST_WS}*::{_RUST_WS}*)?mem{_RUST_WS}*::{_RUST_WS}*(?:take|replace|swap){_RUST_WS}*\(",
+                body,
+            ):
+                if not re.match(
+                    rf"{_RUST_WS}*&{_RUST_WS}*mut{_RUST_WS}+self{_RUST_WS}*\.",
+                    body[mutation.end() :],
+                ):
+                    return False
+        references = list(_rust_self_reference_matches(body))
+        for call in re.finditer(
+            rf"\.{_RUST_WS}*(?:r#)?([A-Za-z_]\w*){_RUST_WS}*\(", body
+        ):
+            if call[1] in reachable and not any(
+                ref["instance"] is not None
+                and ref["name"] == call[1]
+                and ref.start() <= call.start() < ref.end()
+                for ref in references
+            ):
+                return False
+        # An alias/foreign receiver touching this accumulator spelling cannot
+        # silently inherit self's ownership proof. Keep owner resolution unmet.
+        member_accesses = re.findall(rf"\.{_RUST_WS}*(?:r#)?{re.escape(field)}\b", body)
+        if len(member_accesses) != len(re.findall(access, body)):
+            return False
+        if name in {"emit_source", "compile_checked"}:
+            continue
+        if re.search(access, body):
+            if name not in recording or not _rust_terminal_refusal_push(body, fields):
+                return False
+    return True
+
+
+def _rust_rejection_family(root: Path) -> tuple[set[str], list[Finding]]:
+    """Inventory production method rejections across sibling lowering modules.
+
+    Only syntactically rejection-only bodies grant a definite dispatch-path
+    classification. Mixed bodies remain visible applicability obligations: they
+    may enforce valid-input invariants or reject an unsupported operand domain.
+    This lexical inventory cannot certify that those guards cover valid Python.
+    Macro expansion, qualified paths other than Self:: and dynamic targets remain unproven;
+    lexical discovery is not a Rust grammar or semantic support authority.
+    """
+    family = root / "runtime/molt-backend-rust/src/rust"
+    full_backend = (root / "runtime/molt-backend-rust/Cargo.toml").is_file()
+    methods: dict[str, tuple[str, int, str]] = {}
+    ambiguous: set[str] = set()
+    referenced: set[str] = set()
+    reference_locations: dict[str, str] = {}
+    findings: list[Finding] = []
+    family_sources: list[str] = []
+    root_code = ""
+    paths = [root / "runtime/molt-backend-rust/src/rust.rs", *family.rglob("*.rs")]
+    for path in sorted(path for path in paths if path.is_file()):
+        if path.name == "tests.rs" or (
+            path.is_relative_to(family) and "tests" in path.relative_to(family).parts
+        ):
+            continue
+        text = path.read_text(errors="replace")
+        code = mask_rust_comments_and_strings(text)
+        test_lines = _rust_cfg_test_line_numbers(code)
+        code = _blank_lines(code.split("\n"), test_lines)
+        family_sources.append(code)
+        if path == root / "runtime/molt-backend-rust/src/rust.rs":
+            root_code = code
+        rel = path.relative_to(root).as_posix()
+        for call in _rust_self_reference_matches(code):
+            if call["instance"] is not None and call["call"] is not None:
+                referenced.add(call["name"])
+                line = code.count("\n", 0, call.start()) + 1
+                reference_locations.setdefault(call["name"], f"{rel}:{line}")
+        for match in re.finditer(
+            rf"\bfn{_RUST_WS}+(?:r#)?([A-Za-z_]\w*){_RUST_WS}*(?:<[^{{}};]*>{_RUST_WS}*)?\(",
+            code,
+        ):
+            line = code.count("\n", 0, match.start()) + 1
+            if line in test_lines:
+                continue
+            opening = code.find("{", match.end())
+            semicolon = code.find(";", match.end())
+            if opening < 0 or 0 <= semicolon < opening:
+                continue
+            end, _ = _balanced_block(code, opening)
+            body = code[opening + 1 : end - 1]
+            name = match[1]
+            if name in methods:
+                # Ambiguous names cannot establish a forwarding proof.
+                ambiguous.add(name)
+                methods[name] = (rel, line, "")
+            else:
+                methods[name] = (rel, line, body)
+    for name in sorted(ambiguous & referenced):
+        rel, line, _ = methods[name]
+        findings.append(
+            Finding(
+                probe="rust_backend_rejection_applicability",
+                severity="high",
+                title="Ambiguous Rust rejection-family method identity",
+                location=f"{rel}:{line}",
+                detail=f"{name}: duplicate method definitions require owner/type resolution",
+                suggested_action="resolve method ownership before accepting rejection-path coverage",
+                class_retired="rust-backend-rejection-applicability",
+                metric=0,
+            )
+        )
+    for name in sorted(referenced - methods.keys()):
+        if name == "emit_unsupported_op" and not full_backend:
+            continue
+        findings.append(
+            Finding(
+                probe="rust_backend_rejection_applicability",
+                severity="medium",
+                title="Unresolved Rust lowering helper target",
+                location=reference_locations[name],
+                detail=f"{name}: called target absent from lexical method inventory",
+                suggested_action="resolve owner/signature/macro target before accepting lowering coverage",
+                class_retired="rust-backend-rejection-applicability",
+                metric=0,
+            )
+        )
+    # Bind discovery to the refusal accumulator consumed by compile_checked,
+    # rather than only the historical recording helper spelling. Partial lexical
+    # fixtures retain the known primitive; real backend trees require evidence.
+    consumer = methods.get("compile_checked", ("", 0, ""))[2]
+    refusal_fields = {match[1] for match in _rust_checked_refusal_guards(consumer)}
+    recording = set()
+    for name, (rel, line, body) in methods.items():
+        if any(
+            re.search(
+                rf"self{_RUST_WS}*\.{_RUST_WS}*{re.escape(field)}{_RUST_WS}*\.{_RUST_WS}*(?:push|extend|insert){_RUST_WS}*\(",
+                body,
+            )
+            for field in refusal_fields
+        ):
+            recording.add(name)
+            # A recording write is diagnostic evidence, not a proof that all
+            # operands reject. This includes writes moved directly into emitters.
+            if _rust_terminal_refusal_push(body, refusal_fields):
+                continue
+            findings.append(
+                Finding(
+                    probe="rust_backend_rejection_applicability",
+                    severity="medium",
+                    title="Rust refusal accumulator write needs applicability evidence",
+                    location=f"{rel}:{line}",
+                    detail=f"{name}: writes publication refusal state",
+                    suggested_action="prove recording path admission and valid-input coverage",
+                    class_retired="rust-backend-rejection-applicability",
+                    metric=0,
+                )
+            )
+    exposed = set()
+    for name, (rel, line, body) in methods.items():
+        if name in recording or name in {"compile_checked", "emit_source"}:
+            continue
+        if any(
+            re.search(rf"\.{_RUST_WS}*{re.escape(field)}\b", body)
+            for field in refusal_fields
+        ):
+            exposed.add(name)
+            findings.append(
+                Finding(
+                    probe="rust_backend_rejection_applicability",
+                    severity="medium",
+                    title="Rust refusal accumulator access needs ownership evidence",
+                    location=f"{rel}:{line}",
+                    detail=f"{name}: alias/receiver/mutator not resolved",
+                    suggested_action="resolve accumulator exposure and downstream rejection before accepting lowering coverage",
+                    class_retired="rust-backend-rejection-applicability",
+                    metric=0,
+                )
+            )
+    protocol_proven = full_backend and _rust_refusal_protocol_proven(
+        methods,
+        refusal_fields,
+        recording,
+        "\n".join(family_sources),
+        root_code,
+        set(methods) - ambiguous,
+    )
+    if full_backend and (not refusal_fields or (not recording and not protocol_proven)):
+        findings.append(
+            Finding(
+                probe="rust_backend_rejection_applicability",
+                severity="high",
+                title="Rust rejection protocol authority unresolved",
+                location="runtime/molt-backend-rust/src/rust.rs:1",
+                detail="publication refusal consumer or recording producer absent from lexical inventory",
+                suggested_action="resolve rejection-state producer and publication consumer before acceptance",
+                class_retired="rust-backend-rejection-applicability",
+                metric=0,
+            )
+        )
+    rejected = {
+        name
+        for name in recording
+        if _rust_terminal_refusal_push(methods[name][2], refusal_fields)
+    }
+    if full_backend and not protocol_proven:
+        rejected.clear()
+        findings.append(
+            Finding(
+                probe="rust_backend_rejection_applicability",
+                severity="high",
+                title="Rust refusal publication protocol needs downstream evidence",
+                location="runtime/molt-backend-rust/src/rust.rs:1",
+                detail="recording is not proven to reach checked rejection without reset/recovery",
+                suggested_action="prove accumulator ownership, reset ordering and checked Err publication boundary",
+                class_retired="rust-backend-rejection-applicability",
+                metric=0,
+            )
+        )
+    if not full_backend and not recording:
+        rejected = {"emit_unsupported_op"}
+    while True:
+        added = {
+            name
+            for name, (_, _, body) in methods.items()
+            if _rust_single_self_call(body) in rejected
+        } - rejected
+        if not added:
+            break
+        rejected.update(added)
+    # Reachability grants only an applicability obligation, never a claim that
+    # every path or valid operand is rejected. Keep upstream mixed callers visible
+    # when a rejection moves laterally into a helper or through multiple helpers.
+    reachable = set(rejected) | recording | exposed
+    while True:
+        added = {
+            name
+            for name, (_, _, body) in methods.items()
+            if _rust_self_reference_names(body) & reachable
+        } - reachable
+        if not added:
+            break
+        reachable.update(added)
+    for name, (rel, line, body) in sorted(methods.items()):
+        if name in rejected or name not in reachable:
+            continue
+        findings.append(
+            Finding(
+                probe="rust_backend_rejection_applicability",
+                severity="medium",
+                title="Rust rejection guard needs applicability evidence",
+                location=f"{rel}:{line}",
+                detail=f"{name}: may-reject lowering body; not a globally unsupported opcode claim",
+                suggested_action="trace valid-input admission and alternate lowering; retain adversarial operand/arity/flow coverage",
+                class_retired="rust-backend-rejection-applicability",
+                metric=0,
+            )
+        )
+    for name, (rel, line, body) in sorted(methods.items()):
+        for callee in sorted(
+            recording
+            | (
+                {"emit_unsupported_op"}
+                if full_backend and "emit_unsupported_op" not in methods
+                else set()
+            )
+        ):
+            # Free/qualified recording calls cannot inherit an instance-method
+            # proof. Keep them visible without pretending owner/type resolution.
+            for match in re.finditer(
+                rf"(?<![\w.]){re.escape(callee)}{_RUST_WS}*\(", body
+            ):
+                if any(
+                    reference["name"] == callee
+                    and reference.start() <= match.start() < reference.end()
+                    for reference in _rust_self_reference_matches(body)
+                ):
+                    continue
+                findings.append(
+                    Finding(
+                        probe="rust_backend_rejection_applicability",
+                        severity="medium",
+                        title="Rust recording call needs receiver evidence",
+                        location=f"{rel}:{line}",
+                        detail=f"{name}: non-instance recording call {callee}",
+                        suggested_action="resolve receiver and recording-state ownership",
+                        class_retired="rust-backend-rejection-applicability",
+                        metric=0,
+                    )
+                )
+    return rejected, findings
+
+
 def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
     """Backend ops that fail closed because Rust lowering is not implemented.
 
@@ -1408,25 +2051,67 @@ def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
     """
     rel = Path("runtime/molt-backend-rust/src/rust/op_emitter.rs")
     path = root / rel
+    if not path.is_file():
+        relocated = Path("runtime/molt-backend-rust/src/rust/op_emitter/mod.rs")
+        if (root / relocated).is_file():
+            rel, path = relocated, root / relocated
+        elif (root / "runtime/molt-backend-rust/Cargo.toml").is_file():
+            return [
+                Finding(
+                    probe="rust_backend_rejection_applicability",
+                    severity="high",
+                    title="Rust dispatch source authority unresolved",
+                    location=f"{rel.as_posix()}:1",
+                    detail="neither file-module nor directory-module dispatcher is present",
+                    suggested_action="resolve production dispatcher before accepting lowering coverage",
+                    class_retired="rust-backend-rejection-applicability",
+                    metric=0,
+                )
+            ]
     try:
         text = path.read_text(errors="replace")
     except OSError:
         return []
-    lines = text.splitlines()
+    lines = mask_rust_comments_and_strings(text, preserve_literals=True).split("\n")
+    code_lines = mask_rust_comments_and_strings(text).split("\n")
+    rejected, applicability = _rust_rejection_family(root)
     findings: list[Finding] = []
-    for line_no, line in enumerate(lines, start=1):
-        if "self.emit_unsupported_op(" not in line:
+    seen: set[tuple[str, str]] = set()
+    code = "\n".join(code_lines)
+    for call in _rust_self_reference_matches(code):
+        if call["name"] not in rejected:
+            continue
+        line_no = code.count("\n", 0, call.start()) + 1
+        if call["instance"] is None or call["call"] is None:
+            findings.append(
+                Finding(
+                    probe="rust_backend_rejection_applicability",
+                    severity="medium",
+                    title="Rust rejection reference needs target/applicability evidence",
+                    location=f"{rel.as_posix()}:{line_no}",
+                    detail=f"{call['name']}: named associated/method reference; not a proven invocation",
+                    suggested_action="resolve alias/receiver/call target before accepting lowering coverage",
+                    class_retired="rust-backend-rejection-applicability",
+                    metric=0,
+                )
+            )
             continue
         call_block = "\n".join(lines[line_no - 1 : min(len(lines), line_no + 8)])
         if "unexpectedly produces output" in call_block:
             continue
-        arm_text = _rust_match_arm_text_before(lines, line_no - 1)
+        arm_text = _rust_match_arm_text_before(
+            lines, line_no - 1, call_end_offset=call.end()
+        )
         marker, count = _rust_backend_lowering_gap_marker(arm_text)
+        key = (arm_text, marker)
+        if key in seen:
+            continue
+        seen.add(key)
         findings.append(
             Finding(
                 probe="rust_backend_lowering_gap",
                 severity="high" if count >= 5 else "medium",
-                title=f"{count} Rust backend lowering gap(s)",
+                title=f"{count} Rust dispatch-path lowering gap(s)",
                 location=f"{rel.as_posix()}:{line_no}",
                 detail=f"L{line_no}:{marker}",
                 suggested_action=(
@@ -1438,7 +2123,7 @@ def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
                 metric=count,
             )
         )
-    return findings
+    return findings + applicability
 
 
 _NATIVE_SCALAR_PLAN_SURFACE_REL = (
@@ -1774,9 +2459,9 @@ def _large_region_count_from_title(title: str) -> int:
 def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     """Aggregate scalars that may only improve (decrease). CI fails on regress.
 
-    These are deliberately PRECISE (fail-loud dispatch switchboards and emitter
-    routes already excluded by the probe), so the ratchet fires on real new
-    hand-maintained semantic surface, not on legitimate new dispatch arms."""
+    Lowering paths and unresolved applicability are separate metrics. The latter
+    counts missing target/applicability proof, not unsupported Python operations;
+    moving rejection behind a mixed body cannot silently turn the gate green."""
     sem = [f for f in findings if f.probe == "semantic_fallthrough"]
     match_cls = [f for f in sem if f.title.startswith("hand-classified")]
     handsets = [f for f in sem if f.title.startswith("`matches!`")]
@@ -1804,7 +2489,7 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     max_undecomposed_file_lines = float(
         max((f.metric for f in undecomposed), default=0)
     )
-    return {
+    metrics = {
         # the hand-maintained-opcode-fact surface (match classifiers w/ silent default)
         "hand_classified_matches": float(len(match_cls)),
         # the high-priority subset: critical file AND large (≥6-opcode) hand-list
@@ -1816,6 +2501,11 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         "debt_markers_total": float(sum(int(f.metric) for f in debt)),
         "python_stub_surfaces_total": float(sum(int(f.metric) for f in python_stubs)),
         "rust_stub_surfaces_total": float(sum(int(f.metric) for f in rust_stubs)),
+        # Unresolved target/applicability proof debt is independently gated.
+        # Moving a definite rejection into a mixed body cannot make --check green.
+        "rust_backend_rejection_applicability_total": float(
+            sum(f.probe == "rust_backend_rejection_applicability" for f in findings)
+        ),
         "rust_backend_lowering_gaps_total": float(
             sum(int(f.metric) for f in rust_backend_lowering_gaps)
         ),
@@ -1833,9 +2523,15 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         "duplicate_authorities": float(len(dup)),
     }
 
+    if set(metrics) != release_receipt.STRUCTURAL_AUDIT_METRICS:
+        raise ValueError(
+            "structural metric computation disagrees with canonical receipt schema"
+        )
+    return metrics
+
 
 # Metrics where a HIGHER value is worse (the ratchet direction is "down").
-_RATCHET_DOWN = set(ratchet_metrics([]).keys())
+_RATCHET_DOWN = set(release_receipt.STRUCTURAL_AUDIT_METRICS)
 
 
 # Replacement authority + equivalence gate per deletion-candidate class — so a
@@ -2140,6 +2836,7 @@ def main(argv: list[str] | None = None) -> int:
         receipt_destination = release_receipt.prepare_receipt_destination(
             repo_root=root,
             receipt_path=args.receipt,
+            observe_audit_engine=True,
             source_sha=args.source_sha,
         )
     except ValueError as exc:
@@ -2196,13 +2893,32 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         try:
-            raw_baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raw_baseline = release_receipt.loads_exact(
+                baseline_path.read_text(encoding="utf-8")
+            )
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            release_receipt.ExactJsonError,
+        ) as exc:
             print(f"ERROR: invalid baseline at {baseline_path}: {exc}", file=sys.stderr)
             return 2
         if not isinstance(raw_baseline, dict):
             print(
                 f"ERROR: baseline root is not an object: {baseline_path}",
+                file=sys.stderr,
+            )
+            return 2
+        if set(raw_baseline) != set(release_receipt.STRUCTURAL_AUDIT_METRICS):
+            print(
+                f"ERROR: baseline metric keys differ from canonical authority: {baseline_path}",
+                file=sys.stderr,
+            )
+            return 2
+        if not all(release_receipt._metric(value) for value in raw_baseline.values()):
+            print(
+                f"ERROR: baseline values must be finite non-negative numbers: {baseline_path}",
                 file=sys.stderr,
             )
             return 2
@@ -2228,6 +2944,7 @@ def main(argv: list[str] | None = None) -> int:
             receipt = release_receipt.build_receipt(
                 kind=release_receipt.KIND_STRUCTURAL_AUDIT,
                 source_sha=receipt_destination.source_sha,
+                audit_engine=receipt_destination.audit_engine,
                 status=status,
                 argv=raw_argv,
                 tool_path=Path(__file__),

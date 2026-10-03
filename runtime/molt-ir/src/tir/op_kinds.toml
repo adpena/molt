@@ -24,15 +24,15 @@ comparison_warning_pairs = [
 # Resource-exhaustion failures are outside this semantic exception lattice.
 # Sequence length OverflowError is not resource exhaustion and remains throwing.
 primitive_operator_effect_cases = [
-    { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["I64","BigInt","Bool"],["I64","BigInt","Bool"]], purity = "pure" },
-    { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["F64"],["F64","Bool"]], purity = "pure" },
-    { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["Bool"],["F64"]], purity = "pure" },
-    { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["I64","BigInt"],["F64"]], purity = "pure_may_throw" },
-    { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["F64"],["I64","BigInt"]], purity = "pure_may_throw" },
-    { opcodes = ["Add","InplaceAdd"], operands = [["Str"],["Str"]], purity = "pure_may_throw" },
-    { opcodes = ["Add","InplaceAdd"], operands = [["Bytes"],["Bytes"]], purity = "pure_may_throw" },
-    { opcodes = ["Mul","InplaceMul"], operands = [["Str","Bytes"],["I64","BigInt","Bool"]], purity = "pure_may_throw" },
-    { opcodes = ["Mul","InplaceMul"], operands = [["I64","BigInt","Bool"],["Str","Bytes"]], purity = "pure_may_throw" },
+    { opcodes = ["Add","CheckedAdd","Sub","Mul","CheckedMul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["I64","BigInt","Bool"],["I64","BigInt","Bool"]], purity = "pure" },
+    { opcodes = ["Add","CheckedAdd","Sub","Mul","CheckedMul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["F64"],["F64","Bool"]], purity = "pure" },
+    { opcodes = ["Add","CheckedAdd","Sub","Mul","CheckedMul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["Bool"],["F64"]], purity = "pure" },
+    { opcodes = ["Add","CheckedAdd","Sub","Mul","CheckedMul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["I64","BigInt"],["F64"]], purity = "pure_may_throw" },
+    { opcodes = ["Add","CheckedAdd","Sub","Mul","CheckedMul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["F64"],["I64","BigInt"]], purity = "pure_may_throw" },
+    { opcodes = ["Add","CheckedAdd","InplaceAdd"], operands = [["Str"],["Str"]], purity = "pure_may_throw" },
+    { opcodes = ["Add","CheckedAdd","InplaceAdd"], operands = [["Bytes"],["Bytes"]], purity = "pure_may_throw" },
+    { opcodes = ["Mul","CheckedMul","InplaceMul"], operands = [["Str","Bytes"],["I64","BigInt","Bool"]], purity = "pure_may_throw" },
+    { opcodes = ["Mul","CheckedMul","InplaceMul"], operands = [["I64","BigInt","Bool"],["Str","Bytes"]], purity = "pure_may_throw" },
     { opcodes = ["Div","FloorDiv","Mod","Pow"], operands = [["I64","BigInt","Bool","F64"],["I64","BigInt","Bool","F64"]], purity = "pure_may_throw" },
     { opcodes = ["Neg","Pos"], operands = [["I64","BigInt","Bool","F64"]], purity = "pure" },
     { opcodes = ["BitAnd","BitOr","BitXor"], operands = [["I64","BigInt","Bool"],["I64","BigInt","Bool"]], purity = "pure" },
@@ -65,11 +65,11 @@ primitive_operator_effect_cases = [
 #                  verifier result arity (`result_arity`), PLUS the per-OpCode
 #                  operand-ownership default
 #                  (`operand_ownership`, the OPERAND-side borrowed|consumed|
-#                  interior_borrow_keepalive axis, design 27 §2.1). Both are
+#                  container_absorb axis, design 27 §2.1). Both are
 #                  exhaustive over the enum. The per-position `operand_ownership`
 #                  list form classifies a single operand finer than the op
-#                  default (e.g. `Index`'s container is interior-borrowed, its
-#                  key merely borrowed).
+#                  default (e.g. a store retains its value while borrowing
+#                  the container and key).
 #   - [[kind]]     — the kind_to_opcode mapper: OpCode-equivalence groups
 #                  (canonical + aliases, the |-grouped arms). The first
 #                  canonical spelling for each mapped OpCode also feeds the
@@ -88,7 +88,10 @@ primitive_operator_effect_cases = [
 #   - [[consuming_kind]] — per-SPELLING operand-consume overrides (design 27
 #                  §2.3): the Copy-lifted `_original_kind` spellings that free an
 #                  operand internally (the CallArgs builder), finer than the
-#                  OpCode. Consumed by drop_insertion.rs's op_consumed_operand_root.
+#                  OpCode. Read by ownership_lattice_min's op_transferred_operands.
+#   - [[source_call_kind]] — per-SPELLING source Python call instructions
+#                  (design 20 §1.6): the spellings that may carry typed
+#                  `argument_custody`, and their first adoptable operand.
 #   - [[absorbing_kind]] — per-SPELLING result-absorption facts for Copy-lifted
 #                  constructors (`*_new`) whose result owns operand lifetimes
 #                  without becoming first-class [[kind]] aliases.
@@ -133,11 +136,10 @@ primitive_operator_effect_cases = [
 #                  generated opcode-to-rule lattices for type_refine.rs result
 #                  inference. The registry owns opcode membership; type_refine.rs
 #                  owns the rule semantics and live operand/attr parsing.
-#   - call_opcode_roles / call_graph_user_call_kinds - generated call graph and
-#                  CallFacts dispatch facts. The opcode role owns first-class
-#                  Call/CallMethod/CallBuiltin/Copy behavior; the kind predicate
-#                  owns the exact `_original_kind` spellings that make a Copy
-#                  fallback count as a user-level call edge.
+#   - may_call_python / async_work_poll_after_kinds - callback effects and
+#                  call-return observation protocol. FunctionCallSites combines
+#                  callback effects with exact primitive/slot proofs and source
+#                  target provenance; the polling list never defines call edges.
 #   - ssa_s_value_attr_keys / ssa_original_kind_preserving_kinds - generated
 #                  SSA attr-transport facts. The registry owns which opcode gets
 #                  which string-payload attr key and which SimpleIR spellings
@@ -189,7 +191,9 @@ primitive_operator_effect_cases = [
 #   - exception_transfer_edge_opcodes - subset of exception-label ops whose
 #                  label-valued `value` attr contributes an implicit CFG edge.
 #   - exception_region_nesting_roles - TryStart/TryEnd role facts consumed by
-#                  DCE/SCCP try-depth tracking. Distinct from label and transfer
+#                  DCE/SCCP try-depth tracking, and by the CFG's binding-edge
+#                  query: a transfer edge whose op enters a region registers
+#                  it and binds no handler argument. Distinct from label and transfer
 #                  facts: it owns lexical exception-region nesting only.
 #   - canonicalize_commutative_reorder / canonicalize_swapped_comparison /
 #                  canonicalize_binary_rules - ordered algebraic facts consumed
@@ -224,7 +228,6 @@ primitive_operator_effect_cases = [
 #   - boxed_runtime_inplace_dispatch_opcodes - first-class opcodes whose boxed
 #                  runtime fallback must call `molt_inplace_*` and try the
 #                  in-place dunder before binary fallback.
-#   - drop_insertion_suspension_point_opcodes - opcode-only frame-retain fact
 #                  for drop_insertion.rs. Omitted opcodes do not suspend and do
 #                  not require pre-op coroutine-frame IncRefs.
 #   - drop_insertion_return_deferral_barrier_opcodes - opcode-only fact for
@@ -369,7 +372,7 @@ simpleir_integer_producer_semantics_kinds = [
     "box_from_raw_int", "unbox_to_raw_int", "checked_add", "checked_mul",
     "loop_index_start", "loop_index_next",
     "int", "cast_int", "builtin_int",
-    "int_from_obj", "int_from_str_of_obj",
+    "int_from_obj", "int_from_str_of_obj", "operator_index",
     "sum", "builtin_sum",
     "range", "builtin_range", "range_new", "for_range",
     "enumerate",
@@ -406,6 +409,8 @@ simpleir_runtime_neutral_semantics_kinds = [
 # custody. This does not authorize Python-visible frame objects, tracing hooks,
 # or traceback-frame introspection.
 simpleir_execution_frame_semantics_kinds = [
+    "frame_context_set", "frame_home_cell", "frame_home_clear", "frame_home_load",
+    "frame_home_private_cell", "frame_home_store", "frame_home_take", "frame_locals",
     "frame_locals_set", "line", "trace_enter_slot", "trace_exit",
 ]
 # Python-visible frame introspection. A target claiming this capability must
@@ -457,7 +462,7 @@ simpleir_function_reference_s_value_kinds = ["func_new", "func_new_closure"]
 simpleir_defined_function_reference_s_value_kinds = [
     "call", "call_internal", "func_new", "func_new_closure", "func_new_builtin",
     "code_new", "call_guarded", "call_indirect", "alloc_task", "call_async",
-    "asyncgen_locals_register", "gen_locals_register", "task_new",
+    "stateful_locals_register", "task_new",
     "generator_send", "call_func", "call_method", "import_from",
     "import_name", "class_def", "decorator", "super_call", "yield_from", "await",
 ]
@@ -585,7 +590,7 @@ simpleir_fallible_protocol_semantics_kinds = [
 ]
 simpleir_async_runtime_semantics_kinds = [
     "alloc_task", "call_async", "block_on", "is_native_awaitable",
-    "asyncgen_locals_register", "gen_locals_register",
+    "stateful_locals_register",
     "state_label", "state_switch", "state_transition", "state_yield",
 ]
 # Servicing CPython pending calls and the eval breaker is independent from task
@@ -603,23 +608,23 @@ simpleir_host_capability_semantics_kinds = [
 # ===========================================================================
 # Call graph / CallFacts opcode and kind roles.
 #
-# The opcode role is a first-class call classification shared by call_graph.rs
-# and call_facts.rs. The user-call kind list is intentionally spelling-level:
-# it applies only to Copy fallbacks carrying `_original_kind`, so GPU helper
-# kinds that also map to OpCode::Call and CallBuiltin runtime helpers cannot
-# accidentally become user-level call graph edges.
+# Callback capability belongs to each opcode's effect row and the exact-site
+# effect projection. This spelling list solely places call-return eval-breaker
+# observations; it is not a call graph membership policy.
 # ===========================================================================
 
-call_opcode_roles = [
-    { opcode = "Call", role = "user_call" },
-    { opcode = "CallMethod", role = "dynamic_method" },
-    { opcode = "CallMethodIc", role = "dynamic_method" },
-    { opcode = "CallSuperMethodIc", role = "dynamic_method" },
-    { opcode = "CallBuiltin", role = "runtime_builtin" },
-    { opcode = "Copy", role = "copy_original_kind" },
+# Independent callback contracts for preserved primitives. Physical guards and
+# source-location updates do not dispatch; lifetime releases are explicit in
+# finalized TIR. Trace frame lifecycle operations are deliberately absent.
+# call_async only constructs an unstarted task; print_newline writes host stdout.
+callback_free_copy_kinds = [
+    "call_async", "guard_bool", "guard_dict_shape", "guard_float", "guard_int",
+    "guard_layout", "guard_none", "guard_str", "guard_tag", "guard_type",
+    "line", "missing", "nop", "print_newline",
 ]
 
-call_graph_user_call_kinds = [
+async_work_poll_after_kinds = [
+    "builtin_func",
     "call",
     "call_func",
     "call_internal",
@@ -676,6 +681,7 @@ ssa_original_kind_preserving_kinds = [
     "get_attr_name",
     "guarded_field_get",
     "load",
+    "guarded_load",
     "load_attr",
     "store_attr",
     "set_attr_name",
@@ -772,55 +778,167 @@ fuzz_tir_opcode_shapes = [
 ]
 
 # ===========================================================================
-# CopyLowering classifier (alias_analysis.rs). FLAT sets of individual kinds +
-# the fresh-value prefix rule. A Copy carrying _original_kind = k is classified
-# by these; an unlisted k falls to the fail-closed _ => TransparentAlias
+# CopyLowering classifier (alias_analysis.rs). Disjoint exact result-custody
+# sets. A Copy carrying _original_kind = k is classified by these; an unlisted
+# kind falls to the fail-closed _ => TransparentAlias
 # default (leak-safe, never UAF — docs/design/foundation/20).
 # ===========================================================================
 
-# copy_kind_mints_fresh_owned_ref: mints a fresh +1 owned reference.
-classifier_fresh_value = [
+# copy_kind_mints_owned_value: returns an independent +1 owned reference.
+# The object may already be published or alias any reachable object. This
+# is result custody, never allocation freshness; escape_alloc_site_opcodes
+# is the separate allocation authority. Both public lookup and raw runtime
+# construction use builtin_func and return a dynamic owned value.
+# Runtime-backed results agree with runtime_import_return_specs, including
+# op-loop/numeric operation aliases. Boxed None/bool/numbers have the same
+# custody contract: their reference release is a no-op when no heap owner exists.
+# call_async constructs an owned task (or the owned async_sleep future).
+# callargs_new owns its builder until call binding consumes it; frame_home_take
+# transfers its frame binding. Neither fact implies allocation freshness.
+classifier_owned_value = [
+    "abs",
     "aiter",
+    "anext",
     "ascii_from_obj",
+    "asyncgen_new",
+    "block_on",
+    "bound_method_new",
+    "bridge_unavailable",
+    "buffer2d_get",
+    "buffer2d_matmul",
+    "buffer2d_new",
+    "buffer2d_set",
+    "builtin_func",
+    "builtin_type",
+    "bytearray_count",
+    "bytearray_count_slice",
+    "bytearray_endswith",
+    "bytearray_endswith_slice",
+    "bytearray_fill_range",
+    "bytearray_find",
+    "bytearray_find_slice",
+    "bytearray_from_obj",
+    "bytearray_from_str",
+    "bytearray_replace",
+    "bytearray_split",
+    "bytearray_split_max",
+    "bytearray_startswith",
+    "bytearray_startswith_slice",
+    "bytes_count",
+    "bytes_count_slice",
+    "bytes_endswith",
+    "bytes_endswith_slice",
+    "bytes_find",
+    "bytes_find_slice",
+    "bytes_from_obj",
+    "bytes_from_str",
+    "bytes_replace",
+    "bytes_split",
+    "bytes_split_max",
+    "bytes_startswith",
+    "bytes_startswith_slice",
+    "call_async",
+    "callargs_expand_kwstar",
+    "callargs_expand_star",
+    "callargs_new",
+    "callargs_push_kw",
+    "callargs_push_pos",
+    "cbor_parse",
+    "chr",
+    "class_apply_set_name",
+    "class_def",
+    "class_layout_version",
+    "class_merge_layout",
+    "class_new",
+    "class_set_base",
+    "class_set_layout_version",
     "classmethod_new",
     "code_new",
+    "code_slot_set",
+    "code_slots_init",
     "complex_from_obj",
     "contains",
-    "class_def",
+    "context_closing",
+    "context_depth",
+    "context_enter",
+    "context_exit",
+    "context_null",
+    "context_unwind",
+    "context_unwind_to",
+    "dataclass_get",
     "dataclass_new",
     "dataclass_new_values",
+    "dataclass_set",
+    "dataclass_set_class",
+    "dict_clear",
+    "dict_copy",
     "dict_from_obj",
+    "dict_get",
     "dict_items",
     "dict_keys",
     "dict_new",
+    "dict_pop",
+    "dict_popitem",
+    "dict_setdefault",
+    "dict_setdefault_empty_list",
+    "dict_str_int_inc",
+    "dict_update",
+    "dict_update_kwstar",
     "dict_values",
     "enumerate",
+    "env_get",
+    "exception_active",
+    "exception_class",
+    "exception_clear",
+    "exception_context_set",
+    "exception_current",
+    "exception_enter_handler",
+    "exception_finally_pending_observer",
+    "exception_kind",
+    "exception_last",
+    "exception_last_pending",
+    "exception_match_builtin",
+    "exception_message",
     "exception_new",
     "exception_new_builtin",
     "exception_new_builtin_empty",
     "exception_new_builtin_one",
     "exception_new_from_class",
-    "exception_finally_pending_observer",
+    "exception_pop",
+    "exception_push",
+    "exception_resolve_captured",
+    "exception_set_cause",
+    "exception_set_last",
+    "exception_set_value",
+    "exception_stack_clear",
+    "exception_stack_depth",
+    "exception_stack_enter",
+    "exception_stack_exit",
+    "exception_stack_set_depth",
+    "exceptiongroup_combine",
+    "exceptiongroup_match",
+    "file_close",
+    "file_flush",
+    "file_open",
+    "file_read",
+    "file_write",
     "float_from_obj",
+    "frame_home_take",
+    "frame_locals",
+    "frame_locals_set",
+    "frozenset_add",
     "frozenset_new",
     "func_new",
     "func_new_closure",
-    # `getattr(obj, name, default)` returns one owned result on both branches.
-    # The miss branch may preserve the default's identity, but the runtime has
-    # minted an independent +1 root that must be dropped separately.
+    "gen_close",
+    "gen_send",
+    "gen_throw",
     "get_attr_name_default",
-    # Special-method lookup likewise returns an independent owned result. The
-    # descriptor path may bind a fresh callable while the plain-value path
-    # retains the resolved attribute, but both paths transfer one +1 root.
     "get_attr_special_obj",
-    # The augassign in-place family. Every molt_inplace_* runtime symbol
-    # returns an OWNED +1 reference regardless of object identity (a mutating
-    # __iadd__-style fast path inc_refs and returns operand 0; the dunder /
-    # binary-fallback paths return a fresh owned result) — so the result must
-    # be classified as minting ownership, never as a transparent alias of
-    # operand 0 (which would leak the +1 under drop insertion). The +=/-=/*=
-    # trio rides first-class opcodes (InplaceAdd/Sub/Mul, [[kind]] below);
-    # these ten ride the preserved-Copy lane.
+    "getargv",
+    "getframe",
+    "has_attr_name",
+    "id",
     "inplace_bit_and",
     "inplace_bit_or",
     "inplace_bit_xor",
@@ -833,28 +951,105 @@ classifier_fresh_value = [
     "inplace_rshift",
     "int_from_obj",
     "int_from_str_of_obj",
+    "invert",
+    "is_bound_method",
+    "is_callable",
+    "is_generator",
+    "is_native_awaitable",
+    "isinstance",
+    "issubclass",
     "iter",
+    "json_parse",
+    "len",
+    "list_append",
+    "list_clear",
+    "list_copy",
+    "list_count",
+    "list_extend",
     "list_fill_new",
     "list_from_range",
+    "list_index",
+    "list_index_range",
+    "list_insert",
+    "list_int_new",
     "list_new",
     "list_pop",
-    # `@` lowers through the preserved-Copy lane but calls `molt_matmul`,
-    # whose dunder/buffer/error paths return an owned result object.
+    "list_remove",
+    "list_reverse",
     "matmul",
+    "memoryview_cast",
+    "module_import_star",
+    "module_new",
+    "msgpack_parse",
     "object_new",
+    "object_set_class",
+    "operator_index",
+    "ord",
+    "pow_mod",
     "property_new",
     "range_new",
     "repr_from_obj",
+    "round",
+    "set_add",
+    "set_add_probe",
+    "set_difference_update",
+    "set_discard",
+    "set_intersection_update",
     "set_new",
+    "set_pop",
+    "set_remove",
+    "set_symdiff_update",
+    "set_update",
     "slice",
     "slice_new",
+    "stateful_locals_register",
     "staticmethod_new",
+    "statistics_mean_slice",
+    "statistics_stdev_slice",
     "str_from_obj",
+    "string_capitalize",
+    "string_count",
+    "string_count_slice",
+    "string_endswith",
+    "string_endswith_slice",
+    "string_find",
+    "string_find_slice",
     "string_format",
     "string_join",
+    "string_lower",
+    "string_lstrip",
+    "string_replace",
+    "string_rstrip",
+    "string_split",
+    "string_split_field",
+    "string_split_field_end",
+    "string_split_field_eq",
+    "string_split_field_is_ascii",
+    "string_split_field_len",
+    "string_split_field_len_from_bounds",
+    "string_split_field_ord_at_bounds",
+    "string_split_field_start",
     "string_split_field_to_int",
+    "string_split_max",
+    "string_split_sep_dict_inc",
+    "string_split_validate",
+    "string_split_ws_dict_inc",
+    "string_startswith",
+    "string_startswith_slice",
+    "string_strip",
+    "string_upper",
+    "super_new",
+    "sys_executable",
+    "trunc",
+    "tuple_count",
     "tuple_from_list",
+    "tuple_index",
     "tuple_new",
+    "type_of",
+    "vec_max",
+    "vec_min",
+    "vec_prod",
+    "vec_sum",
 ]
 
 # Eval-breaker placement authority. Every first-class call return is a Python
@@ -885,12 +1080,6 @@ classifier_exception_creation_ref = [
     "exception_new_builtin_empty",
     "exception_new_builtin_one",
     "exception_new_from_class",
-]
-
-# ...and the prefix form (the vec_* vectorized-reduction family, each calling a
-# dedicated molt_vec_* runtime reduction returning a fresh boxed result).
-classifier_fresh_value_prefixes = [
-    "vec_",
 ]
 
 # copy_kind_mints_owned_alias_ref: result is operand 0's object bits, but the
@@ -956,22 +1145,20 @@ canonicalize_binary_rules = [
 # explicit SSA alias/absorption facts; callback and opaque storage families are
 # therefore global-escape boundaries unless another generated fact proves them.
 opcode_has_local_only_operands_opcodes = [
+    "CheckException",
+    "DecRef",
+    "DelBoundary",
+    "DeleteVar",
+    "ExceptionPending",
+    "Free",
+    "FunctionDefaultsVersion",
+    "IncRef",
     "Is",
     "IsNot",
-    "CheckedAdd",
-    "CheckedMul",
-    "IncRef",
-    "DecRef",
-    "DeleteVar",
-    "DelBoundary",
-    "Free",
-    "CheckException",
-    "ExceptionPending",
-    "TryStart",
-    "TryEnd",
-    "StateBlockStart",
     "StateBlockEnd",
-    "FunctionDefaultsVersion",
+    "StateBlockStart",
+    "TryEnd",
+    "TryStart",
 ]
 
 alias_rc_barrier_opcodes = [
@@ -983,6 +1170,7 @@ alias_rc_barrier_opcodes = [
     "CheckException",
     "ClosureLoad",
     "ClosureStore",
+    "FrameContextSet",
     "Raise",
     "StateSwitch",
     "StateTransition",
@@ -1030,23 +1218,11 @@ refcount_balance_dec_opcodes = ["DecRef"]
 # here. This is deliberately narrower than state_machine_opcodes:
 # high-level `Yield`/`YieldFrom` and StateBlock delimiters are coroutine markers,
 # but not by themselves proof of the lowered re-entrant dispatch shape that the
-# drop-insertion state-machine bail guards.
+# state-machine transforms classify.
 lowered_state_machine_body_opcodes = [
     "StateSwitch",
     "StateTransition",
     "StateYield",
-]
-
-# drop_insertion_suspension_point_opcodes: execution-suspension points where
-# live owned values must be retained into the suspended coroutine/generator
-# frame before the op. This is deliberately distinct from state-machine
-# transform legality: StateSwitch/StateTransition/AllocTask are state-machine
-# machinery, but construction alone is neither a re-entrant body nor a
-# suspension that publishes the live frame.
-drop_insertion_suspension_point_opcodes = [
-    "StateYield",
-    "Yield",
-    "YieldFrom",
 ]
 
 # drop_insertion_return_deferral_barrier_opcodes: explicit ownership rails that
@@ -1353,7 +1529,6 @@ type_refine_attr_result_type_rules = [
     { opcode = "CallMethod", rule = "call_return_type" },
     { opcode = "CallMethodIc", rule = "call_return_type" },
     { opcode = "CallSuperMethodIc", rule = "call_return_type" },
-    { opcode = "CallBuiltin", rule = "call_builtin_return_type" },
     { opcode = "TypeGuard", rule = "type_guard" },
     { opcode = "Copy", rule = "copy_original_kind" },
 ]
@@ -1456,12 +1631,11 @@ value_range_cond_narrow_rules = [
 # value_range_container_length_rules: opcodes that seed container-length and
 # len(container) facts used by ValueRangeResult::proves_index_in_bounds. The
 # registry owns opcode membership; value_range.rs owns operand counts,
-# builtin-name validation, copy resolution, and const/symbolic length formulas.
+# explicit primitive validation, copy resolution, and const/symbolic length formulas.
 value_range_container_length_rules = [
     { opcode = "BuildList", rule = "fixed_literal" },
     { opcode = "BuildTuple", rule = "fixed_literal" },
     { opcode = "Mul", rule = "list_repeat" },
-    { opcode = "CallBuiltin", rule = "len_call" },
     { opcode = "Copy", rule = "len_call" },
 ]
 
@@ -1532,6 +1706,7 @@ repr_raw_i64_full_deopt_seed_rules = [
 ]
 
 repr_projectable_bool_result_rules = [
+    { opcode = "IsPending", rule = "always" },
     { opcode = "ConstBool", rule = "always" },
     { opcode = "Is", rule = "always" },
     { opcode = "IsNot", rule = "always" },
@@ -1714,199 +1889,35 @@ classifier_inert_marker = [
     "line",
     "missing",
     "nop",
+]
+
+# Explicit non-owning Copy results: borrowed binding/object views, unpublished
+# storage, and resultless effects. These entries do not alias operand zero or
+# grant no-heap-move/MemGVN privileges; classifier_no_heap_move alone does that.
+# Runtime owned results belong in classifier_owned_value, never both sets.
+classifier_transparent_alias = [
+    "alloc_class",
+    "dict_set",
+    "dict_update_missing",
+    "frame_home_cell",
+    "frame_home_clear",
+    "frame_home_load",
+    "frame_home_private_cell",
+    "frame_home_store",
+    "function_closure_bits",
+    "print_newline",
     "trace_enter_slot",
     "trace_exit",
 ]
-
-# classify_copy_kind explicit transparent-alias bucket: known Copy-lifted
-# runtime/effect ops whose result/ownership is intentionally NOT promoted to
-# FreshValue or InertMarker yet, but whose transparent-alias droppability is a
-# deliberate table fact rather than a silent `_ => TransparentAlias` fallthrough.
-# These entries DO NOT grant no-heap-move/MemGVN alias privileges; that
-# separate precision set remains `classifier_no_heap_move`.
-classifier_transparent_alias = [
-    "alloc_class",
-    "anext",
-    "asyncgen_locals_register",
-    "asyncgen_new",
-    "bound_method_new",
-    "block_on",
-    "bridge_unavailable",
-    "buffer2d_get",
-    "buffer2d_matmul",
-    "buffer2d_new",
-    "buffer2d_set",
-    "builtin_type",
-    "bytearray_count",
-    "bytearray_count_slice",
-    "bytearray_endswith",
-    "bytearray_endswith_slice",
-    "bytearray_fill_range",
-    "bytearray_find",
-    "bytearray_find_slice",
-    "bytearray_from_obj",
-    "bytearray_from_str",
-    "bytearray_replace",
-    "bytearray_split",
-    "bytearray_split_max",
-    "bytearray_startswith",
-    "bytearray_startswith_slice",
-    "bytes_count",
-    "bytes_count_slice",
-    "bytes_endswith",
-    "bytes_endswith_slice",
-    "bytes_find",
-    "bytes_find_slice",
-    "bytes_from_obj",
-    "bytes_from_str",
-    "bytes_replace",
-    "bytes_split",
-    "bytes_split_max",
-    "bytes_startswith",
-    "bytes_startswith_slice",
-    "callargs_expand_kwstar",
-    "callargs_expand_star",
-    "callargs_new",
-    "callargs_push_kw",
-    "callargs_push_pos",
-    "chr",
-    "class_apply_set_name",
-    "class_layout_version",
-    "class_merge_layout",
-    "class_new",
-    "class_set_base",
-    "class_set_layout_version",
-    "classmethod_new",
-    "code_new",
-    "code_slot_set",
-    "code_slots_init",
-    "context_closing",
-    "context_depth",
-    "context_enter",
-    "context_exit",
-    "context_null",
-    "context_unwind",
-    "context_unwind_to",
-    "dataclass_get",
-    "dataclass_set",
-    "dataclass_set_class",
-    "dict_clear",
-    "dict_copy",
-    "dict_get",
-    "dict_inc",
-    "dict_pop",
-    "dict_popitem",
-    "dict_set",
-    "dict_setdefault",
-    "dict_setdefault_empty_list",
-    "dict_str_int_inc",
-    "dict_update",
-    "dict_update_kwstar",
-    "dict_update_missing",
-    "env_get",
-    "exception_class",
-    "exception_clear",
-    "exception_context_set",
-    "exception_kind",
-    "exception_last",
-    "exception_last_pending",
-    "exception_match_builtin",
-    "exception_message",
-    "exception_pop",
-    "exception_push",
-    "exception_set_cause",
-    "exception_set_last",
-    "exception_stack_clear",
-    "exception_stack_depth",
-    "exception_stack_enter",
-    "exception_stack_exit",
-    "exception_stack_set_depth",
-    "exceptiongroup_combine",
-    "exceptiongroup_match",
-    "file_close",
-    "file_flush",
-    "file_open",
-    "file_read",
-    "file_write",
-    "frame_locals_set",
-    "frozenset_add",
-    "func_new",
-    "func_new_closure",
-    "function_closure_bits",
-    "gen_locals_register",
-    "get_attr_name_default",
-    "has_attr_name",
-    "id",
-    "intarray_from_seq",
-    "invert",
-    "is_bound_method",
-    "is_callable",
-    "is_generator",
-    "is_native_awaitable",
-    "isinstance",
-    "issubclass",
-    "len",
-    "list_append",
-    "list_clear",
-    "list_copy",
-    "list_count",
-    "list_extend",
-    "list_index",
-    "list_index_range",
-    "list_insert",
-    "list_int_new",
-    "list_remove",
-    "list_reverse",
-    "memoryview_new",
-    "memoryview_tobytes",
-    "module_import_star",
-    "module_new",
-    "ord",
-    "pow_mod",
-    "print_newline",
-    "property_new",
-    "round",
-    "set_add",
-    "set_add_probe",
-    "set_difference_update",
-    "set_discard",
-    "set_intersection_update",
-    "set_pop",
-    "set_remove",
-    "set_symdiff_update",
-    "set_update",
-    "staticmethod_new",
-    "statistics_mean_slice",
-    "statistics_stdev_slice",
-    "string_capitalize",
-    "string_count",
-    "string_count_slice",
-    "string_endswith",
-    "string_endswith_slice",
-    "string_find",
-    "string_find_slice",
-    "string_lower",
-    "string_lstrip",
-    "string_replace",
-    "string_rstrip",
-    "string_split",
-    "string_split_field",
-    "string_split_field_eq",
-    "string_split_field_len",
-    "string_split_max",
-    "string_split_sep_dict_inc",
-    "string_split_validate",
-    "string_split_ws_dict_inc",
-    "string_startswith",
-    "string_startswith_slice",
-    "string_strip",
-    "string_upper",
-    "super_new",
-    "taq_ingest_line",
-    "trunc",
-    "tuple_count",
-    "tuple_index",
-    "type_of",
+# copy_kind_is_binding_view: the result borrows a binding its frame's home owns
+# (a store's view of its operand, a load's view of the home), valid until the
+# slot's next write. Never an owner: no release, no phi retain on any arc, a
+# retain where it is returned or adopted (frame-slot-custody COORDINATION P2).
+classifier_binding_view = [
+    "frame_home_cell",
+    "frame_home_load",
+    "frame_home_private_cell",
+    "frame_home_store",
 ]
 # copy_kind_is_explicit_no_heap_move: provable no-incref pure move of operand 0
 # (bare copy, the named SSA/var moves, the validate-and-pass-through guards).
@@ -1923,6 +1934,51 @@ classifier_no_heap_move = [
 # Operation shapes shared by wire admission, isolated-function lowering and
 # preserved-Copy TIR verification. Backends consume admitted operands/IDs;
 # none owns a second arity or missing-ID policy.
+[[simpleir_op_shape]]
+kind = "frame_context_set"
+family = "execution_frame"
+operands = 3
+value_rule = "unconstrained"
+
+# The value is the code slot index into the frame's homes. A store's operand
+# is the binding (a boxed object or a raw integer carrier), the frame's cell,
+# or a compiler-private cell; the home takes its reference.
+[[simpleir_op_shape]]
+kind = "frame_home_store"
+family = "execution_frame"
+operands = 1
+value_rule = "nonnegative"
+
+[[simpleir_op_shape]]
+kind = "frame_home_cell"
+family = "execution_frame"
+operands = 1
+value_rule = "nonnegative"
+
+[[simpleir_op_shape]]
+kind = "frame_home_private_cell"
+family = "execution_frame"
+operands = 1
+value_rule = "nonnegative"
+
+[[simpleir_op_shape]]
+kind = "frame_home_load"
+family = "execution_frame"
+operands = 0
+value_rule = "nonnegative"
+
+[[simpleir_op_shape]]
+kind = "frame_home_take"
+family = "execution_frame"
+operands = 0
+value_rule = "nonnegative"
+
+[[simpleir_op_shape]]
+kind = "frame_home_clear"
+family = "execution_frame"
+operands = 0
+value_rule = "nonnegative"
+
 [[simpleir_op_shape]]
 kind = "code_new"
 family = "code_metadata"
@@ -2611,6 +2667,9 @@ kind = "set_new"
 kind = "tuple_new"
 
 [[absorbing_kind]]
+kind = "slice_new"
+
+[[absorbing_kind]]
 kind = "class_def"
 
 [[absorbing_operand_kind]]
@@ -2662,6 +2721,8 @@ operand = "all"
 #                     "pure"           (consistent+effect_free+nothrow),
 #                     "pure_may_throw" (consistent+effect_free, may raise),
 #                     "impure"         (not a pure computation).
+#   may_call_python : mandatory synchronous callback capability, independent
+#                     of throwing, mutation, and deferred callable references.
 #   may_access_arbitrary_heap : callback/global-memory floor used by alias and
 #                     MemorySSA. Defaults true for impure opcodes and false for
 #                     exact pure classes; only positive runtime evidence may
@@ -2677,6 +2738,7 @@ operand = "all"
 
 [[opcode]]
 name = "Add"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2687,6 +2749,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Sub"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2697,6 +2760,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Mul"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2707,30 +2771,33 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "CheckedAdd"
+may_call_python = true
 operand_arity = 2
 operand_independent_result_types = ["i64", "bool"]
-may_throw = false
-side_effecting = false
+may_throw = true
+side_effecting = true
 purity = "impure"
-may_access_arbitrary_heap = false
+may_access_arbitrary_heap = true
 result_arity = "two"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "CheckedMul"
+may_call_python = true
 operand_arity = 2
 operand_independent_result_types = ["i64", "bool"]
-may_throw = false
-side_effecting = false
+may_throw = true
+side_effecting = true
 purity = "impure"
-may_access_arbitrary_heap = false
+may_access_arbitrary_heap = true
 result_arity = "two"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceAdd"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2741,6 +2808,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceSub"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2751,6 +2819,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceMul"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2761,6 +2830,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Div"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2771,6 +2841,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "FloorDiv"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2781,6 +2852,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Mod"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2791,6 +2863,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Pow"
+may_call_python = true
 operand_arity = 2
 # `0 ** -1` / `0.0 ** -1.0` raise ZeroDivisionError; a negative base with a
 # non-integer exponent returns complex (NOT a float) — both are observable and
@@ -2808,6 +2881,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Neg"
+may_call_python = true
 operand_arity = 1
 may_throw = true
 side_effecting = true
@@ -2818,6 +2892,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Pos"
+may_call_python = true
 operand_arity = 1
 may_throw = true
 side_effecting = true
@@ -2828,6 +2903,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Eq"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2839,6 +2915,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Ne"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2850,6 +2927,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Lt"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2861,6 +2939,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Le"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2872,6 +2951,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Gt"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2883,6 +2963,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Ge"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2894,6 +2975,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Is"
+may_call_python = false
 operand_arity = 2
 frontend_intrinsic_scalar_arity = 2
 may_throw = false
@@ -2906,6 +2988,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "IsNot"
+may_call_python = false
 operand_arity = 2
 frontend_intrinsic_scalar_arity = 2
 may_throw = false
@@ -2918,6 +3001,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "In"
+may_call_python = true
 operand_arity = 2
 frontend_intrinsic_scalar_arity = 2
 may_throw = true
@@ -2931,6 +3015,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "NotIn"
+may_call_python = true
 operand_arity = 2
 frontend_intrinsic_scalar_arity = 2
 may_throw = true
@@ -2944,6 +3029,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BitAnd"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2954,6 +3040,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BitOr"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2964,6 +3051,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BitXor"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -2974,6 +3062,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BitNot"
+may_call_python = true
 operand_arity = 1
 may_throw = true
 side_effecting = true
@@ -2984,6 +3073,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Shl"
+may_call_python = true
 operand_arity = 2
 # `1 << -1` raises ValueError("negative shift count"); the exception is
 # observable even when the result is dead, so DCE must keep it and SCCP must not
@@ -2999,6 +3089,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Shr"
+may_call_python = true
 operand_arity = 2
 # `1 >> -1` raises ValueError("negative shift count") — same contract as `Shl`.
 may_throw = true
@@ -3010,6 +3101,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "And"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -3021,6 +3113,7 @@ result_mints_owned_selected_operand = true
 
 [[opcode]]
 name = "Or"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -3032,6 +3125,7 @@ result_mints_owned_selected_operand = true
 
 [[opcode]]
 name = "Not"
+may_call_python = true
 operand_arity = 1
 frontend_intrinsic_scalar_arity = 1
 may_throw = true
@@ -3045,6 +3139,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Bool"
+may_call_python = true
 operand_arity = 1
 frontend_intrinsic_scalar_arity = 1
 may_throw = true
@@ -3058,6 +3153,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Alloc"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3070,6 +3166,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "StackAlloc"
+may_call_python = false
 may_throw = false
 side_effecting = false
 purity = "impure"
@@ -3082,6 +3179,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ObjectNewBound"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3094,6 +3192,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Free"
+may_call_python = true
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3103,25 +3202,19 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "LoadAttr"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
-# The attribute READ borrows its source object (operand 0) AND its result may be
-# an interior borrow / opaque raw-int handle INTO that source's backing store
-# (the `Counter._handle` registry-handle class). `interior_borrow_keepalive`
-# records this on operand 0 (design 27 §2.1 / §1.5 borrow-of edge): the source's
-# drop is deferred to the borrow result's last use, not the source's own
-# straight-line last use (the round-6 BLOCKER-1 UAF: dropping the wrapper after
-# `get_attr` but before `molt_counter_len(handle)` ran the finalizer and made
-# `len(Counter(...))` return 0). It is STILL borrowed (not consumed) — the op
-# frees nothing — so the consume axis (`op_consumed_operand_root`) reads it as
-# non-consuming; the keepalive is the extra liveness coupling layered on top.
-operand_ownership = ["interior_borrow_keepalive"]
+# The runtime returns an independently owned result; receiver custody ends
+# at the read and its exception observation.
+operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "StoreAttr"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3131,6 +3224,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "DelAttr"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3140,24 +3234,20 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Index"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
-# Subscript READ `cont[key]`: operand 0 (the container) is interior-borrowed —
-# the result may be a borrow into / an opaque handle indexing the container's
-# backing store (`c[k]` on the `Counter._handle` class lowers to
-# `h = get_attr(c,"_handle"); molt_counter_getitem(h,k)`), so the container's
-# drop is deferred to the result's last use (design 27 §1.5 borrow-of edge,
-# round-6 UAF). Operand 1 (the key) is a plain borrowed argument — the result
-# does NOT borrow into it. Per-position so only the container carries the
-# keepalive; both operands remain non-consumed (the op frees neither).
-operand_ownership = ["interior_borrow_keepalive", "borrowed"]
+# The runtime returns an independently owned result; receiver custody ends
+# at the read and its exception observation.
+operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "StoreIndex"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3171,6 +3261,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "DelIndex"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3180,6 +3271,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "DeleteVar"
+may_call_python = true
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3189,6 +3281,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Call"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3198,6 +3291,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "CallMethod"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3207,6 +3301,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "CallMethodIc"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3216,6 +3311,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "CallSuperMethodIc"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3225,6 +3321,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "CallBuiltin"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3234,6 +3331,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "OrdAt"
+may_call_python = true
 operand_arity = 2
 frontend_intrinsic_scalar_arity = 2
 may_throw = true
@@ -3246,6 +3344,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BoxVal"
+may_call_python = false
 operand_arity = 1
 # Full-width i64 boxing allocates a BigInt outside the inline payload range.
 # Each materialization can fail, so this is also excluded from GVN numbering.
@@ -3260,6 +3359,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "UnboxVal"
+may_call_python = false
 operand_arity = 1
 may_throw = false
 side_effecting = false
@@ -3272,6 +3372,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "TypeGuard"
+may_call_python = false
 operand_arity = 1
 may_throw = false
 side_effecting = false
@@ -3282,6 +3383,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "IncRef"
+may_call_python = false
 operand_arity = 1
 may_throw = false
 side_effecting = true
@@ -3292,6 +3394,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "DecRef"
+may_call_python = true
 operand_arity = 1
 may_throw = false
 side_effecting = true
@@ -3305,6 +3408,7 @@ result_absorbs_operands = false
 # it otherwise, so backend lowerings never need a second release authority.
 [[opcode]]
 name = "DelBoundary"
+may_call_python = true
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3314,8 +3418,9 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BuildList"
+may_call_python = false
 operand_arity = "variable"
-may_throw = false
+may_throw = true
 side_effecting = false
 purity = "impure"
 # Exact list builders only allocate fresh storage and retain their operands.
@@ -3327,8 +3432,9 @@ result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildDict"
+may_call_python = true
 operand_arity = "variable_pairs"
-may_throw = false
+may_throw = true
 side_effecting = false
 purity = "impure"
 # Inserting user keys can synchronously invoke hashing and equality.
@@ -3340,8 +3446,9 @@ result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildTuple"
+may_call_python = false
 operand_arity = "variable"
-may_throw = false
+may_throw = true
 side_effecting = false
 purity = "impure"
 # Exact tuple builders only allocate fresh storage and retain their operands.
@@ -3352,8 +3459,9 @@ result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildSet"
+may_call_python = true
 operand_arity = "variable"
-may_throw = false
+may_throw = true
 side_effecting = false
 purity = "impure"
 # Inserting user elements can synchronously invoke hashing and equality.
@@ -3365,17 +3473,21 @@ result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildSlice"
-may_throw = false
+may_call_python = false
+may_throw = true
 side_effecting = false
-purity = "pure"
-# Slice construction only allocates fresh storage and retains its three values.
+purity = "impure"
+# Slice construction allocates fresh storage and retains every bound; an omitted
+# bound is None. Allocation can fail and the result keeps its bounds alive, as
+# for the exact list/tuple builders; no user callback runs.
 may_access_arbitrary_heap = false
 result_arity = "one"
 operand_ownership = "all_borrowed"
-result_absorbs_operands = false
+result_absorbs_operands = true
 
 [[opcode]]
 name = "GetIter"
+may_call_python = true
 operand_arity = 1
 may_throw = true
 side_effecting = false
@@ -3386,6 +3498,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "IterNext"
+may_call_python = true
 operand_arity = 1
 may_throw = true
 side_effecting = false
@@ -3396,6 +3509,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "IterNextUnboxed"
+may_call_python = true
 operand_arity = 1
 operand_independent_result_types = ["operand", "bool"]
 may_throw = true
@@ -3407,6 +3521,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "UnpackSequence"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3416,6 +3531,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ForIter"
+may_call_python = true
 operand_arity = 1
 may_throw = true
 side_effecting = false
@@ -3426,6 +3542,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "AllocTask"
+may_call_python = false
 may_throw = false
 side_effecting = false
 purity = "impure"
@@ -3435,6 +3552,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "StateSwitch"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3444,6 +3562,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "StateTransition"
+may_call_python = false
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3452,7 +3571,43 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
+name = "StateSet"
+may_call_python = false
+operand_arity = 0
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "IsPending"
+may_call_python = false
+frontend_intrinsic_scalar_arity = 1
+operand_independent_result_types = ["bool"]
+operand_arity = 1
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "TaskWait"
+may_call_python = false
+operand_arity = 1
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
 name = "StateYield"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3462,6 +3617,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ClosureLoad"
+may_call_python = false
 may_throw = true
 side_effecting = false
 purity = "impure"
@@ -3470,7 +3626,19 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
+name = "FrameContextSet"
+may_call_python = true
+operand_arity = 3
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
 name = "ClosureStore"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3480,6 +3648,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Yield"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3489,6 +3658,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "YieldFrom"
+may_call_python = true
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3498,6 +3668,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Raise"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3507,6 +3678,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "CheckException"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3517,6 +3689,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ExceptionPending"
+may_call_python = false
 operand_arity = 0
 operand_independent_result_types = ["bool"]
 frontend_intrinsic_scalar_arity = 0
@@ -3537,6 +3710,7 @@ result_absorbs_operands = false
 # load) and compares against 0 ("never mutated since creation").
 [[opcode]]
 name = "FunctionDefaultsVersion"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3547,6 +3721,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "TryStart"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3556,6 +3731,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "TryEnd"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3565,6 +3741,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "StateBlockStart"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3574,6 +3751,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "StateBlockEnd"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3583,6 +3761,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstInt"
+may_call_python = false
 operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 may_throw = false
@@ -3595,6 +3774,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBigInt"
+may_call_python = false
 operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 exact_scalar_result_type = "BigInt"
@@ -3611,6 +3791,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstFloat"
+may_call_python = false
 operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 may_throw = false
@@ -3623,6 +3804,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstStr"
+may_call_python = false
 operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 may_throw = true
@@ -3635,6 +3817,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBool"
+may_call_python = false
 operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 may_throw = false
@@ -3647,6 +3830,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstNone"
+may_call_python = false
 operand_arity = 0
 frontend_intrinsic_scalar_arity = 0
 may_throw = false
@@ -3659,6 +3843,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBytes"
+may_call_python = false
 operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 may_throw = true
@@ -3671,6 +3856,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Copy"
+may_call_python = true
 operand_arity = "variable"
 may_throw = false
 side_effecting = false
@@ -3681,6 +3867,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Import"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3690,6 +3877,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ImportFrom"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3699,11 +3887,12 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleCacheGet"
+may_call_python = true
 operand_arity = 1
 may_throw = true
 side_effecting = true
 purity = "impure"
-may_access_arbitrary_heap = false
+may_access_arbitrary_heap = true
 result_arity = "one"
 operand_independent_result_types = ["dynbox"]
 operand_ownership = "all_borrowed"
@@ -3711,6 +3900,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleCacheSet"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3720,6 +3910,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleCacheDel"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3729,6 +3920,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleGetAttr"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -3740,6 +3932,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleImportFrom"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -3751,6 +3944,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleGetGlobal"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -3762,6 +3956,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleGetName"
+may_call_python = true
 operand_arity = 2
 may_throw = true
 side_effecting = true
@@ -3773,6 +3968,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleSetAttr"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3786,6 +3982,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleDelGlobal"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3795,6 +3992,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleDelGlobalIfPresent"
+may_call_python = true
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3804,6 +4002,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "WarnStderr"
+may_call_python = false
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3813,6 +4012,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ScfIf"
+may_call_python = true
 may_throw = false
 side_effecting = false
 purity = "impure"
@@ -3822,6 +4022,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ScfFor"
+may_call_python = true
 may_throw = false
 side_effecting = false
 purity = "impure"
@@ -3831,6 +4032,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ScfWhile"
+may_call_python = true
 may_throw = false
 side_effecting = false
 purity = "impure"
@@ -3840,6 +4042,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ScfYield"
+may_call_python = false
 may_throw = false
 side_effecting = false
 purity = "impure"
@@ -3900,7 +4103,7 @@ mapper_opcode = "Div"
 # lower_to_simple/printer round-trip spelling some backends defensively consume.
 [[kind]]
 canonical = "floordiv"
-aliases = ["floor_div"]
+aliases = ["floor_div", "binop_floor_div"]
 mapper_opcode = "FloorDiv"
 
 [[kind]]
@@ -3915,12 +4118,12 @@ mapper_opcode = "Pow"
 
 [[kind]]
 canonical = "neg"
-aliases = []
+aliases = ["unary_neg"]
 mapper_opcode = "Neg"
 
 [[kind]]
 canonical = "pos"
-aliases = []
+aliases = ["unary_pos"]
 mapper_opcode = "Pos"
 
 [[kind]]
@@ -4045,7 +4248,7 @@ mapper_opcode = "Free"
 
 [[kind]]
 canonical = "get_attr"
-aliases = ["get_attr_generic_ptr", "get_attr_generic_obj", "get_attr_name", "guarded_field_get", "load", "load_attr"]
+aliases = ["get_attr_generic_ptr", "get_attr_generic_obj", "get_attr_name", "guarded_field_get", "load", "guarded_load", "load_attr"]
 mapper_opcode = "LoadAttr"
 
 [[kind]]
@@ -4234,6 +4437,15 @@ canonical = "closure_load"
 aliases = []
 mapper_opcode = "ClosureLoad"
 
+# Compiler services with typed scheduling/ownership semantics cannot re-enter
+# through generic call or callable acquisition carriers. The backend export is
+# an implementation detail of this kind, not a second semantic spelling.
+[[kind]]
+canonical = "frame_context_set"
+aliases = []
+mapper_opcode = "FrameContextSet"
+backend_service_symbol = "molt_frame_context_set"
+
 [[kind]]
 canonical = "closure_store"
 aliases = []
@@ -4407,9 +4619,11 @@ mapper_opcode = "WarnStderr"
 # THE OPERAND-OWNERSHIP MODEL (two granularities — read both):
 #
 #   1. PER-OPCODE DEFAULT (the `operand_ownership` field on every [[opcode]]
-#      row above). molt's compiled-function call convention is "callee borrows
-#      all args, returns owned" (design 20 §1.2/§1.5) — so EVERY OpCode borrows
-#      EVERY operand by default (`operand_ownership = "all_borrowed"`). The
+#      row above). molt's default call convention is "callee borrows its args,
+#      returns owned" (design 20 §1.2/§1.5) — so EVERY OpCode borrows EVERY
+#      operand by default (`operand_ownership = "all_borrowed"`). A source
+#      Python call instruction names the operands it adopts per call site, in
+#      its typed `argument_custody` (design 20 §1.6), not in this table. The
 #      field is EXHAUSTIVE over the enum (a new OpCode fails to render until it
 #      is classified), the structural kill for the "is this operand consumed?"
 #      assumption that was hardcoded across the RC passes.
@@ -4431,21 +4645,32 @@ mapper_opcode = "WarnStderr"
 #      fact is therefore keyed on the exact `_original_kind` spelling, not the
 #      OpCode.
 #
-# Drives `kind_operand_ownership_table` (consumed by drop_insertion.rs's
-# `op_consumed_operand_root`, which it REPLACES — design 27 §2.3: "Rung 1
-# special-cased this in op_consumed_operand_root; Rung 2 makes it a row"). This
+# Drives `kind_consumed_operand_table`, which the ownership module's
+# `op_transferred_operands` reads in place of the drop pass's old special case
+# (design 27 §2.3: "Rung 2 makes it a row"). This
 # retires the hand-coded `matches!(_original_kind, "call_bind" | "call_indirect")`
 # consume list (the C6 CallArgs-double-free bug class). A future consuming op (a
 # streaming builder, a move-into-collection intrinsic) is correctly handled by
 # ADDING a row — never by editing the drop pass.
 #
-#   kind            : the wire-kind SPELLING (canonical OR alias) the
-#                     `_original_kind` attr carries; cross-checked against the
-#                     [[kind]] vocabulary at generation (an unknown spelling is
-#                     a hard error — the structural kill for a typo'd override).
-#   consumed_operand: "last"     — the LAST operand is consumed (preserves the
+#   kind            : the wire-kind SPELLING the `_original_kind` attr carries,
+#                     checked at generation (an unknown spelling is a hard
+#                     error — the structural kill for a typo'd override): a
+#                     [[kind]] mapper spelling (canonical OR alias), or a
+#                     Copy-lifted spelling whose operation moves the operand's
+#                     reference into storage it owns: an inert marker with no
+#                     surviving result (`classifier_inert_marker`), a binding
+#                     view (`classifier_binding_view`: a frame home store, whose
+#                     result is a view of the home it stored into), or a fresh
+#                     value that takes it into its own result
+#                     (`classifier_owned_value`). Any other transparent, no-heap
+#                     or owned-alias Copy names the operand's object without
+#                     declaring storage that owns it, and cannot consume it.
+#                     Where the spelling declares a [[simpleir_op_shape]], the
+#                     selected operand must exist.
+#   consumed_operand: "last"     — the LAST operand is consumed (the
 #                                   arity-independent `op.operands.last()`
-#                                   semantics op_consumed_operand_root uses;
+#                                   position call_bind/call_indirect free;
 #                                   the CallArgs builder is operand [callee,
 #                                   builder] index 1 = last), OR
 #                     <integer>  — a fixed 0-based operand index is consumed.
@@ -4466,6 +4691,105 @@ consumed_operand = "last"
 # (molt_call_indirect_ic). Builder is the last operand and is consumed.
 kind = "call_indirect"
 consumed_operand = "last"
+
+[[consuming_kind]]
+# A frame-home store hands its operand's reference to the frame's home, which
+# owns the binding until the next store, a delete, a proxy write or the frame's
+# exit releases it (builtins/frames/bindings.rs). The result is a non-owning
+# binding view, so the store adopts operand 0 like a transferred call operand:
+# a dead root moves its +1 in, a live one is retained for it.
+kind = "frame_home_store"
+consumed_operand = 0
+
+[[consuming_kind]]
+# The frame's cell of a captured variable enters its home the same way.
+kind = "frame_home_cell"
+consumed_operand = 0
+
+[[consuming_kind]]
+# A compiler-private cell enters its home the same way.
+kind = "frame_home_private_cell"
+consumed_operand = 0
+
+# ===========================================================================
+# Source Python call instructions per WIRE-KIND SPELLING (design 20 §1.6).
+#
+# CPython's CALL moves its stack references into the call however the callee is
+# found. A source call instruction may therefore carry typed per-operand
+# `argument_custody`, and it adopts each `Transferred` operand on both of its
+# continuations, whether or not a callee runs. A spelling without a row rejects
+# argument_custody: runtime helper entries, FFI (`invoke_ffi`), builtins and the
+# legacy `call_function`. A `call` row admits it for a program function only,
+# since a runtime entry in the boxed runtime ABI never adopts. The frontend
+# decides which instructions are source calls; a call it synthesizes carries no
+# custody.
+#
+# A dynamic source call adopts every argument. It adopts its callable too when
+# it is an ordinary call (CALL), so the invocation can release a temporary bound
+# method before its callee runs; an expanded call (CALL_FUNCTION_EX, a builder
+# whose `CallArgumentForm` is `Expanded`) keeps its callable through the
+# invocation. A raw direct call (`call`, `call_internal`) carries exactly its
+# target's parameter custody.
+#
+# Drives `kind_source_call_first_adopted_operand` and
+# `kind_source_call_callable_operand`, which SimpleIR admission (ir_schema.rs,
+# ir.rs) reads. Method fusion reads the first to project a source call's
+# adoption onto the fused IC call.
+#
+#   kind                 : the wire-kind SPELLING (canonical or alias).
+#   first_adopted_operand: 0 or 1, the first operand position that may be
+#                          `Transferred`; an earlier operand (a `super()`
+#                          class) always stays borrowed.
+#   callable_operand     : optional, the position of the callable, whose custody
+#                          follows the call form rather than the arguments'.
+# ===========================================================================
+
+[[source_call_kind]]
+kind = "call"
+first_adopted_operand = 0
+
+[[source_call_kind]]
+kind = "call_internal"
+first_adopted_operand = 0
+
+[[source_call_kind]]
+# [callable, args...]: the resolved and fallback legs adopt identically.
+kind = "call_guarded"
+first_adopted_operand = 0
+callable_operand = 0
+
+[[source_call_kind]]
+kind = "call_func"
+first_adopted_operand = 0
+callable_operand = 0
+
+[[source_call_kind]]
+# [bound callable, args...]: the receiver lives in the bound method.
+kind = "call_method"
+first_adopted_operand = 0
+callable_operand = 0
+
+[[source_call_kind]]
+# [receiver, args...]: the receiver is `self`, adopted like an argument.
+kind = "call_method_ic"
+first_adopted_operand = 0
+
+[[source_call_kind]]
+# [class, self, args...]
+kind = "call_super_method_ic"
+first_adopted_operand = 1
+
+[[source_call_kind]]
+# [callee, builder]: the `[[consuming_kind]]` row frees the builder, and the
+# builder's call form decides the callee's custody.
+kind = "call_bind"
+first_adopted_operand = 0
+callable_operand = 0
+
+[[source_call_kind]]
+kind = "call_indirect"
+first_adopted_operand = 0
+callable_operand = 0
 
 # ===========================================================================
 # Per-TERMINATOR operand ownership (molt task #58 ladder #72, design 27 §2.4
@@ -4501,8 +4825,9 @@ consumed_operand = "last"
 #                `Switch { cases[].args, default_args }`. ALWAYS `transferred`:
 #                ownership moves INTO the block param on the edge (the C3
 #                forwarded-arg-double-drop class; the successor-side dual is
-#                `incoming_arg_roots` in §3). Dropping it at the source would
-#                double-free the phi's object.
+#                DropInsertion's per-arc custody, which moves the root's +1
+#                into the param or retains one on the arc). Dropping it at the
+#                source would double-free the phi's object.
 #
 # Drives `terminator_operand_ownership_table(kind, category)` and the derived
 # `terminator_operand_is_transferred(kind, category)` (op_kinds_generated.rs),
@@ -4585,7 +4910,9 @@ branch_arg = "none"
 # Each row is one frontend UPPERCASE `op.kind`, in exactly ONE of two forms:
 #
 #   opcode = "<OpCode>"  — the kind lowercases to a wire `[[kind]]` spelling
-#       whose mapper_opcode is this OpCode, and that OpCode is `may_throw = true`
+#       whose mapper_opcode is this OpCode (or to a Copy-preserved constructor
+#       spelling such as `tuple_new`/`slice_new` whose construction facts this
+#       `Build*` OpCode owns), and that OpCode is `may_throw = true`
 #       above. The generator ASSERTS may_throw==true for this OpCode, so flipping
 #       an opcode to nothrow while leaving it raising here is a generation-time
 #       FAILURE — the structural kill for the dual raising-oracle drift. The
@@ -4605,6 +4932,30 @@ branch_arg = "none"
 # ---------------------------------------------------------------------------
 
 # OPCODE-MAPPED-RAISING: kind ⇒ may_throw OpCode (cross-checked at generation).
+[[frontend_raising_kind]]
+kind = "SET_NEW"
+opcode = "BuildSet"
+
+[[frontend_raising_kind]]
+kind = "DICT_NEW"
+opcode = "BuildDict"
+
+[[frontend_raising_kind]]
+kind = "TUPLE_NEW"
+opcode = "BuildTuple"
+
+[[frontend_raising_kind]]
+kind = "LIST_NEW"
+opcode = "BuildList"
+
+[[frontend_raising_kind]]
+kind = "SLICE_NEW"
+opcode = "BuildSlice"
+
+[[frontend_raising_kind]]
+kind = "FRAME_HOME_STORE"
+reason = "preserved-Copy: a boxed view of a raw integer may allocate in its home; transfer MemoryError at this store before the next effect or lexical-region exit"
+
 [[frontend_raising_kind]]
 kind = "BOX"
 opcode = "BoxVal"
@@ -4740,6 +5091,10 @@ opcode = "GetIter"
 [[frontend_raising_kind]]
 kind = "ITER_NEXT"
 opcode = "IterNext"
+
+[[frontend_raising_kind]]
+kind = "FRAME_CONTEXT_SET"
+opcode = "FrameContextSet"
 
 [[frontend_raising_kind]]
 kind = "FOR_ITER"
@@ -5052,6 +5407,41 @@ effect = "writes_heap"
 reason = "frontend local/module slot write; aliases Copy in the wire mapper but mutates a slot before serialization"
 
 [[frontend_effect_kind]]
+kind = "FRAME_HOME_STORE"
+effect = "writes_heap"
+reason = "binds a local in its frame's home, which takes the value's reference; releasing the displaced binding may run a finalizer"
+
+[[frontend_effect_kind]]
+kind = "FRAME_HOME_CELL"
+effect = "writes_heap"
+reason = "binds a captured variable's cell in its frame's home; releasing the displaced binding may run a finalizer"
+
+[[frontend_effect_kind]]
+kind = "FRAME_HOME_PRIVATE_CELL"
+effect = "writes_heap"
+reason = "binds a compiler-private cell in its frame's home; releasing the displaced binding may run a finalizer"
+
+[[frontend_effect_kind]]
+kind = "FRAME_HOME_LOAD"
+effect = "reads_heap"
+reason = "reads a binding from its frame's home, which a PEP 667 frame proxy may have written during any callback"
+
+[[frontend_effect_kind]]
+kind = "FRAME_HOME_TAKE"
+effect = "writes_heap"
+reason = "moves a binding out of its frame's home, leaving it unbound"
+
+[[frontend_effect_kind]]
+kind = "FRAME_HOME_CLEAR"
+effect = "writes_heap"
+reason = "unbinds a local in its frame's home; releasing the binding may run a finalizer"
+
+[[frontend_effect_kind]]
+kind = "FRAME_LOCALS"
+effect = "writes_heap"
+reason = "locals() reads the frame's bindings and, before PEP 667, refreshes the frame's one locals dict, whose displaced values may run finalizers"
+
+[[frontend_effect_kind]]
 kind = "ABS"
 effects_like_opcode = "Neg"
 effect = "writes_heap"
@@ -5216,11 +5606,6 @@ reason = "mutation: dictionary item write helper"
 kind = "DICT_SETDEFAULT"
 effect = "writes_heap"
 reason = "mutation: dictionary setdefault helper"
-
-[[frontend_effect_kind]]
-kind = "DICT_SPLIT_COUNT_INT_INC"
-effect = "writes_heap"
-reason = "mutation: split dictionary integer increment helper"
 
 [[frontend_effect_kind]]
 kind = "DICT_STR_INT_INC"
@@ -5592,32 +5977,24 @@ kind = "TRACE_EXIT"
 reason = "structural: tracing exit marker"
 
 [[frontend_check_exception_skip]]
+kind = "FRAME_HOME_CELL"
+reason = "structural: transfers an existing cell into its frame home without allocating; a displaced binding finalizer reports its own error as unraisable"
+
+[[frontend_check_exception_skip]]
+kind = "FRAME_HOME_PRIVATE_CELL"
+reason = "structural: transfers an existing cell into its frame home without allocating; a displaced binding finalizer reports its own error as unraisable"
+
+[[frontend_check_exception_skip]]
+kind = "FRAME_HOME_CLEAR"
+reason = "structural: unbinding a frame home cannot raise; a finalizer the displaced binding runs reports its own error as unraisable"
+
+[[frontend_check_exception_skip]]
 kind = "CONST_NOT_IMPLEMENTED"
 reason = "const: the NotImplemented singleton"
 
 [[frontend_check_exception_skip]]
 kind = "CONST_ELLIPSIS"
 reason = "const: the Ellipsis singleton"
-
-[[frontend_check_exception_skip]]
-kind = "CALLARGS_NEW"
-reason = "structural: call-args builder allocate"
-
-[[frontend_check_exception_skip]]
-kind = "CALLARGS_PUSH_POS"
-reason = "structural: call-args builder push positional"
-
-[[frontend_check_exception_skip]]
-kind = "CALLARGS_PUSH_KW"
-reason = "structural: call-args builder push keyword"
-
-[[frontend_check_exception_skip]]
-kind = "CALLARGS_EXPAND_STAR"
-reason = "structural: call-args builder *args expand (the trailing CALL carries the check)"
-
-[[frontend_check_exception_skip]]
-kind = "CALLARGS_EXPAND_KWSTAR"
-reason = "structural: call-args builder **kwargs expand (the trailing CALL carries the check)"
 
 [[frontend_check_exception_skip]]
 kind = "BORROW"
@@ -5642,22 +6019,6 @@ reason = "structural: construct a builtin exception object; construction does no
 [[frontend_check_exception_skip]]
 kind = "MISSING"
 reason = "structural: the internal MISSING sentinel marker"
-
-[[frontend_check_exception_skip]]
-kind = "TUPLE_NEW"
-opcode = "BuildTuple"
-
-[[frontend_check_exception_skip]]
-kind = "LIST_NEW"
-opcode = "BuildList"
-
-[[frontend_check_exception_skip]]
-kind = "DICT_NEW"
-opcode = "BuildDict"
-
-[[frontend_check_exception_skip]]
-kind = "SET_NEW"
-opcode = "BuildSet"
 
 [[frontend_check_exception_skip]]
 kind = "CODE_NEW"
@@ -5765,3 +6126,40 @@ augassign_kind = "INPLACE_RSHIFT"
 ast_op = "MatMult"
 binop_kind = "MATMUL"
 augassign_kind = "INPLACE_MATMUL"
+
+# Argument preparation has observable failure edges before later expressions.
+# These runtime operations are preserved Copy spellings, not nothrow structural markers.
+[[frontend_raising_kind]]
+kind = "CALLARGS_NEW"
+reason = "runtime call-argument allocation can fail"
+
+[[frontend_raising_kind]]
+kind = "CALLARGS_PUSH_POS"
+reason = "runtime positional argument retention can allocate"
+
+[[frontend_raising_kind]]
+kind = "CALLARGS_PUSH_KW"
+reason = "runtime keyword insertion can allocate and invoke key protocols"
+
+[[frontend_raising_kind]]
+kind = "CALLARGS_EXPAND_STAR"
+reason = "runtime positional expansion invokes iteration protocols"
+
+[[frontend_raising_kind]]
+kind = "CALLARGS_EXPAND_KWSTAR"
+reason = "runtime keyword expansion invokes mapping protocols"
+
+[[kind]]
+canonical = "state_set"
+aliases = []
+mapper_opcode = "StateSet"
+
+[[kind]]
+canonical = "is_pending"
+aliases = []
+mapper_opcode = "IsPending"
+
+[[kind]]
+canonical = "task_wait"
+aliases = []
+mapper_opcode = "TaskWait"

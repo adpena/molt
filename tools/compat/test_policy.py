@@ -8,6 +8,7 @@ verified-subset release receipts all consume this same projection.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import json
@@ -62,6 +63,7 @@ _METADATA_KEYS = frozenset(
         "platforms",
         "stderr",
         "stdlib_profile",
+        "source_role",
         "stdout",
         "verified_subset_scope",
     }
@@ -109,6 +111,7 @@ def parse_version(value: str) -> tuple[int, int]:
 class TestMetadata:
     """Exact typed policy carried by one differential source file."""
 
+    source_role: str = "program"
     verification_scope: str = CPYTHON_EQUIVALENCE_SCOPE
     expect_molt_fail: bool = False
     expected_failure_reason: str | None = None
@@ -125,6 +128,8 @@ class TestMetadata:
         """Return the canonical JSON-ready representation of non-default fields."""
 
         record: dict[str, object] = {}
+        if self.source_role != "program":
+            record["source_role"] = self.source_role
         if self.verification_scope != CPYTHON_EQUIVALENCE_SCOPE:
             record["verified_subset_scope"] = self.verification_scope
         if self.expect_molt_fail:
@@ -175,6 +180,8 @@ class TestMetadata:
         Static corpus consumers use this before parsing. Execution consumers
         continue through exclusion_reason for the full coordinate policy.
         """
+        if self.source_role == "fixture":
+            return "inert fixture source"
         if python_version is not None:
             if self.min_python is not None and python_version < self.min_python:
                 return f"min_py {self.min_python[0]}.{self.min_python[1]}"
@@ -298,6 +305,25 @@ def _parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
     line, comment = comments[0]
     raw = _parse_tokens(path, line, comment.removeprefix(_METADATA_PREFIX).strip())
 
+    source_role = raw.get("source_role", ("program",))[0]
+    if source_role not in {"program", "fixture"}:
+        raise ValueError("MOLT_META source_role must be program or fixture")
+    if source_role == "fixture":
+        body = ast.parse(source_bytes, filename=str(path)).body
+        if body and not (
+            len(body) == 1
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            raise ValueError(
+                "MOLT_META fixture sources must be empty or docstring-only; executable programs cannot be excluded"
+            )
+        if set(raw) != {"source_role"}:
+            raise ValueError(
+                "MOLT_META fixture role cannot override executable test policy"
+            )
+
     scope = raw.get("verified_subset_scope", (CPYTHON_EQUIVALENCE_SCOPE,))[0]
     if scope not in VERIFICATION_SCOPES:
         raise ValueError(
@@ -334,6 +360,7 @@ def _parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
     profiles = _enum_values(raw, "stdlib_profile", STDLIB_PROFILES)
 
     return TestMetadata(
+        source_role=source_role,
         verification_scope=scope,
         expect_molt_fail=bool(expect_values),
         expected_failure_reason=reason,
@@ -972,5 +999,17 @@ def verification_scope_paths(
         raise ValueError(f"unknown verified-subset scope: {scope}")
     sources = load_test_inventory(suites, repo_root=repo_root).sources
     return frozenset(
-        source.path for source in sources if source.metadata.verification_scope == scope
+        source.path
+        for source in sources
+        if source.metadata.source_role == "program"
+        and source.metadata.verification_scope == scope
+    )
+
+
+def program_files(inventory: TestSourceInventory) -> tuple[Path, ...]:
+    """Select executable programs while preserving every source in the inventory."""
+    return tuple(
+        inventory.repo_root / source.path
+        for source in inventory.sources
+        if source.metadata.source_role == "program"
     )

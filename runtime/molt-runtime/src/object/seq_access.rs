@@ -35,7 +35,9 @@ impl PinnedSequenceItem<'_, '_> {
 
 impl Drop for PinnedSequenceItem<'_, '_> {
     fn drop(&mut self) {
-        dec_ref_bits(self.py, self.bits);
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            dec_ref_bits(self.py, self.bits);
+        });
     }
 }
 
@@ -46,6 +48,13 @@ impl<'a, 'py> PinnedSequenceSnapshot<'a, 'py> {
         values: crate::object::backing::TrackedVecOwner<u64>,
     ) -> Self {
         Self { py, values }
+    }
+
+    /// Move retained elements and their accounted backing into a sequence.
+    /// No reference is consumed unless the destination has been allocated.
+    pub(crate) fn into_owned_values(self) -> crate::object::backing::TrackedVecOwner<u64> {
+        let snapshot = std::mem::ManuallyDrop::new(self);
+        unsafe { std::ptr::read(&snapshot.values) }
     }
 }
 
@@ -59,9 +68,11 @@ impl std::ops::Deref for PinnedSequenceSnapshot<'_, '_> {
 
 impl Drop for PinnedSequenceSnapshot<'_, '_> {
     fn drop(&mut self) {
-        for &bits in self.values.iter() {
-            dec_ref_bits(self.py, bits);
-        }
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            for &bits in self.values.iter() {
+                dec_ref_bits(self.py, bits);
+            }
+        });
     }
 }
 
@@ -272,7 +283,9 @@ impl std::ops::Deref for PinnedTuple<'_, '_> {
 
 impl Drop for PinnedTuple<'_, '_> {
     fn drop(&mut self) {
-        dec_ref_bits(self.py, self.bits);
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            dec_ref_bits(self.py, self.bits);
+        });
     }
 }
 
@@ -421,23 +434,19 @@ unsafe fn adjust_tuple_contains_refs(ptr: *mut u8, removed: &[u64], added: &[u64
     }
 }
 
-/// Replace one slot of an exclusively-owned fixed tuple.
+/// Replace a fixed tuple slot admitted by the physical C-ABI owner.
 ///
-/// The incoming value is borrowed and receives one tuple-owned reference. The
-/// displaced tuple-owned reference is returned to the caller for release or
-/// ownership transfer. This is used only while a C-created tuple is being
-/// initialized; ordinary published tuples remain immutable.
-pub(crate) unsafe fn replace_unique_item(
+/// PyTuple_SetItem enforces exclusive publication; PyTuple_SET_ITEM gives that
+/// obligation to its unsafe caller. Both enter this one storage primitive.
+/// The borrowed input gains a tuple edge, and the displaced owned edge is
+/// returned for retirement after physical/runtime publication.
+pub(crate) unsafe fn replace_capi_item(
     py: &PyToken<'_>,
     ptr: *mut u8,
     index: usize,
     value_bits: u64,
 ) -> Option<u64> {
     if ptr.is_null() || unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
-        return None;
-    }
-    let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe { (*header).ref_count_snapshot() } != 1 {
         return None;
     }
     let items = unsafe { tuple_slice_mut(ptr) };
@@ -502,7 +511,8 @@ pub(crate) unsafe fn replace_unique_pair(
 
 pub(crate) unsafe fn detach_tuple_edges(ptr: *mut u8, mut detach: impl FnMut(u64)) {
     let none = MoltObject::none().bits();
-    for slot in unsafe { tuple_slice_mut(ptr) } {
+    // Tuple storage unwinds last-to-first, including finalizer reentry.
+    for slot in unsafe { tuple_slice_mut(ptr) }.iter_mut().rev() {
         detach(std::mem::replace(slot, none));
     }
 }

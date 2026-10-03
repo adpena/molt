@@ -1,3 +1,4 @@
+use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
 use molt_obj_model::MoltObject;
 
 use super::methods::is_not_implemented_bits;
@@ -6,7 +7,7 @@ use crate::{
     alloc_string, alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable1,
     class_bases_bits, class_bases_vec, class_dict_bits, class_mro_vec, dec_ref_bits,
     dict_get_in_place, dict_order, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
-    issubclass_bits, maybe_ptr_from_bits, obj_eq, obj_from_bits, object_type_id, raise_exception,
+    issubclass_bits, maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception,
     runtime_state, type_of_bits,
 };
 
@@ -108,11 +109,16 @@ fn set_contains(_py: &crate::PyToken<'_>, set_bits: u64, value_bits: u64) -> Res
     }
     let mut found = false;
     for_each_iter_value(_py, set_bits, |entry_bits| {
-        if obj_eq(_py, obj_from_bits(entry_bits), obj_from_bits(value_bits)) {
-            found = true;
-            return Ok(IterVisit::Break);
+        match compare_object_eq_bool(_py, obj_from_bits(entry_bits), obj_from_bits(value_bits)) {
+            CompareBoolOutcome::True => {
+                found = true;
+                Ok(IterVisit::Break)
+            }
+            CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {
+                Ok(IterVisit::Continue)
+            }
+            CompareBoolOutcome::Error => Err(MoltObject::none().bits()),
         }
-        Ok(IterVisit::Continue)
     })?;
     Ok(found)
 }
@@ -1310,6 +1316,10 @@ fn protocol_collect_structural_members(
         b"__doc__",
         b"__annotations__",
         b"__annotate__",
+        // CPython 3.14 typing._SPECIAL_NAMES: these visible type namespace
+        // entries are annotation machinery, never Protocol requirements.
+        b"__annotate_func__",
+        b"__annotations_cache__",
         b"_is_protocol",
         b"_is_runtime_protocol",
         b"__protocol_attrs__",

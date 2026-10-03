@@ -414,12 +414,10 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
     TokenContract(
         "pyproject.toml",
         (
-            "molt.pytest_memory_guard_bootstrap",
             "molt.pytest_memory_guard_config_plugin",
         ),
-        "pytest config must load the startup guard plugin explicitly while "
-        "the package entry point guards console-script pytest before "
-        "conftest loading",
+        "repository pytest config must explicitly load the startup guard "
+        "before conftest loading; installed Molt must not register global hooks",
     ),
     TokenContract(
         "src/molt/pytest_memory_guard_config_plugin.py",

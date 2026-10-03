@@ -3,9 +3,7 @@
 //!
 //! Fake-model harness (own binary: the hook OnceLock is first-wins per
 //! process). Locks the divergences the ledger flagged:
-//! * Contains/Index compared raw handle BITS — equal-but-distinct heap strings
-//!   always missed (silent wrong answer);
-//! * Index returned a bare `-1` on absence (indistinguishable from an error);
+
 //! * Tuple/List fabricated EMPTY results for non-iterables (theater);
 //! * PySequence_SetItem silently MUTATED tuples (CPython: TypeError);
 //! * PySequence_Size(dict) returned a silent -1 (CPython: TypeError, dict has
@@ -229,64 +227,9 @@ fn make_str(text: &str) -> u64 {
 
 use molt_cpython_abi::api::{abstract_mapping, abstract_sequence, errors};
 
-#[test]
-fn contains_and_index_use_value_equality_for_heap_strings() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
-    unsafe { errors::PyErr_Clear() };
-
-    // Two DISTINCT heap str handles with EQUAL bytes — the exact case the
-    // pre-fix raw-bits compare missed.
-    let s_in_list = make_str("dtype");
-    let s_probe = make_str("dtype");
-    assert_ne!(
-        s_in_list, s_probe,
-        "handles must be distinct for this proof"
-    );
-
-    let list_bits = unsafe { fx_alloc_list() };
-    unsafe { fx_list_append(list_bits, s_in_list, std::ptr::null_mut()) };
-    let list = register(list_bits);
-    let probe = register(s_probe);
-
-    assert_eq!(
-        unsafe { abstract_sequence::PySequence_Contains(list, probe) },
-        1,
-        "equal-but-distinct heap strings must match by VALUE (Py_EQ), not bits"
-    );
-    assert_eq!(
-        unsafe { abstract_sequence::PySequence_Index(list, probe) },
-        0,
-        "PySequence_Index must find the value-equal string at index 0"
-    );
-    assert_eq!(
-        unsafe { abstract_sequence::PySequence_Count(list, probe) },
-        1,
-        "PySequence_Count must count the value-equal string"
-    );
-}
-
-#[test]
-fn index_absent_raises_valueerror() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
-    unsafe { errors::PyErr_Clear() };
-
-    let list_bits = unsafe { fx_alloc_list() };
-    unsafe { fx_list_append(list_bits, make_str("present"), std::ptr::null_mut()) };
-    let list = register(list_bits);
-    let probe = register(make_str("absent"));
-
-    let rc = unsafe { abstract_sequence::PySequence_Index(list, probe) };
-    assert_eq!(rc, -1);
-    assert!(
-        !unsafe { errors::PyErr_Occurred() }.is_null(),
-        "CPython raises ValueError 'sequence.index(x): x not in sequence' — a \
-         bare -1 is the pre-fix silent sentinel"
-    );
-    unsafe { errors::PyErr_Clear() };
-}
-
+// Contains/count/index use real runtime protocol ownership. Their former
+// fake-storage cases live in cpython_abi_hooks/inquiry_tests.rs, exercised
+// through both compiled C header transports.
 #[test]
 fn tuple_and_list_of_non_iterable_raise_typeerror_not_empty() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

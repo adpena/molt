@@ -190,7 +190,7 @@ fn pickle_dump_obj(
         out.push('t');
         return Ok(());
     }
-    if type_id == TYPE_ID_LIST {
+    if type_id == TYPE_ID_LIST && unsafe { crate::object::iterable::builtin_receiver(_py, ptr) } {
         let Some(values) = (unsafe {
             crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
         }) else {

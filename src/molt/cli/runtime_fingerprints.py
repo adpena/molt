@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import stat
+from collections.abc import Mapping
 from typing import Any
 
 from molt.cli.atomic_io import _atomic_write_json
@@ -35,6 +36,17 @@ _FIELDS = frozenset(
         "build_identity_scope",
     }
 )
+
+
+def _artifact_semantic_fingerprint(fingerprint: Mapping[str, Any]) -> dict[str, Any]:
+    # Backend inputs_digest is a file-stat acceleration hint, not source content.
+    # Runtime projections validate their compile digest against build_identity,
+    # and include it in hash/rustc already. Reuse and metadata refresh must agree
+    # on the same content, toolchain, configuration, and projection identity.
+    return {
+        key: fingerprint.get(key)
+        for key in ("hash", "rustc", "meta_digest", "build_identity_scope")
+    }
 
 
 def _runtime_fingerprint_payload_is_valid(payload: object) -> bool:
@@ -113,16 +125,7 @@ def _refresh_runtime_fingerprint_metadata(
     if existing is None:
         return
     payload = _fingerprint_payload(fingerprint)
-    if any(
-        existing.get(key) != payload.get(key)
-        for key in (
-            "hash",
-            "rustc",
-            "inputs_digest",
-            "meta_digest",
-            "build_identity_scope",
-        )
-    ):
+    if _artifact_semantic_fingerprint(existing) != _artifact_semantic_fingerprint(payload):
         raise ValueError(
             "artifact metadata refresh cannot change its admitted semantic identity"
         )
@@ -215,9 +218,9 @@ def _artifact_needs_rebuild(
     if not _runtime_fingerprint_payload_is_valid(stored_fingerprint):
         return True
     return any(
-        stored_fingerprint.get(key) != fingerprint.get(key)
-        for key in ("hash", "rustc", "meta_digest", "build_identity_scope")
-        if fingerprint.get(key) is not None
+        stored_fingerprint.get(key) != value
+        for key, value in _artifact_semantic_fingerprint(fingerprint).items()
+        if value is not None
     )
 
 

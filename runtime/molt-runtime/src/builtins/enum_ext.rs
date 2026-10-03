@@ -258,13 +258,19 @@ pub extern "C" fn molt_enum_verify_member(members_bits: u64, value_bits: u64) ->
             if member_value_bits == value_bits {
                 return MoltObject::from_bool(true).bits();
             }
-            // Also compare by value equality for int/float/str.
-            if obj_eq(
+            match crate::object::ops_compare::compare_object_eq_bool(
                 _py,
                 obj_from_bits(member_value_bits),
                 obj_from_bits(value_bits),
             ) {
-                return MoltObject::from_bool(true).bits();
+                crate::object::ops_compare::CompareBoolOutcome::True => {
+                    return MoltObject::from_bool(true).bits();
+                }
+                crate::object::ops_compare::CompareBoolOutcome::Error => {
+                    return MoltObject::none().bits();
+                }
+                crate::object::ops_compare::CompareBoolOutcome::False
+                | crate::object::ops_compare::CompareBoolOutcome::NotComparable => {}
             }
         }
         MoltObject::from_bool(false).bits()
@@ -530,18 +536,40 @@ pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
         };
 
         let result = unsafe {
-            let order = dict_order(dict_ptr);
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                dec_ref_bits(_py, members_bits);
+                return MoltObject::none().bits();
+            }
             let mut found = MoltObject::none().bits();
             let mut i = 0;
-            while i + 1 < order.len() {
-                let key_bits = order[i];
-                let val_bits = order[i + 1];
-                if val_bits == value_bits
-                    || obj_eq(_py, obj_from_bits(val_bits), obj_from_bits(value_bits))
-                {
-                    found = key_bits;
-                    inc_ref_bits(_py, found);
-                    break;
+            loop {
+                let pair = {
+                    let order = dict_order(dict_ptr);
+                    if i + 1 >= order.len() {
+                        break;
+                    }
+                    let pair = (order[i], order[i + 1]);
+                    inc_ref_bits(_py, pair.0);
+                    inc_ref_bits(_py, pair.1);
+                    pair
+                };
+                let outcome = crate::object::ops_compare::compare_object_eq_bool(
+                    _py, obj_from_bits(pair.1), obj_from_bits(value_bits),
+                );
+                dec_ref_bits(_py, pair.1);
+                match outcome {
+                    crate::object::ops_compare::CompareBoolOutcome::True => {
+                        found = pair.0;
+                        break;
+                    }
+                    crate::object::ops_compare::CompareBoolOutcome::Error => {
+                        dec_ref_bits(_py, pair.0);
+                        break;
+                    }
+                    crate::object::ops_compare::CompareBoolOutcome::False
+                    | crate::object::ops_compare::CompareBoolOutcome::NotComparable => {
+                        dec_ref_bits(_py, pair.0);
+                    }
                 }
                 i += 2;
             }

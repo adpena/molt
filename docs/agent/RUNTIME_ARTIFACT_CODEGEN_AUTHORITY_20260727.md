@@ -29,8 +29,8 @@ option and rejects selection after Cargo's `--` separator.
 | WASM shared runtime | `cdylib` |
 | combined split-runtime build | `staticlib,cdylib` |
 
-The selected artifact set is folded into the existing runtime fingerprint
-metadata. Native-link source attestations, session verification, target
+The selected artifact set is folded into the canonical runtime build identity.
+Native generation admission, native-link source attestations, target
 fingerprints, and shared WASM caches therefore cannot reuse an artifact whose
 producer selected a different crate-type set. Publication and build identity
 remain owned by their existing authorities; this module owns only producer
@@ -127,17 +127,132 @@ selectors outside response files use the typed Cargo plan's file/tree closure.
 Native linkage uses manifest v5 and portable dependency custody v2. Bundle v3
 derives its target from the runtime receipt; extraction never guesses target
 semantics from the receiving host. Producer directories are not link inputs.
+Source-native publication uses `runtime_native_generation.py`: the archive,
+link manifest and optional dependency custody archive are staged, validated and
+published as one immutable content-addressed directory. The mutable Cargo
+coordinate holds only a selection receipt. Reuse captures candidate members,
+then current build inputs once, and closes the member fences. A build acquires
+the existing build lock before its input capture and recaptures inputs once
+after staging, before publication. Final link retains its independent input
+capture and generation fences. Mutable archive aliases, standalone native
+fingerprints, process session admission and manifest-only refresh no longer
+authorize native consumers. Installed cells share atomic directory publication
+while retaining their separate signed-cell admission and never invoking Cargo.
 WASM generation v3 and expected-pair v2 bind both members to one family, retain
 stable file identities through final-link snapshotting, and share the resolved
 linker/archive selection with build capture. Export-only member changes retain
 the static-library compile identity. The deleted per-member Cargo builder and
 metadata-only runtime fingerprint are not fallback authorities.
 
+WASM linker output arguments separate the published module name from the physical
+staging path through `wasm_link_args.wasm_link_output_arguments`. Runtime reloc
+members, linked programs and split applications set lld's module name from their
+publication filename. Unique transaction paths remain the write destinations;
+they never enter the module-name subsection. Function and local debug names stay
+intact. Content identity still includes every emitted byte, and publication-source
+changes still invalidate the appropriate receipts.
+
+The WASM codegen binding derives its cache digest from the admitted shared and
+relocatable member hashes, with distinct roles. Build provenance remains the
+admission authority; changing a receipt or its storage coordinate alone does not
+invalidate byte-identical app inputs. Final-link fingerprints likewise include
+both runtime members as content inputs and keep receipt transport outside the
+code-generating command identity. Cache hits still require fresh pair admission;
+executed links receive the exact generation and expected-identity receipts.
+
+Native callable codegen retains an operation-owned binding to its admitted
+runtime build identity, archive generation, and callable-file generation. Final
+link admission validates that same archive and manifest, resolves current Cargo
+configuration and every source/tool/Python input afresh, and rejects drift. It
+does not silently rebuild or select a different runtime after app codegen. The
+link consumer keeps the generation fences through actual execution and cached
+link reuse. Native object outputs pass the same final identity capture and
+close their generation fences after object preparation. The binding is neither
+a portable receipt nor a live-probe cache.
+
+Native `--emit obj` uses a private stage beside the requested output, from
+backend setup and cache synchronization through object validation and final
+codegen-binding admission. Only an admitted object atomically replaces the
+requested output. Failed builds preserve an existing output and reclaim the
+owned stage and its synchronization receipt.
+
+Callable projection first derives immutable bytes and the semantic cache digest
+from the same archive-derived symbol tuple. It captures the materialized file
+generation, checks its SHA256 against those known bytes, and carries that exact
+identity into codegen binding. Reopening a returned path cannot establish a
+different expected digest. Mutation before capture fails the known-content
+comparison; mutation after projection returns fails the retained identity fence.
+Content-addressed projections use exclusive publication. Concurrent creators
+admit the winning file's bytes and generation without replacing it. Existing
+corruption or unreadable content fails closed instead of rewriting a generation
+that another build may already have bound.
+
+The binding owns both the callable-file identity and semantic cache digest.
+Cache setup, dispatch, daemon probes/full requests, and one-shot subprocesses
+take that binding explicitly. Native daemon request construction rejects a
+missing binding before serialization. Operation-local environments discard any
+ambient callable path/SHA and project the bound pair; staging never mutates
+process-global environment. The content SHA and semantic digest contribute to
+cache identity, while the materialized path does not. Native batch children
+inherit the admitted environment of their one-shot backend or serialized
+daemon request. The shared Rust loader reads
+once, hashes that buffer against the independently supplied digest, and parses
+those exact admitted bytes before resolver codegen. Missing, malformed or
+mismatched digests and unreadable/invalid input fail closed, including optional
+LLVM consumers. Filenames are not digest evidence. Both absent inputs remain
+available only to callers that do not require runtime callables; required
+production resolvers still reject absence.
+
 Live family resolution always captures the selected toolchain. Portable toolchain
 manifests are projections of that capture, never substituted as live inputs.
+Within a capture, exact recursively immutable build identities and toolchain
+manifests are validated once at construction and reused by their consumers.
+Their owned Python, toolchain and manifest subgraphs retain successful schema
+admissions for that graph's lifetime; target-dependent admission includes the
+target. Native and WASM members share those facts without repeating Python
+closure validation. Manifest capture and projection freeze one payload for
+canonical hashing and admission. Success markers never enter serialized data;
+foreign mappings and subclasses cannot supply them, and failures are not cached.
+Owned graphs require exact immutable JSON scalar types and exact string keys;
+scalar subclasses are rejected without invoking conversion callbacks.
+Wire mappings still receive full schema and digest admission, and serialized
+payloads remain detached. This reuse neither caches live source discovery nor
+replaces pre/post source, toolchain, or artifact-content checks.
+The frozen JSON authority owns its descendants and shares them across family
+members. Canonical derivation uses the existing exact JSON encoder and retains
+only requested scalar hashes on those immutable nodes; it does not retain a
+second wire graph or canonical byte buffer. Caller-owned mappings, including
+mapping proxies and subclasses, are copied before admission. Mutable wire
+exports remain detached, and new live captures always receive fresh validation.
+Native-link and WASM-generation admission compare recorded identities against
+the caller's already-admitted exact identity through the same receipt authority.
+The complete outer shape, scalar digests and canonical payload digest must match;
+a matching claim reuses the trusted immutable owner instead of revalidating its
+Python and toolchain descendants. Changed or self-resealed claims fail. Reads
+without an expected identity still perform full semantic admission. Artifact
+bytes and live build inputs retain their independent mutation checks.
 The pair and final-preflight consumers capture once, then publish that projection;
 `runtime_family_identity` measures the complete pre/post capture without counting
 an independent toolchain-provision pass.
+Runtime source and sysroot trees hash through the same no-follow, open-handle
+transaction as archives and tools. Tree enumeration keeps its mutation snapshot;
+the shared handle authority checks file identity and content-change time before
+reading and through completion, including same-size writes with restored mtimes.
+Tree capture does not implement another path-reopening mutation guard or alias
+classifier, and new admissions still enumerate and hash their live input closure.
+Native, shared/relocatable WASM, and standalone WASM ABI resolvers capture the
+union of runtime source and build-tooling roots in one `RuntimeTreeIndex` per
+live resolution. The index projects distinct source and publication receipts
+with their existing logical labels, required tooling roots, and optional source
+roots. Callers cannot supply an independently captured publication authority.
+Source changes still affect compile identity; tooling-only changes affect the
+family publication identity. The index never survives into a later resolution:
+post-build admission and final native link both enumerate and hash afresh,
+including newly added files. Snapshot and hash passes dispatch batches of at most
+32 files under the same worker and memory ceiling, retaining ordered results
+and per-file no-follow/ChangeTime checks. Smaller closures use smaller batches
+to retain parallelism. Neither tree bytes nor membership use a process-global
+cache.
 Cargo tool and wrapper records project the already-captured executable custody;
 building the family receipt does not hash those same executables again.
 Native-executable admission remains part of that capture, including distinct
@@ -176,8 +291,8 @@ before member retention and staged identities survive to publication. Every
 operational WASM builder failure, including the standalone CPython ABI provider,
 uses the same bounded evidence model; JSON mode retains subprocess output,
 timeouts, identity drift, and evidence-write errors.
-Native build and manifest-refresh timeouts retain partial streams as well.
-Native fingerprint publication and refresh fail admission on write errors;
+Native build timeouts retain partial streams as well.
+Native generation and selector publication fail admission on write errors;
 failure-evidence persistence errors remain visible even without attached state.
 
 Backend probe receipts, object-cache variants and daemon selection likewise use

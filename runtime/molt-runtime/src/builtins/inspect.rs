@@ -1,11 +1,10 @@
 use molt_obj_model::MoltObject;
 
 use crate::call::function::function_code_execution_kind;
-use crate::object::HEADER_FLAG_COROUTINE;
 use crate::object::layout::CodeExecutionKind;
 use crate::{
-    TYPE_ID_FUNCTION, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TYPE, alloc_dict_with_pairs,
-    alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes, call_callable1, dec_ref_bits,
+    TYPE_ID_FUNCTION, TYPE_ID_STRING, TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_list,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, call_callable1, dec_ref_bits,
     decode_value_list, exception_pending, int_bits_from_i64, is_truthy, maybe_ptr_from_bits,
     missing_bits, molt_dir_builtin, molt_getattr_builtin, obj_from_bits, object_type_id,
     raise_exception, string_obj_to_owned, to_i64, type_of_bits,
@@ -16,6 +15,19 @@ fn get_attr_optional(
     obj_bits: u64,
     name: &[u8],
 ) -> Result<Option<u64>, u64> {
+    // Internal signature inspection reads the typed binder owner, not public
+    // attributes with compiler-private spellings. Wrapped objects retain their
+    // normal Python observation path.
+    if crate::call::function::FunctionBindingField::from_name(name).is_some()
+        && let Some(pointer) = obj_from_bits(obj_bits).as_ptr()
+        && unsafe { object_type_id(pointer) } == TYPE_ID_FUNCTION
+    {
+        let value = unsafe { crate::object::function_metadata::metadata_bits(pointer, name) };
+        if let Some(bits) = value {
+            crate::inc_ref_bits(_py, bits);
+        }
+        return Ok(value);
+    }
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
     };
@@ -83,7 +95,12 @@ fn code_flags_from_attr(
     result
 }
 
-fn callable_execution_kind(obj_bits: u64) -> Option<CodeExecutionKind> {
+fn callable_execution_kind(py: &crate::PyToken<'_>, obj_bits: u64) -> Option<CodeExecutionKind> {
+    let class = type_of_bits(py, obj_bits);
+    let classes = crate::builtin_classes(py);
+    if class != classes.function && class != crate::builtins::types::method_class(py) {
+        return None;
+    }
     let mut ptr = maybe_ptr_from_bits(obj_bits)?;
     unsafe {
         if object_type_id(ptr) == crate::TYPE_ID_BOUND_METHOD {
@@ -471,6 +488,24 @@ struct ParsedTextSignature {
     vararg: Option<String>,
     varkw: Option<String>,
     posonly_cut: usize,
+    implicit_receiver: bool,
+}
+
+impl ParsedTextSignature {
+    /// Argument Clinic's `$` marker declares an implicit receiver. Whether it
+    /// is removed comes from the callable's actual binding, never its spelling.
+    fn bind_receiver(&mut self, bound: bool) {
+        if !self.implicit_receiver {
+            return;
+        }
+        if bound {
+            self.params.remove(0);
+            self.posonly_cut = self.posonly_cut.saturating_sub(1);
+        } else {
+            self.posonly_cut = self.posonly_cut.max(1);
+        }
+        self.implicit_receiver = false;
+    }
 }
 
 fn split_text_signature_tokens(payload: &str) -> Option<Vec<String>> {
@@ -651,6 +686,23 @@ fn parse_text_signature(text: &str) -> Option<ParsedTextSignature> {
         if name.is_empty() {
             return None;
         }
+        let name = if let Some(receiver) = name.strip_prefix('$') {
+            if receiver.is_empty()
+                || !parsed.params.is_empty()
+                || kwonly
+                || saw_posonly_marker
+                || parsed.implicit_receiver
+            {
+                return None;
+            }
+            parsed.implicit_receiver = true;
+            receiver
+        } else {
+            name
+        };
+        if name.contains('$') {
+            return None;
+        }
         let kind = if kwonly {
             TextParamKind::KeywordOnly
         } else {
@@ -737,8 +789,10 @@ fn default_value_bits(
     }
 }
 
-fn signature_payload_from_text_signature(_py: &crate::PyToken<'_>, text: &str) -> Option<u64> {
-    let parsed = parse_text_signature(text)?;
+fn signature_payload_from_parsed_text(
+    _py: &crate::PyToken<'_>,
+    parsed: ParsedTextSignature,
+) -> Option<u64> {
     let mut owned: Vec<u64> = Vec::new();
 
     let positional_params: Vec<&TextParamSpec> = parsed
@@ -881,7 +935,18 @@ fn signature_payload_from_text_attr(
         return Ok(None);
     };
     dec_ref_bits(_py, attr_bits);
-    Ok(signature_payload_from_text_signature(_py, &text))
+    let Some(mut parsed) = parse_text_signature(&text) else {
+        return Ok(None);
+    };
+    if parsed.implicit_receiver {
+        let receiver = get_attr_optional(_py, obj_bits, b"__self__")?;
+        let bound = receiver.is_some_and(|bits| !obj_from_bits(bits).is_none());
+        if let Some(bits) = receiver {
+            dec_ref_bits(_py, bits);
+        }
+        parsed.bind_receiver(bound);
+    }
+    Ok(signature_payload_from_parsed_text(_py, parsed))
 }
 
 fn inspect_cleandoc_text(text: &str) -> String {
@@ -966,14 +1031,14 @@ fn inspect_cleandoc_impl(_py: &crate::PyToken<'_>, doc_bits: u64) -> u64 {
 pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let builtins = crate::builtins::classes::builtin_classes(_py);
-        let is_builtin_fn = builtins.is_builtin_callable_class(type_of_bits(_py, obj_bits));
+        let is_builtin_fn = builtins.is_native_callable_class(type_of_bits(_py, obj_bits));
 
         // Prefer `__text_signature__` when present (CPython parity), but only for objects where
         // CPython uses it for signature discovery (builtin functions and types). Avoid inheriting
         // `object.__text_signature__` across arbitrary instances.
         if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
             let type_id = unsafe { object_type_id(ptr) };
-            if type_id == TYPE_ID_FUNCTION || type_id == TYPE_ID_TYPE {
+            if is_builtin_fn || type_id == TYPE_ID_FUNCTION || type_id == TYPE_ID_TYPE {
                 let sig_from_text =
                     match signature_payload_from_text_attr(_py, obj_bits, b"__text_signature__") {
                         Ok(value) => value,
@@ -983,6 +1048,10 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
                     return sig_bits;
                 }
             }
+        }
+
+        if is_builtin_fn {
+            return raise_exception(_py, "ValueError", "no signature found for builtin callable");
         }
 
         // For Molt-defined (non-builtin) functions, prefer compiler-provided signature metadata.
@@ -1158,18 +1227,8 @@ pub extern "C" fn molt_inspect_getmembers(obj_bits: u64, predicate_bits: u64) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isfunction(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let has_code = match has_attr(_py, obj_bits, b"__code__") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        if has_code {
-            return MoltObject::from_bool(true).bits();
-        }
-        let has_molt_args = match has_attr(_py, obj_bits, b"__molt_arg_names__") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        MoltObject::from_bool(has_molt_args).bits()
+        MoltObject::from_bool(type_of_bits(_py, obj_bits) == crate::builtin_classes(_py).function)
+            .bits()
     })
 }
 
@@ -1205,27 +1264,17 @@ pub extern "C" fn molt_inspect_ismodule(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_iscoroutine(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
-            unsafe {
-                if object_type_id(ptr) == TYPE_ID_OBJECT {
-                    let header = crate::header_from_obj_ptr(ptr);
-                    if ((*header).load_metadata_flags() & HEADER_FLAG_COROUTINE) != 0 {
-                        return MoltObject::from_bool(true).bits();
-                    }
-                }
-            }
-        }
-
-        // Public introspection attributes are not native coroutine identity.
-        // In particular, types._GeneratorWrapper deliberately exposes cr_*.
-        MoltObject::from_bool(false).bits()
+        MoltObject::from_bool(crate::async_rt::generators::is_native_coroutine_bits(
+            obj_bits,
+        ))
+        .bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_iscoroutinefunction(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Some(kind) = callable_execution_kind(obj_bits) {
+        if let Some(kind) = callable_execution_kind(_py, obj_bits) {
             return MoltObject::from_bool(kind == CodeExecutionKind::Coroutine).bits();
         }
         let flags = match code_flags_from_attr(_py, obj_bits, b"__code__") {
@@ -1239,7 +1288,7 @@ pub extern "C" fn molt_inspect_iscoroutinefunction(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isasyncgenfunction(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Some(kind) = callable_execution_kind(obj_bits) {
+        if let Some(kind) = callable_execution_kind(_py, obj_bits) {
             return MoltObject::from_bool(kind == CodeExecutionKind::AsyncGenerator).bits();
         }
         let flags = match code_flags_from_attr(_py, obj_bits, b"__code__") {
@@ -1253,7 +1302,7 @@ pub extern "C" fn molt_inspect_isasyncgenfunction(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isgeneratorfunction(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Some(kind) = callable_execution_kind(obj_bits) {
+        if let Some(kind) = callable_execution_kind(_py, obj_bits) {
             return MoltObject::from_bool(kind == CodeExecutionKind::Generator).bits();
         }
         let flags = match code_flags_from_attr(_py, obj_bits, b"__code__") {
@@ -1264,21 +1313,15 @@ pub extern "C" fn molt_inspect_isgeneratorfunction(obj_bits: u64) -> u64 {
     })
 }
 
+/// The native portion of inspect.isawaitable. The stdlib owns the live
+/// collections.abc.Awaitable check, including registered virtual subclasses.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_isawaitable(obj_bits: u64) -> u64 {
+pub extern "C" fn molt_inspect_isnativeawaitable(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let has_await = match has_attr(_py, obj_bits, b"__await__") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        if has_await {
-            return MoltObject::from_bool(true).bits();
-        }
-        let flags = match code_flags_from_attr(_py, obj_bits, b"gi_code") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        MoltObject::from_bool((flags & 0x100) != 0).bits()
+        MoltObject::from_bool(
+            crate::async_rt::generators::is_native_python_awaitable_bits(obj_bits),
+        )
+        .bits()
     })
 }
 
@@ -1397,6 +1440,68 @@ pub extern "C" fn molt_inspect_getcoroutinestate(coro_bits: u64) -> u64 {
         }
         state_string(_py, b"CORO_SUSPENDED")
     })
+}
+
+#[cfg(test)]
+mod text_signature_tests {
+    use super::*;
+
+    #[test]
+    fn clinic_receiver_binding_preserves_cpython_parameter_boundaries() {
+        // CPython 3.12/3.13/3.14 observations: module-bound builtins,
+        // bound methods and unbound descriptors use the same Clinic marker.
+        for (text, bound, names, posonly) in [
+            (
+                "($module, source, globals=None, locals=None, /)",
+                true,
+                vec!["source", "globals", "locals"],
+                3,
+            ),
+            (
+                "($module, source, /, globals=None, locals=None)",
+                true,
+                vec!["source", "globals", "locals"],
+                1,
+            ),
+            (
+                "($module, /, base, exp, mod=None)",
+                true,
+                vec!["base", "exp", "mod"],
+                0,
+            ),
+            ("($self, object, /)", true, vec!["object"], 1),
+            ("($self, object, /)", false, vec!["self", "object"], 2),
+            (
+                "($type, iterable, value=None, /)",
+                true,
+                vec!["iterable", "value"],
+                2,
+            ),
+            ("($self, value)", false, vec!["self", "value"], 1),
+            ("(self, value)", true, vec!["self", "value"], 0),
+        ] {
+            let mut parsed = parse_text_signature(text).unwrap();
+            parsed.bind_receiver(bound);
+            assert_eq!(
+                parsed
+                    .params
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>(),
+                names
+            );
+            assert_eq!(parsed.posonly_cut, posonly);
+        }
+        let mut variadic = parse_text_signature("($module, /, *args, **kws)").unwrap();
+        variadic.bind_receiver(true);
+        assert!(variadic.params.is_empty());
+        assert_eq!(variadic.posonly_cut, 0);
+        assert_eq!(variadic.vararg.as_deref(), Some("args"));
+        assert_eq!(variadic.varkw.as_deref(), Some("kws"));
+        for malformed in ["($)", "(x, $self)", "($self, $other)", "(*, $self)"] {
+            assert!(parse_text_signature(malformed).is_none(), "{malformed}");
+        }
+    }
 }
 
 #[cfg(test)]
