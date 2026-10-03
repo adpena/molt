@@ -2,7 +2,13 @@
 
 use crate::randomness::{fill_os_random, os_random_supported};
 use crate::*;
+use molt_cpython_abi::abi_types::{Py_hash_t, Py_uhash_t};
 use molt_obj_model::MoltObject;
+use molt_obj_model::hash_policy::{self, TupleHashAccumulator, normalize_hash as fix_hash};
+pub(crate) use molt_obj_model::hash_policy::{
+    PY_HASH_BITS, PY_HASH_IMAG, PY_HASH_INF, PY_HASH_MODULUS, PY_HASH_NAN, PY_HASH_NONE,
+    PY_HASH_WIDTH, hash_int, hash_pointer,
+};
 use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive};
@@ -13,10 +19,12 @@ pub(crate) struct HashSecret {
     k1: u64,
 }
 
-const PY_HASH_BITS: u32 = 61;
-const PY_HASH_MODULUS: u64 = (1u64 << PY_HASH_BITS) - 1;
-pub(crate) const PY_HASH_INF: i64 = 314_159;
-const PY_HASH_NONE: i64 = 0xfca86420;
+// Algorithm metadata stays next to its implementation; the pure object policy
+// above owns target widths and the numeric/aggregate primitives.
+pub(crate) const PY_HASH_ALGORITHM: &str = "siphash13";
+pub(crate) const PY_HASH_ALGORITHM_BITS: u32 = u64::BITS;
+pub(crate) const PY_HASH_SEED_BITS: u32 = 2 * u64::BITS;
+pub(crate) const PY_HASH_CUTOFF: u32 = 0;
 const PY_HASHSEED_MAX: u64 = 4_294_967_295;
 
 static HASH_MODULUS_BIG: OnceLock<BigInt> = OnceLock::new();
@@ -216,29 +224,6 @@ impl SipHasher13 {
     }
 }
 
-fn fix_hash(hash: i64) -> i64 {
-    if hash == -1 { -2 } else { hash }
-}
-
-fn exp_mod(exp: i32) -> u32 {
-    if exp >= 0 {
-        (exp as u32) % PY_HASH_BITS
-    } else {
-        PY_HASH_BITS - 1 - ((-1 - exp) as u32 % PY_HASH_BITS)
-    }
-}
-
-fn pow2_mod(exp: u32) -> u64 {
-    let mut value = 1u64;
-    for _ in 0..exp {
-        value <<= 1;
-        if value >= PY_HASH_MODULUS {
-            value -= PY_HASH_MODULUS;
-        }
-    }
-    value
-}
-
 fn reduce_mersenne(mut value: u128) -> u64 {
     let mask = PY_HASH_MODULUS as u128;
     value = (value & mask) + (value >> PY_HASH_BITS);
@@ -251,29 +236,6 @@ fn reduce_mersenne(mut value: u128) -> u64 {
 
 fn mul_mod_mersenne(lhs: u64, rhs: u64) -> u64 {
     reduce_mersenne((lhs as u128) * (rhs as u128))
-}
-
-fn frexp(value: f64) -> (f64, i32) {
-    if value == 0.0 {
-        return (0.0, 0);
-    }
-    let bits = value.to_bits();
-    let mut exp = ((bits >> 52) & 0x7ff) as i32;
-    let mut mant = bits & ((1u64 << 52) - 1);
-    if exp == 0 {
-        let mut e = -1022;
-        while mant & (1u64 << 52) == 0 {
-            mant <<= 1;
-            e -= 1;
-        }
-        exp = e;
-        mant &= (1u64 << 52) - 1;
-    } else {
-        exp -= 1022;
-    }
-    let frac_bits = (1022u64 << 52) | mant;
-    let frac = f64::from_bits(frac_bits);
-    (frac, exp)
 }
 
 fn hash_bytes_with_secret(bytes: &[u8], secret: &HashSecret) -> i64 {
@@ -509,7 +471,9 @@ unsafe fn simd_max_byte_wasm32(bytes: &[u8]) -> u32 {
     }
 }
 
-fn hash_string(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
+// Object consumers may call this only after proving the exact str hash
+// protocol. The object state remains the single string-hash cache.
+pub(super) fn hash_string(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let cached = super::object_state(ptr);
     if cached != 0 {
         return cached.wrapping_sub(1);
@@ -529,32 +493,6 @@ fn hash_bytes_cached(_py: &PyToken<'_>, ptr: *mut u8, bytes: &[u8]) -> i64 {
     let hash = hash_bytes(_py, bytes);
     super::object_set_state(ptr, hash.wrapping_add(1));
     hash
-}
-
-pub(crate) fn hash_int(val: i64) -> i64 {
-    // Fast path: for values whose magnitude fits within PY_HASH_MODULUS
-    // (which includes all 47-bit inline NaN-boxed ints), skip the i128
-    // modulus arithmetic entirely.
-    if val >= 0 && (val as u64) < PY_HASH_MODULUS {
-        return val; // val >= 0 so val != -1, fix_hash not needed
-    }
-    if val < 0 && val != i64::MIN {
-        let mag = (-val) as u64;
-        if mag < PY_HASH_MODULUS {
-            return fix_hash(val); // fix_hash handles -1 -> -2
-        }
-    }
-    let mut mag = val as i128;
-    let sign = if mag < 0 { -1 } else { 1 };
-    if mag < 0 {
-        mag = -mag;
-    }
-    let modulus = PY_HASH_MODULUS as i128;
-    let mut hash = (mag % modulus) as i64;
-    if sign < 0 {
-        hash = -hash;
-    }
-    fix_hash(hash)
 }
 
 fn hash_bigint(ptr: *mut u8) -> i64 {
@@ -605,7 +543,7 @@ fn pow_mod_mersenne(mut base: u64, mut exp: u64) -> u64 {
 }
 
 /// Modular inverse of `q mod _PyHASH_MODULUS` via Fermat's little theorem
-/// (`_PyHASH_MODULUS` is the Mersenne prime `2**61 - 1`), i.e. `q^(M-2) mod M`.
+/// (`_PyHASH_MODULUS` is the target Mersenne prime), i.e. `q^(M-2) mod M`.
 /// `q_mod` must be reduced and non-zero (the caller guarantees `denominator`
 /// is not divisible by the modulus before calling).
 #[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
@@ -625,7 +563,7 @@ fn modinv_mersenne(q_mod: u64) -> u64 {
 /// return -2 if result == -1 else result
 /// ```
 ///
-/// `M == _PyHASH_MODULUS == 2**61 - 1`. This is the single shared authority for
+/// `M == _PyHASH_MODULUS` (61 or 31 bits). This is the shared authority for
 /// the cross-type invariant `hash(1) == hash(1.0) == hash(Fraction(1)) ==
 /// hash(Decimal(1))` and `hash(Fraction(3, 2)) == hash(1.5)`.
 #[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
@@ -674,94 +612,25 @@ pub(crate) fn py_decimal_hash(coefficient: &BigInt, exp10: i64) -> i64 {
 }
 
 fn hash_float(val: f64) -> i64 {
-    if val.is_nan() {
-        return 0;
-    }
-    if val.is_infinite() {
-        return if val.is_sign_positive() {
-            PY_HASH_INF
-        } else {
-            -PY_HASH_INF
-        };
-    }
-    if val == 0.0 {
-        return 0;
-    }
-    let value = val.abs();
-    let mut sign = 1i64;
-    if val.is_sign_negative() {
-        sign = -1;
-    }
-    let (mut frac, mut exp) = frexp(value);
-    let mut hash = 0u64;
-    while frac != 0.0 {
-        frac *= (1u64 << 28) as f64;
-        let intpart = frac as u64;
-        frac -= intpart as f64;
-        hash = ((hash << 28) & PY_HASH_MODULUS) | intpart;
-        exp -= 28;
-    }
-    let exp = exp_mod(exp);
-    hash = mul_mod_mersenne(hash, pow2_mod(exp));
-    let hash = (hash as i64) * sign;
-    fix_hash(hash)
+    hash_policy::hash_float(val, PY_HASH_NAN)
 }
 
 fn hash_complex(re: f64, im: f64) -> i64 {
-    let re_hash = hash_float(re);
-    let im_hash = hash_float(im);
-    let mut hash = re_hash.wrapping_add(im_hash.wrapping_mul(1000003));
-    if hash == -1 {
-        hash = -2;
-    }
-    hash
+    hash_policy::combine_complex_hashes(hash_float(re), hash_float(im))
 }
 
 fn hash_tuple(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     unsafe {
         crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
-            #[cfg(target_pointer_width = "64")]
-            {
-                const XXPRIME_1: u64 = 11400714785074694791;
-                const XXPRIME_2: u64 = 14029467366897019727;
-                const XXPRIME_5: u64 = 2870177450012600261;
-                let mut acc = XXPRIME_5;
-                for &elem in elems.iter() {
-                    let lane = hash_bits_signed(_py, elem);
-                    if exception_pending(_py) {
-                        return 0;
-                    }
-                    acc = acc.wrapping_add((lane as u64).wrapping_mul(XXPRIME_2));
-                    acc = acc.rotate_left(31);
-                    acc = acc.wrapping_mul(XXPRIME_1);
+            let mut acc = TupleHashAccumulator::new();
+            for &elem in elems.iter() {
+                let lane = hash_bits_signed(_py, elem);
+                if exception_pending(_py) {
+                    return 0;
                 }
-                acc = acc.wrapping_add((elems.len() as u64) ^ (XXPRIME_5 ^ 3527539));
-                if acc == u64::MAX {
-                    return 1546275796;
-                }
-                acc as i64
+                acc.push(lane);
             }
-            #[cfg(target_pointer_width = "32")]
-            {
-                const XXPRIME_1: u32 = 2654435761;
-                const XXPRIME_2: u32 = 2246822519;
-                const XXPRIME_5: u32 = 374761393;
-                let mut acc = XXPRIME_5;
-                for &elem in elems.iter() {
-                    let lane = hash_bits_signed(_py, elem);
-                    if exception_pending(_py) {
-                        return 0;
-                    }
-                    acc = acc.wrapping_add((lane as u32).wrapping_mul(XXPRIME_2));
-                    acc = acc.rotate_left(13);
-                    acc = acc.wrapping_mul(XXPRIME_1);
-                }
-                acc = acc.wrapping_add((elems.len() as u32) ^ (XXPRIME_5 ^ 3527539));
-                if acc == u32::MAX {
-                    return 1546275796;
-                }
-                (acc as i32) as i64
-            }
+            acc.finish_tuple(elems.len())
         })
         .unwrap_or(0)
     }
@@ -774,187 +643,51 @@ fn hash_dataclass_fields(
     field_names: &[String],
     type_label: &str,
 ) -> i64 {
-    #[cfg(target_pointer_width = "64")]
-    {
-        const XXPRIME_1: u64 = 11400714785074694791;
-        const XXPRIME_2: u64 = 14029467366897019727;
-        const XXPRIME_5: u64 = 2870177450012600261;
-        let mut acc = XXPRIME_5;
-        let mut count = 0usize;
-        for (idx, &elem) in fields.iter().enumerate() {
-            let flag = flags.get(idx).copied().unwrap_or(0x7);
-            if (flag & 0x4) == 0 {
-                continue;
-            }
-            if is_missing_bits(_py, elem) {
-                let name = field_names.get(idx).map(|s| s.as_str()).unwrap_or("field");
-                let _ = attr_error(_py, type_label, name);
-                return 0;
-            }
-            count += 1;
-            let lane = hash_bits_signed(_py, elem);
-            if exception_pending(_py) {
-                return 0;
-            }
-            acc = acc.wrapping_add((lane as u64).wrapping_mul(XXPRIME_2));
-            acc = acc.rotate_left(31);
-            acc = acc.wrapping_mul(XXPRIME_1);
+    let mut acc = TupleHashAccumulator::new();
+    let mut count = 0usize;
+    for (idx, &elem) in fields.iter().enumerate() {
+        let flag = flags.get(idx).copied().unwrap_or(0x7);
+        if (flag & 0x4) == 0 {
+            continue;
         }
-        acc = acc.wrapping_add((count as u64) ^ (XXPRIME_5 ^ 3527539));
-        if acc == u64::MAX {
-            return 1546275796;
+        if is_missing_bits(_py, elem) {
+            let name = field_names.get(idx).map(|s| s.as_str()).unwrap_or("field");
+            let _ = attr_error(_py, type_label, name);
+            return 0;
         }
-        acc as i64
+        count += 1;
+        let lane = hash_bits_signed(_py, elem);
+        if exception_pending(_py) {
+            return 0;
+        }
+        acc.push(lane);
     }
-    #[cfg(target_pointer_width = "32")]
-    {
-        const XXPRIME_1: u32 = 2654435761;
-        const XXPRIME_2: u32 = 2246822519;
-        const XXPRIME_5: u32 = 374761393;
-        let mut acc = XXPRIME_5;
-        let mut count = 0usize;
-        for (idx, &elem) in fields.iter().enumerate() {
-            let flag = flags.get(idx).copied().unwrap_or(0x7);
-            if (flag & 0x4) == 0 {
-                continue;
-            }
-            if is_missing_bits(_py, elem) {
-                let name = field_names.get(idx).map(|s| s.as_str()).unwrap_or("field");
-                let _ = attr_error(_py, type_label, name);
-                return 0;
-            }
-            count += 1;
-            let lane = hash_bits_signed(_py, elem);
-            if exception_pending(_py) {
-                return 0;
-            }
-            acc = acc.wrapping_add((lane as u32).wrapping_mul(XXPRIME_2));
-            acc = acc.rotate_left(13);
-            acc = acc.wrapping_mul(XXPRIME_1);
-        }
-        acc = acc.wrapping_add((count as u32) ^ (XXPRIME_5 ^ 3527539));
-        if acc == u32::MAX {
-            return 1546275796;
-        }
-        (acc as i32) as i64
-    }
+    acc.finish_tuple(count)
 }
 
 fn hash_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let origin_bits = unsafe { generic_alias_origin_bits(ptr) };
     let args_bits = unsafe { generic_alias_args_bits(ptr) };
-    #[cfg(target_pointer_width = "64")]
-    {
-        const XXPRIME_1: u64 = 11400714785074694791;
-        const XXPRIME_2: u64 = 14029467366897019727;
-        const XXPRIME_5: u64 = 2870177450012600261;
-        let mut acc = XXPRIME_5;
-        for lane_bits in [origin_bits, args_bits] {
-            let lane = hash_bits_signed(_py, lane_bits);
-            if exception_pending(_py) {
-                return 0;
-            }
-            acc = acc.wrapping_add((lane as u64).wrapping_mul(XXPRIME_2));
-            acc = acc.rotate_left(31);
-            acc = acc.wrapping_mul(XXPRIME_1);
+    let mut acc = TupleHashAccumulator::new();
+    for lane_bits in [origin_bits, args_bits] {
+        let lane = hash_bits_signed(_py, lane_bits);
+        if exception_pending(_py) {
+            return 0;
         }
-        acc = acc.wrapping_add(2u64 ^ (XXPRIME_5 ^ 3527539));
-        if acc == u64::MAX {
-            return 1546275796;
-        }
-        acc as i64
+        acc.push(lane);
     }
-    #[cfg(target_pointer_width = "32")]
-    {
-        const XXPRIME_1: u32 = 2654435761;
-        const XXPRIME_2: u32 = 2246822519;
-        const XXPRIME_5: u32 = 374761393;
-        let mut acc = XXPRIME_5;
-        for lane_bits in [origin_bits, args_bits] {
-            let lane = hash_bits_signed(_py, lane_bits);
-            if exception_pending(_py) {
-                return 0;
-            }
-            acc = acc.wrapping_add((lane as u32).wrapping_mul(XXPRIME_2));
-            acc = acc.rotate_left(13);
-            acc = acc.wrapping_mul(XXPRIME_1);
-        }
-        acc = acc.wrapping_add(2u32 ^ (XXPRIME_5 ^ 3527539));
-        if acc == u32::MAX {
-            return 1546275796;
-        }
-        (acc as i32) as i64
-    }
+    acc.finish_tuple(2)
 }
 
 fn hash_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let args_bits = unsafe { union_type_args_bits(ptr) };
-    #[cfg(target_pointer_width = "64")]
-    {
-        const XXPRIME_1: u64 = 11400714785074694791;
-        const XXPRIME_2: u64 = 14029467366897019727;
-        const XXPRIME_5: u64 = 2870177450012600261;
-        let lane = hash_bits_signed(_py, args_bits);
-        if exception_pending(_py) {
-            return 0;
-        }
-        let mut acc = XXPRIME_5;
-        acc = acc.wrapping_add((lane as u64).wrapping_mul(XXPRIME_2));
-        acc = acc.rotate_left(31);
-        acc = acc.wrapping_mul(XXPRIME_1);
-        acc = acc.wrapping_add(1u64 ^ (XXPRIME_5 ^ 3527539));
-        if acc == u64::MAX {
-            return 1546275796;
-        }
-        acc as i64
+    let lane = hash_bits_signed(_py, args_bits);
+    if exception_pending(_py) {
+        return 0;
     }
-    #[cfg(target_pointer_width = "32")]
-    {
-        const XXPRIME_1: u32 = 2654435761;
-        const XXPRIME_2: u32 = 2246822519;
-        const XXPRIME_5: u32 = 374761393;
-        let lane = hash_bits_signed(_py, args_bits);
-        if exception_pending(_py) {
-            return 0;
-        }
-        let mut acc = XXPRIME_5;
-        acc = acc.wrapping_add((lane as u32).wrapping_mul(XXPRIME_2));
-        acc = acc.rotate_left(13);
-        acc = acc.wrapping_mul(XXPRIME_1);
-        acc = acc.wrapping_add(1u32 ^ (XXPRIME_5 ^ 3527539));
-        if acc == u32::MAX {
-            return 1546275796;
-        }
-        (acc as i32) as i64
-    }
-}
-
-#[cfg(target_pointer_width = "64")]
-fn slice_hash_acc(lanes: [u64; 3]) -> u64 {
-    const XXPRIME_1: u64 = 11400714785074694791;
-    const XXPRIME_2: u64 = 14029467366897019727;
-    const XXPRIME_5: u64 = 2870177450012600261;
-    let mut acc = XXPRIME_5;
-    for lane in lanes {
-        acc = acc.wrapping_add(lane.wrapping_mul(XXPRIME_2));
-        acc = acc.rotate_left(31);
-        acc = acc.wrapping_mul(XXPRIME_1);
-    }
-    acc
-}
-
-#[cfg(target_pointer_width = "32")]
-fn slice_hash_acc(lanes: [u32; 3]) -> u32 {
-    const XXPRIME_1: u32 = 2654435761;
-    const XXPRIME_2: u32 = 2246822519;
-    const XXPRIME_5: u32 = 374761393;
-    let mut acc = XXPRIME_5;
-    for lane in lanes {
-        acc = acc.wrapping_add(lane.wrapping_mul(XXPRIME_2));
-        acc = acc.rotate_left(13);
-        acc = acc.wrapping_mul(XXPRIME_1);
-    }
-    acc
+    let mut acc = TupleHashAccumulator::new();
+    acc.push(lane);
+    acc.finish_tuple(1)
 }
 
 pub(crate) fn hash_slice_bits(
@@ -963,58 +696,43 @@ pub(crate) fn hash_slice_bits(
     stop_bits: u64,
     step_bits: u64,
 ) -> Option<i64> {
-    let mut lanes = [0i64; 3];
-    let elems = [start_bits, stop_bits, step_bits];
-    for (idx, bits) in elems.iter().enumerate() {
-        lanes[idx] = hash_bits_signed(_py, *bits);
+    let mut acc = TupleHashAccumulator::new();
+    for bits in [start_bits, stop_bits, step_bits] {
+        let lane = hash_bits_signed(_py, bits);
         if exception_pending(_py) {
             return None;
         }
+        acc.push(lane);
     }
-    #[cfg(target_pointer_width = "64")]
-    {
-        let acc = slice_hash_acc([lanes[0] as u64, lanes[1] as u64, lanes[2] as u64]);
-        if acc == u64::MAX {
-            return Some(1546275796);
-        }
-        Some(acc as i64)
-    }
-    #[cfg(target_pointer_width = "32")]
-    {
-        let acc = slice_hash_acc([lanes[0] as u32, lanes[1] as u32, lanes[2] as u32]);
-        if acc == u32::MAX {
-            return Some(1546275796);
-        }
-        Some((acc as i32) as i64)
-    }
+    Some(acc.finish())
 }
 
-fn shuffle_frozenset_hash(hash: u64) -> u64 {
-    let mixed = (hash ^ 89869747u64) ^ (hash << 16);
-    mixed.wrapping_mul(3644798167u64)
+fn shuffle_frozenset_hash(hash: Py_uhash_t) -> Py_uhash_t {
+    let mixed = (hash ^ 89869747) ^ (hash << 16);
+    mixed.wrapping_mul(3644798167)
 }
 
 fn hash_frozenset(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let elems = unsafe { set_order(ptr) };
-    let mut hash = 0u64;
+    let mut hash: Py_uhash_t = 0;
     for &elem in elems.iter() {
-        hash ^= shuffle_frozenset_hash(hash_bits(_py, elem));
+        let lane = hash_bits_signed(_py, elem);
+        if exception_pending(_py) {
+            return 0;
+        }
+        hash ^= shuffle_frozenset_hash(lane as Py_uhash_t);
     }
-    if elems.len() & 1 == 1 {
-        hash ^= shuffle_frozenset_hash(0);
-    }
-    hash ^= ((elems.len() as u64) + 1).wrapping_mul(1927868237u64);
+    // set_order contains only active elements. CPython's null/dummy parity
+    // correction belongs to its traversal of empty/deleted table slots.
+    hash ^= (elems.len() as Py_uhash_t)
+        .wrapping_add(1)
+        .wrapping_mul(1927868237);
     hash ^= (hash >> 11) ^ (hash >> 25);
-    hash = hash.wrapping_mul(69069u64).wrapping_add(907133923u64);
-    if hash == u64::MAX {
-        hash = 590923713u64;
+    hash = hash.wrapping_mul(69069).wrapping_add(907133923);
+    if hash == Py_uhash_t::MAX {
+        hash = 590923713;
     }
-    hash as i64
-}
-
-pub(crate) fn hash_pointer(ptr: u64) -> i64 {
-    let hash = (ptr >> 4) as i64;
-    fix_hash(hash)
+    fix_hash(hash as i64)
 }
 
 fn hash_unhashable(_py: &PyToken<'_>, obj: MoltObject) -> i64 {
@@ -1134,7 +852,8 @@ enum HashDeclaration {
 }
 
 /// Resolve user declarations before selecting a physical builtin carrier.
-/// __eq__ without __hash__ disables hashing at that same MRO entry.
+/// Implicit __hash__ = None belongs to class construction. Later equality
+/// mutation must not disable an inherited hash slot.
 unsafe fn hash_declaration(py: &PyToken<'_>, bits: u64) -> HashDeclaration {
     unsafe {
         if let Some(ptr) = obj_from_bits(bits).as_ptr()
@@ -1144,16 +863,19 @@ unsafe fn hash_declaration(py: &PyToken<'_>, bits: u64) -> HashDeclaration {
             return HashDeclaration::Builtin;
         }
         let class_bits = type_of_bits(py, bits);
-        if is_builtin_class_bits(py, class_bits) {
-            return HashDeclaration::Builtin;
-        }
         let Some(class) = obj_from_bits(class_bits).as_ptr() else {
             return HashDeclaration::Builtin;
         };
+        if is_builtin_class_bits(py, class_bits) && crate::object::class_is_immutable(py, class) {
+            return HashDeclaration::Builtin;
+        }
         let hash_name = intern_static_name(py, &runtime_state(py).interned.hash_name, b"__hash__");
-        let eq_name = intern_static_name(py, &runtime_state(py).interned.eq_name, b"__eq__");
         for &base in class_mro_view(py, class).iter() {
-            if is_builtin_class_bits(py, base) {
+            if is_builtin_class_bits(py, base)
+                && obj_from_bits(base)
+                    .as_ptr()
+                    .is_some_and(|base| crate::object::class_is_immutable(py, base))
+            {
                 break;
             }
             let Some(base) = obj_from_bits(base).as_ptr() else {
@@ -1169,9 +891,6 @@ unsafe fn hash_declaration(py: &PyToken<'_>, bits: u64) -> HashDeclaration {
                     HashDeclaration::Custom
                 };
             }
-            if dict_get_in_place(py, dict, eq_name).is_some() {
-                return HashDeclaration::Disabled;
-            }
         }
         HashDeclaration::Builtin
     }
@@ -1186,7 +905,7 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
         return hash_int(if b { 1 } else { 0 });
     }
     if obj.is_none() {
-        return PY_HASH_NONE;
+        return fix_hash(PY_HASH_NONE);
     }
     if let Some(f) = obj.as_float() {
         return hash_float(f);
@@ -1334,7 +1053,7 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
         let hash = if let Some(i) = crate::builtins::numbers::index_i64_integral_bits(res_bits) {
             // __hash__ preserves every fitting Py_hash_t, even above the
             // numeric modulus; overflow falls back to integer hashing.
-            if isize::try_from(i).is_ok() {
+            if Py_hash_t::try_from(i).is_ok() {
                 fix_hash(i)
             } else {
                 hash_int(i)
@@ -1392,27 +1111,8 @@ pub extern "C" fn molt_int_hash_method(self_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_float_hash_method(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(self_bits);
-        let value_bits = if obj.as_float().is_some()
-            || obj
-                .as_ptr()
-                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_FLOAT })
-        {
-            self_bits
-        } else if let Some(bits) = float_subclass_value_bits_raw(self_bits) {
-            bits
-        } else {
+        let Some(value) = crate::object::ops::as_float_extended(obj_from_bits(self_bits)) else {
             return hash_descriptor_type_error(_py, self_bits, "float");
-        };
-        let value = obj_from_bits(value_bits);
-        let value = if let Some(value) = value.as_float() {
-            value
-        } else {
-            unsafe {
-                crate::object::ops::heap_float_value(
-                    value.as_ptr().expect("validated float hash receiver"),
-                )
-            }
         };
         let hash = hash_float(value);
         if exception_pending(_py) {
@@ -1512,8 +1212,8 @@ pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64, ctx: HashContext
 #[cfg(test)]
 mod numeric_hash_tests {
     //! Pins the shared modular numeric hash against CPython 3.12 reference
-    //! values (computed with `sys.hash_info.modulus == 2**61 - 1`). These are
-    //! the same constants the differential `fractions_hash_modular.py`,
+    //! values on 64-bit targets and checks the ABI-width contract on every
+    //! target. The 64-bit golden values are the same constants the differential `fractions_hash_modular.py`,
     //! `decimal_hash_modular.py`, and `numeric_cross_type_hash_invariant.py`
     //! tests assert end-to-end on the compiled binary.
     use super::{
@@ -1524,12 +1224,207 @@ mod numeric_hash_tests {
         ClassEdgeOwnership, ObjectAuxPreselection, TYPE_ID_BYTES, TYPE_ID_STRING,
         alloc_object_with_aux, dec_ref_bits, object_init_class_edge_unpublished, object_state,
     };
-    use crate::{MoltHeader, MoltObject, builtin_classes};
-    use num_bigint::BigInt;
-    use num_traits::One;
+    use crate::{MoltObject, builtin_classes};
+    use num_bigint::{BigInt, Sign};
+    use num_integer::Integer;
+    use num_traits::{One, Signed, ToPrimitive};
 
     fn frac(n: i128, d: i128) -> i64 {
         py_numeric_hash(&BigInt::from(n), &BigInt::from(d))
+    }
+
+    // Independent arbitrary-precision arithmetic, rather than the runtime's
+    // fixed-word Mersenne multiply/reduce or frexp implementation.
+    fn rational_reference(numerator: &BigInt, denominator: &BigInt) -> i64 {
+        let modulus = BigInt::from(super::PY_HASH_MODULUS);
+        let denominator = denominator.mod_floor(&modulus);
+        let magnitude = if denominator == BigInt::from(0) {
+            super::PY_HASH_INF
+        } else {
+            let inverse = denominator.modpow(&(&modulus - 2), &modulus);
+            (numerator.abs() * inverse)
+                .mod_floor(&modulus)
+                .to_i64()
+                .unwrap()
+        };
+        let signed = if numerator.sign() == Sign::Minus {
+            -magnitude
+        } else {
+            magnitude
+        };
+        if signed == -1 { -2 } else { signed }
+    }
+
+    #[test]
+    fn numeric_hashes_follow_target_modulus_across_representations() {
+        let modulus = super::PY_HASH_MODULUS as i64;
+        assert_eq!(
+            molt_obj_model::hash_policy::hash_i128(i128::MIN),
+            if super::PY_HASH_WIDTH == 64 { -32 } else { -8 },
+        );
+        assert_eq!(
+            molt_obj_model::hash_policy::hash_i128(i128::MAX),
+            if super::PY_HASH_WIDTH == 64 { 31 } else { 7 },
+        );
+        assert_eq!(hash_int(modulus), 0);
+        assert_eq!(hash_int(modulus + 1), 1);
+        assert_eq!(hash_int(-modulus - 1), -2);
+        for value in [i64::MIN, -modulus, -1, 0, 1, 1 << 46, i64::MAX] {
+            let integer = BigInt::from(value);
+            let expected = rational_reference(&integer, &BigInt::one());
+            assert_eq!(hash_int(value), expected);
+            assert_eq!(hash_bigint_value(&integer), expected);
+            assert_eq!(py_numeric_hash(&integer, &BigInt::one()), expected);
+        }
+        let one = BigInt::one();
+        for (value, numerator, denominator) in [
+            (1.5, BigInt::from(3), BigInt::from(2)),
+            (-7.0, BigInt::from(-7), one.clone()),
+            (
+                4503599627370497.0,
+                BigInt::from(4503599627370497i64),
+                one.clone(),
+            ),
+            (f64::from_bits(1), one.clone(), &one << 1074usize),
+            (
+                f64::from_bits(0x000f_ffff_ffff_ffff),
+                (&one << 52usize) - 1,
+                &one << 1074usize,
+            ),
+            (f64::MIN_POSITIVE, one.clone(), &one << 1022usize),
+            (f64::MAX, ((&one << 53usize) - 1) << 971usize, one.clone()),
+        ] {
+            let expected = rational_reference(&numerator, &denominator);
+            assert_eq!(hash_float(value), expected, "float {value:?}");
+            assert_eq!(py_numeric_hash(&numerator, &denominator), expected);
+        }
+        for (numerator, denominator) in [(1, 3), (-7, 2), (22, 7), (1, modulus)] {
+            assert_eq!(
+                frac(numerator as i128, denominator as i128),
+                rational_reference(&BigInt::from(numerator), &BigInt::from(denominator)),
+            );
+        }
+        for exponent in [-512i64, -31, -1, 0, 1, 31, 512] {
+            let coefficient = BigInt::from(-123456789i64);
+            let scale = BigInt::from(10).pow(exponent.unsigned_abs() as u32);
+            let expected = if exponent >= 0 {
+                rational_reference(&(&coefficient * scale), &one)
+            } else {
+                rational_reference(&coefficient, &scale)
+            };
+            assert_eq!(py_decimal_hash(&coefficient, exponent), expected);
+        }
+    }
+
+    #[test]
+    fn hash_result_width_and_cpython_siphash_vectors() {
+        use super::{HashSecret, PY_HASH_WIDTH, fix_hash, hash_bytes_with_secret, hash_pointer};
+        assert_eq!(PY_HASH_WIDTH, molt_cpython_abi::abi_types::Py_hash_t::BITS);
+        assert_eq!(fix_hash(-1), -2);
+        assert_eq!(hash_pointer(0), 0);
+        assert_eq!(
+            hash_pointer(molt_cpython_abi::abi_types::Py_uhash_t::MAX as u64),
+            -2
+        );
+        assert_eq!(hash_pointer(1), (1u64 << (PY_HASH_WIDTH - 4)) as i64);
+        if PY_HASH_WIDTH == 32 {
+            assert_eq!(fix_hash(0x0000_0001_ffff_ffff), -2);
+            assert_eq!(fix_hash(0x0000_0000_8000_0000), i32::MIN as i64);
+        }
+        // CPython v3.12.0 Lib/test/test_hash.py, siphash13 seed=0 'abc'.
+        let expected = if PY_HASH_WIDTH == 64 {
+            -4594863902769663758
+        } else {
+            69611762
+        };
+        assert_eq!(
+            hash_bytes_with_secret(b"abc", &HashSecret { k0: 0, k1: 0 }),
+            expected,
+        );
+        assert_eq!(hash_bytes_with_secret(b"", &HashSecret { k0: 0, k1: 0 }), 0);
+        assert_eq!(
+            super::hash_complex(0.0, 3000.0),
+            if PY_HASH_WIDTH == 64 {
+                3000009000
+            } else {
+                -1294958296
+            },
+        );
+        assert_eq!(super::hash_complex(-1000004.0, 1.0), -2);
+    }
+
+    #[test]
+    fn tuple_hash_consumers_preserve_cpython_target_vectors() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            // CPython v3.12.0 Lib/test/test_tuple.py::test_hash_exact.
+            for (values, expected32, expected64) in [
+                (vec![], 750394483, 5740354900026072187),
+                (
+                    vec![MoltObject::from_int(0).bits()],
+                    1214856301,
+                    -8753497827991233192,
+                ),
+                (
+                    vec![MoltObject::from_int(0).bits(); 2],
+                    -168982784,
+                    -8458139203682520985,
+                ),
+                (
+                    vec![MoltObject::from_float(0.5).bits()],
+                    2077348973,
+                    -408149959306781352,
+                ),
+            ] {
+                let tuple = crate::object::builders::alloc_tuple(_py, &values);
+                assert!(!tuple.is_null());
+                let expected = if super::PY_HASH_WIDTH == 64 {
+                    expected64
+                } else {
+                    expected32
+                };
+                assert_eq!(super::hash_tuple(_py, tuple), expected);
+                assert_eq!(
+                    super::hash_dataclass_fields(_py, &values, &[], &[], "fixture"),
+                    expected,
+                );
+                dec_ref_bits(_py, MoltObject::from_ptr(tuple).bits());
+            }
+        });
+    }
+
+    #[test]
+    fn frozenset_hashes_only_active_elements_at_target_width() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            // CPython v3.12.0 Objects/setobject.c frozenset_hash, with only
+            // active lanes: no empty/dummy table-slot correction remains.
+            for (values, expected32, expected64) in [
+                (vec![], -1572407560, 133146708735736),
+                (vec![0], -281444354, -2704248722033767810),
+                (vec![1], 882226578, -558064481276695278),
+                (vec![1, 2], -489709338, -1826646154956904602),
+                (vec![1, 2, 3], -2021384008, -272375401224217160),
+            ] {
+                let elems: Vec<u64> = values
+                    .into_iter()
+                    .map(|value| MoltObject::from_int(value).bits())
+                    .collect();
+                let set = crate::object::builders::alloc_set_like_with_entries(
+                    _py,
+                    &elems,
+                    crate::TYPE_ID_FROZENSET,
+                );
+                assert!(!set.is_null());
+                let expected = if super::PY_HASH_WIDTH == 64 {
+                    expected64
+                } else {
+                    expected32
+                };
+                assert_eq!(super::hash_frozenset(_py, set), expected);
+                dec_ref_bits(_py, MoltObject::from_ptr(set).bits());
+            }
+        });
     }
 
     #[test]
@@ -1542,15 +1437,15 @@ mod numeric_hash_tests {
                 (TYPE_ID_BYTES, builtins.bytes, b"subclass-bytes".as_slice()),
             ] {
                 let total =
-                    std::mem::size_of::<MoltHeader>() + std::mem::size_of::<usize>() + bytes.len();
+                    super::super::layout::InlineBytesStorage::object_size(bytes.len()).unwrap();
                 let ptr =
                     alloc_object_with_aux(_py, total, type_id, ObjectAuxPreselection::Sidecar);
                 assert!(!ptr.is_null());
                 unsafe {
-                    *(ptr as *mut usize) = bytes.len();
+                    super::super::layout::InlineBytesStorage::set_len(ptr, bytes.len());
                     std::ptr::copy_nonoverlapping(
                         bytes.as_ptr(),
-                        ptr.add(std::mem::size_of::<usize>()),
+                        super::super::layout::InlineBytesStorage::data(ptr),
                         bytes.len(),
                     );
                     assert!(object_init_class_edge_unpublished(
@@ -1581,6 +1476,7 @@ mod numeric_hash_tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
     fn fraction_hash_matches_cpython() {
         // Whole numbers beyond i64 must NOT collapse to 0.
         let big = BigInt::from(10u8).pow(30);
@@ -1607,6 +1503,7 @@ mod numeric_hash_tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
     fn cross_type_numeric_invariant() {
         // hash(1) == hash(1.0) == hash(Fraction(1)) == hash(Decimal(1))
         assert_eq!(hash_int(1), 1);
@@ -1628,6 +1525,7 @@ mod numeric_hash_tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
     fn decimal_style_hash_matches_cpython() {
         // Decimal value = coeff * 10^exp, expressed as a rational.
         let ten = BigInt::from(10u8);
@@ -1659,6 +1557,7 @@ mod numeric_hash_tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
     fn decimal_hash_large_exponents_stay_modular() {
         assert_eq!(
             py_decimal_hash(&BigInt::one(), 999_999),
@@ -1689,7 +1588,7 @@ mod numeric_hash_tests {
     #[test]
     fn fermat_modular_inverse_roundtrips() {
         // pow_mod_mersenne(q, M-2) is the inverse of q mod M; q * inv % M == 1.
-        const M: u64 = (1u64 << 61) - 1;
+        const M: u64 = super::PY_HASH_MODULUS;
         for q in [2u64, 3, 7, 10, 9999, 1234567891] {
             let inv = pow_mod_mersenne(q, M - 2);
             let prod = ((q as u128) * (inv as u128)) % (M as u128);

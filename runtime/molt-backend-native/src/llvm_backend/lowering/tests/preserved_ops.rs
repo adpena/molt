@@ -105,6 +105,10 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
 fn lower_preserved_passthrough_class_routes_to_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
+    // `exception_set_cause` is an exact boxed-ABI kind on the admitted route.
+    backend
+        .runtime_callable_symbols
+        .insert("molt_exception_set_cause".into());
     backend.function_linkage_abis.insert(
         "gen_fn".to_string(),
         test_native_linkage_abi(vec![], Some(TirType::DynBox)),
@@ -153,18 +157,11 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
         ),
         ("cbor_parse", 1, true, None, "molt_cbor_parse_scalar_obj"),
         (
-            "gen_locals_register",
+            "stateful_locals_register",
             2,
             false,
             Some("gen_fn"),
-            "molt_gen_locals_register",
-        ),
-        (
-            "asyncgen_locals_register",
-            2,
-            false,
-            Some("gen_fn"),
-            "molt_asyncgen_locals_register",
+            "molt_stateful_locals_register",
         ),
         (
             "function_closure_bits",
@@ -213,17 +210,19 @@ fn callable_constructors_release_only_discarded_owned_results() {
             backend
                 .runtime_callable_symbols
                 .insert(format!("molt_{kind}"));
-            backend.function_linkage_abis.insert(
-                "callable_result_target".into(),
-                test_native_linkage_abi(
-                    if kind == "func_new_closure" {
-                        vec![TirType::DynBox]
-                    } else {
-                        vec![]
-                    },
-                    Some(TirType::DynBox),
-                ),
+            let mut target_abi = test_native_linkage_abi(
+                if kind == "func_new_closure" {
+                    vec![TirType::DynBox]
+                } else {
+                    vec![]
+                },
+                Some(TirType::DynBox),
             );
+            // A closure constructor's target takes the closure transport first.
+            target_abi.source_signature.has_closure = kind == "func_new_closure";
+            backend
+                .function_linkage_abis
+                .insert("callable_result_target".into(), target_abi);
             let symbol_target = matches!(kind, "func_new" | "func_new_closure" | "builtin_func")
                 .then_some("callable_result_target");
             let ir = lower_preserved_kind_ir(&backend, kind, argc, bound, symbol_target)
@@ -326,16 +325,16 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
             .unwrap_or_else(|| panic!("missing descriptor call: {ir}"));
         assert_eq!(call.matches("i64 %boxed_int").count(), arity, "{ir}");
         assert_eq!(
-            ir.matches("call void @molt_dec_ref_obj(i64 %boxed_int")
+            ir.matches("call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits")
                 .count(),
-            arity,
-            "{ir}"
+            1,
+            "repeated descriptor operands share one materialized owner: {ir}"
         );
         assert_eq!(
             ir.matches(&format!("phi i64 [ {boxed}, %box_int_inline"))
                 .count(),
-            arity,
-            "{ir}"
+            1,
+            "repeated descriptor operands preserve identity: {ir}"
         );
         backend.module.verify().expect("boxed descriptor arguments");
     }
@@ -435,6 +434,269 @@ fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
 }
 
 #[test]
+fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
+    // Kinds whose runtime entry is exactly `molt_<kind>` with a generated row
+    // have no dedicated arm: a raw integer operand is boxed once, owned through
+    // the call and released after it, and an unavailable symbol fails closed.
+    for (kind, arity) in [
+        ("isinstance", 2),
+        ("issubclass", 2),
+        ("has_attr_name", 2),
+        ("is_callable", 1),
+        ("str_from_obj", 1),
+        ("int_from_obj", 3),
+        ("ord", 1),
+        ("string_join", 2),
+        ("module_set_attr", 3),
+        ("exception_set_cause", 2),
+        ("exception_stack_exit", 1),
+        ("context_unwind_to", 2),
+        ("class_merge_layout", 3),
+        ("callargs_push_pos", 2),
+        ("callargs_expand_star", 2),
+        ("code_new", 9),
+        ("vec_sum", 3),
+        ("vec_prod", 3),
+        ("vec_min", 3),
+        ("vec_max", 3),
+    ] {
+        let symbol = format!("molt_{kind}");
+        for admitted in [false, true] {
+            let ctx = Context::create();
+            let mut backend = make_backend(&ctx);
+            if admitted {
+                backend.runtime_callable_symbols.insert(symbol.clone());
+            }
+            let func = runtime_call_shape_function(OpCode::Copy, kind, &symbol, arity, true, true);
+            if !admitted {
+                let error = try_lower_tir_to_llvm(&func, &backend)
+                    .expect_err("an exact runtime kind requires runtime admission");
+                assert_lowering_error_contains(
+                    &error,
+                    &format!(
+                        "boxed runtime symbol `{symbol}` is unavailable in the selected runtime"
+                    ),
+                );
+                continue;
+            }
+            let ir = try_lower_tir_to_llvm(&func, &backend)
+                .unwrap_or_else(|error| panic!("{kind}: {:?}", error.diagnostics()))
+                .print_to_string()
+                .to_string();
+            backend
+                .module
+                .verify()
+                .unwrap_or_else(|error| panic!("{kind}: {error}"));
+            let call = ir
+                .lines()
+                .find(|line| line.contains(&format!("call i64 @{symbol}(")))
+                .unwrap_or_else(|| panic!("{kind}: missing runtime call: {ir}"));
+            assert_eq!(
+                call.matches("i64 %boxed_int").count(),
+                arity,
+                "{kind}: {ir}"
+            );
+            assert_eq!(
+                ir.matches("call i64 @molt_int_from_i64(").count(),
+                1,
+                "{kind}: {ir}"
+            );
+            let release = "call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits)";
+            assert_eq!(ir.matches(release).count(), 1, "{kind}: {ir}");
+            assert!(
+                ir.find(call).unwrap() < ir.find(release).unwrap(),
+                "{kind}: the box outlives the borrowing call: {ir}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
+    // (kind, operands, raw tag attr, runtime symbol, expected arguments)
+    let cases: &[(&str, usize, Option<i64>, &str, &str)] = &[
+        ("type_of", 1, None, "molt_type_of", "(i64 %boxed_int)"),
+        (
+            "builtin_type",
+            1,
+            None,
+            "molt_builtin_type",
+            "(i64 %boxed_int)",
+        ),
+        (
+            "get_attr_name_default",
+            3,
+            None,
+            "molt_get_attr_name_default",
+            "(i64 %boxed_int, i64 %boxed_int, i64 %boxed_int)",
+        ),
+        (
+            "gen_send",
+            2,
+            None,
+            "molt_generator_send",
+            "(i64 %boxed_int, i64 %boxed_int)",
+        ),
+        (
+            "gen_throw",
+            2,
+            None,
+            "molt_generator_throw",
+            "(i64 %boxed_int, i64 %boxed_int)",
+        ),
+        (
+            "gen_close",
+            1,
+            None,
+            "molt_generator_close",
+            "(i64 %boxed_int)",
+        ),
+        (
+            "super_new",
+            2,
+            None,
+            "molt_super_new",
+            "(i64 %boxed_int, i64 %boxed_int)",
+        ),
+        (
+            "class_layout_version",
+            1,
+            None,
+            "molt_class_layout_version",
+            "(i64 %boxed_int)",
+        ),
+        ("abs", 1, None, "molt_abs_builtin", "(i64 %boxed_int)"),
+        (
+            "string_format",
+            2,
+            None,
+            "molt_format_builtin",
+            "(i64 %boxed_int, i64 %boxed_int)",
+        ),
+        (
+            "json_parse",
+            1,
+            None,
+            "molt_json_parse_scalar_obj",
+            "(i64 %boxed_int)",
+        ),
+        (
+            "exception_match_builtin",
+            1,
+            Some(7),
+            "molt_exception_match_builtin",
+            "(i64 %boxed_int, i64 7)",
+        ),
+        (
+            "exception_new_builtin_one",
+            1,
+            Some(7),
+            "molt_exception_new_builtin_one",
+            "(i64 7, i64 %boxed_int)",
+        ),
+        (
+            "exception_new_builtin",
+            1,
+            Some(7),
+            "molt_exception_new_builtin",
+            "(i64 7, i64 %boxed_int)",
+        ),
+    ];
+    for &(kind, arity, tag, symbol, arguments) in cases {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            format!("dedicated_{kind}"),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let raw = func.fresh_value();
+        let result = func.fresh_value();
+        let mut attrs = AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]);
+        if let Some(tag) = tag {
+            attrs.insert("value".into(), AttrValue::Int(tag));
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_int_def(raw, i64::MAX));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![raw; arity],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let ir = try_lower_tir_to_llvm(&func, &backend)
+            .unwrap_or_else(|error| panic!("{kind}: {:?}", error.diagnostics()))
+            .print_to_string()
+            .to_string();
+        backend
+            .module
+            .verify()
+            .unwrap_or_else(|error| panic!("{kind}: {error}"));
+        let call = format!("call i64 @{symbol}{arguments}");
+        let release = format!("call void @molt_dec_ref_obj(i64 %{kind}_owner_bits)");
+        assert!(
+            ir.contains(&call),
+            "{kind}: object operands are boxed and raw ABI words stay raw: {ir}"
+        );
+        assert_eq!(
+            ir.matches("call i64 @molt_int_from_i64(").count(),
+            1,
+            "{kind}: {ir}"
+        );
+        assert_eq!(ir.matches(&release).count(), 1, "{kind}: {ir}");
+        assert!(
+            ir.find(&call).unwrap() < ir.find(&release).unwrap(),
+            "{kind}: the box outlives the borrowing call: {ir}"
+        );
+    }
+
+    // A module store borrows its operands and retires its discarded result.
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "module_store_owner".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let raw = func.fresh_value();
+    let fallback = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(const_int_def(raw, i64::MAX));
+    entry.ops.push(const_none_def(fallback));
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::ModuleSetAttr,
+        operands: vec![raw; 3],
+        results: vec![],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![fallback],
+    };
+    let ir = try_lower_tir_to_llvm(&func, &backend)
+        .unwrap_or_else(|error| panic!("module store: {:?}", error.diagnostics()))
+        .print_to_string()
+        .to_string();
+    backend.module.verify().expect("module store ownership");
+    let call = "call i64 @molt_module_set_attr(i64 %boxed_int, i64 %boxed_int, i64 %boxed_int)";
+    let release = "call void @molt_dec_ref_obj(i64 %module_call_owner_bits)";
+    assert!(ir.contains(call), "{ir}");
+    assert!(ir.find(call).unwrap() < ir.find(release).unwrap(), "{ir}");
+    assert!(
+        ir.contains("call void @molt_dec_ref_obj(i64 %module_call_result)"),
+        "a discarded owned module result is released: {ir}"
+    );
+}
+
+#[test]
 fn direct_and_preserved_boxed_calls_share_result_custody() {
     for opcode in [OpCode::Call, OpCode::Copy] {
         for (kind, symbol, arity, shape) in [
@@ -449,6 +711,10 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
             ),
             ("list_append", "molt_list_append", 2, "owned"),
             ("print_newline", "molt_print_newline", 0, "void"),
+            ("vec_sum", "molt_vec_sum", 3, "owned"),
+            ("vec_prod", "molt_vec_prod", 3, "owned"),
+            ("vec_min", "molt_vec_min", 3, "owned"),
+            ("vec_max", "molt_vec_max", 3, "owned"),
         ] {
             for with_result in [false, true] {
                 let ctx = Context::create();
@@ -495,6 +761,35 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
 }
 
 #[test]
+fn preserved_vector_reductions_reject_wrong_arity_before_materialization() {
+    for kind in ["vec_sum", "vec_prod", "vec_min", "vec_max"] {
+        let symbol = format!("molt_{kind}");
+        for arity in [2, 4] {
+            let ctx = Context::create();
+            let mut backend = make_backend(&ctx);
+            backend.runtime_callable_symbols.insert(symbol.clone());
+            let func = runtime_call_shape_function(OpCode::Copy, kind, &symbol, arity, true, true);
+            let error = try_lower_tir_to_llvm(&func, &backend)
+                .expect_err("a preserved reduction must carry exactly three object operands");
+            assert_lowering_error_contains(
+                &error,
+                "has no positional boxed-value ABI classification",
+            );
+            assert!(backend.module.get_function(&symbol).is_none());
+            let ir = backend.module.print_to_string().to_string();
+            assert!(
+                !ir.contains("call i64 @molt_int_from_i64("),
+                "{kind}/{arity}: {ir}"
+            );
+            assert!(
+                !ir.contains("call void @molt_dec_ref_obj("),
+                "{kind}/{arity}: {ir}"
+            );
+        }
+    }
+}
+
+#[test]
 fn direct_and_preserved_borrowed_calls_box_raw_arguments_before_cleanup() {
     for opcode in [OpCode::Call, OpCode::Copy] {
         let ctx = Context::create();
@@ -514,20 +809,20 @@ fn direct_and_preserved_borrowed_calls_box_raw_arguments_before_cleanup() {
         assert_eq!(call.matches("i64 %boxed_int").count(), 3, "{ir}");
         assert_eq!(
             ir.matches("call i64 @molt_int_from_i64(").count(),
-            3,
-            "each raw argument must be materialized independently: {ir}"
+            1,
+            "the same raw value in three positions must keep one object identity: {ir}"
         );
         assert_eq!(
-            ir.matches("call void @molt_dec_ref_obj(i64 %boxed_int")
+            ir.matches("call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits")
                 .count(),
-            3,
-            "each temporary boxed argument owner must be retired: {ir}"
+            1,
+            "the single materialized owner must be retired exactly once: {ir}"
         );
         let retain = ir
             .find("call void @molt_inc_ref_obj(i64 %molt_dict_set)")
             .unwrap_or_else(|| panic!("bound borrowed result was not retained: {ir}"));
         let cleanup = ir
-            .find("call void @molt_dec_ref_obj(i64 %boxed_int")
+            .find("call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits")
             .unwrap_or_else(|| panic!("temporary argument owner was not retired: {ir}"));
         assert!(
             retain < cleanup,
@@ -574,8 +869,8 @@ fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
 }
 
 #[test]
-fn generator_locals_registration_preserves_mixed_abi_for_both_families() {
-    for kind in ["gen_locals_register", "asyncgen_locals_register"] {
+fn stateful_locals_registration_preserves_mixed_abi() {
+    for kind in ["stateful_locals_register"] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
         backend.function_linkage_abis.insert(
@@ -802,12 +1097,12 @@ fn lower_preserved_unmapped_kind_fails_loud() {
     assert_lowering_error_contains(&err, "__ppaudit_unmapped__");
 }
 
-/// RESULT-LESS preserved side-effect ops (`print_newline`, `set_update`,
-/// `dict_str_int_inc`, …) whose `molt_<kind>` symbol IS in the linked
+/// RESULT-LESS preserved side-effect ops (`print_newline`, `set_update`, …)
+/// whose `molt_<kind>` symbol IS in the linked
 /// intrinsic surface must lower to that runtime call via the generic
 /// fallback — NOT be dropped as a `Copy` "0 results → no-op". The
 /// passthrough enumeration found these reaching the no-op branch (a missing
-/// newline / a set or dict mutation that never happened). This pins the
+/// newline / a set mutation that never happened). This pins the
 /// result-less generic-fallback path; the symbols are injected because the
 /// unit-test backend has an empty intrinsic surface by default.
 #[test]
@@ -818,7 +1113,6 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
     let cases: &[(&str, usize, &str)] = &[
         ("print_newline", 0, "molt_print_newline"),
         ("set_update", 2, "molt_set_update"),
-        ("dict_str_int_inc", 3, "molt_dict_str_int_inc"),
         ("math_sin", 1, "molt_math_sin"),
         (
             "string_split_field_len_from_bounds",
@@ -1098,7 +1392,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
             .unwrap_or_else(|error| panic!("{kind}: {error}"));
         let ir = llvm_fn.print_to_string().to_string();
         let call = format!("call i64 @{symbol}(i64 %boxed_int)");
-        let input_release = "call void @molt_dec_ref_obj(i64 %boxed_int)";
+        let input_release = "call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits)";
         assert!(
             ir.contains(&call),
             "raw preserved {kind} input must be boxed: {ir}"
@@ -1112,7 +1406,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
             "{ir}"
         );
         assert!(
-            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{symbol})")),
+            ir.contains("call void @molt_dec_ref_obj(i64 %boxed_call_result)"),
             "discarded preserved {kind} result must be retired: {ir}"
         );
     }
@@ -1154,7 +1448,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
         .expect("raw preserved unpack input ownership");
     let ir = llvm_fn.print_to_string().to_string();
     let call = "call i64 @molt_unpack_sequence(i64 %boxed_int, i64 1, i64 %unpack_out_ptr)";
-    let input_release = "call void @molt_dec_ref_obj(i64 %boxed_int)";
+    let input_release = "call void @molt_dec_ref_obj(i64 %unpack_owner_bits)";
     assert!(
         ir.contains(call),
         "unpack must keep its boxed/raw/raw mixed ABI: {ir}"
@@ -1266,6 +1560,72 @@ fn lower_preserved_dataclass_new_values_calls_runtime_with_value_slice() {
         .expect("dataclass_new_values must lower through its value-slice runtime call");
     assert!(ir.contains("molt_dataclass_new_from_values"), "{ir}");
     assert!(ir.contains("alloca i64, i64 2"), "{ir}");
+}
+
+#[test]
+fn preserved_word_ranges_use_static_entry_block_slots() {
+    for (kind, operand_count, result_count) in
+        [("unpack_sequence", 1, 2), ("dataclass_new_values", 5, 1)]
+    {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            format!("{kind}_word_range"),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let operands: Vec<_> = (0..operand_count).map(|_| func.fresh_value()).collect();
+        let results: Vec<_> = (0..result_count).map(|_| func.fresh_value()).collect();
+        let body = func.fresh_block();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend(operands.iter().map(|&operand| const_none_def(operand)));
+        entry.terminator = Terminator::Branch {
+            target: body,
+            args: vec![],
+        };
+        let mut attrs = AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]);
+        if kind == "unpack_sequence" {
+            attrs.insert("value".into(), AttrValue::Int(result_count as i64));
+        }
+        // An operation in a loop-shaped block reuses one static slot; a range
+        // allocated where the operation runs would grow the stack per iteration.
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::Copy,
+                    operands,
+                    results: results.clone(),
+                    attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![results[0]],
+                },
+            },
+        );
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        backend
+            .module
+            .verify()
+            .expect("preserved word-range lowering must verify");
+        let ir = llvm_fn.print_to_string().to_string();
+        let entry = llvm_fn.get_first_basic_block().unwrap();
+        let mut entry_ir = String::new();
+        let mut instruction = entry.get_first_instruction();
+        while let Some(current) = instruction {
+            entry_ir.push_str(&current.print_to_string().to_string());
+            instruction = current.get_next_instruction();
+        }
+        assert!(entry_ir.contains("alloca i64, i64 2"), "{kind}: {ir}");
+        assert_eq!(ir.matches("alloca i64, i64 2").count(), 1, "{kind}: {ir}");
+    }
 }
 
 #[test]
@@ -1391,7 +1751,8 @@ fn lower_preserved_list_extend_calls_runtime() {
 #[test]
 fn lower_preserved_aiter_calls_runtime() {
     let ctx = Context::create();
-    let backend = make_backend(&ctx);
+    let mut backend = make_backend(&ctx);
+    backend.runtime_callable_symbols.insert("molt_aiter".into());
     let mut func = TirFunction::new(
         "aiter_preserved".into(),
         vec![],
@@ -1503,7 +1864,10 @@ fn lower_preserved_sys_executable_uses_classified_runtime_abi() {
 #[test]
 fn lower_preserved_context_exit_calls_runtime() {
     let ctx = Context::create();
-    let backend = make_backend(&ctx);
+    let mut backend = make_backend(&ctx);
+    backend
+        .runtime_callable_symbols
+        .insert("molt_context_exit".into());
     let mut func = TirFunction::new(
         "context_exit_preserved".into(),
         vec![],

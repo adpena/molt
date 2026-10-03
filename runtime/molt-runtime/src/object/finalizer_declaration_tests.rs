@@ -18,7 +18,7 @@ extern "C" fn inspect_namespace_commit(_weak: u64) -> u64 {
         let instance = REENTRANT_INSTANCE.swap(0, Ordering::SeqCst);
         let ptr = obj_from_bits(instance).as_ptr().unwrap();
         REENTRANT_ELIGIBLE.store(
-            u64::from(unsafe { object_class_has_finalizer(py, ptr) }),
+            u64::from(unsafe { object_has_finalizer(py, ptr) }),
             Ordering::SeqCst,
         );
         dec_ref_bits(py, instance);
@@ -146,7 +146,7 @@ fn late_base_finalizers_follow_current_mro_without_descendant_flag_copies() {
         let own_del = finalizer(py, true);
         let preexisting = instance(py, leaf);
         assert!(!unsafe {
-            object_class_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
+            object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
         });
 
         crate::molt_set_attr_name(base, del, base_del);
@@ -157,7 +157,7 @@ fn late_base_finalizers_follow_current_mro_without_descendant_flag_copies() {
             });
         }
         assert!(unsafe {
-            object_class_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
+            object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
         });
         dec_ref_bits(py, preexisting);
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
@@ -165,7 +165,7 @@ fn late_base_finalizers_follow_current_mro_without_descendant_flag_copies() {
         let removed = instance(py, leaf);
         crate::molt_del_attr_name(base, del);
         assert!(!unsafe {
-            object_class_has_finalizer(py, obj_from_bits(removed).as_ptr().unwrap())
+            object_has_finalizer(py, obj_from_bits(removed).as_ptr().unwrap())
         });
         dec_ref_bits(py, removed);
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
@@ -303,11 +303,11 @@ fn metaclass_finalizers_follow_late_mro_mutation_for_type_payloads() {
             TYPE_ID_TYPE
         );
         assert!(!unsafe {
-            object_class_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
+            object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
         });
         crate::molt_set_attr_name(meta, del, base_del);
         assert!(unsafe {
-            object_class_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
+            object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
         });
         assert!(!unsafe {
             class_header_declares_finalizer(obj_from_bits(derived).as_ptr().unwrap())
@@ -435,7 +435,7 @@ fn builtin_spelled_class_and_metaclass_names_do_not_suppress_finalizers() {
             crate::molt_set_attr_name(ordinary, del, callback);
             let value = instance(py, ordinary);
             assert!(unsafe {
-                object_class_has_finalizer(py, obj_from_bits(value).as_ptr().unwrap())
+                object_has_finalizer(py, obj_from_bits(value).as_ptr().unwrap())
             });
             dec_ref_bits(py, value);
             assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
@@ -454,7 +454,7 @@ fn builtin_spelled_class_and_metaclass_names_do_not_suppress_finalizers() {
             );
             assert!(!crate::exception_pending(py));
             assert!(unsafe {
-                object_class_has_finalizer(py, obj_from_bits(class).as_ptr().unwrap())
+                object_has_finalizer(py, obj_from_bits(class).as_ptr().unwrap())
             });
             dec_ref_bits(py, class);
             crate::molt_gc_collect(MoltObject::from_int(2).bits());
@@ -493,7 +493,7 @@ fn finalizer_raw_owner_releases_when_callback_panics_before_binding() {
         });
 
         let outcome = crate::test_support::catch_expected_unwind(|| unsafe {
-            run_object_del_in_revival_window(py, value_ptr);
+            run_object_finalizer_in_revival_window(py, value_ptr);
         });
         assert!(outcome.is_err());
         assert_eq!(FINALIZER_RAW_OBSERVER.load(Ordering::SeqCst), callback);
@@ -547,7 +547,7 @@ fn finalizer_bound_owner_and_exception_scope_restore_on_panic() {
         });
 
         let outcome = crate::test_support::catch_expected_unwind(|| unsafe {
-            run_object_del_in_revival_window(py, value_ptr);
+            run_object_finalizer_in_revival_window(py, value_ptr);
         });
         assert!(outcome.is_err());
         assert_eq!(

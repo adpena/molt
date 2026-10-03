@@ -93,3 +93,9 @@ try:
     print("module      ", module_only)
 except NameError:
     print("module      ", "NameError")
+
+# Module scope, live constant branch: a later read sees the branch's rebinding.
+module_rebound = "before"
+if 1:
+    module_rebound = "after"
+print("module live ", module_rebound)

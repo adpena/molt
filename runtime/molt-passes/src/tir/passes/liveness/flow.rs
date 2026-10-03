@@ -3,14 +3,10 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::values::ValueId;
 
-/// The successors of `block` under the terminator-only CFG (the edges that carry
-/// SSA values via block args). Exception edges are handled by the drop pass's
-/// CheckException logic, not by liveness propagation — at this analysis layer a
-/// value live across a potentially-throwing op is captured by ordinary
-/// straight-line liveness (the op is just another op in the block).
 /// The values `term` *uses* directly (the condition of a CondBranch, the switch
 /// value, and Return values) — NOT the branch args, which are handled by the
-/// successor block-arg propagation in [`live_out_of`].
+/// successor block-arg propagation in [`live_out_of`]. Exceptional successors
+/// merge into liveness at their exact operation in the solver.
 pub(super) fn terminator_direct_uses(term: &Terminator) -> Vec<ValueId> {
     match term {
         Terminator::Branch { .. } => vec![],
@@ -51,7 +47,6 @@ pub(super) fn live_out_of(
     block_args: &HashMap<BlockId, HashSet<ValueId>>,
     heap_carrying: &dyn Fn(ValueId) -> bool,
     canon: &dyn Fn(ValueId) -> ValueId,
-    keepalive_roots: &dyn Fn(ValueId) -> Vec<ValueId>,
 ) -> HashSet<ValueId> {
     let mut out = HashSet::new();
     for succ in crate::tir::dominators::terminator_successors(&block.terminator) {
@@ -72,12 +67,6 @@ pub(super) fn live_out_of(
         for v in edge_args_to(&block.terminator, succ) {
             if heap_carrying(v) {
                 out.insert(canon(v));
-            }
-            // A borrow result forwarded on an edge keeps its source object live-out
-            // of this block (the source must reach the successor where the borrow
-            // is consumed). Design 20 interior-borrow keepalive.
-            for src_root in keepalive_roots(v) {
-                out.insert(src_root);
             }
         }
     }

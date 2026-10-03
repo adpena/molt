@@ -170,9 +170,8 @@ fn emit_internal_call(
         });
 
     if is_tail_call {
-        call_ctx
-            .frame
-            .emit_const_anchor_releases(func, import_ids, reloc_enabled);
+        // Admission excludes activation owners and literal anchors: a tail
+        // transfer has no cleanup obligation to bypass or move before a call.
         push_call_args(func, locals, args_names);
         emit_return_call(func, reloc_enabled, func_idx);
         tail_call_count.set(tail_call_count.get() + 1);

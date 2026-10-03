@@ -2,7 +2,9 @@ use self::ops::{DispatchOpScratch, emit_dispatch_op};
 use super::super::op_loop::WasmFunctionEmitContext;
 use super::DispatchMode;
 use super::block_layout::emit_dispatch_block_lookup;
-use super::common::{emit_dispatch_trailing_return, emit_stateful_resume_prelude};
+use super::common::{
+    emit_dispatch_trailing_return, emit_stateful_resume_prelude, emit_static_dispatch_edge,
+};
 use super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
 use wasm_encoder::{BlockType, Function, Instruction};
 
@@ -48,9 +50,6 @@ fn emit_non_linear_dispatch(
         }
     }
 
-    if mode == DispatchMode::Stateful {
-        func.instruction(&Instruction::Block(BlockType::Empty));
-    }
     func.instruction(&Instruction::Loop(BlockType::Empty));
     for _ in (0..block_count).rev() {
         func.instruction(&Instruction::Block(BlockType::Empty));
@@ -88,15 +87,13 @@ fn emit_non_linear_dispatch(
         }
 
         if !block_terminated {
-            func.instruction(&Instruction::I64Const(end as i64));
-            func.instruction(&Instruction::LocalSet(locals.state_local));
+            emit_static_dispatch_edge(func, op_emitter, plan, locals, *start, end, depth, 0);
         }
-        func.instruction(&Instruction::Br(depth));
 
         if block_idx + 1 < block_count {
             func.instruction(&Instruction::End);
         }
     }
 
-    emit_dispatch_trailing_return(func, op_emitter, locals, mode);
+    emit_dispatch_trailing_return(func, op_emitter);
 }

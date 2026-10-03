@@ -12,29 +12,91 @@ pub(crate) enum MergeOutcome {
     Error,
 }
 
-unsafe fn direct_dict(py: &PyToken<'_>, ptr: *mut u8) -> bool {
-    if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
-        return false;
+/// Resolve direct merge storage only when the source retains dict.__iter__.
+/// The original object remains the protocol receiver on the slow path.
+pub(crate) unsafe fn direct_dict(py: &PyToken<'_>, source: u64) -> Result<Option<u64>, ()> {
+    let class = type_of_bits(py, source);
+    if class == builtin_classes(py).dict {
+        return super::ops::dict_backing_bits(py, source);
     }
-    let class = unsafe { object_class_bits(ptr) };
-    if class == 0 || class == builtin_classes(py).dict {
-        return true;
+    if !unsafe { crate::object::class_layout::is_real_subtype(py, class, builtin_classes(py).dict) }
+    {
+        return Ok(None);
     }
     let Some(class_ptr) = obj_from_bits(class).as_ptr() else {
-        return false;
+        return Ok(None);
     };
     let Some(dict_class) = obj_from_bits(builtin_classes(py).dict).as_ptr() else {
-        return false;
+        return Ok(None);
     };
     let Some(name) = attr_name_bits_from_bytes(py, b"__iter__") else {
-        return false;
+        return Err(());
     };
     let same = unsafe {
         class_attr_lookup_raw_mro(py, class_ptr, name)
             == class_attr_lookup_raw_mro(py, dict_class, name)
     };
     dec_ref_bits(py, name);
-    same
+    if exception_pending(py) {
+        return Err(());
+    }
+    if same {
+        super::ops::dict_backing_bits(py, source)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Consume a mapping method's owned output using CPython method_output_as_list.
+/// Exact semantic lists retain identity, including specialized int/bool storage.
+/// Length hints belong to the first iterator, never the method output.
+pub(crate) fn output_as_list(
+    py: &PyToken<'_>,
+    source: u64,
+    method: &[u8],
+    output: u64,
+) -> Option<u64> {
+    use molt_cpython_abi::api::errors::with_preserved_error;
+    if exception_pending(py) {
+        with_preserved_error(|| dec_ref_bits(py, output));
+        return None;
+    }
+    if type_of_bits(py, output) == builtin_classes(py).list {
+        return Some(output);
+    }
+    let first = OwnedIterator::new(py, output);
+    if first.is_none() {
+        let exception = molt_exception_last();
+        if crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "TypeError") {
+            // Replace the pending TypeError, retaining only the independently
+            // handled exception as implicit context, just like PyErr_Format.
+            clear_exception(py);
+            let owner = type_name(py, obj_from_bits(source));
+            let result = type_name(py, obj_from_bits(output));
+            let owner = owner.as_bytes();
+            let result = result.as_bytes();
+            let message = [
+                &owner[..owner.len().min(200)],
+                b".",
+                method,
+                b"() returned a non-iterable (type ",
+                &result[..result.len().min(200)],
+                b")",
+            ]
+            .concat();
+            crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
+        }
+        with_preserved_error(|| {
+            dec_ref_bits(py, exception);
+            dec_ref_bits(py, output);
+        });
+        return None;
+    }
+    with_preserved_error(|| dec_ref_bits(py, output));
+    let first = first.unwrap();
+    let list = unsafe { super::ops::list_from_iter_bits(py, first.bits()) };
+    with_preserved_error(|| drop(first));
+    list
 }
 
 pub(crate) unsafe fn apply(
@@ -47,7 +109,11 @@ pub(crate) unsafe fn apply(
         let Some(ptr) = obj_from_bits(source).as_ptr() else {
             return MergeOutcome::NotMapping;
         };
-        if direct_dict(py, ptr) {
+        if let Some(backing) = match direct_dict(py, source) {
+            Ok(backing) => backing,
+            Err(()) => return MergeOutcome::Error,
+        } {
+            let ptr = obj_from_bits(backing).as_ptr().unwrap();
             let length = dict_order(ptr).len();
             for index in (0..length).step_by(2) {
                 // No source backing borrow survives Python hash/equality or a
@@ -89,30 +155,9 @@ pub(crate) unsafe fn apply(
             return MergeOutcome::NotMapping;
         };
         let output = call_callable0(py, method);
-        dec_ref_bits(py, method);
-        if exception_pending(py) {
-            dec_ref_bits(py, output);
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, method));
+        let Some(keys) = output_as_list(py, source, b"keys", output) else {
             return MergeOutcome::Error;
-        }
-        let exact_list = obj_from_bits(output).as_ptr().is_some_and(|ptr| {
-            object_type_id(ptr) == TYPE_ID_LIST
-                && (object_class_bits(ptr) == 0
-                    || object_class_bits(ptr) == builtin_classes(py).list)
-        });
-        let keys = if exact_list {
-            output
-        } else {
-            // PyMapping_Keys first gets an iterator, then materializes THAT
-            // iterator as a list: __iter__ can observably run twice.
-            let first = OwnedIterator::new(py, output);
-            dec_ref_bits(py, output);
-            let Some(first) = first else {
-                return MergeOutcome::Error;
-            };
-            let Some(keys) = super::ops::list_from_iter_bits(py, first.bits()) else {
-                return MergeOutcome::Error;
-            };
-            keys
         };
         let iter = OwnedIterator::new(py, keys);
         dec_ref_bits(py, keys);
@@ -160,13 +205,15 @@ pub(crate) unsafe fn keyword_available(
             return false;
         }
         if found {
-            let name = format_obj_str(py, obj_from_bits(key));
+            let name = crate::object::ops_format::format_obj_str_bytes(py, obj_from_bits(key));
             if !exception_pending(py) {
-                raise_exception::<()>(
-                    py,
-                    "TypeError",
-                    &format!("got multiple values for keyword argument '{name}'"),
-                );
+                let message = [
+                    b"got multiple values for keyword argument '".as_slice(),
+                    &name,
+                    b"'",
+                ]
+                .concat();
+                crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
             }
             return false;
         }
@@ -212,8 +259,23 @@ pub(crate) unsafe fn merge_keywords(py: &PyToken<'_>, target: *mut u8, mapping: 
 
 /// This is a call boundary operation, never an operand-expansion operation.
 pub(crate) unsafe fn validate_keywords(py: &PyToken<'_>, dict: *mut u8) -> bool {
-    for pair in unsafe { dict_order(dict) }.chunks_exact(2) {
-        if !obj_from_bits(pair[0])
+    validate_keyword_names(
+        py,
+        unsafe { dict_order(dict) }
+            .chunks_exact(2)
+            .map(|pair| pair[0]),
+    )
+}
+
+/// Keyword names at a call boundary are strings (`str` storage, subclasses
+/// included), whether they still sit in the call's mapping or were already
+/// unpacked from it.
+pub(crate) fn validate_keyword_names(
+    py: &PyToken<'_>,
+    names: impl IntoIterator<Item = u64>,
+) -> bool {
+    for name in names {
+        if !obj_from_bits(name)
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
         {

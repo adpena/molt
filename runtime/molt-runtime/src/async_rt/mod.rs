@@ -1,3 +1,6 @@
+pub(crate) mod awaitable;
+pub(crate) mod throw_protocol;
+pub(crate) use awaitable::*;
 pub(crate) mod cancellation;
 pub(crate) mod channels;
 pub(crate) mod event_loop;
@@ -47,9 +50,9 @@ pub(crate) use cancellation::{
 #[allow(unused_imports)]
 pub(crate) use scheduler::{
     AsyncHangProbe, CURRENT_TASK, CurrentTaskScope, MoltScheduler, MoltTask, SleepQueue,
-    async_trace_enabled, asyncgen_registry, await_waiter_clear, await_waiter_register,
-    await_waiters, block_on_wait_spec, current_task_key, current_task_ptr,
-    instant_from_monotonic_secs, molt_asyncio_child_watcher_add, molt_asyncio_child_watcher_clear,
+    async_trace_enabled, await_waiter_clear, await_waiter_register, await_waiters,
+    block_on_wait_spec, current_task_key, current_task_ptr, instant_from_monotonic_secs,
+    molt_asyncio_child_watcher_add, molt_asyncio_child_watcher_clear,
     molt_asyncio_child_watcher_pop, molt_asyncio_child_watcher_remove, molt_asyncio_enter_task,
     molt_asyncio_event_loop_get, molt_asyncio_event_loop_get_current,
     molt_asyncio_event_loop_policy_get, molt_asyncio_event_loop_policy_set,
@@ -73,7 +76,7 @@ pub(crate) use scheduler::{
 
 pub(crate) use scheduler::process_task_state;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use scheduler::{is_block_on_task, sleep_worker, thread_task_state};
+pub(crate) use scheduler::{sleep_worker, thread_task_state};
 
 #[allow(unused_imports)]
 pub(crate) use generators::*;
@@ -82,16 +85,14 @@ pub(crate) use generators_async::*;
 
 pub(crate) use poll::{
     anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr,
-    asyncio_fd_watcher_poll_fn_addr, asyncio_gather_poll_fn_addr,
-    asyncio_ready_runner_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
+    asyncio_fd_watcher_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
     asyncio_sock_accept_poll_fn_addr, asyncio_sock_connect_poll_fn_addr,
     asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_poll_fn_addr,
     asyncio_sock_recvfrom_into_poll_fn_addr, asyncio_sock_recvfrom_poll_fn_addr,
     asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendto_poll_fn_addr,
     asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_readline_poll_fn_addr,
     asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_readline_poll_fn_addr,
-    asyncio_stream_send_all_poll_fn_addr, asyncio_timer_handle_poll_fn_addr,
-    asyncio_wait_for_poll_fn_addr, asyncio_wait_poll_fn_addr, call_poll_fn,
+    asyncio_stream_send_all_poll_fn_addr, call_poll_fn,
     contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, io_wait_poll_fn_addr, poll_future_with_task_stack,

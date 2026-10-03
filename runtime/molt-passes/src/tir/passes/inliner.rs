@@ -4,6 +4,7 @@
 //! pass-family surface; the driver, eligibility policy, body cloning, call-site
 //! collection, exception labels, and splice mechanics live in submodules.
 
+mod activation;
 mod call_sites;
 mod clone_body;
 mod driver;

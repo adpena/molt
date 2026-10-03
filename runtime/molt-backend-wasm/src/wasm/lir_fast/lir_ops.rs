@@ -16,11 +16,11 @@ use self::numeric_selection::numeric_selection_for_opcode;
 use self::refcount_ops::emit_lir_refcount_op;
 use super::lir_context::LirLowerCtx;
 use super::lir_runtime_ops::{
-    LirSequenceBuilderFinish, emit_lir_alloc, emit_lir_attr, emit_lir_boxed_operands_runtime_call,
-    emit_lir_build_dict, emit_lir_build_set, emit_lir_build_slice, emit_lir_closure_load,
-    emit_lir_closure_store, emit_lir_del_index, emit_lir_exception_pending, emit_lir_get_iter,
-    emit_lir_index, emit_lir_iter_next, emit_lir_membership, emit_lir_object_new_bound,
-    emit_lir_sequence_builder, emit_lir_store_index, emit_lir_unpack_sequence,
+    emit_lir_alloc, emit_lir_attr, emit_lir_boxed_operands_runtime_call, emit_lir_build_dict,
+    emit_lir_build_list, emit_lir_build_set, emit_lir_build_slice, emit_lir_build_tuple,
+    emit_lir_closure_load, emit_lir_closure_store, emit_lir_del_index, emit_lir_exception_pending,
+    emit_lir_get_iter, emit_lir_index, emit_lir_iter_next, emit_lir_membership,
+    emit_lir_object_new_bound, emit_lir_store_index, emit_lir_unpack_sequence,
 };
 use super::lir_scalar::{
     emit_lir_binary_arith, emit_lir_bit_not, emit_lir_bitwise, emit_lir_bool, emit_lir_bool_select,
@@ -70,8 +70,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             emit_lir_boxed_operands_runtime_call(ctx, op, numeric_lir_runtime_call(selection));
         }
         OpCode::OrdAt => emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::OrdAt),
-        OpCode::BuildList => emit_lir_sequence_builder(ctx, op, LirSequenceBuilderFinish::List),
-        OpCode::BuildTuple => emit_lir_sequence_builder(ctx, op, LirSequenceBuilderFinish::Tuple),
+        OpCode::BuildList => emit_lir_build_list(ctx, op),
+        OpCode::BuildTuple => emit_lir_build_tuple(ctx, op),
         OpCode::BuildDict => emit_lir_build_dict(ctx, op),
         OpCode::BuildSet => emit_lir_build_set(ctx, op),
         OpCode::Neg => emit_lir_unary_arith(ctx, op, numeric_selection_for_opcode(tir_op.opcode)),
@@ -87,6 +87,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::NotIn => emit_lir_membership(ctx, op, true),
         OpCode::ExceptionPending => emit_lir_exception_pending(ctx, op),
         OpCode::FunctionDefaultsVersion
+        | OpCode::FrameContextSet
         | OpCode::ModuleCacheGet
         | OpCode::ModuleCacheSet
         | OpCode::ModuleCacheDel
@@ -148,6 +149,9 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::StateSwitch
         | OpCode::StateTransition
         | OpCode::StateYield
+        | OpCode::StateSet
+        | OpCode::IsPending
+        | OpCode::TaskWait
         | OpCode::Import
         | OpCode::ImportFrom
         | OpCode::Raise

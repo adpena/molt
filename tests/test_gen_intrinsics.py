@@ -61,6 +61,13 @@ def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
 
     assert length_hint.arity == 2
     assert length_hint.defaults == ("IntrinsicDefaultValue::Int(0)",)
+    assert by_name["molt_getframe"].arity == 1
+    assert by_name["molt_getframe"].defaults == ("IntrinsicDefaultValue::Int(0)",)
+    for name in ("molt_require_intrinsic_runtime", "molt_load_intrinsic_runtime"):
+        assert by_name[name].arity == 2
+        assert by_name[name].defaults == ("IntrinsicDefaultValue::None",)
+    assert by_name["molt_runtime_active_runtime"].arity == 0
+    assert by_name["molt_runtime_active_runtime"].defaults == ()
 
     generated = (ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs").read_text()
     assert "pub(crate) enum IntrinsicDefaultValue" in generated
@@ -329,7 +336,6 @@ def test_collections_and_argparse_categories_are_toml_owned() -> None:
         "molt_ordereddict_",
         "molt_defaultdict_",
         "molt_deque_",
-        "molt_counter_",
         "molt_chainmap_",
     ]
     for prefix in (
@@ -338,7 +344,6 @@ def test_collections_and_argparse_categories_are_toml_owned() -> None:
         "molt_ordereddict_",
         "molt_defaultdict_",
         "molt_deque_",
-        "molt_counter_",
         "molt_chainmap_",
     ):
         assert all(prefix != extra[0] for extra in module._EXTRA_PREFIX_MODULES)

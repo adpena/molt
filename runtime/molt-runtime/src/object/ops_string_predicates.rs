@@ -17,7 +17,7 @@ fn all_nonempty(bytes: &[u8], predicate: impl FnMut(u32) -> bool) -> bool {
     !bytes.is_empty() && code_points(bytes).all(predicate)
 }
 
-fn isidentifier(bytes: &[u8]) -> bool {
+pub(crate) fn is_identifier_bytes(bytes: &[u8]) -> bool {
     let mut codes = code_points(bytes);
     let Some(first) = codes.next() else {
         return false;
@@ -166,7 +166,7 @@ fn string_predicate(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_isidentifier(hay_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        string_predicate(py, hay_bits, "isidentifier", isidentifier)
+        string_predicate(py, hay_bits, "isidentifier", is_identifier_bytes)
     })
 }
 
@@ -236,7 +236,11 @@ type Predicate = (&'static str, extern "C" fn(u64) -> u64, fn(&[u8]) -> bool);
 
 #[cfg(test)]
 const PREDICATES: &[Predicate] = &[
-    ("isidentifier", molt_string_isidentifier, isidentifier),
+    (
+        "isidentifier",
+        molt_string_isidentifier,
+        is_identifier_bytes,
+    ),
     ("isdigit", molt_string_isdigit, isdigit),
     ("isdecimal", molt_string_isdecimal, isdecimal),
     ("isnumeric", molt_string_isnumeric, isnumeric),
@@ -277,12 +281,12 @@ mod predicate_contract_tests {
                         error,
                         "TypeError"
                     ));
-                    let message = crate::builtins::exceptions::exception_materialized_message_bits(
+                    let message = crate::builtins::exceptions::format_exception_message(
                         py,
                         obj_from_bits(error).as_ptr().unwrap(),
                     );
                     assert_eq!(
-                        string_obj_to_owned(obj_from_bits(message)).unwrap(),
+                        message,
                         format!(
                             "descriptor '{name}' for 'str' objects doesn't apply to a '{receiver_type}' object"
                         )

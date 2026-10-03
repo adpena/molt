@@ -8,7 +8,7 @@ pub(super) fn apply_daemon_request_env(
     // Apply per-request env var overrides so callers can control backend
     // diagnostics and non-TIR tuning without restarting the daemon. TIR itself
     // is not request-optional.
-    for key in DAEMON_REQUEST_ENV_KEYS {
+    for key in DAEMON_REQUEST_ENV_KEYS.iter() {
         unsafe {
             std::env::remove_var(key);
         }

@@ -115,6 +115,7 @@ fn make_comprehension_ir() -> FunctionIR {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
 }
@@ -160,6 +161,7 @@ fn make_legacy_scalar_hint_ir() -> FunctionIR {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
 }
@@ -277,6 +279,7 @@ fn roundtrip_preserves_structural_source_site() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 

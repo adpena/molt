@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use super::types::TirType;
 use super::values::ValueId;
+use crate::ir::ParameterCustody;
 
 /// Dialect namespace for operations (MLIR-style).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
@@ -201,8 +202,18 @@ pub enum OpCode {
     StateSwitch,
     StateTransition,
     StateYield,
+    /// Store the next activation state; does not suspend.
+    StateSet,
+    /// Test the scheduler sentinel without Python truthiness or callbacks.
+    IsPending,
+    /// Register this activation on a future; does not return or transfer it.
+    TaskWait,
     ClosureLoad,
     ClosureStore,
+    /// Publish Python argument-zero/class-cell custody to the active frame.
+    /// Three borrowed boxed operands, no result. Replacing owners can finalize
+    /// and raise; this internal service is not a Python call-return poll point.
+    FrameContextSet,
     Yield,
     YieldFrom,
     // Exception
@@ -425,6 +436,11 @@ pub struct TirOp {
 /// pending calls and the eval breaker at a Python asynchronous-work boundary.
 pub const ASYNC_WORK_POLL_ATTR: &str = "async_work_poll";
 
+/// Attribute projection of a call's typed per-operand custody: the
+/// [`ParameterCustody::encode`] bytes, one per operand, aligned with
+/// `operands`. Absent means the op borrows every operand.
+pub const ARGUMENT_CUSTODY_ATTR: &str = "argument_custody";
+
 /// Executable builtin identity, separate from positional arguments. A name
 /// selects runtime builtin lookup; it does not prove a fixed callable, purity,
 /// argument admission, or the result type.
@@ -524,8 +540,8 @@ impl TirOp {
             .flatten()
     }
 
-    /// The operand observed by the existing length primitive or fixed builtin
-    /// len function. Call metadata and argument roles come from builtin_call.
+    /// The operand observed by the explicit length primitive. A mutable
+    /// public call named len does not establish a length observation.
     pub fn length_argument(&self) -> Option<ValueId> {
         if !self.has_valid_shape() || self.results.len() != 1 {
             return None;
@@ -536,11 +552,7 @@ impl TirOp {
         {
             return Some(*argument);
         }
-        let call = self.builtin_call()?;
-        match (call.wire_kind, call.named_target(), call.arguments) {
-            ("call_builtin", Some("len"), [argument]) => Some(*argument),
-            _ => None,
-        }
+        None
     }
 
     /// A direct fixed-offset field load: one object operand, one result,
@@ -618,6 +630,54 @@ impl TirOp {
         }
         if let Some(op_idx) = other.source_op_index() {
             self.set_source_op_index(op_idx);
+        }
+    }
+
+    /// Custody of the operand at `index`. This op adopts a `Transferred`
+    /// operand's reference on its normal and its exceptional continuation,
+    /// whether or not a callee runs. A projection that does not name every
+    /// operand is malformed and is never guessed.
+    pub fn operand_custody(&self, index: usize) -> ParameterCustody {
+        let arity = self.operands.len();
+        let custody = match self.attrs.get(ARGUMENT_CUSTODY_ATTR) {
+            None => return ParameterCustody::Borrowed,
+            Some(AttrValue::Bytes(encoded)) => ParameterCustody::decode(encoded, arity, index),
+            Some(_) => None,
+        };
+        custody.unwrap_or_else(|| {
+            panic!(
+                "{:?}: malformed {ARGUMENT_CUSTODY_ATTR} for operand {index} of {arity}",
+                self.opcode
+            )
+        })
+    }
+
+    /// Every operand's custody in operand order, or `None` when this op
+    /// borrows every operand: the SimpleIR `argument_custody` projection.
+    pub fn argument_custody(&self) -> Option<Vec<ParameterCustody>> {
+        self.attrs.contains_key(ARGUMENT_CUSTODY_ATTR).then(|| {
+            (0..self.operands.len())
+                .map(|index| self.operand_custody(index))
+                .collect()
+        })
+    }
+
+    /// Project `custody`, one entry per operand. All-borrowed custody is the
+    /// absent attribute, so the fact has one encoding.
+    pub fn set_argument_custody(&mut self, custody: &[ParameterCustody]) {
+        assert_eq!(
+            custody.len(),
+            self.operands.len(),
+            "argument custody must name every operand"
+        );
+        match ParameterCustody::encode(custody) {
+            Some(encoded) => {
+                self.attrs
+                    .insert(ARGUMENT_CUSTODY_ATTR.into(), AttrValue::Bytes(encoded));
+            }
+            None => {
+                self.attrs.remove(ARGUMENT_CUSTODY_ATTR);
+            }
         }
     }
 
@@ -813,7 +873,7 @@ mod tests {
         op.opcode = OpCode::CallBuiltin;
         op.operands = vec![ValueId(1)];
         op.attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
-        assert_eq!(op.length_argument(), Some(ValueId(1)));
+        assert_eq!(op.length_argument(), None);
         op.attrs
             .insert("_original_kind".into(), AttrValue::Str("print".into()));
         assert_eq!(op.length_argument(), None);

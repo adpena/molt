@@ -3,18 +3,6 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        "molt_traceback_source_line" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_traceback_source_line",
-            crate::molt_traceback_source_line as *const (),
-        )),
-        "molt_traceback_infer_col_offsets" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_traceback_infer_col_offsets",
-            crate::molt_traceback_infer_col_offsets as *const (),
-        )),
-        "molt_traceback_format_caret_line" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_traceback_format_caret_line",
-            crate::molt_traceback_format_caret_line as *const (),
-        )),
         "molt_traceback_format_exception_only" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_traceback_format_exception_only",

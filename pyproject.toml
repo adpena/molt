@@ -19,9 +19,6 @@ dependencies = [
 [project.scripts]
 molt = "molt.cli:main"
 
-[project.entry-points.pytest11]
-molt_memory_guard = "molt.pytest_memory_guard_bootstrap"
-
 [tool.uv]
 managed = true
 constraint-dependencies = [
@@ -97,6 +94,7 @@ exclude = ["src/molt/stdlib/**", "stdlib/**", "tests/differential/**"]
 testpaths = ["tests"]
 cache_dir = "tmp/pytest-cache"
 addopts = [
+    # Repository custody is explicit; installing Molt must not hook user pytest.
     "-p",
     "molt.pytest_memory_guard_config_plugin",
     "--ignore=tests/differential",
@@ -231,7 +229,9 @@ demo = [
     "uvicorn>=0.49.0",
 ]
 release = [
+    "auditwheel==6.8.2; sys_platform == 'linux'",
     "build==1.5.0",
+    "delocate==0.13.0; sys_platform == 'darwin'",
     "setuptools==83.0.0",
     "wheel==0.47.0",
 ]
@@ -269,4 +269,5 @@ accel = [
 ]
 
 [tool.setuptools.package-data]
+"molt" = ["backend_environment.json", "stdlib/collections/LICENSE.cpython"]
 "molt_accel" = ["py.typed", "default_exports.json"]

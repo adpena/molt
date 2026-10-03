@@ -21,7 +21,7 @@ compile_error!("feature `source_extension_loader` is unsupported on wasm32 targe
 // contract. `#[used]` keeps the witness in static archives until link admission.
 #[cfg(not(feature = "free-threaded"))]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_5fce853bad8ac502_gil_v2")]
+#[unsafe(export_name = "molt_generated_object_abi_bf06a9269171acab_gil_v3")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 const _: () = assert!(
@@ -32,7 +32,7 @@ const _: () = assert!(
 
 #[cfg(feature = "free-threaded")]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_5fce853bad8ac502_free_threaded_v2")]
+#[unsafe(export_name = "molt_generated_object_abi_bf06a9269171acab_free_threaded_v3")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 macro_rules! fn_addr {
@@ -423,15 +423,15 @@ pub(crate) use crate::concurrency::locks::{
     molt_barrier_abort, molt_barrier_broken, molt_barrier_drop, molt_barrier_n_waiting,
     molt_barrier_new, molt_barrier_parties, molt_barrier_reset, molt_barrier_wait,
     molt_condition_drop, molt_condition_new, molt_condition_notify, molt_condition_wait,
-    molt_condition_wait_for, molt_event_clear, molt_event_drop, molt_event_is_set, molt_event_new,
-    molt_event_set, molt_event_wait, molt_local_drop, molt_local_get_dict, molt_local_new,
-    molt_lock_acquire, molt_lock_drop, molt_lock_locked, molt_lock_new, molt_lock_release,
-    molt_queue_drop, molt_queue_empty, molt_queue_full, molt_queue_get, molt_queue_is_shutdown,
-    molt_queue_join, molt_queue_lifo_new, molt_queue_new, molt_queue_priority_new, molt_queue_put,
-    molt_queue_qsize, molt_queue_shutdown, molt_queue_task_done, molt_rlock_acquire,
-    molt_rlock_acquire_restore, molt_rlock_drop, molt_rlock_is_owned, molt_rlock_locked,
-    molt_rlock_new, molt_rlock_release, molt_rlock_release_save, molt_semaphore_acquire,
-    molt_semaphore_drop, molt_semaphore_new, molt_semaphore_release,
+    molt_event_clear, molt_event_drop, molt_event_is_set, molt_event_new, molt_event_set,
+    molt_event_wait, molt_local_drop, molt_local_get_dict, molt_local_new, molt_lock_acquire,
+    molt_lock_drop, molt_lock_locked, molt_lock_new, molt_lock_release, molt_queue_drop,
+    molt_queue_empty, molt_queue_full, molt_queue_get, molt_queue_is_shutdown, molt_queue_join,
+    molt_queue_lifo_new, molt_queue_new, molt_queue_priority_new, molt_queue_put, molt_queue_qsize,
+    molt_queue_shutdown, molt_queue_task_done, molt_rlock_acquire, molt_rlock_acquire_restore,
+    molt_rlock_drop, molt_rlock_is_owned, molt_rlock_locked, molt_rlock_new, molt_rlock_release,
+    molt_rlock_release_save, molt_semaphore_acquire, molt_semaphore_drop, molt_semaphore_new,
+    molt_semaphore_release,
 };
 #[allow(unused_imports)]
 pub(crate) use crate::concurrency::{
@@ -494,8 +494,6 @@ pub use crate::async_rt::generators::*;
 pub(crate) use crate::async_rt::io_poller::IoPoller;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::io_poller::*;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use crate::async_rt::is_block_on_task;
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub(crate) use crate::async_rt::net_stubs::IoPoller;
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
@@ -543,16 +541,14 @@ pub(crate) use crate::async_rt::sockets::{
 pub use crate::async_rt::threads::*;
 pub(crate) use crate::async_rt::{
     anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr,
-    asyncio_fd_watcher_poll_fn_addr, asyncio_gather_poll_fn_addr,
-    asyncio_ready_runner_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
+    asyncio_fd_watcher_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
     asyncio_sock_accept_poll_fn_addr, asyncio_sock_connect_poll_fn_addr,
     asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_poll_fn_addr,
     asyncio_sock_recvfrom_into_poll_fn_addr, asyncio_sock_recvfrom_poll_fn_addr,
     asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendto_poll_fn_addr,
     asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_readline_poll_fn_addr,
     asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_readline_poll_fn_addr,
-    asyncio_stream_send_all_poll_fn_addr, asyncio_timer_handle_poll_fn_addr,
-    asyncio_wait_for_poll_fn_addr, asyncio_wait_poll_fn_addr, call_poll_fn,
+    asyncio_stream_send_all_poll_fn_addr, call_poll_fn,
     contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, io_wait_poll_fn_addr, molt_block_on,
@@ -569,12 +565,11 @@ pub use crate::builtins::array_mod::*;
 pub use crate::builtins::ast::*;
 pub use crate::builtins::atexit::*;
 pub(crate) use crate::builtins::attr::{
-    apply_class_slots_layout, attr_error, attr_error_with_message, attr_error_with_obj,
-    attr_error_with_obj_message, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
-    class_attr_lookup, class_attr_lookup_raw_mro, class_field_offset, dataclass_attr_lookup_raw,
-    descriptor_bind, descriptor_is_data, dir_collect_from_class_bits, dir_collect_from_instance,
-    instance_bits_for_call, is_iterator_bits, module_attr_lookup, object_attr_lookup_raw,
-    raise_attr_name_type_error, setattr_no_attr_error_with_obj,
+    attr_error, attr_error_with_message, attr_error_with_obj, attr_error_with_obj_message,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, class_attr_lookup,
+    class_attr_lookup_raw_mro, descriptor_bind, descriptor_is_data, instance_bits_for_call,
+    is_iterator_bits, module_attr_lookup, raise_attr_name_type_error,
+    setattr_no_attr_error_with_obj,
 };
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::callable::*;
@@ -610,23 +605,20 @@ pub(crate) use crate::builtins::exceptions::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, CURRENT_EXCEPTION_PENDING, EXCEPTION_STACK,
     ExceptionSentinel, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE,
     alloc_exception, alloc_exception_from_class_bits, clear_exception, clear_exception_type_cache,
-    clear_thread_exception_for_teardown, exception_args_bits, exception_args_from_iterable,
-    exception_args_is_lazy_single, exception_args_payload_bits, exception_cause_bits,
-    exception_clear_reason_set, exception_context_align_depth, exception_context_bits,
-    exception_context_fallback_pop, exception_context_fallback_push, exception_dict_bits,
-    exception_group_method_bits, exception_handler_active, exception_kind_bits,
+    clear_thread_exception_for_teardown, exception_cause_bits, exception_clear_reason_set,
+    exception_context_align_depth, exception_context_bits, exception_context_fallback_pop,
+    exception_context_fallback_push, exception_dict_bits, exception_handler_active,
     exception_last_bits_noinc, exception_matches_type, exception_materialized_args_bits,
-    exception_materialized_message_bits, exception_message_for_storage, exception_message_is_lazy,
-    exception_msg_bits, exception_notes_bits, exception_pending, exception_stack_baseline_get,
+    exception_notes_bits, exception_pending, exception_stack_baseline_get,
     exception_stack_baseline_set, exception_stack_depth, exception_stack_pop,
     exception_stack_pop_restore_last, exception_stack_push, exception_stack_set_depth,
-    exception_store_args_and_message, exception_suppress_bits, exception_trace_bits,
-    exception_type_bits_from_name, exceptions_clear_runtime_state, format_exception,
-    format_exception_message, format_exception_with_traceback, generator_exception_stack_store,
-    generator_exception_stack_take, generator_raise_active,
+    exception_suppress_bits, exception_trace_bits, exception_type_bits_from_name,
+    exceptions_clear_runtime_state, format_exception_message, format_exception_with_traceback,
+    generator_exception_stack_store, generator_exception_stack_take, generator_raise_active,
     molt_async_work_poll_and_exception_last_pending, molt_async_work_poll_and_exception_pending,
     molt_exception_active, molt_exception_clear, molt_exception_kind, molt_exception_last,
-    molt_exception_last_pending, molt_exception_pending, molt_exception_set_last, molt_raise,
+    molt_exception_last_pending, molt_exception_match_handler, molt_exception_pending,
+    molt_exception_set_last, molt_exception_trace_prepend, molt_raise,
     molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
     raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error,
     raise_unsupported_inplace, record_exception, record_memory_error_without_allocation,
@@ -638,14 +630,18 @@ pub(crate) use crate::builtins::exceptions::{
     task_exception_stack_take, task_last_exception_contains_valid, task_last_exception_drop,
     task_raise_active,
 };
+#[cfg(test)]
+pub(crate) use crate::builtins::exceptions::{exception_args_bits, exception_args_payload_bits};
+pub use crate::builtins::exceptions::{
+    molt_exception_member_delete, molt_exception_member_get, molt_exception_member_set,
+};
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;
 pub(crate) use crate::builtins::frames::{
-    exception_materialize_traceback_bits, frame_stack_active_builtins_bits,
-    frame_stack_active_globals_bits, frame_stack_pop, frame_stack_push_owned, frame_stack_set_line,
-    molt_frame_context_set, molt_getframe, molt_globals_builtin, molt_locals_builtin,
-    traceback_payload_code_bits, traceback_payload_col, traceback_payload_end_col,
-    traceback_payload_line, traceback_payload_next_bits,
+    exception_materialize_traceback_bits, frame_stack_active_globals_bits, frame_stack_pop,
+    frame_stack_push_owned, frame_stack_set_line, molt_getframe, molt_globals_builtin,
+    molt_locals_builtin, traceback_payload_code_bits, traceback_payload_col,
+    traceback_payload_end_col, traceback_payload_line, traceback_payload_next_bits,
 };
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functions_fnmatch::*;
@@ -658,8 +654,7 @@ pub use crate::builtins::functools::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
-    close_payload, file_handle_detached_message, file_handle_enter, file_handle_exit,
-    file_handle_is_closed, path_from_bits,
+    close_payload, file_handle_enter, file_handle_exit, path_from_bits,
 };
 #[cfg(not(feature = "stdlib_itertools"))]
 pub use crate::builtins::itertools::*;
@@ -670,13 +665,12 @@ pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::modules::*;
 pub(crate) use crate::builtins::numbers::{
     ComplexParts, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref,
-    bigint_to_inline, compare_numbers, complex_bits, complex_from_obj_lossy,
-    complex_from_obj_strict, complex_ptr_from_bits, complex_ref, float_pair_from_obj,
-    float_subclass_value_bits_raw, index_bigint_from_obj, index_i64_from_obj,
-    index_i64_integral_bits, index_i64_with_overflow, inline_int_from_i128, int_bits_from_bigint,
-    int_bits_from_i64, int_bits_from_i128, int_subclass_value_bits_raw, round_float_ndigits,
-    round_half_even, sequence_index_bigint, sequence_index_i64, sequence_index_i64_with_type_error,
-    split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
+    bigint_to_inline, compare_numbers, complex_bits, complex_from_obj_strict,
+    complex_ptr_from_bits, complex_ref, float_pair_from_obj, index_bigint_from_obj,
+    index_i64_from_obj, index_i64_integral_bits, index_i64_with_overflow, inline_int_from_i128,
+    int_bits_from_bigint, int_bits_from_i64, int_bits_from_i128, int_subclass_value_bits_raw,
+    round_float_ndigits, round_half_even, sequence_index_bigint, sequence_index_i64,
+    sequence_index_i64_with_type_error, split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
 };
 pub use crate::builtins::operator::*;
 #[cfg(not(feature = "stdlib_path"))]
@@ -707,10 +701,10 @@ pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
 #[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::tempfile_mod::*;
+pub use crate::builtins::threading_helpers::molt_thread_timeout_max;
 pub(crate) use crate::builtins::type_ops::{
-    ClassInfoProtocol, RuntimeClassInfo, class_bases_vec, class_mro_pinned, class_mro_vec,
-    class_mro_view, collect_runtime_classinfo, isinstance_bits, isinstance_runtime,
-    issubclass_bits, issubclass_runtime, runtime_classinfo_protocol_match, type_of_bits,
+    class_bases_vec, class_mro_pinned, class_mro_vec, class_mro_view, isinstance_bits,
+    isinstance_runtime, issubclass_bits, issubclass_runtime, type_of_bits,
 };
 pub use crate::builtins::types::*;
 pub use crate::builtins::warnings_ext::*;
@@ -735,6 +729,9 @@ pub(crate) use crate::call::dispatch::{
 pub(crate) use crate::call::function::{call_function_obj_bound_vec, call_function_obj_vec};
 pub(crate) use crate::call::lookup_call_attr;
 pub use crate::intrinsics::capabilities::*;
+pub use crate::intrinsics::registry::{
+    molt_load_intrinsic_runtime, molt_require_intrinsic_runtime, molt_runtime_active_runtime,
+};
 pub(crate) use crate::object::accessors::{
     object_field_get_ptr_raw, object_field_set_ptr_raw, resolve_obj_ptr,
 };
@@ -747,25 +744,24 @@ pub(crate) use crate::object::layout::{
     CALL_ITER_PAYLOAD_SIZE, ENUMERATE_PAYLOAD_SIZE, FunctionCallAbi, MAP_PAYLOAD_SIZE,
     bound_method_func_bits, bound_method_self_bits, bump_function_mutation_version, bytearray_data,
     bytearray_len, bytearray_vec, bytearray_vec_ptr, bytearray_vec_ref, call_iter_cached_tuple,
-    call_iter_callable_bits, call_iter_sentinel_bits, call_iter_set_cached_tuple,
-    class_annotate_bits, class_annotations_bits, class_bases_bits, class_bump_layout_version,
-    class_dict_bits, class_layout_version_bits, class_mro_bits, class_name_bits,
-    class_qualname_bits, class_set_annotate_bits, class_set_annotations_bits, class_set_bases_bits,
-    class_set_layout_version_bits, class_set_name_bits, class_set_qualname_bits,
-    classmethod_func_bits, code_arg_names_bits, code_argcount, code_callable_arity,
-    code_callable_fn_ptr, code_callable_trampoline_ptr, code_cellvars_bits, code_filename_bits,
-    code_firstlineno, code_freevars_bits, code_kwonly_names_bits, code_kwonlyargcount,
-    code_linetable_bits, code_name_bits, code_names_bits, code_posonlyargcount,
-    code_publish_lexical_metadata, code_signature_posonly_bits, code_vararg_bits, code_varkw_bits,
-    code_varnames_bits, ensure_function_code_bits, enumerate_cached_inner, enumerate_cached_outer,
+    call_iter_callable_bits, call_iter_sentinel_bits, call_iter_set_cached_tuple, class_bases_bits,
+    class_bump_layout_version, class_dict_bits, class_layout_version_bits, class_mro_bits,
+    class_name_bits, class_qualname_bits, class_set_bases_bits, class_set_layout_version_bits,
+    class_set_name_bits, class_set_qualname_bits, classmethod_func_bits, code_arg_names_bits,
+    code_argcount, code_callable_arity, code_callable_fn_ptr, code_callable_trampoline_ptr,
+    code_cellvars_bits, code_filename_bits, code_firstlineno, code_freevars_bits,
+    code_kwonly_names_bits, code_kwonlyargcount, code_linetable_bits, code_name_bits,
+    code_names_bits, code_posonlyargcount, code_publish_lexical_metadata,
+    code_signature_posonly_bits, code_vararg_bits, code_varkw_bits, code_varnames_bits,
+    ensure_function_code_bits, enumerate_cached_inner, enumerate_cached_outer,
     enumerate_index_bits, enumerate_set_cached_inner, enumerate_set_cached_outer,
     enumerate_set_index_bits, enumerate_target_bits, filter_func_bits, filter_iter_bits,
     function_annotate_bits, function_annotations_bits, function_arity, function_arity_usize,
-    function_call_abi, function_closure_bits, function_code_bits, function_dict_bits,
+    function_call_abi, function_closure_bits, function_code_bits,
     function_execution_closure_bits, function_fn_ptr, function_globals_bits,
     function_has_execution_closure, function_mutation_version, function_name_bits,
     function_set_annotate_bits, function_set_annotations_bits, function_set_closure_bits,
-    function_set_code_bits, function_set_dict_bits, function_set_globals_bits,
+    function_set_code_bits, function_set_globals_bits,
     function_set_trampoline_ptr, function_trampoline_ptr, generic_alias_args_bits,
     generic_alias_origin_bits, iter_cached_tuple, iter_index, iter_set_cached_tuple,
     iter_set_index, iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr,
@@ -775,6 +771,8 @@ pub(crate) use crate::object::layout::{
     slice_step_bits, slice_stop_bits, staticmethod_func_bits, super_obj_bits, super_type_bits,
     union_type_args_bits, zip_iters_ptr, zip_set_strict_bits, zip_strict_bits,
 };
+#[cfg(test)]
+pub(crate) use crate::object::layout::{function_dict_bits, function_set_dict_bits};
 pub use crate::object::memoryview::MoltBufferView;
 pub(crate) use crate::object::memoryview::{
     BytesLikeSliceError, MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, RELEASED_MEMORYVIEW_ERROR,
@@ -795,9 +793,8 @@ pub(crate) use crate::object::ops::{
     dict_get_method, dict_items_method, dict_keys_method, dict_popitem_method, dict_set_in_place,
     dict_setdefault_method, dict_table_capacity, dict_update_method, dict_update_set_via_store,
     dict_values_method, format_obj, format_obj_str, frozenset_from_iter_bits, hash_slice_bits,
-    is_truthy, list_from_iter_bits, obj_eq, set_add_in_place, set_del_in_place, set_find_entry,
-    set_replace_entries, set_table_capacity, tuple_from_isize_slice, tuple_from_iter_bits,
-    type_name,
+    is_truthy, list_from_iter_bits, set_add_in_place, set_clear_in_place, set_del_in_place,
+    set_find_entry, set_table_capacity, tuple_from_isize_slice, tuple_from_iter_bits, type_name,
 };
 pub use crate::object::ops_arith::*;
 pub use crate::object::ops_builtins::*;
@@ -840,13 +837,12 @@ pub(crate) use crate::object::{
     alloc_object, alloc_object_with_aux, alloc_object_zeroed_with_aux, bits_from_ptr, buffer2d_ptr,
     bytes_data, bytes_len, dataclass_desc_ptr, dataclass_fields_ptr, dec_ref_bits, file_handle_ptr,
     header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
-    instance_set_dict_bits, intarray_len, intarray_slice, maybe_ptr_from_bits,
-    memoryview_base_bits, memoryview_data, memoryview_format_bits, memoryview_itemsize,
-    memoryview_len, memoryview_ndim, memoryview_offset, memoryview_owner_bits, memoryview_ptr,
-    memoryview_readonly, memoryview_released, memoryview_shape, memoryview_stride,
-    memoryview_strides, obj_from_bits, object_class_bits, object_is_exact_builtin_dict,
-    object_mark_has_ptrs, object_payload_size, object_type_id, pending_bits_i64, ptr_from_bits,
-    string_bytes, string_len,
+    instance_set_dict_bits, maybe_ptr_from_bits, memoryview_base_bits, memoryview_data,
+    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
+    memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
+    memoryview_released, memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits,
+    object_class_bits, object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size,
+    object_type_id, pending_bits_i64, ptr_from_bits, string_bytes, string_len,
 };
 pub use crate::object::{
     MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
@@ -859,12 +855,11 @@ pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gi
 #[allow(unused_imports)]
 pub(crate) use crate::state::{
     CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, EXPECTED_LIVE_OBJECTS, FRAME_STACK, GIL_DEPTH,
-    PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT, REPR_DEPTH, REPR_SET, REPR_STACK,
-    TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS, leak_assertion_enabled, process_memory_snapshot,
-    profile_enabled, profile_enabled_unchecked, profile_hit, profile_hit_bytes,
-    profile_hit_bytes_unchecked, profile_hit_unchecked, recursion_guard_enter,
-    recursion_guard_exit, recursion_limit_get, recursion_limit_set, traceback_suppress_enter,
-    traceback_suppress_exit, traceback_suppressed,
+    PARSE_ARENA, REPR_DEPTH, REPR_SET, REPR_STACK, TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS,
+    leak_assertion_enabled, process_memory_snapshot, profile_enabled, profile_enabled_unchecked,
+    profile_hit, profile_hit_bytes, profile_hit_bytes_unchecked, profile_hit_unchecked,
+    recursion_guard_enter, recursion_guard_exit, recursion_limit_get, recursion_limit_set,
+    traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,
 };
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::{

@@ -1,19 +1,53 @@
+use crate::builtins::attr::lookup_special_method_bits;
 use crate::object::HEADER_FLAG_COROUTINE;
 use crate::*;
-use std::sync::OnceLock;
 
-/// Cached `MOLT_DEBUG_EXCEPTION_MATCH` flag.
-///
-/// `isinstance_runtime` is on the hot path of every `except ClassName` match,
-/// every `isinstance()` call, and every exception-type comparison. Reading the
-/// env var directly on each call (`std::env::var`) takes the libc environ lock
-/// (`__findenv_locked`) and heap-allocates a `String` per call — profiling an
-/// exception-heavy loop showed `getenv` internals as the single dominant frame.
-/// Cache the flag once like every sibling debug flag in `exceptions.rs`.
-#[inline]
-fn debug_exception_match() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTION_MATCH").as_deref() == Ok("1"))
+/// Shared admission for the public tp_new wrapper and native allocation.
+/// The display label affects diagnostics only; real MRO ancestry owns subtype
+/// admission and never dispatches an overridable __subclasscheck__ hook.
+pub(crate) fn native_constructor_receiver(
+    py: &PyToken<'_>,
+    declaring: u64,
+    receiver: Option<u64>,
+    label: &str,
+) -> Option<(u64, *mut u8)> {
+    let Some(class) = receiver else {
+        return raise_exception(
+            py,
+            "TypeError",
+            &format!("{label}.__new__(): not enough arguments"),
+        );
+    };
+    let Some(ptr) = obj_from_bits(class)
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+    else {
+        return raise_exception(
+            py,
+            "TypeError",
+            &format!(
+                "{label}.__new__(X): X is not a type object ({})",
+                type_name(py, obj_from_bits(class)),
+            ),
+        );
+    };
+    if !unsafe { crate::object::class_layout::is_real_subtype(py, class, declaring) } {
+        let name = class_name_for_error(class);
+        return raise_exception(
+            py,
+            "TypeError",
+            &format!("{label}.__new__({name}): {name} is not a subtype of {label}"),
+        );
+    }
+    let builtins = builtin_classes(py);
+    if declaring == builtins.int && class == builtins.bool {
+        return raise_exception(
+            py,
+            "TypeError",
+            "int.__new__(bool) is not safe, use bool.__new__()",
+        );
+    }
+    Some((class, ptr))
 }
 
 #[derive(Clone, Copy)]
@@ -22,156 +56,429 @@ pub(crate) enum ClassInfoProtocol {
     Subclass,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum RuntimeClassInfo {
-    Type(u64),
-    Protocol(u64),
+fn classinfo_type_error_message(protocol: ClassInfoProtocol) -> &'static str {
+    match protocol {
+        ClassInfoProtocol::Instance => {
+            "isinstance() arg 2 must be a type, a tuple of types, or a union"
+        }
+        ClassInfoProtocol::Subclass => {
+            "issubclass() arg 2 must be a class, a tuple of classes, or a union"
+        }
+    }
 }
 
-#[inline]
-fn classinfo_protocol_name_bits(_py: &PyToken<'_>, protocol: ClassInfoProtocol) -> u64 {
+fn classinfo_protocol_name_bits(py: &PyToken<'_>, protocol: ClassInfoProtocol) -> u64 {
     match protocol {
         ClassInfoProtocol::Instance => intern_static_name(
-            _py,
-            &runtime_state(_py).interned.instancecheck_name,
+            py,
+            &runtime_state(py).interned.instancecheck_name,
             b"__instancecheck__",
         ),
         ClassInfoProtocol::Subclass => intern_static_name(
-            _py,
-            &runtime_state(_py).interned.subclasscheck_name,
+            py,
+            &runtime_state(py).interned.subclasscheck_name,
             b"__subclasscheck__",
         ),
     }
 }
 
-#[inline]
-fn classinfo_type_error_message(protocol: ClassInfoProtocol) -> &'static str {
-    match protocol {
-        ClassInfoProtocol::Instance => "isinstance() arg 2 must be a type or tuple of types",
-        ClassInfoProtocol::Subclass => "issubclass() arg 2 must be a class or tuple of classes",
+fn real_class(py: &PyToken<'_>, bits: u64) -> Option<bool> {
+    if obj_from_bits(bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+    {
+        return Some(true);
     }
-}
-
-fn classinfo_has_protocol(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    protocol: ClassInfoProtocol,
-) -> bool {
-    unsafe {
-        let name_bits = classinfo_protocol_name_bits(_py, protocol);
-        let Some(check_bits) = attr_lookup_ptr_allow_missing(_py, class_ptr, name_bits) else {
-            return false;
-        };
-        dec_ref_bits(_py, check_bits);
-        true
-    }
-}
-
-pub(crate) fn collect_runtime_classinfo(
-    _py: &PyToken<'_>,
-    class_bits: u64,
-    protocol: ClassInfoProtocol,
-    out: &mut Vec<RuntimeClassInfo>,
-) {
-    let obj = obj_from_bits(class_bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", classinfo_type_error_message(protocol));
-    };
-    unsafe {
-        match object_type_id(ptr) {
-            TYPE_ID_TYPE => out.push(RuntimeClassInfo::Type(class_bits)),
-            TYPE_ID_TUPLE => {
-                let Some(items) = crate::object::seq_access::snapshot(
-                    _py,
-                    ptr,
-                    "sequence snapshot allocation failed",
-                ) else {
-                    return;
-                };
-                for item in items.iter() {
-                    collect_runtime_classinfo(_py, *item, protocol, out);
-                    if exception_pending(_py) {
-                        break;
-                    }
-                }
-            }
-            TYPE_ID_UNION => {
-                let args_bits = union_type_args_bits(ptr);
-                let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        classinfo_type_error_message(protocol),
-                    );
-                };
-                if object_type_id(args_ptr) != TYPE_ID_TUPLE {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        classinfo_type_error_message(protocol),
-                    );
-                }
-                let Some(items) = crate::object::seq_access::snapshot(
-                    _py,
-                    args_ptr,
-                    "sequence snapshot allocation failed",
-                ) else {
-                    return;
-                };
-                for item in items.iter() {
-                    collect_runtime_classinfo(_py, *item, protocol, out);
-                    if exception_pending(_py) {
-                        break;
-                    }
-                }
-            }
-            _ => {
-                if classinfo_has_protocol(_py, ptr, protocol) {
-                    out.push(RuntimeClassInfo::Protocol(class_bits));
-                } else if !exception_pending(_py) {
-                    raise_exception::<()>(_py, "TypeError", classinfo_type_error_message(protocol));
-                }
-            }
+    match unsafe { crate::object::class_layout::real_class_view(bits) } {
+        Ok(class) => Some(class.is_some()),
+        Err(()) => {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "class projection");
+            None
         }
     }
 }
 
-pub(crate) fn runtime_classinfo_protocol_match(
-    _py: &PyToken<'_>,
-    class_bits: u64,
-    arg_bits: u64,
+fn structural_classinfo_match(
+    py: &PyToken<'_>,
+    value: u64,
+    class: u64,
     protocol: ClassInfoProtocol,
 ) -> Option<bool> {
-    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        return raise_exception::<Option<bool>>(
-            _py,
-            "TypeError",
-            classinfo_type_error_message(protocol),
-        );
-    };
-    unsafe {
-        let name_bits = classinfo_protocol_name_bits(_py, protocol);
-        let Some(check_bits) = attr_lookup_ptr_allow_missing(_py, class_ptr, name_bits) else {
-            if exception_pending(_py) {
-                return None;
+    if !real_class(py, class)? {
+        return raise_exception(py, "TypeError", classinfo_type_error_message(protocol));
+    }
+    let result = unsafe {
+        match protocol {
+            ClassInfoProtocol::Instance => {
+                crate::object::class_layout::try_is_real_instance(py, value, class)
             }
-            return raise_exception::<Option<bool>>(
-                _py,
-                "TypeError",
-                classinfo_type_error_message(protocol),
-            );
-        };
-        let res_bits = call_callable1(_py, check_bits, arg_bits);
-        dec_ref_bits(_py, check_bits);
-        if exception_pending(_py) {
-            return None;
+            ClassInfoProtocol::Subclass => {
+                if !real_class(py, value)? {
+                    return raise_exception(py, "TypeError", "issubclass() arg 1 must be a class");
+                }
+                crate::object::class_layout::try_is_real_subtype(py, value, class)
+            }
         }
-        let res = is_truthy(_py, obj_from_bits(res_bits));
-        dec_ref_bits(_py, res_bits);
-        Some(res)
+    };
+    match result {
+        Ok(matched) => Some(matched),
+        Err(()) => {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "class relation");
+            None
+        }
     }
 }
 
+/// Tuple storage for both public classinfo and observable __bases__. Keep the
+/// tuple and each projected element owned across arbitrary callbacks, without
+/// invoking a tuple subclass's iteration, indexing or length overrides.
+struct ClassInfoTuple<'a, 'py> {
+    owner: crate::builtins::exceptions::ExceptionValue<'a, 'py>,
+    storage: ClassInfoTupleStorage,
+    len: usize,
+}
+
+#[derive(Clone, Copy)]
+enum ClassInfoTupleStorage {
+    Managed(*mut u8),
+    Native(*mut molt_cpython_abi::abi_types::PyObject),
+}
+
+impl<'a, 'py> ClassInfoTuple<'a, 'py> {
+    /// Outer None is failure; Some(None) is a non-tuple without an error.
+    fn from_bits(py: &'a PyToken<'py>, bits: u64) -> Option<Option<Self>> {
+        use crate::builtins::exceptions::ExceptionValue;
+        let Some(pointer) = obj_from_bits(bits).as_ptr() else {
+            return Some(None);
+        };
+        let storage = match unsafe { object_type_id(pointer) } {
+            TYPE_ID_TUPLE => ClassInfoTupleStorage::Managed(pointer),
+            TYPE_ID_FOREIGN => unsafe {
+                let native = std::ptr::with_exposed_provenance_mut(
+                    crate::object::foreign::foreign_ptr_from_obj(pointer),
+                );
+                if molt_cpython_abi::api::sequences::PyTuple_Check(native) == 0 {
+                    return Some(None);
+                }
+                ClassInfoTupleStorage::Native(native)
+            },
+            _ => return Some(None),
+        };
+        let owner = ExceptionValue::pin(py, bits);
+        let len = match storage {
+            ClassInfoTupleStorage::Managed(pointer) => unsafe {
+                crate::object::seq_access::len(pointer)
+            },
+            ClassInfoTupleStorage::Native(pointer) => unsafe {
+                let len = molt_cpython_abi::api::sequences::PyTuple_Size(pointer);
+                if len < 0 {
+                    crate::cpython_abi_hooks::propagate_native_failure(py, "classinfo tuple size");
+                    return None;
+                }
+                len as usize
+            },
+        };
+        Some(Some(Self {
+            owner,
+            storage,
+            len,
+        }))
+    }
+
+    fn item(&self, index: usize) -> Option<crate::builtins::exceptions::ExceptionValue<'a, 'py>> {
+        use crate::builtins::exceptions::ExceptionValue;
+        let py = self.owner.py;
+        match self.storage {
+            ClassInfoTupleStorage::Managed(pointer) => {
+                let bits = unsafe { crate::object::seq_access::item(pointer, index) }?;
+                Some(ExceptionValue::pin(py, bits))
+            }
+            ClassInfoTupleStorage::Native(pointer) => unsafe {
+                let item =
+                    molt_cpython_abi::api::sequences::PyTuple_GetItem(pointer, index as isize);
+                if item.is_null() {
+                    crate::cpython_abi_hooks::propagate_native_failure(py, "classinfo tuple item");
+                    return None;
+                }
+                let Some(bits) = molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(item)
+                else {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        py,
+                        "classinfo tuple projection",
+                    );
+                    return None;
+                };
+                Some(ExceptionValue::adopt(py, bits))
+            },
+        }
+    }
+
+    fn any(&self, mut matches: impl FnMut(u64) -> Option<bool>) -> Option<bool> {
+        for index in 0..self.len {
+            let item = self.item(index)?;
+            if matches(item.bits())? {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+}
+
+/// Optional ordinary lookup masks only AttributeError. Presence is distinct
+/// from failure, including for a native wrapper's tp_getattro callback.
+fn classinfo_attribute<'a, 'py>(
+    py: &'a PyToken<'py>,
+    value: u64,
+    name: &[u8],
+) -> Option<Option<crate::builtins::exceptions::ExceptionValue<'a, 'py>>> {
+    use crate::builtins::exceptions::ExceptionValue;
+    let Some(pointer) = obj_from_bits(value).as_ptr() else {
+        // Immediate builtin values cannot override attributes. Their __class__
+        // still participates in abstract isinstance; they have no __bases__.
+        return if name == b"__class__" {
+            match unsafe { crate::object::class_layout::real_type_bits(py, value) } {
+                Ok(class) => Some(Some(ExceptionValue::adopt(py, class))),
+                Err(()) => {
+                    crate::cpython_abi_hooks::propagate_native_failure(py, "instance type");
+                    None
+                }
+            }
+        } else {
+            Some(None)
+        };
+    };
+    let name = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, name)?);
+    let result = unsafe { attr_lookup_ptr_allow_missing(py, pointer, name.bits()) }
+        .map(|bits| ExceptionValue::adopt(py, bits));
+    if exception_pending(py) {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+fn abstract_bases<'a, 'py>(
+    py: &'a PyToken<'py>,
+    class: u64,
+) -> Option<Option<ClassInfoTuple<'a, 'py>>> {
+    let Some(bases) = classinfo_attribute(py, class, b"__bases__")? else {
+        return Some(None);
+    };
+    ClassInfoTuple::from_bits(py, bases.bits())
+}
+
+fn check_abstract_class(py: &PyToken<'_>, class: u64, message: &str) -> Option<()> {
+    if abstract_bases(py, class)?.is_some() {
+        Some(())
+    } else {
+        raise_exception(py, "TypeError", message)
+    }
+}
+
+/// CPython abstract_issubclass: compare identity before looking up __bases__,
+/// retain the old tuple until the next lookup completes, and tail-traverse a
+/// single base without consuming recursive-call budget.
+fn abstract_subclass(py: &PyToken<'_>, derived: u64, class: u64) -> Option<bool> {
+    if derived == class {
+        return Some(true);
+    }
+    let Some(mut bases) = abstract_bases(py, derived)? else {
+        return Some(false);
+    };
+    loop {
+        match bases.len {
+            0 => return Some(false),
+            1 => {
+                let derived = bases.item(0)?;
+                if derived.bits() == class {
+                    return Some(true);
+                }
+                let next = abstract_bases(py, derived.bits());
+                // The old tuple still owns the raw base. Release a projected
+                // element pin before replacing that tuple, matching CPython
+                // XSETREF cleanup order on success, absence and failure.
+                drop(derived);
+                let Some(next) = next? else {
+                    return Some(false);
+                };
+                bases = next;
+            }
+            _ => {
+                let _recursion = crate::state::recursion::RecursionGuard::enter_with_message(
+                    py,
+                    "maximum recursion depth exceeded in __issubclass__",
+                )?;
+                return bases.any(|base| abstract_subclass(py, base, class));
+            }
+        }
+    }
+}
+
+/// The default type.__instancecheck__ observes __class__ after a failed real
+/// relation. Abstract classinfo instead validates __bases__ and follows the
+/// apparent class's abstract ancestry. Physical layout admission stays in
+/// class_layout and must never use this callback-bearing public protocol.
+pub(crate) fn instancecheck_default(py: &PyToken<'_>, value: u64, class: u64) -> Option<bool> {
+    if real_class(py, class)? {
+        if structural_classinfo_match(py, value, class, ClassInfoProtocol::Instance)? {
+            return Some(true);
+        }
+        let Some(apparent) = classinfo_attribute(py, value, b"__class__")? else {
+            return Some(false);
+        };
+        let actual = match unsafe { crate::object::class_layout::real_type_bits(py, value) } {
+            Ok(actual) => crate::builtins::exceptions::ExceptionValue::adopt(py, actual),
+            Err(()) => {
+                crate::cpython_abi_hooks::propagate_native_failure(py, "instance type");
+                return None;
+            }
+        };
+        if apparent.bits() == actual.bits() || !real_class(py, apparent.bits())? {
+            return Some(false);
+        }
+        return structural_classinfo_match(py, apparent.bits(), class, ClassInfoProtocol::Subclass);
+    }
+    check_abstract_class(
+        py,
+        class,
+        classinfo_type_error_message(ClassInfoProtocol::Instance),
+    )?;
+    let Some(apparent) = classinfo_attribute(py, value, b"__class__")? else {
+        return Some(false);
+    };
+    abstract_subclass(py, apparent.bits(), class)
+}
+
+pub(crate) fn subclasscheck_default(py: &PyToken<'_>, value: u64, class: u64) -> Option<bool> {
+    if real_class(py, class)? && real_class(py, value)? {
+        return structural_classinfo_match(py, value, class, ClassInfoProtocol::Subclass);
+    }
+    // A mixed pair validates derived first, even if class is a real type.
+    // Neither validation may turn an attribute failure into a new TypeError.
+    check_abstract_class(py, value, "issubclass() arg 1 must be a class")?;
+    let is_union = obj_from_bits(class)
+        .as_ptr()
+        .is_some_and(|pointer| unsafe { object_type_id(pointer) == TYPE_ID_UNION });
+    if !is_union {
+        check_abstract_class(
+            py,
+            class,
+            classinfo_type_error_message(ClassInfoProtocol::Subclass),
+        )?;
+    }
+    abstract_subclass(py, value, class)
+}
+
+fn classinfo_default(
+    py: &PyToken<'_>,
+    value: u64,
+    class: u64,
+    protocol: ClassInfoProtocol,
+) -> Option<bool> {
+    match protocol {
+        ClassInfoProtocol::Instance => instancecheck_default(py, value, class),
+        ClassInfoProtocol::Subclass => subclasscheck_default(py, value, class),
+    }
+}
+
+/// Traverse tuple/union members in observation order. Exact instance identity
+/// and exact-type defaults precede special lookup; metaclass overrides precede
+/// the abstract fallback. Only recursive paths consume recursion budget.
+fn classinfo_match(
+    py: &PyToken<'_>,
+    value: u64,
+    classinfo: u64,
+    protocol: ClassInfoProtocol,
+    hooks: bool,
+) -> Option<bool> {
+    use crate::builtins::exceptions::ExceptionValue;
+    let owner = ExceptionValue::pin(py, classinfo);
+    if hooks {
+        if matches!(protocol, ClassInfoProtocol::Instance) {
+            let actual = match unsafe { crate::object::class_layout::real_type_bits(py, value) } {
+                Ok(actual) => ExceptionValue::adopt(py, actual),
+                Err(()) => {
+                    crate::cpython_abi_hooks::propagate_native_failure(py, "instance type");
+                    return None;
+                }
+            };
+            if actual.bits() == classinfo {
+                return Some(true);
+            }
+        }
+        if real_class(py, classinfo)? {
+            let meta = match unsafe { crate::object::class_layout::real_type_bits(py, classinfo) } {
+                Ok(meta) => ExceptionValue::adopt(py, meta),
+                Err(()) => {
+                    crate::cpython_abi_hooks::propagate_native_failure(py, "class metatype");
+                    return None;
+                }
+            };
+            if meta.bits() == builtin_classes(py).type_obj {
+                return classinfo_default(py, value, classinfo, protocol);
+            }
+        }
+    }
+    let tuple = obj_from_bits(classinfo)
+        .as_ptr()
+        .filter(|&pointer| unsafe { object_type_id(pointer) == TYPE_ID_UNION })
+        .map_or(classinfo, |pointer| unsafe {
+            union_type_args_bits(pointer)
+        });
+    if let Some(items) = ClassInfoTuple::from_bits(py, tuple)? {
+        let message = match protocol {
+            ClassInfoProtocol::Instance => "maximum recursion depth exceeded in __instancecheck__",
+            ClassInfoProtocol::Subclass => "maximum recursion depth exceeded in __subclasscheck__",
+        };
+        let _recursion = crate::state::recursion::RecursionGuard::enter_with_message(py, message)?;
+        return items.any(|item| classinfo_match(py, value, item, protocol, hooks));
+    }
+    if !hooks {
+        return structural_classinfo_match(py, value, classinfo, protocol);
+    }
+    let name = classinfo_protocol_name_bits(py, protocol);
+    let method = unsafe { lookup_special_method_bits(py, owner.bits(), name) }
+        .map(|method| ExceptionValue::adopt(py, method));
+    if exception_pending(py) {
+        return None;
+    }
+    if let Some(method) = method {
+        let result = {
+            let _recursion = crate::state::recursion::RecursionGuard::enter(py)?;
+            unsafe { call_callable1(py, method.bits(), value) }
+        };
+        let result = ExceptionValue::adopt(py, result);
+        drop(method);
+        if exception_pending(py) {
+            return None;
+        }
+        let matched = is_truthy(py, obj_from_bits(result.bits()));
+        return if exception_pending(py) {
+            None
+        } else {
+            Some(matched)
+        };
+    }
+    classinfo_default(py, value, classinfo, protocol)
+}
+
+fn runtime_classinfo_match(
+    py: &PyToken<'_>,
+    value: u64,
+    classinfo: u64,
+    protocol: ClassInfoProtocol,
+) -> bool {
+    let _value = crate::builtins::exceptions::ExceptionValue::pin(py, value);
+    let mut matched = false;
+    crate::builtins::exceptions::with_saved_raised_exception(py, || {
+        let Some(result) = classinfo_match(py, value, classinfo, protocol, true) else {
+            return false;
+        };
+        matched = result;
+        true
+    });
+    matched
+}
 pub(crate) unsafe fn class_mro_pinned<'a, 'py>(
     _py: &'a PyToken<'py>,
     class_ptr: *mut u8,
@@ -329,8 +636,8 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                     let func_ptr = func_obj.as_ptr();
                     if let Some(func_ptr) = func_ptr {
                         let func_class_bits = object_class_bits(func_ptr);
-                        if builtins.is_builtin_callable_class(func_class_bits) {
-                            func_class_bits
+                        if let Some(kind) = crate::builtins::functions::native_callable::NativeCallableKind::from_class(_py, func_class_bits) {
+                            kind.bound_class(_py)
                         } else {
                             crate::builtins::types::method_class(_py)
                         }
@@ -470,402 +777,277 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
     builtins.object
 }
 
-fn collect_classinfo_isinstance(_py: &PyToken<'_>, class_bits: u64, out: &mut Vec<u64>) {
-    let obj = obj_from_bits(class_bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return raise_exception::<_>(
-            _py,
-            "TypeError",
-            "isinstance() arg 2 must be a type or tuple of types",
-        );
-    };
-    unsafe {
-        match object_type_id(ptr) {
-            TYPE_ID_TYPE => out.push(class_bits),
-            TYPE_ID_TUPLE => {
-                let Some(items) = crate::object::seq_access::snapshot(
-                    _py,
-                    ptr,
-                    "sequence snapshot allocation failed",
-                ) else {
-                    return;
-                };
-                for item in items.iter() {
-                    collect_classinfo_isinstance(_py, *item, out);
-                }
-            }
-            TYPE_ID_UNION => {
-                let args_bits = union_type_args_bits(ptr);
-                let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "isinstance() arg 2 must be a type or tuple of types",
-                    );
-                };
-                if object_type_id(args_ptr) != TYPE_ID_TUPLE {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "isinstance() arg 2 must be a type or tuple of types",
-                    );
-                }
-                let Some(items) = crate::object::seq_access::snapshot(
-                    _py,
-                    args_ptr,
-                    "sequence snapshot allocation failed",
-                ) else {
-                    return;
-                };
-                for item in items.iter() {
-                    collect_classinfo_isinstance(_py, *item, out);
-                }
-            }
-            _ => raise_exception::<_>(
-                _py,
-                "TypeError",
-                "isinstance() arg 2 must be a type or tuple of types",
-            ),
-        }
-    }
-}
-
 pub(crate) fn issubclass_bits(sub_bits: u64, class_bits: u64) -> bool {
-    if sub_bits == class_bits {
-        return true;
-    }
-    let obj = obj_from_bits(sub_bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return false;
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_TYPE {
-            return false;
-        }
-        let mro_bits = class_mro_bits(ptr);
-        if let Some(mro_ptr) = obj_from_bits(mro_bits).as_ptr()
-            && object_type_id(mro_ptr) == TYPE_ID_TUPLE
-        {
-            if crate::object::seq_access::with_immutable_tuple_slice(mro_ptr, |mro| {
-                mro.contains(&class_bits)
-            })
-            .unwrap_or(false)
-            {
-                return true;
-            }
-            // The stored MRO tuple may be stale or incomplete (e.g. when a
-            // user-defined class inherits from a builtin exception and the
-            // class dict was modified after MRO construction — such as when a
-            // user-defined __init__ is added).  Walk the bases directly as a
-            // fallback instead of trusting the cached tuple.
-            return issubclass_walk_bases(ptr, class_bits);
-        }
-    }
-    class_mro_vec(sub_bits).contains(&class_bits)
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe { crate::object::class_layout::is_real_subtype(py, sub_bits, class_bits) }
+    })
 }
 
-/// Walk the base classes recursively to check subclass relationship.
-/// This bypasses the stored MRO tuple and directly inspects the `__bases__`
-/// slot on each class, providing a reliable fallback when the MRO tuple is
-/// stale or incomplete.
-unsafe fn issubclass_walk_bases(sub_ptr: *mut u8, class_bits: u64) -> bool {
-    unsafe {
-        let bases_bits = class_bases_bits(sub_ptr);
-        let bases = class_bases_vec(bases_bits);
-        for base_bits in bases {
-            if base_bits == class_bits {
-                return true;
-            }
-            let base_obj = obj_from_bits(base_bits);
-            if let Some(base_ptr) = base_obj.as_ptr()
-                && object_type_id(base_ptr) == TYPE_ID_TYPE
-                && issubclass_walk_bases(base_ptr, class_bits)
-            {
-                return true;
-            }
-        }
-        false
-    }
+pub(crate) fn issubclass_runtime(py: &PyToken<'_>, sub_bits: u64, class_bits: u64) -> bool {
+    runtime_classinfo_match(py, sub_bits, class_bits, ClassInfoProtocol::Subclass)
 }
 
-pub(crate) fn issubclass_runtime(_py: &PyToken<'_>, sub_bits: u64, class_bits: u64) -> bool {
-    if sub_bits == class_bits {
-        return true;
-    }
-    let class_obj = obj_from_bits(class_bits);
-    let Some(class_ptr) = class_obj.as_ptr() else {
-        return false;
-    };
-    unsafe {
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return false;
-        }
-    }
-    let meta_bits = unsafe { object_class_bits(class_ptr) };
-    let meta_ptr = if meta_bits != 0 {
-        obj_from_bits(meta_bits).as_ptr()
-    } else {
-        obj_from_bits(builtin_classes(_py).type_obj).as_ptr()
-    };
-    if let Some(meta_ptr) = meta_ptr {
-        unsafe {
-            if object_type_id(meta_ptr) == TYPE_ID_TYPE {
-                let name_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.subclasscheck_name,
-                    b"__subclasscheck__",
-                );
-                if let Some(check_bits) =
-                    class_attr_lookup(_py, meta_ptr, meta_ptr, Some(class_ptr), name_bits)
-                {
-                    let res_bits = call_callable1(_py, check_bits, sub_bits);
-                    dec_ref_bits(_py, check_bits);
-                    if exception_pending(_py) {
-                        return false;
+pub(crate) fn isinstance_bits(py: &PyToken<'_>, val_bits: u64, class_bits: u64) -> bool {
+    classinfo_match(py, val_bits, class_bits, ClassInfoProtocol::Instance, false).unwrap_or(false)
+}
+
+pub(crate) fn isinstance_runtime(py: &PyToken<'_>, val_bits: u64, class_bits: u64) -> bool {
+    runtime_classinfo_match(py, val_bits, class_bits, ClassInfoProtocol::Instance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builtins::exceptions::ExceptionValue;
+    use molt_cpython_abi::api::{refcount, sequences, typeobj};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+
+    // Ordinary attributes supply abstract protocol facts; this hook also lets
+    // the failure tests distinguish original exceptions from synthetic errors.
+    extern "C" fn protocol_attribute(receiver: u64, name: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let pointer = obj_from_bits(receiver).as_ptr().unwrap();
+                let dictionary = obj_from_bits(instance_dict_bits(pointer)).as_ptr().unwrap();
+                let failure_name =
+                    ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"failure").unwrap());
+                if let Some(failure) = dict_get_in_place(py, dictionary, failure_name.bits()) {
+                    return crate::molt_raise(failure);
+                }
+                let field = match string_obj_to_owned(obj_from_bits(name)).as_deref() {
+                    Some("__bases__") => b"bases_result".as_slice(),
+                    Some("__class__") => b"class_result".as_slice(),
+                    _ => return raise_exception(py, "AttributeError", "fixture attribute missing"),
+                };
+                let field =
+                    ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, field).unwrap());
+                match dict_get_in_place(py, dictionary, field.bits()) {
+                    Some(value) => {
+                        inc_ref_bits(py, value);
+                        value
                     }
-                    let res = is_truthy(_py, obj_from_bits(res_bits));
-                    dec_ref_bits(_py, res_bits);
-                    return res;
+                    None => raise_exception(py, "AttributeError", "fixture attribute missing"),
                 }
             }
-        }
-    }
-    issubclass_bits(sub_bits, class_bits)
-}
-
-pub(crate) fn isinstance_bits(_py: &PyToken<'_>, val_bits: u64, class_bits: u64) -> bool {
-    let mut classes = Vec::new();
-    collect_classinfo_isinstance(_py, class_bits, &mut classes);
-    let val_type = type_of_bits(_py, val_bits);
-    for class_bits in classes {
-        if issubclass_bits(val_type, class_bits) {
-            return true;
-        }
-    }
-    false
-}
-
-pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u64) -> bool {
-    // Fast-path: if val is an exception instance and class_bits is an exception
-    // type class, use the exception class hierarchy directly.  This avoids the
-    // generic __instancecheck__ / metaclass path which can fail for exception
-    // objects whose metaclass doesn't support it (the same logic that `except`
-    // clauses use).
-    if let Some(val_ptr) = obj_from_bits(val_bits).as_ptr()
-        && unsafe { object_type_id(val_ptr) } == TYPE_ID_EXCEPTION
-        && let Some(cls_ptr) = obj_from_bits(class_bits).as_ptr()
-    {
-        let cls_tid = unsafe { object_type_id(cls_ptr) };
-        if cls_tid == TYPE_ID_TYPE {
-            let builtins = builtin_classes(_py);
-            if issubclass_bits(class_bits, builtins.base_exception) {
-                let val_type = type_of_bits(_py, val_bits);
-                return issubclass_bits(val_type, class_bits);
-            }
-        } else if cls_tid == TYPE_ID_TUPLE {
-            // isinstance(exc, (TypeError, ValueError)) — check if all
-            // tuple elements are exception types; if so, use the fast
-            // path for each.
-            let items = unsafe { crate::object::seq_access::pin_tuple(_py, cls_ptr) }
-                .expect("type-checked exception class tuple must remain live");
-            let builtins = builtin_classes(_py);
-            let all_exc = items.iter().all(|&item_bits| {
-                if let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() {
-                    let is_type = unsafe { object_type_id(item_ptr) } == TYPE_ID_TYPE;
-                    is_type && issubclass_bits(item_bits, builtins.base_exception)
-                } else {
-                    false
-                }
-            });
-            if all_exc {
-                let val_type = type_of_bits(_py, val_bits);
-                return items
-                    .iter()
-                    .any(|&item_bits| issubclass_bits(val_type, item_bits));
-            }
-        }
+        })
     }
 
-    // Fast-path for builtin types: resolve the value's type via type_of_bits and
-    // check with issubclass_bits directly.  This avoids the metaclass
-    // __instancecheck__ lookup which may not be wired up for builtin type objects
-    // (range, dict_keys, filter, map, zip, enumerate, etc.).
-    //
-    // We handle both a single type and a tuple of types here so that
-    // isinstance(x, (int, str)) also benefits from the fast path.
-    {
-        let class_obj = obj_from_bits(class_bits);
-        if let Some(class_ptr) = class_obj.as_ptr() {
-            let class_tid = unsafe { object_type_id(class_ptr) };
-            if class_tid == TYPE_ID_TYPE {
-                let val_type = type_of_bits(_py, val_bits);
-                if issubclass_bits(val_type, class_bits) {
-                    return true;
-                }
-                // issubclass fast-path returned false.  Only short-circuit
-                // when the metaclass is plain `type`; custom metaclasses
-                // (e.g. typing._ProtocolMeta) may define __instancecheck__
-                // that performs structural checks.
-                let meta_bits = unsafe { object_class_bits(class_ptr) };
-                let plain_type = meta_bits == 0 || meta_bits == builtin_classes(_py).type_obj;
-                if plain_type {
-                    return false;
-                }
-                // Custom metaclass — fall through to the generic path.
-            } else if class_tid == TYPE_ID_TUPLE {
-                let items = unsafe { crate::object::seq_access::pin_tuple(_py, class_ptr) }
-                    .expect("type-checked class tuple must remain live");
-                let val_type = type_of_bits(_py, val_bits);
-                let all_types = items.iter().all(|&item_bits| {
-                    if let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() {
-                        unsafe { object_type_id(item_ptr) == TYPE_ID_TYPE }
-                    } else {
-                        false
-                    }
-                });
-                if all_types {
-                    // Check that none of the tuple elements have a custom metaclass.
-                    let all_plain_meta = items.iter().all(|&item_bits| {
-                        if let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() {
-                            let meta = unsafe { object_class_bits(item_ptr) };
-                            meta == 0 || meta == builtin_classes(_py).type_obj
-                        } else {
-                            true
-                        }
-                    });
-                    if all_plain_meta {
-                        if items
-                            .iter()
-                            .any(|&item_bits| issubclass_bits(val_type, item_bits))
-                        {
-                            return true;
-                        }
-                        return false;
-                    }
-                }
-                // Tuple contains non-type elements (e.g. nested tuples) — fall
-                // through to the generic path which recursively flattens them.
-            }
-        }
-    }
-
-    let saved_exc_bits = if exception_pending(_py) {
-        molt_exception_last()
-    } else {
-        MoltObject::none().bits()
-    };
-    let has_saved_exc = !obj_from_bits(saved_exc_bits).is_none() && saved_exc_bits != 0;
-    let skip_clear = has_saved_exc && saved_exc_bits == val_bits;
-    if has_saved_exc && !skip_clear {
-        molt_exception_clear();
-    }
-    let mut saw_new_exception = false;
-    let mut matched = false;
-    let mut classes = Vec::new();
-    collect_runtime_classinfo(_py, class_bits, ClassInfoProtocol::Instance, &mut classes);
-    let debug_match = debug_exception_match();
-    if debug_match && has_saved_exc && classes.is_empty() {
-        let class_type = class_name_for_error(type_of_bits(_py, class_bits));
-        eprintln!(
-            "molt isinstance match pending=1 classes_empty=1 class_type={}",
-            class_type
+    fn protocol_class<'a, 'py>(py: &'a PyToken<'py>) -> ExceptionValue<'a, 'py> {
+        let name = ExceptionValue::adopt(
+            py,
+            attr_name_bits_from_bytes(py, b"AbstractClassInfo").unwrap(),
         );
+        let method_name = ExceptionValue::adopt(
+            py,
+            attr_name_bits_from_bytes(py, b"__getattribute__").unwrap(),
+        );
+        let function = alloc_function_obj(py, fn_addr!(protocol_attribute), 2);
+        assert!(!function.is_null());
+        let function = ExceptionValue::adopt(py, MoltObject::from_ptr(function).bits());
+        let namespace = ExceptionValue::adopt(py, crate::molt_dict_new(0));
+        assert_eq!(
+            crate::c_api::molt_mapping_setitem(
+                namespace.bits(),
+                method_name.bits(),
+                function.bits()
+            ),
+            0
+        );
+        let class = crate::builtins::types::molt_type_new(
+            builtin_classes(py).type_obj,
+            name.bits(),
+            MoltObject::none().bits(),
+            namespace.bits(),
+            MoltObject::none().bits(),
+        );
+        assert!(!exception_pending(py));
+        ExceptionValue::adopt(py, class)
     }
-    for class_info in classes {
-        let class_bits = match class_info {
-            RuntimeClassInfo::Type(class_bits) => class_bits,
-            RuntimeClassInfo::Protocol(class_bits) => {
-                if skip_clear {
-                    continue;
-                }
-                match runtime_classinfo_protocol_match(
-                    _py,
-                    class_bits,
-                    val_bits,
-                    ClassInfoProtocol::Instance,
-                ) {
-                    Some(true) => {
-                        matched = true;
-                        break;
-                    }
-                    Some(false) => continue,
-                    None => {
-                        saw_new_exception = true;
-                        break;
-                    }
-                }
-            }
-        };
-        let class_obj = obj_from_bits(class_bits);
-        let Some(class_ptr) = class_obj.as_ptr() else {
-            continue;
-        };
+
+    fn protocol_object<'a, 'py>(
+        py: &'a PyToken<'py>,
+        class: u64,
+        field: &[u8],
+        value: u64,
+    ) -> ExceptionValue<'a, 'py> {
+        let object =
+            unsafe { alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap()) };
+        let object = ExceptionValue::adopt(py, object);
+        let field = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, field).unwrap());
+        crate::molt_set_attr_name(object.bits(), field.bits(), value);
+        assert!(!exception_pending(py));
+        object
+    }
+
+    fn tuple<'a, 'py>(
+        py: &'a PyToken<'py>,
+        values: &[u64],
+        native: bool,
+    ) -> ExceptionValue<'a, 'py> {
+        if !native {
+            let tuple = alloc_tuple(py, values);
+            assert!(!tuple.is_null());
+            return ExceptionValue::adopt(py, MoltObject::from_ptr(tuple).bits());
+        }
         unsafe {
-            if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                continue;
+            // Public physical allocation deliberately bypasses managed tuple
+            // construction hooks, so this exercises genuine foreign storage.
+            let tuple = refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut molt_cpython_abi::abi_types::PyTuple_Type,
+                values.len() as isize,
+            ));
+            assert!(!tuple.as_ptr().is_null());
+            for (index, &value) in values.iter().enumerate() {
+                let item = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(value);
+                assert!(!item.is_null());
+                assert_eq!(
+                    sequences::PyTuple_SetItem(tuple.as_ptr(), index as isize, item),
+                    0
+                );
             }
-        }
-        if !skip_clear {
-            let meta_bits = unsafe { object_class_bits(class_ptr) };
-            let meta_ptr = if meta_bits != 0 {
-                obj_from_bits(meta_bits).as_ptr()
-            } else {
-                obj_from_bits(builtin_classes(_py).type_obj).as_ptr()
-            };
-            if let Some(meta_ptr) = meta_ptr {
-                unsafe {
-                    if object_type_id(meta_ptr) == TYPE_ID_TYPE {
-                        let name_bits = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.instancecheck_name,
-                            b"__instancecheck__",
-                        );
-                        if let Some(check_bits) =
-                            class_attr_lookup(_py, meta_ptr, meta_ptr, Some(class_ptr), name_bits)
-                        {
-                            let res_bits = call_callable1(_py, check_bits, val_bits);
-                            dec_ref_bits(_py, check_bits);
-                            if exception_pending(_py) {
-                                saw_new_exception = true;
-                                break;
-                            }
-                            let res = is_truthy(_py, obj_from_bits(res_bits));
-                            dec_ref_bits(_py, res_bits);
-                            if res {
-                                matched = true;
-                                break;
-                            }
-                            continue;
-                        }
-                    }
-                }
-            }
-        }
-        let val_type = type_of_bits(_py, val_bits);
-        if debug_match && has_saved_exc {
-            let val_name = class_name_for_error(val_type);
-            let class_name = class_name_for_error(class_bits);
-            eprintln!(
-                "molt isinstance match pending=1 val_type={} class={}",
-                val_name, class_name
+            let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(tuple.as_ptr()).unwrap();
+            let value = ExceptionValue::adopt(py, bits);
+            assert_eq!(
+                object_type_id(obj_from_bits(bits).as_ptr().unwrap()),
+                TYPE_ID_FOREIGN
             );
-        }
-        if issubclass_bits(val_type, class_bits) {
-            matched = true;
-            break;
+            value
         }
     }
-    if saw_new_exception {
-        if has_saved_exc {
-            dec_ref_bits(_py, saved_exc_bits);
-        }
-        return false;
+
+    fn assert_original_error(py: &PyToken<'_>, expected: u64) {
+        assert!(exception_pending(py));
+        let raised = ExceptionValue::adopt(py, crate::molt_exception_last_pending());
+        assert_eq!(raised.bits(), expected);
+        clear_exception(py);
     }
-    if has_saved_exc {
-        if !skip_clear {
-            let _ = molt_exception_set_last(saved_exc_bits);
-        }
-        dec_ref_bits(_py, saved_exc_bits);
+
+    #[test]
+    fn abstract_classinfo_shares_managed_and_native_tuple_storage() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            let class = protocol_class(py);
+            for native in [false, true] {
+                let empty = tuple(py, &[], native);
+                let root = protocol_object(py, class.bits(), b"bases_result", empty.bits());
+                let bases = tuple(py, &[root.bits()], native);
+                let derived = protocol_object(py, class.bits(), b"bases_result", bases.bits());
+                let value = protocol_object(py, class.bits(), b"class_result", derived.bits());
+                let alternatives = tuple(py, &[root.bits(), MoltObject::none().bits()], native);
+                assert!(issubclass_runtime(py, derived.bits(), root.bits()));
+                assert!(issubclass_runtime(py, root.bits(), root.bits()));
+                assert!(isinstance_runtime(py, value.bits(), root.bits()));
+                assert!(isinstance_runtime(py, value.bits(), alternatives.bits()));
+                assert!(issubclass_runtime(py, derived.bits(), alternatives.bits()));
+                assert!(!isinstance_runtime(py, value.bits(), empty.bits()));
+                assert!(!issubclass_runtime(
+                    py,
+                    MoltObject::none().bits(),
+                    empty.bits()
+                ));
+                // Public abstract acceptance never proves physical ancestry.
+                assert!(!unsafe {
+                    crate::object::class_layout::is_real_subtype(py, derived.bits(), root.bits())
+                });
+                assert!(!unsafe {
+                    crate::object::class_layout::is_real_instance(py, value.bits(), root.bits())
+                });
+                let malformed = protocol_object(
+                    py,
+                    class.bits(),
+                    b"bases_result",
+                    MoltObject::from_int(7).bits(),
+                );
+                assert_eq!(
+                    subclasscheck_default(py, malformed.bits(), root.bits()),
+                    None
+                );
+                let raised = ExceptionValue::adopt(py, crate::molt_exception_last_pending());
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    raised.bits(),
+                    "TypeError"
+                ));
+                clear_exception(py);
+                let bad_branch = tuple(py, &[malformed.bits()], native);
+                let outer = protocol_object(py, class.bits(), b"bases_result", bad_branch.bits());
+                assert!(!issubclass_runtime(py, outer.bits(), root.bits()));
+                assert!(!exception_pending(py));
+            }
+        });
     }
-    matched
+
+    #[test]
+    fn abstract_classinfo_preserves_callback_identity_and_default_class_checks() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            let class = protocol_class(py);
+            let empty = tuple(py, &[], false);
+            let root = protocol_object(py, class.bits(), b"bases_result", empty.bits());
+            let failure = crate::builtins::exceptions::alloc_exception(
+                py,
+                "LookupError",
+                "classinfo callback",
+            );
+            assert!(!failure.is_null());
+            let failure = ExceptionValue::adopt(py, MoltObject::from_ptr(failure).bits());
+            let failing = protocol_object(py, class.bits(), b"failure", failure.bits());
+            let builtins = builtin_classes(py);
+            assert_eq!(
+                subclasscheck_default(py, failing.bits(), builtins.object),
+                None
+            );
+            assert_original_error(py, failure.bits());
+            assert!(!issubclass_runtime(
+                py,
+                failing.bits(),
+                MoltObject::none().bits()
+            ));
+            assert_original_error(py, failure.bits());
+            assert!(!issubclass_runtime(py, root.bits(), failing.bits()));
+            assert_original_error(py, failure.bits());
+            assert!(!isinstance_runtime(py, root.bits(), failing.bits()));
+            assert_original_error(py, failure.bits());
+            for target in [builtins.int, root.bits()] {
+                assert_eq!(instancecheck_default(py, failing.bits(), target), None);
+                assert_original_error(py, failure.bits());
+            }
+            // Exact actual-type admission must not observe the failing __class__.
+            assert!(isinstance_runtime(py, failing.bits(), class.bits()));
+            assert_eq!(
+                instancecheck_default(py, failing.bits(), class.bits()),
+                Some(true)
+            );
+            for native in [false, true] {
+                let matched_first = tuple(py, &[class.bits(), failing.bits()], native);
+                assert!(isinstance_runtime(py, failing.bits(), matched_first.bits()));
+                let failed_first = tuple(py, &[failing.bits(), class.bits()], native);
+                assert!(!isinstance_runtime(py, root.bits(), failed_first.bits()));
+                assert_original_error(py, failure.bits());
+            }
+            let apparent = protocol_object(py, class.bits(), b"class_result", builtins.int);
+            assert_eq!(
+                instancecheck_default(py, apparent.bits(), builtins.int),
+                Some(true)
+            );
+            let int_bases = tuple(py, &[builtins.int], false);
+            let int_derived = protocol_object(py, class.bits(), b"bases_result", int_bases.bits());
+            assert_eq!(
+                subclasscheck_default(py, int_derived.bits(), builtins.int),
+                Some(true)
+            );
+            let missing = protocol_object(py, class.bits(), b"unused", MoltObject::none().bits());
+            assert_eq!(
+                instancecheck_default(py, missing.bits(), builtins.int),
+                Some(false)
+            );
+            assert_eq!(
+                instancecheck_default(py, missing.bits(), root.bits()),
+                Some(false)
+            );
+            assert!(!exception_pending(py));
+        });
+    }
 }

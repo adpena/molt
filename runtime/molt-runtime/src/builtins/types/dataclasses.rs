@@ -339,30 +339,6 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 break 'compute;
             }
 
-            let Some(molt_dataclass_name_bits) =
-                attr_name_bits_from_bytes(_py, b"__molt_dataclass__")
-            else {
-                result_bits = MoltObject::none().bits();
-                break 'compute;
-            };
-            let has_molt_dataclass =
-                unsafe { dict_get_in_place(_py, body_ptr, molt_dataclass_name_bits) }.is_some();
-            if !has_molt_dataclass {
-                unsafe {
-                    dict_set_in_place(
-                        _py,
-                        body_ptr,
-                        molt_dataclass_name_bits,
-                        MoltObject::from_bool(true).bits(),
-                    );
-                }
-            }
-            dec_ref_bits(_py, molt_dataclass_name_bits);
-            if exception_pending(_py) {
-                result_bits = MoltObject::none().bits();
-                break 'compute;
-            }
-
             let Some(module_name_bits) = attr_name_bits_from_bytes(_py, b"__module__") else {
                 result_bits = MoltObject::none().bits();
                 break 'compute;

@@ -72,46 +72,21 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         return False, False
 
     def _load_local_value_unchecked(self, name: str) -> MoltValue | None:
-        if name in self.comp_shadow_locals:
-            return self._load_local_value(name, guard_unbound=False)
-        if self.current_func_name != "molt_main" and name in self.global_decls:
-            return None
-        cell = self._load_boxed_cell(name)
-        if cell is not None:
-            hint = self.boxed_local_hints.get(name)
-            res = self._emit_cell_get(cell, type_hint=hint or "Any")
-            self._copy_container_hints_for_name_load(name, res.name)
-            return res
-        if self.is_async() and (
-            name in self.async_locals or name in self.async_internal_bindings
-        ):
-            offset = self._async_binding_slot(name).offset
-            res = MoltValue(self.next_var(), type_hint=self._async_binding_hint(name))
-            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
-            return res
-        cached = self.locals.get(name)
-        if cached is None:
-            return None
-        # Emit explicit load_var for non-boxed function locals (no unbound
-        # guard in the unchecked variant).
+        """A binding's current value for ``locals()``, missing while unbound.
+
+        A ``global`` declaration names a module binding rather than a local,
+        unless a comprehension scope shadows it. Every other name is read by the
+        canonical local reader, without an unbound guard and without a source
+        fact: this read is no Python expression, so a binding a callback may
+        have rebound comes from its storage.
+        """
         if (
-            self.current_func_name != "molt_main"
-            and not self.is_async()
-            and name in self.scope_assigned
-            and name not in self.boxed_locals
+            name not in self.comp_shadow_locals
+            and self.current_func_name != "molt_main"
+            and name in self.global_decls
         ):
-            res = MoltValue(self.next_var(), type_hint=cached.type_hint)
-            self.emit(
-                MoltOp(
-                    kind="LOAD_VAR",
-                    args=[],
-                    result=res,
-                    metadata={"var": name},
-                )
-            )
-            self._copy_container_hints_for_name_load(name, res.name)
-            return res
-        return cached
+            return None
+        return self._load_local_value(name, guard_unbound=False)
 
     def _emit_receiver_call_args(
         self, receiver: MoltValue, args: list[ast.expr]
@@ -212,8 +187,6 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         flags = 0
         if class_info.get("frozen"):
             flags |= 0x1
-        if class_info.get("eq"):
-            flags |= 0x2
         if class_info.get("repr"):
             flags |= 0x4
         if class_info.get("slots"):

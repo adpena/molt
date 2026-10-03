@@ -226,7 +226,7 @@ fn foreign_module_set_does_not_redirect_into_active_function_globals() {
         assert!(!obj_from_bits(module).is_none());
 
         inc_ref_bits(_py, globals);
-        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals, 0);
+        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals, 0, 0);
         let result = molt_module_set_attr(module, key, value);
         crate::builtins::frames::frame_stack_pop(_py);
         assert!(obj_from_bits(result).is_none());
@@ -306,7 +306,7 @@ fn global_dict_subclass_value_error_propagates_without_builtins_fallback() {
 }
 
 #[test]
-fn builtins_subclass_hit_miss_and_error_keep_bootstrap_fallback_ordered() {
+fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let key = attr_name_bits_from_bytes(_py, b"len").unwrap();
@@ -334,20 +334,54 @@ fn builtins_subclass_hit_miss_and_error_keep_bootstrap_fallback_ordered() {
         assert_and_clear_exception(_py, "NameError", "name 'len' is not defined");
 
         LOOKUP_MODE.store(LOOKUP_VALUE_ERROR, Ordering::SeqCst);
-        assert_eq!(
-            lookup_builtin_global(_py, key, "len", globals, builtins),
-            Err(())
-        );
+        assert_eq!(lookup_builtin_global(_py, key, builtins), Err(()));
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 3);
         assert_eq!(refcount(value), value_before);
         assert_and_clear_exception(_py, "ValueError", "callback lookup failed");
 
-        let bootstrap = lookup_builtin_global(_py, key, "len", globals, 0)
-            .expect("bootstrap lookup")
-            .expect("runtime builtin");
+        assert_eq!(lookup_builtin_global(_py, key, 0), Ok(None));
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 3);
-        assert!(crate::builtins::callable::is_callable_impl(_py, bootstrap));
-        dec_ref_bits(_py, bootstrap);
+
+        inc_ref_bits(_py, globals);
+        inc_ref_bits(_py, builtins);
+        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals, builtins, 0);
+        for (mode, expected) in [
+            (LOOKUP_HIT, Some(value)),
+            (LOOKUP_KEY_ERROR, None),
+            (LOOKUP_VALUE_ERROR, None),
+        ] {
+            LOOKUP_MODE.store(mode, Ordering::SeqCst);
+            let found = crate::builtins::functions::lookup_builtin_name(_py, "len");
+            assert_eq!(found, expected);
+            if let Some(found) = found {
+                assert_eq!(refcount(value), value_before + 1);
+                dec_ref_bits(_py, found);
+            }
+            if mode == LOOKUP_VALUE_ERROR {
+                assert_and_clear_exception(_py, "ValueError", "callback lookup failed");
+            } else {
+                assert!(!exception_pending(_py));
+            }
+        }
+        assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 6);
+        crate::builtins::frames::frame_stack_pop(_py);
+        assert_eq!(refcount(builtins), builtins_before);
+        assert_eq!(refcount(value), value_before);
+
+        inc_ref_bits(_py, globals);
+        crate::builtins::frames::frame_stack_push_owned(
+            _py,
+            0,
+            globals,
+            MoltObject::none().bits(),
+            0,
+        );
+        assert_eq!(
+            crate::builtins::functions::lookup_builtin_name(_py, "len"),
+            None
+        );
+        assert_and_clear_exception(_py, "TypeError", "not subscriptable");
+        crate::builtins::frames::frame_stack_pop(_py);
 
         LOOKUP_RESULT.store(0, Ordering::SeqCst);
         for bits in [globals, builtins, class, function, value, key] {

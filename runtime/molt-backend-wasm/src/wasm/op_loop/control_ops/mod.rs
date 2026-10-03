@@ -28,6 +28,7 @@ pub(super) struct ControlOpContext<'a> {
     pub(super) reloc_enabled: bool,
     pub(super) native_eh_enabled: bool,
     pub(super) op_idx: usize,
+    pub(super) return_depth: u32,
 }
 
 pub(super) fn emit_control_op(

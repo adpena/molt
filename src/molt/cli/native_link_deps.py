@@ -3,9 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 from molt.cli.native_link_manifest import (
+    NativeLinkInputs,
     read_native_link_flags,
 )
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 
 
 def _collect_cargo_native_link_deps(
@@ -14,13 +16,15 @@ def _collect_cargo_native_link_deps(
     target_triple: str | None = None,
     object_format: str,
     runtime_build_identity: RuntimeBuildIdentity,
-) -> list[str]:
+    runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+) -> NativeLinkInputs:
     """Load the artifact-bound, order-preserving Cargo native link plan."""
     return read_native_link_flags(
         runtime_lib,
         target_triple=target_triple,
         object_format=object_format,
         runtime_build_identity=runtime_build_identity,
+        runtime_codegen_binding=runtime_codegen_binding,
     )
 
 

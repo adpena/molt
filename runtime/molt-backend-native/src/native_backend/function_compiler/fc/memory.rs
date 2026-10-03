@@ -2,6 +2,7 @@ use super::super::*;
 use crate::runtime_import_abi::{
     MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_TOKEN_OWNED,
 };
+use crate::tir::simple_def_use::simple_ir_out_result;
 use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 
 /// Single-source kind authority for [`handle_memory_op`], consulted by
@@ -128,7 +129,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let local_publish = module.declare_func_in_func(publish_callee, builder.func);
             let publish_call = builder.ins().call(local_publish, &[unpublished]);
             let res = builder.inst_results(publish_call)[0];
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -169,7 +170,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let local_publish = module.declare_func_in_func(publish_callee, builder.func);
             let publish_call = builder.ins().call(local_publish, &[unpublished]);
             let res = builder.inst_results(publish_call)[0];
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -451,11 +452,9 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             for name in origin_ptr_cleanup {
                 cleanup_roots.release(builder, local_dec_ref_obj, &name);
             }
-            if let Some(out_name) = op.out.as_ref()
-                && out_name != "none"
-            {
+            if let Some(out_name) = simple_ir_out_result(op) {
                 let none_val = builder.ins().iconst(types::I64, box_none());
-                def_var_named(&mut *builder, vars, out_name.clone(), none_val);
+                def_var_named(&mut *builder, vars, out_name, none_val);
             }
         }
         "load" => {
@@ -482,7 +481,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 offset_val,
                 nbc,
             );
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -516,7 +515,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[obj_ptr, offset]);
             let res = builder.inst_results(call)[0];
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -560,7 +559,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[obj_ptr, offset, *val]);
-            if let Some(out_name) = op.out.as_ref() {
+            if let Some(out_name) = simple_ir_out_result(op) {
                 let res = builder.inst_results(call)[0];
                 def_var_named(&mut *builder, vars, out_name, res);
             }
@@ -589,7 +588,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 offset,
                 nbc,
             );
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -675,7 +674,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 ],
             );
             let res = builder.inst_results(call)[0];
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -773,11 +772,9 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     attr_len,
                 ],
             );
-            if let Some(out_name) = op.out.as_ref()
-                && out_name != "none"
-            {
+            if let Some(out_name) = simple_ir_out_result(op) {
                 let res = builder.inst_results(call)[0];
-                def_var_named(&mut *builder, vars, out_name.clone(), res);
+                def_var_named(&mut *builder, vars, out_name, res);
             }
         }
         "guard_type" | "guard_tag" => {
@@ -887,7 +884,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 .ins()
                 .call(local_callee, &[*obj, *class_bits, *expected_version]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }

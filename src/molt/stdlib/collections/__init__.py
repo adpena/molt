@@ -70,32 +70,6 @@ _MOLT_DEQUE_REVERSE = _require_intrinsic("molt_deque_reverse")
 _MOLT_DEQUE_ROTATE = _require_intrinsic("molt_deque_rotate")
 _MOLT_DEQUE_SETITEM = _require_intrinsic("molt_deque_setitem")
 
-# --- Counter intrinsics ---
-_MOLT_COUNTER_ADD = _require_intrinsic("molt_counter_add")
-_MOLT_COUNTER_AND = _require_intrinsic("molt_counter_and")
-_MOLT_COUNTER_CLEAR = _require_intrinsic("molt_counter_clear")
-_MOLT_COUNTER_CONTAINS = _require_intrinsic("molt_counter_contains")
-_MOLT_COUNTER_COPY = _require_intrinsic("molt_counter_copy")
-_MOLT_COUNTER_DELITEM = _require_intrinsic("molt_counter_delitem")
-_MOLT_COUNTER_DROP = _require_intrinsic("molt_counter_drop")
-_MOLT_COUNTER_ELEMENTS = _require_intrinsic("molt_counter_elements")
-_MOLT_COUNTER_FROM_ITERABLE = _require_intrinsic("molt_counter_from_iterable")
-_MOLT_COUNTER_FROM_MAPPING = _require_intrinsic("molt_counter_from_mapping")
-_MOLT_COUNTER_GETITEM = _require_intrinsic("molt_counter_getitem")
-_MOLT_COUNTER_ITEMS = _require_intrinsic("molt_counter_items")
-_MOLT_COUNTER_LEN = _require_intrinsic("molt_counter_len")
-_MOLT_COUNTER_MOST_COMMON = _require_intrinsic("molt_counter_most_common")
-_MOLT_COUNTER_NEG = _require_intrinsic("molt_counter_neg")
-_MOLT_COUNTER_NEW = _require_intrinsic("molt_counter_new")
-_MOLT_COUNTER_OR = _require_intrinsic("molt_counter_or")
-_MOLT_COUNTER_POS = _require_intrinsic("molt_counter_pos")
-_MOLT_COUNTER_POP = _require_intrinsic("molt_counter_pop")
-_MOLT_COUNTER_SETITEM = _require_intrinsic("molt_counter_setitem")
-_MOLT_COUNTER_SUB = _require_intrinsic("molt_counter_sub")
-_MOLT_COUNTER_SUBTRACT = _require_intrinsic("molt_counter_subtract")
-_MOLT_COUNTER_TOTAL = _require_intrinsic("molt_counter_total")
-_MOLT_COUNTER_UPDATE = _require_intrinsic("molt_counter_update")
-
 # --- defaultdict intrinsics ---
 _MOLT_DEFAULTDICT_COPY = _require_intrinsic("molt_defaultdict_copy")
 _MOLT_DEFAULTDICT_DROP = _require_intrinsic("molt_defaultdict_drop")
@@ -500,416 +474,451 @@ def namedtuple(
     return cls
 
 
-# ---------------------------------------------------------------------------
-# Counter — intrinsic-backed (handle-based, NOT a dict subclass)
-# ---------------------------------------------------------------------------
-# NOTE: isinstance(counter, dict) is False. This is a known Molt breakage
-# since Counter uses handle-based storage delegated to Rust intrinsics.
-# ---------------------------------------------------------------------------
+# Counter follows CPython 3.12.13 Lib/collections/__init__.py.
+# Copyright (c) 2001-2026 Python Software Foundation; PSF-2.0.
+# See LICENSE.cpython. Molt compiles these methods and their dependencies;
+# storage and dispatch use the ordinary native dict subclass authorities.
+from itertools import chain as _chain, repeat as _repeat, starmap as _starmap
+from operator import itemgetter as _itemgetter
+from _collections import _count_elements
 
 
-class _CounterElementsIter:
-    """Iterator for Counter.elements() backed by intrinsic."""
+class Counter(dict):
+    '''Dict subclass for counting hashable items.  Sometimes called a bag
+    or multiset.  Elements are stored as dictionary keys and their counts
+    are stored as dictionary values.
 
-    __slots__ = ("_items", "_index", "_remaining", "_current_key")
+    >>> c = Counter('abcdeabcdabcaba')  # count elements from a string
 
-    def __init__(self, counter: "Counter") -> None:
-        self._items = _MOLT_COUNTER_ITEMS(counter._handle)
-        self._index = 0
-        self._remaining = 0
-        self._current_key = None
+    >>> c.most_common(3)                # three most common elements
+    [('a', 5), ('b', 4), ('c', 3)]
+    >>> sorted(c)                       # list all unique elements
+    ['a', 'b', 'c', 'd', 'e']
+    >>> ''.join(sorted(c.elements()))   # list elements with repetitions
+    'aaaaabbbbcccdde'
+    >>> sum(c.values())                 # total of all counts
+    15
 
-    @staticmethod
-    def _coerce_count(count: Any) -> int:
-        if isinstance(count, int):
-            return int(count)
-        if isinstance(count, float):
-            raise TypeError(
-                f"'{type(count).__name__}' object cannot be interpreted as an integer"
-            )
-        index = getattr(count, "__index__", None)
-        if index is None:
-            raise TypeError(
-                f"'{type(count).__name__}' object cannot be interpreted as an integer"
-            )
-        value = index()
-        if not isinstance(value, int):
-            raise TypeError(
-                f"'{type(count).__name__}' object cannot be interpreted as an integer"
-            )
-        return int(value)
+    >>> c['a']                          # count of letter 'a'
+    5
+    >>> for elem in 'shazam':           # update counts from an iterable
+    ...     c[elem] += 1                # by adding 1 to each element's count
+    >>> c['a']                          # now there are seven 'a'
+    7
+    >>> del c['b']                      # remove all 'b'
+    >>> c['b']                          # now there are zero 'b'
+    0
 
-    def __iter__(self):
-        return self
+    >>> d = Counter('simsalabim')       # make another counter
+    >>> c.update(d)                     # add in the second counter
+    >>> c['a']                          # now there are nine 'a'
+    9
 
-    def __next__(self):
-        while self._index < len(self._items):
-            key, count = self._items[self._index]
-            if self._remaining <= 0:
-                self._current_key = key
-                try:
-                    self._remaining = self._coerce_count(count)
-                except Exception:
-                    raise
-            if self._remaining > 0:
-                self._remaining -= 1
-                if self._remaining == 0:
-                    self._index += 1
-                return self._current_key
-            self._index += 1
-        raise StopIteration
+    >>> c.clear()                       # empty the counter
+    >>> c
+    Counter()
 
+    Note:  If a count is set to zero or reduced to zero, it will remain
+    in the counter until the entry is deleted or the counter is cleared:
 
-class _CounterItemsIter:
-    __slots__ = ("_items", "_index")
+    >>> c = Counter('aaabbc')
+    >>> c['b'] -= 2                     # reduce the count of 'b' by two
+    >>> c.most_common()                 # 'b' is still in, but its count is zero
+    [('a', 3), ('c', 1), ('b', 0)]
 
-    def __init__(self, items) -> None:
-        self._items = items
-        self._index = 0
+    '''
+    # References:
+    #   http://en.wikipedia.org/wiki/Multiset
+    #   http://www.gnu.org/software/smalltalk/manual-base/html_node/Bag.html
+    #   http://www.java2s.com/Tutorial/Cpp/0380__set-multiset/Catalog0380__set-multiset.htm
+    #   http://code.activestate.com/recipes/259174/
+    #   Knuth, TAOCP Vol. II section 4.6.3
 
-    def __iter__(self):
-        return self
+    def __init__(self, iterable=None, /, **kwds):
+        '''Create a new, empty Counter object.  And if given, count elements
+        from an input iterable.  Or, initialize the count from another mapping
+        of elements to their counts.
 
-    def __next__(self):
-        if self._index >= len(self._items):
-            raise StopIteration
-        item = self._items[self._index]
-        self._index += 1
-        return item
+        >>> c = Counter()                           # a new, empty counter
+        >>> c = Counter('gallahad')                 # a new counter from an iterable
+        >>> c = Counter({'a': 4, 'b': 2})           # a new counter from a mapping
+        >>> c = Counter(a=4, b=2)                   # a new counter from keyword args
 
+        '''
+        super().__init__()
+        self.update(iterable, **kwds)
 
-class _CounterItemsView:
-    __slots__ = ("_counter",)
-
-    def __init__(self, counter: "Counter") -> None:
-        self._counter = counter
-
-    def __iter__(self):
-        return _CounterItemsIter(_MOLT_COUNTER_ITEMS(self._counter._handle))
-
-    def __len__(self) -> int:
-        return len(self._counter)
-
-    def __contains__(self, item: Any) -> bool:
-        if not isinstance(item, tuple) or len(item) != 2:
-            return False
-        key, value = item
-        return _MOLT_COUNTER_GETITEM(self._counter._handle, key) == value
-
-    def __repr__(self) -> str:
-        return f"dict_items({list(self)!r})"
-
-
-class _CounterKeysIter:
-    __slots__ = ("_items", "_index")
-
-    def __init__(self, items) -> None:
-        self._items = items
-        self._index = 0
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self._index >= len(self._items):
-            raise StopIteration
-        key, _count = self._items[self._index]
-        self._index += 1
-        return key
-
-
-class _CounterValuesIter:
-    __slots__ = ("_items", "_index")
-
-    def __init__(self, items) -> None:
-        self._items = items
-        self._index = 0
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self._index >= len(self._items):
-            raise StopIteration
-        _key, count = self._items[self._index]
-        self._index += 1
-        return count
-
-
-class Counter:
-    __slots__ = ("_handle",)
-
-    def __init__(
-        self,
-        iterable=None,
-        **kwargs,
-    ) -> None:
-        if iterable is not None:
-            if isinstance(iterable, dict) or hasattr(iterable, "items"):
-                if isinstance(iterable, dict):
-                    pairs = list(iterable.items())
-                else:
-                    pairs = [(k, iterable[k]) for k in iterable]
-                self._handle = _MOLT_COUNTER_FROM_MAPPING(pairs)
-            else:
-                if isinstance(iterable, (list, tuple)):
-                    self._handle = _MOLT_COUNTER_FROM_ITERABLE(iterable)
-                else:
-                    self._handle = _MOLT_COUNTER_FROM_ITERABLE(list(iterable))
-        else:
-            self._handle = _MOLT_COUNTER_NEW()
-        if kwargs:
-            _MOLT_COUNTER_UPDATE(self._handle, list(kwargs.items()))
-
-    @classmethod
-    def _from_handle(cls, handle) -> "Counter":
-        inst = cls.__new__(cls)
-        inst._handle = handle
-        return inst
-
-    def __missing__(self, key: Any) -> int:
+    def __missing__(self, key):
+        'The count of elements not in the Counter is zero.'
+        # Needed so that self[missing_item] does not raise KeyError
         return 0
 
-    def __getitem__(self, key: Any) -> int:
-        return _MOLT_COUNTER_GETITEM(self._handle, key)
+    def total(self):
+        'Sum of the counts'
+        return sum(self.values())
 
-    def __setitem__(self, key: Any, value: int) -> None:
-        _MOLT_COUNTER_SETITEM(self._handle, key, value)
+    def most_common(self, n=None):
+        '''List the n most common elements and their counts from the most
+        common to the least.  If n is None, then list all element counts.
 
-    def __delitem__(self, key: Any) -> None:
-        _MOLT_COUNTER_DELITEM(self._handle, key)
+        >>> Counter('abracadabra').most_common(3)
+        [('a', 5), ('b', 2), ('r', 2)]
 
-    def __contains__(self, key: Any) -> bool:
-        return bool(_MOLT_COUNTER_CONTAINS(self._handle, key))
+        '''
+        # Emulate Bag.sortedByCount from Smalltalk
+        if n is None:
+            return sorted(self.items(), key=_itemgetter(1), reverse=True)
 
-    def __len__(self) -> int:
-        return int(_MOLT_COUNTER_LEN(self._handle))
-
-    def __bool__(self) -> bool:
-        return len(self) > 0
-
-    def __iter__(self):
-        return _CounterKeysIter(_MOLT_COUNTER_ITEMS(self._handle))
-
-    def keys(self):
-        items = _MOLT_COUNTER_ITEMS(self._handle)
-        return [k for k, _v in items]
-
-    def values(self):
-        items = _MOLT_COUNTER_ITEMS(self._handle)
-        return [v for _k, v in items]
-
-    def items(self):
-        return _CounterItemsView(self)
-
-    def get(self, key: Any, default=None):
-        if _MOLT_COUNTER_CONTAINS(self._handle, key):
-            return _MOLT_COUNTER_GETITEM(self._handle, key)
-        return default
-
-    def pop(self, key: Any, *args):
-        if len(args) > 1:
-            raise TypeError(f"pop expected at most 2 arguments, got {1 + len(args)}")
-        if _MOLT_COUNTER_CONTAINS(self._handle, key):
-            count = _MOLT_COUNTER_GETITEM(self._handle, key)
-            _MOLT_COUNTER_DELITEM(self._handle, key)
-            return count
-        if args:
-            return args[0]
-        raise KeyError(key)
-
-    def popitem(self):
-        if not len(self):
-            raise KeyError("popitem(): dictionary is empty")
-        items = _MOLT_COUNTER_ITEMS(self._handle)
-        key, count = items[-1]
-        _MOLT_COUNTER_DELITEM(self._handle, key)
-        return (key, count)
-
-    def setdefault(self, key: Any, default: Any = None) -> Any:
-        if _MOLT_COUNTER_CONTAINS(self._handle, key):
-            return _MOLT_COUNTER_GETITEM(self._handle, key)
-        _MOLT_COUNTER_SETITEM(self._handle, key, default)
-        return default
-
-    def clear(self) -> None:
-        _MOLT_COUNTER_CLEAR(self._handle)
-
-    def copy(self) -> "Counter":
-        return Counter._from_handle(_MOLT_COUNTER_COPY(self._handle))
-
-    def update(self, *args, **kwargs) -> None:
-        if args:
-            if len(args) > 1:
-                raise TypeError(f"update expected at most 1 argument, got {len(args)}")
-            source = args[0]
-            if isinstance(source, Counter):
-                _MOLT_COUNTER_UPDATE(self._handle, _MOLT_COUNTER_ITEMS(source._handle))
-            elif isinstance(source, dict) or hasattr(source, "items"):
-                if isinstance(source, dict):
-                    pairs = list(source.items())
-                else:
-                    pairs = [(k, source[k]) for k in source]
-                _MOLT_COUNTER_UPDATE(self._handle, pairs)
-            else:
-                if isinstance(source, (list, tuple)):
-                    _MOLT_COUNTER_UPDATE(self._handle, source)
-                else:
-                    _MOLT_COUNTER_UPDATE(self._handle, list(source))
-        if kwargs:
-            _MOLT_COUNTER_UPDATE(self._handle, list(kwargs.items()))
-
-    def subtract(self, iterable=None, **kwargs) -> None:
-        if iterable is not None:
-            if isinstance(iterable, Counter):
-                _MOLT_COUNTER_SUBTRACT(
-                    self._handle, _MOLT_COUNTER_ITEMS(iterable._handle)
-                )
-            elif isinstance(iterable, dict) or hasattr(iterable, "items"):
-                if isinstance(iterable, dict):
-                    pairs = list(iterable.items())
-                else:
-                    pairs = [(k, iterable[k]) for k in iterable]
-                _MOLT_COUNTER_SUBTRACT(self._handle, pairs)
-            else:
-                if isinstance(iterable, (list, tuple)):
-                    _MOLT_COUNTER_SUBTRACT(self._handle, iterable)
-                else:
-                    _MOLT_COUNTER_SUBTRACT(self._handle, list(iterable))
-        if kwargs:
-            _MOLT_COUNTER_SUBTRACT(self._handle, list(kwargs.items()))
+        # Lazy import to speedup Python startup time
+        import heapq
+        return heapq.nlargest(n, self.items(), key=_itemgetter(1))
 
     def elements(self):
-        return _CounterElementsIter(self)
+        '''Iterator over elements repeating each as many times as its count.
 
-    def most_common(self, n: int | None = None):
-        return _MOLT_COUNTER_MOST_COMMON(self._handle, n)
+        >>> c = Counter('ABCABC')
+        >>> sorted(c.elements())
+        ['A', 'A', 'B', 'B', 'C', 'C']
 
-    def total(self):
-        return _MOLT_COUNTER_TOTAL(self._handle)
+        Knuth's example for prime factors of 1836:  2**2 * 3**3 * 17**1
 
-    def __repr__(self) -> str:
-        if len(self) == 0:
-            return "Counter()"
-        mc = self.most_common()
-        items: list[str] = []
-        for key, count in mc:
-            items.append(f"{key!r}: {count!r}")
-        return f"Counter({{{', '.join(items)}}})"
+        >>> import math
+        >>> prime_factors = Counter({2: 2, 3: 3, 17: 1})
+        >>> math.prod(prime_factors.elements())
+        1836
 
-    def __eq__(self, other: Any) -> bool:
-        if isinstance(other, Counter):
-            if len(self) != len(other):
-                return False
-            for key in self:
-                if self[key] != other[key]:
-                    return False
-            for key in other:
-                if key not in self:
-                    return False
-            return True
-        if isinstance(other, dict):
-            if len(self) != len(other):
-                return False
-            for key in self:
-                if self[key] != other.get(key, _MISSING):
-                    return False
-            for key in other:
-                if key not in self:
-                    return False
-            return True
-        return NotImplemented
+        Note, if an element's count has been set to zero or is a negative
+        number, elements() will ignore it.
 
-    def __ne__(self, other: Any) -> bool:
-        result = self.__eq__(other)
-        if result is NotImplemented:
-            return NotImplemented
-        return not result
+        '''
+        # Emulate Bag.do from Smalltalk and Multiset.begin from C++.
+        return _chain.from_iterable(_starmap(_repeat, self.items()))
 
-    def __add__(self, other: "Counter") -> "Counter":
-        if not isinstance(other, Counter):
-            return NotImplemented
-        return Counter._from_handle(_MOLT_COUNTER_ADD(self._handle, other._handle))
+    # Override dict methods where necessary
 
-    def __sub__(self, other: "Counter") -> "Counter":
-        if not isinstance(other, Counter):
-            return NotImplemented
-        return Counter._from_handle(_MOLT_COUNTER_SUB(self._handle, other._handle))
+    @classmethod
+    def fromkeys(cls, iterable, v=None):
+        # There is no equivalent method for counters because the semantics
+        # would be ambiguous in cases such as Counter.fromkeys('aaabbc', v=2).
+        # Initializing counters to zero values isn't necessary because zero
+        # is already the default value for counter lookups.  Initializing
+        # to one is easily accomplished with Counter(set(iterable)).  For
+        # more exotic cases, create a dictionary first using a dictionary
+        # comprehension or dict.fromkeys().
+        raise NotImplementedError(
+            'Counter.fromkeys() is undefined.  Use Counter(iterable) instead.')
 
-    def __or__(self, other) -> "Counter":
-        if not isinstance(other, Counter):
-            return NotImplemented
-        return Counter._from_handle(_MOLT_COUNTER_OR(self._handle, other._handle))
+    def update(self, iterable=None, /, **kwds):
+        '''Like dict.update() but add counts instead of replacing them.
 
-    def __and__(self, other: "Counter") -> "Counter":
-        if not isinstance(other, Counter):
-            return NotImplemented
-        return Counter._from_handle(_MOLT_COUNTER_AND(self._handle, other._handle))
+        Source can be an iterable, a dictionary, or another Counter instance.
 
-    def __pos__(self) -> "Counter":
-        return Counter._from_handle(_MOLT_COUNTER_POS(self._handle))
+        >>> c = Counter('which')
+        >>> c.update('witch')           # add elements from another iterable
+        >>> d = Counter('watch')
+        >>> c.update(d)                 # add elements from another counter
+        >>> c['h']                      # four 'h' in which, witch, and watch
+        4
 
-    def __neg__(self) -> "Counter":
-        return Counter._from_handle(_MOLT_COUNTER_NEG(self._handle))
+        '''
+        # The regular dict.update() operation makes no sense here because the
+        # replace behavior results in some of the original untouched counts
+        # being mixed-in with all of the other counts for a mismash that
+        # doesn't have a straight-forward interpretation in most counting
+        # contexts.  Instead, we implement straight-addition.  Both the inputs
+        # and outputs are allowed to contain zero and negative counts.
 
-    def __iadd__(self, other: "Counter"):
-        if not isinstance(other, Counter):
-            return NotImplemented
-        new_handle = _MOLT_COUNTER_ADD(self._handle, other._handle)
-        old_handle = self._handle
-        self._handle = new_handle
+        if iterable is not None:
+            if isinstance(iterable, abc.Mapping):
+                if self:
+                    self_get = self.get
+                    for elem, count in iterable.items():
+                        self[elem] = count + self_get(elem, 0)
+                else:
+                    # fast path when counter is empty
+                    super().update(iterable)
+            else:
+                _count_elements(self, iterable)
+        if kwds:
+            self.update(kwds)
+
+    def subtract(self, iterable=None, /, **kwds):
+        '''Like dict.update() but subtracts counts instead of replacing them.
+        Counts can be reduced below zero.  Both the inputs and outputs are
+        allowed to contain zero and negative counts.
+
+        Source can be an iterable, a dictionary, or another Counter instance.
+
+        >>> c = Counter('which')
+        >>> c.subtract('witch')             # subtract elements from another iterable
+        >>> c.subtract(Counter('watch'))    # subtract elements from another counter
+        >>> c['h']                          # 2 in which, minus 1 in witch, minus 1 in watch
+        0
+        >>> c['w']                          # 1 in which, minus 1 in witch, minus 1 in watch
+        -1
+
+        '''
+        if iterable is not None:
+            self_get = self.get
+            if isinstance(iterable, abc.Mapping):
+                for elem, count in iterable.items():
+                    self[elem] = self_get(elem, 0) - count
+            else:
+                for elem in iterable:
+                    self[elem] = self_get(elem, 0) - 1
+        if kwds:
+            self.subtract(kwds)
+
+    def copy(self):
+        'Return a shallow copy.'
+        return self.__class__(self)
+
+    def __reduce__(self):
+        return self.__class__, (dict(self),)
+
+    def __delitem__(self, elem):
+        'Like dict.__delitem__() but does not raise KeyError for missing values.'
+        if elem in self:
+            super().__delitem__(elem)
+
+    def __repr__(self):
+        if not self:
+            return f'{self.__class__.__name__}()'
         try:
-            _MOLT_COUNTER_DROP(old_handle)
-        except Exception:
-            pass
+            # dict() preserves the ordering returned by most_common()
+            d = dict(self.most_common())
+        except TypeError:
+            # handle case where values are not orderable
+            d = dict(self)
+        return f'{self.__class__.__name__}({d!r})'
+
+    # Multiset-style mathematical operations discussed in:
+    #       Knuth TAOCP Volume II section 4.6.3 exercise 19
+    #       and at http://en.wikipedia.org/wiki/Multiset
+    #
+    # Outputs guaranteed to only include positive counts.
+    #
+    # To strip negative and zero counts, add-in an empty counter:
+    #       c += Counter()
+    #
+    # Results are ordered according to when an element is first
+    # encountered in the left operand and then by the order
+    # encountered in the right operand.
+    #
+    # When the multiplicities are all zero or one, multiset operations
+    # are guaranteed to be equivalent to the corresponding operations
+    # for regular sets.
+    #     Given counter multisets such as:
+    #         cp = Counter(a=1, b=0, c=1)
+    #         cq = Counter(c=1, d=0, e=1)
+    #     The corresponding regular sets would be:
+    #         sp = {'a', 'c'}
+    #         sq = {'c', 'e'}
+    #     All of the following relations would hold:
+    #         set(cp + cq) == sp | sq
+    #         set(cp - cq) == sp - sq
+    #         set(cp | cq) == sp | sq
+    #         set(cp & cq) == sp & sq
+    #         (cp == cq) == (sp == sq)
+    #         (cp != cq) == (sp != sq)
+    #         (cp <= cq) == (sp <= sq)
+    #         (cp < cq) == (sp < sq)
+    #         (cp >= cq) == (sp >= sq)
+    #         (cp > cq) == (sp > sq)
+
+    def __eq__(self, other):
+        'True if all counts agree. Missing counts are treated as zero.'
+        if not isinstance(other, Counter):
+            return NotImplemented
+        return all(self[e] == other[e] for c in (self, other) for e in c)
+
+    def __ne__(self, other):
+        'True if any counts disagree. Missing counts are treated as zero.'
+        if not isinstance(other, Counter):
+            return NotImplemented
+        return not self == other
+
+    def __le__(self, other):
+        'True if all counts in self are a subset of those in other.'
+        if not isinstance(other, Counter):
+            return NotImplemented
+        return all(self[e] <= other[e] for c in (self, other) for e in c)
+
+    def __lt__(self, other):
+        'True if all counts in self are a proper subset of those in other.'
+        if not isinstance(other, Counter):
+            return NotImplemented
+        return self <= other and self != other
+
+    def __ge__(self, other):
+        'True if all counts in self are a superset of those in other.'
+        if not isinstance(other, Counter):
+            return NotImplemented
+        return all(self[e] >= other[e] for c in (self, other) for e in c)
+
+    def __gt__(self, other):
+        'True if all counts in self are a proper superset of those in other.'
+        if not isinstance(other, Counter):
+            return NotImplemented
+        return self >= other and self != other
+
+    def __add__(self, other):
+        '''Add counts from two counters.
+
+        >>> Counter('abbb') + Counter('bcc')
+        Counter({'b': 4, 'c': 2, 'a': 1})
+
+        '''
+        if not isinstance(other, Counter):
+            return NotImplemented
+        result = Counter()
+        for elem, count in self.items():
+            newcount = count + other[elem]
+            if newcount > 0:
+                result[elem] = newcount
+        for elem, count in other.items():
+            if elem not in self and count > 0:
+                result[elem] = count
+        return result
+
+    def __sub__(self, other):
+        ''' Subtract count, but keep only results with positive counts.
+
+        >>> Counter('abbbc') - Counter('bccd')
+        Counter({'b': 2, 'a': 1})
+
+        '''
+        if not isinstance(other, Counter):
+            return NotImplemented
+        result = Counter()
+        for elem, count in self.items():
+            newcount = count - other[elem]
+            if newcount > 0:
+                result[elem] = newcount
+        for elem, count in other.items():
+            if elem not in self and count < 0:
+                result[elem] = 0 - count
+        return result
+
+    def __or__(self, other):
+        '''Union is the maximum of value in either of the input counters.
+
+        >>> Counter('abbb') | Counter('bcc')
+        Counter({'b': 3, 'c': 2, 'a': 1})
+
+        '''
+        if not isinstance(other, Counter):
+            return NotImplemented
+        result = Counter()
+        for elem, count in self.items():
+            other_count = other[elem]
+            newcount = other_count if count < other_count else count
+            if newcount > 0:
+                result[elem] = newcount
+        for elem, count in other.items():
+            if elem not in self and count > 0:
+                result[elem] = count
+        return result
+
+    def __and__(self, other):
+        ''' Intersection is the minimum of corresponding counts.
+
+        >>> Counter('abbb') & Counter('bcc')
+        Counter({'b': 1})
+
+        '''
+        if not isinstance(other, Counter):
+            return NotImplemented
+        result = Counter()
+        for elem, count in self.items():
+            other_count = other[elem]
+            newcount = count if count < other_count else other_count
+            if newcount > 0:
+                result[elem] = newcount
+        return result
+
+    def __pos__(self):
+        'Adds an empty counter, effectively stripping negative and zero counts'
+        result = Counter()
+        for elem, count in self.items():
+            if count > 0:
+                result[elem] = count
+        return result
+
+    def __neg__(self):
+        '''Subtracts from an empty counter.  Strips positive and zero counts,
+        and flips the sign on negative counts.
+
+        '''
+        result = Counter()
+        for elem, count in self.items():
+            if count < 0:
+                result[elem] = 0 - count
+        return result
+
+    def _keep_positive(self):
+        '''Internal method to strip elements with a negative or zero count'''
+        nonpositive = [elem for elem, count in self.items() if not count > 0]
+        for elem in nonpositive:
+            del self[elem]
         return self
 
-    def __isub__(self, other: "Counter"):
-        if not isinstance(other, Counter):
-            return NotImplemented
-        new_handle = _MOLT_COUNTER_SUB(self._handle, other._handle)
-        old_handle = self._handle
-        self._handle = new_handle
-        try:
-            _MOLT_COUNTER_DROP(old_handle)
-        except Exception:
-            pass
-        return self
+    def __iadd__(self, other):
+        '''Inplace add from another counter, keeping only positive counts.
+
+        >>> c = Counter('abbb')
+        >>> c += Counter('bcc')
+        >>> c
+        Counter({'b': 4, 'c': 2, 'a': 1})
+
+        '''
+        for elem, count in other.items():
+            self[elem] += count
+        return self._keep_positive()
+
+    def __isub__(self, other):
+        '''Inplace subtract counter, but keep only results with positive counts.
+
+        >>> c = Counter('abbbc')
+        >>> c -= Counter('bccd')
+        >>> c
+        Counter({'b': 2, 'a': 1})
+
+        '''
+        for elem, count in other.items():
+            self[elem] -= count
+        return self._keep_positive()
 
     def __ior__(self, other):
-        if not isinstance(other, Counter):
-            return NotImplemented
-        new_handle = _MOLT_COUNTER_OR(self._handle, other._handle)
-        old_handle = self._handle
-        self._handle = new_handle
-        try:
-            _MOLT_COUNTER_DROP(old_handle)
-        except Exception:
-            pass
-        return self
+        '''Inplace union is the maximum of value from either counter.
 
-    def __iand__(self, other: "Counter"):
-        if not isinstance(other, Counter):
-            return NotImplemented
-        new_handle = _MOLT_COUNTER_AND(self._handle, other._handle)
-        old_handle = self._handle
-        self._handle = new_handle
-        try:
-            _MOLT_COUNTER_DROP(old_handle)
-        except Exception:
-            pass
-        return self
+        >>> c = Counter('abbb')
+        >>> c |= Counter('bcc')
+        >>> c
+        Counter({'b': 3, 'c': 2, 'a': 1})
 
-    def __hash__(self):
-        raise TypeError("unhashable type: 'Counter'")
+        '''
+        for elem, other_count in other.items():
+            count = self[elem]
+            if other_count > count:
+                self[elem] = other_count
+        return self._keep_positive()
 
-    def __del__(self):
-        handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_COUNTER_DROP(handle)
-            except Exception:
-                pass
+    def __iand__(self, other):
+        '''Inplace intersection is the minimum of corresponding counts.
+
+        >>> c = Counter('abbb')
+        >>> c &= Counter('bcc')
+        >>> c
+        Counter({'b': 1})
+
+        '''
+        for elem, count in self.items():
+            other_count = other[elem]
+            if other_count < count:
+                self[elem] = other_count
+        return self._keep_positive()
+
 
 
 # ---------------------------------------------------------------------------

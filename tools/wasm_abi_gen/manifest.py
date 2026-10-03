@@ -890,6 +890,42 @@ def runtime_import_return_specs(data: dict) -> dict[str, str]:
     return contracts
 
 
+def runtime_operation_return_specs(data: dict) -> dict[str, str]:
+    """Project runtime returns onto exact operation spellings.
+
+    Generic preserved calls use molt_<kind>. Explicit manifest operation
+    selectors override that spelling convention, including mixed/raw imports,
+    numeric aliases, and constant materializers. This is semantic custody only;
+    operation existence, first-class mapping, and result presence are separate.
+    An i64 machine carrier never establishes an owned object.
+    """
+    contracts = runtime_import_return_specs(data)
+    operations = {
+        symbol.removeprefix("molt_"): contracts[entry["name"]]
+        for entry in data["import"]
+        if (symbol := runtime_export_name(entry)) is not None
+        and symbol.startswith("molt_")
+    }
+    selected: dict[str, str] = {}
+    for family, import_key in (
+        ("op_loop_runtime_call", "import_name"),
+        ("numeric_runtime_selector", "import_name"),
+        ("const_op_policy", "materializer_import"),
+    ):
+        for entry in data.get(family, []):
+            if import_key not in entry:
+                continue
+            kind = entry["kind"]
+            contract = contracts[entry[import_key]]
+            prior = selected.setdefault(kind, contract)
+            if prior != contract:
+                raise WasmAbiManifestError(
+                    f"operation {kind!r} has conflicting runtime return contracts"
+                )
+    operations.update(selected)
+    return operations
+
+
 def _annotate_runtime_callable_features(
     imports: list[dict],
     *,

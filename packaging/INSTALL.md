@@ -1,7 +1,8 @@
 # Molt install (binary release)
 
-This bundle includes the Molt CLI, a production-optimized compiler, and matching
-compiler/runtime sources. The optional `molt-worker` helper is a separate package
+This bundle includes the Molt CLI, a production-optimized compiler, prebuilt
+native and WASM runtime artifacts for every supported profile, stdlib tier and
+extension/freestanding variant, and the matching compiler/runtime sources. The optional `molt-worker` helper is a separate package
 with its own command and data paths; installing both does not duplicate ownership.
 Molt requires the local toolchains listed below; it does not install them on
 your behalf. Private CLI dependencies require the explicit setup command below.
@@ -11,15 +12,24 @@ any host Python installation or hidden CPython fallback.
 ## Requirements
 
 - **Python 3.12+** available as `python3` (or `python` on Windows).
-- **uv** manages the CLI's isolated dependencies directly from the bundled
-  `uv.lock`, including its artifact hashes and Python/platform markers.
-- **Rust toolchain** (`rustup` recommended) so Molt can build the selected runtime.
-  The shipped compiler itself is already built; selecting a guest profile does
-  not rebuild it.
-- **C/C++ toolchain**:
+- **uv** manages a binary bundle's private CLI dependencies directly from the
+  bundled `uv.lock`, including artifact hashes and Python/platform markers.
+  Platform wheels use the pip environment and do not require uv for normal
+  compilation.
+- **No Rust toolchain.** The compiler and runtime ship prebuilt; `molt build`,
+  `molt run`, `molt doctor` and `molt setup` neither use nor install Rust. A
+  request outside the shipped runtime cells (for example a GPU feature flag or
+  a cross-compilation target) fails and lists the shipped cells. Building other
+  runtime configurations is Molt development in a source checkout
+  (`MOLT_SOURCE_ROOT`). Upgrade an installed Molt with the installer, package
+  manager or pip that provided it; `molt update --no-locks` only provisions
+  its pinned wasm-tools. Rust toolchain refresh (`molt update`) is a
+  source-checkout development workflow.
+- **C/C++ toolchain** (links programs against the shipped runtime):
   - macOS: Xcode Command Line Tools (`xcode-select --install`)
   - Linux: clang/llvm + build essentials
-  - Windows: LLVM clang or set `CC` to a compatible compiler
+  - Windows: LLVM clang or set `CC` to a compatible compiler, plus the MSVC
+    runtime libraries and Windows SDK (Visual Studio Build Tools C++ workload)
 - **WASM (optional)**: the [WASM toolchain](../docs/spec/areas/tooling/0001-toolchains.md)
   supplies target-specific C tools and the WASI sysroot. Public
   `molt run --target wasm` also requires Node.js. Keep WASI SDK compilers
@@ -28,11 +38,64 @@ any host Python installation or hidden CPython fallback.
 Set `PYTHON` to a CPython executable path to select an interpreter explicitly;
 the native launcher on every platform honors the same override.
 The bootstrap checks the CPython 3.12+ minimum. Verified versions and target
-support remain those listed in the release matrix.
+support remain those listed in the release matrix. Source parsing uses this
+interpreter: to target Python 3.N, the CLI must run on CPython 3.N or newer.
+Homebrew binds its frontend to Python 3.14 for the current 3.12-3.14 policies.
+After changing `PYTHON` for a binary bundle, authorize the corresponding private
+environment with `molt setup --install-cli-dependencies`, then retry the build.
+This frontend requirement does not create a Python dependency in compiled guests.
 
 ## Install
 
-### Package managers (recommended)
+### pip
+
+Install a platform wheel downloaded from a release with
+`pip install <wheel-path>`. The workflow produces wheel assets; it currently
+has no PyPI publication step for the planned `pip install molt` registry route.
+A platform wheel installs this same distribution (compiler, runtime cells and signed source
+manifest) into the environment's `share/molt/distribution`; the `molt`
+command uses it directly without uv or Rust. On other platforms pip selects
+the pure-Python wheel, whose CLI requires `MOLT_SOURCE_ROOT` to name a Molt
+source checkout; it never adopts a nearby checkout implicitly.
+
+Installing Molt does not register pytest plugins or take over other projects'
+test runs. Molt's repository loads its development test guard explicitly through
+its own pytest configuration.
+
+Project dependency commands use the nearest user project from the current
+directory, or the explicit `MOLT_PROJECT_ROOT`. They reject sealed compiler
+inputs as a project. `molt install` manages that project's `.molt-venv` using
+uv and the host platform's environment layout. Without package arguments, or
+with `--sync`, it exports the uv project lock (including source mappings)
+and resolves additional requirements before removing packages outside the
+combined transitive closure. Requirements files retain their includes, constraints, hashes and relative-path rules.
+
+Dependency resolution currently uses the CLI interpreter and host platform,
+not the selected guest version or WASM platform. Build discovery also admits a
+project `.venv/lib/python*/site-packages` before the managed `.molt-venv`; this
+POSIX-only path can shadow managed packages. A target-bound dependency
+environment and consistent module-root admission remain release blockers.
+
+`molt install add <package>` persists the dependency and synchronizes the same
+environment through one uv project operation; a persistence or installation
+failure returns an error. Explicit package and requirements paths are relative
+to the invoking directory. `molt deps` reads the project's dependency metadata;
+`molt vendor` resolves its lock and writes default or relative output paths under
+the project root. Python-only projects do not require a compiler Cargo lock.
+Installing Molt itself through pip, a package manager, or a release bundle is a
+separate operation. These dependency-command checks do not replace the
+[installed release acceptance](PACKAGING.md).
+
+The separate `test`, `bench`, `clean`, `lint`, and `profile` implementations
+still select the compiler-input tree as their execution or cleanup root. Their
+installed behavior is an open product boundary; they do not provide a verified
+user-project workflow yet.
+
+### Package managers
+
+Use the commands below when the corresponding release is available in the
+package repository. A generated manifest or template in this source tree does
+not establish that a package has been published.
 
 Homebrew (macOS/Linux):
 
@@ -40,6 +103,13 @@ Homebrew (macOS/Linux):
 brew tap adpena/molt
 brew install molt
 ```
+
+The formula projects the complete bundle directories from the distribution
+authority, retaining `runtime/` and hidden files under `source/`. Its package
+test compiles a release-profile argument-binding guest and compares the
+standalone executable with CPython. Template and filesystem checks do not
+establish a successful Homebrew installation; POSIX package acceptance remains
+required.
 
 Optional minimal worker:
 
@@ -109,8 +179,12 @@ warm launches reuse them. No activation or `MOLT_VENV` override is needed.
 `MOLT_HOME` defaults to the CLI cache root's `home` directory: typically
 `~/.cache/molt/home` (respecting `XDG_CACHE_HOME`) or `%LOCALAPPDATA%\Molt\home`.
 It must be outside the immutable installation prefix.
-Uninstall a portable installation by removing its bundle, PATH entry, and its
-environment under `MOLT_HOME`; uv's download cache is independently managed by uv.
+Use the installer or package manager that provided Molt to uninstall it. For a
+portable installation, remove its bundle and any PATH entry you added. Private
+environments under `MOLT_HOME/environments`, retained runtime generations under
+`MOLT_HOME/installed-runtime`, and other build/cache outputs remain separately
+owned mutable data. Remove them only when no retained installation or build uses
+them; do not remove unrelated outputs. uv manages its download cache separately.
 
 Run after install:
 
@@ -150,7 +224,7 @@ Example JSON shape (values vary):
     "checks": [
       {"name": "python", "ok": true, "detail": "3.12.x (requires >=3.12)"},
       {"name": "uv", "ok": true, "detail": "<path-to-uv>"},
-      {"name": "cargo", "ok": true, "detail": "<path-to-cargo>"}
+      {"name": "molt-runtime", "ok": true, "detail": "<count> shipped runtime cells verified under <runtime-root>"}
     ]
   },
   "warnings": [],
@@ -166,23 +240,18 @@ Failed checks include a `level` and optional `advice` list in `data.checks`.
   - macOS: `brew install python@3.12`
   - Windows: `winget install Python.Python.3.12`
   - Linux: install Python 3.12+ via your package manager
-- **uv** (required): install uv.
+- **uv** (binary bundles): install uv for their private CLI environment.
   - macOS: `brew install uv`
   - Windows: `winget install Astral.Uv` or `scoop install uv`
   - Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **cargo/rustup**: install Rust toolchain and ensure PATH is updated.
-  - macOS: `brew install rustup` or use the signed installer from <https://rustup.rs/>.
-  - Linux: use the distribution package or the signed installer from <https://rustup.rs/>.
-  - Windows: `winget install Rustlang.Rustup`
-  - Then: `source $HOME/.cargo/env` (macOS/Linux) or reopen your terminal (Windows)
 - **clang**: install a C toolchain.
   - macOS: `xcode-select --install`
   - Linux: `sudo apt-get update && sudo apt-get install -y clang lld`
   - Windows: `winget install LLVM.LLVM` and set `CC=clang`
-- **wasm-target** (optional): `rustup target add wasm32-wasip1`
 - **CLI dependencies**: review and run `molt setup --install-cli-dependencies`.
   Do not rewrite a packaged compiler's sealed lockfiles.
-- **molt-runtime**: run `cargo build --release --package molt-runtime`
+- **molt-runtime**: `molt doctor` verifies the shipped runtime cells. Reinstall
+  Molt if one is damaged; installed Molt never rebuilds them.
 
 ## Optional environment overrides
 

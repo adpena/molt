@@ -5,24 +5,16 @@ const WASI_TARGET_INCLUDE_DIRS: &[&str] = &["wasm32-wasip1", "wasm32-wasi"];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WasiSysroot {
-    root: PathBuf,
-    include_dir: Option<PathBuf>,
+    pub root: PathBuf,
+    pub include_dir: Option<PathBuf>,
     lib_dir: Option<PathBuf>,
 }
 
 impl WasiSysroot {
-    pub fn include_dir(&self) -> Option<&Path> {
-        self.include_dir.as_deref()
-    }
-
     pub fn lib_dir(&self, preferred_target: &str) -> PathBuf {
         self.lib_dir
             .clone()
             .unwrap_or_else(|| self.root.join("lib").join(preferred_target))
-    }
-
-    pub fn sysroot_flag(&self) -> String {
-        format!("--sysroot={}", self.root.display())
     }
 }
 

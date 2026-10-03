@@ -228,28 +228,42 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     )
     .expect("write stdlib split native batch worker test IR");
 
-    let run_backend = |destination: &Path| {
-        Command::new(env!("CARGO_BIN_EXE_molt-backend"))
-            .args(["--native-output-kind", "archive"])
-            .arg("--ir-file")
-            .arg(&ir_path)
-            .arg("--output")
-            .arg(destination)
-            .env("MOLT_ENTRY_MODULE", "demo")
-            .env("MOLT_STDLIB_OBJ", &stdlib_path)
-            .env("MOLT_STDLIB_CACHE_KEY", "stdlib-batch-key")
-            .env(
-                "MOLT_STDLIB_CACHE_MANIFEST",
-                "{\"cache_key\":\"stdlib-batch-key\"}",
-            )
-            .env("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]")
-            .env("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols_path)
-            .env("MOLT_BACKEND_BATCH_SIZE", "1")
-            .env("MOLT_BACKEND_BATCH_OP_BUDGET", "8000")
-            .output()
-            .expect("spawn production molt-backend binary")
+    let manifest_for = |cache_key: &str, opt_level: &str| {
+        serde_json::json!({
+        "schema": "stdlib-manifest-v2-archive", "artifact_kind": "archive", "cache_key": cache_key,
+        "cache_variant": format!("profile=test;codegen_env=test-{opt_level}"),
+        "compiler_fingerprint": "test", "target_triple": null,
+    }).to_string()
     };
-    let output = run_backend(&output_path);
+    let run_backend =
+        |destination: &Path, cache_key: &str, opt_level: &str, inline_exc_disabled: &str| {
+            Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+                .args(["--native-output-kind", "archive"])
+                .arg("--ir-file")
+                .arg(&ir_path)
+                .arg("--output")
+                .arg(destination)
+                .env("MOLT_ENTRY_MODULE", "demo")
+                .env("MOLT_STDLIB_OBJ", &stdlib_path)
+                .env("MOLT_STDLIB_CACHE_KEY", cache_key)
+                .env("MOLT_BACKEND_OPT_LEVEL", opt_level)
+                .env("MOLT_BACKEND_INLINE_EXC_DISABLED", inline_exc_disabled)
+                .env(
+                    "MOLT_STDLIB_CACHE_MANIFEST",
+                    manifest_for(cache_key, opt_level),
+                )
+                .env("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]")
+                .env("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols_path)
+                .env(
+                    "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256",
+                    "7001af054760bae1bd40827bc8d71908d728584511d2a419f376e490ba1c405d",
+                )
+                .env("MOLT_BACKEND_BATCH_SIZE", "1")
+                .env("MOLT_BACKEND_BATCH_OP_BUDGET", "8000")
+                .output()
+                .expect("spawn production molt-backend binary")
+        };
+    let output = run_backend(&output_path, "stdlib-batch-key", "speed", "0");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -260,12 +274,12 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         stderr
     );
     assert!(
-        stderr.contains("first build")
-            && stderr.contains("caching 2 stdlib functions")
+        stderr.contains("materializing 2 stdlib functions")
+            && stderr.contains("stdlib object reuse: 0 hits, 2 misses")
             && stderr.contains("stdlib batch 1/2")
             && stderr.contains("stdlib batch 2/2")
-            && stderr.contains("compiling materialized stdlib batch 1/2")
-            && stderr.contains("compiling materialized stdlib batch 2/2"),
+            && stderr.contains("compiling stdlib object miss 1/2")
+            && stderr.contains("compiling stdlib object miss 2/2"),
         "expected production worker path to materialize and compile two stdlib cache batches; stderr:\n{stderr}"
     );
     assert!(
@@ -300,7 +314,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         std::fs::read_to_string(stdlib_path.with_extension("manifest.json"))
             .expect("shared stdlib manifest sidecar")
             .trim(),
-        "{\"cache_key\":\"stdlib-batch-key\"}"
+        manifest_for("stdlib-batch-key", "speed")
     );
     let partition_manifest = std::fs::read_to_string(stdlib_path.with_extension("partition.json"))
         .expect("shared stdlib partition manifest sidecar");
@@ -318,7 +332,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     );
 
     let warm_output_path = tmp.path.join("out-warm.a");
-    let warm_output = run_backend(&warm_output_path);
+    let warm_output = run_backend(&warm_output_path, "stdlib-batch-key", "speed", "0");
     let warm_stderr = String::from_utf8_lossy(&warm_output.stderr);
     assert!(
         warm_output.status.success(),
@@ -342,6 +356,66 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
             .len()
             > 0,
         "warm native batch worker path must write a non-empty application object"
+    );
+
+    // Force a whole-archive miss with a different program key. Constituent
+    // admission must avoid BOTH production workers and reproduce the archive.
+    let original_archive = std::fs::read(&stdlib_path).expect("read original stdlib archive");
+    let constituent_output = run_backend(
+        &tmp.path.join("other-program.a"),
+        "other-program",
+        "speed",
+        "0",
+    );
+    let constituent_stderr = String::from_utf8_lossy(&constituent_output.stderr);
+    assert!(
+        constituent_output.status.success(),
+        "constituent reuse failed: {constituent_stderr}"
+    );
+    assert!(
+        constituent_stderr.contains("stdlib object reuse: 2 hits, 0 misses"),
+        "archive miss must restore both exact objects: {constituent_stderr}"
+    );
+    assert!(
+        !constituent_stderr.contains("compiling stdlib object miss"),
+        "cache hits must not invoke stdlib workers: {constituent_stderr}"
+    );
+    assert_eq!(std::fs::read(&stdlib_path).unwrap(), original_archive);
+
+    // This switch was absent from the old CLI digest. Keep the same manifest
+    // variant to prove that the actual inherited worker input invalidates reuse.
+    let emitter_output = run_backend(
+        &tmp.path.join("changed-emitter.a"),
+        "changed-emitter",
+        "speed",
+        "1",
+    );
+    let emitter_stderr = String::from_utf8_lossy(&emitter_output.stderr);
+    assert!(
+        emitter_output.status.success(),
+        "changed emitter failed: {emitter_stderr}"
+    );
+    assert!(
+        emitter_stderr.contains("stdlib object reuse: 0 hits, 2 misses"),
+        "actual emitter switch must invalidate both constituent keys: {emitter_stderr}"
+    );
+
+    // Effective codegen settings and their canonical manifest change together.
+    // Identical IR cannot admit the prior speed-optimized object generation.
+    let changed_output = run_backend(
+        &tmp.path.join("changed-codegen.a"),
+        "changed-codegen",
+        "none",
+        "0",
+    );
+    let changed_stderr = String::from_utf8_lossy(&changed_output.stderr);
+    assert!(
+        changed_output.status.success(),
+        "changed codegen failed: {changed_stderr}"
+    );
+    assert!(
+        changed_stderr.contains("stdlib object reuse: 0 hits, 2 misses"),
+        "codegen authority changes must recompile both objects: {changed_stderr}"
     );
 
     std::fs::remove_dir_all(&tmp.path).expect("remove native batch worker temp dir");
@@ -425,12 +499,7 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
         artifact_dir.display()
     );
     let manifest_path = artifact_dir.join("manifest.json");
-    let module_context_path = artifact_dir.join("module_context.json");
     assert!(manifest_path.exists(), "failure manifest must be preserved");
-    assert!(
-        module_context_path.exists(),
-        "batch module context must be copied beside the replay job"
-    );
     let copied_job_path = artifact_dir.join("batch_1.json");
     assert!(
         copied_job_path.exists(),
@@ -439,19 +508,13 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
     let copied_job = std::fs::read_to_string(&copied_job_path).expect("read copied batch job");
     let copied_job_json: serde_json::Value =
         serde_json::from_str(&copied_job).expect("parse copied batch job");
-    let replay_module_context_path = copied_job_json
-        .get("module_context_path")
-        .and_then(serde_json::Value::as_str)
-        .map(PathBuf::from)
-        .expect("copied replay job module_context_path");
     assert!(
-        replay_module_context_path == module_context_path,
-        "copied replay job must reference the preserved module context: {copied_job}"
+        copied_job_json
+            .get("module_context")
+            .is_some_and(serde_json::Value::is_object),
+        "replay must retain the exact projected context inline: {copied_job}"
     );
-    assert!(
-        replay_module_context_path.exists(),
-        "copied replay job module context path must exist"
-    );
+    assert!(copied_job_json.get("module_context_path").is_none());
     let manifest = std::fs::read_to_string(&manifest_path).expect("read failure manifest");
     let manifest_json: serde_json::Value =
         serde_json::from_str(&manifest).expect("parse failure manifest");

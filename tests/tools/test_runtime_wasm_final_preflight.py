@@ -147,11 +147,17 @@ def test_active_build_guards_require_explicit_live_marker_custody(
 ) -> None:
     marker_dir = tmp_path / "active"
     marker_dir.mkdir()
-    marker = marker_dir / "guard-123-token.json"
+    token = "a" * 32
+    marker = marker_dir / f"guard-123-{token}.json"
     marker.write_text(
         json.dumps(
             {
                 "pid": 123,
+                "schema_version": 2,
+                "token": token,
+                "guard_process": {"pid": 123, "started_at_ns": 100},
+                "child_process": {"pid": 124, "started_at_ns": 200},
+                "child_launch_state": "recorded",
                 "status": "child_running",
                 "command": ["python", "-m", "molt.cli", "internal-runtime-wasm-build"],
                 "cwd": str(tmp_path),

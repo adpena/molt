@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -12,9 +13,64 @@ import pytest
 from tools.proof_queue_pkg import execution_environment, supervisor_custody
 
 
+def test_leaf_requires_pre_entry_process_creation_authority() -> None:
+    capability = _capability({})
+    capability["mode"] = "leaf"
+    capability["pre_entry_process_create_authority"] = False
+    with pytest.raises(ValueError, match="lacks process custody"):
+        supervisor_custody.decode_supervisor_capability(capability, mode="leaf")
+
+
+def test_typed_event_artifact_binds_image_size_and_content(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    image_path = tmp_path / "observed-image"
+    image_digest = "a" * 64
+    payload = {
+        "sequence": 1,
+        "process_id": 7,
+        "stable_process_id": "test:7",
+        "event": {
+            "kind": "exec",
+            "image": {
+                "path": str(image_path),
+                "sha256": image_digest,
+                "size_bytes": 11,
+            },
+        },
+    }
+    data = json.dumps(payload).encode() + b"\n"
+    digest = hashlib.sha256(data).hexdigest()
+    event_path = receipt.with_name(f"{receipt.name}.events.{digest}.jsonl")
+    event_path.write_bytes(data)
+    descriptor = {
+        "schema": supervisor_custody.SUPERVISOR_EVENT_LOG_SCHEMA,
+        "file": event_path.name,
+        "bytes": len(data),
+        "count": 1,
+        "sha256": digest,
+    }
+    path, images = supervisor_custody._verified_supervisor_event_artifact(
+        receipt_path=receipt, descriptor=descriptor, collect_images=True
+    )
+    assert path == event_path.resolve()
+    assert images == [(str(image_path), image_digest, 11)]
+    event_path.write_bytes(data.replace(b'"size_bytes": 11', b'"size_bytes": 12'))
+    with pytest.raises(ValueError, match="identity changed"):
+        supervisor_custody._verified_supervisor_event_artifact(
+            receipt_path=receipt, descriptor=descriptor, collect_images=True
+        )
+
+
+def test_source_authority_includes_shared_protocol() -> None:
+    root = Path(__file__).resolve().parents[2]
+    assert (root / "tools/proof_supervisor/protocol.json").resolve() in (
+        supervisor_custody.source_authority_paths(root)
+    )
+
+
 def _capability(required: object) -> dict[str, object]:
     return {
-        "schema": "molt.proof-supervisor-capability.v2",
+        "schema": supervisor_custody.SUPERVISOR_CAPABILITY_SCHEMA,
         "platform": {"win32": "windows", "darwin": "macos"}.get(
             sys.platform, sys.platform
         ),
@@ -22,6 +78,7 @@ def _capability(required: object) -> dict[str, object]:
         "backend": "test-native-backend",
         "available": True,
         "pre_entry_exec_authority": True,
+        "pre_entry_process_create_authority": True,
         "recursive_descendant_authority": True,
         "reason": None,
         "required_environment": required,

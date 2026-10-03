@@ -572,8 +572,10 @@ def _github_execution_identity(
 
 
 def _backend_identity(coordinate: VerifiedSubsetCoordinate) -> dict[str, object]:
-    if coordinate.backend == "native":
-        return {"backend": "native", "runner": "process"}
+    if coordinate.backend in {"llvm", "native"}:
+        return {"backend": coordinate.backend, "runner": "process"}
+    if coordinate.backend != "wasm":
+        raise ValueError(f"unsupported verified-subset backend: {coordinate.backend}")
     node_name = shutil.which("node")
     if node_name is None:
         raise ValueError("node is unavailable for verified-subset WASM execution")
@@ -754,12 +756,16 @@ def verify_receipt_closure(
     source_sha: str,
     validation: VerifiedSubsetValidation | None = None,
     build_profile: str | None = None,
-) -> None:
+) -> int:
     if build_profile is not None:
         execution_profiles(build_profile)
     validation = validation or validate_manifest()
     validation.require_root(ROOT)
-    expected_coordinates = {coordinate.id for coordinate in validation.coordinates}
+    expected_coordinates = {
+        coordinate.id
+        for coordinate in validation.coordinates
+        if build_profile is None or coordinate.build_profile == build_profile
+    }
     files = _receipt_files(receipt_root, expected_count=len(expected_coordinates))
     if len(files) != len(expected_coordinates):
         raise ValueError(
@@ -824,6 +830,7 @@ def verify_receipt_closure(
             f"verified-subset receipt matrix is incomplete: missing={missing!r}"
         )
     validation.verify_unchanged()
+    return len(seen)
 
 
 def _run_coordinate(
@@ -950,7 +957,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
         if args.command == "verify-receipts":
-            verify_receipt_closure(
+            verified_count = verify_receipt_closure(
                 receipt_root=args.receipt_root,
                 source_sha=args.source_sha,
                 validation=validation,
@@ -959,7 +966,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 "verified subset receipts: OK "
                 f"source_sha={args.source_sha} "
-                f"coordinates={len(validation.coordinates)}"
+                f"coordinates={verified_count}"
             )
             return 0
         coordinate = next(

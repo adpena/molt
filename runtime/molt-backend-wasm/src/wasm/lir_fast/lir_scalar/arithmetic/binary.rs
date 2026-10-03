@@ -1,4 +1,5 @@
 use super::super::super::lir_context::LirLowerCtx;
+use super::super::super::lir_runtime_ops::emit_lir_runtime_result;
 use super::super::super::runtime_calls::numeric_lir_runtime_call;
 use super::super::boxing::{emit_box_inline_i64, emit_box_none, emit_get_boxed_for_repr};
 use crate::wasm_abi_generated::{WasmNumericOpLoopKind, WasmNumericRuntimeSelection};
@@ -16,6 +17,29 @@ fn raw_i64_arith_instruction(op_loop_kind: WasmNumericOpLoopKind) -> Instruction
         WasmNumericOpLoopKind::Mod => Instruction::I64RemS,
         _ => unreachable!("non-arithmetic numeric selector routed to arithmetic emitter"),
     }
+}
+
+fn emit_python_i64_divrem(
+    ctx: &mut LirLowerCtx,
+    lhs: molt_tir::tir::values::ValueId,
+    rhs: molt_tir::tir::values::ValueId,
+    kind: WasmNumericOpLoopKind,
+) {
+    let result = ctx.alloc_scratch_local(ValType::I64);
+    ctx.emit_get(lhs);
+    ctx.emit_get(rhs);
+    ctx.instructions.push(raw_i64_arith_instruction(kind));
+    ctx.instructions.push(Instruction::LocalSet(result));
+    let lhs_local = ctx.get_local(lhs);
+    let rhs_local = ctx.get_local(rhs);
+    crate::wasm_values::push_python_signed_divrem_adjust(
+        |instruction| ctx.instructions.push(instruction),
+        lhs_local,
+        rhs_local,
+        result,
+        kind,
+    );
+    ctx.instructions.push(Instruction::LocalGet(result));
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_binary_arith(
@@ -77,12 +101,28 @@ pub(in crate::wasm::lir_fast) fn emit_lir_binary_arith(
     let result_repr = op.result_values[0].repr;
     match (lhs_repr, rhs_repr) {
         (LirRepr::I64, LirRepr::I64) if result_repr == LirRepr::I64 && !boxed_dispatch => {
-            ctx.emit_get(lhs);
-            ctx.emit_get(rhs);
-            ctx.instructions
-                .push(raw_i64_arith_instruction(selection.op_loop_kind));
+            if matches!(
+                selection.op_loop_kind,
+                WasmNumericOpLoopKind::FloorDiv | WasmNumericOpLoopKind::Mod
+            ) {
+                emit_python_i64_divrem(ctx, lhs, rhs, selection.op_loop_kind);
+            } else {
+                ctx.emit_get(lhs);
+                ctx.emit_get(rhs);
+                ctx.instructions
+                    .push(raw_i64_arith_instruction(selection.op_loop_kind));
+            }
         }
-        (LirRepr::F64, LirRepr::F64) => {
+        // Respect the upstream zero-divisor/range proof for float carriers too.
+        // Exact float floor/mod require fmod (not a WASM instruction); dispatch
+        // through the canonical runtime until a raw fmod ABI owns this lane.
+        (LirRepr::F64, LirRepr::F64)
+            if !boxed_dispatch
+                && !matches!(
+                    selection.op_loop_kind,
+                    WasmNumericOpLoopKind::FloorDiv | WasmNumericOpLoopKind::Mod
+                ) =>
+        {
             ctx.emit_get(lhs);
             ctx.emit_get(rhs);
             match selection.op_loop_kind {
@@ -90,32 +130,15 @@ pub(in crate::wasm::lir_fast) fn emit_lir_binary_arith(
                 WasmNumericOpLoopKind::Sub => ctx.instructions.push(Instruction::F64Sub),
                 WasmNumericOpLoopKind::Mul => ctx.instructions.push(Instruction::F64Mul),
                 WasmNumericOpLoopKind::TrueDiv => ctx.instructions.push(Instruction::F64Div),
-                WasmNumericOpLoopKind::FloorDiv => {
-                    ctx.instructions.push(Instruction::F64Div);
-                    ctx.instructions.push(Instruction::F64Floor);
-                }
-                WasmNumericOpLoopKind::Mod => {
-                    let scratch_a = ctx.alloc_scratch_local(ValType::F64);
-                    let scratch_b = ctx.alloc_scratch_local(ValType::F64);
-                    ctx.instructions.push(Instruction::LocalSet(scratch_b));
-                    ctx.instructions.push(Instruction::LocalSet(scratch_a));
-                    ctx.instructions.push(Instruction::LocalGet(scratch_a));
-                    ctx.instructions.push(Instruction::LocalGet(scratch_a));
-                    ctx.instructions.push(Instruction::LocalGet(scratch_b));
-                    ctx.instructions.push(Instruction::F64Div);
-                    ctx.instructions.push(Instruction::F64Floor);
-                    ctx.instructions.push(Instruction::LocalGet(scratch_b));
-                    ctx.instructions.push(Instruction::F64Mul);
-                    ctx.instructions.push(Instruction::F64Sub);
-                }
                 _ => unreachable!("non-arithmetic numeric selector routed to arithmetic emitter"),
             }
         }
         _ => {
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
-            ctx.emit_runtime_call(numeric_lir_runtime_call(selection));
-            ctx.emit_set(dst);
+            let call = numeric_lir_runtime_call(selection);
+            ctx.emit_runtime_call(call);
+            emit_lir_runtime_result(ctx, op, call);
             return;
         }
     }

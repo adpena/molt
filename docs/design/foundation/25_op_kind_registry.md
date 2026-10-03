@@ -75,8 +75,8 @@ A `MoltOp` produced by the frontend visitors is serialized to a JSON op whose `"
 
 1. **Frontend emitter** — `src/molt/frontend/lowering/serialization.py` plus the extracted `serialization_*_ops.py` handler modules. `map_ops_to_json` dispatches to the handlers, which emit the JSON `"kind"` string (lowercase). **This is the authoritative wire vocabulary** (see §3).
 2. **TIR SSA mapper and reverse backend spelling** — `kind_to_opcode` in `runtime/molt-ir/src/tir/ssa.rs:1902`, backed by `op_kinds_generated.rs:20`, maps a kind string → `OpCode`. `opcode_canonical_kind_table` is the generated reverse authority for backend op-name tails such as MLIR opaque lowering. Unknown input kinds deliberately fall back to `OpCode::Copy`, stashing the spelling in `_original_kind`, as the runtime backstop behind the generated registry.
-3. **LLVM lowering** — `lower_preserved_simpleir_op` (`runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs`) dispatches through handler-owned `HANDLED_KINDS` slices in `preserved_ops/{direct_ops,callable_ops,container_ops}.rs`, the arity-bearing `preserved_ops/vector_reductions.rs::VEC_REDUCTION_OPS` table, plus the ABI-exact `molt_<kind>` runtime fallback `try_lower_preserved_runtime_call` (`lowering/runtime_helpers.rs`), guarded by a **terminal fail-loud** state in `lowering/op_dispatch.rs`.
-4. **RC/alias classifier** — `classify_copy_kind` / `copy_kind_mints_fresh_owned_ref` / `copy_kind_is_explicit_no_heap_move` in `runtime/molt-passes/src/tir/passes/alias_analysis.rs:535/496/645`. **Its `_ => CopyLowering::TransparentAlias` default (alias_analysis.rs:564) is the UAF-escalation precondition.**
+3. **LLVM lowering** — `lower_preserved_simpleir_op` (`runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs`) dispatches through handler-owned `HANDLED_KINDS` slices in `preserved_ops/{direct_ops,callable_ops,container_ops}.rs`, plus the ABI-exact `molt_<kind>` runtime fallback `try_lower_preserved_runtime_call` (`lowering/runtime_helpers.rs`), guarded by a **terminal fail-loud** state in `lowering/op_dispatch.rs`.
+4. **RC/alias classifier** — `classify_copy_kind` / `copy_kind_mints_owned_value` / `copy_kind_is_explicit_no_heap_move` in `runtime/molt-passes/src/tir/passes/alias_analysis.rs:535/496/645`. **Its `_ => CopyLowering::TransparentAlias` default (alias_analysis.rs:564) is the UAF-escalation precondition.**
 5. **Native + WASM SimpleIR dispatch** — extracted native `function_compiler/fc/*` handler slices plus the WASM facade/child modules, reached via the `lower_to_simple` `_original_kind` restoration (`runtime/molt-passes/src/tir/lower_to_simple/op_lowering.rs`).
 
 The proven failures:
@@ -104,8 +104,7 @@ The structural cause is identical in every case: **N copies of one table, no com
   **Total: 431 emitted JSON kinds** (416 literals + 15 spellings from the 4 computed sites).
 - **Rust `match` arms** (`kind_to_opcode`, `classify_copy_kind`, and handler drift checks): a line-anchored brace/comment-aware state machine. It locates `fn NAME`, finds `match X {`, brace-matches the body, then collects the string literals of every **top-level** arm pattern (left of `=>`), skipping `//`+`/* */` comments and `"strings"`, and skipping each arm body whether `{}`-block or comma-terminated. **Validated against floordiv/floor_div/matmul + `index` (a `{}`-block arm following another `{}`-block arm).** Failure modes (each absent in the parsed functions, asserted/documented): a `=>` inside a pattern literal (impossible — kinds are identifiers); raw strings `r"…"` in a pattern (asserted absent via `(?<![A-Za-z0-9_])r#*"`); macro-generated arms (none); nested `match` in a body (handled by the balanced-brace skip).
 - **LLVM preserved-op handler slices** (`preserved_ops/{direct_ops,callable_ops,container_ops}.rs`): dedicated LLVM coverage is extracted from the local `HANDLED_KINDS` slices that `preserved_ops/op_family.rs` routes. The audit separately compares each slice to its adjacent `match kind` body and reports `llvm_preserved_handler_routing_drift` as a dangerous cell if they diverge.
-- **`matches!(…)` arms** (`copy_kind_mints_fresh_owned_ref`, `copy_kind_is_inert_marker`, `copy_kind_is_explicit_transparent_alias`, `copy_kind_is_explicit_no_heap_move`): balanced-paren extraction of the macro body's literals + `.starts_with("PREFIX")` prefix rules.
-- **LLVM `VEC_REDUCTION_OPS`** (`llvm_backend/lowering/preserved_ops/vector_reductions.rs`): the 24-entry `(kind, arity)` table — real LLVM coverage with operand arity owned beside the vector lowering.
+- **`matches!(…)` arms** (`copy_kind_mints_owned_value`, `copy_kind_is_inert_marker`, `copy_kind_is_explicit_transparent_alias`, `copy_kind_is_explicit_no_heap_move`): balanced-paren extraction of the macro body's literals + `.starts_with("PREFIX")` prefix rules.
 - **Runtime ABI surface:** generic direct/preserved eligibility comes from normalized boxed-call contracts. Runtime export scanning verifies machine shapes; it never upgrades raw i64 carriers into object values. Fixed/custom declarations and residual raw/mixed helpers remain separately audited.
 - **Structural/pre-SSA consumed kinds** (not routed through `kind_to_opcode`): **owned** by `[[simpleir_control_kind]]`, generating `tir::is_structural`, CFG block-boundary helpers, and `lower_from_simple` pre-SSA membership. (Drift-proof: a new structural/pre-SSA/SSA-only kind must be classified in the registry before generated consumers or the audit accept it.)
 - **Native/WASM SimpleIR arm presence** (advisory): native coverage now unions the extracted `function_compiler/fc/*::HANDLED_KINDS` op-family authorities (plus inline dispatch slices) with the legacy textual `function_compiler.rs` arm scan, so decomposition does not hide real native handlers from the audit. WASM still uses a textual scan for arm-shaped `"a" | "b" … =>` tokens (every OR-alternative captured). **Advisory only** — textual scans can over-/under-count (guards, bindings, unrelated helper arms); never a sole basis for a disposition.
@@ -117,8 +116,7 @@ The structural cause is identical in every case: **N copies of one table, no com
 | frontend emitted JSON kinds | **431** (416 const literals + 4 computed sites resolving to 15 spellings) |
 | `ssa.rs kind_to_opcode` arms | 150 |
 | LLVM preserved-op handler slices | 157 |
-| LLVM `VEC_REDUCTION_OPS` table | 24 |
-| classifier FreshValue allow-list | 48 (+ `vec_*` prefix) |
+| classifier OwnedValue allow-list | 48 (+ `vec_*` prefix) |
 | classifier InertMarker arms | 13 |
 | classifier transparent-alias set | 207 |
 | classifier no-heap-move (alias) set | 7 |
@@ -146,21 +144,21 @@ Phase 2's table is therefore **keyed by the emitted JSON kind**. (The MoltOp→J
 
 ## 4. The drift matrix — dangerous-cell findings
 
-The audit categorizes by the **precise bug preconditions** (not the coarse "emitted-but-unmapped", which is BY DESIGN — the architecture deliberately lifts most value/effect ops to `Copy{_original_kind}` and restores/re-symbol-dispatches them).
+The audit records drift observations and bug preconditions. Each finding is limited by its source authority: frontend dormancy does not establish whole-pipeline deadness, and an owned boxed return does not establish heap allocation. Emitted-but-unmapped is intentional for preserved `Copy{_original_kind}` operations with valid lowering.
 
 | category | count | meaning |
 |---|---|---|
-| `llvm_coverage_gap` | **0** | emitted + unmapped + NOT llvm-covered (no arm, not in vec table, no ABI-exact runtime fallback) → **LLVM build-fails loud** (fail-loud guard). **EMPTY.** |
-| `freshvalue_llvm_gap` | **0** | FreshValue + not llvm-covered → the UAF/double-free precondition. **EMPTY = the LLVM fatal contract holds.** |
+| `llvm_coverage_gap` | **0** | emitted + unmapped + NOT llvm-covered (no arm or ABI-exact runtime fallback) → **LLVM build-fails loud** (fail-loud guard). **EMPTY.** |
+| `ownedvalue_llvm_gap` | **0** | OwnedValue + not llvm-covered → the UAF/double-free precondition. **EMPTY = the LLVM fatal contract holds.** |
 | `classifier_silent_fallthrough` | **0** | emitted + unmapped + classifier fell to `_ => TransparentAlias` (no explicit class) + is a real runtime op (`molt_<kind>` exists). **EMPTY = known transparent-alias decisions are table-visible.** |
 | `simpleir_lane_gap` | **0** | emitted + unmapped + no native AND no wasm arm AND no symbol → nothing can lower it on the SimpleIR lanes. **EMPTY.** |
 | `mapped_never_emitted` | **45** | a mapper arm the frontend never emits — mostly round-trip or explicit alias spellings (benign); `floor_div` is now an explicit alias of canonical `floordiv`. |
-| `freshvalue_never_emitted` | **0** | dead FreshValue allow-list entry. **EMPTY.** |
+| `ownedvalue_never_emitted` | **0** | a OwnedValue spelling absent from frontend serialization; internal producers may still require it. |
 | `llvm_boxed_runtime_abi_mismatch` | **0** | normalized object-value/void call contracts whose parameter or result shape disagrees with runtime exports. Dedicated raw machine declarations do not authorize generic calls. |
 
 ### 4.1 Disposition of every dangerous category
 
-**`freshvalue_llvm_gap = 0` and `simpleir_lane_gap = 0` are the headline:** on current main there is **NO silent miscompile and NO UAF from kind drift.** The original floordiv-class *silent* miscompile (operand-0 passthrough on LLVM) was already closed by a dedicated LLVM `"floordiv"` arm (lowering.rs:10325) and the universal LLVM fail-loud gate (lowering.rs:2410). Every remaining gap is either fail-loud (a build error) or leak-safe (a non-UAF reference leak).
+**`ownedvalue_llvm_gap = 0` and `simpleir_lane_gap = 0` are the headline:** on current main there is **NO silent miscompile and NO UAF from kind drift.** The original floordiv-class *silent* miscompile (operand-0 passthrough on LLVM) was already closed by a dedicated LLVM `"floordiv"` arm (lowering.rs:10325) and the universal LLVM fail-loud gate (lowering.rs:2410). Every remaining gap is either fail-loud (a build error) or leak-safe (a non-UAF reference leak).
 
 **`llvm_coverage_gap` (26) — LATENT, fail-loud.** All 26 have native+wasm coverage; they fail-loud on LLVM only. Breakdown:
 - **18 async/concurrency runtime ops** (`block_on`, `spawn`, `call_async`, `cancel_token_*` (8), `cancelled`, `cancel_current`, `chan_drop`, `future_cancel{,_clear,_msg}`, `promise_set_{result,exception}`, `task_register_token_owned`, `thread_submit`). These have runtime functions under **different spellings** (e.g. `spawn`→`molt_thread_spawn`, not `molt_spawn`), so the LLVM `molt_<kind>` probe misses them. *Disposition: latent LLVM gap* — the asyncio runtime surface is less mature on the LLVM lane; an async-heavy program targeting LLVM would hit a build error (not a miscompile). Repro sketch: `asyncio.run(main())` with a `create_task`/cancel path, `--target llvm`.
@@ -172,9 +170,24 @@ Closed in the current audit: the repr-identity ops (`cast`, `widen`, `copy_var`)
 
 **`llvm_boxed_runtime_abi_mismatch = 0` — required invariant.** Both ABI audits consume `runtime_boxed_call_specs` from the canonical manifest normalizer. Value and void calls share one semantic authority; a missing export or incompatible shape is a finding before frontend emission. The old handwritten void-only table and audit schema are retired.
 
-**`classifier_silent_fallthrough = 0` — CLOSED.** The 207 table-visible transparent-alias decisions now live in `classifier_transparent_alias`, a generated table distinct from `classifier_no_heap_move`. This preserves the same leak-safe drop-insertion behavior (`TransparentAlias`, never `FreshValue`) while making each known decision explicit: a future ownership promotion must move the kind out of the transparent-alias table and into `classifier_fresh_value` with matching backend evidence, rather than hiding behind the `_ => TransparentAlias` default.
+**`classifier_silent_fallthrough = 0` — CLOSED.** The 207 table-visible transparent-alias decisions now live in `classifier_transparent_alias`, a generated table distinct from `classifier_no_heap_move`. This preserves the same leak-safe drop-insertion behavior (`TransparentAlias`, never `OwnedValue`) while making each known decision explicit: a future ownership promotion must move the kind out of the transparent-alias table and into `classifier_owned_value` with matching backend evidence, rather than hiding behind the `_ => TransparentAlias` default.
 
-**`mapped_never_emitted` (45) — mostly BENIGN round-trip or explicit-alias vocabulary.** The module phase re-lifts post-pipeline SimpleIR on every build, so `kind_to_opcode` MUST recognize generated round-trip spellings even when the *frontend* never emits them. Verified round-trip outputs (benign): `build_list`, `get_attr`, `set_attr`, `for_iter`, `yield`, `yield_from`, `checked_add`, `checked_mul`, `exception_pending`, `iter_next_unboxed`, … The prior `floordiv`/`floor_div` schism is closed in the live registry: canonical spelling is frontend `floordiv`, `floor_div` remains a table-visible alias, and `lower_to_simple` emits `floordiv` so round-trip output no longer recreates the old split. The remaining entries are alias arms such as `load_attr`/`store_attr`/`get_iter`/`const_int`/`call_function` plus generated round-trip vocabulary; they are benign as long as the alias set stays explicit and generated.
+**`mapped_never_emitted` — frontend-only mapper dormancy.** The module phase re-lifts post-pipeline SimpleIR on every build, so `kind_to_opcode` MUST recognize generated round-trip spellings even when the *frontend* never emits them. Verified round-trip outputs (benign): `build_list`, `get_attr`, `set_attr`, `for_iter`, `yield`, `yield_from`, `checked_add`, `checked_mul`, `exception_pending`, `iter_next_unboxed`, … The prior `floordiv`/`floor_div` schism is closed in the live registry: canonical spelling is frontend `floordiv`, `floor_div` remains a table-visible alias, and `lower_to_simple` emits `floordiv` so round-trip output no longer recreates the old split. The remaining entries are alias arms such as `load_attr`/`store_attr`/`get_iter`/`const_int`/`call_function` plus generated round-trip vocabulary; they are benign as long as the alias set stays explicit and generated.
+
+D5 and D6 measure absence from the Python serialization handlers. They do not
+enumerate typed pass producers. For example, terminal ownership in
+`drop_insertion/activation.rs` constructs `StateSet`, `IsPending`, and
+`TaskWait`. Their typed shapes and mapper spellings belong to `op_kinds.toml`;
+`lower_to_simple/op_lowering.rs` serializes them through
+`opcode_canonical_kind_table`. Their `state_set`, `is_pending`, and
+`task_wait` spellings therefore remain valid frontend-dormancy observations,
+not dead operations or missing mappings. Neither a backend handler nor a
+runtime callable by itself proves that a producer emits an operation.
+
+The human report and baseline diagnostics share category-specific guidance.
+This reporting distinction does not exempt names or change the exact baseline
+gate: new and stale category members still fail until their source changes are
+reviewed. Counts of D5/D6 observations are not counts of unreachable operations.
 
 ---
 
@@ -225,13 +238,18 @@ feeds `opcode_type_refine_operand_type_rule_table` for operand-dependent
 arithmetic, boolean, bitwise, iterator, indexing, tuple, Copy, BoxVal, and
 UnboxVal rules. `type_refine.rs` owns only the rule semantics and live
 operand/attr parsing, not private opcode membership.
-Call graph and call-site fact dispatch are generated as a role lattice:
-`call_opcode_roles` feeds `opcode_call_role_table` for first-class
-Call/CallMethod/CallBuiltin/Copy behavior, and
-`call_graph_user_call_kinds` feeds `simpleir_kind_is_call_graph_user_call` for
-Copy `_original_kind` fallbacks. `call_graph.rs` and `call_facts.rs` own target
-resolution, GPU runtime-symbol carve-outs, builtin no-throw proof, and fact
-lattice semantics; they do not carry private call opcode or call-kind sets.
+Call graph and CallFacts share `FunctionCallSites`, an exact-site projection of
+the mandatory `may_call_python` opcode effect, exact scalar primitive matrix,
+GPU source provenance, and fixed-slot load/store lifetime facts. Callback
+capability is independent of throwing and global-memory effects. Unknown
+preserved Copy operations fail closed; actual value identity and independent
+`callback_free_copy_kinds` contracts provide explicit exemptions. Trace entry
+and exit preserve non-owning custody but are effectful, so alias analysis,
+overflow peeling, and exception capture cannot ignore their callbacks. Direct targets retain
+the existing source-role authority. Native leaf classification runs after
+lifetime finalization so explicit release callbacks also prevent guard elision.
+`async_work_poll_after_kinds` is solely the preserved call-return polling
+protocol; it does not classify Python call edges.
 SCCP constant folding now follows the same shape:
 `sccp_constant_seed_rules` feeds `opcode_sccp_constant_seed_rule_table` for
 constant constructors the lattice can seed from attrs, and
@@ -308,7 +326,11 @@ implicit CFG transfer edges, and `exception_region_nesting_roles` feeds
 nesting. DCE and SCCP own their try-depth traversal and dead-op/constant-fold
 policy; the registry owns only the Enter/Exit role for the closed opcode set,
 so nesting cannot drift into private TryStart/TryEnd matches beside the
-label/transfer facts.
+label/transfer facts. The CFG derives which transfer edges bind their target's
+arguments from the transfer and nesting facts
+(`dominators::exception_edge_binds_handler_arguments`): a transfer edge whose op
+enters a region is a registration, which keeps its handler reachable but binds
+nothing.
 
 Block retirement is owned by `TirFunction::retain_blocks`: it validates retained
 terminator and exception-label references atomically, then removes blocks and
@@ -378,8 +400,8 @@ hand-set. `generator_fusion_iter_use_roles` produces
 `opcode_generator_fusion_iter_use_role_table`, keeping IterNext and optional
 None-guard membership out of the iterator-use scanner.
 
-1. **One table** `runtime/molt-ir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, may_throw, side_effecting, purity ∈ {pure, pure_may_throw, impure}, backends_required[], runtime_symbol?)`.
-2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-ir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the reverse `opcode_canonical_kind_table` backend spelling authority, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, generated `ALL_OPCODES`, and the typed effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants, raising/skip/binop tables, and pre-serialization frontend effect classes the emitter and midend use).
+1. **One table** `runtime/molt-ir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {owned_value, transparent_alias, inert_marker, structural}, may_throw, side_effecting, purity ∈ {pure, pure_may_throw, impure}, backends_required[], runtime_symbol?)`.
+2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-ir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the reverse `opcode_canonical_kind_table` backend spelling authority, the `classify_copy_kind`/`copy_kind_mints_owned_value` arms, generated `ALL_OPCODES`, and the typed effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants, raising/skip/binop tables, and pre-serialization frontend effect classes the emitter and midend use).
 3. **One sync test** `tests/test_gen_op_kinds.py` (modeled on `tests/test_gen_intrinsics.py`) re-renders in memory and `assert_eq`s against the checked-in generated files → **drift = build/test error**.
 4. **The effect oracles hook the same table:** `opcode_may_throw_table`, `opcode_is_side_effecting_table`, and `opcode_effects_table` are generated from the `may_throw`, `side_effecting`, `purity`, and `may_access_arbitrary_heap` columns, then consumed by `effects.rs` with no pass-local opcode lists. Impure opcodes default to arbitrary heap access; pure classes default false, and only positive runtime evidence may mark an impure opcode local. Callback-capable reads (`LoadAttr`, `Index`, dynamic `LEN`/attribute/`isinstance` helpers), module reads, and replacing typed-slot stores retain the coarse floor because callbacks or old-value finalization can mutate unrelated captured state. Only exact-site pristine/boxed-neutral evidence from the shared typed-slot planner discharges the replacing-store destructor path; spelling is not proof. Guarded field get/set operations fail closed because a guard miss can use generic attribute dispatch. The frontend projects the same axis as `FRONTEND_ARBITRARY_HEAP_EFFECT`; it may recover callback freedom only from exact built-in producer provenance, truthiness predicate facts, and the existing exact-list write-alias authority. Annotations and raw type-tag guards admit subclasses and are not callback-absence proof. A new opcode or frontend op-kind **requires** an explicit effect classification (kills bug-class instance #1 — the `matches!`-default-false trap — and the frontend private-set drift class).
 5. **Generated facts require real consumers:** the dormant deforestation iterator-fusion lane and its barrier table are retired. Its yielded-element/iterator confusion and unconsumed `fused` tags did not implement a valid backend protocol. Tuple scalarization and the separate generator-fusion pass retain their real execution paths and authorities.
@@ -466,7 +488,7 @@ The unit of work is the complete structural change (per CLAUDE.md). Phase 2 is O
 - **Canonical spelling = the frontend emission.** The frontend is the producer; `lower_to_simple` is a round-trip that should match it. Collapsing to the frontend spelling minimizes emitter churn and makes the wire vocabulary == the frontend vocabulary.
 - **Aliases are first-class table data**, not code. The mapper's `|`-grouped arms (`"copy" | "store_var" | "load_var"`, `"shl" | "lshift"`, `"eq" | "string_eq"`, …) become `aliases[]` columns. This is where the round-trip/legacy spellings live, explicitly.
 - **No default anywhere.** Every kind has an explicit `effect`, `classifier_class`, and `mapper_opcode` (or explicit `"copy"`). Rare path-sensitive result facts live in explicit rows such as `[[result_validity]]` (`IterNextUnboxed` result 0 is conditional-valid-only-on-edge). The generated Rust still ends in `_ =>` arms for runtime safety, but the sync test makes them unreachable for in-table kinds.
-- **The `vec_*` family** stays a generated prefix expansion (the 24 `VEC_REDUCTION_OPS` rows + the classifier `vec_` prefix) — encode the prefix rule in the table, generate the explicit table for LLVM + the prefix check for the classifier.
+- **The vector reduction family** has four exact operation rows (`vec_sum`, `vec_prod`, `vec_min`, `vec_max`) in `classifier_owned_value`. Their manifest imports declare compiler-only boxed calls; LLVM uses the shared boxed runtime route, while native and WASM retain their numerical dispatch. A name prefix cannot establish a result ownership contract.
 - **RC soundness invariant preserved** (per docs/design/foundation/20): the classifier's fail-closed direction (unknown → TransparentAlias = leak-not-UAF) is retained as the generated `_ =>` backstop; the table makes the *known* set explicit and total.
 
 ### 6.3 Anchors phase 2 edits (verified 2026-06-06)
@@ -476,8 +498,8 @@ The unit of work is the complete structural change (per CLAUDE.md). Phase 2 is O
 - `runtime/molt-passes/src/tir/lower_to_simple/op_lowering.rs` (`_original_kind` restoration and `OpCode::FloorDiv => "floordiv"` lowering).
 - `runtime/molt-ir/src/tir/op_kinds.toml` (`[[simpleir_control_kind]]`) for structural, CFG-boundary, pre-SSA, and SSA-only SimpleIR kinds.
 - `runtime/molt-passes/src/tir/lower_from_simple.rs` (`rewrite_loop_index_to_store_load`) for the actual loop-index pre-SSA rewrite implementation.
-- `runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs` (`lower_preserved_simpleir_op` dispatcher), `runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/{op_family,direct_ops,callable_ops,container_ops,vector_reductions}.rs` (LLVM preserved-op routing authorities), `runtime/molt-backend-native/src/llvm_backend/lowering/runtime_helpers.rs` (`try_lower_preserved_runtime_call`), and `runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs` (fail-loud gate).
-- `runtime/molt-passes/src/tir/passes/alias_analysis.rs:496` (`copy_kind_mints_fresh_owned_ref`), :535 (`classify_copy_kind`), :564 (`_ => TransparentAlias`), :645 (`copy_kind_is_explicit_no_heap_move`).
+- `runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs` (`lower_preserved_simpleir_op` dispatcher), `runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/{op_family,direct_ops,callable_ops,container_ops}.rs` (LLVM preserved-op routing authorities), `runtime/molt-backend-native/src/llvm_backend/lowering/runtime_helpers.rs` (`try_lower_preserved_runtime_call`), and `runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs` (fail-loud gate).
+- `runtime/molt-passes/src/tir/passes/alias_analysis.rs:496` (`copy_kind_mints_owned_value`), :535 (`classify_copy_kind`), :564 (`_ => TransparentAlias`), :645 (`copy_kind_is_explicit_no_heap_move`).
 - `runtime/molt-passes/src/tir/passes/effects.rs` (`opcode_may_throw` / `is_side_effecting` / `opcode_effects` delegate to the generated effect oracle).
 - `src/molt/frontend/lowering/op_kinds_generated.py` (`FRONTEND_EFFECT_CLASS` and the `FRONTEND_EFFECT_*_KINDS` sets) plus `src/molt/frontend/lowering/midend_canonicalization.py` (`_op_effect_class`) for pre-serialization frontend DCE/CSE/LICM effect authority. `midend_optimization.py` is only the composed MRO entrypoint.
 - `runtime/molt-ir/src/tir/mod.rs` (`is_structural`), `runtime/molt-ir/src/tir/cfg.rs` (terminator/leader/ender/cond-branch), and `runtime/molt-passes/src/tir/lower_from_simple.rs` consume generated SimpleIR control-kind tables.
@@ -487,8 +509,104 @@ The unit of work is the complete structural change (per CLAUDE.md). Phase 2 is O
 
 ## 7. CI seed
 
-`tools/audit_op_kinds.py --check` exits non-zero on any **new** member of any dangerous-cell category vs `tools/op_kinds_baseline.json` (committed). It is wire-ready; the CI wiring lands in phase 2 step 2 (alongside the `gen_op_kinds.py` sync test). The baseline is the contract: a new emitted kind that drifts (no mapper arm + no coverage, or a silent classifier fallthrough) becomes a build error until it gets a table row.
+`tools/audit_op_kinds.py --check` exits non-zero on both **new** current findings and **stale** baseline-only findings in any category relative to committed `tools/op_kinds_baseline.json`. The comparison records changes in observations as well as bug preconditions. Diagnose the reported category against its source authority before changing mappings, ownership, routing, or the baseline; frontend dormancy alone does not justify adding or removing an opcode.
 
 ### 7.1 Current LLVM runtime ABI adjunct gate
 
-`tools/llvm_runtime_abi_audit.py --check` guards the preserved-Copy runtime-call seam. `MOLT_RUNTIME_CALLABLE_SYMBOLS` is availability only. Generic direct and preserved calls consume the target-neutral generated boxed ABI projection from `runtime_boxed_call_specs`; each argument is an object value and the result is owned or truly void. The audit uses all extracted serialization handlers and subtracts dedicated LLVM handler/vector routes before requiring generic semantic eligibility. Exact fixed declarations retain their stronger attributes, while residual conservative declarations serve dedicated raw/mixed consumers only. Native declarations remain independently checked against Rust export arity, parameter carriers, and return carriers. Conservative rows must not mirror the generated boxed authority; raw i64 helpers do not become boxed by machine shape.
+`tools/llvm_runtime_abi_audit.py --check` guards the preserved-Copy runtime-call seam. `MOLT_RUNTIME_CALLABLE_SYMBOLS` is availability only. Generic direct and preserved calls consume the target-neutral generated boxed ABI projection from `runtime_boxed_call_specs`; each argument is an object value and the result follows its owned, borrowed, poll, or void contract. The audit uses all extracted serialization handlers and subtracts dedicated LLVM handler routes before requiring generic semantic eligibility. Exact fixed declarations retain their stronger attributes, while residual conservative declarations serve dedicated raw/mixed consumers only. Native declarations remain independently checked against Rust export arity, parameter carriers, and return carriers. Conservative rows must not mirror the generated boxed authority; raw i64 helpers do not become boxed by machine shape.
+
+Fresh owned results require exact canonical operation membership. The four bounded
+vector reductions declare fresh results individually in `classifier_owned_value`;
+an operation name prefix never admits an ownership contract. Their canonical
+manifest imports use `boxed_call = true`, with three object operands and an owned
+return derived from the boxed ABI. The runtime packs `(result, last, count, more)`
+into that result tuple. This compiler-only
+admission does not make the reductions Python callables. LLVM obtains their
+symbol, arity, machine declaration and result custody from the generated shared
+projection. Its former reduction-specific symbol table, handler and conservative
+signature rows are removed. The native and WASM numerical routes keep the same
+runtime calls.
+
+The shared LLVM positional emitter borrows each input, releases materialized
+argument owners after the call, and binds or releases the owned tuple. The source
+audits validate the same boxed contract against the runtime exports; no
+reduction-specific exemption remains.
+
+D10 (`owned_result_transparent_alias`) applies to the Copy operation vocabulary:
+an operation must be emitted by a serialization handler or accepted by an exact
+native routing slice or LLVM preserved-handler slice,
+and the canonical mapper must reach Copy (explicitly or through its unmapped
+fallback). This includes internally generated preserved operations. A same-named
+boxed runtime callable alone does not establish this scope; ordinary Call results
+have their own ownership path, so a service such as `platform_system` is not a
+Copy-classifier entry. Advisory textual arm scans cannot establish scope either.
+Within that scope, D10 reads `runtime_operation_return_specs`, projected from
+the canonical import return authority plus op-loop, numeric-selector, and
+constant-materializer operation mappings. This includes compiler-only mixed/raw
+signatures without inferring ownership from an i64 machine carrier. Owned
+runtime results have independent result custody; boxed bool, None, and inline
+numbers obey the same protocol with no heap release. Borrowed binding/object
+views, unpublished storage, raw bits, and void returns remain distinct contracts.
+`TransparentAlias` means non-owning custody and does not itself union the result
+with operand zero. Only the separate no-heap-move fact establishes that identity.
+A D10 count is not a count of proven heap leaks; unexplained findings must not be
+accepted into the baseline.
+
+The explicit Copy custody classes are disjoint, so classifier precedence cannot
+hide contradictory owner/non-owner rows. Numeric aliases `binop_floor_div`,
+`unary_neg`, and `unary_pos` use their existing first-class opcode families;
+`guarded_load` uses `LoadAttr` and preserves its field offset and original kind.
+Its LLVM consumer shares the admitted field-load path with `load`. `call_async`
+constructs an owned task or an owned async-sleep future. No allocation or escape
+fact follows from these result-custody declarations.
+
+
+### Owned lookup results and allocation facts
+
+`classifier_owned_value` declares an independent result reference that its
+consumer must release or transfer. It does not declare a newly allocated
+object, disjoint storage, or a fixed callable identity. `builtin_func` covers
+both unnamed runtime construction and named public lookup. The public lookup
+may return any replacement object from the active namespace; it has dynamic
+type, can alias any published object, and cannot inherit its name operand's
+string type. Both forms return their own reference obligation.
+
+The generated owned-value fact drives TIR type refinement, result custody,
+LLVM's explicit-lowering check, the registry audit, and the binary-image
+`owned_value_root` category. Fresh allocation remains a separate explicit
+escape/constructor fact. Binary-image `heap_alloc_root` must not be inferred
+from result ownership. Lookup effects remain conservative, including custom
+mapping callbacks and exceptions.
+
+
+### Mutable builtin calls are opaque
+
+The `call_builtin` wire operation performs public namespace lookup. A name,
+including a constant dynamic-name operand, is not callable identity. TIR does
+not derive return types, constant results, container lengths, or leaf status
+from that spelling. The old builtin-name result classifier and SCCP evaluator
+are removed. A public replacement may return any value, mutate state, raise,
+or call back into the program.
+
+Explicit `range_new` and the `len` primitive retain their independent structural
+contracts. Range specialization already admits only `range_new`; length-based
+bounds elimination admits only the explicit length primitive. Public calls and
+namespace mapping acquisition create opaque call-graph edges, preserving
+recursion-guard requirements. Call effects remain conservative.
+
+
+Dedicated module namespace acquisition shares the opaque runtime-builtin call
+role: `ModuleGetGlobal` may invoke a captured mapping's item protocol;
+`ModuleGetAttr`, `ModuleGetName`, and `ModuleImportFrom` may invoke module
+attribute callbacks. Their result syntax must not establish a leaf function or
+authorize native recursion-guard elision. `namespace_get`/`namespace_del` already
+travel through ordinary opaque calls; no parallel spelling classifier is needed.
+
+
+Explicit Python release operands have one generated projection in the ownership
+module. `PythonLifetimeFacts` records canonical release roots once; lexical drop
+placement consumes that set, and point availability consumes the same per-op
+projection. `DecRef`, `DeleteVar` old-slot operands, and `DelBoundary` therefore
+cannot drift between release placement and lifetime facts. Terminal activation
+lowering exposes yield/pending exits as Returns before shared ownership analysis;
+there is no separate suspension-retain classification lane.

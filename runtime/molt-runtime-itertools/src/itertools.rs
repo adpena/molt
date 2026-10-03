@@ -21,10 +21,8 @@ use molt_runtime_core::type_ids::*;
 // Process-global statics leak object handles across interpreter teardown
 // (and would alias across subinterpreters/isolates): a class object cached by
 // the first interpreter would still be referenced after that interpreter's
-// heap is torn down. The in-tree copy (builtins/itertools.rs) adopted
-// RuntimeState-scoped slots in commit 0c4ee6b9; this satellite mirrors that by
-// boxing the same slot struct into the runtime's extension-state registry,
-// which the runtime clears+drops on every interpreter teardown.
+// heap is torn down. Both the in-tree and satellite profiles compile this same
+// source and keep the slot box in the runtime's extension-state registry.
 macro_rules! define_itertools_runtime_state {
     (@unit $field:ident) => {
         ()
@@ -155,15 +153,7 @@ fn itertools_state(_py: &PyToken) -> &'static ItertoolsRuntimeState {
 
 /// Helper: init-once pattern for AtomicU64 slots.
 fn init_atomic_bits(_py: &PyToken, slot: &AtomicU64, f: impl FnOnce() -> u64) -> u64 {
-    let cached = slot.load(Ordering::Acquire);
-    if cached != 0 {
-        return cached;
-    }
-    let bits = f();
-    match slot.compare_exchange(0, bits, Ordering::AcqRel, Ordering::Acquire) {
-        Ok(_) => bits,
-        Err(existing) => existing,
-    }
+    molt_runtime_core::cached_handle::get_or_init(slot, f, |bits| dec_ref_bits(_py, bits))
 }
 
 fn builtin_func_bits(_py: &PyToken, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
@@ -190,7 +180,11 @@ fn kwd_mark_bits(_py: &PyToken) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_kwd_mark() -> u64 {
-    with_core_gil!(_py, kwd_mark_bits(_py))
+    with_core_gil!(_py, {
+        let bits = kwd_mark_bits(_py);
+        inc_ref_bits(_py, bits);
+        bits
+    })
 }
 
 fn iter_self_bits(_py: &PyToken) -> u64 {
@@ -1415,7 +1409,11 @@ pub extern "C" fn molt_itertools_repeat_new(_cls_bits: u64, obj_bits: u64, times
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_repeat_type() -> u64 {
-    with_core_gil!(_py, repeat_class(_py))
+    with_core_gil!(_py, {
+        let bits = repeat_class(_py);
+        inc_ref_bits(_py, bits);
+        bits
+    })
 }
 
 #[unsafe(no_mangle)]

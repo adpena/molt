@@ -20,12 +20,7 @@ pub(crate) fn materialize_stdlib_cache(
     stdlib_funcs: &mut Vec<molt_backend::FunctionIR>,
     module_context: &molt_backend::NativeBackendModuleContext,
 ) -> io::Result<()> {
-    ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(|err| {
-        eprintln!(
-            "{}: warning: could not create stdlib cache parent dir: {err}",
-            request.log_prefix
-        );
-    });
+    ensure_output_parent_dir(stdlib_path.to_str().unwrap_or(""))?;
 
     let stdlib_count = stdlib_funcs.len();
     eprintln!(
@@ -34,6 +29,12 @@ pub(crate) fn materialize_stdlib_cache(
         stdlib_count,
         stdlib_path.display()
     );
+    let object_cache = super::super::publish::StdlibObjectCache::for_archive(
+        stdlib_path,
+        request.expected_cache_key,
+        request.expected_cache_manifest,
+        request.target_triple,
+    )?;
     let temp_stdlib_path = stdlib_cache_temp_publish_path(stdlib_path, "archive");
     if let Err(err) = compile_stdlib_cache_archive(
         &temp_stdlib_path,
@@ -42,6 +43,7 @@ pub(crate) fn materialize_stdlib_cache(
         request.target_triple,
         request.log_prefix,
         module_context.clone(),
+        object_cache.as_ref(),
     ) {
         return Err(cleanup_temporary_after_error(&temp_stdlib_path, err));
     }

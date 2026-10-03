@@ -5,9 +5,10 @@ use super::call_abi::{
     LirRuntimeArg, emit_lir_runtime_call_with_args, emit_lir_runtime_discard,
     emit_lir_runtime_result,
 };
-use molt_codegen_abi::box_int_bits;
 use molt_tir::tir::lir::LirOp;
-use wasm_encoder::{Instruction, ValType};
+use wasm_encoder::{Instruction, MemArg, ValType};
+
+const I64_ALIGN_EXPONENT: u32 = 3;
 
 /// Materialize borrowed element views before acquiring an aggregate resource.
 /// They stay owned by the operation; successful append retains each element.
@@ -24,54 +25,69 @@ fn prepare_builder_operands(ctx: &mut LirLowerCtx, op: &LirOp) -> Vec<u32> {
         .collect()
 }
 
-#[derive(Clone, Copy)]
-pub(in crate::wasm::lir_fast) enum LirSequenceBuilderFinish {
-    List,
-    Tuple,
+pub(in crate::wasm::lir_fast) fn emit_lir_build_list(ctx: &mut LirLowerCtx, op: &LirOp) {
+    emit_lir_fixed_sequence(ctx, op, LirRuntimeCall::ListFromValues);
 }
 
-impl LirSequenceBuilderFinish {
-    const fn finish_call(self) -> LirRuntimeCall {
-        match self {
-            Self::List => LirRuntimeCall::ListBuilderFinish,
-            Self::Tuple => LirRuntimeCall::TupleBuilderFinish,
-        }
-    }
+pub(in crate::wasm::lir_fast) fn emit_lir_build_tuple(ctx: &mut LirLowerCtx, op: &LirOp) {
+    emit_lir_fixed_sequence(ctx, op, LirRuntimeCall::TupleFromValues);
 }
 
-pub(in crate::wasm::lir_fast) fn emit_lir_sequence_builder(
-    ctx: &mut LirLowerCtx,
-    op: &LirOp,
-    finish: LirSequenceBuilderFinish,
-) {
+/// Fixed-arity tuples pass their operand words to the one runtime constructor.
+/// The range is a scratch allocation private to this operation: the runtime
+/// copies and retains every word before it is freed, so there is no builder
+/// owner, per-element failure branch or shared buffer.
+fn emit_lir_fixed_sequence(ctx: &mut LirLowerCtx, op: &LirOp, constructor: LirRuntimeCall) {
     assert!(
         !op.result_values.is_empty(),
-        "sequence builder op requires result"
+        "fixed sequence requires result"
     );
+    // A fallible physical box must precede the scratch acquisition. Otherwise
+    // its exception branch would strand the range.
     let operands = prepare_builder_operands(ctx, op);
-    let owner = ctx.alloc_operation_owner();
-    emit_lir_runtime_call_with_args(
-        ctx,
-        LirRuntimeCall::ListBuilderNew,
-        &[LirRuntimeArg::I64Const(box_int_bits(
-            op.tir_op.operands.len() as i64,
-        ))],
-    );
-    ctx.instructions.push(Instruction::LocalSet(owner));
-    ctx.guard_operation_exception();
-
-    for operand in operands {
-        ctx.instructions.push(Instruction::LocalGet(owner));
-        ctx.instructions.push(Instruction::LocalGet(operand));
-        ctx.emit_runtime_call(LirRuntimeCall::ListBuilderAppend);
-        ctx.branch_to_operation_cleanup_if();
+    let count = i64::try_from(operands.len()).expect("sequence arity exceeds the i64 ABI");
+    if operands.is_empty() {
+        emit_lir_runtime_call_with_args(
+            ctx,
+            constructor,
+            &[LirRuntimeArg::I64Const(0), LirRuntimeArg::I64Const(0)],
+        );
+        emit_lir_runtime_result(ctx, op, constructor);
+        return;
     }
+    let bytes = count
+        .checked_mul(8)
+        .expect("sequence operand range exceeds the i64 scratch ABI");
+    let scratch = ctx.alloc_scratch_local(ValType::I64);
+    ctx.instructions.push(Instruction::I64Const(bytes));
+    ctx.emit_runtime_call(LirRuntimeCall::ScratchAlloc);
+    ctx.instructions.push(Instruction::LocalTee(scratch));
+    ctx.instructions.push(Instruction::I64Eqz);
+    // ScratchAlloc owns MemoryError publication; the result stays None.
+    ctx.branch_to_operation_cleanup_if();
+    for (index, operand) in operands.into_iter().enumerate() {
+        ctx.instructions.push(Instruction::LocalGet(scratch));
+        ctx.instructions.push(Instruction::I32WrapI64);
+        ctx.instructions.push(Instruction::LocalGet(operand));
+        ctx.instructions
+            .push(Instruction::I64Store(word_memarg(index)));
+    }
+    ctx.instructions.push(Instruction::LocalGet(scratch));
+    ctx.instructions.push(Instruction::I64Const(count));
+    ctx.emit_runtime_call(constructor);
+    // The runtime copied the range; free it while the sequence waits on the stack.
+    ctx.instructions.push(Instruction::LocalGet(scratch));
+    ctx.instructions.push(Instruction::I64Const(bytes));
+    ctx.emit_runtime_call(LirRuntimeCall::ScratchFree);
+    emit_lir_runtime_result(ctx, op, constructor);
+}
 
-    ctx.instructions.push(Instruction::LocalGet(owner));
-    ctx.emit_runtime_call(finish.finish_call());
-    // Finish consumes the builder on both success and failure.
-    ctx.forget_operation_owner(owner);
-    emit_lir_runtime_result(ctx, op, finish.finish_call());
+fn word_memarg(index: usize) -> MemArg {
+    MemArg {
+        offset: (index as u64) * 8,
+        align: I64_ALIGN_EXPONENT,
+        memory_index: 0,
+    }
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_build_dict(ctx: &mut LirLowerCtx, op: &LirOp) {

@@ -1,6 +1,10 @@
 use super::super::result_sink::{
     finish_owned_local_result, store_owned_result_or_release, store_runtime_result,
 };
+use super::custody::{
+    call_adopts_arguments, operand_adopted, push_spilled_arguments, release_adopted_call_inputs,
+    release_adopted_callable,
+};
 use super::site::{
     build_positional_callargs, collect_live_object_locals_for_call, emit_call_site_id,
     emit_pending_exception_return, release_live_object_locals, retain_live_object_locals,
@@ -40,6 +44,7 @@ pub(super) fn emit_dynamic_call_op(
         "call_guarded" => {
             let target_name = op.s_value.as_ref().unwrap();
             let args_names = op.args.as_ref().unwrap();
+            let adopts = call_adopts_arguments(op);
             let callee_bits = locals[&args_names[0]];
             let out = locals.op_result_or_sink_slot(op);
             let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
@@ -52,7 +57,11 @@ pub(super) fn emit_dynamic_call_op(
                 let table_target = call_site_abi.table_target(target_name, "call_guarded");
                 func.instruction(&Instruction::LocalGet(callee_bits));
                 func.instruction(&Instruction::I64Const(arity as i64));
-                func.instruction(&Instruction::I64Const(i64::from(has_closure)));
+                // Bit 0: closure first; bit 1: the entry's custody must match
+                // this instruction's adoption of its arguments.
+                func.instruction(&Instruction::I64Const(
+                    i64::from(has_closure) | if adopts { 0b10 } else { 0 },
+                ));
                 emit_call(
                     func,
                     reloc_enabled,
@@ -140,27 +149,49 @@ pub(super) fn emit_dynamic_call_op(
                     reloc_enabled,
                     import_ids[WasmRuntimeImport::RecursionGuardExit],
                 );
+                // The adopting entry ended its parameters; the instruction's
+                // callable ends after it returns, as on the owned fallback leg.
+                release_adopted_callable(func, import_ids, reloc_enabled, locals, op);
                 func.instruction(&Instruction::Else);
                 emit_call(
                     func,
                     reloc_enabled,
                     import_ids[WasmRuntimeImport::RecursionGuardExit],
                 );
+                // No callee took the adopted callable and arguments over.
+                release_adopted_call_inputs(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    locals,
+                    call_site_abi.call_func_spill_offset(),
+                    op,
+                    true,
+                    1,
+                );
                 emit_pending_exception_return(
                     func,
                     const_cache,
                     call_ctx.frame,
-                    import_ids,
-                    reloc_enabled,
+                    call_ctx.return_depth + 3,
                 );
                 func.instruction(&Instruction::End);
                 func.instruction(&Instruction::Else);
+                release_adopted_call_inputs(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    locals,
+                    call_site_abi.call_func_spill_offset(),
+                    op,
+                    true,
+                    1,
+                );
                 emit_pending_exception_return(
                     func,
                     const_cache,
                     call_ctx.frame,
-                    import_ids,
-                    reloc_enabled,
+                    call_ctx.return_depth + 2,
                 );
                 func.instruction(&Instruction::End);
                 func.instruction(&Instruction::Else);
@@ -176,11 +207,13 @@ pub(super) fn emit_dynamic_call_op(
             func.instruction(&Instruction::I64Const(spill_base as i64));
             func.instruction(&Instruction::I64Const(arity as i64));
             func.instruction(&Instruction::I64Const(op.value.unwrap_or(0)));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[WasmRuntimeImport::CallFuncDispatch],
-            );
+            // Both legs adopt alike: adopted arguments take the owned lane.
+            let dispatch = if adopts {
+                WasmRuntimeImport::CallFuncOwned
+            } else {
+                WasmRuntimeImport::CallFuncDispatch
+            };
+            emit_call(func, reloc_enabled, import_ids[dispatch]);
             func.instruction(&Instruction::LocalSet(out));
             if direct_shape {
                 func.instruction(&Instruction::End);
@@ -189,6 +222,7 @@ pub(super) fn emit_dynamic_call_op(
         }
         "call_func" => {
             let args_names = op.args.as_ref().unwrap();
+            let adopts = call_adopts_arguments(op);
             let live_object_locals = collect_live_object_locals_for_call(
                 locals,
                 call_liveness,
@@ -215,6 +249,13 @@ pub(super) fn emit_dynamic_call_op(
                     reloc_enabled,
                     WasmRuntimeImport::RequireIntrinsicRuntime,
                 );
+                // The callee is a runtime builtin, which only borrows: its
+                // call is never a source call adoption, and nothing here could
+                // release an adopted lookup value the backend never built.
+                assert!(
+                    !call_adopts_arguments(op),
+                    "runtime intrinsic lookup carries argument custody"
+                );
                 release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
                 return CallOpEmission::Handled;
             }
@@ -232,19 +273,15 @@ pub(super) fn emit_dynamic_call_op(
             func.instruction(&Instruction::I64Const(nargs as i64));
             let code_id = op.value.unwrap_or(0);
             func.instruction(&Instruction::I64Const(code_id));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallFuncDispatch],
-            );
-            store_runtime_result(
-                func,
-                op,
-                locals,
-                import_ids,
-                reloc_enabled,
-                WasmRuntimeImport::CallFuncDispatch,
-            );
+            // Adopted arguments belong to the call: the owned lane of the same
+            // invocation authority moves or releases them.
+            let dispatch = if adopts {
+                WasmRuntimeImport::CallFuncOwned
+            } else {
+                WasmRuntimeImport::CallFuncDispatch
+            };
+            emit_call(func, reloc_enabled, import_ids[dispatch]);
+            store_runtime_result(func, op, locals, import_ids, reloc_enabled, dispatch);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         "invoke_ffi" => {
@@ -456,7 +493,12 @@ pub(super) fn emit_dynamic_call_op(
             emit_call_site_id(func, func_ir.name.as_str(), op_idx, call_site_label);
             func.instruction(&Instruction::LocalGet(func_bits));
             func.instruction(&Instruction::LocalGet(builder_ptr));
-            let import = if op.kind == "call_indirect" {
+            // An ordinary call (a stack-form builder) adopted its callable as
+            // well as the builder; one owned entry serves both spellings, whose
+            // runtime dispatch is the same. An expanded call keeps its callable.
+            let import = if operand_adopted(op, 0) {
+                WasmRuntimeImport::CallBindIcOwned
+            } else if op.kind == "call_indirect" {
                 WasmRuntimeImport::CallIndirectIc
             } else {
                 WasmRuntimeImport::CallBindIc
@@ -496,6 +538,19 @@ pub(super) fn emit_dynamic_call_op(
                     func.instruction(&Instruction::LocalGet(locals[arg_name]));
                 }
                 import
+            } else if call_adopts_arguments(op) {
+                // An ordinary call that adopted its bound method and arguments:
+                // the owned lane ends a temporary bound method of a Python
+                // function before that function runs.
+                func.instruction(&Instruction::LocalGet(method_bits));
+                push_spilled_arguments(
+                    func,
+                    locals,
+                    call_site_abi.call_func_spill_offset(),
+                    &args_names[1..],
+                );
+                func.instruction(&Instruction::I64Const(0));
+                WasmRuntimeImport::CallFuncOwned
             } else {
                 // Generic path: allocate callargs and dispatch via IC.
                 let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
@@ -514,6 +569,20 @@ pub(super) fn emit_dynamic_call_op(
             };
             emit_call(func, reloc_enabled, import_ids[import]);
             store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
+            if fast_import.is_some() {
+                // The builtin borrowed the instruction's adopted inputs; they
+                // end once it returns, the bound method last.
+                release_adopted_call_inputs(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    locals,
+                    call_site_abi.call_func_spill_offset(),
+                    op,
+                    true,
+                    1,
+                );
+            }
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         _ => return CallOpEmission::NotHandled,

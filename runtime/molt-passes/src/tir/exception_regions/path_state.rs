@@ -7,7 +7,7 @@
 //! Consumed by [`super`]'s `compute_exception_region_facts`. See the
 //! module-level docs on [`super`].
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
@@ -80,12 +80,17 @@ fn op_normal_fallthrough_reachable(state_before: &ExceptionPathState, op: &TirOp
 
 fn terminator_successor_state(
     label_to_block: &BTreeMap<i64, BlockId>,
+    block_labels: &HashMap<u32, i64>,
     anonymous_destinations: &AnonymousHandlerDestinations,
     target: BlockId,
     state: &ExceptionPathState,
 ) -> ExceptionPathState {
+    // A block owns at most one label, so resolve it directly. Every landing puts
+    // a pending terminator edge on its exceptional path, so scanning all labels
+    // here would grow with landings times labels.
     if state.pending_must_transfer
-        && let Some((&label, _)) = label_to_block.iter().find(|(_, block)| **block == target)
+        && let Some(&label) = block_labels.get(&target.0)
+        && label_to_block.get(&label) == Some(&target)
         && let Some(handler_state) = state.enter_handler(label, anonymous_destinations)
     {
         return handler_state;
@@ -108,11 +113,17 @@ fn op_exception_successors_with_state(
     let Some(&target) = label_to_block.get(&label) else {
         return Vec::new();
     };
-    state
+    let successor = state
         .enter_handler(label, anonymous_destinations)
-        .into_iter()
-        .map(|succ_state| (target, succ_state))
-        .collect()
+        .unwrap_or_else(|| {
+            // A transfer can first enter an ownership landing block or leave the
+            // function. Keep pending custody until a later branch actually reaches
+            // the lexical handler; the physical edge need not name that handler.
+            let mut pending = state.clone();
+            pending.pending_must_transfer = true;
+            pending
+        });
+    vec![(target, successor)]
 }
 
 type ConstIntValues = BTreeMap<ValueId, i64>;
@@ -304,6 +315,12 @@ fn collect_const_int_values(func: &TirFunction) -> ConstIntValues {
 }
 
 fn state_id(op: &TirOp, const_int_values: &ConstIntValues) -> Result<Option<i64>, &'static str> {
+    if op.opcode == OpCode::StateSet {
+        return label_value(op)
+            .map(Some)
+            .ok_or("saved-state value attribute is not an integer");
+    }
+
     let kind = opcode_canonical_kind_table(op.opcode);
     if !simpleir_kind_is_suspend(kind) {
         return Ok(None);
@@ -328,81 +345,52 @@ fn state_id(op: &TirOp, const_int_values: &ConstIntValues) -> Result<Option<i64>
 fn terminator_successors_with_state(
     term: &Terminator,
     label_to_block: &BTreeMap<i64, BlockId>,
+    block_labels: &HashMap<u32, i64>,
     anonymous_destinations: &AnonymousHandlerDestinations,
     state: &ExceptionPathState,
     state_resume_stacks: &StateResumeStacks,
 ) -> Vec<(BlockId, ExceptionPathState)> {
+    let successor_state = |target: BlockId, state: &ExceptionPathState| {
+        terminator_successor_state(
+            label_to_block,
+            block_labels,
+            anonymous_destinations,
+            target,
+            state,
+        )
+    };
     match term {
-        Terminator::Branch { target, .. } => {
-            vec![(
-                *target,
-                terminator_successor_state(label_to_block, anonymous_destinations, *target, state),
-            )]
-        }
+        Terminator::Branch { target, .. } => vec![(*target, successor_state(*target, state))],
         Terminator::CondBranch {
             then_block,
             else_block,
             ..
         } => vec![
-            (
-                *then_block,
-                terminator_successor_state(
-                    label_to_block,
-                    anonymous_destinations,
-                    *then_block,
-                    state,
-                ),
-            ),
-            (
-                *else_block,
-                terminator_successor_state(
-                    label_to_block,
-                    anonymous_destinations,
-                    *else_block,
-                    state,
-                ),
-            ),
+            (*then_block, successor_state(*then_block, state)),
+            (*else_block, successor_state(*else_block, state)),
         ],
         Terminator::Switch { cases, default, .. } => {
             let mut successors = Vec::with_capacity(cases.len() + 1);
-            successors.extend(cases.iter().map(|(_, target, _)| {
-                (
-                    *target,
-                    terminator_successor_state(
-                        label_to_block,
-                        anonymous_destinations,
-                        *target,
-                        state,
-                    ),
-                )
-            }));
-            successors.push((
-                *default,
-                terminator_successor_state(label_to_block, anonymous_destinations, *default, state),
-            ));
+            successors.extend(
+                cases
+                    .iter()
+                    .map(|(_, target, _)| (*target, successor_state(*target, state))),
+            );
+            successors.push((*default, successor_state(*default, state)));
             successors
         }
         Terminator::StateDispatch { cases, default, .. } => {
             let mut successors = Vec::with_capacity(cases.len() + 1);
-            successors.push((
-                *default,
-                terminator_successor_state(label_to_block, anonymous_destinations, *default, state),
-            ));
+            successors.push((*default, successor_state(*default, state)));
             for (state, target, _) in cases {
                 // CFG cases are a syntactic superset. No reachable save means
                 // no resume edge, not custody inherited from the dispatcher.
                 if let Some(stacks) = state_resume_stacks.get(state) {
-                    successors.extend(stacks.iter().map(|resume_stack| {
-                        (
-                            *target,
-                            terminator_successor_state(
-                                label_to_block,
-                                anonymous_destinations,
-                                *target,
-                                resume_stack,
-                            ),
-                        )
-                    }));
+                    successors.extend(
+                        stacks
+                            .iter()
+                            .map(|resume_stack| (*target, successor_state(*target, resume_stack))),
+                    );
                 }
             }
             successors
@@ -434,6 +422,7 @@ fn collect_state_resume_stacks_once(
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,
                 label_to_block,
+                &func.label_id_map,
                 anonymous_destinations,
                 &state,
                 state_resume_stacks,
@@ -553,6 +542,7 @@ pub(super) fn reachable_region_pops(
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,
                 label_to_block,
+                &func.label_id_map,
                 anonymous_destinations,
                 &state,
                 state_resume_stacks,
@@ -618,6 +608,7 @@ pub(super) fn path_states_before(
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,
                 label_to_block,
+                &func.label_id_map,
                 anonymous_destinations,
                 &state,
                 state_resume_stacks,
@@ -673,6 +664,7 @@ pub(super) fn lexical_handlers_before(
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,
                 label_to_block,
+                &func.label_id_map,
                 anonymous_destinations,
                 &state,
                 state_resume_stacks,
@@ -740,6 +732,7 @@ pub fn exception_pop_owner_states(
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,
                 &label_to_block,
+                &func.label_id_map,
                 &anonymous_destinations,
                 &state,
                 &state_resume_stacks,

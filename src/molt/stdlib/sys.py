@@ -3,211 +3,16 @@
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-from _intrinsics import runtime_active as _runtime_active
 
 
-def cast(_tp, value):  # type: ignore[override]
-    return value
+# The native initializer publishes modules, process metadata, import state and
+# stdio before executing this body. Python owns only shaped views and APIs.
 
 
-# Ensure sys.modules exists early to avoid circular import failures.
-_existing_modules = globals().get("modules")
-if _existing_modules is None:
-    # Try the new intrinsic first; fall back to a plain dict.
-    try:
-        _modules_intrinsic = _require_intrinsic("molt_sys_modules")
-    except RuntimeError:
-        _modules_intrinsic = None
-    if callable(_modules_intrinsic):
-        _new_modules = _modules_intrinsic()
-        if isinstance(_new_modules, dict):
-            modules: dict[str, object] = _new_modules
-        else:
-            modules = {}
-    else:
-        modules = {}
-else:
-    modules = _existing_modules
-TYPE_CHECKING = False
+# Frame depth counts Python frames only. Publish the runtime callable itself:
+# a Python forwarding wrapper would change the visible stack and argument law.
+_MOLT_GETFRAME = _require_intrinsic("molt_getframe")
 
-if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
-else:
-
-    class _TypingAlias:
-        __slots__ = ()
-
-        def __getitem__(self, _item):
-            return self
-
-    Callable = _TypingAlias()
-    Iterable = _TypingAlias()
-
-
-def _noop(*_args: object, **_kwargs: object) -> None:
-    """Universal no-op fallback for unavailable intrinsics."""
-    return None
-
-
-def _return_empty_list() -> list[object]:
-    return []
-
-
-def _return_empty_tuple() -> tuple[object, ...]:
-    return ()
-
-
-def _return_empty_str() -> str:
-    return ""
-
-
-def _return_utf8() -> str:
-    return "utf-8"
-
-
-def _return_false() -> bool:
-    return False
-
-
-def _return_zero() -> int:
-    return 0
-
-
-def _return_zero_for_sizeof(_obj: object, _default: object = None) -> int:
-    return 0
-
-
-def _return_1000() -> int:
-    return 1000
-
-
-def _return_4300() -> int:
-    return 4300
-
-
-def _return_switchinterval() -> float:
-    return 0.005
-
-
-def _return_asyncgen_hooks_default() -> tuple[None, None]:
-    return (None, None)
-
-
-def _return_version_info_default() -> tuple[int, int, int, str, int]:
-    return (3, 12, 0, "final", 0)
-
-
-def _return_version_default() -> str:
-    return "3.12.0 (molt)"
-
-
-def _return_hexversion_default() -> int:
-    return 0x030C00F0
-
-
-def _return_platform_unknown() -> str:
-    return "unknown"
-
-
-def _return_refcount_default(_obj: object) -> int:
-    return 1
-
-
-def _return_identity(value: object) -> object:
-    return value
-
-
-def _reference_maxsize() -> int:
-    import sys as reference_sys
-
-    return reference_sys.maxsize
-
-
-def _reference_maxunicode() -> int:
-    import sys as reference_sys
-
-    return reference_sys.maxunicode
-
-
-def _reference_byteorder() -> str:
-    import sys as reference_sys
-
-    return reference_sys.byteorder
-
-
-def _return_empty_frozenset() -> frozenset[object]:
-    return frozenset()
-
-
-def _safe_intrinsic(
-    name: str,
-    default: object = None,
-    _ri: object = _require_intrinsic,
-) -> Callable[..., object]:
-    """Resolve an intrinsic, returning *default* (or _noop) on failure.
-
-    This NEVER raises during import, making bootstrap infallible on all
-    targets including WASM where the registry may be populated lazily.
-    The _ri default captures the resolver at definition time, avoiding
-    a module-global lookup that can fail in AOT-compiled stdlib modules.
-    """
-    try:
-        fn = _ri(name)
-        if callable(fn):
-            return fn  # type: ignore[return-value]
-    except (RuntimeError, TypeError):
-        pass
-    if default is not None:
-        return default  # type: ignore[return-value]
-    return _noop
-
-
-def _noop_getframe(_depth: int = 0) -> object:
-    """Fallback for when molt_getframe intrinsic is unavailable (e.g. WASM/node)."""
-    return None
-
-
-def _noop_is_string_obj(val: object) -> bool:
-    """Fallback for when molt_is_string_obj intrinsic is unavailable (e.g. WASM/node)."""
-    return isinstance(val, str)
-
-
-def _platform_default() -> str:
-    try:
-        value = _MOLT_SYS_PLATFORM()
-        if isinstance(value, str):
-            return value
-    except Exception:
-        pass
-    return _return_platform_unknown()
-
-
-def _platform_is_windows() -> bool:
-    return _platform_default().startswith("win")
-
-
-def _filesystem_encode_errors_default() -> str:
-    if _platform_is_windows():
-        return "surrogatepass"
-    return "surrogateescape"
-
-
-def _platlibdir_default() -> str:
-    if _platform_is_windows():
-        return "DLLs"
-    return "lib"
-
-
-# Define early to avoid circular-import NameError during stdlib bootstrap.
-# _safe_intrinsic never raises — WASM builds won't crash when the lazy
-# resolver hasn't wired these yet.
-_MOLT_GETFRAME = _safe_intrinsic("molt_getframe", _noop_getframe)
-# Always use isinstance-based check: the molt_is_string_obj intrinsic
-# fails on WASM when the string was allocated by the compiler (its header
-# type_id can diverge from TYPE_ID_STRING for interned/constant strings).
-_MOLT_IS_STRING_OBJ = _noop_is_string_obj
-
-# Compiled runtimes are the host; avoid recursive sys -> importlib -> sys.
 
 __all__ = [
     "argv",
@@ -287,113 +92,41 @@ __all__ = [
     "audit",
 ]
 
-_MOLT_GETRECURSIONLIMIT = _safe_intrinsic("molt_getrecursionlimit", _return_1000)
-_MOLT_SETRECURSIONLIMIT = _safe_intrinsic("molt_setrecursionlimit", None)
-_MOLT_EXCEPTION_ACTIVE = _safe_intrinsic("molt_exception_active", None)
-_MOLT_EXCEPTION_LAST = _safe_intrinsic("molt_exception_last", None)
-_MOLT_UNRAISABLE_HOOK_ARGS_IS_EXACT = _safe_intrinsic(
-    "molt_unraisable_hook_args_is_exact", _return_false
-)
-_MOLT_ASYNCGEN_HOOKS_GET = _safe_intrinsic(
-    "molt_asyncgen_hooks_get", _return_asyncgen_hooks_default
-)
-_MOLT_ASYNCGEN_HOOKS_SET = _safe_intrinsic("molt_asyncgen_hooks_set", None)
-_MOLT_SYS_VERSION_INFO = _safe_intrinsic(
-    "molt_sys_version_info", _return_version_info_default
-)
-_MOLT_SYS_VERSION = _safe_intrinsic("molt_sys_version", _return_version_default)
-_MOLT_SYS_HEXVERSION = _safe_intrinsic(
-    "molt_sys_hexversion", _return_hexversion_default
-)
-_MOLT_SYS_API_VERSION = _safe_intrinsic("molt_sys_api_version", _return_zero)
-_MOLT_SYS_ABIFLAGS = _safe_intrinsic("molt_sys_abiflags", _return_empty_str)
-_MOLT_SYS_IMPLEMENTATION_PAYLOAD = _safe_intrinsic(
-    "molt_sys_implementation_payload", None
-)
-_MOLT_SYS_FLAGS_PAYLOAD = _safe_intrinsic("molt_sys_flags_payload", None)
-_MOLT_SYS_PLATFORM = _safe_intrinsic("molt_sys_platform", _return_platform_unknown)
-_MOLT_SYS_IS_FINALIZING = _safe_intrinsic("molt_sys_is_finalizing", _return_false)
-_MOLT_SYS_GETREFCOUNT = _safe_intrinsic(
-    "molt_sys_getrefcount", _return_refcount_default
-)
-_MOLT_SYS_SETTRACE = _safe_intrinsic("molt_sys_settrace", None)
-_MOLT_SYS_GETTRACE = _safe_intrinsic("molt_sys_gettrace", None)
-_MOLT_SYS_SETPROFILE = _safe_intrinsic("molt_sys_setprofile", None)
-_MOLT_SYS_GETPROFILE = _safe_intrinsic("molt_sys_getprofile", None)
-_MOLT_SYS_STDIN = _safe_intrinsic("molt_sys_stdin", None)
-_MOLT_SYS_STDOUT = _safe_intrinsic("molt_sys_stdout", None)
-_MOLT_SYS_STDERR = _safe_intrinsic("molt_sys_stderr", None)
-_MOLT_SYS_GETFILESYSTEMENCODEERRORS = _safe_intrinsic(
-    "molt_sys_getfilesystemencodeerrors", _filesystem_encode_errors_default
-)
-if _runtime_active():
-    _MOLT_SYS_MAXSIZE = _require_intrinsic("molt_sys_maxsize", globals())
-    _MOLT_SYS_MAXUNICODE = _require_intrinsic("molt_sys_maxunicode", globals())
-    _MOLT_SYS_BYTEORDER = _require_intrinsic("molt_sys_byteorder", globals())
-else:
-    # Tooling-only CPython baseline path. Compiled Molt runtimes must publish
-    # their target facts through the required intrinsics above.
-    _MOLT_SYS_MAXSIZE = _reference_maxsize
-    _MOLT_SYS_MAXUNICODE = _reference_maxunicode
-    _MOLT_SYS_BYTEORDER = _reference_byteorder
-_MOLT_SYS_PREFIX = _safe_intrinsic("molt_sys_prefix", _return_empty_str)
-_MOLT_SYS_EXEC_PREFIX = _safe_intrinsic("molt_sys_exec_prefix", _return_empty_str)
-_MOLT_SYS_BASE_PREFIX = _safe_intrinsic("molt_sys_base_prefix", _return_empty_str)
-_MOLT_SYS_BASE_EXEC_PREFIX = _safe_intrinsic(
-    "molt_sys_base_exec_prefix", _return_empty_str
-)
-_MOLT_SYS_PLATLIBDIR = _safe_intrinsic("molt_sys_platlibdir", _platlibdir_default)
-_MOLT_SYS_FLOAT_INFO = _safe_intrinsic("molt_sys_float_info", None)
-_MOLT_SYS_INT_INFO = _safe_intrinsic("molt_sys_int_info", None)
-_MOLT_SYS_HASH_INFO = _safe_intrinsic("molt_sys_hash_info", None)
-_MOLT_SYS_THREAD_INFO = _safe_intrinsic("molt_sys_thread_info", None)
-_MOLT_SYS_INTERN = _safe_intrinsic("molt_sys_intern", _return_identity)
-_MOLT_SYS_GETSIZEOF = _safe_intrinsic("molt_sys_getsizeof", _return_zero_for_sizeof)
-_MOLT_SYS_STDLIB_MODULE_NAMES = _safe_intrinsic(
-    "molt_sys_stdlib_module_names", _return_empty_frozenset
-)
-_MOLT_SYS_BUILTIN_MODULE_NAMES = _safe_intrinsic(
-    "molt_sys_builtin_module_names", _return_empty_tuple
-)
-_MOLT_SYS_ORIG_ARGV = _safe_intrinsic("molt_sys_orig_argv", _return_empty_list)
-_MOLT_SYS_COPYRIGHT = _safe_intrinsic("molt_sys_copyright", _return_empty_str)
-_MOLT_TRACEBACK_FORMAT_EXCEPTION = _safe_intrinsic(
-    "molt_traceback_format_exception", None
-)
-_MOLT_SYS_GETDEFAULTENCODING = _safe_intrinsic(
-    "molt_sys_getdefaultencoding", _return_utf8
-)
-_MOLT_SYS_GETFILESYSTEMENCODING = _safe_intrinsic(
-    "molt_sys_getfilesystemencoding", _return_utf8
-)
-_MOLT_SYS_GETSWITCHINTERVAL = _safe_intrinsic(
-    "molt_sys_getswitchinterval", _return_switchinterval
-)
-_MOLT_SYS_SETSWITCHINTERVAL = _safe_intrinsic("molt_sys_setswitchinterval", None)
-_MOLT_SYS_GET_INT_MAX_STR_DIGITS = _safe_intrinsic(
-    "molt_sys_get_int_max_str_digits", _return_4300
-)
-_MOLT_SYS_SET_INT_MAX_STR_DIGITS = _safe_intrinsic(
-    "molt_sys_set_int_max_str_digits", None
-)
-_MOLT_SYS_CALL_TRACING_VALIDATE = _safe_intrinsic(
-    "molt_sys_call_tracing_validate", None
-)
-_MOLT_SYS_ADDAUDITHOOK = _safe_intrinsic("molt_sys_addaudithook", None)
-_MOLT_SYS_AUDIT_HOOK_COUNT = _safe_intrinsic("molt_sys_audit_hook_count", _return_zero)
-_MOLT_SYS_AUDIT_GET_HOOKS = _safe_intrinsic(
-    "molt_sys_audit_get_hooks", _return_empty_list
-)
-_MOLT_SYS_EXIT = _safe_intrinsic("molt_sys_exit", None)
-_MOLT_SYS_DISPLAYHOOK_WRITE = _safe_intrinsic("molt_sys_displayhook_write", None)
-_MOLT_SYS_EXCEPTHOOK_WRITE = _safe_intrinsic("molt_sys_excepthook_write", None)
-_MOLT_OS_WRITE_RESOLVED = False
-try:
-    _MOLT_OS_WRITE_FN = _require_intrinsic("molt_os_write")
-    if callable(_MOLT_OS_WRITE_FN):
-        _MOLT_OS_WRITE_RESOLVED = True
-except (RuntimeError, TypeError):
-    _MOLT_OS_WRITE_FN = None
+_MOLT_GETRECURSIONLIMIT = _require_intrinsic("molt_getrecursionlimit")
+_MOLT_SETRECURSIONLIMIT = _require_intrinsic("molt_setrecursionlimit")
+_MOLT_EXCEPTION_ACTIVE = _require_intrinsic("molt_exception_active")
+_MOLT_EXCEPTION_LAST = _require_intrinsic("molt_exception_last")
+_MOLT_UNRAISABLE_HOOK_ARGS_IS_EXACT = _require_intrinsic("molt_unraisable_hook_args_is_exact")
+_MOLT_ASYNCGEN_HOOKS_GET = _require_intrinsic("molt_asyncgen_hooks_get")
+_MOLT_ASYNCGEN_HOOKS_SET = _require_intrinsic("molt_asyncgen_hooks_set")
+_ASYNCGEN_HOOK_UNSET = object()
+_MOLT_SYS_FLAGS_PAYLOAD = _require_intrinsic("molt_sys_flags_payload")
+_MOLT_SYS_IS_FINALIZING = _require_intrinsic("molt_sys_is_finalizing")
+_MOLT_SYS_GETREFCOUNT = _require_intrinsic("molt_sys_getrefcount")
+_MOLT_SYS_SETTRACE = _require_intrinsic("molt_sys_settrace")
+_MOLT_SYS_GETTRACE = _require_intrinsic("molt_sys_gettrace")
+_MOLT_SYS_SETPROFILE = _require_intrinsic("molt_sys_setprofile")
+_MOLT_SYS_GETPROFILE = _require_intrinsic("molt_sys_getprofile")
+_MOLT_SYS_GETFILESYSTEMENCODEERRORS = _require_intrinsic("molt_sys_getfilesystemencodeerrors")
+_MOLT_SYS_FLOAT_INFO = _require_intrinsic("molt_sys_float_info")
+_MOLT_SYS_INT_INFO = _require_intrinsic("molt_sys_int_info")
+_MOLT_SYS_HASH_INFO = _require_intrinsic("molt_sys_hash_info")
+_MOLT_SYS_THREAD_INFO = _require_intrinsic("molt_sys_thread_info")
+_MOLT_SYS_INTERN = _require_intrinsic("molt_sys_intern")
+_MOLT_SYS_GETSIZEOF = _require_intrinsic("molt_sys_getsizeof")
+_MOLT_TRACEBACK_FORMAT_EXCEPTION = _require_intrinsic("molt_traceback_format_exception")
+_MOLT_SYS_GETDEFAULTENCODING = _require_intrinsic("molt_sys_getdefaultencoding")
+_MOLT_SYS_GETFILESYSTEMENCODING = _require_intrinsic("molt_sys_getfilesystemencoding")
+_MOLT_SYS_GETSWITCHINTERVAL = _require_intrinsic("molt_sys_getswitchinterval")
+_MOLT_SYS_SETSWITCHINTERVAL = _require_intrinsic("molt_sys_setswitchinterval")
+_MOLT_SYS_GET_INT_MAX_STR_DIGITS = _require_intrinsic("molt_sys_get_int_max_str_digits")
+_MOLT_SYS_SET_INT_MAX_STR_DIGITS = _require_intrinsic("molt_sys_set_int_max_str_digits")
+_MOLT_SYS_CALL_TRACING_VALIDATE = _require_intrinsic("molt_sys_call_tracing_validate")
+_MOLT_SYS_ADDAUDITHOOK = _require_intrinsic("molt_sys_addaudithook")
+_MOLT_SYS_AUDIT = _require_intrinsic("molt_sys_audit")
+_MOLT_SYS_EXIT = _require_intrinsic("molt_sys_exit")
+_MOLT_SYS_DISPLAYHOOK_WRITE = _require_intrinsic("molt_sys_displayhook_write")
+_MOLT_SYS_EXCEPTHOOK_WRITE = _require_intrinsic("molt_sys_excepthook_write")
 
 # Runtime sys module publication is the sole argv/executable authority.  Python
 # placeholders would execute after publication and could overwrite the process
@@ -826,394 +559,57 @@ def _thread_info_tuple_type():
     return _ThreadInfoTuple
 
 
-platform = _platform_default()
-
-
-def _sys_abiflags_is_available(platform_name: str) -> bool:
-    return not platform_name.startswith("win")
-
-
-_SYS_ABIFLAGS_AVAILABLE = _sys_abiflags_is_available(platform)
-if _SYS_ABIFLAGS_AVAILABLE:
+if "abiflags" in globals():
     __all__.insert(__all__.index("flags"), "abiflags")
 
-
-def _try_str_intrinsic(fn: object, fallback: str) -> str:
-    """Call *fn*() and return its value when it is a str, else *fallback*."""
-    try:
-        val = fn()  # type: ignore[operator]
-        if isinstance(val, str):
-            return val
-    except Exception:
-        pass
-    return fallback
-
-
-def _try_int_intrinsic(fn: object, fallback: int) -> int:
-    """Call *fn*() and return its value when it is an int, else *fallback*."""
-    try:
-        val = fn()  # type: ignore[operator]
-        if isinstance(val, int):
-            return val
-    except Exception:
-        pass
-    return fallback
+def _validate_bootstrap_scalars() -> None:
+    """Validate the native bootstrap's values without replacing their owners."""
+    g = globals()
+    maxsize_value = g["maxsize"]
+    maxunicode_value = g["maxunicode"]
+    byteorder_value = g["byteorder"]
+    if not isinstance(maxsize_value, int) or isinstance(maxsize_value, bool) or maxsize_value <= 0:
+        raise RuntimeError("canonical sys bootstrap returned invalid maxsize")
+    if not isinstance(maxunicode_value, int) or isinstance(maxunicode_value, bool) or not 0 < maxunicode_value <= 0x10FFFF:
+        raise RuntimeError("canonical sys bootstrap returned invalid maxunicode")
+    if not isinstance(byteorder_value, str) or byteorder_value not in ("little", "big"):
+        raise RuntimeError("canonical sys bootstrap returned invalid byteorder")
 
 
-def _try_tuple_intrinsic(
-    fn: object, fallback: tuple[object, ...], expected_len: int = 0
-) -> tuple[object, ...] | list[object]:
-    """Call *fn*() and return when it is a tuple/list, else *fallback*."""
-    try:
-        val = fn()  # type: ignore[operator]
-        if isinstance(val, (list, tuple)):
-            if expected_len == 0 or len(val) == expected_len:
-                return val
-    except Exception:
-        pass
-    return fallback
+def _metadata_tuple(payload: object, name: str, count: int) -> tuple[object, ...]:
+    if not isinstance(payload, (list, tuple)) or len(payload) != count:
+        raise RuntimeError(f"{name} returned invalid value")
+    return tuple(payload)
 
 
-def _resolve_scalar_metadata() -> tuple[int, int, str]:
-    maxsize_value = _MOLT_SYS_MAXSIZE()
-    maxunicode_value = _MOLT_SYS_MAXUNICODE()
-    byteorder_value = _MOLT_SYS_BYTEORDER()
-
-    if (
-        not isinstance(maxsize_value, int)
-        or isinstance(maxsize_value, bool)
-        or maxsize_value <= 0
-    ):
-        raise RuntimeError("molt_sys_maxsize returned invalid value")
-    if (
-        not isinstance(maxunicode_value, int)
-        or isinstance(maxunicode_value, bool)
-        or maxunicode_value <= 0
-        or maxunicode_value > 0x10FFFF
-    ):
-        raise RuntimeError("molt_sys_maxunicode returned invalid value")
-    if not isinstance(byteorder_value, str) or byteorder_value not in (
-        "little",
-        "big",
-    ):
-        raise RuntimeError("molt_sys_byteorder returned invalid value")
-    return maxsize_value, maxunicode_value, byteorder_value
-
-
-# On WASM, intrinsics that return heap-allocated objects (tuples, dicts)
-# Split metadata init into a helper to reduce molt_init_sys function size.
-# Cranelift generates incorrect code for functions >200KB of machine code.
-def _init_metadata():
-    """Initialize version/platform metadata as module globals."""
+def _init_metadata_views() -> None:
+    """Finalize public shapes once, during the canonical module initializer."""
     global _SYS_FLAGS_GIL
     g = globals()
-    maxsize_value, maxunicode_value, byteorder_value = _resolve_scalar_metadata()
-    version_text = _try_str_intrinsic(_MOLT_SYS_VERSION, "3.12.0 (molt)")
-    raw_version_info = _try_tuple_intrinsic(
-        _MOLT_SYS_VERSION_INFO, (3, 12, 0, "final", 0), expected_len=5
-    )
-    _rvi = tuple(raw_version_info)
-    hexversion_value = _try_int_intrinsic(_MOLT_SYS_HEXVERSION, 0x030C00F0)
-    api_version_value = _try_int_intrinsic(_MOLT_SYS_API_VERSION, 0)
-    platform_value = _try_str_intrinsic(_MOLT_SYS_PLATFORM, _return_platform_unknown())
-    abiflags_value = ""
-    if _SYS_ABIFLAGS_AVAILABLE:
-        abiflags_value = _try_str_intrinsic(_MOLT_SYS_ABIFLAGS, "")
-    implementation_value = _implementation_namespace_type()(
-        "molt", "molt-312", _rvi, hexversion_value
-    )
-    try:
-        implementation_payload = _MOLT_SYS_IMPLEMENTATION_PAYLOAD()
-    except Exception:
-        implementation_payload = None
-    if implementation_payload is not None:
-        implementation_value = _resolve_implementation(implementation_payload)
-
-    flags_values = (
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        1,
-        0,
-        0,
-        0,
-        0,
-        0,
-        4300,
-    )
-    try:
-        flags_payload = _MOLT_SYS_FLAGS_PAYLOAD()
-    except Exception:
-        flags_payload = None
-    if flags_payload is not None:
-        flags_values, _SYS_FLAGS_GIL = _resolve_flags_payload(flags_payload)
-
-    float_info_values = tuple(
-        _try_tuple_intrinsic(
-            _MOLT_SYS_FLOAT_INFO,
-            (
-                1.7976931348623157e308,
-                1024,
-                308,
-                2.2250738585072014e-308,
-                -1021,
-                -307,
-                15,
-                53,
-                2.220446049250313e-16,
-                2,
-                1,
-            ),
-            expected_len=len(_FLOAT_INFO_FIELDS),
-        )
-    )
-    int_info_values = tuple(
-        _try_tuple_intrinsic(
-            _MOLT_SYS_INT_INFO,
-            (30, 4, 4300, 640),
-            expected_len=len(_INT_INFO_FIELDS),
-        )
-    )
-    hash_info_values = tuple(
-        _try_tuple_intrinsic(
-            _MOLT_SYS_HASH_INFO,
-            (64, 2305843009213693951, 314159, 0, 1000003, "siphash13", 64, 128, 0),
-            expected_len=len(_HASH_INFO_FIELDS),
-        )
-    )
-    thread_info_values = tuple(
-        _try_tuple_intrinsic(
-            _MOLT_SYS_THREAD_INFO,
-            ("pthread", None, None),
-            expected_len=len(_THREAD_INFO_FIELDS),
-        )
-    )
-    platlibdir_value = _try_str_intrinsic(_MOLT_SYS_PLATLIBDIR, _platlibdir_default())
-
-    g["version"] = version_text
-    g["_raw_version_info"] = _rvi
-    g["version_info"] = _version_info_tuple_type()(_rvi)
-    g["hexversion"] = hexversion_value
-    g["api_version"] = api_version_value
-    g["platform"] = platform_value
-    if _SYS_ABIFLAGS_AVAILABLE:
-        g["abiflags"] = abiflags_value
-    else:
-        g.pop("abiflags", None)
+    _validate_bootstrap_scalars()
+    raw_version = _expect_version_info_tuple(g["version_info"], "canonical sys bootstrap", "version_info")
+    implementation_value = _resolve_implementation(g["implementation"])
+    flags_values, _SYS_FLAGS_GIL = _resolve_flags_payload(_MOLT_SYS_FLAGS_PAYLOAD())
+    float_values = _metadata_tuple(_MOLT_SYS_FLOAT_INFO(), "molt_sys_float_info", len(_FLOAT_INFO_FIELDS))
+    int_values = _metadata_tuple(_MOLT_SYS_INT_INFO(), "molt_sys_int_info", len(_INT_INFO_FIELDS))
+    hash_values = _metadata_tuple(_MOLT_SYS_HASH_INFO(), "molt_sys_hash_info", len(_HASH_INFO_FIELDS))
+    thread_values = _metadata_tuple(_MOLT_SYS_THREAD_INFO(), "molt_sys_thread_info", len(_THREAD_INFO_FIELDS))
+    g["version_info"] = _version_info_tuple_type()(raw_version)
     g["implementation"] = implementation_value
     g["flags"] = _flags_tuple_type()(flags_values)
-    g["path"] = []
-    g["meta_path"] = []
-    g["path_hooks"] = []
-    g["path_importer_cache"] = {}
-    g["maxsize"] = maxsize_value
-    g["maxunicode"] = maxunicode_value
-    g["byteorder"] = byteorder_value
-    g["prefix"] = ""
-    g["exec_prefix"] = ""
-    g["base_prefix"] = ""
-    g["base_exec_prefix"] = ""
-    g["platlibdir"] = platlibdir_value
-    g["float_info"] = _float_info_tuple_type()(float_info_values)
-    g["int_info"] = _int_info_tuple_type()(int_info_values)
-    g["hash_info"] = _hash_info_tuple_type()(hash_info_values)
-    g["thread_info"] = _thread_info_tuple_type()(thread_info_values)
-    g["orig_argv"] = []
-    g["copyright"] = "Copyright (c) Molt contributors."
-    g["stdlib_module_names"] = frozenset()
-    g["builtin_module_names"] = ()
+    g["float_info"] = _float_info_tuple_type()(float_values)
+    g["int_info"] = _int_info_tuple_type()(int_values)
+    g["hash_info"] = _hash_info_tuple_type()(hash_values)
+    g["thread_info"] = _thread_info_tuple_type()(thread_values)
+    g["stdlib_module_names"] = frozenset(g["stdlib_module_names"])
 
 
-_metadata_names = [
-    "version",
-    "version_info",
-    "hexversion",
-    "api_version",
-    "implementation",
-    "flags",
-    "maxsize",
-    "maxunicode",
-    "byteorder",
-    "prefix",
-    "exec_prefix",
-    "base_prefix",
-    "base_exec_prefix",
-    "platlibdir",
-    "float_info",
-    "int_info",
-    "hash_info",
-    "thread_info",
-    "orig_argv",
-    "copyright",
-    "stdlib_module_names",
-    "builtin_module_names",
-]
-if _SYS_ABIFLAGS_AVAILABLE:
-    _metadata_names.append("abiflags")
-_METADATA_NAMES = frozenset(_metadata_names)
-_metadata_initialized = False
-
-
-def _ensure_metadata_initialized() -> None:
-    global _metadata_initialized
-    if _metadata_initialized:
-        return
-    _init_metadata()
-    _metadata_initialized = True
-
-
-path = []
 _molt_bootstrap_pythonpath = ()
 _molt_bootstrap_module_roots = ()
 _molt_bootstrap_venv_site_packages = ()
 _molt_bootstrap_pwd = "/"
 _molt_bootstrap_include_cwd = False
 _molt_bootstrap_stdlib_root = None
-meta_path = []
-path_hooks = []
-path_importer_cache = {}
-
-
-def _resolve_stdio_handle(intrinsic: object, name: str) -> object:
-    resolved = intrinsic
-    if isinstance(resolved, str):
-        resolved = _safe_intrinsic(resolved)
-    if not callable(resolved):
-        raise RuntimeError(f"sys {name} intrinsic unavailable")
-    handle = resolved()
-    if handle is None:
-        raise RuntimeError(f"sys {name} intrinsic returned invalid value")
-    return handle
-
-
-_STDIO_NAMES = frozenset(
-    {"stdin", "stdout", "stderr", "__stdin__", "__stdout__", "__stderr__"}
-)
-_stdio_initialized = False
-
-
-def _ensure_stdio_initialized() -> None:
-    global _stdio_initialized
-    if _stdio_initialized:
-        return
-
-    # Use the safe intrinsics resolved earlier — avoids direct builtins imports
-    # which fail when sys is imported transitively at runtime.
-    # If an intrinsic returns None (e.g. during early bootstrap before the runtime
-    # registers stdio handles), fall back to a minimal file-like wrapper around
-    # the raw C file descriptors so that print() and sys.stdout.write() still work.
-    stdin = _MOLT_SYS_STDIN()
-    stdout = _MOLT_SYS_STDOUT()
-    stderr = _MOLT_SYS_STDERR()
-
-    if stdout is None or stderr is None or stdin is None:
-
-        class _StdioFallback:
-            """Minimal file-like object wrapping a raw fd for bootstrap."""
-
-            def __init__(self, _name: str, _fd: int, _writable: bool = True) -> None:
-                self.name = _name
-                self._fd = _fd
-                self.mode = "w" if _writable else "r"
-                self.encoding = "utf-8"
-                self.errors = "surrogateescape"
-                self.closed = False
-                self._writable = _writable
-
-            def write(self, s: object) -> int:
-                text = str(s) if not isinstance(s, str) else s
-                if not text:
-                    return 0
-                data = text.encode(self.encoding, self.errors)
-                if _MOLT_OS_WRITE_RESOLVED and _MOLT_OS_WRITE_FN is not None:
-                    _MOLT_OS_WRITE_FN(self._fd, data)
-                return len(text)
-
-            def read(self, n: int = -1) -> str:
-                return ""
-
-            def readline(self, limit: int = -1) -> str:
-                return ""
-
-            def flush(self) -> None:
-                pass
-
-            def fileno(self) -> int:
-                return self._fd
-
-            def isatty(self) -> bool:
-                return False
-
-            def readable(self) -> bool:
-                return not self._writable
-
-            def writable(self) -> bool:
-                return self._writable
-
-            def seekable(self) -> bool:
-                return False
-
-            def close(self) -> None:
-                self.closed = True
-
-            def __enter__(self) -> "_StdioFallback":
-                return self
-
-            def __exit__(self, *_args: object) -> None:
-                pass
-
-        if stdin is None:
-            stdin = _StdioFallback("<stdin>", 0, False)
-        if stdout is None:
-            stdout = _StdioFallback("<stdout>", 1, True)
-        if stderr is None:
-            stderr = _StdioFallback("<stderr>", 2, True)
-
-    g = globals()
-    g["stdin"] = stdin
-    g["stdout"] = stdout
-    g["stderr"] = stderr
-    g["__stdin__"] = stdin
-    g["__stdout__"] = stdout
-    g["__stderr__"] = stderr
-    _stdio_initialized = True
-
-
-def __getattr__(name: str) -> object:
-    if name in _METADATA_NAMES:
-        _ensure_metadata_initialized()
-        return globals()[name]
-    if name in _STDIO_NAMES:
-        _ensure_stdio_initialized()
-        return globals()[name]
-    if name in _HEAVY_API_NAMES:
-        _ensure_heavy_api_initialized()
-        return globals()[name]
-    raise AttributeError(name)
-
-
-_default_encoding = "utf-8"
-_fs_encoding = "utf-8"
-_fs_encode_errors = None
-
-
-def _filesystem_encode_errors() -> str:
-    global _fs_encode_errors
-    if isinstance(_fs_encode_errors, str):
-        return _fs_encode_errors
-    value = _MOLT_SYS_GETFILESYSTEMENCODEERRORS()
-    _fs_encode_errors = (
-        value if isinstance(value, str) else _filesystem_encode_errors_default()
-    )
-    return _fs_encode_errors
 
 
 _AsyncgenHooksTuple = None
@@ -1244,111 +640,114 @@ def _asyncgen_hooks_tuple_type():
     return _AsyncgenHooksTuple
 
 
-_HEAVY_API_NAMES = frozenset(
-    {
-        "asyncgen_hooks",
-        "getrecursionlimit",
-        "setrecursionlimit",
-        "exc_info",
-        "_getframe",
-        "getdefaultencoding",
-        "getfilesystemencoding",
-        "getfilesystemencodeerrors",
-        "get_asyncgen_hooks",
-        "set_asyncgen_hooks",
-        "intern",
-        "getsizeof",
-        "displayhook",
-        "__displayhook__",
-        "excepthook",
-        "__excepthook__",
-        "unraisablehook",
-        "__unraisablehook__",
-        "get_int_max_str_digits",
-        "set_int_max_str_digits",
-        "is_finalizing",
-        "getrefcount",
-        "getswitchinterval",
-        "setswitchinterval",
-        "settrace",
-        "gettrace",
-        "setprofile",
-        "getprofile",
-        "call_tracing",
-        "exception",
-        "addaudithook",
-        "audit",
-    }
-)
-_heavy_api_initialized = False
+def getrecursionlimit() -> int:
+    return int((_MOLT_GETRECURSIONLIMIT()))
 
 
-def _ensure_heavy_api_initialized() -> None:
-    global _heavy_api_initialized
-    if _heavy_api_initialized:
+def setrecursionlimit(limit: int) -> None:
+    _MOLT_SETRECURSIONLIMIT(limit)
+    return None
+
+
+def exc_info() -> tuple[object, object, object]:
+    exc = _MOLT_EXCEPTION_ACTIVE()
+    if exc is None:
+        return None, None, None
+    return type(exc), exc, getattr(exc, "__traceback__", None)
+
+
+def getdefaultencoding() -> str:
+    return _MOLT_SYS_GETDEFAULTENCODING()
+
+
+def getfilesystemencoding() -> str:
+    return _MOLT_SYS_GETFILESYSTEMENCODING()
+
+
+def getfilesystemencodeerrors() -> str:
+    return _MOLT_SYS_GETFILESYSTEMENCODEERRORS()
+
+
+def get_asyncgen_hooks() -> object:
+    hooks = _MOLT_ASYNCGEN_HOOKS_GET()
+    if not isinstance(hooks, tuple) or len(hooks) != 2:
+        raise RuntimeError("asyncgen hooks intrinsic returned invalid value")
+    firstiter, finalizer = hooks
+    return _AsyncgenHooksTuple(firstiter, finalizer)
+
+
+def set_asyncgen_hooks(
+    firstiter: object = _ASYNCGEN_HOOK_UNSET,
+    finalizer: object = _ASYNCGEN_HOOK_UNSET,
+) -> None:
+    _MOLT_ASYNCGEN_HOOKS_SET(firstiter, finalizer, _ASYNCGEN_HOOK_UNSET)
+    return None
+
+
+def intern(s: object) -> str:
+    if not isinstance(s, str):
+        raise TypeError(f"intern() argument 1 must be str, not {type(s).__name__}")
+    return _MOLT_SYS_INTERN(s)
+
+
+def getsizeof(obj: object, default: object = ...) -> int:
+    if default is ...:
+        return _MOLT_SYS_GETSIZEOF(obj, None)
+    return _MOLT_SYS_GETSIZEOF(obj, default)
+
+
+def displayhook(value: object) -> None:
+    if value is None:
+        return
+    _builtins = modules.get("builtins")
+    text = repr(value)
+    _MOLT_SYS_DISPLAYHOOK_WRITE(text)
+    _MOLT_SYS_DISPLAYHOOK_WRITE("\n")
+    if _builtins is not None:
+        _builtins._ = value  # type: ignore[attr-defined]
+
+
+def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
+    try:
+        lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(
+            exc_type, exc_value, exc_tb, None, True
+        )
+    except BaseException:  # noqa: BLE001
+        lines = None
+    if isinstance(lines, list) and all(isinstance(line, str) for line in lines):
+        _MOLT_SYS_EXCEPTHOOK_WRITE("".join(lines))
         return
 
-    AsyncgenHooksTuple = _asyncgen_hooks_tuple_type()
+    type_name = getattr(exc_type, "__name__", None)
+    if not isinstance(type_name, str):
+        type_name = str(exc_type)
+    detail = str(exc_value) if exc_value is not None else ""
+    if detail:
+        _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}: {detail}\n")
+        return
+    _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
 
-    def getrecursionlimit() -> int:
-        return int((_MOLT_GETRECURSIONLIMIT()))
 
-    def setrecursionlimit(limit: int) -> None:
-        _MOLT_SETRECURSIONLIMIT(limit)
-        return None
+def unraisablehook(unraisable: object) -> None:
+    if not _MOLT_UNRAISABLE_HOOK_ARGS_IS_EXACT(unraisable):
+        raise TypeError(
+            "sys.unraisablehook argument type must be UnraisableHookArgs"
+        )
+    err_msg = getattr(unraisable, "err_msg", None)
+    obj = getattr(unraisable, "object", None)
+    exc_value = getattr(unraisable, "exc_value", None)
+    exc_type = getattr(unraisable, "exc_type", None)
+    exc_tb = getattr(unraisable, "exc_traceback", None)
 
-    def exc_info() -> tuple[object, object, object]:
-        exc = _MOLT_EXCEPTION_ACTIVE()
-        if exc is None:
-            return None, None, None
-        return type(exc), exc, getattr(exc, "__traceback__", None)
+    if err_msg is not None:
+        if obj is not None:
+            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}: {obj!r}\n")
+        else:
+            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}:\n")
+    elif obj is not None:
+        _MOLT_SYS_EXCEPTHOOK_WRITE(f"Exception ignored in: {obj!r}\n")
 
-    def _getframe(depth: int = 0) -> object | None:
-        return _MOLT_GETFRAME(depth + 2)
-
-    def getdefaultencoding() -> str:
-        return _MOLT_SYS_GETDEFAULTENCODING()
-
-    def getfilesystemencoding() -> str:
-        return _MOLT_SYS_GETFILESYSTEMENCODING()
-
-    def getfilesystemencodeerrors() -> str:
-        return _filesystem_encode_errors()
-
-    def get_asyncgen_hooks() -> object:
-        hooks = _MOLT_ASYNCGEN_HOOKS_GET()
-        if not isinstance(hooks, tuple) or len(hooks) != 2:
-            raise RuntimeError("asyncgen hooks intrinsic returned invalid value")
-        firstiter, finalizer = hooks
-        return AsyncgenHooksTuple(firstiter, finalizer)
-
-    def set_asyncgen_hooks(
-        *, firstiter: object | None = None, finalizer: object | None = None
-    ) -> None:
-        _MOLT_ASYNCGEN_HOOKS_SET(firstiter, finalizer)
-        return None
-
-    def intern(s: object) -> str:
-        if not isinstance(s, str):
-            raise TypeError(f"intern() argument 1 must be str, not {type(s).__name__}")
-        return _MOLT_SYS_INTERN(s)
-
-    def getsizeof(obj: object, default: object = ...) -> int:
-        if default is ...:
-            return _MOLT_SYS_GETSIZEOF(obj, None)
-        return _MOLT_SYS_GETSIZEOF(obj, default)
-
-    def displayhook(value: object) -> None:
-        if value is None:
-            return
-        _builtins = modules.get("builtins")
-        text = repr(value)
-        _MOLT_SYS_DISPLAYHOOK_WRITE(text)
-        _MOLT_SYS_DISPLAYHOOK_WRITE("\n")
-        if _builtins is not None:
-            _builtins._ = value  # type: ignore[attr-defined]
-
-    def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
+    if exc_value is not None:
         try:
             lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(
                 exc_type, exc_value, exc_tb, None, True
@@ -1358,154 +757,89 @@ def _ensure_heavy_api_initialized() -> None:
         if isinstance(lines, list) and all(isinstance(line, str) for line in lines):
             _MOLT_SYS_EXCEPTHOOK_WRITE("".join(lines))
             return
-
         type_name = getattr(exc_type, "__name__", None)
         if not isinstance(type_name, str):
             type_name = str(exc_type)
         detail = str(exc_value) if exc_value is not None else ""
         if detail:
             _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}: {detail}\n")
-            return
-        _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
+        else:
+            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
 
-    def unraisablehook(unraisable: object) -> None:
-        if not _MOLT_UNRAISABLE_HOOK_ARGS_IS_EXACT(unraisable):
-            raise TypeError(
-                "sys.unraisablehook argument type must be UnraisableHookArgs"
-            )
-        err_msg = getattr(unraisable, "err_msg", None)
-        obj = getattr(unraisable, "object", None)
-        exc_value = getattr(unraisable, "exc_value", None)
-        exc_type = getattr(unraisable, "exc_type", None)
-        exc_tb = getattr(unraisable, "exc_traceback", None)
 
-        if err_msg is not None:
-            if obj is not None:
-                _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}: {obj!r}\n")
-            else:
-                _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}:\n")
-        elif obj is not None:
-            _MOLT_SYS_EXCEPTHOOK_WRITE(f"Exception ignored in: {obj!r}\n")
+def get_int_max_str_digits() -> int:
+    return int((_MOLT_SYS_GET_INT_MAX_STR_DIGITS()))
 
-        if exc_value is not None:
-            try:
-                lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(
-                    exc_type, exc_value, exc_tb, None, True
-                )
-            except BaseException:  # noqa: BLE001
-                lines = None
-            if isinstance(lines, list) and all(isinstance(line, str) for line in lines):
-                _MOLT_SYS_EXCEPTHOOK_WRITE("".join(lines))
-                return
-            type_name = getattr(exc_type, "__name__", None)
-            if not isinstance(type_name, str):
-                type_name = str(exc_type)
-            detail = str(exc_value) if exc_value is not None else ""
-            if detail:
-                _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}: {detail}\n")
-            else:
-                _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
 
-    def get_int_max_str_digits() -> int:
-        return int((_MOLT_SYS_GET_INT_MAX_STR_DIGITS()))
+def set_int_max_str_digits(maxdigits: int) -> None:
+    _MOLT_SYS_SET_INT_MAX_STR_DIGITS(maxdigits)
 
-    def set_int_max_str_digits(maxdigits: int) -> None:
-        _MOLT_SYS_SET_INT_MAX_STR_DIGITS(maxdigits)
 
-    def is_finalizing() -> bool:
-        value = _MOLT_SYS_IS_FINALIZING()
-        if not isinstance(value, bool):
-            raise RuntimeError("molt_sys_is_finalizing returned invalid value")
-        return value
+def is_finalizing() -> bool:
+    value = _MOLT_SYS_IS_FINALIZING()
+    if not isinstance(value, bool):
+        raise RuntimeError("molt_sys_is_finalizing returned invalid value")
+    return value
 
-    def getrefcount(obj: object) -> int:
-        value = _MOLT_SYS_GETREFCOUNT(obj)
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise RuntimeError("molt_sys_getrefcount returned invalid value")
-        return value
 
-    def getswitchinterval() -> float:
-        return float((_MOLT_SYS_GETSWITCHINTERVAL()))
+def getrefcount(obj: object) -> int:
+    value = _MOLT_SYS_GETREFCOUNT(obj)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RuntimeError("molt_sys_getrefcount returned invalid value")
+    return value
 
-    def setswitchinterval(interval: float) -> None:
-        _MOLT_SYS_SETSWITCHINTERVAL(interval)
 
-    def settrace(tracefunc: object) -> None:
-        _MOLT_SYS_SETTRACE(tracefunc)
+def getswitchinterval() -> float:
+    return float((_MOLT_SYS_GETSWITCHINTERVAL()))
 
-    def gettrace() -> object:
-        return _MOLT_SYS_GETTRACE()
 
-    def setprofile(profilefunc: object) -> None:
-        _MOLT_SYS_SETPROFILE(profilefunc)
+def setswitchinterval(interval: float) -> None:
+    _MOLT_SYS_SETSWITCHINTERVAL(interval)
 
-    def getprofile() -> object:
-        return _MOLT_SYS_GETPROFILE()
 
-    def call_tracing(func: object, args: object) -> object:
-        _MOLT_SYS_CALL_TRACING_VALIDATE(func, args)
-        return func(*args)  # type: ignore[operator]
+def settrace(tracefunc: object) -> None:
+    _MOLT_SYS_SETTRACE(tracefunc)
 
-    def exception() -> BaseException | None:
-        exc = _MOLT_EXCEPTION_ACTIVE()
-        if exc is None:
-            exc = _MOLT_EXCEPTION_LAST()
-        if isinstance(exc, BaseException):
-            return exc
-        return None
 
-    def addaudithook(hook: object) -> None:
-        _MOLT_SYS_ADDAUDITHOOK(hook)
+def gettrace() -> object:
+    return _MOLT_SYS_GETTRACE()
 
-    def audit(event: str, *args: object) -> None:
-        count = _MOLT_SYS_AUDIT_HOOK_COUNT()
-        if not count:
-            return
-        hooks = _MOLT_SYS_AUDIT_GET_HOOKS()
-        if isinstance(hooks, list):
-            for hook in hooks:
-                if callable(hook):
-                    hook(event, args)
 
-    g = globals()
-    g.update(
-        {
-            "asyncgen_hooks": AsyncgenHooksTuple,
-            "getrecursionlimit": getrecursionlimit,
-            "setrecursionlimit": setrecursionlimit,
-            "exc_info": exc_info,
-            "_getframe": _getframe,
-            "getdefaultencoding": getdefaultencoding,
-            "getfilesystemencoding": getfilesystemencoding,
-            "getfilesystemencodeerrors": getfilesystemencodeerrors,
-            "get_asyncgen_hooks": get_asyncgen_hooks,
-            "set_asyncgen_hooks": set_asyncgen_hooks,
-            "intern": intern,
-            "getsizeof": getsizeof,
-            "displayhook": displayhook,
-            "__displayhook__": displayhook,
-            "excepthook": excepthook,
-            "__excepthook__": excepthook,
-            "unraisablehook": unraisablehook,
-            "__unraisablehook__": unraisablehook,
-            "get_int_max_str_digits": get_int_max_str_digits,
-            "set_int_max_str_digits": set_int_max_str_digits,
-            "is_finalizing": is_finalizing,
-            "getrefcount": getrefcount,
-            "getswitchinterval": getswitchinterval,
-            "setswitchinterval": setswitchinterval,
-            "settrace": settrace,
-            "gettrace": gettrace,
-            "setprofile": setprofile,
-            "getprofile": getprofile,
-            "call_tracing": call_tracing,
-            "exception": exception,
-            "addaudithook": addaudithook,
-            "audit": audit,
-        }
-    )
-    _heavy_api_initialized = True
+def setprofile(profilefunc: object) -> None:
+    _MOLT_SYS_SETPROFILE(profilefunc)
 
+
+def getprofile() -> object:
+    return _MOLT_SYS_GETPROFILE()
+
+
+def call_tracing(func: object, args: object) -> object:
+    _MOLT_SYS_CALL_TRACING_VALIDATE(func, args)
+    return func(*args)  # type: ignore[operator]
+
+
+def exception() -> BaseException | None:
+    exc = _MOLT_EXCEPTION_ACTIVE()
+    if exc is None:
+        exc = _MOLT_EXCEPTION_LAST()
+    if isinstance(exc, BaseException):
+        return exc
+    return None
+
+
+def addaudithook(hook: object) -> None:
+    _MOLT_SYS_ADDAUDITHOOK(hook)
+
+
+def audit(event: str, *args: object) -> None:
+    _MOLT_SYS_AUDIT(event, args)
+
+# Direct aliases preserve callable identity without an export registry.
+_getframe = _MOLT_GETFRAME
+asyncgen_hooks = _asyncgen_hooks_tuple_type()
+__displayhook__ = displayhook
+__excepthook__ = excepthook
+__unraisablehook__ = unraisablehook
 
 # --- Compile-time constants (no intrinsic needed) ---
 
@@ -1525,18 +859,6 @@ warnoptions: list[str] = []
 _xoptions: dict[str, object] = {}
 
 
-# ---------------------------------------------------------------------------
-# Namespace cleanup — remove names that are not part of CPython's sys public API.
-# These are needed for type annotations, casting helpers, and intermediate
-# variables but must not appear in the module __dict__ as non-underscore
-# public names.
-# ---------------------------------------------------------------------------
-for _name in (
-    "TYPE_CHECKING",
-    "cast",
-    "Callable",
-    "Iterable",
-    "version_obj",
-    "abiflags_obj",
-):
-    globals().pop(_name, None)
+# Finalize shaped metadata before the initializer returns. Attribute reads
+# never rerun producers or resurrect a deleted public key.
+_init_metadata_views()

@@ -56,6 +56,41 @@ pub(crate) struct IoPoller {
     ready: Mutex<HashMap<PtrSlot, u32>>,
 }
 
+/// Host ABIs without a multiplexed completion wait need an explicit retry
+/// deadline. Socket/WebSocket registrations bound a host wait by this interval;
+/// process and stream retries put the same interval into the owning task's
+/// existing timer queue. An idle loop with no such work has no polling cap.
+#[cfg(target_arch = "wasm32")]
+pub(crate) const HOST_PROGRESS_POLL_SLICE: Duration = Duration::from_millis(5);
+
+/// Give a scheduled task a concrete retry deadline for a poll-driven host
+/// operation. Inline futures are subscribed through their scheduled awaiter by
+/// `sleep_register_impl`; they must not create an unowned scheduler timer.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn register_host_progress_retry(py: &PyToken<'_>, task: *mut u8) -> bool {
+    if task.is_null() {
+        return false;
+    }
+    let flags = unsafe { (*header_from_obj_ptr(task)).load_synchronized_flags() };
+    if flags & (crate::HEADER_FLAG_BLOCK_ON | crate::HEADER_FLAG_SPAWN_RETAIN) == 0 {
+        return false;
+    }
+    let deadline = Instant::now() + HOST_PROGRESS_POLL_SLICE;
+    if flags & crate::HEADER_FLAG_BLOCK_ON != 0 {
+        runtime_state(py)
+            .sleep_queue()
+            .register_blocking(py, task, deadline);
+    } else {
+        crate::async_rt::scheduler::register_task_sleep(py, task, deadline);
+    }
+    true
+}
+
+/// With no deadline and no host readiness waiter, no guest code can become
+/// ready; chunking only keeps each WASI clock wait finite.
+#[cfg(target_arch = "wasm32")]
+const UNBOUNDED_IDLE_CHUNK: Duration = Duration::from_secs(3600);
+
 #[cfg(target_arch = "wasm32")]
 impl IoPoller {
     pub(crate) fn new() -> Self {
@@ -190,6 +225,25 @@ impl IoPoller {
         for (future, mask) in ready {
             self.mark_ready(future, mask);
             let _ = wake_await_waiters(_py, future.0);
+        }
+    }
+
+    /// Idle wait of the only guest thread (`LoopParker::park` on wasm32):
+    /// nothing else can publish loop work while it blocks. Without host
+    /// readiness waiters the wait lasts exactly until the loop's next deadline;
+    /// with them it is one bounded slice followed by a readiness poll whose
+    /// wakes land in the loop's ready queue before the wait is re-evaluated.
+    pub(crate) fn idle_wait(&self, py: &PyToken<'_>, timeout: Option<Duration>) {
+        let host_waiters = !self.waiters.lock().unwrap().is_empty();
+        let wait = match (host_waiters, timeout) {
+            (false, Some(timeout)) => timeout,
+            (false, None) => UNBOUNDED_IDLE_CHUNK,
+            (true, Some(timeout)) => timeout.min(HOST_PROGRESS_POLL_SLICE),
+            (true, None) => HOST_PROGRESS_POLL_SLICE,
+        };
+        std::thread::sleep(wait);
+        if host_waiters {
+            self.poll_host(py);
         }
     }
 }

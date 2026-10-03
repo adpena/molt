@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import ast
 from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
+from molt.compiler_analysis.python_binding_facts import UNBOUND_IDENTITY
 from typing import (
     Any,
-    cast,
 )
 
 from molt.frontend._types import (
@@ -33,6 +33,18 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 
 class ExpressionVisitorMixin(GeneratorMixinBase):
     def visit_Name(self, node: ast.Name) -> Any:
+        value = self._load_name_in_scope(node)
+        if isinstance(node.ctx, ast.Load) and isinstance(value, MoltValue):
+            fact = (
+                self.python_binding_index.expression_fact(node)
+                if self.python_binding_index is not None
+                else None
+            )
+            if fact is None or fact.binding_capture_required:
+                value = self._capture_expression_reference(value)
+        return value
+
+    def _load_name_in_scope(self, node: ast.Name) -> Any:
         if (
             isinstance(node.ctx, ast.Load)
             and self._class_ns_stack
@@ -107,8 +119,20 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
             # Check locals BEFORE module_global_mutations: inline
             # comprehensions bind their iterator variable in self.locals,
             # which must shadow the module-level name (CPython scoping).
+            binding_fact = (
+                self.python_binding_index.expression_fact(node)
+                if self.python_binding_index is not None
+                else None
+            )
+            binding_may_be_unbound = (
+                bool(binding_fact.identities & UNBOUND_IDENTITY)
+                if binding_fact is not None and binding_fact.name_lookup == "lexical"
+                else None
+            )
             local = self._load_local_value(
-                node.id, binding_invalidated=binding_invalidated
+                node.id,
+                binding_invalidated=binding_invalidated,
+                binding_may_be_unbound=binding_may_be_unbound,
             )
             if local is not None:
                 return local
@@ -178,20 +202,13 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                         return self._emit_global_get(node.id)
                 if node.id in {"locals", "__import__"}:
                     return self._emit_module_attr_get_on("builtins", node.id)
-                builtin_tag = BUILTIN_TYPE_TAGS.get(node.id)
-                if builtin_tag is not None:
-                    tag_val = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[builtin_tag], result=tag_val))
-                    res = MoltValue(self.next_var(), type_hint="type")
-                    self.emit(MoltOp(kind="BUILTIN_TYPE", args=[tag_val], result=res))
-                    return res
+                if node.id in BUILTIN_TYPE_TAGS:
+                    # Python names read the captured live builtins namespace.
+                    # Type tags remain an internal runtime representation, not
+                    # authority to replace a rebound Python callable.
+                    return self._emit_global_get(node.id)
                 if node.id in BUILTIN_FUNC_SPECS:
-                    _, requirement_bits = self._runtime_qualified_callable_requirement(
-                        "builtins", node.id
-                    )
-                    return self._emit_builtin_function(
-                        node.id, runtime_requirement_bits=requirement_bits
-                    )
+                    return self._emit_global_get(node.id)
                 if self._builtin_exception_is_available(node.id):
                     return self._emit_exception_class(node.id)
                 if node.id in self.stdlib_allowlist:
@@ -225,43 +242,8 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[folded_str], result=res))
                 return res
-        # Specialized list[int] detection: [int_literal] * count
-        # Emits LIST_INT_NEW for flat i64 storage (Codon-style) instead of
-        # generic LIST_NEW + MUL which creates NaN-boxed elements.
-        # NOTE: bools are excluded — `[True] * n` must yield booleans,
-        # not ints, since `bool` is a subclass of `int` in CPython.
-        if isinstance(node.op, ast.Mult):
-            list_node = count_node = None
-            if (
-                isinstance(node.left, ast.List)
-                and len(node.left.elts) == 1
-                and isinstance(node.left.elts[0], ast.Constant)
-                and isinstance(node.left.elts[0].value, int)
-                and not isinstance(node.left.elts[0].value, bool)
-            ):
-                list_node, count_node = node.left, node.right
-            elif (
-                isinstance(node.right, ast.List)
-                and len(node.right.elts) == 1
-                and isinstance(node.right.elts[0], ast.Constant)
-                and isinstance(node.right.elts[0].value, int)
-                and not isinstance(node.right.elts[0].value, bool)
-            ):
-                list_node, count_node = node.right, node.left
-            if list_node is not None and count_node is not None:
-                fill_const = cast(ast.Constant, list_node.elts[0])
-                fill_val = cast(int, fill_const.value)
-                fill_int = int(fill_val)
-                fill_res = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[fill_int], result=fill_res))
-                count_res = self.visit(count_node)
-                if count_res is None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE,
-                        "Unsupported list repeat count",
-                    )
-                return self._emit_list_int_filled(count_res, fill_res)
-
+        # Keep both source multiplication orders in canonical operator dispatch.
+        # Shared representation facts specialize only exact admitted operands.
         left = self.visit(node.left)
         if left is None:
             raise FrontendRejection(
@@ -825,20 +807,6 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 val_hint = self._dict_value_hint(target)
                 if val_hint:
                     res_type = val_hint
-            spec = self._intrinsic_handle_class_spec_for_value(target)
-            if spec is not None and spec.getitem_intrinsic is not None:
-                if index_val is None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE,
-                        "Unsupported intrinsic-backed class index",
-                    )
-                return self._emit_intrinsic_handle_class_call(
-                    target,
-                    spec,
-                    spec.getitem_intrinsic,
-                    [index_val],
-                    result_hint="int",
-                )
         res = MoltValue(self.next_var(), type_hint=res_type)
         self.emit(MoltOp(kind="INDEX", args=[target, index_val], result=res))
         return res
@@ -896,8 +864,12 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 Diagnostic.SYNTAX_FORM,
                 "Unsupported assignment expression target",
             )
+        # Assignment expressions publish a binding and return an independent
+        # expression reference (Python's COPY before STORE). Capture before
+        # publication: releasing the displaced slot may reenter Python.
+        result = self._emit_owned_value_alias(value_node)
         self._emit_assign_target(node.target, value_node, node.value)
-        return value_node
+        return result
 
     def visit_Compare(self, node: ast.Compare) -> Any:
         return self._emit_expression_flow(node, "value")[0]

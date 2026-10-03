@@ -1,6 +1,6 @@
 schema_version = 1
 # Retired ABI slots are never valid heap kinds and must never be reused.
-retired_ids = [205, 231]
+retired_ids = [205, 220, 231]
 
 # Canonical heap-kind and lifetime-policy authority. The object header stores only
 # `type_id`; fixed kinds resolve by indexed lookup with invalid retired holes and no header
@@ -22,8 +22,9 @@ metrics = "object"
 name = "STRING"
 id = 200
 layout = "inline"
-edges = "none"
-cycle = "never"
+edges = "dynamic"
+cycle = "dynamic"
+track = "native_subtype"
 weakref = "deny"
 shape = "fixed"
 drop = "string"
@@ -32,11 +33,11 @@ metrics = "string"
 [[kind]]
 name = "LIST"
 id = 201
-layout = "vec_bits"
-edges = "dynamic"
+layout = "object"
+edges = "shape"
 cycle = "always"
-weakref = "deny"
-shape = "fixed"
+weakref = "class"
+shape = "class"
 drop = "list"
 metrics = "list"
 
@@ -44,8 +45,9 @@ metrics = "list"
 name = "BYTES"
 id = 202
 layout = "inline"
-edges = "none"
-cycle = "never"
+edges = "dynamic"
+cycle = "dynamic"
+track = "native_subtype"
 weakref = "deny"
 shape = "fixed"
 drop = "none"
@@ -135,8 +137,9 @@ metrics = "none"
 name = "BYTEARRAY"
 id = 211
 layout = "vec_u8"
-edges = "none"
-cycle = "never"
+edges = "dynamic"
+cycle = "dynamic"
+track = "native_subtype"
 weakref = "deny"
 shape = "fixed"
 drop = "bytearray"
@@ -235,17 +238,6 @@ drop = "memoryview"
 metrics = "none"
 
 [[kind]]
-name = "INTARRAY"
-id = 220
-layout = "inline"
-edges = "none"
-cycle = "never"
-weakref = "deny"
-shape = "fixed"
-drop = "none"
-metrics = "none"
-
-[[kind]]
 name = "FUNCTION"
 id = 221
 layout = "function"
@@ -270,11 +262,11 @@ metrics = "none"
 [[kind]]
 name = "MODULE"
 id = 223
-layout = "module"
-edges = "fixed"
+layout = "object"
+edges = "shape"
 cycle = "always"
 weakref = "allow"
-shape = "fixed"
+shape = "class"
 drop = "module"
 metrics = "none"
 
@@ -381,8 +373,9 @@ metrics = "bigint"
 name = "COMPLEX"
 id = 234
 layout = "inline"
-edges = "none"
-cycle = "never"
+edges = "dynamic"
+cycle = "dynamic"
+track = "native_subtype"
 weakref = "deny"
 shape = "fixed"
 drop = "none"
@@ -658,6 +651,21 @@ shape = "fixed"
 drop = "cell"
 metrics = "none"
 
+# One observed synchronous activation's bindings, indexed by its code object's
+# localsplus layout and released in the target's frame-clear order
+# (builtins/frames/bindings.rs). The only Rust-side storage, the 3.14
+# overwritten-locals vector, is freed by the same clear.
+[[kind]]
+name = "FRAME_BINDINGS"
+id = 259
+layout = "fixed_bits"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "none"
+metrics = "none"
+
 
 # Immutable OBJECT subshape ABI. Selected before publication and used directly
 # for visit/clear/terminal-drop dispatch; poll functions and class identities are
@@ -694,30 +702,6 @@ family = "task"
 resource_slot0 = "none"
 
 [[object_shape]]
-name = "ASYNCIO_WAIT"
-id = 5
-family = "task"
-resource_slot0 = "none"
-
-[[object_shape]]
-name = "ASYNCIO_GATHER"
-id = 6
-family = "task"
-resource_slot0 = "none"
-
-[[object_shape]]
-name = "ASYNCIO_WAIT_FOR"
-id = 7
-family = "task"
-resource_slot0 = "none"
-
-[[object_shape]]
-name = "ASYNCIO_TIMER_HANDLE"
-id = 8
-family = "task"
-resource_slot0 = "none"
-
-[[object_shape]]
 name = "ASYNCIO_FD_WATCHER"
 id = 9
 family = "task"
@@ -726,12 +710,6 @@ resource_slot0 = "none"
 [[object_shape]]
 name = "ASYNCIO_SERVER_ACCEPT_LOOP"
 id = 10
-family = "task"
-resource_slot0 = "none"
-
-[[object_shape]]
-name = "ASYNCIO_READY_RUNNER"
-id = 11
 family = "task"
 resource_slot0 = "none"
 
@@ -930,6 +908,21 @@ resource_slot0 = "none"
 [[object_shape]]
 name = "TYPES_MAPPING_PROXY"
 id = 73
+family = "types"
+resource_slot0 = "none"
+
+# A frame object's typed binding source precedes its managed __dict__
+# (builtins/frames/locals_proxy.rs).
+[[object_shape]]
+name = "TYPES_FRAME"
+id = 74
+family = "types"
+resource_slot0 = "none"
+
+# PEP 667 frame.f_locals over the same binding source (3.13 onward).
+[[object_shape]]
+name = "TYPES_FRAME_LOCALS_PROXY"
+id = 75
 family = "types"
 resource_slot0 = "none"
 

@@ -1087,34 +1087,6 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 // merge-block parameters to their output variable names.
                 // Guard: skip if the merge block was already filled (can't emit defs).
                 if !*is_block_filled && !frame.phi_ops.is_empty() {
-                    let phi_join_slot_names: Vec<Option<String>> = {
-                        let mut names: Vec<Option<String>> = Vec::new();
-                        let mut scan_idx = op_idx + 1;
-                        while scan_idx < func_ops.len() && func_ops[scan_idx].kind == "phi" {
-                            scan_idx += 1;
-                        }
-                        if scan_idx < func_ops.len()
-                            && matches!(func_ops[scan_idx].kind.as_str(), "label" | "state_label")
-                        {
-                            scan_idx += 1;
-                        }
-                        while scan_idx < func_ops.len() && names.len() < frame.phi_ops.len() {
-                            let next = &func_ops[scan_idx];
-                            if next.kind != "load_var" {
-                                break;
-                            }
-                            if let Some(var_name) = preanalyze_alias_source(next)
-                                && is_join_slot_name(var_name)
-                            {
-                                names.push(Some(var_name.to_string()));
-                                scan_idx += 1;
-                                continue;
-                            }
-                            break;
-                        }
-                        names.resize(frame.phi_ops.len(), None);
-                        names
-                    };
                     for (idx, (out, _then_name, _else_name)) in frame.phi_ops.iter().enumerate() {
                         let param = frame.phi_params.get(idx).copied().unwrap_or_else(|| {
                             panic!("phi param missing for {out} in {}", func_name)
@@ -1148,38 +1120,6 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             .expect("phi output carrier");
                             emit_inc_ref_obj(builder, *boxed, local_inc_ref_obj);
                             cleanup_roots.acquire(builder, local_dec_ref_obj, out, *boxed);
-                        }
-                        if let Some(Some(join_name)) = phi_join_slot_names.get(idx) {
-                            let join_storage =
-                                merge_rebind_storage_for_name(join_name, representation_plan);
-                            let join_value = if join_storage == out_storage {
-                                param
-                            } else {
-                                merge_rebind_value_for_storage(
-                                    &mut *module,
-                                    &mut *import_ids,
-                                    &mut *builder,
-                                    import_refs,
-                                    sealed_blocks,
-                                    vars,
-                                    representation_plan,
-                                    nbc,
-                                    out,
-                                    join_storage,
-                                )
-                            };
-                            def_var_from_merge_rebind_storage(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                import_refs,
-                                vars,
-                                representation_plan,
-                                nbc,
-                                join_name,
-                                join_value,
-                                join_storage,
-                            );
                         }
                     }
                     if let Some(block) = builder.current_block() {

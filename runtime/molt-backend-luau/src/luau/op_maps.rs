@@ -143,21 +143,13 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = molt_dict_popitem({dict})"));
                 }
             }
-            "dict_inc" | "dict_str_int_inc" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 3 {
-                    let dict = sanitize_ident(&args[0]);
-                    let key = sanitize_ident(&args[1]);
-                    let inc = sanitize_ident(&args[2]);
-                    if let Some(ref out_name) = op.out {
-                        let out = sanitize_ident(out_name);
-                        self.emit_line(&format!(
-                            "local {out} = molt_dict_inc({dict}, {key}, {inc})"
-                        ));
-                    } else {
-                        self.emit_line(&format!("molt_dict_inc({dict}, {key}, {inc})"));
-                    }
-                }
+            // The fused `d[k] = d.get(k, 0) + delta` stands in for the statement
+            // only when it runs no Python code; this target cannot check that,
+            // so the op declines, `False`, and the statement lowered beside it
+            // runs.
+            "dict_str_int_inc" => {
+                let out = self.out_var(op);
+                self.emit_line(&format!("local {out} = false"));
             }
             "dict_from_obj" => {
                 let out = self.out_var(op);

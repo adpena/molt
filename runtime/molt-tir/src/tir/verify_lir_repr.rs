@@ -82,6 +82,7 @@ mod tests {
 
     fn make_lir_function(blocks: HashMap<BlockId, LirBlock>) -> LirFunction {
         LirFunction {
+            container_storage: std::collections::HashMap::new(),
             name: "test_fn".into(),
             param_names: vec![],
             param_types: vec![],

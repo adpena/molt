@@ -1,3 +1,4 @@
+use crate::builtins::attr::lookup_special_method_bits;
 // Type conversion operations.
 // Split from ops.rs for compilation-unit size reduction.
 
@@ -5,7 +6,6 @@ use crate::const_data_cache::{
     ConstDataLiteralKind, const_data_literal_insert, const_data_literal_lookup,
 };
 use crate::object::accessors::object_field_init_ptr_raw;
-use crate::object::inc_ref_ptr;
 use crate::object::ops::{as_float_extended, float_result_bits};
 use crate::object::ops_format::{format_bytes, format_string_repr_bytes};
 use crate::*;
@@ -13,7 +13,7 @@ use molt_obj_model::MoltObject;
 use molt_obj_model::int_literal::{IntLiteralErrorKind, scan_int_literal_with_limit};
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::{Signed, ToPrimitive, Zero};
+use num_traits::{Signed, Zero};
 
 /// Format an i64 into a stack-allocated buffer, returning the UTF-8 slice.
 /// This avoids the heap allocation of `i.to_string()` in the hot path.
@@ -47,21 +47,6 @@ fn int_to_stack_str(val: i64, buf: &mut [u8; 24]) -> &[u8] {
 pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val_bits);
-        // Fast path: already a string -- inc_ref and return as-is.
-        if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                if object_type_id(ptr) == TYPE_ID_STRING {
-                    molt_inc_ref(ptr);
-                    return val_bits;
-                }
-                if object_type_id(ptr) == TYPE_ID_EXCEPTION
-                    && let Some(bits) =
-                        crate::object::ops_format::exception_cached_message_str_bits(_py, ptr)
-                {
-                    return bits;
-                }
-            }
-        }
         // Fast path: inline int -- stack-format to avoid String allocation.
         if let Some(i) = obj.as_int() {
             // Max i64 is 19 digits + sign = 20 bytes; 24 for safety.
@@ -82,39 +67,21 @@ pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
             }
             return MoltObject::from_ptr(ptr).bits();
         }
-        let rendered = format_obj_str(_py, obj);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        let ptr = alloc_string(_py, rendered.as_bytes());
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(ptr).bits()
+        crate::object::ops_format::format_obj_str_bits(_py, obj)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_repr_from_obj(val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(val_bits);
-        let rendered = format_obj(_py, obj);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        let ptr = alloc_string(_py, rendered.as_bytes());
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(ptr).bits()
+    crate::with_gil_entry_nopanic!(py, {
+        crate::object::ops_format::format_obj_bits(py, obj_from_bits(val_bits))
     })
 }
 
-fn ascii_escape(text: &str) -> String {
-    let bytes = text.as_bytes();
+fn ascii_escape(bytes: &[u8]) -> String {
     // SIMD fast path: if entire string is ASCII, return as-is (common case)
     if bytes.is_ascii() {
-        return text.to_string();
+        return String::from_utf8(bytes.to_vec()).expect("ASCII prefix");
     }
     // Find the first non-ASCII byte using SIMD scan, copy the safe prefix in bulk
     let mut first_non_ascii = 0usize;
@@ -170,15 +137,15 @@ fn ascii_escape(text: &str) -> String {
         first_non_ascii += 1;
     }
 
-    let mut out = String::with_capacity(text.len());
+    let mut out = String::with_capacity(bytes.len());
     // Copy the all-ASCII prefix in bulk
-    out.push_str(&text[..first_non_ascii]);
+    out.push_str(std::str::from_utf8(&bytes[..first_non_ascii]).expect("ASCII prefix"));
     // Process remaining characters
-    for ch in text[first_non_ascii..].chars() {
-        if ch.is_ascii() {
-            out.push(ch);
+    for cp in crate::object::ops_string::wtf8_from_bytes(&bytes[first_non_ascii..]).code_points() {
+        let code = cp.to_u32();
+        if code < 128 {
+            out.push(code as u8 as char);
         } else {
-            let code = ch as u32;
             if code <= 0xff {
                 out.push_str(&format!("\\x{:02x}", code));
             } else if code <= 0xffff {
@@ -194,12 +161,18 @@ fn ascii_escape(text: &str) -> String {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ascii_from_obj(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(val_bits);
-        let rendered = format_obj(_py, obj);
+        let rendered_bits = molt_repr_from_obj(val_bits);
         if exception_pending(_py) {
+            dec_ref_bits(_py, rendered_bits);
             return MoltObject::none().bits();
         }
+        let rendered = crate::object::ops_format::string_obj_bytes(obj_from_bits(rendered_bits))
+            .expect("validated repr string");
+        if rendered.is_ascii() {
+            return rendered_bits;
+        }
         let escaped = ascii_escape(&rendered);
+        dec_ref_bits(_py, rendered_bits);
         let ptr = alloc_string(_py, escaped.as_bytes());
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -505,17 +478,10 @@ pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(val_bits);
-        // Inline non-NaN float: return as-is.
-        if obj.is_float() {
-            return val_bits;
-        }
-        // Heap-allocated NaN float (TYPE_ID_FLOAT): `float(x)` returns the
-        // same object when x is already a float, matching CPython semantics.
-        if let Some(ptr) = obj.as_ptr()
-            && unsafe { object_type_id(ptr) } == TYPE_ID_FLOAT
-        {
-            unsafe { inc_ref_ptr(_py, ptr) };
+        // Preserve identity only for an exact float. A physical float payload
+        // can carry subclass identity and must dispatch its __float__ slot.
+        if crate::builtins::numbers::is_exact_float(_py, val_bits) {
+            inc_ref_bits(_py, val_bits);
             return val_bits;
         }
         if let Some(value) = crate::builtins::numbers::float_from_number_protocol(_py, val_bits) {
@@ -570,20 +536,17 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_float_new(cls_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let cls_obj = obj_from_bits(cls_bits);
-        let Some(cls_ptr) = cls_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "float.__new__ expects type");
-        };
-        unsafe {
-            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "float.__new__ expects type");
-            }
-        }
         let builtins = builtin_classes(_py);
-        if cls_bits != builtins.float && !issubclass_bits(cls_bits, builtins.float) {
-            let type_label = class_name_for_error(cls_bits);
-            let msg = format!("float.__new__ expects type, got {}", type_label);
-            return raise_exception::<_>(_py, "TypeError", &msg);
+        let Some((_, cls_ptr)) = crate::builtins::type_ops::native_constructor_receiver(
+            _py,
+            builtins.float,
+            Some(cls_bits),
+            "float",
+        ) else {
+            return MoltObject::none().bits();
+        };
+        if unsafe { crate::object::class_finish_definition(_py, cls_ptr) }.is_err() {
+            return MoltObject::none().bits();
         }
         let float_bits = molt_float_from_obj(val_bits);
         if exception_pending(_py) {
@@ -592,41 +555,30 @@ pub extern "C" fn molt_float_new(cls_bits: u64, val_bits: u64) -> u64 {
         if cls_bits == builtins.float {
             return float_bits;
         }
+        let _value_owner = obj_from_bits(float_bits)
+            .as_ptr()
+            .map(crate::PtrDropGuard::new);
         let inst_bits = unsafe { alloc_instance_for_class(_py, cls_ptr) };
         let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
-            if obj_from_bits(float_bits).as_ptr().is_some() {
-                dec_ref_bits(_py, float_bits);
-            }
             return MoltObject::none().bits();
         };
-        let Some(slot_name_bits) = attr_name_bits_from_bytes(_py, b"__molt_float_value__") else {
-            if obj_from_bits(float_bits).as_ptr().is_some() {
-                dec_ref_bits(_py, float_bits);
-            }
-            return raise_exception::<_>(
+        let mut instance_owner = crate::PtrDropGuard::new(inst_ptr);
+        let Some(offset) = (unsafe {
+            crate::object::class_layout::scalar_value_offset(
                 _py,
-                "TypeError",
-                "float subclass layout missing value slot",
-            );
+                cls_ptr,
+                crate::object::class_layout::ScalarValueKind::Float,
+            )
+        }) else {
+            return MoltObject::none().bits();
         };
-        let Some(offset) = (unsafe { class_field_offset(_py, cls_ptr, slot_name_bits) }) else {
-            dec_ref_bits(_py, slot_name_bits);
-            if obj_from_bits(float_bits).as_ptr().is_some() {
-                dec_ref_bits(_py, float_bits);
-            }
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "float subclass layout missing value slot",
-            );
-        };
-        dec_ref_bits(_py, slot_name_bits);
         unsafe {
             let _ = object_field_init_ptr_raw(_py, inst_ptr, offset, float_bits);
         }
-        if obj_from_bits(float_bits).as_ptr().is_some() {
-            dec_ref_bits(_py, float_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
+        instance_owner.release();
         inst_bits
     })
 }
@@ -735,11 +687,6 @@ fn float_value_bits_or_descriptor_error(
     if as_float_extended(obj).is_some() {
         return Some(self_bits);
     }
-    if let Some(bits) = float_subclass_value_bits_raw(self_bits)
-        && as_float_extended(obj_from_bits(bits)).is_some()
-    {
-        return Some(bits);
-    }
     let type_label = class_name_for_error(type_of_bits(_py, self_bits));
     let msg = format!(
         "descriptor '{method}' for 'float' objects doesn't apply to a '{type_label}' object"
@@ -759,10 +706,12 @@ pub extern "C" fn molt_float_float(self_bits: u64) -> u64 {
         let Some(bits) = float_value_bits_or_descriptor_error(_py, self_bits, "__float__") else {
             return MoltObject::none().bits();
         };
-        if obj_from_bits(bits).as_ptr().is_some() {
+        if crate::builtins::numbers::is_exact_float(_py, self_bits) {
             inc_ref_bits(_py, bits);
+            bits
+        } else {
+            float_result_bits(_py, as_float_extended(obj_from_bits(bits)).unwrap())
         }
-        bits
     })
 }
 
@@ -957,217 +906,180 @@ pub extern "C" fn molt_float_from_number(cls_bits: u64, val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let has_imag = to_i64(obj_from_bits(has_imag_bits)).unwrap_or(0) != 0;
-        let val_obj = obj_from_bits(val_bits);
-        if !has_imag {
-            if complex_ptr_from_bits(val_bits).is_some() {
-                inc_ref_bits(_py, val_bits);
-                return val_bits;
-            }
-            if let Some(f) = val_obj.as_float() {
-                return complex_bits(_py, f, 0.0);
-            }
-            if let Some(i) = to_i64(val_obj) {
-                return complex_bits(_py, i as f64, 0.0);
-            }
-            if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
-                if let Some(val) = unsafe { bigint_ref(ptr) }.to_f64() {
-                    return complex_bits(_py, val, 0.0);
-                }
-                return raise_exception::<_>(
-                    _py,
-                    "OverflowError",
-                    "int too large to convert to float",
-                );
-            }
-            if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-                unsafe {
-                    let type_id = object_type_id(ptr);
-                    if type_id == TYPE_ID_STRING {
-                        let len = string_len(ptr);
-                        let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
-                        let text = match std::str::from_utf8(bytes) {
-                            Ok(val) => val,
-                            Err(_) => {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "ValueError",
-                                    "complex() arg is a malformed string",
-                                );
-                            }
-                        };
-                        match parse_complex_from_str(text) {
-                            Ok(parts) => {
-                                return complex_bits(_py, parts.re, parts.im);
-                            }
-                            Err(()) => {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "ValueError",
-                                    "complex() arg is a malformed string",
-                                );
-                            }
-                        }
-                    }
-                    if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                        let type_label = type_name(_py, val_obj);
-                        let msg = format!(
-                            "complex() argument must be a string or a number, not {type_label}"
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                    if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__complex__") {
-                        if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, name_bits)
-                        {
-                            let res_bits = call_callable0(_py, call_bits);
-                            dec_ref_bits(_py, call_bits);
-                            if exception_pending(_py) {
-                                return MoltObject::none().bits();
-                            }
-                            if complex_ptr_from_bits(res_bits).is_some() {
-                                return res_bits;
-                            }
-                            let owner = class_name_for_error(type_of_bits(_py, val_bits));
-                            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                            if obj_from_bits(res_bits).as_ptr().is_some() {
-                                dec_ref_bits(_py, res_bits);
-                            }
-                            let msg = format!(
-                                "{owner}.__complex__ returned non-complex (type {res_type})"
-                            );
-                            return raise_exception::<_>(_py, "TypeError", &msg);
-                        }
-                        dec_ref_bits(_py, name_bits);
-                    }
-                    let float_name_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.float_name,
-                        b"__float__",
-                    );
-                    if let Some(call_bits) =
-                        attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits)
-                    {
-                        let res_bits = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        let res_obj = obj_from_bits(res_bits);
-                        if let Some(f) = res_obj.as_float() {
-                            return complex_bits(_py, f, 0.0);
-                        }
-                        let owner = class_name_for_error(type_of_bits(_py, val_bits));
-                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                        if res_obj.as_ptr().is_some() {
-                            dec_ref_bits(_py, res_bits);
-                        }
-                        let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    let index_name_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.index_name,
-                        b"__index__",
-                    );
-                    if let Some(call_bits) =
-                        attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits)
-                    {
-                        let res_bits = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        let res_obj = obj_from_bits(res_bits);
-                        if let Some(i) = to_i64(res_obj) {
-                            return complex_bits(_py, i as f64, 0.0);
-                        }
-                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                        if res_obj.as_ptr().is_some() {
-                            dec_ref_bits(_py, res_bits);
-                        }
-                        let msg = format!("__index__ returned non-int (type {res_type})");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                }
-            }
+/// The physical descriptor never dispatches through a subtype override.
+pub(crate) extern "C" fn complex_complex(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = complex_ptr_from_bits(bits) else {
             return raise_exception::<_>(
-                _py,
+                py,
                 "TypeError",
-                "complex() argument must be a string or a number",
+                "descriptor '__complex__' requires a 'complex' object",
             );
-        }
-        let imag_obj = obj_from_bits(imag_bits);
-        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            unsafe {
-                let type_id = object_type_id(ptr);
-                if type_id == TYPE_ID_STRING
-                    || type_id == TYPE_ID_BYTES
-                    || type_id == TYPE_ID_BYTEARRAY
-                {
-                    let type_label = type_name(_py, val_obj);
-                    let msg = format!(
-                        "complex() argument 'real' must be a real number, not {type_label}"
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        }
-        if let Some(ptr) = maybe_ptr_from_bits(imag_bits) {
-            unsafe {
-                let type_id = object_type_id(ptr);
-                if type_id == TYPE_ID_STRING
-                    || type_id == TYPE_ID_BYTES
-                    || type_id == TYPE_ID_BYTEARRAY
-                {
-                    let type_label = type_name(_py, imag_obj);
-                    let msg = format!(
-                        "complex() argument 'imag' must be a real number, not {type_label}"
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        }
-        let real = match complex_from_obj_strict(_py, val_obj) {
-            Ok(Some(val)) => val,
-            Ok(None) => {
-                let type_label = type_name(_py, val_obj);
-                let msg =
-                    format!("complex() argument 'real' must be a real number, not {type_label}");
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            Err(()) => {
-                return raise_exception::<_>(
-                    _py,
-                    "OverflowError",
-                    "int too large to convert to float",
-                );
-            }
         };
-        let imag = match complex_from_obj_strict(_py, imag_obj) {
-            Ok(Some(val)) => val,
-            Ok(None) => {
-                let type_label = type_name(_py, imag_obj);
-                let msg =
-                    format!("complex() argument 'imag' must be a real number, not {type_label}");
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            Err(()) => {
-                return raise_exception::<_>(
-                    _py,
-                    "OverflowError",
-                    "int too large to convert to float",
-                );
-            }
-        };
-        let re = real.re - imag.im;
-        let im = real.im + imag.re;
-        complex_bits(_py, re, im)
+        if type_of_bits(py, bits) == builtin_classes(py).complex {
+            inc_ref_bits(py, bits);
+            return bits;
+        }
+        let parts = unsafe { *complex_ref(ptr) };
+        complex_bits(py, parts.re, parts.im)
     })
 }
 
+fn complex_number_admitted(py: &PyToken<'_>, bits: u64) -> bool {
+    if complex_ptr_from_bits(bits).is_some()
+        || crate::object::ops::as_float_extended(obj_from_bits(bits)).is_some()
+        || obj_from_bits(bits).is_int()
+        || obj_from_bits(bits).is_bool()
+        || bigint_ptr_from_bits(bits).is_some()
+    {
+        return true;
+    }
+    unsafe {
+        if crate::builtins::attr::has_special_method(py, bits, b"__float__") {
+            return true;
+        }
+        !exception_pending(py) && crate::builtins::attr::has_special_method(py, bits, b"__index__")
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let has_imag = to_i64(obj_from_bits(has_imag_bits)).unwrap_or(0) != 0;
+        if !has_imag && type_of_bits(py, val_bits) == builtin_classes(py).complex {
+            inc_ref_bits(py, val_bits);
+            return val_bits;
+        }
+        if let Some(ptr) = obj_from_bits(val_bits).as_ptr()
+            && unsafe { object_type_id(ptr) == TYPE_ID_STRING }
+        {
+            if has_imag {
+                return raise_exception::<_>(
+                    py,
+                    "TypeError",
+                    "complex() can't take second arg if first is a string",
+                );
+            }
+            let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
+            let parts = std::str::from_utf8(bytes)
+                .ok()
+                .and_then(|text| parse_complex_from_str(text).ok());
+            return match parts {
+                Some(parts) => complex_bits(py, parts.re, parts.im),
+                None => {
+                    raise_exception::<_>(py, "ValueError", "complex() arg is a malformed string")
+                }
+            };
+        }
+        if has_imag
+            && obj_from_bits(imag_bits)
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+        {
+            return raise_exception::<_>(py, "TypeError", "complex() second arg can't be a string");
+        }
+
+        // Only the first argument uses __complex__. The returned reference stays
+        // owned through result validation and any deprecation-warning callback.
+        let mut real_bits = val_bits;
+        let mut real_owner = None;
+        if let Some(method) =
+            unsafe { crate::builtins::attr::lookup_special_method(py, val_bits, b"__complex__") }
+        {
+            let result = unsafe { call_callable0(py, method) };
+            dec_ref_bits(py, method);
+            if exception_pending(py) {
+                dec_ref_bits(py, result);
+                return MoltObject::none().bits();
+            }
+            let Some(ptr) = complex_ptr_from_bits(result) else {
+                let actual = class_name_for_error(type_of_bits(py, result));
+                dec_ref_bits(py, result);
+                return raise_exception::<_>(
+                    py,
+                    "TypeError",
+                    &format!("__complex__ returned non-complex (type {actual})"),
+                );
+            };
+            real_owner = Some(PtrDropGuard::new(ptr));
+            if type_of_bits(py, result) != builtin_classes(py).complex
+                && !crate::builtins::numbers::warn_numeric_subclass_result(
+                    py,
+                    "__complex__",
+                    "complex",
+                    result,
+                )
+            {
+                return MoltObject::none().bits();
+            }
+            real_bits = result;
+        } else if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+
+        // CPython admits both numeric argument kinds before running __float__
+        // or __index__, so an invalid imaginary argument cannot trigger a real
+        // conversion callback as a side effect.
+        if !complex_number_admitted(py, real_bits) {
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                &format!(
+                    "complex() first argument must be a string or a number, not '{}'",
+                    class_name_for_error(type_of_bits(py, real_bits))
+                ),
+            );
+        }
+        if has_imag && !complex_number_admitted(py, imag_bits) {
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                &format!(
+                    "complex() second argument must be a number, not '{}'",
+                    class_name_for_error(type_of_bits(py, imag_bits))
+                ),
+            );
+        }
+
+        let real_complex = complex_ptr_from_bits(real_bits);
+        let (mut re, real_im) = if let Some(ptr) = real_complex {
+            let parts = unsafe { *complex_ref(ptr) };
+            (parts.re, parts.im)
+        } else {
+            let Some(value) = crate::builtins::numbers::float_from_number_protocol(py, real_bits)
+            else {
+                return MoltObject::none().bits();
+            };
+            (value, 0.0)
+        };
+        drop(real_owner);
+        let mut im = if !has_imag {
+            real_im
+        } else if let Some(ptr) = complex_ptr_from_bits(imag_bits) {
+            let parts = unsafe { *complex_ref(ptr) };
+            re -= parts.im;
+            parts.re
+        } else {
+            let Some(value) = crate::builtins::numbers::float_from_number_protocol(py, imag_bits)
+            else {
+                return MoltObject::none().bits();
+            };
+            value
+        };
+        // Adding an absent zero changes its sign. Only non-orthogonal complex
+        // components take the correction path used by complex_new_impl.
+        if has_imag && real_complex.is_some() {
+            im += real_im;
+        }
+        complex_bits(py, re, im)
+    })
+}
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_complex_conjugate(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1225,14 +1137,17 @@ pub extern "C" fn molt_complex_from_number(cls_bits: u64, val_bits: u64) -> u64 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_new(cls_bits: u64, val_bits: u64, base_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let cls_obj = obj_from_bits(cls_bits);
-        let Some(cls_ptr) = cls_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "int.__new__ expects type");
+        let builtins = builtin_classes(_py);
+        let Some((_, cls_ptr)) = crate::builtins::type_ops::native_constructor_receiver(
+            _py,
+            builtins.int,
+            Some(cls_bits),
+            "int",
+        ) else {
+            return MoltObject::none().bits();
         };
-        unsafe {
-            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "int.__new__ expects type");
-            }
+        if unsafe { crate::object::class_finish_definition(_py, cls_ptr) }.is_err() {
+            return MoltObject::none().bits();
         }
         let has_base = base_bits != missing_bits(_py);
         let has_base_bits = MoltObject::from_int(if has_base { 1 } else { 0 }).bits();
@@ -1240,38 +1155,33 @@ pub extern "C" fn molt_int_new(cls_bits: u64, val_bits: u64, base_bits: u64) -> 
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let builtins = builtin_classes(_py);
         if cls_bits == builtins.int {
             return int_bits;
         }
-        if !issubclass_bits(cls_bits, builtins.int) {
-            let type_label = class_name_for_error(cls_bits);
-            let msg = format!("int.__new__ expects type, got {}", type_label);
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        }
+        let _value_owner = obj_from_bits(int_bits)
+            .as_ptr()
+            .map(crate::PtrDropGuard::new);
         let inst_bits = unsafe { alloc_instance_for_class(_py, cls_ptr) };
         let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
-        let Some(slot_name_bits) = attr_name_bits_from_bytes(_py, b"__molt_int_value__") else {
-            return raise_exception::<_>(
+        let mut instance_owner = crate::PtrDropGuard::new(inst_ptr);
+        let Some(offset) = (unsafe {
+            crate::object::class_layout::scalar_value_offset(
                 _py,
-                "TypeError",
-                "int subclass layout missing value slot",
-            );
+                cls_ptr,
+                crate::object::class_layout::ScalarValueKind::Int,
+            )
+        }) else {
+            return MoltObject::none().bits();
         };
-        let Some(offset) = (unsafe { class_field_offset(_py, cls_ptr, slot_name_bits) }) else {
-            dec_ref_bits(_py, slot_name_bits);
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "int subclass layout missing value slot",
-            );
-        };
-        dec_ref_bits(_py, slot_name_bits);
         unsafe {
             let _ = object_field_init_ptr_raw(_py, inst_ptr, offset, int_bits);
         }
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        instance_owner.release();
         inst_bits
     })
 }
@@ -1446,40 +1356,6 @@ pub extern "C" fn molt_int_is_integer(self_bits: u64) -> u64 {
     })
 }
 
-#[inline(always)]
-unsafe fn int_from_default_exception_single_inline_int_str(
-    _py: &PyToken<'_>,
-    val_bits: u64,
-) -> Option<u64> {
-    let ptr = maybe_ptr_from_bits(val_bits)?;
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_EXCEPTION {
-            return None;
-        }
-        let msg_bits = exception_msg_bits(ptr);
-        if !exception_message_is_lazy(msg_bits)
-            && !crate::object::ops_format::exception_uses_cached_message_str(_py, ptr)
-        {
-            return None;
-        }
-        let args_bits = exception_args_bits(ptr);
-        if exception_args_is_lazy_single(args_bits) {
-            let arg = obj_from_bits(exception_args_payload_bits(ptr));
-            return arg.as_int().map(|value| MoltObject::from_int(value).bits());
-        }
-        let args_ptr = maybe_ptr_from_bits(args_bits)?;
-        if object_type_id(args_ptr) != TYPE_ID_TUPLE || tuple_len(args_ptr) != 1 {
-            return None;
-        }
-        let arg_bits = crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |items| {
-            items.first().copied()
-        })
-        .flatten()?;
-        let arg = obj_from_bits(arg_bits);
-        arg.as_int().map(|value| MoltObject::from_int(value).bits())
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_from_str_of_obj(
     val_bits: u64,
@@ -1487,14 +1363,6 @@ pub extern "C" fn molt_int_from_str_of_obj(
     has_base_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let has_base = to_i64(obj_from_bits(has_base_bits)).unwrap_or(0) != 0;
-        if !has_base
-            && let Some(bits) =
-                unsafe { int_from_default_exception_single_inline_int_str(_py, val_bits) }
-        {
-            return bits;
-        }
-
         let str_bits = molt_str_from_obj(val_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1661,10 +1529,19 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                 if !has_base {
                     let int_name_bits =
                         intern_static_name(_py, &runtime_state(_py).interned.int_name, b"__int__");
-                    if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, int_name_bits)
-                    {
+                    if let Some(call_bits) = lookup_special_method_bits(
+                        _py,
+                        MoltObject::from_ptr(ptr).bits(),
+                        int_name_bits,
+                    ) {
                         let res_bits = call_callable0(_py, call_bits);
                         dec_ref_bits(_py, call_bits);
+                        if exception_pending(_py) {
+                            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                                dec_ref_bits(_py, res_bits)
+                            });
+                            return MoltObject::none().bits();
+                        }
                         let res_obj = obj_from_bits(res_bits);
                         // Bare BigInt result: return as-is, BEFORE the to_i64
                         // path, so a fit-i64 BigInt is not re-boxed through the
@@ -1691,11 +1568,19 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                         &runtime_state(_py).interned.index_name,
                         b"__index__",
                     );
-                    if let Some(call_bits) =
-                        attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits)
-                    {
+                    if let Some(call_bits) = lookup_special_method_bits(
+                        _py,
+                        MoltObject::from_ptr(ptr).bits(),
+                        index_name_bits,
+                    ) {
                         let res_bits = call_callable0(_py, call_bits);
                         dec_ref_bits(_py, call_bits);
+                        if exception_pending(_py) {
+                            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                                dec_ref_bits(_py, res_bits)
+                            });
+                            return MoltObject::none().bits();
+                        }
                         let res_obj = obj_from_bits(res_bits);
                         // Bare BigInt result: return as-is, BEFORE the to_i64
                         // path, so a fit-i64 BigInt is not re-boxed through the
@@ -1839,9 +1724,6 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
             TYPE_TAG_TUPLE => obj
                 .as_ptr()
                 .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TUPLE }),
-            TYPE_TAG_INTARRAY => obj
-                .as_ptr()
-                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_INTARRAY }),
             TYPE_TAG_DICT => obj
                 .as_ptr()
                 .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT }),

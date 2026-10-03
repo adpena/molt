@@ -9,10 +9,10 @@ pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
         };
         let builtins = builtin_classes(_py);
         let bits = match name.as_str() {
-            "IOBase" => builtins.io_base,
-            "RawIOBase" => builtins.raw_io_base,
-            "BufferedIOBase" => builtins.buffered_io_base,
-            "TextIOBase" => builtins.text_io_base,
+            "_IOBase" => builtins.io_base,
+            "_RawIOBase" => builtins.raw_io_base,
+            "_BufferedIOBase" => builtins.buffered_io_base,
+            "_TextIOBase" => builtins.text_io_base,
             "FileIO" => builtins.file_io,
             "BufferedReader" => builtins.buffered_reader,
             "BufferedWriter" => builtins.buffered_writer,

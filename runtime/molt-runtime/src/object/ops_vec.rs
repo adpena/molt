@@ -1,1603 +1,863 @@
-//! Vectorized sum/prod/min/max operations.
-//! Extracted from ops.rs for compilation-unit size reduction.
+//! Exact fused-loop reductions: `vec_sum`, `vec_prod`, `vec_min` and `vec_max`.
+//!
+//! Each kernel runs one bounded chunk of an ordinary Python loop over the loop's
+//! own iterator, `for x in it:`, whose one-statement body updates an
+//! accumulator: `acc += x` (either operand order), `acc *= x`, or the min/max
+//! update `if x < acc: acc = x` / `if acc < x: acc = x`.
+//!
+//! A kernel returns the tuple `(result, last, count, more)`. It consumes, from
+//! the iterator's current position, `count` items of an exact list, tuple or
+//! range whose updates provably run no Python code: the accumulator and every
+//! item are exact ints, bools or floats, and releasing the loop target's
+//! previous value runs nothing. `result` is then exactly the accumulator the
+//! loop leaves after those items and `last` the loop target's value. It stops
+//! before the first item it does not admit, leaving that item and the rest to
+//! the loop; at the iterator's end; or after one chunk, with `more` true. The
+//! caller publishes the loop target and accumulator after each nonempty chunk,
+//! so a signal handler or pending call serviced at its loop's back edge
+//! observes the state the loop has there, and rereads both for the next chunk.
+//!
+//! Arithmetic is the loop's own: exact integers of any size, IEEE-754 float
+//! operations in iteration order and Python's int-to-float promotion. Nothing is
+//! compensated, reassociated, truncated or wrapped, and no result depends on an
+//! earlier call or the environment. Builtin `sum()` is a different operation
+//! with its own algorithm (`ops_builtins/builtin_collections.rs`).
 
-use super::ops::{range_components_i64, range_len_i128};
+use super::ops::{
+    float_result_bits, heap_float_value, range_components_i64, range_len_i128,
+    range_value_at_index_i64,
+};
 use crate::*;
 use molt_obj_model::MoltObject;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use num_bigint::BigInt;
 
-fn vec_sum_result(_py: &PyToken<'_>, sum_bits: u64, ok: bool) -> u64 {
-    let ok_bits = MoltObject::from_bool(ok).bits();
-    let tuple_ptr = alloc_tuple(_py, &[sum_bits, ok_bits]);
-    if tuple_ptr.is_null() {
-        return MoltObject::none().bits();
-    }
-    MoltObject::from_ptr(tuple_ptr).bits()
+/// Integers of at most this magnitude convert to `f64` exactly.
+const EXACT_F64_INT: i128 = 1 << 53;
+
+/// A chunk consumes at most this many items before its loop's back edge.
+const VEC_CHUNK: usize = 1 << 12;
+
+/// Past this many bits an int accumulator's own arithmetic dominates, and a
+/// chunk ends after each item, as often as the loop observes pending work.
+const BIG_ACC_CHUNK_BITS: u64 = 1 << 12;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reduction {
+    Sum,
+    Prod,
+    Min,
+    Max,
 }
 
-fn vec_sum_i64_result(_py: &PyToken<'_>, value: i64, ok: bool) -> u64 {
-    let value_bits = int_bits_from_i64(_py, value);
-    let out = vec_sum_result(_py, value_bits, ok);
-    dec_ref_bits(_py, value_bits);
-    out
+/// An exact builtin number: arithmetic and comparison between two of them run
+/// no Python code.
+#[derive(Clone)]
+enum Num {
+    Int(i128),
+    Big(BigInt),
+    Float(f64),
 }
 
-fn vec_sum_f64_result(_py: &PyToken<'_>, value: f64, ok: bool) -> u64 {
-    vec_sum_result(_py, MoltObject::from_float(value).bits(), ok)
-}
-
-fn number_as_f64(obj: MoltObject) -> Option<f64> {
-    if let Some(f) = obj.as_float() {
-        return Some(f);
-    }
-    obj.as_int().map(|i| i as f64)
-}
-
-fn sum_floats_scalar(elems: &[u64], acc: f64) -> Option<f64> {
-    let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
-    for &bits in elems {
-        let obj = MoltObject::from_bits(bits);
-        vals.push(number_as_f64(obj)?);
-    }
-    Some(sum_f64_neumaier(&vals, acc))
-}
-
-/// Extract all elements as f64 and compute Neumaier compensated sum.
-/// Returns None if any element is not a number (falls back to generic path).
-/// Uses Neumaier summation instead of SIMD to match CPython >= 3.12 `sum()`.
-fn sum_floats_simd(elems: &[u64], acc: f64) -> Option<f64> {
-    // Pre-extract all f64 values
-    let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
-    for &bits in elems {
-        vals.push(number_as_f64(MoltObject::from_bits(bits))?);
-    }
-    Some(sum_f64_neumaier(&vals, acc))
-}
-
-fn sum_float_range_arith_checked(start: i64, stop: i64, step: i64, acc: f64) -> Option<f64> {
-    let len = range_len_i128(start, stop, step);
-    if len <= 0 {
-        return Some(acc);
-    }
-    let n = len as f64;
-    let first = start as f64;
-    let stride = step as f64;
-    let last = first + stride * (n - 1.0);
-    let total = acc + (n * (first + last) * 0.5);
-    total.is_finite().then_some(total)
-}
-const VEC_LANE_WARMUP_SAMPLES: u64 = 128;
-const VEC_LANE_MISS_RATIO_LIMIT: u64 = 4;
-static VEC_SUM_INT_HITS: AtomicU64 = AtomicU64::new(0);
-static VEC_SUM_INT_MISSES: AtomicU64 = AtomicU64::new(0);
-static VEC_SUM_FLOAT_HITS: AtomicU64 = AtomicU64::new(0);
-static VEC_SUM_FLOAT_MISSES: AtomicU64 = AtomicU64::new(0);
-
-fn adaptive_vec_lanes_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("MOLT_ADAPTIVE_VEC_LANES")
-            .ok()
-            .map(|raw| {
-                let norm = raw.trim().to_ascii_lowercase();
-                !matches!(norm.as_str(), "0" | "false" | "off" | "no")
-            })
-            .unwrap_or(true)
-    })
-}
-
-fn vec_lane_allowed(hits: &AtomicU64, misses: &AtomicU64) -> bool {
-    if !adaptive_vec_lanes_enabled() {
-        return true;
-    }
-    let hit = hits.load(Ordering::Relaxed);
-    let miss = misses.load(Ordering::Relaxed);
-    let samples = hit.saturating_add(miss);
-    if samples < VEC_LANE_WARMUP_SAMPLES {
-        return true;
-    }
-    miss <= hit.saturating_mul(VEC_LANE_MISS_RATIO_LIMIT)
-}
-
-fn vec_lane_record(hits: &AtomicU64, misses: &AtomicU64, success: bool) {
-    if !adaptive_vec_lanes_enabled() {
-        return;
-    }
-    if success {
-        hits.fetch_add(1, Ordering::Relaxed);
-    } else {
-        misses.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-fn sum_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") {
-            return unsafe { sum_ints_simd_x86_64_avx2(elems, acc) };
-        }
-        if std::arch::is_x86_feature_detected!("sse2") {
-            return unsafe { sum_ints_simd_x86_64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return unsafe { sum_ints_simd_aarch64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        return unsafe { sum_ints_simd_wasm32(elems, acc) };
-    }
-    sum_ints_scalar(elems, acc)
-}
-
-fn prod_ints_unboxed(elems: &[i64], acc: i64) -> i64 {
-    let mut prod = acc;
-    if prod == 0 {
-        return 0;
-    }
-    if prod == 1
-        && let Some(result) = prod_ints_unboxed_trivial(elems)
-    {
-        return result;
-    }
-    for &val in elems {
-        if val == 0 {
-            return 0;
-        }
-        prod *= val;
-    }
-    prod
-}
-
-fn prod_list_int_storage(ptr: *mut u8, acc: i64) -> i64 {
-    let elems = unsafe { crate::object::layout::list_int_vec_ref(ptr) };
-    prod_ints_unboxed(elems.as_slice(), acc)
-}
-
-fn prod_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return unsafe { prod_ints_simd_aarch64(elems, acc) };
-        }
-    }
-    prod_ints_scalar(elems, acc)
-}
-
-fn min_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") {
-            return unsafe { min_ints_simd_x86_64_avx2(elems, acc) };
-        }
-        if std::arch::is_x86_feature_detected!("sse4.2") {
-            return unsafe { min_ints_simd_x86_64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return unsafe { min_ints_simd_aarch64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        return unsafe { min_ints_simd_wasm32(elems, acc) };
-    }
-    min_ints_scalar(elems, acc)
-}
-
-fn max_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") {
-            return unsafe { max_ints_simd_x86_64_avx2(elems, acc) };
-        }
-        if std::arch::is_x86_feature_detected!("sse4.2") {
-            return unsafe { max_ints_simd_x86_64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return unsafe { max_ints_simd_aarch64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        return unsafe { max_ints_simd_wasm32(elems, acc) };
-    }
-    max_ints_scalar(elems, acc)
-}
-
-fn sum_ints_trusted(elems: &[u64], acc: i64) -> i64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") {
-            return unsafe { sum_ints_trusted_simd_x86_64_avx2(elems, acc) };
-        }
-        if std::arch::is_x86_feature_detected!("sse2") {
-            return unsafe { sum_ints_trusted_simd_x86_64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return unsafe { sum_ints_trusted_simd_aarch64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        return unsafe { sum_ints_trusted_simd_wasm32(elems, acc) };
-    }
-    sum_ints_trusted_scalar(elems, acc)
-}
-
-fn prod_ints_trusted(elems: &[u64], acc: i64) -> i64 {
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return unsafe { prod_ints_trusted_simd_aarch64(elems, acc) };
-        }
-    }
-    prod_ints_trusted_scalar(elems, acc)
-}
-
-fn min_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
-    let mut min_val = acc;
-    for &bits in elems {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int_unchecked();
-        if val < min_val {
-            min_val = val;
-        }
-    }
-    min_val
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn min_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
-    use std::arch::x86_64::*;
-    unsafe {
-        let mut i = 0usize;
-        let mut vec_min = _mm_set1_epi64x(acc);
-        while i + 2 <= elems.len() {
-            let obj0 = MoltObject::from_bits(elems[i]);
-            let obj1 = MoltObject::from_bits(elems[i + 1]);
-            let v0 = obj0.as_int_unchecked();
-            let v1 = obj1.as_int_unchecked();
-            let vec = _mm_set_epi64x(v1, v0);
-            let cmp = _mm_cmpgt_epi64(vec_min, vec);
-            vec_min = _mm_blendv_epi8(vec_min, vec, cmp);
-            i += 2;
-        }
-        let mut lanes = [0i64; 2];
-        _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_min);
-        let mut min_val = acc.min(lanes[0]).min(lanes[1]);
-        for &bits in &elems[i..] {
-            let obj = MoltObject::from_bits(bits);
-            let val = obj.as_int_unchecked();
-            if val < min_val {
-                min_val = val;
-            }
-        }
-        min_val
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn min_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
-    use std::arch::x86_64::*;
-    unsafe {
-        let mut i = 0usize;
-        let mut vec_min = _mm256_set1_epi64x(acc);
-        while i + 4 <= elems.len() {
-            let obj0 = MoltObject::from_bits(elems[i]);
-            let obj1 = MoltObject::from_bits(elems[i + 1]);
-            let obj2 = MoltObject::from_bits(elems[i + 2]);
-            let obj3 = MoltObject::from_bits(elems[i + 3]);
-            let v0 = obj0.as_int_unchecked();
-            let v1 = obj1.as_int_unchecked();
-            let v2 = obj2.as_int_unchecked();
-            let v3 = obj3.as_int_unchecked();
-            let vec = _mm256_set_epi64x(v3, v2, v1, v0);
-            let cmp = _mm256_cmpgt_epi64(vec_min, vec);
-            vec_min = _mm256_blendv_epi8(vec_min, vec, cmp);
-            i += 4;
-        }
-        let mut lanes = [0i64; 4];
-        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_min);
-        let mut min_val = acc;
-        for lane in lanes {
-            if lane < min_val {
-                min_val = lane;
-            }
-        }
-        for &bits in &elems[i..] {
-            let obj = MoltObject::from_bits(bits);
-            let val = obj.as_int_unchecked();
-            if val < min_val {
-                min_val = val;
-            }
-        }
-        min_val
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn min_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
-    unsafe {
-        use std::arch::aarch64::*;
-        let mut i = 0usize;
-        let mut vec_min = vdupq_n_s64(acc);
-        while i + 2 <= elems.len() {
-            let obj0 = MoltObject::from_bits(elems[i]);
-            let obj1 = MoltObject::from_bits(elems[i + 1]);
-            let v0 = obj0.as_int_unchecked();
-            let v1 = obj1.as_int_unchecked();
-            let lanes = [v0, v1];
-            let vec = vld1q_s64(lanes.as_ptr());
-            let mask = vcgtq_s64(vec_min, vec);
-            let vec_min_u = vreinterpretq_u64_s64(vec_min);
-            let vec_u = vreinterpretq_u64_s64(vec);
-            let blended_u = vbslq_u64(mask, vec_u, vec_min_u);
-            vec_min = vreinterpretq_s64_u64(blended_u);
-            i += 2;
-        }
-        let mut lanes = [0i64; 2];
-        vst1q_s64(lanes.as_mut_ptr(), vec_min);
-        let mut min_val = acc.min(lanes[0]).min(lanes[1]);
-        for &bits in &elems[i..] {
-            let obj = MoltObject::from_bits(bits);
-            let val = obj.as_int_unchecked();
-            if val < min_val {
-                min_val = val;
-            }
-        }
-        min_val
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-unsafe fn min_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i64 {
-    let mut min_val = acc;
-    for &bits in elems {
-        let val = MoltObject::from_bits(bits).as_int_unchecked();
-        if val < min_val {
-            min_val = val;
-        }
-    }
-    min_val
-}
-
-fn min_ints_trusted(elems: &[u64], acc: i64) -> i64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") {
-            return unsafe { min_ints_trusted_simd_x86_64_avx2(elems, acc) };
-        }
-        if std::arch::is_x86_feature_detected!("sse4.2") {
-            return unsafe { min_ints_trusted_simd_x86_64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return unsafe { min_ints_trusted_simd_aarch64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        return unsafe { min_ints_trusted_simd_wasm32(elems, acc) };
-    }
-    min_ints_trusted_scalar(elems, acc)
-}
-
-fn max_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
-    let mut max_val = acc;
-    for &bits in elems {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int_unchecked();
-        if val > max_val {
-            max_val = val;
-        }
-    }
-    max_val
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn max_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
-    use std::arch::x86_64::*;
-    unsafe {
-        let mut i = 0usize;
-        let mut vec_max = _mm_set1_epi64x(acc);
-        while i + 2 <= elems.len() {
-            let obj0 = MoltObject::from_bits(elems[i]);
-            let obj1 = MoltObject::from_bits(elems[i + 1]);
-            let v0 = obj0.as_int_unchecked();
-            let v1 = obj1.as_int_unchecked();
-            let vec = _mm_set_epi64x(v1, v0);
-            let cmp = _mm_cmpgt_epi64(vec, vec_max);
-            vec_max = _mm_blendv_epi8(vec_max, vec, cmp);
-            i += 2;
-        }
-        let mut lanes = [0i64; 2];
-        _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_max);
-        let mut max_val = acc.max(lanes[0]).max(lanes[1]);
-        for &bits in &elems[i..] {
-            let obj = MoltObject::from_bits(bits);
-            let val = obj.as_int_unchecked();
-            if val > max_val {
-                max_val = val;
-            }
-        }
-        max_val
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn max_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
-    use std::arch::x86_64::*;
-    unsafe {
-        let mut i = 0usize;
-        let mut vec_max = _mm256_set1_epi64x(acc);
-        while i + 4 <= elems.len() {
-            let obj0 = MoltObject::from_bits(elems[i]);
-            let obj1 = MoltObject::from_bits(elems[i + 1]);
-            let obj2 = MoltObject::from_bits(elems[i + 2]);
-            let obj3 = MoltObject::from_bits(elems[i + 3]);
-            let v0 = obj0.as_int_unchecked();
-            let v1 = obj1.as_int_unchecked();
-            let v2 = obj2.as_int_unchecked();
-            let v3 = obj3.as_int_unchecked();
-            let vec = _mm256_set_epi64x(v3, v2, v1, v0);
-            let cmp = _mm256_cmpgt_epi64(vec, vec_max);
-            vec_max = _mm256_blendv_epi8(vec_max, vec, cmp);
-            i += 4;
-        }
-        let mut lanes = [0i64; 4];
-        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_max);
-        let mut max_val = acc;
-        for lane in lanes {
-            if lane > max_val {
-                max_val = lane;
-            }
-        }
-        for &bits in &elems[i..] {
-            let obj = MoltObject::from_bits(bits);
-            let val = obj.as_int_unchecked();
-            if val > max_val {
-                max_val = val;
-            }
-        }
-        max_val
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn max_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
-    unsafe {
-        use std::arch::aarch64::*;
-        let mut i = 0usize;
-        let mut vec_max = vdupq_n_s64(acc);
-        while i + 2 <= elems.len() {
-            let obj0 = MoltObject::from_bits(elems[i]);
-            let obj1 = MoltObject::from_bits(elems[i + 1]);
-            let v0 = obj0.as_int_unchecked();
-            let v1 = obj1.as_int_unchecked();
-            let lanes = [v0, v1];
-            let vec = vld1q_s64(lanes.as_ptr());
-            let mask = vcgtq_s64(vec, vec_max);
-            let vec_max_u = vreinterpretq_u64_s64(vec_max);
-            let vec_u = vreinterpretq_u64_s64(vec);
-            let blended_u = vbslq_u64(mask, vec_u, vec_max_u);
-            vec_max = vreinterpretq_s64_u64(blended_u);
-            i += 2;
-        }
-        let mut lanes = [0i64; 2];
-        vst1q_s64(lanes.as_mut_ptr(), vec_max);
-        let mut max_val = acc.max(lanes[0]).max(lanes[1]);
-        for &bits in &elems[i..] {
-            let obj = MoltObject::from_bits(bits);
-            let val = obj.as_int_unchecked();
-            if val > max_val {
-                max_val = val;
-            }
-        }
-        max_val
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-unsafe fn max_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i64 {
-    let mut max_val = acc;
-    for &bits in elems {
-        let val = MoltObject::from_bits(bits).as_int_unchecked();
-        if val > max_val {
-            max_val = val;
-        }
-    }
-    max_val
-}
-
-fn max_ints_trusted(elems: &[u64], acc: i64) -> i64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") {
-            return unsafe { max_ints_trusted_simd_x86_64_avx2(elems, acc) };
-        }
-        if std::arch::is_x86_feature_detected!("sse4.2") {
-            return unsafe { max_ints_trusted_simd_x86_64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return unsafe { max_ints_trusted_simd_aarch64(elems, acc) };
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        return unsafe { max_ints_trusted_simd_wasm32(elems, acc) };
-    }
-    max_ints_trusted_scalar(elems, acc)
-}
-
+/// `ptr` is an instance of the builtin class itself, not of a subclass.
 #[inline]
-unsafe fn read_generic_sequence<R>(
-    ptr: *mut u8,
-    read: impl for<'slice> FnOnce(&'slice [u64]) -> R,
-) -> Option<R> {
-    let type_id = unsafe { object_type_id(ptr) };
-    if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-        return None;
+unsafe fn is_exact_instance(ptr: *mut u8, builtin_class_bits: u64) -> bool {
+    let class_bits = unsafe { object_class_bits(ptr) };
+    class_bits == 0 || class_bits == builtin_class_bits
+}
+
+/// The value of an exact int, bool or float; `None` for anything whose
+/// arithmetic could run Python code.
+fn exact_number(py: &PyToken<'_>, bits: u64) -> Option<Num> {
+    let obj = obj_from_bits(bits);
+    if let Some(value) = obj.as_int() {
+        return Some(Num::Int(i128::from(value)));
     }
-    Some(unsafe { crate::object::seq_access::with_borrowed(ptr, read) })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_int(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        if !vec_lane_allowed(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES) {
-            return vec_sum_i64_result(_py, acc, false);
-        }
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => {
-                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
-                return vec_sum_i64_result(_py, acc, false);
-            }
-        };
-        unsafe {
-            let Some(sum) = read_generic_sequence(ptr, |elems| sum_ints_checked(elems, acc)) else {
-                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
-                return vec_sum_i64_result(_py, acc, false);
-            };
-            if let Some(sum) = sum {
-                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, true);
-                return vec_sum_i64_result(_py, sum, true);
-            }
-        }
-        vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
-        vec_sum_i64_result(_py, acc, false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        if !vec_lane_allowed(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES) {
-            return vec_sum_i64_result(_py, acc, false);
-        }
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => {
-                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
-                return vec_sum_i64_result(_py, acc, false);
-            }
-        };
-        unsafe {
-            let Some(sum) = read_generic_sequence(ptr, |elems| sum_ints_trusted(elems, acc)) else {
-                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
-                return vec_sum_i64_result(_py, acc, false);
-            };
-            vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, true);
-            vec_sum_i64_result(_py, sum, true)
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_prod_int(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_INTARRAY {
-                let elems = intarray_slice(ptr);
-                let prod = prod_ints_unboxed(elems, acc);
-                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
-            }
-            if type_id == TYPE_ID_LIST_INT {
-                let prod = prod_list_int_storage(ptr, acc);
-                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
-            }
-            let Some(prod) = read_generic_sequence(ptr, |elems| prod_ints_checked(elems, acc))
-            else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            if let Some(prod) = prod {
-                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
-            }
-        }
-        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_prod_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_INTARRAY {
-                let elems = intarray_slice(ptr);
-                let prod = prod_ints_unboxed(elems, acc);
-                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
-            }
-            if type_id == TYPE_ID_LIST_INT {
-                let prod = prod_list_int_storage(ptr, acc);
-                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
-            }
-            let Some(prod) = read_generic_sequence(ptr, |elems| prod_ints_trusted(elems, acc))
-            else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            vec_sum_result(_py, MoltObject::from_int(prod).bits(), true)
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_min_int(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let Some(val) = read_generic_sequence(ptr, |elems| min_ints_checked(elems, acc)) else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            if let Some(val) = val {
-                return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
-            }
-        }
-        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_min_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let Some(val) = read_generic_sequence(ptr, |elems| min_ints_trusted(elems, acc)) else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_max_int(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let Some(val) = read_generic_sequence(ptr, |elems| max_ints_checked(elems, acc)) else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            if let Some(val) = val {
-                return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
-            }
-        }
-        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_max_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let Some(val) = read_generic_sequence(ptr, |elems| max_ints_trusted(elems, acc)) else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
-        }
-    })
-}
-
-fn sum_int_range_arith_checked(start: i64, stop: i64, step: i64, acc: i64) -> Option<i64> {
-    let len = range_len_i128(start, stop, step);
-    if len <= 0 {
-        return Some(acc);
+    if let Some(value) = obj.as_float() {
+        return Some(Num::Float(value));
     }
-    let n = len;
-    let first = i128::from(start);
-    let stride = i128::from(step);
-    let last = first.checked_add(stride.checked_mul(n.checked_sub(1)?)?)?;
-    let two_term_sum = first.checked_add(last)?;
-    let range_sum = n.checked_mul(two_term_sum)?.checked_div(2)?;
-    let total = i128::from(acc).checked_add(range_sum)?;
-    i64::try_from(total).ok()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let start_obj = obj_from_bits(start_bits);
-        let start = match start_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_i64_result(_py, acc, false),
-        };
-        if start < 0 {
-            return vec_sum_i64_result(_py, acc, false);
-        }
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_i64_result(_py, acc, false),
-        };
-        unsafe {
-            let Some(sum) = read_generic_sequence(ptr, |elems| {
-                let start_idx = (start as usize).min(elems.len());
-                sum_ints_checked(&elems[start_idx..], acc)
-            }) else {
-                return vec_sum_i64_result(_py, acc, false);
-            };
-            if let Some(sum) = sum {
-                return vec_sum_i64_result(_py, sum, true);
-            }
-        }
-        vec_sum_i64_result(_py, acc, false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_int_range_trusted(
-    seq_bits: u64,
-    acc_bits: u64,
-    start_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let start_obj = obj_from_bits(start_bits);
-        let start = match start_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_i64_result(_py, acc, false),
-        };
-        if start < 0 {
-            return vec_sum_i64_result(_py, acc, false);
-        }
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_i64_result(_py, acc, false),
-        };
-        unsafe {
-            let Some(sum) = read_generic_sequence(ptr, |elems| {
-                let start_idx = (start as usize).min(elems.len());
-                sum_ints_trusted(&elems[start_idx..], acc)
-            }) else {
-                return vec_sum_i64_result(_py, acc, false);
-            };
-            vec_sum_i64_result(_py, sum, true)
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_int_range_iter(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc = match obj_from_bits(acc_bits).as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let ptr = match obj_from_bits(seq_bits).as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_i64_result(_py, acc, false),
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_RANGE {
-                return vec_sum_i64_result(_py, acc, false);
-            }
-            let Some((start, stop, step)) = range_components_i64(ptr) else {
-                return vec_sum_i64_result(_py, acc, false);
-            };
-            if let Some(sum) = sum_int_range_arith_checked(start, stop, step, acc) {
-                return vec_sum_i64_result(_py, sum, true);
-            }
-        }
-        vec_sum_i64_result(_py, acc, false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_int_range_iter_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc = match obj_from_bits(acc_bits).as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let ptr = match obj_from_bits(seq_bits).as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_i64_result(_py, acc, false),
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_RANGE {
-                return vec_sum_i64_result(_py, acc, false);
-            }
-            let Some((start, stop, step)) = range_components_i64(ptr) else {
-                return vec_sum_i64_result(_py, acc, false);
-            };
-            if let Some(sum) = sum_int_range_arith_checked(start, stop, step, acc) {
-                return vec_sum_i64_result(_py, sum, true);
-            }
-        }
-        vec_sum_i64_result(_py, acc, false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_float(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        if !vec_lane_allowed(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES) {
-            return vec_sum_f64_result(_py, acc, false);
-        }
-        let ptr = match obj_from_bits(seq_bits).as_ptr() {
-            Some(ptr) => ptr,
-            None => {
-                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
-                return vec_sum_f64_result(_py, acc, false);
-            }
-        };
-        unsafe {
-            let Some(sum) = read_generic_sequence(ptr, |elems| sum_floats_simd(elems, acc)) else {
-                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
-                return vec_sum_f64_result(_py, acc, false);
-            };
-            if let Some(sum) = sum {
-                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, true);
-                return vec_sum_f64_result(_py, sum, true);
-            }
-        }
-        vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
-        vec_sum_f64_result(_py, acc, false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_float_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        if !vec_lane_allowed(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES) {
-            return vec_sum_f64_result(_py, acc, false);
-        }
-        let ptr = match obj_from_bits(seq_bits).as_ptr() {
-            Some(ptr) => ptr,
-            None => {
-                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
-                return vec_sum_f64_result(_py, acc, false);
-            }
-        };
-        unsafe {
-            let Some(sum) = read_generic_sequence(ptr, |elems| sum_floats_simd(elems, acc)) else {
-                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
-                return vec_sum_f64_result(_py, acc, false);
-            };
-            if let Some(sum) = sum {
-                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, true);
-                return vec_sum_f64_result(_py, sum, true);
-            }
-        }
-        vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
-        vec_sum_f64_result(_py, acc, false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_float_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let start = match obj_from_bits(start_bits).as_int() {
-            Some(val) => val,
-            None => return vec_sum_f64_result(_py, acc, false),
-        };
-        if start < 0 {
-            return vec_sum_f64_result(_py, acc, false);
-        }
-        let ptr = match obj_from_bits(seq_bits).as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_f64_result(_py, acc, false),
-        };
-        unsafe {
-            let Some(sum) = read_generic_sequence(ptr, |elems| {
-                let start_idx = (start as usize).min(elems.len());
-                sum_floats_scalar(&elems[start_idx..], acc)
-            }) else {
-                return vec_sum_f64_result(_py, acc, false);
-            };
-            if let Some(sum) = sum {
-                return vec_sum_f64_result(_py, sum, true);
-            }
-        }
-        vec_sum_f64_result(_py, acc, false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_float_range_trusted(
-    seq_bits: u64,
-    acc_bits: u64,
-    start_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let start = match obj_from_bits(start_bits).as_int() {
-            Some(val) => val,
-            None => return vec_sum_f64_result(_py, acc, false),
-        };
-        if start < 0 {
-            return vec_sum_f64_result(_py, acc, false);
-        }
-        let ptr = match obj_from_bits(seq_bits).as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_f64_result(_py, acc, false),
-        };
-        unsafe {
-            let Some(sum) = read_generic_sequence(ptr, |elems| {
-                let start_idx = (start as usize).min(elems.len());
-                sum_floats_scalar(&elems[start_idx..], acc)
-            }) else {
-                return vec_sum_f64_result(_py, acc, false);
-            };
-            if let Some(sum) = sum {
-                return vec_sum_f64_result(_py, sum, true);
-            }
-        }
-        vec_sum_f64_result(_py, acc, false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_float_range_iter(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let ptr = match obj_from_bits(seq_bits).as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_f64_result(_py, acc, false),
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_RANGE {
-                return vec_sum_f64_result(_py, acc, false);
-            }
-            let Some((start, stop, step)) = range_components_i64(ptr) else {
-                return vec_sum_f64_result(_py, acc, false);
-            };
-            if let Some(sum) = sum_float_range_arith_checked(start, stop, step, acc) {
-                return vec_sum_f64_result(_py, sum, true);
-            }
-        }
-        vec_sum_f64_result(_py, acc, false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum_float_range_iter_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let ptr = match obj_from_bits(seq_bits).as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_f64_result(_py, acc, false),
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_RANGE {
-                return vec_sum_f64_result(_py, acc, false);
-            }
-            let Some((start, stop, step)) = range_components_i64(ptr) else {
-                return vec_sum_f64_result(_py, acc, false);
-            };
-            if let Some(sum) = sum_float_range_arith_checked(start, stop, step, acc) {
-                return vec_sum_f64_result(_py, sum, true);
-            }
-        }
-        vec_sum_f64_result(_py, acc, false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_prod_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let start_obj = obj_from_bits(start_bits);
-        let start = match start_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        if start < 0 {
-            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-        }
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_INTARRAY {
-                let elems = intarray_slice(ptr);
-                let start_idx = (start as usize).min(elems.len());
-                let slice = &elems[start_idx..];
-                let prod = prod_ints_unboxed(slice, acc);
-                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
-            }
-            if type_id == TYPE_ID_LIST_INT {
-                let elems = crate::object::layout::list_int_vec_ref(ptr);
-                let slice = elems.as_slice();
-                let start_idx = (start as usize).min(slice.len());
-                let prod = prod_ints_unboxed(&slice[start_idx..], acc);
-                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
-            }
-            let Some(prod) = read_generic_sequence(ptr, |elems| {
-                let start_idx = (start as usize).min(elems.len());
-                prod_ints_checked(&elems[start_idx..], acc)
-            }) else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            if let Some(prod) = prod {
-                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
-            }
-        }
-        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_prod_int_range_trusted(
-    seq_bits: u64,
-    acc_bits: u64,
-    start_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let start_obj = obj_from_bits(start_bits);
-        let start = match start_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        if start < 0 {
-            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-        }
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_INTARRAY {
-                let elems = intarray_slice(ptr);
-                let start_idx = (start as usize).min(elems.len());
-                let slice = &elems[start_idx..];
-                let prod = prod_ints_unboxed(slice, acc);
-                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
-            }
-            if type_id == TYPE_ID_LIST_INT {
-                let elems = crate::object::layout::list_int_vec_ref(ptr);
-                let slice = elems.as_slice();
-                let start_idx = (start as usize).min(slice.len());
-                let prod = prod_ints_unboxed(&slice[start_idx..], acc);
-                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
-            }
-            let Some(prod) = read_generic_sequence(ptr, |elems| {
-                let start_idx = (start as usize).min(elems.len());
-                prod_ints_trusted(&elems[start_idx..], acc)
-            }) else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            vec_sum_result(_py, MoltObject::from_int(prod).bits(), true)
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_min_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let start_obj = obj_from_bits(start_bits);
-        let start = match start_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        if start < 0 {
-            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-        }
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let Some(val) = read_generic_sequence(ptr, |elems| {
-                let start_idx = (start as usize).min(elems.len());
-                min_ints_checked(&elems[start_idx..], acc)
-            }) else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            if let Some(val) = val {
-                return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
-            }
-        }
-        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_min_int_range_trusted(
-    seq_bits: u64,
-    acc_bits: u64,
-    start_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let start_obj = obj_from_bits(start_bits);
-        let start = match start_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        if start < 0 {
-            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-        }
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let Some(val) = read_generic_sequence(ptr, |elems| {
-                let start_idx = (start as usize).min(elems.len());
-                min_ints_trusted(&elems[start_idx..], acc)
-            }) else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_max_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let start_obj = obj_from_bits(start_bits);
-        let start = match start_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        if start < 0 {
-            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-        }
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let Some(val) = read_generic_sequence(ptr, |elems| {
-                let start_idx = (start as usize).min(elems.len());
-                max_ints_checked(&elems[start_idx..], acc)
-            }) else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            if let Some(val) = val {
-                return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
-            }
-        }
-        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_max_int_range_trusted(
-    seq_bits: u64,
-    acc_bits: u64,
-    start_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let acc_obj = obj_from_bits(acc_bits);
-        let acc = match acc_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
-        };
-        let start_obj = obj_from_bits(start_bits);
-        let start = match start_obj.as_int() {
-            Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        if start < 0 {
-            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-        }
-        let seq_obj = obj_from_bits(seq_bits);
-        let ptr = match seq_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
-        };
-        unsafe {
-            let Some(val) = read_generic_sequence(ptr, |elems| {
-                let start_idx = (start as usize).min(elems.len());
-                max_ints_trusted(&elems[start_idx..], acc)
-            }) else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
-            };
-            vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
-        }
-    })
-}
-
-/// Neumaier compensated summation on pre-extracted f64 values.
-/// Matches CPython >= 3.12 `sum()` for float sequences.
-fn sum_f64_neumaier(vals: &[f64], acc: f64) -> f64 {
-    let mut sum = acc;
-    let mut comp = 0.0_f64;
-    for &x in vals {
-        let t = sum + x;
-        if sum.abs() >= x.abs() {
-            comp += (sum - t) + x;
-        } else {
-            comp += (x - t) + sum;
-        }
-        sum = t;
+    if let Some(value) = obj.as_bool() {
+        return Some(Num::Int(i128::from(value)));
     }
-    sum + comp
-}
-
-fn sum_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
-    let mut sum = acc;
-    for &bits in elems {
-        let obj = MoltObject::from_bits(bits);
-        if let Some(val) = obj.as_int() {
-            sum += val;
-        } else {
-            return None;
-        }
-    }
-    Some(sum)
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn sum_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
+    let ptr = obj.as_ptr()?;
     unsafe {
-        use std::arch::aarch64::*;
-        let mut i = 0usize;
-        let mut vec_sum = vdupq_n_s64(0);
-        while i + 2 <= elems.len() {
-            let obj0 = MoltObject::from_bits(elems[i]);
-            let obj1 = MoltObject::from_bits(elems[i + 1]);
-            let v0 = obj0.as_int()?;
-            let v1 = obj1.as_int()?;
-            let lanes = [v0, v1];
-            let vec = vld1q_s64(lanes.as_ptr());
-            vec_sum = vaddq_s64(vec_sum, vec);
-            i += 2;
-        }
-        let mut lanes = [0i64; 2];
-        vst1q_s64(lanes.as_mut_ptr(), vec_sum);
-        let mut sum = acc + lanes[0] + lanes[1];
-        for &bits in &elems[i..] {
-            let obj = MoltObject::from_bits(bits);
-            let val = obj.as_int()?;
-            sum += val;
-        }
-        Some(sum)
-    }
-}
-
-fn prod_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
-    let mut prod = acc;
-    for &bits in elems {
-        let obj = MoltObject::from_bits(bits);
-        if let Some(val) = obj.as_int() {
-            prod *= val;
-        } else {
-            return None;
-        }
-    }
-    Some(prod)
-}
-
-fn prod_ints_unboxed_trivial(_elems: &[i64]) -> Option<i64> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") {
-            return unsafe { prod_ints_unboxed_avx2_trivial(_elems) };
-        }
-    }
-    None
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn prod_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
-    prod_ints_scalar(elems, acc)
-}
-
-fn min_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
-    let mut min_val = acc;
-    for &bits in elems {
-        let obj = MoltObject::from_bits(bits);
-        if let Some(val) = obj.as_int() {
-            if val < min_val {
-                min_val = val;
+        match object_type_id(ptr) {
+            TYPE_ID_BIGINT if is_exact_instance(ptr, builtin_classes(py).int) => {
+                Some(Num::Big(bigint_ref(ptr).clone()))
             }
-        } else {
-            return None;
+            TYPE_ID_FLOAT if is_exact_instance(ptr, builtin_classes(py).float) => {
+                Some(Num::Float(heap_float_value(ptr)))
+            }
+            _ => None,
         }
     }
-    Some(min_val)
 }
 
-#[cfg(target_arch = "aarch64")]
-unsafe fn min_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
+/// Releasing a fused loop target's previous value cannot run Python code: it
+/// is unbound, a value without a reference count, or an exact str, bytes, int
+/// or float, none of which has a finalizer or weak references. A fused loop
+/// binds its target once per chunk, after the fact, so it may do so only then.
+pub(crate) fn loop_target_release_is_inert(py: &PyToken<'_>, bits: u64) -> bool {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return true;
+    };
+    if is_missing_bits(py, bits) {
+        return true;
+    }
+    let builtins = builtin_classes(py);
     unsafe {
-        use std::arch::aarch64::*;
-        let mut i = 0usize;
-        let mut vec_min = vdupq_n_s64(acc);
-        while i + 2 <= elems.len() {
-            let obj0 = MoltObject::from_bits(elems[i]);
-            let obj1 = MoltObject::from_bits(elems[i + 1]);
-            let v0 = obj0.as_int()?;
-            let v1 = obj1.as_int()?;
-            let lanes = [v0, v1];
-            let vec = vld1q_s64(lanes.as_ptr());
-            let mask = vcgtq_s64(vec_min, vec);
-            let vec_min_u = vreinterpretq_u64_s64(vec_min);
-            let vec_u = vreinterpretq_u64_s64(vec);
-            let blended_u = vbslq_u64(mask, vec_u, vec_min_u);
-            vec_min = vreinterpretq_s64_u64(blended_u);
-            i += 2;
+        match object_type_id(ptr) {
+            TYPE_ID_STRING => is_exact_instance(ptr, builtins.str),
+            TYPE_ID_BYTES => is_exact_instance(ptr, builtins.bytes),
+            TYPE_ID_BIGINT => is_exact_instance(ptr, builtins.int),
+            TYPE_ID_FLOAT => is_exact_instance(ptr, builtins.float),
+            _ => false,
         }
-        let mut lanes = [0i64; 2];
-        vst1q_s64(lanes.as_mut_ptr(), vec_min);
-        let mut min_val = acc.min(lanes[0]).min(lanes[1]);
-        for &bits in &elems[i..] {
-            let obj = MoltObject::from_bits(bits);
-            let val = obj.as_int()?;
-            if val < min_val {
-                min_val = val;
-            }
-        }
-        Some(min_val)
     }
 }
 
-fn max_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
-    let mut max_val = acc;
-    for &bits in elems {
-        let obj = MoltObject::from_bits(bits);
-        if let Some(val) = obj.as_int() {
-            if val > max_val {
-                max_val = val;
+/// Python's int-to-float promotion: the nearest float, ties to even.
+#[inline]
+fn int_to_f64(value: i128) -> f64 {
+    value as f64
+}
+
+/// `acc = acc + item` for exact numbers. False, with `acc` unchanged, where
+/// Python could raise (an int too large for a float) or for two NaNs: which of
+/// them the sum returns depends on the source's operand order, which the op
+/// does not carry. The loop itself then runs that item.
+fn add_in_place(acc: &mut Num, item: Num) -> bool {
+    let next = match (&mut *acc, item) {
+        (Num::Int(a), Num::Int(b)) => match a.checked_add(b) {
+            Some(sum) => Num::Int(sum),
+            None => Num::Big(BigInt::from(*a) + BigInt::from(b)),
+        },
+        (Num::Int(a), Num::Big(b)) => Num::Big(BigInt::from(*a) + b),
+        (Num::Big(a), Num::Int(b)) => {
+            *a += BigInt::from(b);
+            return true;
+        }
+        (Num::Big(a), Num::Big(b)) => {
+            *a += b;
+            return true;
+        }
+        (Num::Float(a), Num::Float(b)) if a.is_nan() && b.is_nan() => return false,
+        (Num::Float(a), Num::Float(b)) => Num::Float(*a + b),
+        (Num::Float(a), Num::Int(b)) => Num::Float(*a + int_to_f64(b)),
+        (Num::Int(a), Num::Float(b)) => Num::Float(int_to_f64(*a) + b),
+        (Num::Float(_), Num::Big(_)) | (Num::Big(_), Num::Float(_)) => return false,
+    };
+    *acc = next;
+    true
+}
+
+/// `acc = acc * item` for exact numbers, under the same conditions as
+/// [`add_in_place`].
+fn mul_in_place(acc: &mut Num, item: Num) -> bool {
+    let next = match (&mut *acc, item) {
+        (Num::Int(a), Num::Int(b)) => match a.checked_mul(b) {
+            Some(product) => Num::Int(product),
+            None => Num::Big(BigInt::from(*a) * BigInt::from(b)),
+        },
+        (Num::Int(a), Num::Big(b)) => Num::Big(BigInt::from(*a) * b),
+        (Num::Big(a), Num::Int(b)) => {
+            *a *= BigInt::from(b);
+            return true;
+        }
+        (Num::Big(a), Num::Big(b)) => {
+            *a *= b;
+            return true;
+        }
+        (Num::Float(a), Num::Float(b)) if a.is_nan() && b.is_nan() => return false,
+        (Num::Float(a), Num::Float(b)) => Num::Float(*a * b),
+        (Num::Float(a), Num::Int(b)) => Num::Float(*a * int_to_f64(b)),
+        (Num::Int(a), Num::Float(b)) => Num::Float(int_to_f64(*a) * b),
+        (Num::Float(_), Num::Big(_)) | (Num::Big(_), Num::Float(_)) => return false,
+    };
+    *acc = next;
+    true
+}
+
+/// Python's `left < right` for exact numbers; int/float comparison is exact.
+/// `None` for a big int against a float, which the loop compares itself.
+fn less(left: &Num, right: &Num) -> Option<bool> {
+    let exact_float = |value: i128| (-EXACT_F64_INT..=EXACT_F64_INT).contains(&value);
+    Some(match (left, right) {
+        (Num::Int(a), Num::Int(b)) => a < b,
+        (Num::Int(a), Num::Big(b)) => BigInt::from(*a) < *b,
+        (Num::Big(a), Num::Int(b)) => *a < BigInt::from(*b),
+        (Num::Big(a), Num::Big(b)) => a < b,
+        (Num::Float(a), Num::Float(b)) => a < b,
+        (Num::Int(a), Num::Float(b)) if exact_float(*a) => int_to_f64(*a) < *b,
+        (Num::Float(a), Num::Int(b)) if exact_float(*b) => *a < int_to_f64(*b),
+        _ => return None,
+    })
+}
+
+/// Whether the min/max update rebinds the accumulator to `item`: `item < acc`
+/// for min, `acc < item` for max. Both source spellings of each compare the
+/// same way for exact numbers, NaN included.
+fn replaces(reduction: Reduction, item: &Num, acc: &Num) -> Option<bool> {
+    if reduction == Reduction::Min {
+        less(item, acc)
+    } else {
+        less(acc, item)
+    }
+}
+
+/// An item as the loop binds it: an object of the sequence (borrowed), or a
+/// value a flat list or a range holds unboxed.
+#[derive(Clone, Copy)]
+enum Item {
+    Object(u64),
+    Int(i64),
+    Bool(bool),
+}
+
+impl Item {
+    /// The item as an owned reference.
+    fn into_owned_bits(self, py: &PyToken<'_>) -> u64 {
+        match self {
+            Item::Object(bits) => {
+                inc_ref_bits(py, bits);
+                bits
             }
+            Item::Int(value) => int_bits_from_i64(py, value),
+            Item::Bool(value) => MoltObject::from_bool(value).bits(),
+        }
+    }
+}
+
+/// One chunk's progress: the accumulator's value and, for min/max, the item
+/// the loop keeps bound (`None`: the accumulator object the chunk started
+/// with), the items consumed and the last of them.
+struct Chunk {
+    reduction: Reduction,
+    acc: Num,
+    // Preserve the selected occurrence, not only its numeric value: two
+    // iterations may yield equal but distinct heap integers.
+    kept: Option<(usize, Item)>,
+    count: usize,
+    last: Option<Item>,
+    /// The chunk ended at its size bound, not at a declined item or the end.
+    full: bool,
+}
+
+impl Chunk {
+    /// One loop iteration; false, with nothing changed, when the loop itself
+    /// must run `item`.
+    fn step(&mut self, item: Item, value: Num) -> bool {
+        let applied = match self.reduction {
+            Reduction::Sum => add_in_place(&mut self.acc, value),
+            Reduction::Prod => mul_in_place(&mut self.acc, value),
+            Reduction::Min | Reduction::Max => match replaces(self.reduction, &value, &self.acc) {
+                Some(true) => {
+                    self.acc = value;
+                    self.kept = Some((self.count, item));
+                    true
+                }
+                Some(false) => true,
+                None => false,
+            },
+        };
+        if applied {
+            self.count += 1;
+            self.last = Some(item);
+            if self.count == VEC_CHUNK
+                || matches!(&self.acc, Num::Big(big) if big.bits() > BIG_ACC_CHUNK_BITS)
+            {
+                self.full = true;
+            }
+        }
+        applied
+    }
+
+    /// Whether the chunk has room for another item.
+    #[inline]
+    fn open(&self) -> bool {
+        !self.full
+    }
+}
+
+/// The items of `iter_ptr`'s target from `start`, while the chunk admits them.
+/// Returns the iterator position after the consumed items; `None` when the
+/// target is not a sequence the kernels read.
+unsafe fn fold_iterator_target(
+    py: &PyToken<'_>,
+    chunk: &mut Chunk,
+    iter_ptr: *mut u8,
+    start: usize,
+) -> Option<usize> {
+    let target_ptr = obj_from_bits(unsafe { iter_target_bits(iter_ptr) }).as_ptr()?;
+    let builtins = builtin_classes(py);
+    unsafe {
+        match object_type_id(target_ptr) {
+            TYPE_ID_LIST | TYPE_ID_TUPLE => {
+                let class_bits = if object_type_id(target_ptr) == TYPE_ID_LIST {
+                    builtins.list
+                } else {
+                    builtins.tuple
+                };
+                if !is_exact_instance(target_ptr, class_bits) {
+                    return None;
+                }
+                // No Python code runs while the chunk holds the borrow.
+                crate::object::seq_access::with_borrowed(target_ptr, |items| {
+                    for &bits in items.get(start..).unwrap_or(&[]) {
+                        if !chunk.open() {
+                            break;
+                        }
+                        let Some(value) = exact_number(py, bits) else {
+                            break;
+                        };
+                        if !chunk.step(Item::Object(bits), value) {
+                            break;
+                        }
+                    }
+                });
+                Some(start + chunk.count)
+            }
+            TYPE_ID_LIST_INT => {
+                if !is_exact_instance(target_ptr, builtins.list) {
+                    return None;
+                }
+                let storage = crate::object::layout::list_int_vec_ref(target_ptr);
+                for &value in storage.as_slice().get(start..).unwrap_or(&[]) {
+                    if !chunk.open() || !chunk.step(Item::Int(value), Num::Int(i128::from(value))) {
+                        break;
+                    }
+                }
+                Some(start + chunk.count)
+            }
+            TYPE_ID_LIST_BOOL => {
+                if !is_exact_instance(target_ptr, builtins.list) {
+                    return None;
+                }
+                let storage = crate::object::layout::list_bool_vec_ref(target_ptr);
+                for &value in storage.as_slice().get(start..).unwrap_or(&[]) {
+                    let value = value != 0;
+                    if !chunk.open() || !chunk.step(Item::Bool(value), Num::Int(i128::from(value)))
+                    {
+                        break;
+                    }
+                }
+                Some(start + chunk.count)
+            }
+            TYPE_ID_RANGE => {
+                if !is_exact_instance(target_ptr, builtins.range) {
+                    return None;
+                }
+                let (first, stop, step) = range_components_i64(target_ptr)?;
+                let len = range_len_i128(first, stop, step);
+                let mut index = start as i128;
+                while index < len && chunk.open() {
+                    let Some(value) = range_value_at_index_i64(first, stop, step, index) else {
+                        break;
+                    };
+                    if !chunk.step(Item::Int(value), Num::Int(i128::from(value))) {
+                        break;
+                    }
+                    index += 1;
+                }
+                Some(start + chunk.count)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// One chunk of the loop over `iter_bits`: the owned `(result, last, count,
+/// more)` tuple, or `None` bits with an allocation failure pending.
+fn vec_reduction_chunk(
+    py: &PyToken<'_>,
+    reduction: Reduction,
+    iter_bits: u64,
+    acc_bits: u64,
+    target_bits: u64,
+) -> u64 {
+    let none = MoltObject::none().bits();
+    let declined = |py: &PyToken<'_>| -> u64 {
+        let tuple = alloc_tuple(
+            py,
+            &[
+                none,
+                none,
+                MoltObject::from_int(0).bits(),
+                MoltObject::from_bool(false).bits(),
+            ],
+        );
+        if tuple.is_null() {
+            none
         } else {
-            return None;
+            MoltObject::from_ptr(tuple).bits()
         }
+    };
+    if !loop_target_release_is_inert(py, target_bits) {
+        return declined(py);
     }
-    Some(max_val)
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn max_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
+    let Some(acc) = exact_number(py, acc_bits) else {
+        return declined(py);
+    };
+    let Some(iter_ptr) = obj_from_bits(iter_bits).as_ptr() else {
+        return declined(py);
+    };
+    let mut chunk = Chunk {
+        reduction,
+        acc,
+        kept: None,
+        count: 0,
+        last: None,
+        full: false,
+    };
     unsafe {
-        use std::arch::aarch64::*;
-        let mut i = 0usize;
-        let mut vec_max = vdupq_n_s64(acc);
-        while i + 2 <= elems.len() {
-            let obj0 = MoltObject::from_bits(elems[i]);
-            let obj1 = MoltObject::from_bits(elems[i + 1]);
-            let v0 = obj0.as_int()?;
-            let v1 = obj1.as_int()?;
-            let lanes = [v0, v1];
-            let vec = vld1q_s64(lanes.as_ptr());
-            let mask = vcgtq_s64(vec, vec_max);
-            let vec_max_u = vreinterpretq_u64_s64(vec_max);
-            let vec_u = vreinterpretq_u64_s64(vec);
-            let blended_u = vbslq_u64(mask, vec_u, vec_max_u);
-            vec_max = vreinterpretq_s64_u64(blended_u);
-            i += 2;
+        if object_type_id(iter_ptr) != TYPE_ID_ITER {
+            return declined(py);
         }
-        let mut lanes = [0i64; 2];
-        vst1q_s64(lanes.as_mut_ptr(), vec_max);
-        let mut max_val = acc.max(lanes[0]).max(lanes[1]);
-        for &bits in &elems[i..] {
-            let obj = MoltObject::from_bits(bits);
-            let val = obj.as_int()?;
-            if val > max_val {
-                max_val = val;
+        let start = iter_index(iter_ptr);
+        if start == ITER_EXHAUSTED {
+            return declined(py);
+        }
+        let Some(next) = fold_iterator_target(py, &mut chunk, iter_ptr, start) else {
+            return declined(py);
+        };
+        if chunk.count == 0 {
+            return declined(py);
+        }
+        // The loop's iterator advances past exactly the consumed items; the
+        // ordinary loop finds the rest, or finishes the iterator at its end.
+        iter_set_index(iter_ptr, next);
+    }
+    // Preserve result-first allocation/failure order. Only the same selected
+    // iteration may reuse that owner for the final loop-target binding.
+    let selected_last = matches!(reduction, Reduction::Min | Reduction::Max)
+        && matches!(chunk.kept, Some((index, _)) if index + 1 == chunk.count);
+    let result = match reduction {
+        Reduction::Sum | Reduction::Prod => match chunk.acc {
+            Num::Int(value) => int_bits_from_i128(py, value),
+            Num::Big(value) => int_bits_from_bigint(py, value),
+            Num::Float(value) => float_result_bits(py, value),
+        },
+        Reduction::Min | Reduction::Max => match chunk.kept {
+            Some((_, item)) => item.into_owned_bits(py),
+            None => {
+                inc_ref_bits(py, acc_bits);
+                acc_bits
             }
-        }
-        Some(max_val)
+        },
+    };
+    if exception_pending(py) {
+        dec_ref_bits(py, result);
+        return none;
     }
+    let last = if selected_last {
+        inc_ref_bits(py, result);
+        result
+    } else {
+        chunk
+            .last
+            .map(|item| item.into_owned_bits(py))
+            .unwrap_or(none)
+    };
+    if exception_pending(py) {
+        dec_ref_bits(py, result);
+        dec_ref_bits(py, last);
+        return none;
+    }
+    let tuple = alloc_tuple(
+        py,
+        &[
+            result,
+            last,
+            int_bits_from_i64(py, chunk.count as i64),
+            MoltObject::from_bool(chunk.full).bits(),
+        ],
+    );
+    dec_ref_bits(py, result);
+    dec_ref_bits(py, last);
+    if tuple.is_null() {
+        return none;
+    }
+    MoltObject::from_ptr(tuple).bits()
 }
 
-fn sum_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
-    let mut sum = acc;
-    for &bits in elems {
-        let obj = MoltObject::from_bits(bits);
-        sum += obj.as_int_unchecked();
-    }
-    sum
+/// One chunk of `for x in it: acc = acc + x` (or `x + acc`).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum(iter_bits: u64, acc_bits: u64, target_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        vec_reduction_chunk(_py, Reduction::Sum, iter_bits, acc_bits, target_bits)
+    })
 }
 
-#[cfg(target_arch = "aarch64")]
-unsafe fn sum_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
-    unsafe {
-        use std::arch::aarch64::*;
-        let mut i = 0usize;
-        let mut vec_sum = vdupq_n_s64(0);
-        while i + 2 <= elems.len() {
-            let obj0 = MoltObject::from_bits(elems[i]);
-            let obj1 = MoltObject::from_bits(elems[i + 1]);
-            let v0 = obj0.as_int_unchecked();
-            let v1 = obj1.as_int_unchecked();
-            let lanes = [v0, v1];
-            let vec = vld1q_s64(lanes.as_ptr());
-            vec_sum = vaddq_s64(vec_sum, vec);
-            i += 2;
-        }
-        let mut lanes = [0i64; 2];
-        vst1q_s64(lanes.as_mut_ptr(), vec_sum);
-        let mut sum = acc + lanes[0] + lanes[1];
-        for &bits in &elems[i..] {
-            let obj = MoltObject::from_bits(bits);
-            sum += obj.as_int_unchecked();
-        }
-        sum
-    }
+/// One chunk of `for x in it: acc = acc * x` (or `x * acc`).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_prod(iter_bits: u64, acc_bits: u64, target_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        vec_reduction_chunk(_py, Reduction::Prod, iter_bits, acc_bits, target_bits)
+    })
 }
 
-fn prod_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
-    let mut prod = acc;
-    if prod == 0 {
-        return 0;
-    }
-    for &bits in elems {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int_unchecked();
-        if val == 0 {
-            return 0;
-        }
-        prod *= val;
-    }
-    prod
+/// One chunk of `for x in it: if x < acc: acc = x`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_min(iter_bits: u64, acc_bits: u64, target_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        vec_reduction_chunk(_py, Reduction::Min, iter_bits, acc_bits, target_bits)
+    })
 }
 
-#[cfg(target_arch = "aarch64")]
-unsafe fn prod_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
-    prod_ints_trusted_scalar(elems, acc)
+/// One chunk of `for x in it: if acc < x: acc = x`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_max(iter_bits: u64, acc_bits: u64, target_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        vec_reduction_chunk(_py, Reduction::Max, iter_bits, acc_bits, target_bits)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn int(value: i128) -> Num {
+        Num::Int(value)
+    }
+
+    fn float_of(value: &Num) -> f64 {
+        match value {
+            Num::Float(value) => *value,
+            _ => panic!("expected a float result"),
+        }
+    }
+
+    fn add(acc: Num, item: Num) -> Option<Num> {
+        let mut acc = acc;
+        add_in_place(&mut acc, item).then_some(acc)
+    }
+
+    fn mul(acc: Num, item: Num) -> Option<Num> {
+        let mut acc = acc;
+        mul_in_place(&mut acc, item).then_some(acc)
+    }
+
+    fn chunk(reduction: Reduction, acc: Num) -> Chunk {
+        Chunk {
+            reduction,
+            acc,
+            kept: None,
+            count: 0,
+            last: None,
+            full: false,
+        }
+    }
+
+    #[test]
+    fn explicit_float_addition_is_sequential_not_compensated() {
+        let mut acc = Num::Float(0.0);
+        for _ in 0..10 {
+            assert!(add_in_place(&mut acc, Num::Float(0.1)));
+        }
+        // The ordinary loop, unlike builtin sum(), accumulates rounding error.
+        assert_eq!(float_of(&acc), 0.9999999999999999);
+    }
+
+    #[test]
+    fn int_accumulator_promotes_only_when_a_float_arrives() {
+        assert!(matches!(add(int(2), int(3)), Some(Num::Int(5))));
+        assert_eq!(float_of(&add(int(1), Num::Float(0.5)).unwrap()), 1.5);
+        assert!(matches!(add(int(i128::MAX), int(1)), Some(Num::Big(_))));
+        assert!(matches!(mul(int(i128::MAX), int(2)), Some(Num::Big(_))));
+    }
+
+    #[test]
+    fn signed_zero_nan_and_infinity_follow_ieee_addition() {
+        assert!(float_of(&add(Num::Float(-0.0), Num::Float(-0.0)).unwrap()).is_sign_negative());
+        assert!(float_of(&add(int(0), Num::Float(-0.0)).unwrap()).is_sign_positive());
+        assert!(float_of(&add(Num::Float(f64::INFINITY), Num::Float(1.0)).unwrap()).is_infinite());
+        assert!(
+            float_of(&add(Num::Float(f64::INFINITY), Num::Float(f64::NEG_INFINITY)).unwrap())
+                .is_nan()
+        );
+        // One NaN operand is the result whatever the order; two NaNs are not.
+        assert!(float_of(&add(Num::Float(f64::NAN), Num::Float(1.0)).unwrap()).is_nan());
+        assert!(add(Num::Float(f64::NAN), Num::Float(-f64::NAN)).is_none());
+        assert!(mul(Num::Float(-f64::NAN), Num::Float(f64::NAN)).is_none());
+    }
+
+    #[test]
+    fn declined_items_leave_the_accumulator_untouched() {
+        let big = BigInt::from(i128::MAX) * BigInt::from(i128::MAX);
+        let mut acc = Num::Big(big.clone());
+        assert!(!add_in_place(&mut acc, Num::Float(1.0)));
+        assert!(matches!(&acc, Num::Big(value) if *value == big));
+        let mut acc = Num::Float(1.0);
+        assert!(!mul_in_place(&mut acc, Num::Big(big)));
+        assert_eq!(float_of(&acc), 1.0);
+    }
+
+    #[test]
+    fn comparisons_are_exact_and_nan_never_replaces() {
+        assert_eq!(less(&int(1), &Num::Float(1.5)), Some(true));
+        assert_eq!(less(&Num::Float(f64::NAN), &int(1)), Some(false));
+        assert_eq!(less(&int(1), &Num::Float(f64::NAN)), Some(false));
+        assert_eq!(less(&int(EXACT_F64_INT + 1), &Num::Float(1.0)), None);
+        assert_eq!(replaces(Reduction::Min, &int(1), &int(1)), Some(false));
+        assert_eq!(replaces(Reduction::Max, &int(2), &int(1)), Some(true));
+    }
+
+    /// A chunk stops at its size bound, and a declined item is not consumed.
+    #[test]
+    fn chunks_are_bounded_and_stop_before_a_declined_item() {
+        let mut sum = chunk(Reduction::Sum, int(0));
+        let mut stepped = 0usize;
+        while sum.open() && sum.step(Item::Int(1), int(1)) {
+            stepped += 1;
+        }
+        assert_eq!(stepped, VEC_CHUNK);
+        assert!(sum.full && matches!(sum.acc, Num::Int(value) if value == VEC_CHUNK as i128));
+
+        let mut sum = chunk(Reduction::Sum, Num::Float(f64::NAN));
+        assert!(sum.step(Item::Int(1), int(1)));
+        assert!(!sum.step(Item::Object(0), Num::Float(f64::NAN)));
+        assert_eq!(sum.count, 1);
+        assert!(!sum.full);
+
+        // A huge int accumulator ends the chunk after each item.
+        let mut prod = chunk(Reduction::Prod, Num::Big(BigInt::from(1) << 5000u32));
+        assert!(prod.step(Item::Int(3), int(3)));
+        assert!(prod.full && prod.count == 1);
+    }
+
+    #[test]
+    fn min_and_max_keep_the_item_itself() {
+        let mut min = chunk(Reduction::Min, int(5));
+        assert!(min.step(Item::Int(7), int(7)));
+        assert!(min.kept.is_none());
+        assert!(min.step(Item::Int(3), int(3)));
+        assert!(matches!(min.kept, Some((1, Item::Int(3)))));
+        assert!(matches!(min.last, Some(Item::Int(3))));
+        let mut max = chunk(Reduction::Max, Num::Float(1.0));
+        assert!(max.step(Item::Bool(true), int(1)));
+        assert!(max.kept.is_none(), "1 < 1.0 is false: the float stays");
+    }
+
+    fn chunk_fields(bits: u64) -> [u64; 4] {
+        let ptr = obj_from_bits(bits).as_ptr().expect("owned chunk tuple");
+        unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+                items.try_into().expect("four chunk fields")
+            })
+            .expect("chunk result is a tuple")
+        }
+    }
+
+    fn heap_refs(bits: u64) -> u32 {
+        let ptr = obj_from_bits(bits).as_ptr().expect("physical heap integer");
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
+
+    #[test]
+    fn minmax_heap_winner_and_last_share_each_chunk_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let wide = 1_i64 << 62;
+            let len = VEC_CHUNK + 1;
+            for reduction in [Reduction::Min, Reduction::Max] {
+                for boxed_list in [false, true] {
+                    let step = if reduction == Reduction::Min { -1 } else { 1 };
+                    let first = if step < 0 { wide + len as i64 } else { wide };
+                    let values: Vec<i64> = (0..len).map(|i| first + step * i as i64).collect();
+                    let sequence = if boxed_list {
+                        MoltObject::from_ptr(
+                            crate::object::builders::alloc_list_int_from_raw_slice(_py, &values)
+                                .expect("boxed heap-integer source"),
+                        )
+                        .bits()
+                    } else {
+                        let start = int_bits_from_i64(_py, first);
+                        let stop = int_bits_from_i64(_py, first + step * len as i64);
+                        let range =
+                            alloc_range(_py, start, stop, MoltObject::from_int(step).bits());
+                        assert!(!range.is_null());
+                        dec_ref_bits(_py, start);
+                        dec_ref_bits(_py, stop);
+                        MoltObject::from_ptr(range).bits()
+                    };
+                    let iter = molt_iter(sequence);
+                    let mut acc = int_bits_from_i64(_py, first - step);
+                    let mut target = MoltObject::none().bits();
+                    for count in [VEC_CHUNK, 1] {
+                        let tuple = vec_reduction_chunk(_py, reduction, iter, acc, target);
+                        assert!(!exception_pending(_py));
+                        let fields = chunk_fields(tuple);
+                        assert_eq!(obj_from_bits(fields[2]).as_int(), Some(count as i64));
+                        assert_eq!(obj_from_bits(fields[3]).as_bool(), Some(count == VEC_CHUNK));
+                        assert_eq!(fields[0], fields[1], "one selected iteration, one object");
+                        assert_eq!(
+                            heap_refs(fields[0]),
+                            if boxed_list { 3 } else { 2 },
+                            "tuple edges plus the original boxed container owner"
+                        );
+                        if boxed_list {
+                            let last_index = if count == VEC_CHUNK {
+                                VEC_CHUNK - 1
+                            } else {
+                                VEC_CHUNK
+                            };
+                            let read = molt_index(
+                                sequence,
+                                MoltObject::from_int(last_index as i64).bits(),
+                            );
+                            assert_eq!(read, fields[0], "a later list read retains the winner");
+                            dec_ref_bits(_py, read);
+                        }
+                        inc_ref_bits(_py, fields[0]);
+                        inc_ref_bits(_py, fields[1]);
+                        dec_ref_bits(_py, acc);
+                        dec_ref_bits(_py, target);
+                        acc = fields[0];
+                        target = fields[1];
+                        dec_ref_bits(_py, tuple);
+                        assert_eq!(
+                            heap_refs(acc),
+                            if boxed_list { 3 } else { 2 },
+                            "published bindings and any original container owner"
+                        );
+                    }
+                    dec_ref_bits(_py, acc);
+                    dec_ref_bits(_py, target);
+                    dec_ref_bits(_py, iter);
+                    dec_ref_bits(_py, sequence);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn minmax_tied_heap_occurrences_keep_their_own_identity() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let wide = 1_i64 << 62;
+            for reduction in [Reduction::Min, Reduction::Max] {
+                for source in ["prior", "first", "same-object"] {
+                    let item = int_bits_from_i64(_py, wide);
+                    let sequence = if source == "same-object" {
+                        let ptr = alloc_tuple(_py, &[item, item]);
+                        assert!(!ptr.is_null());
+                        MoltObject::from_ptr(ptr).bits()
+                    } else {
+                        MoltObject::from_ptr(
+                            crate::object::builders::alloc_list_int_from_raw_slice(
+                                _py,
+                                &[wide, wide],
+                            )
+                            .expect("boxed heap-integer source"),
+                        )
+                        .bits()
+                    };
+                    let seed = if source == "prior" {
+                        wide
+                    } else if reduction == Reduction::Min {
+                        wide + 1
+                    } else {
+                        wide - 1
+                    };
+                    let acc = int_bits_from_i64(_py, seed);
+                    let iter = molt_iter(sequence);
+                    let item_refs = heap_refs(item);
+                    let tuple =
+                        vec_reduction_chunk(_py, reduction, iter, acc, MoltObject::none().bits());
+                    assert!(!exception_pending(_py));
+                    let fields = chunk_fields(tuple);
+                    assert_eq!(obj_from_bits(fields[2]).as_int(), Some(2));
+                    if source == "same-object" {
+                        assert_eq!(fields[0], item);
+                        assert_eq!(fields[1], item);
+                        assert_eq!(heap_refs(item), item_refs + 2);
+                    } else {
+                        assert_ne!(
+                            fields[0], fields[1],
+                            "equal values are separate occurrences"
+                        );
+                        assert_eq!(fields[0] == acc, source == "prior");
+                        assert_eq!(heap_refs(fields[0]), 2);
+                        let first = molt_index(sequence, MoltObject::from_int(0).bits());
+                        assert_eq!(fields[0] == first, source == "first");
+                        dec_ref_bits(_py, first);
+                        assert_eq!(heap_refs(fields[1]), 2);
+                        let last = molt_index(sequence, MoltObject::from_int(1).bits());
+                        assert_eq!(fields[1], last);
+                        dec_ref_bits(_py, last);
+                    }
+                    dec_ref_bits(_py, tuple);
+                    assert_eq!(heap_refs(acc), 1);
+                    assert_eq!(heap_refs(item), item_refs);
+                    dec_ref_bits(_py, iter);
+                    dec_ref_bits(_py, sequence);
+                    assert_eq!(heap_refs(item), 1);
+                    dec_ref_bits(_py, acc);
+                    dec_ref_bits(_py, item);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn prior_chunk_ties_retain_original_winner_and_zero_count_publishes_nothing() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let wide = 1_i64 << 62;
+            for reduction in [Reduction::Min, Reduction::Max] {
+                let ptr = crate::object::builders::alloc_list_int_from_raw_iter(
+                    py,
+                    VEC_CHUNK + 1,
+                    |_| wide,
+                )
+                .unwrap();
+                let sequence = MoltObject::from_ptr(ptr).bits();
+                assert_eq!(unsafe { object_type_id(ptr) }, TYPE_ID_LIST);
+                let first = molt_index(sequence, MoltObject::from_int(0).bits());
+                let iter = molt_iter(sequence);
+                let seed = int_bits_from_i64(
+                    py,
+                    if reduction == Reduction::Min {
+                        wide + 1
+                    } else {
+                        wide - 1
+                    },
+                );
+                let first_tuple =
+                    vec_reduction_chunk(py, reduction, iter, seed, MoltObject::none().bits());
+                let first_fields = chunk_fields(first_tuple);
+                assert_eq!(first_fields[0], first);
+                let second_tuple =
+                    vec_reduction_chunk(py, reduction, iter, first_fields[0], first_fields[1]);
+                let second_fields = chunk_fields(second_tuple);
+                assert_eq!(obj_from_bits(second_fields[2]).as_int(), Some(1));
+                assert_eq!(
+                    second_fields[0], first,
+                    "a later tied chunk keeps the incoming owner"
+                );
+                assert_ne!(second_fields[0], second_fields[1]);
+                let acc_refs = heap_refs(second_fields[0]);
+                let target_refs = heap_refs(second_fields[1]);
+                let empty =
+                    vec_reduction_chunk(py, reduction, iter, second_fields[0], second_fields[1]);
+                let empty_fields = chunk_fields(empty);
+                assert_eq!(obj_from_bits(empty_fields[2]).as_int(), Some(0));
+                assert_eq!(empty_fields[0], MoltObject::none().bits());
+                assert_eq!(empty_fields[1], MoltObject::none().bits());
+                assert_eq!(heap_refs(second_fields[0]), acc_refs);
+                assert_eq!(heap_refs(second_fields[1]), target_refs);
+                for bits in [
+                    empty,
+                    second_tuple,
+                    first_tuple,
+                    seed,
+                    iter,
+                    sequence,
+                    first,
+                ] {
+                    dec_ref_bits(py, bits);
+                }
+                assert!(!exception_pending(py));
+            }
+        });
+    }
 }

@@ -21,7 +21,8 @@ The current required matrix is the cross-product of:
 - target-language versions 3.12, 3.13, and 3.14, each with an exact pinned
   reference-CPython micro version;
 - every Windows, macOS, and Linux architecture in the release-target authority;
-- native and WASM backends;
+- LLVM, native and WASM backends;
+- `dev` and `release` guest build profiles;
 - the CPython-language ABI and GIL concurrency mode.
 
 `config/verified_subset.toml` selects executable policy. `TargetPythonVersion` owns
@@ -112,7 +113,24 @@ classification, and comparison-law identity. Counts are derived from those
 rows. It also binds the projection digest, policy inputs, exact reference
 CPython executable/version, GIL and pointer-width state, Rust host/toolchain,
 backend runner, GitHub Actions run identity, runner OS/architecture/label, and
-source revision.
+source revision. The coordinate selects the guest build profile; execution
+records the selected runtime and compiler profile labels.
+
+The current execution record does not bind the actual Molt compiler binary
+digest, profile and feature set, or selected runtime cell/generation identity.
+Close these through existing build diagnostics and runtime inventories, and
+require agreement with the assembled candidate. A matching
+source SHA and one candidate smoke guest do not establish that semantic
+acceptance exercised the shipped compiler/runtime. Target-dependent arithmetic
+also needs an explicit ABI/oracle rule for WASM; the host CPython alone does
+not establish the target ABI. These are qualification gaps, not additions to
+verified coverage.
+
+The comparison law still allows test metadata to ignore stderr, which is the
+default. Recording stderr hashes does not establish equality or deterministic
+guest output. Release qualification must enforce the required guest-stderr
+comparison and attribute host diagnostics separately through the existing
+comparison authority.
 
 `tools/release_criterion_receipt.py` validates against the captured coordinate
 projection and rejects missing, duplicate, excluded, malformed, stale, or
@@ -150,7 +168,9 @@ every E3 receipt inside the source-addressed release-exit archive before any
 candidate build may proceed. The release workflow's plan step performs that
 provenance admission before candidate builds, as specified by the
 [packaging acceptance contract](../../../../../packaging/PACKAGING.md).
-Wiring the gate does not supply missing receipts or establish conformance.
+Declared LLVM cells still need cross-host SDK provisioning and an admitted
+compiler with LLVM enabled. Wiring the gate does not supply missing receipts
+or establish conformance.
 The verified-subset workflow is the execution authority; the local
 `check` command validates policy and reports remaining expected-failure debt but
 does not claim conformance.

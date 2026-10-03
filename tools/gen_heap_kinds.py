@@ -88,7 +88,6 @@ ALLOWED = {
         "inline_rust",
         "iterator",
         "memoryview",
-        "module",
         "object",
         "set",
         "tuple",
@@ -171,6 +170,7 @@ TRACK_PROJECTIONS = {
     "dict_dynamic",
     "foreign_dynamic",
     "tuple_dynamic",
+    "native_subtype",
 }
 OBJECT_SHAPE_FAMILIES = {
     "plain",

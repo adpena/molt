@@ -1,6 +1,9 @@
 //! Formatting, repr, and string conversion — extracted from ops.rs.
 #![allow(clippy::items_after_test_module)]
 
+use crate::builtins::attr::lookup_special_method;
+use crate::builtins::numbers::{index_bigint_integral_bits, index_integral_payload_bits};
+use crate::object::ops::as_float_extended;
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
@@ -9,6 +12,232 @@ use std::borrow::Cow;
 
 use super::ops::{range_components_bigint, unicode_printable_table};
 use super::ops_string::wtf8_from_bytes;
+
+/// A Python renderer either returns the callback's owned string unchanged or
+/// builds lossless WTF-8 bytes. Rust String is only a host diagnostic adapter.
+pub(crate) enum FormatOutput {
+    Bytes(Vec<u8>),
+    OwnedString(u64),
+}
+
+impl From<String> for FormatOutput {
+    fn from(value: String) -> Self {
+        Self::Bytes(value.into_bytes())
+    }
+}
+
+impl From<&str> for FormatOutput {
+    fn from(value: &str) -> Self {
+        Self::Bytes(value.as_bytes().to_vec())
+    }
+}
+
+impl From<Vec<u8>> for FormatOutput {
+    fn from(value: Vec<u8>) -> Self {
+        Self::Bytes(value)
+    }
+}
+
+impl FormatOutput {
+    pub(crate) fn into_bits(self, py: &PyToken<'_>) -> u64 {
+        if exception_pending(py) {
+            if let Self::OwnedString(bits) = self {
+                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
+            }
+            return MoltObject::none().bits();
+        }
+        match self {
+            Self::OwnedString(bits) => bits,
+            Self::Bytes(bytes) => {
+                let ptr = alloc_string(py, &bytes);
+                if ptr.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(ptr).bits()
+                }
+            }
+        }
+    }
+
+    fn into_bytes(self, py: &PyToken<'_>) -> Vec<u8> {
+        if let Self::Bytes(bytes) = self {
+            return bytes;
+        }
+        self.with_bytes(py, |bytes| {
+            let mut out = format_buffer(bytes.len())?;
+            out.extend_from_slice(bytes);
+            Ok(out)
+        })
+        .unwrap_or_else(|error| {
+            error.raise::<()>(py);
+            Vec::new()
+        })
+    }
+
+    /// Keep a renderer's owned string alive while its immutable storage is read.
+    /// Cleanup cannot replace a callback/allocation error with a finalizer error.
+    pub(crate) fn with_bytes<T>(
+        self,
+        py: &PyToken<'_>,
+        consume: impl FnOnce(&[u8]) -> Result<T, FormatError>,
+    ) -> Result<T, FormatError> {
+        match self {
+            Self::Bytes(bytes) => {
+                if exception_pending(py) {
+                    Err(FormatError::Pending)
+                } else {
+                    consume(&bytes)
+                }
+            }
+            Self::OwnedString(bits) => {
+                let result = if exception_pending(py) {
+                    Err(FormatError::Pending)
+                } else {
+                    let ptr = obj_from_bits(bits).as_ptr().expect("owned renderer string");
+                    let bytes =
+                        unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
+                    consume(bytes)
+                };
+                // A failed allocation/writer operation is observable during
+                // callback-string finalization. Publish it before releasing
+                // that owner, then keep the existing pending-error authority.
+                let result = match result {
+                    Ok(value) => Ok(value),
+                    Err(error) => {
+                        error.raise::<()>(py);
+                        Err(FormatError::Pending)
+                    }
+                };
+                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
+                result
+            }
+        }
+    }
+
+    fn into_host_string(self, py: &PyToken<'_>) -> String {
+        String::from_utf8_lossy(&self.into_bytes(py)).into_owned()
+    }
+}
+
+/// One output owner for percent and brace composition. Only a sole final
+/// nonempty callback string may be adopted; earlier fields are copied before
+/// later callbacks run, preserving CPython's identity and finalizer order.
+pub(crate) struct FormatWriter<'a, 'py> {
+    py: &'a PyToken<'py>,
+    output: Option<FormatOutput>,
+}
+
+impl<'a, 'py> FormatWriter<'a, 'py> {
+    pub(crate) fn new(py: &'a PyToken<'py>) -> Self {
+        Self {
+            py,
+            output: Some(FormatOutput::Bytes(Vec::new())),
+        }
+    }
+
+    pub(crate) fn append_bytes(&mut self, bytes: &[u8]) -> Result<(), FormatError> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if matches!(self.output, Some(FormatOutput::OwnedString(_))) {
+            let previous = self.output.take().expect("format writer owner");
+            let materialized = previous.with_bytes(self.py, |text| {
+                let mut buffer = format_buffer(text.len())?;
+                buffer.extend_from_slice(text);
+                Ok(buffer)
+            });
+            self.output = Some(FormatOutput::Bytes(materialized?));
+        }
+        let Some(FormatOutput::Bytes(buffer)) = &mut self.output else {
+            unreachable!("format writer byte storage");
+        };
+        append_format_bytes(buffer, bytes)
+    }
+
+    pub(crate) fn append_output(
+        &mut self,
+        output: FormatOutput,
+        final_piece: bool,
+    ) -> Result<(), FormatError> {
+        let may_adopt = final_piece
+            && !exception_pending(self.py)
+            && matches!(&self.output, Some(FormatOutput::Bytes(bytes)) if bytes.is_empty())
+            && matches!(&output, FormatOutput::OwnedString(bits) if obj_from_bits(*bits)
+                .as_ptr().is_some_and(|ptr| unsafe { string_len(ptr) } != 0));
+        if may_adopt {
+            self.output = Some(output);
+            return Ok(());
+        }
+        output.with_bytes(self.py, |bytes| self.append_bytes(bytes))
+    }
+
+    pub(crate) fn append_literal(
+        &mut self,
+        bytes: &[u8],
+        source: Option<u64>,
+        final_piece: bool,
+    ) -> Result<(), FormatError> {
+        if final_piece
+            && !bytes.is_empty()
+            && let Some(bits) = source
+            && obj_from_bits(bits).as_ptr().is_some_and(|ptr| unsafe {
+                object_type_id(ptr) == TYPE_ID_STRING
+                    && string_bytes(ptr) == bytes.as_ptr()
+                    && string_len(ptr) == bytes.len()
+            })
+        {
+            inc_ref_bits(self.py, bits);
+            return self.append_output(FormatOutput::OwnedString(bits), true);
+        }
+        self.append_bytes(bytes)
+    }
+
+    pub(crate) fn finish(mut self) -> FormatOutput {
+        self.output.take().expect("format writer owner")
+    }
+}
+
+impl Drop for FormatWriter<'_, '_> {
+    fn drop(&mut self) {
+        if let Some(FormatOutput::OwnedString(bits)) = self.output.take() {
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(self.py, bits));
+        }
+    }
+}
+
+#[derive(Default)]
+struct FormatBuffer(Vec<u8>);
+
+impl From<&str> for FormatBuffer {
+    fn from(value: &str) -> Self {
+        Self(value.as_bytes().to_vec())
+    }
+}
+
+impl From<FormatBuffer> for FormatOutput {
+    fn from(value: FormatBuffer) -> Self {
+        Self::Bytes(value.0)
+    }
+}
+
+impl FormatBuffer {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn push_str(&mut self, value: &str) {
+        self.0.extend_from_slice(value.as_bytes());
+    }
+    fn push_bytes(&mut self, value: &[u8]) {
+        self.0.extend_from_slice(value);
+    }
+    fn push(&mut self, value: char) {
+        let mut encoded = [0; 4];
+        self.push_str(value.encode_utf8(&mut encoded));
+    }
+    fn push_output(&mut self, py: &PyToken<'_>, value: FormatOutput) {
+        self.0.extend_from_slice(&value.into_bytes(py));
+    }
+}
 
 #[unsafe(no_mangle)]
 /// Print a bare newline to stdout (used by the `print_newline` op).
@@ -61,6 +290,10 @@ fn format_float(f: f64) -> String {
     molt_runtime_core::float_repr::repr_float(f)
 }
 
+fn float_is_negative(value: f64) -> bool {
+    value.is_sign_negative() && !value.is_nan()
+}
+
 fn format_complex_float(f: f64) -> String {
     let text = format_float(f);
     if let Some(stripped) = text.strip_suffix(".0") {
@@ -77,7 +310,7 @@ fn format_complex(re: f64, im: f64) -> String {
         let im_text = format_complex_float(im);
         return format!("{im_text}j");
     }
-    let sign = if im.is_sign_negative() { "-" } else { "+" };
+    let sign = if float_is_negative(im) { "-" } else { "+" };
     let im_text = format_complex_float(im.abs());
     format!("({re_text}{sign}{im_text}j)")
 }
@@ -90,35 +323,61 @@ fn format_range(start: &BigInt, stop: &BigInt, step: &BigInt) -> String {
     }
 }
 
-fn format_slice(_py: &PyToken<'_>, ptr: *mut u8) -> String {
+fn format_slice(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     unsafe {
-        let start = format_obj(_py, obj_from_bits(slice_start_bits(ptr)));
-        let stop = format_obj(_py, obj_from_bits(slice_stop_bits(ptr)));
-        let step = format_obj(_py, obj_from_bits(slice_step_bits(ptr)));
-        format!("slice({start}, {stop}, {step})")
+        let mut out = FormatBuffer::from("slice(");
+        for (index, value) in [
+            slice_start_bits(ptr),
+            slice_stop_bits(ptr),
+            slice_step_bits(ptr),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index != 0 {
+                out.push_str(", ");
+            }
+            out.push_output(_py, format_obj_output(_py, obj_from_bits(value)));
+            if exception_pending(_py) {
+                break;
+            }
+        }
+        out.push(')');
+        out.into()
     }
 }
 
 /// Look up a string-valued attribute in a namespace with normal dict key
 /// equality. `attr_name_bits_from_bytes` returns an owned reference, including
 /// when the name is cached, so release it after the borrowed dict lookup.
-fn dict_get_attr_string(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &[u8]) -> Option<String> {
+fn dict_get_attr_string(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &[u8]) -> Option<Vec<u8>> {
     let key_bits = attr_name_bits_from_bytes(_py, name)?;
     let value = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) }
-        .and_then(|bits| string_obj_to_owned(obj_from_bits(bits)));
+        .and_then(|bits| string_obj_bytes(obj_from_bits(bits)));
     dec_ref_bits(_py, key_bits);
     value
 }
 
-fn format_qualified_type_name(_py: &PyToken<'_>, type_ptr: *mut u8) -> Option<String> {
+fn format_qualified_type_name(_py: &PyToken<'_>, type_ptr: *mut u8) -> Option<Vec<u8>> {
+    format_qualified_type_name_in_context(_py, type_ptr, QualifiedTypeNameContext::Repr)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum QualifiedTypeNameContext {
+    Repr,
+    Diagnostic,
+}
+
+fn format_qualified_type_name_in_context(
+    _py: &PyToken<'_>,
+    type_ptr: *mut u8,
+    context: QualifiedTypeNameContext,
+) -> Option<Vec<u8>> {
     unsafe {
-        let name =
-            string_obj_to_owned(obj_from_bits(class_name_bits(type_ptr))).unwrap_or_default();
-        if name.is_empty() {
-            return None;
-        }
-        let mut qualname = name;
-        let mut module_name: Option<String> = None;
+        let name = string_obj_bytes(obj_from_bits(class_name_bits(type_ptr))).unwrap_or_default();
+        let qualname =
+            string_obj_bytes(obj_from_bits(class_qualname_bits(type_ptr))).unwrap_or(name);
+        let mut module_name: Option<Vec<u8>> = None;
         if !exception_pending(_py) {
             let dict_bits = class_dict_bits(type_ptr);
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
@@ -127,22 +386,39 @@ fn format_qualified_type_name(_py: &PyToken<'_>, type_ptr: *mut u8) -> Option<St
                 if let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__module__") {
                     module_name = Some(val);
                 }
-                if let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__qualname__") {
-                    qualname = val;
-                }
             }
         }
         if let Some(module) = module_name
-            && !module.is_empty()
-            && module != "builtins"
+            && (!module.is_empty() || context == QualifiedTypeNameContext::Diagnostic)
+            && module != b"builtins"
+            && (context == QualifiedTypeNameContext::Repr || module != b"__main__")
         {
-            return Some(format!("{module}.{qualname}"));
+            let mut out = module;
+            for bytes in [b".".as_slice(), qualname.as_slice()] {
+                if let Err(error) = append_format_bytes(&mut out, bytes) {
+                    return error.raise(_py);
+                }
+            }
+            return Some(out);
         }
         Some(qualname)
     }
 }
 
-fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
+/// Python's %T diagnostic spelling uses actual class identity and qualname,
+/// suppressing builtins/__main__ while retaining lossless Python name bytes.
+pub(crate) fn format_diagnostic_type_name_bytes(py: &PyToken<'_>, obj: MoltObject) -> Vec<u8> {
+    let class = type_of_bits(py, obj.bits());
+    obj_from_bits(class)
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+        .and_then(|ptr| {
+            format_qualified_type_name_in_context(py, ptr, QualifiedTypeNameContext::Diagnostic)
+        })
+        .unwrap_or_else(|| format_class_name_bytes(class))
+}
+
+fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     unsafe {
         let origin_bits = generic_alias_origin_bits(ptr);
         let args_bits = generic_alias_args_bits(ptr);
@@ -153,22 +429,23 @@ fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
                 && object_type_id(arg_ptr) == TYPE_ID_TYPE
                 && let Some(name) = format_qualified_type_name(_py, arg_ptr)
             {
-                return name;
+                return name.into();
             }
-            format_obj(_py, arg_obj)
+            format_obj_output(_py, arg_obj)
         };
         let origin_repr = if let Some(origin_ptr) = origin_obj.as_ptr() {
             if object_type_id(origin_ptr) == TYPE_ID_TYPE {
                 format_qualified_type_name(_py, origin_ptr)
-                    .unwrap_or_else(|| format_obj(_py, origin_obj))
+                    .map(FormatOutput::from)
+                    .unwrap_or_else(|| format_obj_output(_py, origin_obj))
             } else {
-                format_obj(_py, origin_obj)
+                format_obj_output(_py, origin_obj)
             }
         } else {
-            format_obj(_py, origin_obj)
+            format_obj_output(_py, origin_obj)
         };
-        let mut out = String::new();
-        out.push_str(&origin_repr);
+        let mut out = FormatBuffer::new();
+        out.push_output(_py, origin_repr);
         out.push('[');
         let args_obj = obj_from_bits(args_bits);
         if let Some(args_ptr) = args_obj.as_ptr() {
@@ -178,21 +455,24 @@ fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
                         if idx > 0 {
                             out.push_str(", ");
                         }
-                        out.push_str(&render_arg(*elem_bits));
+                        out.push_output(_py, render_arg(*elem_bits));
+                        if exception_pending(_py) {
+                            break;
+                        }
                     }
                 });
             } else {
-                out.push_str(&render_arg(args_bits));
+                out.push_output(_py, render_arg(args_bits));
             }
         } else {
-            out.push_str(&render_arg(args_bits));
+            out.push_output(_py, render_arg(args_bits));
         }
         out.push(']');
-        out
+        out.into()
     }
 }
 
-fn format_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> String {
+fn format_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     unsafe {
         let args_bits = union_type_args_bits(ptr);
         let render_arg = |arg_bits: u64| {
@@ -201,11 +481,11 @@ fn format_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> String {
                 && object_type_id(arg_ptr) == TYPE_ID_TYPE
                 && let Some(name) = format_qualified_type_name(_py, arg_ptr)
             {
-                return name;
+                return name.into();
             }
-            format_obj(_py, arg_obj)
+            format_obj_output(_py, arg_obj)
         };
-        let mut out = String::new();
+        let mut out = FormatBuffer::new();
         let args_obj = obj_from_bits(args_bits);
         if let Some(args_ptr) = args_obj.as_ptr()
             && object_type_id(args_ptr) == TYPE_ID_TUPLE
@@ -215,17 +495,29 @@ fn format_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> String {
                     if idx > 0 {
                         out.push_str(" | ");
                     }
-                    out.push_str(&render_arg(*elem_bits));
+                    out.push_output(_py, render_arg(*elem_bits));
+                    if exception_pending(_py) {
+                        break;
+                    }
                 }
             });
-            return out;
+            return out.into();
         }
-        out.push_str(&render_arg(args_bits));
-        out
+        out.push_output(_py, render_arg(args_bits));
+        out.into()
     }
 }
 
-pub(crate) fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
+/// Read Python string storage without allocating or imposing Rust's Unicode
+/// scalar restriction. The borrowed bytes cannot escape the reader.
+///
+/// # Safety
+/// The caller must keep the string alive throughout `read`, including any
+/// callbacks or reference retirement performed by the reader.
+pub(crate) unsafe fn with_string_bytes<R>(
+    obj: MoltObject,
+    read: impl for<'bytes> FnOnce(&'bytes [u8]) -> R,
+) -> Option<R> {
     let ptr = obj.as_ptr()?;
     unsafe {
         if object_type_id(ptr) != TYPE_ID_STRING {
@@ -233,7 +525,63 @@ pub(crate) fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
         }
         let len = string_len(ptr);
         let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
-        Some(String::from_utf8_lossy(bytes).to_string())
+        Some(read(bytes))
+    }
+}
+
+/// Copy Python string storage without imposing Rust's Unicode scalar restriction.
+pub(crate) fn string_obj_bytes(obj: MoltObject) -> Option<Vec<u8>> {
+    unsafe { with_string_bytes(obj, <[u8]>::to_vec) }
+}
+
+/// Host diagnostic adapter. Python string producers use string_obj_bytes or
+/// the owned/byte rendering entry points, which retain lone surrogates.
+pub(crate) fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
+    string_obj_bytes(obj).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+pub(crate) fn format_class_name_bytes(class_bits: u64) -> Vec<u8> {
+    if obj_from_bits(class_bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_FOREIGN)
+    {
+        return molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
+            crate::object::class_layout::real_class_view(class_bits)
+                .ok()
+                .flatten()
+                .map(|class| (*class).tp_name)
+                .filter(|name| !name.is_null())
+                .map(|name| std::ffi::CStr::from_ptr(name).to_bytes().to_vec())
+                .unwrap_or_else(|| b"<class>".to_vec())
+        });
+    }
+    obj_from_bits(class_bits)
+        .as_ptr()
+        .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_TYPE)
+        .and_then(|ptr| string_obj_bytes(obj_from_bits(unsafe { class_name_bits(ptr) })))
+        .unwrap_or_else(|| class_name_for_error(class_bits).into_bytes())
+}
+
+/// Pin collected set inputs through renderer callbacks using the same
+/// resource-accounted owner as sequence snapshots.
+pub(crate) fn snapshot_format_inputs<'a, 'py>(
+    py: &'a PyToken<'py>,
+    values: &[u64],
+) -> Option<crate::object::seq_access::PinnedSequenceSnapshot<'a, 'py>> {
+    let Some(storage) = crate::object::backing::tracked_vec_box_from_slice(values, values.len())
+    else {
+        return raise_exception::<_>(py, "MemoryError", "format input snapshot allocation failed");
+    };
+    unsafe {
+        for &bits in &*storage {
+            inc_ref_bits(py, bits);
+        }
+        Some(
+            crate::object::seq_access::PinnedSequenceSnapshot::from_owned_values(
+                py,
+                crate::object::backing::tracked_vec_box_from_raw(storage),
+            ),
+        )
     }
 }
 
@@ -270,14 +618,14 @@ pub(crate) fn decode_value_list(obj: MoltObject) -> Option<Vec<u64>> {
     }
 }
 
-fn format_dataclass(_py: &PyToken<'_>, ptr: *mut u8) -> String {
+fn format_dataclass(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     unsafe {
         let desc_ptr = dataclass_desc_ptr(ptr);
         if desc_ptr.is_null() {
-            return "<dataclass>".to_string();
+            return "<dataclass>".into();
         }
         let desc = &*desc_ptr;
-        let mut out = String::new();
+        let mut out = FormatBuffer::new();
         out.push_str(&desc.name);
         out.push('(');
         let mut first = true;
@@ -301,7 +649,7 @@ fn format_dataclass(_py: &PyToken<'_>, ptr: *mut u8) -> String {
             );
             if exception_pending(_py) {
                 dec_ref_bits(_py, val);
-                return "<dataclass>".to_string();
+                return "<dataclass>".into();
             }
             if is_missing_bits(_py, val) {
                 let type_label = if desc.name.is_empty() {
@@ -311,16 +659,16 @@ fn format_dataclass(_py: &PyToken<'_>, ptr: *mut u8) -> String {
                 };
                 dec_ref_bits(_py, val);
                 let _ = attr_error(_py, type_label, name);
-                return "<dataclass>".to_string();
+                return "<dataclass>".into();
             }
-            out.push_str(&format_obj(_py, obj_from_bits(val)));
+            out.push_output(_py, format_obj_output(_py, obj_from_bits(val)));
             dec_ref_bits(_py, val);
             if exception_pending(_py) {
-                return "<dataclass>".to_string();
+                return "<dataclass>".into();
             }
         }
         out.push(')');
-        out
+        out.into()
     }
 }
 
@@ -413,308 +761,355 @@ fn repr_depth_exit() {
     });
 }
 
-fn format_default_object_repr(_py: &PyToken<'_>, ptr: *mut u8) -> String {
+fn format_default_object_repr(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     let class_bits = unsafe {
         if object_type_id(ptr) == TYPE_ID_OBJECT || object_type_id(ptr) == TYPE_ID_DATACLASS {
             object_class_bits(ptr)
         } else {
-            type_of_bits(_py, MoltObject::from_ptr(ptr).bits())
+            type_of_bits(py, MoltObject::from_ptr(ptr).bits())
         }
     };
-    let class_name = class_name_for_error(class_bits);
-    // Look up __module__ on the class to produce CPython-style qualified repr.
-    let class_obj = obj_from_bits(class_bits);
-    if let Some(class_ptr) = class_obj.as_ptr() {
-        unsafe {
-            if object_type_id(class_ptr) == TYPE_ID_TYPE && !exception_pending(_py) {
-                let dict_bits = class_dict_bits(class_ptr);
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    && let Some(module) = dict_get_attr_string(_py, dict_ptr, b"__module__")
-                    && !module.is_empty()
-                    && module != "builtins"
-                {
-                    let mut qualname = class_name.clone();
-                    if let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__qualname__") {
-                        qualname = val;
-                    }
-                    return format!("<{module}.{qualname} object at 0x{:x}>", ptr as usize);
-                }
-            }
-        }
-    }
-    format!("<{class_name} object at 0x{:x}>", ptr as usize)
+    let name = obj_from_bits(class_bits)
+        .as_ptr()
+        .filter(|class| unsafe { object_type_id(*class) } == TYPE_ID_TYPE)
+        .and_then(|class| format_qualified_type_name(py, class))
+        .unwrap_or_else(|| class_name_for_error(class_bits).into_bytes());
+    let mut out = FormatBuffer::from("<");
+    out.push_bytes(&name);
+    out.push_str(&format!(" object at 0x{:x}>", ptr as usize));
+    out.into()
 }
 
-fn call_bits_is_default_object_repr(call_bits: u64) -> bool {
-    let call_obj = obj_from_bits(call_bits);
-    let Some(mut call_ptr) = call_obj.as_ptr() else {
-        return false;
-    };
-    unsafe {
-        if object_type_id(call_ptr) == TYPE_ID_BOUND_METHOD {
-            let func_bits = bound_method_func_bits(call_ptr);
-            let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-                return false;
-            };
-            call_ptr = func_ptr;
-        }
-        object_type_id(call_ptr) == TYPE_ID_FUNCTION
-            && function_fn_ptr(call_ptr) == fn_addr!(molt_repr_from_obj)
-    }
-}
-
-fn call_bits_is_default_object_str(call_bits: u64) -> bool {
-    let call_obj = obj_from_bits(call_bits);
-    let Some(mut call_ptr) = call_obj.as_ptr() else {
-        return false;
-    };
-    unsafe {
-        if object_type_id(call_ptr) == TYPE_ID_BOUND_METHOD {
-            let func_bits = bound_method_func_bits(call_ptr);
-            let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-                return false;
-            };
-            call_ptr = func_ptr;
-        }
-        object_type_id(call_ptr) == TYPE_ID_FUNCTION
-            && function_fn_ptr(call_ptr) == fn_addr!(molt_str_from_obj)
-    }
-}
-
-unsafe fn exception_class_can_use_cached_message_str(
-    _py: &PyToken<'_>,
-    class_bits: u64,
-    class_ptr: *mut u8,
-) -> bool {
-    unsafe {
-        let builtins = builtin_classes(_py);
-        if !issubclass_bits(class_bits, builtins.base_exception) {
-            return false;
-        }
-        if builtins.base_exception_group != 0
-            && issubclass_bits(class_bits, builtins.base_exception_group)
-        {
-            return false;
-        }
-        let class_name =
-            string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr))).unwrap_or_default();
-        if matches!(
-            class_name.as_str(),
-            "KeyError"
-                | "UnicodeDecodeError"
-                | "UnicodeEncodeError"
-                | "HTTPError"
-                | "URLError"
-                | "ContentTooShortError"
-        ) {
-            return false;
-        }
-        let str_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
-        let raw_str = class_attr_lookup_raw_mro(_py, class_ptr, str_name_bits);
-        match raw_str {
-            Some(bits) => {
-                call_bits_is_default_object_str(bits) || call_bits_is_default_object_repr(bits)
-            }
-            None => true,
-        }
-    }
-}
-
-pub(crate) unsafe fn exception_uses_cached_message_str(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
-    unsafe {
-        let class_bits = object_class_bits(ptr);
-        exception_class_uses_cached_message_str(_py, class_bits)
-    }
-}
-
-pub(crate) unsafe fn exception_class_uses_cached_message_str(
-    _py: &PyToken<'_>,
-    class_bits: u64,
-) -> bool {
-    unsafe {
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return false;
+/// The declaring object slot must not redispatch __repr__ on its receiver.
+/// Generic repr() is a separate entry point; object.__str__ delegates to it.
+pub(crate) extern "C" fn object_repr_slot(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let rendered = match obj_from_bits(bits).as_ptr() {
+            Some(ptr) => format_default_object_repr(py, ptr),
+            None => format!(
+                "<{} object at 0x{bits:x}>",
+                class_name_for_error(type_of_bits(py, bits))
+            )
+            .into(),
         };
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return false;
+        if exception_pending(py) {
+            return MoltObject::none().bits();
         }
-        let class_version = class_layout_version_bits(class_ptr);
-        let cached = runtime_state(_py)
-            .exception_str_cache
-            .lock()
-            .unwrap()
-            .get(&class_bits)
-            .copied();
-        match cached {
-            Some((version, value)) if version == class_version => value,
-            _ => {
-                let value = exception_class_can_use_cached_message_str(_py, class_bits, class_ptr);
-                runtime_state(_py)
-                    .exception_str_cache
-                    .lock()
-                    .unwrap()
-                    .insert(class_bits, (class_version, value));
-                value
-            }
-        }
-    }
+        rendered.into_bits(py)
+    })
 }
 
-pub(crate) unsafe fn exception_cached_message_str_bits(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-) -> Option<u64> {
+pub(crate) extern "C" fn object_str_slot(bits: u64) -> u64 {
+    molt_repr_from_obj(bits)
+}
+
+/// The native renderers whose subclass slots must run before storage fast paths.
+fn native_format_base(py: &PyToken<'_>, obj: MoltObject) -> Option<u64> {
+    let classes = builtin_classes(py);
+    // Scalar base selection follows the shared payload authority, including
+    // tagged instances. It never dispatches a conversion protocol.
+    if index_integral_payload_bits(obj.bits()).is_some() {
+        return Some(classes.int);
+    }
+    if as_float_extended(obj).is_some() {
+        return Some(classes.float);
+    }
+    let type_id = unsafe { object_type_id(obj.as_ptr()?) };
+    Some(match type_id {
+        TYPE_ID_STRING => classes.str,
+        TYPE_ID_COMPLEX => classes.complex,
+        TYPE_ID_BYTES => classes.bytes,
+        TYPE_ID_BYTEARRAY => classes.bytearray,
+        TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => classes.list,
+        TYPE_ID_TUPLE => classes.tuple,
+        TYPE_ID_DICT => classes.dict,
+        TYPE_ID_SET => classes.set,
+        TYPE_ID_FROZENSET => classes.frozenset,
+        TYPE_ID_MODULE => classes.module,
+        TYPE_ID_TYPE => classes.type_obj,
+        _ => return None,
+    })
+}
+
+unsafe fn string_str_output(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     unsafe {
-        if !exception_uses_cached_message_str(_py, ptr) {
-            return None;
+        let class = object_class_bits(ptr);
+        if class == 0 || class == builtin_classes(py).str {
+            let bits = MoltObject::from_ptr(ptr).bits();
+            inc_ref_bits(py, bits);
+            FormatOutput::OwnedString(bits)
+        } else {
+            let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+            let result = alloc_string(py, bytes);
+            FormatOutput::OwnedString(if result.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(result).bits()
+            })
         }
-        let msg_bits = exception_materialized_message_bits(_py, ptr);
-        let msg_ptr = obj_from_bits(msg_bits).as_ptr()?;
-        if object_type_id(msg_ptr) != TYPE_ID_STRING {
-            return None;
-        }
-        inc_ref_bits(_py, msg_bits);
-        Some(msg_bits)
     }
 }
 
+/// Explicit str.__str__ uses the declaring slot and never redispatches.
+pub(crate) extern "C" fn string_str_slot(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = obj_from_bits(bits)
+            .as_ptr()
+            .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_STRING)
+        else {
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                "descriptor '__str__' requires a 'str' object",
+            );
+        };
+        unsafe { string_str_output(py, ptr) }.into_bits(py)
+    })
+}
 pub(crate) fn format_obj_str(_py: &PyToken<'_>, obj: MoltObject) -> String {
+    format_obj_str_output(_py, obj).into_host_string(_py)
+}
+
+pub(crate) fn format_obj_str_bits(py: &PyToken<'_>, obj: MoltObject) -> u64 {
+    format_obj_str_output(py, obj).into_bits(py)
+}
+
+pub(crate) fn format_obj_str_bytes(py: &PyToken<'_>, obj: MoltObject) -> Vec<u8> {
+    format_obj_str_output(py, obj).into_bytes(py)
+}
+
+pub(crate) fn format_obj_str_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOutput {
+    if exception_pending(_py) {
+        return FormatOutput::OwnedString(MoltObject::none().bits());
+    }
     if let Some(ptr) = maybe_ptr_from_bits(obj.bits()) {
         unsafe {
             let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_TYPE {
-                return format_obj(_py, obj);
+            if let Some(base) = native_format_base(_py, obj) {
+                if let Some(rendered) = try_subclass_str_or_repr_override(_py, ptr, base) {
+                    return rendered;
+                }
+                if type_id == TYPE_ID_STRING {
+                    return string_str_output(_py, ptr);
+                }
+                return format_obj_output(_py, obj);
             }
-            if type_id == TYPE_ID_FLOAT {
-                let f = crate::object::ops::heap_float_value(ptr);
-                return format_float(f);
-            }
-            if type_id == TYPE_ID_STRING {
-                let len = string_len(ptr);
-                let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
-                return String::from_utf8_lossy(bytes).into_owned();
-            }
-            let subclass_str_override = match type_id {
-                TYPE_ID_LIST => {
-                    try_subclass_str_or_repr_override(_py, ptr, builtin_classes(_py).list)
-                }
-                TYPE_ID_TUPLE => {
-                    try_subclass_str_or_repr_override(_py, ptr, builtin_classes(_py).tuple)
-                }
-                TYPE_ID_DICT => {
-                    try_subclass_str_or_repr_override(_py, ptr, builtin_classes(_py).dict)
-                }
-                TYPE_ID_SET => {
-                    try_subclass_str_or_repr_override(_py, ptr, builtin_classes(_py).set)
-                }
-                TYPE_ID_FROZENSET => {
-                    try_subclass_str_or_repr_override(_py, ptr, builtin_classes(_py).frozenset)
-                }
-                _ => None,
-            };
-            if let Some(rendered) = subclass_str_override {
+            if let Some(rendered) = try_format_special_method(_py, ptr, "__str__") {
                 return rendered;
             }
-            if matches!(
-                type_id,
-                TYPE_ID_LIST | TYPE_ID_TUPLE | TYPE_ID_DICT | TYPE_ID_SET | TYPE_ID_FROZENSET
-            ) {
-                return format_obj(_py, obj);
-            }
-            if type_id == TYPE_ID_EXCEPTION {
-                if let Some(bits) = exception_cached_message_str_bits(_py, ptr) {
-                    let rendered = string_obj_to_owned(obj_from_bits(bits)).unwrap_or_default();
-                    dec_ref_bits(_py, bits);
-                    return rendered;
-                }
-                // Check for a custom __str__ on the exception class before
-                // falling back to the default format_exception_message path.
-                let str_name_exc =
-                    intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
-                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, str_name_exc) {
-                    // If this is NOT a default object/__str__, call the custom one.
-                    if !call_bits_is_default_object_str(call_bits)
-                        && !call_bits_is_default_object_repr(call_bits)
-                    {
-                        let res_bits = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        let res_obj = obj_from_bits(res_bits);
-                        if let Some(rendered) = string_obj_to_owned(res_obj) {
-                            dec_ref_bits(_py, res_bits);
-                            return rendered;
-                        }
-                        dec_ref_bits(_py, res_bits);
-                    } else {
-                        dec_ref_bits(_py, call_bits);
-                    }
-                }
-                return format_exception_message(_py, ptr);
-            }
-            let str_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, str_name_bits) {
-                if call_bits_is_default_object_str(call_bits) {
-                    dec_ref_bits(_py, call_bits);
-                    // CPython's default object.__str__ delegates to __repr__;
-                    // preserve that path so custom __repr__ methods render correctly.
-                    return format_obj(_py, obj);
-                }
-                if call_bits_is_default_object_repr(call_bits) {
-                    dec_ref_bits(_py, call_bits);
-                    // object.__str__ delegates to repr; use format_obj so custom
-                    // __repr__ overrides participate instead of forcing default
-                    // pointer-style formatting.
-                    return format_obj(_py, obj);
-                }
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(rendered) = string_obj_to_owned(res_obj) {
-                    dec_ref_bits(_py, res_bits);
-                    return rendered;
-                }
-                dec_ref_bits(_py, res_bits);
-            }
             if exception_pending(_py) {
-                return "<object>".to_string();
+                return "<object>".into();
             }
         }
     }
-    format_obj(_py, obj)
+    format_obj_output(_py, obj)
+}
+
+/// Consume a bound special method and validate its owned result once. A failed
+/// lookup/call keeps its pending exception; callers must not try another slot.
+pub(crate) unsafe fn invoke_format_method(
+    py: &PyToken<'_>,
+    method: u64,
+    slot: &str,
+    spec: Option<u64>,
+) -> u64 {
+    unsafe {
+        let result = match spec {
+            Some(spec) => call_callable1(py, method, spec),
+            None => call_callable0(py, method),
+        };
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, method));
+        if !exception_pending(py)
+            && obj_from_bits(result)
+                .as_ptr()
+                .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_STRING)
+        {
+            return result;
+        }
+        if !exception_pending(py) {
+            let returned_type = format_class_name_bytes(type_of_bits(py, result));
+            let prefix: &[u8] = if slot == "__format__" {
+                b"__format__ must return a str, not "
+            } else {
+                b" returned non-string (type "
+            };
+            let slot_bytes = if slot == "__format__" {
+                b"".as_slice()
+            } else {
+                slot.as_bytes()
+            };
+            let suffix = if slot == "__format__" {
+                b"".as_slice()
+            } else {
+                b")".as_slice()
+            };
+            let mut message = Vec::new();
+            for bytes in [slot_bytes, prefix, returned_type.as_slice(), suffix] {
+                if let Err(error) = append_format_bytes(&mut message, bytes) {
+                    error.raise::<()>(py);
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(py, result)
+                    });
+                    return MoltObject::none().bits();
+                }
+            }
+            crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
+        }
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+        MoltObject::none().bits()
+    }
+}
+
+/// Resolve a formatting slot on the type and preserve binding/call failures.
+pub(crate) unsafe fn try_format_special_method_bits(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    slot: &str,
+) -> Option<u64> {
+    unsafe {
+        let Some(method) =
+            lookup_special_method(py, MoltObject::from_ptr(ptr).bits(), slot.as_bytes())
+        else {
+            if !exception_pending(py) {
+                return None;
+            }
+            // CPython before 3.14 clears a failed __repr__ descriptor lookup
+            // and uses object.__repr__; a failure while calling the bound
+            // method still propagates. sys_version_info is the runtime target.
+            let propagate_repr_lookup = super::ops_sys::runtime_target_at_least(py, 3, 14);
+            if slot == "__repr__" && !propagate_repr_lookup {
+                clear_exception(py);
+                return Some(object_repr_slot(MoltObject::from_ptr(ptr).bits()));
+            }
+            return Some(MoltObject::none().bits());
+        };
+        Some(invoke_format_method(py, method, slot, None))
+    }
+}
+
+unsafe fn try_format_special_method(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    slot: &str,
+) -> Option<FormatOutput> {
+    unsafe { try_format_special_method_bits(py, ptr, slot) }.map(FormatOutput::OwnedString)
 }
 
 unsafe fn try_subclass_repr_override(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     ptr: *mut u8,
     builtin_class_bits: u64,
-) -> Option<String> {
+) -> Option<FormatOutput> {
     unsafe {
         let class_bits = object_class_bits(ptr);
         if class_bits == 0 || class_bits == builtin_class_bits {
             return None;
         }
-        let repr_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.repr_name, b"__repr__");
-        let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, repr_name_bits)?;
-        if call_bits_is_default_object_repr(call_bits) {
-            dec_ref_bits(_py, call_bits);
+        let class = obj_from_bits(class_bits).as_ptr()?;
+        let base = obj_from_bits(builtin_class_bits).as_ptr()?;
+        let name = intern_static_name(py, &runtime_state(py).interned.repr_name, b"__repr__");
+        if class_attr_lookup_raw_mro(py, class, name) == class_attr_lookup_raw_mro(py, base, name) {
             return None;
         }
-        let res_bits = call_callable0(_py, call_bits);
-        dec_ref_bits(_py, call_bits);
-        let rendered = string_obj_to_owned(obj_from_bits(res_bits));
-        dec_ref_bits(_py, res_bits);
-        rendered
+        try_format_special_method(py, ptr, "__repr__")
     }
+}
+
+/// Structured consumers such as pprint only expand a native container when
+/// its effective repr slot still belongs to the native renderer.
+pub(crate) fn format_native_repr_override_bytes(
+    py: &PyToken<'_>,
+    obj: MoltObject,
+) -> Option<Vec<u8>> {
+    if exception_pending(py) {
+        return Some(Vec::new());
+    }
+    let ptr = obj.as_ptr()?;
+    let base = native_format_base(py, obj)?;
+    unsafe { try_subclass_repr_override(py, ptr, base) }.map(|value| value.into_bytes(py))
+}
+
+/// Native storage does not erase an effective Python __format__ override.
+/// Exact builtins and inherited native slots stay on the payload path; every
+/// other class uses canonical special lookup, including descriptor failures.
+pub(crate) fn format_override(py: &PyToken<'_>, obj: MoltObject, spec: u64) -> Option<u64> {
+    let ptr = obj.as_ptr()?;
+    unsafe {
+        let class_bits = object_class_bits(ptr);
+        if class_bits == 0 {
+            return None;
+        }
+        if let Some(base_bits) = native_format_base(py, obj) {
+            if class_bits == base_bits {
+                return None;
+            }
+            let class = obj_from_bits(class_bits).as_ptr()?;
+            let base = obj_from_bits(base_bits).as_ptr()?;
+            let name =
+                intern_static_name(py, &runtime_state(py).interned.format_name, b"__format__");
+            if class_attr_lookup_raw_mro(py, class, name)
+                == class_attr_lookup_raw_mro(py, base, name)
+            {
+                return None;
+            }
+        }
+        if let Some(method) = lookup_special_method(py, obj.bits(), b"__format__") {
+            return Some(invoke_format_method(py, method, "__format__", Some(spec)));
+        }
+        exception_pending(py).then_some(MoltObject::none().bits())
+    }
+}
+
+unsafe fn list_repr_contents(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
+    let guard = ReprGuard::new(py, ptr);
+    if !guard.active() {
+        return "[...]".into();
+    }
+    let mut out = FormatBuffer::from("[");
+    let mut index = 0;
+    unsafe {
+        while index < crate::object::seq_access::locked_len(ptr) {
+            let Some(item) = crate::object::seq_access::pin_item(py, ptr, index) else {
+                continue;
+            };
+            if index != 0 {
+                out.push_str(", ");
+            }
+            out.push_output(py, format_obj_output(py, obj_from_bits(item.bits())));
+            if exception_pending(py) {
+                break;
+            }
+            index += 1;
+        }
+    }
+    out.push(']');
+    out.into()
+}
+
+pub(crate) extern "C" fn list_repr_slot(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = crate::object::ops_list::list_receiver(py, bits, "__repr__") else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            crate::object::ops_list::promote_specialized_list_to_list(py, ptr);
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            let rendered = list_repr_contents(py, ptr);
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            rendered.into_bits(py)
+        }
+    })
 }
 
 unsafe fn try_subclass_str_or_repr_override(
     _py: &PyToken<'_>,
     ptr: *mut u8,
     builtin_class_bits: u64,
-) -> Option<String> {
+) -> Option<FormatOutput> {
     unsafe {
         let class_bits = object_class_bits(ptr);
         if class_bits == 0 || class_bits == builtin_class_bits {
@@ -730,110 +1125,133 @@ unsafe fn try_subclass_str_or_repr_override(
             intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
         let raw_str = class_attr_lookup_raw_mro(_py, class_ptr, str_name_bits);
         let base_str = class_attr_lookup_raw_mro(_py, base_ptr, str_name_bits);
-        let raw_str_is_default = raw_str.is_some_and(|bits| {
-            call_bits_is_default_object_str(bits) || call_bits_is_default_object_repr(bits)
-        });
-        if raw_str.is_some() && raw_str != base_str && !raw_str_is_default {
-            let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, str_name_bits)?;
-            if call_bits_is_default_object_str(call_bits)
-                || call_bits_is_default_object_repr(call_bits)
-            {
-                dec_ref_bits(_py, call_bits);
-                return None;
-            }
-            let res_bits = call_callable0(_py, call_bits);
-            dec_ref_bits(_py, call_bits);
-            let rendered = string_obj_to_owned(obj_from_bits(res_bits));
-            dec_ref_bits(_py, res_bits);
-            return rendered;
+        if raw_str.is_some() && raw_str != base_str {
+            return try_format_special_method(_py, ptr, "__str__");
         }
 
+        let object_ptr = obj_from_bits(builtin_classes(_py).object).as_ptr()?;
+        if base_str != class_attr_lookup_raw_mro(_py, object_ptr, str_name_bits) {
+            // A declaring __str__ slot (not object.__str__) keeps its own
+            // semantics when only the subclass's __repr__ changes.
+            return None;
+        }
         let repr_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.repr_name, b"__repr__");
         let raw_repr = class_attr_lookup_raw_mro(_py, class_ptr, repr_name_bits);
         let base_repr = class_attr_lookup_raw_mro(_py, base_ptr, repr_name_bits);
-        let raw_repr_is_default = raw_repr.is_some_and(|bits| {
-            call_bits_is_default_object_repr(bits) || call_bits_is_default_object_str(bits)
-        });
-        if raw_repr.is_some() && raw_repr != base_repr && !raw_repr_is_default {
-            let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, repr_name_bits)?;
-            if call_bits_is_default_object_repr(call_bits)
-                || call_bits_is_default_object_str(call_bits)
-            {
-                dec_ref_bits(_py, call_bits);
-                return None;
-            }
-            let res_bits = call_callable0(_py, call_bits);
-            dec_ref_bits(_py, call_bits);
-            let rendered = string_obj_to_owned(obj_from_bits(res_bits));
-            dec_ref_bits(_py, res_bits);
-            return rendered;
+        if raw_repr.is_some() && raw_repr != base_repr {
+            return try_format_special_method(_py, ptr, "__repr__");
         }
         None
     }
 }
 
-pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
-    if let Some(b) = obj.as_bool() {
-        return if b {
-            "True".to_string()
-        } else {
-            "False".to_string()
+pub(crate) unsafe fn format_module_default(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
+    unsafe {
+        let Some(dictionary) = obj_from_bits(module_dict_bits(ptr)).as_ptr() else {
+            return "<module '?'>".into();
         };
+        let name =
+            dict_get_attr_string(py, dictionary, b"__name__").unwrap_or_else(|| b"?".to_vec());
+        let mut out = FormatBuffer::from("<module '");
+        out.push_bytes(&name);
+        out.push('\'');
+        if !exception_pending(py)
+            && let Some(file) = dict_get_attr_string(py, dictionary, b"__file__")
+        {
+            out.push_str(" from '");
+            out.push_bytes(&file);
+            out.push('\'');
+        }
+        out.push('>');
+        out.into()
+    }
+}
+
+pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
+    format_obj_output(_py, obj).into_host_string(_py)
+}
+
+pub(crate) fn format_obj_bits(py: &PyToken<'_>, obj: MoltObject) -> u64 {
+    format_obj_output(py, obj).into_bits(py)
+}
+
+pub(crate) fn format_obj_bytes(py: &PyToken<'_>, obj: MoltObject) -> Vec<u8> {
+    format_obj_output(py, obj).into_bytes(py)
+}
+
+pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOutput {
+    if exception_pending(_py) {
+        return FormatOutput::OwnedString(MoltObject::none().bits());
+    }
+    if let Some(b) = obj.as_bool() {
+        return if b { "True".into() } else { "False".into() };
     }
     if let Some(i) = obj.as_int() {
-        return i.to_string();
+        return i.to_string().into();
     }
     // NaN-boxing: raw 0x0 is IEEE 754 +0.0.  Previous code treated it
     // as int 0 because Cranelift zero-inits variables to 0x0, but that
     // broke float parity (e.g. math.sin(0) displayed "0" not "0.0").
     // Proper int 0 is MoltObject::from_int(0) (0x7ff9_0000_0000_0000).
     if let Some(f) = obj.as_float() {
-        return format_float(f);
+        return format_float(f).into();
     }
     if obj.is_none() {
-        return "None".to_string();
+        return "None".into();
     }
     if obj.is_pending() {
-        return "<pending>".to_string();
+        return "<pending>".into();
     }
     if obj.bits() == ellipsis_bits(_py) {
-        return "Ellipsis".to_string();
+        return "Ellipsis".into();
     }
     if let Some(ptr) = maybe_ptr_from_bits(obj.bits()) {
         unsafe {
             let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_FLOAT {
-                let f = crate::object::ops::heap_float_value(ptr);
-                return format_float(f);
+            if let Some(base) = native_format_base(_py, obj)
+                && let Some(rendered) = try_subclass_repr_override(_py, ptr, base)
+            {
+                return rendered;
+            }
+            if let Some(value) = as_float_extended(obj) {
+                return format_float(value).into();
             }
             if type_id == TYPE_ID_STRING {
                 let len = string_len(ptr);
                 let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
-                return format_string_repr_bytes(bytes);
+                return format_string_repr_bytes(bytes).into();
             }
-            if type_id == TYPE_ID_BIGINT {
-                return bigint_ref(ptr).to_string();
+            if let Some(payload) = index_integral_payload_bits(obj.bits()) {
+                let value = obj_from_bits(payload);
+                if let Some(value) = value.as_int() {
+                    return value.to_string().into();
+                }
+                if let Some(value) = value.as_bool() {
+                    return u8::from(value).to_string().into();
+                }
+                let ptr = bigint_ptr_from_bits(payload).expect("validated integer payload");
+                return bigint_ref(ptr).to_string().into();
             }
             if type_id == TYPE_ID_COMPLEX {
                 let value = *complex_ref(ptr);
-                return format_complex(value.re, value.im);
+                return format_complex(value.re, value.im).into();
             }
             if type_id == TYPE_ID_BYTES {
                 let len = bytes_len(ptr);
                 let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
-                return format_bytes(bytes);
+                return format_bytes(bytes).into();
             }
             if type_id == TYPE_ID_BYTEARRAY {
                 let len = bytes_len(ptr);
                 let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
-                return format!("bytearray({})", format_bytes(bytes));
+                return format!("bytearray({})", format_bytes(bytes)).into();
             }
             if type_id == TYPE_ID_RANGE {
                 if let Some((start, stop, step)) = range_components_bigint(ptr) {
-                    return format_range(&start, &stop, &step);
+                    return format_range(&start, &stop, &step).into();
                 }
-                return "range(?)".to_string();
+                return "range(?)".into();
             }
             if type_id == TYPE_ID_SLICE {
                 return format_slice(_py, ptr);
@@ -841,117 +1259,121 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
             if type_id == TYPE_ID_GENERIC_ALIAS {
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
-                    return "...".to_string();
+                    return "...".into();
                 }
                 return format_generic_alias(_py, ptr);
             }
             if type_id == TYPE_ID_UNION {
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
-                    return "...".to_string();
+                    return "...".into();
                 }
                 return format_union_type(_py, ptr);
             }
             if type_id == TYPE_ID_NOT_IMPLEMENTED {
-                return "NotImplemented".to_string();
+                return "NotImplemented".into();
             }
             if type_id == TYPE_ID_ELLIPSIS {
-                return "Ellipsis".to_string();
+                return "Ellipsis".into();
             }
             if type_id == TYPE_ID_EXCEPTION {
-                return format_exception(_py, ptr);
+                return try_format_special_method(_py, ptr, "__repr__")
+                    .unwrap_or_else(|| format_default_object_repr(_py, ptr));
             }
             if type_id == TYPE_ID_CONTEXT_MANAGER {
-                return "<context_manager>".to_string();
+                return "<context_manager>".into();
             }
             if type_id == TYPE_ID_FILE_HANDLE {
-                return "<file_handle>".to_string();
+                return "<file_handle>".into();
             }
             if type_id == TYPE_ID_FUNCTION {
+                if let Some(text) =
+                    crate::builtins::functions::native_callable::native_callable_repr(_py, ptr)
+                {
+                    return text.into();
+                }
                 let name_bits = function_name_bits(_py, ptr);
                 let name = if name_bits != 0 {
-                    string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_default()
+                    string_obj_bytes(obj_from_bits(name_bits)).unwrap_or_default()
                 } else {
-                    String::new()
+                    Vec::new()
                 };
-                if builtin_classes(_py).is_builtin_callable_class(object_class_bits(ptr)) {
-                    if name.is_empty() {
-                        return "<built-in function>".to_string();
-                    }
-                    return format!("<built-in function {name}>");
-                }
+
                 // Match CPython: <function NAME at 0xADDR>
                 if name.is_empty() {
-                    return format!("<function at 0x{:x}>", ptr as usize);
+                    return format!("<function at 0x{:x}>", ptr as usize).into();
                 }
-                return format!("<function {} at 0x{:x}>", name, ptr as usize);
+                let mut out = FormatBuffer::from("<function ");
+                out.push_bytes(&name);
+                out.push_str(&format!(" at 0x{:x}>", ptr as usize));
+                return out.into();
             }
             if type_id == TYPE_ID_CODE {
-                let name =
-                    string_obj_to_owned(obj_from_bits(code_name_bits(ptr))).unwrap_or_default();
+                let name = string_obj_bytes(obj_from_bits(code_name_bits(ptr))).unwrap_or_default();
                 if name.is_empty() {
-                    return "<code>".to_string();
+                    return "<code>".into();
                 }
-                return format!("<code {name}>");
+                let mut out = FormatBuffer::from("<code ");
+                out.push_bytes(&name);
+                out.push('>');
+                return out.into();
             }
             if type_id == TYPE_ID_BOUND_METHOD {
-                return "<bound_method>".to_string();
+                if let Some(text) =
+                    crate::builtins::functions::native_callable::native_callable_repr(_py, ptr)
+                {
+                    return text.into();
+                }
+                return "<bound_method>".into();
             }
             if type_id == TYPE_ID_GENERATOR {
-                return "<generator>".to_string();
+                return "<generator>".into();
             }
             if type_id == TYPE_ID_ASYNC_GENERATOR {
-                return "<async_generator>".to_string();
+                return "<async_generator>".into();
             }
             if type_id == TYPE_ID_MODULE {
-                let name =
-                    string_obj_to_owned(obj_from_bits(module_name_bits(ptr))).unwrap_or_default();
-                if name.is_empty() {
-                    return "<module>".to_string();
-                }
-                if !exception_pending(_py) {
-                    let dict_bits = module_dict_bits(ptr);
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                        && object_type_id(dict_ptr) == TYPE_ID_DICT
-                        && let Some(file_name) = dict_get_attr_string(_py, dict_ptr, b"__file__")
-                        && !file_name.is_empty()
-                    {
-                        return format!("<module '{name}' from '{file_name}'>");
-                    }
-                }
-                return format!("<module '{name}'>");
+                return format_module_default(_py, ptr);
             }
             if type_id == TYPE_ID_TYPE {
-                return format_qualified_type_name(_py, ptr)
-                    .map(|name| format!("<class '{name}'>"))
-                    .unwrap_or_else(|| "<type>".to_string());
+                let Some(name) = format_qualified_type_name(_py, ptr) else {
+                    return "<type>".into();
+                };
+                let mut out = FormatBuffer::from("<class '");
+                out.push_bytes(&name);
+                out.push_str("'>");
+                return out.into();
             }
             if type_id == crate::TYPE_ID_NATIVE_DESCRIPTOR {
                 let result = crate::builtins::types::native_descriptor_repr(
                     _py,
                     MoltObject::from_ptr(ptr).bits(),
                 );
-                let text = string_obj_to_owned(obj_from_bits(result)).unwrap_or_default();
-                dec_ref_bits(_py, result);
-                return text;
+                return FormatOutput::OwnedString(result);
             }
             if type_id == TYPE_ID_CLASSMETHOD {
-                return "<classmethod>".to_string();
+                return "<classmethod>".into();
             }
             if type_id == TYPE_ID_STATICMETHOD {
-                return "<staticmethod>".to_string();
+                return "<staticmethod>".into();
             }
             if type_id == TYPE_ID_PROPERTY {
-                return "<property>".to_string();
+                return "<property>".into();
             }
             if type_id == TYPE_ID_SUPER {
-                let owner = class_name_for_error(super_type_bits(ptr));
+                let owner = format_class_name_bytes(super_type_bits(ptr));
                 let receiver_class = super::layout::super_receiver_class_bits(ptr);
+                let mut out = FormatBuffer::from("<super: <class '");
+                out.push_bytes(&owner);
+                out.push_str("'>, ");
                 if obj_from_bits(receiver_class).is_none() {
-                    return format!("<super: <class '{owner}'>, NULL>");
+                    out.push_str("NULL>");
+                    return out.into();
                 }
-                let receiver = class_name_for_error(receiver_class);
-                return format!("<super: <class '{owner}'>, <{receiver} object>>");
+                out.push('<');
+                out.push_bytes(&format_class_name_bytes(receiver_class));
+                out.push_str(" object>>");
+                return out.into();
             }
             if type_id == TYPE_ID_DATACLASS {
                 let desc_ptr = dataclass_desc_ptr(ptr);
@@ -962,71 +1384,35 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
             if type_id == TYPE_ID_BUFFER2D {
                 let buf_ptr = buffer2d_ptr(ptr);
                 if buf_ptr.is_null() {
-                    return "<buffer2d>".to_string();
+                    return "<buffer2d>".into();
                 }
                 let buf = &*buf_ptr;
-                return format!("<buffer2d {}x{}>", buf.rows, buf.cols);
+                return format!("<buffer2d {}x{}>", buf.rows, buf.cols).into();
             }
             if type_id == TYPE_ID_MEMORYVIEW {
                 if memoryview_released(ptr) {
-                    return "<released memoryview>".to_string();
+                    return "<released memoryview>".into();
                 }
                 let len = memoryview_len(ptr);
                 let stride = memoryview_stride(ptr);
                 let readonly = memoryview_readonly(ptr);
-                return format!("<memoryview len={len} stride={stride} readonly={readonly}>");
-            }
-            if type_id == TYPE_ID_INTARRAY {
-                let elems = intarray_slice(ptr);
-                let mut out = String::from("intarray([");
-                for (idx, val) in elems.iter().enumerate() {
-                    if idx > 0 {
-                        out.push_str(", ");
-                    }
-                    out.push_str(&val.to_string());
-                }
-                out.push_str("])");
-                return out;
+                return format!("<memoryview len={len} stride={stride} readonly={readonly}>")
+                    .into();
             }
             if type_id == TYPE_ID_LIST {
-                if let Some(rendered) =
-                    try_subclass_repr_override(_py, ptr, builtin_classes(_py).list)
-                {
-                    return rendered;
-                }
-                let guard = ReprGuard::new(_py, ptr);
-                if !guard.active() {
-                    return "[...]".to_string();
-                }
-                let mut out = String::from("[");
-                let mut idx = 0;
-                loop {
-                    if idx >= crate::object::seq_access::locked_len(ptr) {
-                        break;
-                    }
-                    let Some(elem) = crate::object::seq_access::pin_item(_py, ptr, idx) else {
-                        continue;
-                    };
-                    if idx > 0 {
-                        out.push_str(", ");
-                    }
-                    out.push_str(&format_obj(_py, obj_from_bits(elem.bits())));
-                    idx += 1;
-                }
-                out.push(']');
-                return out;
+                return list_repr_contents(_py, ptr);
             }
             if type_id == TYPE_ID_LIST_INT {
                 // Specialized list[int]: flat i64 storage via ListIntStorage (#[repr(C)]).
                 // Format as a regular Python list for display parity.
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
-                    return "[...]".to_string();
+                    return "[...]".into();
                 }
                 let storage_ptr = crate::object::layout::list_int_storage_ptr(ptr);
                 if !storage_ptr.is_null() {
                     let elems = crate::object::layout::list_int_vec_ref(ptr);
-                    let mut out = String::from("[");
+                    let mut out = FormatBuffer::from("[");
                     for (idx, val) in elems.iter().enumerate() {
                         if idx > 0 {
                             out.push_str(", ");
@@ -1034,21 +1420,21 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                         out.push_str(&val.to_string());
                     }
                     out.push(']');
-                    return out;
+                    return out.into();
                 }
-                return "[]".to_string();
+                return "[]".into();
             }
             if type_id == TYPE_ID_LIST_BOOL {
                 // Specialized list[bool]: flat u8 storage via ListBoolStorage (#[repr(C)]).
                 // Format as a regular Python list with True/False for display parity.
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
-                    return "[...]".to_string();
+                    return "[...]".into();
                 }
                 let storage_ptr = crate::object::layout::list_bool_storage_ptr(ptr);
                 if !storage_ptr.is_null() {
                     let elems = crate::object::layout::list_bool_vec_ref(ptr);
-                    let mut out = String::from("[");
+                    let mut out = FormatBuffer::from("[");
                     for (idx, val) in elems.iter().enumerate() {
                         if idx > 0 {
                             out.push_str(", ");
@@ -1056,28 +1442,26 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                         out.push_str(if *val != 0 { "True" } else { "False" });
                     }
                     out.push(']');
-                    return out;
+                    return out.into();
                 }
-                return "[]".to_string();
+                return "[]".into();
             }
             if type_id == TYPE_ID_TUPLE {
-                if let Some(rendered) =
-                    try_subclass_repr_override(_py, ptr, builtin_classes(_py).tuple)
-                {
-                    return rendered;
-                }
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
-                    return "(...)".to_string();
+                    return "(...)".into();
                 }
-                let mut out = String::from("(");
+                let mut out = FormatBuffer::from("(");
                 let tuple_len =
                     crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
                         for (idx, elem) in elems.iter().enumerate() {
                             if idx > 0 {
                                 out.push_str(", ");
                             }
-                            out.push_str(&format_obj(_py, obj_from_bits(*elem)));
+                            out.push_output(_py, format_obj_output(_py, obj_from_bits(*elem)));
+                            if exception_pending(_py) {
+                                break;
+                            }
                         }
                         elems.len()
                     })
@@ -1086,96 +1470,116 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                     out.push(',');
                 }
                 out.push(')');
-                return out;
+                return out.into();
             }
             if type_id == TYPE_ID_DICT {
-                if let Some(rendered) =
-                    try_subclass_repr_override(_py, ptr, builtin_classes(_py).dict)
-                {
-                    return rendered;
-                }
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
-                    return "{...}".to_string();
+                    return "{...}".into();
                 }
-                let pairs = dict_order(ptr);
-                let mut out = String::from("{");
+                let mut out = FormatBuffer::from("{");
                 let mut idx = 0;
                 let mut first = true;
-                while idx + 1 < pairs.len() {
+                loop {
+                    let Some((key, value)) = ({
+                        let pairs = dict_order(ptr);
+                        pairs.get(idx + 1).map(|value| (pairs[idx], *value))
+                    }) else {
+                        break;
+                    };
+                    inc_ref_bits(_py, key);
+                    inc_ref_bits(_py, value);
+                    let _key_owner = PtrDropGuard::new(
+                        obj_from_bits(key).as_ptr().unwrap_or(std::ptr::null_mut()),
+                    );
+                    let _value_owner = PtrDropGuard::new(
+                        obj_from_bits(value)
+                            .as_ptr()
+                            .unwrap_or(std::ptr::null_mut()),
+                    );
                     if !first {
                         out.push_str(", ");
                     }
                     first = false;
-                    out.push_str(&format_obj(_py, obj_from_bits(pairs[idx])));
+                    out.push_output(_py, format_obj_output(_py, obj_from_bits(key)));
+                    if exception_pending(_py) {
+                        break;
+                    }
                     out.push_str(": ");
-                    out.push_str(&format_obj(_py, obj_from_bits(pairs[idx + 1])));
+                    out.push_output(_py, format_obj_output(_py, obj_from_bits(value)));
+                    if exception_pending(_py) {
+                        break;
+                    }
                     idx += 2;
                 }
                 out.push('}');
-                return out;
+                return out.into();
             }
             if type_id == TYPE_ID_SET {
-                if let Some(rendered) =
-                    try_subclass_repr_override(_py, ptr, builtin_classes(_py).set)
-                {
-                    return rendered;
-                }
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
-                    return "{...}".to_string();
+                    return "{...}".into();
                 }
                 let order = set_order(ptr);
                 if order.is_empty() {
-                    return "set()".to_string();
+                    return "set()".into();
                 }
-                let table = set_table(ptr);
-                let mut out = String::from("{");
+                let values: Vec<u64> = set_table(ptr)
+                    .iter()
+                    .copied()
+                    .filter(|entry| *entry != 0)
+                    .map(|entry| order[entry - 1])
+                    .collect();
+                let Some(values) = snapshot_format_inputs(_py, &values) else {
+                    return Vec::new().into();
+                };
+                let mut out = FormatBuffer::from("{");
                 let mut first = true;
-                for &entry in table.iter() {
-                    if entry == 0 {
-                        continue;
-                    }
+                for &elem in values.iter() {
                     if !first {
                         out.push_str(", ");
                     }
                     first = false;
-                    let elem = order[entry - 1];
-                    out.push_str(&format_obj(_py, obj_from_bits(elem)));
+                    out.push_output(_py, format_obj_output(_py, obj_from_bits(elem)));
+                    if exception_pending(_py) {
+                        break;
+                    }
                 }
                 out.push('}');
-                return out;
+                return out.into();
             }
             if type_id == TYPE_ID_FROZENSET {
-                if let Some(rendered) =
-                    try_subclass_repr_override(_py, ptr, builtin_classes(_py).frozenset)
-                {
-                    return rendered;
-                }
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
-                    return "frozenset({...})".to_string();
+                    return "frozenset({...})".into();
                 }
                 let order = set_order(ptr);
                 if order.is_empty() {
-                    return "frozenset()".to_string();
+                    return "frozenset()".into();
                 }
-                let table = set_table(ptr);
-                let mut out = String::from("frozenset({");
+                let values: Vec<u64> = set_table(ptr)
+                    .iter()
+                    .copied()
+                    .filter(|entry| *entry != 0)
+                    .map(|entry| order[entry - 1])
+                    .collect();
+                let Some(values) = snapshot_format_inputs(_py, &values) else {
+                    return Vec::new().into();
+                };
+                let mut out = FormatBuffer::from("frozenset({");
                 let mut first = true;
-                for &entry in table.iter() {
-                    if entry == 0 {
-                        continue;
-                    }
+                for &elem in values.iter() {
                     if !first {
                         out.push_str(", ");
                     }
                     first = false;
-                    let elem = order[entry - 1];
-                    out.push_str(&format_obj(_py, obj_from_bits(elem)));
+                    out.push_output(_py, format_obj_output(_py, obj_from_bits(elem)));
+                    if exception_pending(_py) {
+                        break;
+                    }
                 }
                 out.push_str("})");
-                return out;
+                return out.into();
             }
             if type_id == TYPE_ID_DICT_KEYS_VIEW
                 || type_id == TYPE_ID_DICT_VALUES_VIEW
@@ -1184,11 +1588,11 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
                     return if type_id == TYPE_ID_DICT_KEYS_VIEW {
-                        "dict_keys(...)".to_string()
+                        "dict_keys(...)".into()
                     } else if type_id == TYPE_ID_DICT_VALUES_VIEW {
-                        "dict_values(...)".to_string()
+                        "dict_values(...)".into()
                     } else {
-                        "dict_items(...)".to_string()
+                        "dict_items(...)".into()
                     };
                 }
                 let dict_bits = dict_view_dict_bits(ptr);
@@ -1196,13 +1600,17 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 if let Some(dict_ptr) = dict_obj.as_ptr()
                     && object_type_id(dict_ptr) == TYPE_ID_DICT
                 {
-                    let pairs = dict_order(dict_ptr);
+                    let Some(pairs) = super::ops_dict::dict_snapshot(
+                        _py, dict_ptr, super::ops_dict::DictSnapshotKind::Entries,
+                    ) else {
+                        return Vec::new().into();
+                    };
                     let mut out = if type_id == TYPE_ID_DICT_KEYS_VIEW {
-                        String::from("dict_keys([")
+                        FormatBuffer::from("dict_keys([")
                     } else if type_id == TYPE_ID_DICT_VALUES_VIEW {
-                        String::from("dict_values([")
+                        FormatBuffer::from("dict_values([")
                     } else {
-                        String::from("dict_items([")
+                        FormatBuffer::from("dict_items([")
                     };
                     let mut idx = 0;
                     let mut first = true;
@@ -1213,9 +1621,18 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                         first = false;
                         if type_id == TYPE_ID_DICT_ITEMS_VIEW {
                             out.push('(');
-                            out.push_str(&format_obj(_py, obj_from_bits(pairs[idx])));
+                            out.push_output(_py, format_obj_output(_py, obj_from_bits(pairs[idx])));
+                            if exception_pending(_py) {
+                                break;
+                            }
                             out.push_str(", ");
-                            out.push_str(&format_obj(_py, obj_from_bits(pairs[idx + 1])));
+                            out.push_output(
+                                _py,
+                                format_obj_output(_py, obj_from_bits(pairs[idx + 1])),
+                            );
+                            if exception_pending(_py) {
+                                break;
+                            }
                             out.push(')');
                         } else {
                             let val = if type_id == TYPE_ID_DICT_KEYS_VIEW {
@@ -1223,40 +1640,27 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                             } else {
                                 pairs[idx + 1]
                             };
-                            out.push_str(&format_obj(_py, obj_from_bits(val)));
+                            out.push_output(_py, format_obj_output(_py, obj_from_bits(val)));
+                            if exception_pending(_py) {
+                                break;
+                            }
                         }
                         idx += 2;
                     }
                     out.push_str("])");
-                    return out;
+                    return out.into();
                 }
             }
             if type_id == TYPE_ID_ITER {
-                return "<iter>".to_string();
+                return "<iter>".into();
             }
-            let repr_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.repr_name, b"__repr__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, repr_name_bits) {
-                if call_bits_is_default_object_repr(call_bits) {
-                    dec_ref_bits(_py, call_bits);
-                    return format_default_object_repr(_py, ptr);
-                }
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(rendered) = string_obj_to_owned(res_obj) {
-                    dec_ref_bits(_py, res_bits);
-                    return rendered;
-                }
-                dec_ref_bits(_py, res_bits);
-                return "<object>".to_string();
+            if let Some(rendered) = try_format_special_method(_py, ptr, "__repr__") {
+                return rendered;
             }
-            if exception_pending(_py) {
-                return "<object>".to_string();
-            }
+            return format_default_object_repr(_py, ptr);
         }
     }
-    "<object>".to_string()
+    "<object>".into()
 }
 
 #[cfg(test)]
@@ -1267,14 +1671,74 @@ mod tests {
     };
     use crate::builtins::attr::attr_name_bits_from_bytes;
     use crate::{
-        alloc_dict_with_pairs, alloc_module_obj, alloc_string, alloc_tuple, class_dict_bits,
-        dict_set_in_place, module_dict_bits, obj_from_bits,
+        alloc_dict_with_pairs, alloc_module_obj, alloc_string, alloc_tuple, dict_set_in_place,
+        module_dict_bits, obj_from_bits,
     };
     use molt_obj_model::MoltObject;
 
     fn refcount(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
         unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
+
+    #[test]
+    fn nonfinite_float_presentations_share_sign_padding_and_percent_suffix() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil(|py| {
+            let py = &py;
+            let cases = [
+                (f64::INFINITY, "+g", "+inf"),
+                (f64::INFINITY, " g", " inf"),
+                (f64::INFINITY, "+08G", "+0000INF"),
+                (f64::INFINITY, "+08%", "+000inf%"),
+                (f64::NEG_INFINITY, "+08%", "-000inf%"),
+                (f64::NAN, "+08G", "+0000NAN"),
+                (-f64::NAN, "+08%", "+000nan%"),
+                (1.5, "<08", "1.500000"),
+                (-1.5, "=08", "-00001.5"),
+                (f64::INFINITY, ">06", "000inf"),
+                (-0.0, "z", "0.0"),
+                (-0.04, "z.1f", "0.0"),
+                (-0.06, "+z.1f", "-0.1"),
+                (-0.0004, "z.1%", "0.0%"),
+                (10.0, ".3", "10.0"),
+                (100.0, ".3", "1e+02"),
+                (0.0, ".1", "0e+00"),
+                (999999.7, "g", "1e+06"),
+                (0.0000999999999, "g", "0.0001"),
+                (999999.7, "#g", "1.00000e+06"),
+                (0.0, "#g", "0.00000"),
+            ];
+            for (value, spec, expected) in cases {
+                let spec = super::parse_format_spec(spec.as_bytes(), false).unwrap();
+                let value = MoltObject::from_float(value);
+                let text = super::format_float_with_spec(py, value, &spec)
+                    .unwrap_or_else(|_| panic!("nonfinite formatting failed"));
+                assert_eq!(text, expected.as_bytes());
+                assert!(!crate::exception_pending(py));
+            }
+            for (re, im, spec, expected) in [
+                (1.0, -f64::NAN, "", "(1+nanj)"),
+                (-f64::NAN, 1.0, "+", "(+nan+1j)"),
+                (-0.0, -0.0, "z", "(0+0j)"),
+                (-0.04, -0.04, "+z.1f", "+0.0+0.0j"),
+                (10.0, 100.0, ".3", "(10+100j)"),
+                (1.0, 2.0, "x>08", "xx(1+2j)"),
+            ] {
+                let spec = super::parse_format_spec(spec.as_bytes(), false).unwrap();
+                let bits = crate::molt_complex_from_obj(
+                    MoltObject::from_float(re).bits(),
+                    MoltObject::from_float(im).bits(),
+                    MoltObject::from_bool(true).bits(),
+                );
+                let text = super::format_with_spec(py, obj_from_bits(bits), &spec)
+                    .unwrap_or_else(|_| panic!("complex formatting failed"))
+                    .into_bytes(py);
+                crate::dec_ref_bits(py, bits);
+                assert_eq!(text, expected.as_bytes());
+                assert!(!crate::exception_pending(py));
+            }
+        });
     }
 
     #[test]
@@ -1348,21 +1812,6 @@ mod tests {
             );
             let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class");
             assert!(!crate::exception_pending(_py));
-            // type.__new__ consumes the constructor's __qualname__ entry into
-            // class metadata. Rebind it in the runtime namespace exercised by
-            // these repr paths, as a later class attribute assignment does.
-            let class_dict_ptr = obj_from_bits(unsafe { class_dict_bits(class_ptr) })
-                .as_ptr()
-                .expect("class dict");
-            unsafe {
-                dict_set_in_place(
-                    _py,
-                    class_dict_ptr,
-                    qual_key,
-                    MoltObject::from_ptr(qual_ptr).bits(),
-                );
-            }
-            assert!(!crate::exception_pending(_py));
             let instance_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
             let instance_ptr = obj_from_bits(instance_bits)
                 .as_ptr()
@@ -1386,6 +1835,7 @@ mod tests {
                 );
                 assert!(
                     format_default_object_repr(_py, instance_ptr)
+                        .into_host_string(_py)
                         .starts_with("<pkg.Outer.C object at 0x")
                 );
                 assert_eq!(refcount(module_key), module_refs);
@@ -1424,13 +1874,15 @@ mod tests {
         // Only `fill`, `align`, and `width` influence assemble_number's padding
         // path; the rest are placeholders the helper does not read.
         FormatSpec {
-            fill,
+            fill: u32::from(fill),
             align,
             zero_flag: false,
             sign: None,
+            coerce_negative_zero: false,
             alternate: false,
             width,
             grouping: None,
+            fractional_grouping: None,
             precision: None,
             ty: None,
         }
@@ -1440,20 +1892,26 @@ mod tests {
     fn zero_pad_grouped_interleaves_separators_through_fill() {
         // Decimal (group 3): the zero-fill region is itself grouped, so the
         // field can exceed `min_field` exactly as CPython's min_width grouping.
-        assert_eq!(zero_pad_grouped("42", 3, ',', 8), "0,000,042");
-        assert_eq!(zero_pad_grouped("42", 3, ',', 7), "000,042");
-        assert_eq!(zero_pad_grouped("7", 3, ',', 6), "00,007");
-        assert_eq!(zero_pad_grouped("7", 3, ',', 7), "000,007");
-        assert_eq!(zero_pad_grouped("7", 3, ',', 8), "0,000,007");
-        assert_eq!(zero_pad_grouped("1", 3, ',', 9), "0,000,001");
-        assert_eq!(zero_pad_grouped("1234567", 3, ',', 15), "000,001,234,567");
-        assert_eq!(zero_pad_grouped("0", 3, ',', 5), "0,000");
+        assert_eq!(zero_pad_grouped("42", 3, ',', 8).unwrap(), "0,000,042");
+        assert_eq!(zero_pad_grouped("42", 3, ',', 7).unwrap(), "000,042");
+        assert_eq!(zero_pad_grouped("7", 3, ',', 6).unwrap(), "00,007");
+        assert_eq!(zero_pad_grouped("7", 3, ',', 7).unwrap(), "000,007");
+        assert_eq!(zero_pad_grouped("7", 3, ',', 8).unwrap(), "0,000,007");
+        assert_eq!(zero_pad_grouped("1", 3, ',', 9).unwrap(), "0,000,001");
+        assert_eq!(
+            zero_pad_grouped("1234567", 3, ',', 15).unwrap(),
+            "000,001,234,567"
+        );
+        assert_eq!(zero_pad_grouped("0", 3, ',', 5).unwrap(), "0,000");
         // The b/o/x bases group by 4 (PEP 515).
-        assert_eq!(zero_pad_grouped("ff", 4, '_', 12), "00_0000_00ff");
-        assert_eq!(zero_pad_grouped("777777", 4, '_', 12), "00_0077_7777");
+        assert_eq!(zero_pad_grouped("ff", 4, '_', 12).unwrap(), "00_0000_00ff");
+        assert_eq!(
+            zero_pad_grouped("777777", 4, '_', 12).unwrap(),
+            "00_0077_7777"
+        );
         // A min_field below the natural width adds no zeros — natural grouping.
-        assert_eq!(zero_pad_grouped("1234567", 3, ',', 0), "1,234,567");
-        assert_eq!(zero_pad_grouped("1234567", 3, ',', 4), "1,234,567");
+        assert_eq!(zero_pad_grouped("1234567", 3, ',', 0).unwrap(), "1,234,567");
+        assert_eq!(zero_pad_grouped("1234567", 3, ',', 4).unwrap(), "1,234,567");
     }
 
     #[test]
@@ -1463,12 +1921,12 @@ mod tests {
         // The '0' flag (sign-aware '=') groups its zero fill, accounting for the
         // sign/base prefix and the float/percent suffix.
         assert_eq!(
-            assemble_number("", "42", "", g3, &num_spec('0', Some('='), Some(8)), '>'),
-            "0,000,042"
+            assemble_number("", "42", "", g3, &num_spec('0', Some('='), Some(8)), '>').unwrap(),
+            b"0,000,042"
         );
         assert_eq!(
-            assemble_number("-", "42", "", g3, &num_spec('0', Some('='), Some(8)), '>'),
-            "-000,042"
+            assemble_number("-", "42", "", g3, &num_spec('0', Some('='), Some(8)), '>').unwrap(),
+            b"-000,042"
         );
         assert_eq!(
             assemble_number(
@@ -1478,16 +1936,17 @@ mod tests {
                 g3,
                 &num_spec('0', Some('='), Some(12)),
                 '>'
-            ),
-            "0,001,234.50"
+            )
+            .unwrap(),
+            b"0,001,234.50"
         );
         assert_eq!(
-            assemble_number("", "50", "%", g3, &num_spec('0', Some('='), Some(10)), '>'),
-            "0,000,050%"
+            assemble_number("", "50", "%", g3, &num_spec('0', Some('='), Some(10)), '>').unwrap(),
+            b"0,000,050%"
         );
         assert_eq!(
-            assemble_number("0x", "ff", "", g4, &num_spec('0', Some('='), Some(12)), '>'),
-            "0x0_0000_00ff"
+            assemble_number("0x", "ff", "", g4, &num_spec('0', Some('='), Some(12)), '>').unwrap(),
+            b"0x0_0000_00ff"
         );
         // Exponential: only the leading integer digit's fill is grouped.
         assert_eq!(
@@ -1498,28 +1957,29 @@ mod tests {
                 g3,
                 &num_spec('0', Some('='), Some(20)),
                 '>'
-            ),
-            "0,000,001.500000e+00"
+            )
+            .unwrap(),
+            b"0,000,001.500000e+00"
         );
         // A non-'=' alignment with a '0' fill char must NOT group the padding.
         assert_eq!(
-            assemble_number("", "42", "", g3, &num_spec('0', Some('>'), Some(8)), '>'),
-            "00000042"
+            assemble_number("", "42", "", g3, &num_spec('0', Some('>'), Some(8)), '>').unwrap(),
+            b"00000042"
         );
         // '=' with a non-'0' fill char pads (ungrouped) between prefix and body.
         assert_eq!(
-            assemble_number("", "42", "", g3, &num_spec('*', Some('='), Some(8)), '>'),
-            "******42"
+            assemble_number("", "42", "", g3, &num_spec('*', Some('='), Some(8)), '>').unwrap(),
+            b"******42"
         );
         // No width: natural grouping only, no padding.
         assert_eq!(
-            assemble_number("", "1234567", "", g3, &num_spec('0', Some('='), None), '>'),
-            "1,234,567"
+            assemble_number("", "1234567", "", g3, &num_spec('0', Some('='), None), '>').unwrap(),
+            b"1,234,567"
         );
         // No grouping requested: ordinary sign-aware zero fill is unchanged.
         assert_eq!(
-            assemble_number("-", "42", "", None, &num_spec('0', Some('='), Some(8)), '>'),
-            "-0000042"
+            assemble_number("-", "42", "", None, &num_spec('0', Some('='), Some(8)), '>').unwrap(),
+            b"-0000042"
         );
     }
 }
@@ -1546,35 +2006,6 @@ pub(crate) fn format_bytes(bytes: &[u8]) -> String {
     }
     out.push(quote);
     out
-}
-
-/// Return a CPython-style type name for format error messages.
-fn type_name_for_format_error(obj: MoltObject) -> &'static str {
-    if obj.as_int().is_some() {
-        "int"
-    } else if obj.as_float().is_some() {
-        "float"
-    } else if obj.as_bool().is_some() {
-        "bool"
-    } else if obj.is_none() {
-        "NoneType"
-    } else if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            match object_type_id(ptr) {
-                TYPE_ID_BIGINT => "int",
-                TYPE_ID_STRING => "str",
-                TYPE_ID_BYTES => "bytes",
-                TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => "list",
-                TYPE_ID_TUPLE => "tuple",
-                TYPE_ID_DICT => "dict",
-                TYPE_ID_SET => "set",
-                TYPE_ID_FROZENSET => "frozenset",
-                _ => "object",
-            }
-        }
-    } else {
-        "object"
-    }
 }
 
 pub(crate) fn format_string_repr_bytes(bytes: &[u8]) -> String {
@@ -1651,220 +2082,419 @@ fn format_string_repr(s: &str) -> String {
 
 #[derive(Clone, Copy)]
 pub(crate) struct FormatSpec {
-    pub(crate) fill: char,
+    pub(crate) fill: u32,
     pub(crate) align: Option<char>,
     pub(crate) zero_flag: bool,
     pub(crate) sign: Option<char>,
+    pub(crate) coerce_negative_zero: bool,
     pub(crate) alternate: bool,
     pub(crate) width: Option<usize>,
     pub(crate) grouping: Option<char>,
+    pub(crate) fractional_grouping: Option<char>,
     pub(crate) precision: Option<usize>,
-    pub(crate) ty: Option<char>,
+    pub(crate) ty: Option<u32>,
 }
 
-pub(crate) type FormatError = (&'static str, Cow<'static, str>);
-
-fn unknown_format_code_error(code: char, obj: MoltObject) -> FormatError {
-    (
-        "ValueError",
-        Cow::Owned(format!(
-            "Unknown format code '{code}' for object of type '{}'",
-            type_name_for_format_error(obj)
-        )),
-    )
+impl FormatSpec {
+    fn presentation(&self) -> Option<char> {
+        self.ty.and_then(char::from_u32)
+    }
 }
 
-fn unsupported_format_string_error(obj: MoltObject) -> FormatError {
-    (
-        "TypeError",
-        Cow::Owned(format!(
-            "unsupported format string passed to {}.__format__",
-            type_name_for_format_error(obj)
-        )),
-    )
-}
-
-fn is_integral_format_obj(obj: MoltObject) -> bool {
-    obj.as_bool().is_some() || obj.as_int().is_some() || bigint_ptr_from_bits(obj.bits()).is_some()
-}
-
-pub(crate) fn parse_format_spec(spec: &str) -> Result<FormatSpec, &'static str> {
-    if spec.is_empty() {
-        return Ok(FormatSpec {
-            fill: ' ',
+impl Default for FormatSpec {
+    fn default() -> Self {
+        Self {
+            fill: u32::from(' '),
             align: None,
             zero_flag: false,
             sign: None,
+            coerce_negative_zero: false,
             alternate: false,
             width: None,
             grouping: None,
+            fractional_grouping: None,
             precision: None,
             ty: None,
-        });
-    }
-    let mut chars = spec.chars().peekable();
-    let mut fill = ' ';
-    let mut align = None;
-    let mut zero_flag = false;
-    let mut sign = None;
-    let mut alternate = false;
-    let mut grouping = None;
-    let mut peeked = chars.clone();
-    let first = peeked.next();
-    let second = peeked.next();
-    if let (Some(c1), Some(c2)) = (first, second) {
-        if matches!(c2, '<' | '>' | '^' | '=') {
-            fill = c1;
-            align = Some(c2);
-            chars.next();
-            chars.next();
-        } else if matches!(c1, '<' | '>' | '^' | '=') {
-            align = Some(c1);
-            chars.next();
-        }
-    } else if let Some(c1) = first
-        && matches!(c1, '<' | '>' | '^' | '=')
-    {
-        align = Some(c1);
-        chars.next();
-    }
-
-    if let Some(ch) = chars.peek().copied()
-        && matches!(ch, '+' | '-' | ' ')
-    {
-        sign = Some(ch);
-        chars.next();
-    }
-
-    if matches!(chars.peek(), Some('#')) {
-        alternate = true;
-        chars.next();
-    }
-
-    if align.is_none() && matches!(chars.peek(), Some('0')) {
-        fill = '0';
-        align = Some('=');
-        zero_flag = true;
-        chars.next();
-    }
-
-    let mut width_text = String::new();
-    while let Some(ch) = chars.peek().copied() {
-        if ch.is_ascii_digit() {
-            width_text.push(ch);
-            chars.next();
-        } else {
-            break;
         }
     }
-    let width = if width_text.is_empty() {
-        None
-    } else {
-        Some(
-            width_text
-                .parse::<usize>()
-                .map_err(|_| "Invalid format width")?,
-        )
-    };
+}
 
-    if let Some(ch) = chars.peek().copied()
-        && (ch == ',' || ch == '_')
-    {
-        grouping = Some(ch);
-        chars.next();
-    }
+#[derive(Debug)]
+pub(crate) enum FormatError {
+    Diagnostic(&'static str, Cow<'static, str>),
+    Bytes(&'static str, Vec<u8>),
+    /// A callback already established the exact runtime exception.
+    Pending,
+}
 
-    let mut precision = None;
-    if matches!(chars.peek(), Some('.')) {
-        chars.next();
-        let mut prec_text = String::new();
-        while let Some(ch) = chars.peek().copied() {
-            if ch.is_ascii_digit() {
-                prec_text.push(ch);
-                chars.next();
-            } else {
-                break;
+impl FormatError {
+    pub(crate) fn raise<T: crate::builtins::exceptions::ExceptionSentinel>(
+        self,
+        py: &PyToken<'_>,
+    ) -> T {
+        match self {
+            Self::Diagnostic(kind, message) => raise_exception(py, kind, message.as_ref()),
+            Self::Bytes(kind, message) => {
+                crate::builtins::exceptions::raise_exception_bytes(py, kind, &message)
+            }
+            Self::Pending => {
+                debug_assert!(exception_pending(py));
+                T::exception_sentinel()
             }
         }
-        if prec_text.is_empty() {
-            return Err("Invalid format precision");
-        }
-        precision = Some(
-            prec_text
-                .parse::<usize>()
-                .map_err(|_| "Invalid format precision")?,
-        );
     }
+}
 
-    let remaining: String = chars.collect();
-    if remaining.len() > 1 {
-        return Err("Invalid format spec");
-    }
-    let ty = if remaining.is_empty() {
-        None
+fn unknown_format_code_error(
+    _py: &PyToken<'_>,
+    code: impl Into<u32>,
+    obj: MoltObject,
+) -> FormatError {
+    let code = code.into();
+    let display = format_code_display(code);
+    FormatError::Diagnostic(
+        "ValueError",
+        Cow::Owned(format!(
+            "Unknown format code '{display}' for object of type '{}'",
+            type_name(_py, obj)
+        )),
+    )
+}
+
+fn format_code_display(code: u32) -> String {
+    if (33..=127).contains(&code) {
+        char::from_u32(code).unwrap().to_string()
     } else {
-        Some(remaining.chars().next().unwrap())
-    };
-
-    Ok(FormatSpec {
-        fill,
-        align,
-        zero_flag,
-        sign,
-        alternate,
-        width,
-        grouping,
-        precision,
-        ty,
-    })
+        format!("\\x{code:x}")
+    }
 }
 
-fn apply_grouping(text: &str, group: usize, sep: char) -> String {
-    let mut out = String::with_capacity(text.len() + text.len() / group);
-    for (count, ch) in text.chars().rev().enumerate() {
-        if count > 0 && count.is_multiple_of(group) {
-            out.push(sep);
+fn unsupported_format_string_error(_py: &PyToken<'_>, obj: MoltObject) -> FormatError {
+    FormatError::Diagnostic(
+        "TypeError",
+        Cow::Owned(format!(
+            "unsupported format string passed to {}.__format__",
+            type_name(_py, obj)
+        )),
+    )
+}
+
+#[derive(Debug)]
+pub(crate) enum FormatParseError {
+    InvalidSpecifier,
+    Diagnostic(&'static str),
+}
+
+impl FormatParseError {
+    pub(crate) fn raise<T: crate::builtins::exceptions::ExceptionSentinel>(
+        self,
+        py: &PyToken<'_>,
+        obj: MoltObject,
+        spec: &[u8],
+    ) -> T {
+        match self {
+            Self::Diagnostic(message) => raise_exception(py, "ValueError", message),
+            Self::InvalidSpecifier => {
+                let mut message = b"Invalid format specifier '".to_vec();
+                message.extend_from_slice(spec);
+                message.extend_from_slice(
+                    format!("' for object of type '{}'", type_name(py, obj)).as_bytes(),
+                );
+                FormatError::Bytes("ValueError", message).raise(py)
+            }
         }
-        out.push(ch);
     }
-    out.chars().rev().collect()
 }
 
-fn apply_alignment(prefix: &str, body: &str, spec: &FormatSpec, default_align: char) -> String {
-    let text = format!("{prefix}{body}");
-    let width = match spec.width {
-        Some(val) => val,
-        None => return text,
-    };
-    let len = text.chars().count();
-    if len >= width {
-        return text;
+/// Parse Python code points directly. Width and precision accumulate without
+/// temporary strings, bounded by the target's Py_ssize_t rather than usize.
+pub(crate) fn parse_format_spec(
+    bytes: &[u8],
+    fractional_grouping: bool,
+) -> Result<FormatSpec, FormatParseError> {
+    let mut codes = wtf8_from_bytes(bytes)
+        .code_points()
+        .map(|code| code.to_u32())
+        .peekable();
+    let mut result = FormatSpec::default();
+    let alignment = |code| char::from_u32(code).filter(|ch| matches!(ch, '<' | '>' | '^' | '='));
+    let mut lookahead = codes.clone();
+    let first = lookahead.next();
+    let second = lookahead.next();
+    let mut fill_specified = false;
+    if let (Some(first), Some(second)) = (first, second)
+        && let Some(align) = alignment(second)
+    {
+        result.fill = first;
+        result.align = Some(align);
+        fill_specified = true;
+        codes.next();
+        codes.next();
+    } else if let Some(first) = first
+        && let Some(align) = alignment(first)
+    {
+        result.align = Some(align);
+        codes.next();
     }
-    let pad_len = width - len;
-    let align = spec.align.unwrap_or(default_align);
-    let fill = spec.fill;
+    if let Some(sign) = codes.peek().copied().and_then(char::from_u32)
+        && matches!(sign, '+' | '-' | ' ')
+    {
+        result.sign = Some(sign);
+        codes.next();
+    }
+    result.coerce_negative_zero = codes.peek() == Some(&u32::from('z'));
+    if result.coerce_negative_zero {
+        codes.next();
+    }
+    result.alternate = codes.peek() == Some(&u32::from('#'));
+    if result.alternate {
+        codes.next();
+    }
+    if !fill_specified && codes.peek() == Some(&u32::from('0')) {
+        result.fill = u32::from('0');
+        result.zero_flag = true;
+        codes.next();
+    }
+    result.width = parse_format_integer(&mut codes)?;
+    result.grouping = parse_format_grouping(&mut codes)?;
+    if codes.peek() == Some(&u32::from('.')) {
+        codes.next();
+        result.precision = parse_format_integer(&mut codes)?;
+        if fractional_grouping {
+            result.fractional_grouping = parse_format_grouping(&mut codes)?;
+        }
+        if result.precision.is_none() && result.fractional_grouping.is_none() {
+            return Err(FormatParseError::Diagnostic(
+                "Format specifier missing precision",
+            ));
+        }
+    }
+    result.ty = codes.next();
+    if codes.next().is_some() {
+        return Err(FormatParseError::InvalidSpecifier);
+    }
+    Ok(result)
+}
+
+pub(crate) fn parse_format_integer(
+    codes: &mut std::iter::Peekable<impl Iterator<Item = u32>>,
+) -> Result<Option<usize>, FormatParseError> {
+    let mut value = None;
+    while let Some(digit) = codes
+        .peek()
+        .and_then(|code| super::ops::unicode_decimal_table::decimal(*code))
+    {
+        let next = value
+            .unwrap_or(0usize)
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(digit as usize))
+            .filter(|value| *value <= isize::MAX as usize)
+            .ok_or(FormatParseError::Diagnostic(
+                "Too many decimal digits in format string",
+            ))?;
+        value = Some(next);
+        codes.next();
+    }
+    Ok(value)
+}
+
+fn parse_format_grouping(
+    codes: &mut std::iter::Peekable<impl Iterator<Item = u32>>,
+) -> Result<Option<char>, FormatParseError> {
+    let separator = codes
+        .peek()
+        .copied()
+        .and_then(char::from_u32)
+        .filter(|code| matches!(code, ',' | '_'));
+    if let Some(separator) = separator {
+        codes.next();
+        if codes
+            .peek()
+            .copied()
+            .and_then(char::from_u32)
+            .is_some_and(|next| matches!(next, ',' | '_') && next != separator)
+        {
+            return Err(FormatParseError::Diagnostic(
+                "Cannot specify both ',' and '_'.",
+            ));
+        }
+    }
+    Ok(separator)
+}
+
+fn validate_format_grouping(spec: &FormatSpec, default_type: char) -> Result<(), FormatError> {
+    let code = spec.ty.unwrap_or(u32::from(default_type));
+    let presentation = char::from_u32(code);
+    for (separator, fractional) in [(spec.grouping, false), (spec.fractional_grouping, true)] {
+        let Some(separator) = separator else {
+            continue;
+        };
+        let allowed = if fractional {
+            presentation != Some('n')
+        } else {
+            match presentation {
+                Some('d' | 'e' | 'f' | 'g' | 'E' | 'G' | '%' | 'F' | '\0') => true,
+                Some('b' | 'o' | 'x' | 'X') => separator == '_',
+                _ => false,
+            }
+        };
+        if !allowed {
+            return Err(FormatError::Diagnostic(
+                "ValueError",
+                Cow::Owned(format!(
+                    "Cannot specify '{separator}' with '{}'.",
+                    format_code_display(code)
+                )),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn apply_grouping(text: &str, group: usize, sep: char) -> Result<String, FormatError> {
+    grouped_digits(text, text.len(), group, sep)
+}
+
+fn grouped_digits(
+    digits: &str,
+    count: usize,
+    group: usize,
+    sep: char,
+) -> Result<String, FormatError> {
+    debug_assert!(
+        digits
+            .bytes()
+            .all(|digit| digit.is_ascii_digit() || digit.is_ascii_hexdigit())
+    );
+    let separators = count.saturating_sub(1) / group;
+    let capacity = separators
+        .checked_mul(sep.len_utf8())
+        .and_then(|size| size.checked_add(count))
+        .ok_or_else(format_memory_error)?;
+    let mut out = format_buffer(capacity)?;
+    let zeros = count.saturating_sub(digits.len());
+    let mut encoded = [0; 4];
+    let separator = sep.encode_utf8(&mut encoded).as_bytes();
+    for index in 0..count {
+        if index > 0 && (count - index).is_multiple_of(group) {
+            out.extend_from_slice(separator);
+        }
+        out.push(if index < zeros {
+            b'0'
+        } else {
+            digits.as_bytes()[index - zeros]
+        });
+    }
+    Ok(String::from_utf8(out).expect("numeric digits and grouping separator"))
+}
+
+fn format_fill_bytes(fill: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(4);
+    super::ops_string::push_wtf8_codepoint(&mut bytes, fill);
+    bytes
+}
+
+fn format_memory_error() -> FormatError {
+    FormatError::Diagnostic("MemoryError", Cow::Borrowed(""))
+}
+
+fn format_buffer(capacity: usize) -> Result<Vec<u8>, FormatError> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(capacity)
+        .map_err(|_| format_memory_error())?;
+    Ok(out)
+}
+
+pub(crate) fn append_format_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), FormatError> {
+    out.try_reserve(bytes.len())
+        .map_err(|_| format_memory_error())?;
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+/// Both percent and advanced integer presentation admit the same Unicode range.
+pub(crate) fn format_character_codepoint(value: &BigInt) -> Result<Vec<u8>, FormatError> {
+    let code = value
+        .to_u32()
+        .filter(|code| *code < 0x110000)
+        .ok_or(FormatError::Diagnostic(
+            "OverflowError",
+            Cow::Borrowed("%c arg not in range(0x110000)"),
+        ))?;
+    let mut out = format_buffer(4)?;
+    super::ops_string::push_wtf8_codepoint(&mut out, code);
+    Ok(out)
+}
+
+/// The caller reserves the complete result first. ASCII fill is a memset;
+/// multibyte/WTF-8 fill grows by copying complete already-written code points.
+fn append_format_fill(out: &mut Vec<u8>, fill: &[u8], count: usize) {
+    if count == 0 {
+        return;
+    }
+    let start = out.len();
+    let bytes = count * fill.len();
+    if fill.len() == 1 {
+        out.resize(start + bytes, fill[0]);
+        return;
+    }
+    out.extend_from_slice(fill);
+    while out.len() - start < bytes {
+        let copied = (out.len() - start).min(bytes - (out.len() - start));
+        out.extend_from_within(start..start + copied);
+    }
+}
+
+pub(crate) fn apply_alignment(
+    prefix: &str,
+    body: &str,
+    spec: &FormatSpec,
+    default_align: char,
+) -> Result<Vec<u8>, FormatError> {
+    apply_alignment_parts(prefix, &[body], spec, default_align)
+}
+
+fn apply_alignment_parts(
+    prefix: &str,
+    body: &[&str],
+    spec: &FormatSpec,
+    default_align: char,
+) -> Result<Vec<u8>, FormatError> {
+    let fill = format_fill_bytes(spec.fill);
+    let align = numeric_alignment(spec, default_align);
+    let body_chars = body.iter().map(|part| part.chars().count()).sum::<usize>();
+    let body_bytes = body.iter().try_fold(0usize, |size, part| {
+        size.checked_add(part.len()).ok_or_else(format_memory_error)
+    })?;
+    let padding = spec
+        .width
+        .unwrap_or(0)
+        .saturating_sub(prefix.chars().count() + body_chars);
+    let capacity = fill
+        .len()
+        .checked_mul(padding)
+        .and_then(|size| size.checked_add(prefix.len()))
+        .and_then(|size| size.checked_add(body_bytes))
+        .ok_or_else(format_memory_error)?;
+    let mut out = format_buffer(capacity)?;
+    let left = match align {
+        '<' | '=' => 0,
+        '^' => padding / 2,
+        _ => padding,
+    };
+    append_format_fill(&mut out, &fill, left);
+    out.extend_from_slice(prefix.as_bytes());
     if align == '=' {
-        let padding = fill.to_string().repeat(pad_len);
-        return format!("{prefix}{padding}{body}");
+        append_format_fill(&mut out, &fill, padding);
     }
-    let padding = fill.to_string().repeat(pad_len);
-    match align {
-        '<' => format!("{text}{padding}"),
-        '>' => format!("{padding}{text}"),
-        '^' => {
-            let left = pad_len / 2;
-            let right = pad_len - left;
-            format!(
-                "{}{}{}",
-                fill.to_string().repeat(left),
-                text,
-                fill.to_string().repeat(right)
-            )
-        }
-        _ => text,
+    for part in body {
+        out.extend_from_slice(part.as_bytes());
     }
+    if align != '=' {
+        append_format_fill(&mut out, &fill, padding - left);
+    }
+    Ok(out)
 }
-
 /// Left-pad `digits` with `'0'` and insert `sep` every `group` digits so the
 /// resulting field (digits *and* separators) spans at least `min_field`
 /// characters, using the fewest digits that satisfy the bound. This mirrors
@@ -1872,7 +2502,12 @@ fn apply_alignment(prefix: &str, body: &str, spec: &FormatSpec, default_align: c
 /// that `calc_number_widths` derives for sign-aware `'0'` fill: the zero-fill
 /// region is itself grouped, so the field can legitimately exceed `min_field`
 /// (a `min_field` of 8 over `42` yields the 9-char `0,000,042`).
-fn zero_pad_grouped(digits: &str, group: usize, sep: char, min_field: usize) -> String {
+fn zero_pad_grouped(
+    digits: &str,
+    group: usize,
+    sep: char,
+    min_field: usize,
+) -> Result<String, FormatError> {
     let cur = digits.chars().count();
     // Total field width for `d` grouped digits: the digits plus one separator
     // for every full group boundary to their left.
@@ -1896,12 +2531,12 @@ fn zero_pad_grouped(digits: &str, group: usize, sep: char, min_field: usize) -> 
         }
         lo
     };
-    let mut padded = String::with_capacity(needed);
-    for _ in 0..needed.saturating_sub(cur) {
-        padded.push('0');
-    }
-    padded.push_str(digits);
-    apply_grouping(&padded, group, sep)
+    grouped_digits(digits, needed, group, sep)
+}
+
+fn numeric_alignment(spec: &FormatSpec, default_align: char) -> char {
+    spec.align
+        .unwrap_or(if spec.zero_flag { '=' } else { default_align })
 }
 
 /// Assemble a formatted number (integer or float) from its parts, applying
@@ -1922,8 +2557,10 @@ fn assemble_number(
     grouping: Option<(usize, char)>,
     spec: &FormatSpec,
     default_align: char,
-) -> String {
-    let align = spec.align.unwrap_or(default_align);
+) -> Result<Vec<u8>, FormatError> {
+    let suffix = grouped_fraction(suffix, spec.fractional_grouping)?;
+    let suffix = suffix.as_ref();
+    let align = numeric_alignment(spec, default_align);
     // The one case where padding interleaves with grouping: the `'0'` fill flag
     // (sign-aware `'='` alignment) combined with an actual grouping separator.
     // Any other alignment, or a non-`'0'` fill char with `'='`, pads with raw
@@ -1931,30 +2568,129 @@ fn assemble_number(
     if let Some((group, sep)) = grouping
         && let Some(width) = spec.width
         && align == '='
-        && spec.fill == '0'
+        && spec.fill == u32::from('0')
     {
         let non_digit = prefix.chars().count() + suffix.chars().count();
-        let field = zero_pad_grouped(int_digits, group, sep, width.saturating_sub(non_digit));
-        return format!("{prefix}{field}{suffix}");
+        let field = zero_pad_grouped(int_digits, group, sep, width.saturating_sub(non_digit))?;
+        let capacity = prefix
+            .len()
+            .checked_add(field.len())
+            .and_then(|size| size.checked_add(suffix.len()))
+            .ok_or_else(format_memory_error)?;
+        let mut out = format_buffer(capacity)?;
+        out.extend_from_slice(prefix.as_bytes());
+        out.extend_from_slice(field.as_bytes());
+        out.extend_from_slice(suffix.as_bytes());
+        return Ok(out);
     }
     // Otherwise: group at the digits' natural width, then pad as a unit.
     let grouped = match grouping {
-        Some((group, sep)) => apply_grouping(int_digits, group, sep),
-        None => int_digits.to_string(),
+        Some((group, sep)) => Cow::Owned(apply_grouping(int_digits, group, sep)?),
+        None => Cow::Borrowed(int_digits),
     };
-    let body = format!("{grouped}{suffix}");
-    apply_alignment(prefix, &body, spec, default_align)
+    apply_alignment_parts(prefix, &[grouped.as_ref(), suffix], spec, default_align)
 }
 
-fn trim_float_trailing(text: &str, alternate: bool) -> String {
+fn grouped_fraction(suffix: &str, separator: Option<char>) -> Result<Cow<'_, str>, FormatError> {
+    let Some(separator) = separator.filter(|_| suffix.starts_with('.')) else {
+        return Ok(Cow::Borrowed(suffix));
+    };
+    let digits = suffix.as_bytes()[1..]
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    let separators = digits.saturating_sub(1) / 3;
+    if separators == 0 {
+        return Ok(Cow::Borrowed(suffix));
+    }
+    let capacity = suffix
+        .len()
+        .checked_add(separators * separator.len_utf8())
+        .ok_or_else(format_memory_error)?;
+    let mut out = format_buffer(capacity)?;
+    out.push(b'.');
+    let mut encoded = [0; 4];
+    let separator = separator.encode_utf8(&mut encoded).as_bytes();
+    for index in 0..digits {
+        if index > 0 && index.is_multiple_of(3) {
+            out.extend_from_slice(separator);
+        }
+        out.push(suffix.as_bytes()[index + 1]);
+    }
+    out.extend_from_slice(&suffix.as_bytes()[digits + 1..]);
+    Ok(Cow::Owned(
+        String::from_utf8(out).expect("numeric fraction is ASCII"),
+    ))
+}
+
+struct NumericFormatBuffer(String);
+
+impl std::fmt::Write for NumericFormatBuffer {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.0
+            .try_reserve(text.len())
+            .map_err(|_| std::fmt::Error)?;
+        self.0.push_str(text);
+        Ok(())
+    }
+}
+
+fn render_numeric(arguments: std::fmt::Arguments<'_>) -> Result<String, FormatError> {
+    let mut buffer = NumericFormatBuffer(String::new());
+    std::fmt::write(&mut buffer, arguments).map_err(|_| format_memory_error())?;
+    Ok(buffer.0)
+}
+
+#[derive(Clone, Copy)]
+enum DecimalNotation {
+    Fixed,
+    Scientific,
+}
+
+/// An f64 terminates within 1074 decimal fractional places (2^-1074).
+/// Beyond that bound all requested places are exact zeros. Keep Rust's bounded
+/// decimal rounding engine, then append the exact suffix with fallible growth;
+/// a Python precision is never passed into core::fmt's u16 precision field.
+fn render_float_decimal(
+    value: f64,
+    precision: usize,
+    notation: DecimalNotation,
+    retain_zeros: bool,
+) -> Result<String, FormatError> {
+    const EXACT_PLACES: usize = 1074;
+    let bounded = precision.min(EXACT_PLACES);
+    let text = match notation {
+        DecimalNotation::Fixed => render_numeric(format_args!("{:.*}", bounded, value))?,
+        DecimalNotation::Scientific => render_numeric(format_args!("{:.*e}", bounded, value))?,
+    };
+    let extra = if retain_zeros { precision - bounded } else { 0 };
+    if extra == 0 {
+        return Ok(text);
+    }
+    let insertion = match notation {
+        DecimalNotation::Fixed => text.len(),
+        DecimalNotation::Scientific => text.find('e').expect("finite decimal exponent"),
+    };
+    let mut bytes = text.into_bytes();
+    let length = bytes.len();
+    let end = length.checked_add(extra).ok_or_else(format_memory_error)?;
+    bytes
+        .try_reserve(extra)
+        .map_err(|_| format_memory_error())?;
+    bytes.resize(end, b'0');
+    bytes.copy_within(insertion..length, insertion + extra);
+    bytes[insertion..insertion + extra].fill(b'0');
+    Ok(String::from_utf8(bytes).expect("decimal presentation is ASCII"))
+}
+
+fn trim_float_trailing(mut text: String, alternate: bool) -> String {
     if alternate {
-        return text.to_string();
+        return text;
     }
     let exp_pos = text.find(['e', 'E']).unwrap_or(text.len());
-    let (mantissa, exp) = text.split_at(exp_pos);
-    let mut end = mantissa.len();
-    if let Some(dot) = mantissa.find('.') {
-        let bytes = mantissa.as_bytes();
+    let mut end = exp_pos;
+    if let Some(dot) = text[..exp_pos].find('.') {
+        let bytes = text.as_bytes();
         while end > dot + 1 && bytes[end - 1] == b'0' {
             end -= 1;
         }
@@ -1962,112 +2698,202 @@ fn trim_float_trailing(text: &str, alternate: bool) -> String {
             end = dot;
         }
     }
-    let trimmed = &mantissa[..end];
-    format!("{trimmed}{exp}")
+    text.replace_range(end..exp_pos, "");
+    text
 }
 
-fn normalize_exponent(text: &str, upper: bool) -> String {
+fn normalize_exponent(mut text: String, upper: bool) -> Result<String, FormatError> {
     let (exp_pos, exp_char) = if let Some(pos) = text.find('e') {
         (pos, 'e')
     } else if let Some(pos) = text.find('E') {
         (pos, 'E')
     } else {
-        return text.to_string();
+        return Ok(text);
     };
-    let (mantissa, exp) = text.split_at(exp_pos);
-    let mut exp_text = &exp[1..];
-    let mut sign = '+';
-    if let Some(first) = exp_text.chars().next()
-        && (first == '+' || first == '-')
-    {
-        sign = first;
-        exp_text = &exp_text[1..];
+    let signed = matches!(text.as_bytes().get(exp_pos + 1), Some(b'+' | b'-'));
+    let digits = text.len() - exp_pos - 1 - usize::from(signed);
+    let added = usize::from(!signed) + 2usize.saturating_sub(digits);
+    text.try_reserve(added).map_err(|_| format_memory_error())?;
+    if upper && exp_char == 'e' {
+        text.replace_range(exp_pos..exp_pos + 1, "E");
     }
-    let digits = if exp_text.is_empty() { "0" } else { exp_text };
-    let mut padded = String::from(digits);
-    if padded.len() == 1 {
-        padded.insert(0, '0');
+    if !signed {
+        text.insert(exp_pos + 1, '+');
     }
-    let exp_out = if upper { 'E' } else { exp_char };
-    format!("{mantissa}{exp_out}{sign}{padded}")
+    for _ in digits..2 {
+        text.insert(exp_pos + 2, '0');
+    }
+    Ok(text)
 }
 
 fn string_format_spec(spec: &FormatSpec) -> Result<FormatSpec, FormatError> {
-    if let Some(sep) = spec.grouping {
-        return Err((
-            "ValueError",
-            Cow::Owned(format!("Cannot specify '{sep}' with 's'.")),
-        ));
-    }
     if let Some(sign) = spec.sign {
         let msg = if sign == ' ' {
             "Space not allowed in string format specifier"
         } else {
             "Sign not allowed in string format specifier"
         };
-        return Err(("ValueError", Cow::Borrowed(msg)));
+        return Err(FormatError::Diagnostic("ValueError", Cow::Borrowed(msg)));
+    }
+    if spec.coerce_negative_zero {
+        return Err(FormatError::Diagnostic(
+            "ValueError",
+            Cow::Borrowed("Negative zero coercion (z) not allowed in string format specifier"),
+        ));
     }
     if spec.alternate {
-        return Err((
+        return Err(FormatError::Diagnostic(
             "ValueError",
             Cow::Borrowed("Alternate form (#) not allowed in string format specifier"),
         ));
     }
-    if spec.align == Some('=') && !spec.zero_flag {
-        return Err((
+    if spec.align == Some('=') {
+        return Err(FormatError::Diagnostic(
             "ValueError",
             Cow::Borrowed("'=' alignment not allowed in string format specifier"),
         ));
     }
-    let mut normalized = *spec;
-    if normalized.zero_flag && normalized.align == Some('=') {
-        normalized.align = None;
-    }
-    Ok(normalized)
+    Ok(*spec)
 }
 
-fn format_string_with_spec(text: String, spec: &FormatSpec) -> Result<String, FormatError> {
+/// Select precision's endpoint and character count in one bounded WTF-8 walk.
+/// Precision zero or a short prefix never scans or copies the remaining input.
+fn format_text_span(text: &[u8], precision: Option<usize>) -> (&[u8], usize) {
+    let limit = precision.unwrap_or(usize::MAX);
+    let mut cursor = 0;
+    let mut count = 0;
+    while count < limit {
+        let Some((next, _)) = super::ops_string::wtf8_step(text, cursor, false) else {
+            break;
+        };
+        cursor = next;
+        count += 1;
+    }
+    (&text[..cursor], count)
+}
+
+fn format_text_span_padded(
+    text: &[u8],
+    count: usize,
+    width: Option<usize>,
+    fill: &[u8],
+    align: char,
+) -> Result<Vec<u8>, FormatError> {
+    let padding = width.unwrap_or(0).saturating_sub(count);
+    let left = match align {
+        '<' => 0,
+        '^' => padding / 2,
+        _ => padding,
+    };
+    let capacity = fill
+        .len()
+        .checked_mul(padding)
+        .and_then(|size| size.checked_add(text.len()))
+        .ok_or_else(format_memory_error)?;
+    let mut out = format_buffer(capacity)?;
+    append_format_fill(&mut out, fill, left);
+    out.extend_from_slice(text);
+    append_format_fill(&mut out, fill, padding - left);
+    Ok(out)
+}
+
+/// Apply string precision and padding directly from immutable WTF-8 storage.
+/// Percent and advanced formatting use the same sizing and fallible writer.
+pub(crate) fn format_text_bytes(
+    text: &[u8],
+    width: Option<usize>,
+    precision: Option<usize>,
+    fill: &[u8],
+    align: char,
+) -> Result<Vec<u8>, FormatError> {
+    let (text, count) = format_text_span(text, precision);
+    format_text_span_padded(text, count, width, fill, align)
+}
+
+/// Percent conversion may keep an unmodified nonempty owned renderer string;
+/// truncation/padding materializes only the selected prefix and output padding.
+pub(crate) fn format_text_output(
+    py: &PyToken<'_>,
+    output: FormatOutput,
+    width: Option<usize>,
+    precision: Option<usize>,
+    fill: &[u8],
+    align: char,
+    preserve_identity: bool,
+) -> Result<FormatOutput, FormatError> {
+    if !exception_pending(py)
+        && let FormatOutput::OwnedString(bits) = &output
+    {
+        let ptr = obj_from_bits(*bits)
+            .as_ptr()
+            .expect("owned renderer string");
+        let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
+        let (text, count) = format_text_span(bytes, precision);
+        if preserve_identity
+            && !text.is_empty()
+            && text.len() == bytes.len()
+            && width.unwrap_or(0) <= count
+        {
+            return Ok(output);
+        }
+        // The closure runs while output still owns this immutable storage.
+        // Reuse the selected span rather than scanning its prefix again.
+        return output
+            .with_bytes(py, |_| {
+                format_text_span_padded(text, count, width, fill, align)
+            })
+            .map(FormatOutput::Bytes);
+    }
+    output
+        .with_bytes(py, |bytes| {
+            format_text_bytes(bytes, width, precision, fill, align)
+        })
+        .map(FormatOutput::Bytes)
+}
+
+fn format_string_with_spec(
+    py: &PyToken<'_>,
+    obj: MoltObject,
+    spec: &FormatSpec,
+) -> Result<FormatOutput, FormatError> {
     let spec = string_format_spec(spec)?;
-    let mut out = text;
-    if let Some(prec) = spec.precision {
-        out = out.chars().take(prec).collect();
+    let ptr = obj.as_ptr().expect("admitted string receiver");
+    let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
+    if !bytes.is_empty() && spec.precision.is_none() && spec.width.unwrap_or(0) == 0 {
+        inc_ref_bits(py, obj.bits());
+        return Ok(FormatOutput::OwnedString(obj.bits()));
     }
-    Ok(apply_alignment("", &out, &spec, '<'))
-}
-
-fn apply_char_alignment(text: String, spec: &FormatSpec) -> String {
-    apply_alignment("", &text, spec, '>')
+    let (text, count) = format_text_span(bytes, spec.precision);
+    if !text.is_empty() && spec.width.unwrap_or(0) <= count && text.len() == bytes.len() {
+        inc_ref_bits(py, obj.bits());
+        return Ok(FormatOutput::OwnedString(obj.bits()));
+    }
+    let fill = format_fill_bytes(spec.fill);
+    Ok(format_text_span_padded(text, count, spec.width, &fill, spec.align.unwrap_or('<'))?.into())
 }
 
 fn validate_integer_format_spec(ty: char, spec: &FormatSpec) -> Result<(), FormatError> {
-    if let Some(sep) = spec.grouping {
-        let allowed = match ty {
-            'd' | 'n' => true,
-            'b' | 'o' | 'x' | 'X' => sep == '_',
-            _ => false,
-        };
-        if !allowed {
-            return Err((
-                "ValueError",
-                Cow::Owned(format!("Cannot specify '{sep}' with '{ty}'.")),
-            ));
-        }
-    }
     if spec.precision.is_some() {
-        return Err((
+        return Err(FormatError::Diagnostic(
             "ValueError",
             Cow::Borrowed("Precision not allowed in integer format specifier"),
         ));
     }
+    if spec.coerce_negative_zero {
+        return Err(FormatError::Diagnostic(
+            "ValueError",
+            Cow::Borrowed("Negative zero coercion (z) not allowed in integer format specifier"),
+        ));
+    }
     if ty == 'c' {
         if spec.sign.is_some() {
-            return Err((
+            return Err(FormatError::Diagnostic(
                 "ValueError",
                 Cow::Borrowed("Sign not allowed with integer format specifier 'c'"),
             ));
         }
         if spec.alternate {
-            return Err((
+            return Err(FormatError::Diagnostic(
                 "ValueError",
                 Cow::Borrowed("Alternate form (#) not allowed with integer format specifier 'c'"),
             ));
@@ -2077,49 +2903,58 @@ fn validate_integer_format_spec(ty: char, spec: &FormatSpec) -> Result<(), Forma
 }
 
 fn is_empty_format_spec(spec: &FormatSpec) -> bool {
-    spec.fill == ' '
+    spec.fill == u32::from(' ')
         && spec.align.is_none()
         && !spec.zero_flag
         && spec.sign.is_none()
+        && !spec.coerce_negative_zero
         && !spec.alternate
         && spec.width.is_none()
         && spec.grouping.is_none()
+        && spec.fractional_grouping.is_none()
         && spec.precision.is_none()
         && spec.ty.is_none()
 }
 
-fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, FormatError> {
-    let ty = spec.ty.unwrap_or('d');
+fn format_int_with_spec(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+    payload: Option<u64>,
+    spec: &FormatSpec,
+) -> Result<Vec<u8>, FormatError> {
+    let ty = spec.presentation().unwrap_or('d');
     validate_integer_format_spec(ty, spec)?;
-    let mut value = if let Some(i) = obj.as_int() {
-        BigInt::from(i)
-    } else if let Some(b) = obj.as_bool() {
-        BigInt::from(if b { 1 } else { 0 })
-    } else if let Some(ptr) = bigint_ptr_from_bits(obj.bits()) {
-        unsafe { bigint_ref(ptr).clone() }
-    } else {
-        return Err(unknown_format_code_error(spec.ty.unwrap_or('d'), obj));
-    };
+    // Only actual integer rendering needs an owned BigInt. Admission and
+    // floating presentations carry borrowed bits without cloning the payload.
+    let mut value = payload
+        .and_then(index_bigint_integral_bits)
+        .ok_or_else(|| unknown_format_code_error(_py, spec.presentation().unwrap_or('d'), obj))?;
     if ty == 'c' {
-        if value.is_negative() {
-            return Err((
-                "ValueError",
-                Cow::Borrowed("format c requires non-negative int"),
+        if value
+            .to_i64()
+            .and_then(|value| std::os::raw::c_long::try_from(value).ok())
+            .is_none()
+        {
+            return Err(FormatError::Diagnostic(
+                "OverflowError",
+                Cow::Borrowed("Python int too large to convert to C long"),
             ));
         }
-        let code = value
-            .to_u32()
-            .ok_or(("ValueError", Cow::Borrowed("format c out of range")))?;
-        let ch = std::char::from_u32(code)
-            .ok_or(("ValueError", Cow::Borrowed("format c out of range")))?;
-        return Ok(apply_char_alignment(ch.to_string(), spec));
+        let text = format_character_codepoint(&value)?;
+        let fill = format_fill_bytes(spec.fill);
+        return format_text_bytes(&text, spec.width, None, &fill, spec.align.unwrap_or('>'));
     }
     let base = match ty {
         'b' => 2,
         'o' => 8,
         'x' | 'X' => 16,
         'd' | 'n' => 10,
-        _ => return Err(("ValueError", Cow::Borrowed("unsupported int format type"))),
+        _ => {
+            return Err(FormatError::Diagnostic(
+                "ValueError",
+                Cow::Borrowed("unsupported int format type"),
+            ));
+        }
     };
     let negative = value.is_negative();
     if negative {
@@ -2152,42 +2987,75 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
             _ => {}
         }
     }
-    Ok(assemble_number(&prefix, &digits, "", grouping, spec, '>'))
+    assemble_number(&prefix, &digits, "", grouping, spec, '>')
 }
 
 pub(crate) fn format_float_with_spec(
+    _py: &PyToken<'_>,
     obj: MoltObject,
     spec: &FormatSpec,
-) -> Result<String, FormatError> {
-    let val = if let Some(f) = obj.as_float() {
-        f
-    } else if let Some(i) = obj.as_int() {
-        i as f64
-    } else if let Some(b) = obj.as_bool() {
-        if b { 1.0 } else { 0.0 }
-    } else {
-        return Err(unknown_format_code_error(spec.ty.unwrap_or('f'), obj));
-    };
+) -> Result<Vec<u8>, FormatError> {
+    // Float descriptors read their payload; integer floating presentations use
+    // the same numeric slot conversion as PyNumber_Float, including overrides.
+    let val =
+        crate::builtins::numbers::float_as_double(_py, obj.bits()).ok_or(FormatError::Pending)?;
+    format_float_value_with_spec(val, spec)
+}
+
+/// Shared float/complex/percent presentation after numeric protocol admission.
+fn validate_float_precision(spec: &FormatSpec) -> Result<(), FormatError> {
+    if spec
+        .precision
+        .is_some_and(|precision| precision > i32::MAX as usize)
+    {
+        return Err(FormatError::Diagnostic(
+            "ValueError",
+            Cow::Borrowed("precision too big"),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn format_float_value_with_spec(
+    val: f64,
+    spec: &FormatSpec,
+) -> Result<Vec<u8>, FormatError> {
+    validate_float_precision(spec)?;
     let use_default = spec.ty.is_none() && spec.precision.is_none();
-    let ty = spec.ty.unwrap_or('g');
+    let ty = spec
+        .presentation()
+        .filter(|code| *code != '\0')
+        .unwrap_or('g');
+    // Percent scaling precedes classification: a finite input can overflow.
+    let val = if ty == '%' { val * 100.0 } else { val };
     let upper = matches!(ty, 'F' | 'E' | 'G');
+    // A NaN's payload sign is not part of Python's numeric presentation.
+    // Every presentation shares sign admission, including infinities and NaNs.
+    let mut prefix = match (float_is_negative(val), spec.sign) {
+        (true, _) => "-",
+        (false, Some('+')) => "+",
+        (false, Some(' ')) => " ",
+        _ => "",
+    };
     if val.is_nan() {
-        let text = if upper { "NAN" } else { "nan" };
-        let prefix = if val.is_sign_negative() { "-" } else { "" };
-        return Ok(apply_alignment(prefix, text, spec, '>'));
+        let text = if ty == '%' {
+            "nan%"
+        } else if upper {
+            "NAN"
+        } else {
+            "nan"
+        };
+        return apply_alignment(prefix, text, spec, '>');
     }
     if val.is_infinite() {
-        let text = if upper { "INF" } else { "inf" };
-        let prefix = if val.is_sign_negative() { "-" } else { "" };
-        return Ok(apply_alignment(prefix, text, spec, '>'));
-    }
-    let mut prefix = String::new();
-    if val.is_sign_negative() {
-        prefix.push('-');
-    } else if let Some(sign) = spec.sign
-        && (sign == '+' || sign == ' ')
-    {
-        prefix.push(sign);
+        let text = if ty == '%' {
+            "inf%"
+        } else if upper {
+            "INF"
+        } else {
+            "inf"
+        };
+        return apply_alignment(prefix, text, spec, '>');
     }
     let abs_val = val.abs();
     let prec = spec.precision.unwrap_or(6);
@@ -2195,39 +3063,42 @@ pub(crate) fn format_float_with_spec(
         format_float(abs_val)
     } else {
         match ty {
-            'f' | 'F' => format!("{:.*}", prec, abs_val),
-            'e' | 'E' => format!("{:.*e}", prec, abs_val),
-            'g' | 'G' => {
-                let digits = if prec == 0 { 1 } else { prec };
-                if abs_val == 0.0 {
-                    "0".to_string()
-                } else {
-                    let exp = abs_val.log10().floor() as i32;
-                    if exp < -4 || exp >= digits as i32 {
-                        let text = format!("{:.*e}", digits - 1, abs_val);
-                        trim_float_trailing(&text, spec.alternate)
-                    } else {
-                        let frac = (digits as i32 - 1 - exp).max(0) as usize;
-                        let text = format!("{:.*}", frac, abs_val);
-                        trim_float_trailing(&text, spec.alternate)
-                    }
-                }
+            'f' | 'F' => render_float_decimal(abs_val, prec, DecimalNotation::Fixed, true)?,
+            'e' | 'E' => render_float_decimal(abs_val, prec, DecimalNotation::Scientific, true)?,
+            'g' | 'G' => format_general_float(abs_val, prec, spec.alternate, spec.ty.is_none())?,
+            '%' => render_float_decimal(abs_val, prec, DecimalNotation::Fixed, true)?,
+            _ => {
+                return Err(FormatError::Diagnostic(
+                    "ValueError",
+                    Cow::Borrowed("unsupported float format type"),
+                ));
             }
-            '%' => {
-                let scaled = abs_val * 100.0;
-                format!("{:.*}", prec, scaled)
-            }
-            _ => return Err(("ValueError", Cow::Borrowed("unsupported float format type"))),
         }
     };
-    body = normalize_exponent(&body, upper);
-    if upper {
-        body = body.replace('e', "E");
+    // PEP 682 coerces the sign of a rounded zero, not merely input -0.0.
+    // Exponents and a percent suffix do not contribute magnitude digits.
+    if spec.coerce_negative_zero
+        && body
+            .split(['e', 'E'])
+            .next()
+            .unwrap()
+            .bytes()
+            .all(|byte| matches!(byte, b'0' | b'.'))
+    {
+        prefix = match spec.sign {
+            Some('+') => "+",
+            Some(' ') => " ",
+            _ => "",
+        };
     }
-    if spec.alternate && !body.contains('.') && !body.contains('E') && !body.contains('e') {
-        body.push('.');
+    body = normalize_exponent(body, upper)?;
+    if spec.alternate && !body.contains('.') {
+        let decimal = body.find(['e', 'E']).unwrap_or(body.len());
+        body.try_reserve(1).map_err(|_| format_memory_error())?;
+        body.insert(decimal, '.');
     }
     if ty == '%' {
+        body.try_reserve(1).map_err(|_| format_memory_error())?;
         body.push('%');
     }
     // Split the magnitude into its leading integer digits and the trailing
@@ -2241,59 +3112,97 @@ pub(crate) fn format_float_with_spec(
         .unwrap_or(body.len());
     let (int_digits, suffix) = body.split_at(int_len);
     let grouping = spec.grouping.map(|sep| (3, sep));
-    Ok(assemble_number(
-        &prefix, int_digits, suffix, grouping, spec, '>',
-    ))
+    assemble_number(prefix, int_digits, suffix, grouping, spec, '>')
 }
 
-fn apply_grouping_to_float_text(text: &str, sep: char) -> String {
-    if text.contains('e') || text.contains('E') {
-        return text.to_string();
+/// Choose notation from the rounded decimal exponent, as PyOS_double_to_string
+/// does. Reposition those same rounded digits instead of rounding a second time
+/// or classifying the unrounded value with log10 at a carry boundary.
+fn format_general_float(
+    value: f64,
+    precision: usize,
+    alternate: bool,
+    add_dot_zero: bool,
+) -> Result<String, FormatError> {
+    let precision = precision.max(1);
+    let mut rounded =
+        render_float_decimal(value, precision - 1, DecimalNotation::Scientific, alternate)?;
+    let (mantissa, exponent) = rounded.split_once('e').expect("scientific float exponent");
+    let exponent: i32 = exponent.parse().expect("finite float exponent");
+    let threshold = precision.saturating_sub(usize::from(add_dot_zero));
+    if exponent < -4 || i64::from(exponent) >= i64::try_from(threshold).unwrap_or(i64::MAX) {
+        return Ok(trim_float_trailing(rounded, alternate));
     }
-    let mut parts = text.splitn(2, '.');
-    let int_part = parts.next().unwrap_or("");
-    let frac_part = parts.next();
-    let grouped = apply_grouping(int_part, 3, sep);
-    if let Some(frac) = frac_part {
-        format!("{grouped}.{frac}")
+    let mantissa_len = mantissa.len();
+    let dot = mantissa.find('.');
+    rounded.truncate(mantissa_len);
+    if let Some(dot) = dot {
+        rounded.remove(dot);
+    }
+    let decimal = exponent + 1;
+    let mut fixed = if decimal <= 0 {
+        let mut bytes = rounded.into_bytes();
+        let offset = 2 + (-decimal) as usize;
+        let length = bytes.len();
+        bytes
+            .try_reserve(offset)
+            .map_err(|_| format_memory_error())?;
+        bytes.resize(length + offset, b'0');
+        bytes.copy_within(0..length, offset);
+        bytes[..offset].fill(b'0');
+        bytes[1] = b'.';
+        String::from_utf8(bytes).expect("numeric presentation is ASCII")
+    } else if decimal as usize >= rounded.len() {
+        let mut bytes = rounded.into_bytes();
+        let padding = decimal as usize - bytes.len();
+        bytes
+            .try_reserve(padding)
+            .map_err(|_| format_memory_error())?;
+        bytes.resize(decimal as usize, b'0');
+        String::from_utf8(bytes).expect("numeric presentation is ASCII")
     } else {
-        grouped
+        rounded.try_reserve(1).map_err(|_| format_memory_error())?;
+        rounded.insert(decimal as usize, '.');
+        rounded
+    };
+    if alternate && !fixed.contains('.') {
+        fixed.try_reserve(1).map_err(|_| format_memory_error())?;
+        fixed.push('.');
     }
+    let mut fixed = trim_float_trailing(fixed, alternate);
+    if add_dot_zero && !fixed.contains('.') {
+        fixed.try_reserve(2).map_err(|_| format_memory_error())?;
+        fixed.push_str(".0");
+    }
+    Ok(fixed)
 }
 
 fn format_complex_with_spec(
     _py: &PyToken<'_>,
+    obj: MoltObject,
     value: ComplexParts,
     spec: &FormatSpec,
-) -> Result<String, FormatError> {
-    let mut ty = spec.ty;
+) -> Result<Vec<u8>, FormatError> {
+    let mut ty = spec.presentation().filter(|code| *code != '\0');
     let mut grouping = spec.grouping;
     if ty == Some('n') {
-        if let Some(sep) = grouping {
-            let msg = if sep == ',' {
-                "Cannot specify ',' with 'n'."
-            } else {
-                "Cannot specify '_' with 'n'."
-            };
-            return Err(("ValueError", Cow::Borrowed(msg)));
-        }
         ty = Some('g');
         grouping = None;
     }
     if let Some(code) = ty
         && !matches!(code, 'e' | 'E' | 'f' | 'F' | 'g' | 'G')
     {
-        let msg = format!("Unknown format code '{code}' for object of type 'complex'");
-        return Err(("ValueError", Cow::Owned(msg)));
+        return Err(unknown_format_code_error(_py, code, obj));
     }
-    if spec.fill == '0' {
-        return Err((
+    validate_float_precision(spec)?;
+    if spec.fill == u32::from('0') {
+        return Err(FormatError::Diagnostic(
             "ValueError",
             Cow::Borrowed("Zero padding is not allowed in complex format specifier"),
         ));
     }
     if spec.align == Some('=') {
-        return Err((
+        return Err(FormatError::Diagnostic(
             "ValueError",
             Cow::Borrowed("'=' alignment flag is not allowed in complex format specifier"),
         ));
@@ -2301,189 +3210,177 @@ fn format_complex_with_spec(
     let re = value.re;
     let im = value.im;
     let re_is_zero = re == 0.0 && !re.is_sign_negative();
-    let im_is_negative = im.is_sign_negative();
-    let im_sign = if im_is_negative { '-' } else { '+' };
-    let use_default = spec.ty.is_none() && spec.precision.is_none();
-    let (real_text, imag_text) = if use_default {
-        let mut real_text = format_complex_float(re.abs());
-        let mut imag_text = format_complex_float(im.abs());
-        if let Some(sep) = grouping {
-            real_text = apply_grouping_to_float_text(&real_text, sep);
-            imag_text = apply_grouping_to_float_text(&imag_text, sep);
-        }
-        (real_text, imag_text)
-    } else {
-        let real_spec = FormatSpec {
-            fill: spec.fill,
-            align: None,
-            zero_flag: spec.zero_flag,
-            sign: spec.sign,
-            alternate: spec.alternate,
-            width: None,
-            grouping,
-            precision: spec.precision,
-            ty,
-        };
-        let imag_spec = FormatSpec {
-            fill: spec.fill,
-            align: None,
-            zero_flag: spec.zero_flag,
-            sign: None,
-            alternate: spec.alternate,
-            width: None,
-            grouping,
-            precision: spec.precision,
-            ty,
-        };
-        let real_text = format_float_with_spec(MoltObject::from_float(re), &real_spec)?;
-        let imag_text = format_float_with_spec(MoltObject::from_float(im.abs()), &imag_spec)?;
-        (real_text, imag_text)
-    };
     let include_real = ty.is_some() || !re_is_zero;
-    let body = if include_real {
-        let real_text = if use_default {
-            let mut prefix = String::new();
-            if re.is_sign_negative() {
-                prefix.push('-');
-            } else if let Some(sign) = spec.sign
-                && (sign == '+' || sign == ' ')
-            {
-                prefix.push(sign);
-            }
-            format!("{prefix}{real_text}")
+    let use_default = spec.ty.is_none() && spec.precision.is_none();
+    let component_spec = FormatSpec {
+        fill: u32::from(' '),
+        align: None,
+        zero_flag: false,
+        width: None,
+        grouping,
+        // Complex's omitted type uses general notation without float's '.0'.
+        ty: if !use_default && ty.is_none() {
+            Some(u32::from('g'))
         } else {
-            real_text
+            ty.map(u32::from)
+        },
+        ..*spec
+    };
+    let render = |component, sign| -> Result<String, FormatError> {
+        let component_spec = FormatSpec {
+            sign,
+            ..component_spec
         };
-        let combined = format!("{real_text}{im_sign}{imag_text}j");
+        let mut text = String::from_utf8(format_float_value_with_spec(component, &component_spec)?)
+            .expect("unpadded numeric text is ASCII");
+        if use_default && text.ends_with(".0") {
+            text.truncate(text.len() - if spec.alternate { 1 } else { 2 });
+        }
+        Ok(text)
+    };
+    let imag_text = render(im, if include_real { Some('+') } else { spec.sign })?;
+    let body = if include_real {
+        let real_text = render(re, spec.sign)?;
+        let combined = render_numeric(format_args!("{real_text}{imag_text}j"))?;
         if ty.is_none() {
-            format!("({combined})")
+            render_numeric(format_args!("({combined})"))?
         } else {
             combined
         }
     } else {
-        let prefix = if im_is_negative {
-            "-"
-        } else if let Some(sign) = spec.sign {
-            if sign == '+' || sign == ' ' {
-                if sign == '+' { "+" } else { " " }
-            } else {
-                ""
-            }
-        } else {
-            ""
-        };
-        format!("{prefix}{imag_text}j")
+        render_numeric(format_args!("{imag_text}j"))?
     };
-    Ok(apply_alignment("", &body, spec, '>'))
+    apply_alignment("", &body, spec, '>')
 }
 
 pub(crate) fn format_with_spec(
     _py: &PyToken<'_>,
     obj: MoltObject,
     spec: &FormatSpec,
-) -> Result<String, FormatError> {
+) -> Result<FormatOutput, FormatError> {
+    let is_string = obj
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING });
+    let integer = index_integral_payload_bits(obj.bits());
+    let default_type = if is_string {
+        's'
+    } else if integer.is_some() {
+        'd'
+    } else {
+        '\0'
+    };
+    validate_format_grouping(spec, default_type)?;
+    if spec.ty.is_some_and(|code| char::from_u32(code).is_none()) {
+        return Err(unknown_format_code_error(_py, spec.ty.unwrap(), obj));
+    }
+    let normalized;
+    let spec = if default_type == '\0' && spec.ty == Some(0) {
+        normalized = FormatSpec { ty: None, ..*spec };
+        &normalized
+    } else {
+        spec
+    };
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_COMPLEX {
                 let value = *complex_ref(ptr);
-                return format_complex_with_spec(_py, value, spec);
+                return format_complex_with_spec(_py, obj, value, spec).map(FormatOutput::from);
             }
         }
     }
-    let string_text = string_obj_to_owned(obj);
-    let is_integral = is_integral_format_obj(obj);
-    let is_float = obj.as_float().is_some();
+    let is_integral = integer.is_some();
+    let is_float = as_float_extended(obj).is_some();
     let is_number = is_integral || is_float;
-    if string_text.is_none() && !is_number && !is_empty_format_spec(spec) {
-        return Err(unsupported_format_string_error(obj));
+    if !is_string && !is_number && !is_empty_format_spec(spec) {
+        return Err(unsupported_format_string_error(_py, obj));
     }
-    if spec.ty == Some('n') {
-        if let Some(sep) = spec.grouping {
-            let msg = if sep == ',' {
-                "Cannot specify ',' with 'n'."
-            } else {
-                "Cannot specify '_' with 'n'."
-            };
-            return Err(("ValueError", Cow::Borrowed(msg)));
-        }
+    if spec.presentation() == Some('n') {
         if !is_number {
-            if string_text.is_some() {
-                return Err(unknown_format_code_error('n', obj));
+            if is_string {
+                return Err(unknown_format_code_error(_py, 'n', obj));
             }
-            return Err(unsupported_format_string_error(obj));
+            return Err(unsupported_format_string_error(_py, obj));
         }
         let mut normalized = FormatSpec {
             fill: spec.fill,
             align: spec.align,
             zero_flag: spec.zero_flag,
             sign: spec.sign,
+            coerce_negative_zero: spec.coerce_negative_zero,
             alternate: spec.alternate,
             width: spec.width,
             grouping: None,
             precision: spec.precision,
+            fractional_grouping: spec.fractional_grouping,
             ty: None,
         };
-        if obj.as_float().is_some() {
-            normalized.ty = Some('g');
-            return format_float_with_spec(obj, &normalized);
+        if is_float {
+            normalized.ty = Some(u32::from('g'));
+            return format_float_with_spec(_py, obj, &normalized).map(FormatOutput::from);
         }
-        normalized.ty = Some('d');
-        return format_int_with_spec(obj, &normalized);
+        normalized.ty = Some(u32::from('d'));
+        return format_int_with_spec(_py, obj, integer, &normalized).map(FormatOutput::from);
     }
-    match spec.ty {
+    match spec.presentation() {
         Some('s') => {
-            if let Some(text) = string_text {
-                format_string_with_spec(text, spec)
+            if is_string {
+                format_string_with_spec(_py, obj, spec)
             } else if is_number {
-                Err(unknown_format_code_error('s', obj))
+                Err(unknown_format_code_error(_py, 's', obj))
             } else {
-                Err(unsupported_format_string_error(obj))
+                Err(unsupported_format_string_error(_py, obj))
             }
         }
         Some('d') | Some('b') | Some('o') | Some('x') | Some('X') | Some('c') => {
-            if is_number {
-                format_int_with_spec(obj, spec)
-            } else if string_text.is_some() {
-                Err(unknown_format_code_error(spec.ty.unwrap(), obj))
+            if is_integral {
+                format_int_with_spec(_py, obj, integer, spec).map(FormatOutput::from)
+            } else if is_float || is_string {
+                Err(unknown_format_code_error(_py, spec.ty.unwrap(), obj))
             } else {
-                Err(unsupported_format_string_error(obj))
+                Err(unsupported_format_string_error(_py, obj))
             }
         }
         Some('f') | Some('F') | Some('e') | Some('E') | Some('g') | Some('G') | Some('%') => {
             if is_number {
-                format_float_with_spec(obj, spec)
-            } else if string_text.is_some() {
-                Err(unknown_format_code_error(spec.ty.unwrap(), obj))
+                format_float_with_spec(_py, obj, spec).map(FormatOutput::from)
+            } else if is_string {
+                Err(unknown_format_code_error(_py, spec.ty.unwrap(), obj))
             } else {
-                Err(unsupported_format_string_error(obj))
+                Err(unsupported_format_string_error(_py, obj))
             }
         }
         Some(code) => {
-            if string_text.is_some() || is_number {
-                Err(unknown_format_code_error(code, obj))
+            if code == '\0' && is_float {
+                let normalized = FormatSpec { ty: None, ..*spec };
+                return format_float_with_spec(_py, obj, &normalized).map(FormatOutput::from);
+            }
+            if is_string || is_number {
+                Err(unknown_format_code_error(
+                    _py,
+                    spec.ty.unwrap_or(u32::from(code)),
+                    obj,
+                ))
             } else {
-                Err(unsupported_format_string_error(obj))
+                Err(unsupported_format_string_error(_py, obj))
             }
         }
         None => {
-            // Check int/bool before float to match CPython's __format__
-            // dispatch order.  Also guards against codegen producing raw
-            // 0x0 bits (Cranelift zero-init) which NaN-boxing interprets
-            // as float +0.0 but semantically represents int 0.
+            // An omitted presentation type uses the same scalar projection
+            // as explicit codes. Only an empty bool spec uses its str form.
             if obj.as_bool().is_some() {
                 if is_empty_format_spec(spec) {
-                    Ok(format_obj_str(_py, obj))
+                    Ok(format_obj_str_output(_py, obj))
                 } else {
-                    format_int_with_spec(obj, spec)
+                    format_int_with_spec(_py, obj, integer, spec).map(FormatOutput::from)
                 }
-            } else if obj.as_int().is_some() || bigint_ptr_from_bits(obj.bits()).is_some() {
-                format_int_with_spec(obj, spec)
-            } else if obj.as_float().is_some() {
-                format_float_with_spec(obj, spec)
-            } else if let Some(text) = string_text {
-                format_string_with_spec(text, spec)
+            } else if is_integral {
+                format_int_with_spec(_py, obj, integer, spec).map(FormatOutput::from)
+            } else if is_float {
+                format_float_with_spec(_py, obj, spec).map(FormatOutput::from)
+            } else if is_string {
+                format_string_with_spec(_py, obj, spec)
             } else {
-                Ok(format_obj_str(_py, obj))
+                Ok(format_obj_str_output(_py, obj))
             }
         }
     }

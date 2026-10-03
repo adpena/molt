@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Collection, Iterator, Mapping, Sequence, cast
 import uuid
 
+from molt.backend_environment import compilation_diagnostics_requested
 from molt.cli.artifact_sync import (
     _artifact_sync_state_matches,
     _artifact_sync_state_path,
@@ -622,6 +623,9 @@ def _try_cached_backend_candidates(
     artifact_contract.validate_shared_stdlib(
         enabled=stdlib_object_path is not None or bool(stdlib_object_cache_key)
     )
+    # Both synchronized outputs and stored candidates bypass backend execution.
+    if compilation_diagnostics_requested():
+        return False, None
     stage_start = time.perf_counter()
     state_path = _artifact_sync_state_path(project_root, output_artifact)
     state = _read_artifact_sync_state(state_path)

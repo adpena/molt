@@ -145,7 +145,9 @@ def test_boxed_module_loop_import_has_one_module_store_and_one_cell_store(
     ops = gen.current_ops[start:]
     module_stores = _named_stores(ops, "MODULE_SET_ATTR", "bound")
     assert len(module_stores) == 1
-    cell_stores = [op for op in ops if op.kind == "STORE_INDEX" and op.args[0] == cell]
+    cell_stores = [
+        op for op in ops if op.kind == "CALL" and op.args[:2] == ["molt_cell_set", cell]
+    ]
     assert len(cell_stores) == 1
     assert module_stores[0].args[2] == cell_stores[0].args[2]
 
@@ -209,24 +211,22 @@ def test_class_nonlocal_import_publishes_to_enclosing_cell_not_class_or_module(
     # serializer is the canonical source-location projection consumed downstream.
     # Inspect that actual consumer and keep its exact cell/return operand chain.
     lowered = gen.map_ops_to_json(outer["ops"], run_midend=False)
-    zeros = {op["out"] for op in lowered if op["kind"] == "const" and op["value"] == 0}
     cell_stores = [
         op
         for op in lowered
-        if op["kind"] == "store_index"
+        if op["kind"] == "call"
+        and op.get("s_value") == "molt_cell_set"
         and op.get("source_line") == 5
-        and op.get("container_type") == "list"
-        and op["args"][1] in zeros
     ]
     assert len(cell_stores) == 1, "the import must replace the enclosing boxed binding"
     store = cell_stores[0]
     loads = [
         op
         for op in lowered[lowered.index(store) + 1 :]
-        if op["kind"] == "index"
+        if op["kind"] == "call"
+        and op.get("s_value") == "molt_cell_get"
         and op.get("source_line") == 6
-        and op["args"][0] == store["args"][0]
-        and op["args"][1] in zeros
+        and op["args"] == [store["args"][0]]
     ]
     assert len(loads) == 1
     assert any(

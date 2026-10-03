@@ -192,10 +192,7 @@ def _absolute_stdout_selection(
         if member is not None:
             path, ordinal = member
             selected[path].add(ordinal)
-        elif not (
-            Path(line).suffix.lower() in {".a", ".lib"}
-            and index._resolve_prefix(line) in index.canonical_paths
-        ):
+        elif index._resolve_prefix(line) not in index.canonical_paths:
             index.reject_unrecognized_tracked_label(line)
     if not saw_input:
         raise LinkMemberSelectionError(
@@ -281,20 +278,19 @@ def _coff_selection(index: _ArchiveMemberIndex, *, stderr: str) -> dict[Path, se
             if not token:
                 raise LinkMemberSelectionError("empty COFF Reading row")
             path = Path(token)
-            if path.suffix.lower() not in {".a", ".lib"}:
-                reading_member_tokens.append(token)
-                continue
-            saw_read = True
-            if not path.is_absolute():
-                if path.name in by_basename:
-                    foreign_basenames.add(path.name)
-                continue
-            resolved = str(path.resolve(strict=False))
-            tracked = index.canonical_paths.get(resolved)
+            tracked = (
+                index.canonical_paths.get(str(path.resolve(strict=False)))
+                if path.is_absolute()
+                else None
+            )
             if tracked is not None:
+                saw_read = True
                 read_archives.add(tracked)
             elif path.name in by_basename:
+                saw_read = True
                 foreign_basenames.add(path.name)
+            elif token.endswith(")") and "(" in token:
+                reading_member_tokens.append(token)
         elif line.startswith("lld-link: Loaded "):
             row = line.removeprefix("lld-link: Loaded ")
             token, separator, symbol = row.rpartition(" for ")

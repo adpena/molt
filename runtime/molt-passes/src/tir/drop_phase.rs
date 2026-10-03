@@ -345,6 +345,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         let target = TargetInfo::native_release_fast();
@@ -393,6 +394,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         let mut tir = crate::tir::lower_from_simple::lower_to_tir(&func_ir);
@@ -430,6 +432,7 @@ mod tests {
             source_file: None,
             is_extern: true,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }];
         // Must not panic (no lift of the empty extern body).
@@ -451,6 +454,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }];
 
@@ -520,6 +524,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }];
 
@@ -586,6 +591,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
 
@@ -636,6 +642,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }];
         finalize_simple_ir_drops(&mut funcs, &tti);

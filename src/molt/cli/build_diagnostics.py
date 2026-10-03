@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
 import tracemalloc
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -51,7 +52,9 @@ def _resolve_build_diagnostics_verbosity(raw: str | None) -> str:
     return "default"
 
 
-def _phase_duration_map(phase_starts: Mapping[str, float]) -> dict[str, float]:
+def _phase_duration_map(
+    phase_starts: Mapping[str, float], *, ended_at: float
+) -> dict[str, float]:
     if not phase_starts:
         return {}
     starts = sorted(phase_starts.items(), key=lambda item: item[1])
@@ -60,7 +63,7 @@ def _phase_duration_map(phase_starts: Mapping[str, float]) -> dict[str, float]:
         if idx + 1 < len(starts):
             ended = starts[idx + 1][1]
         else:
-            ended = time.perf_counter()
+            ended = ended_at
         durations[name] = round(max(0.0, ended - started), 6)
     return durations
 
@@ -72,18 +75,23 @@ def _build_phase_attribution(
     pipeline_stage_ms: Mapping[str, Any],
 ) -> dict[str, Any]:
     frontend_names = ("resolve_entry", "module_graph", "module_analysis", "ir_lowering")
+    # Preserve every observed sequential phase. Backend preparation, runtime
+    # admission and native linking must not disappear from attribution or be
+    # charged to the frontend merely because codegen hit its cache.
     phases: dict[str, float] = {
-        name: round(max(0.0, float(phase_sec.get(name, 0.0))), 6)
-        for name in frontend_names
+        name: round(max(0.0, float(value)), 6) for name, value in phase_sec.items()
     }
-    phases["frontend_lowering"] = round(sum(phases.values()), 6)
+    for name in frontend_names:
+        phases.setdefault(name, 0.0)
+    phases["frontend_lowering"] = round(sum(phases[name] for name in frontend_names), 6)
     phases["backend_codegen"] = round(
         max(0.0, float(phase_sec.get("backend_codegen", 0.0))), 6
     )
     phases["final_app_codegen"] = phases["backend_codegen"]
-    phases["seal"] = 0.0
+    phases.setdefault("seal", 0.0)
     for name, value in pipeline_stage_ms.items():
         if name in {
+            "wasm_reloc_preflight",
             "wasm_link_total",
             "split_runtime_processing",
             "wasm_strip",
@@ -91,6 +99,7 @@ def _build_phase_attribution(
         } and isinstance(value, (int, float)):
             phases[name] = round(max(0.0, float(value)) / 1000.0, 6)
     for name in (
+        "wasm_reloc_preflight",
         "wasm_link_total",
         "split_runtime_processing",
         "wasm_strip",
@@ -1111,17 +1120,69 @@ def _build_midend_diagnostics_payload(
 
 def _emit_build_diagnostics_if_present(
     *,
-    diagnostics_payload: dict[str, Any] | None,
-    diagnostics_path: Path | None,
+    diagnostics_enabled: bool,
+    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]],
     json_output: bool,
     verbosity: str,
-) -> None:
-    _emit_build_diagnostics(
-        diagnostics=diagnostics_payload,
-        diagnostics_path=diagnostics_path,
+    artifact_analysis: Callable[[], dict[str, Any] | None] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Attempt terminal diagnostics once, retaining explicit reporting failures."""
+    if not diagnostics_enabled:
+        return None, None
+    diagnostics_payload = None
+    payload_validated = False
+    try:
+        # Requested artifact inspection belongs before the builder's cutoff.
+        artifacts = artifact_analysis() if artifact_analysis is not None else None
+        diagnostics_payload, diagnostics_path = build_diagnostics_payload()
+        if artifacts is not None:
+            from molt.cli.binary_image_analysis import (
+                _merge_binary_image_analysis_stage,
+            )
+
+            _merge_binary_image_analysis_stage(
+                diagnostics_payload, "artifacts", artifacts
+            )
+        # Validate every route before publication or primary JSON embedding.
+        # A rejected destination must not discard a valid captured payload.
+        json.dumps(diagnostics_payload, allow_nan=False)
+        payload_validated = True
+        _emit_build_diagnostics(
+            diagnostics=diagnostics_payload,
+            diagnostics_path=diagnostics_path,
+            json_output=json_output,
+            verbosity=verbosity,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        # Serialization failures may mean the payload itself cannot be emitted.
+        # Never send invalid diagnostics through the primary JSON error path.
+        if not payload_validated:
+            diagnostics_payload = None
+        return (
+            diagnostics_payload,
+            f"Build diagnostics failed: {type(exc).__name__}: {exc}",
+        )
+    return diagnostics_payload, None
+
+
+def _emit_build_diagnostics_for_result(
+    result: int,
+    *,
+    diagnostics_enabled: bool,
+    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]],
+    json_output: bool,
+    verbosity: str,
+) -> int:
+    """Flush diagnostics without replacing an already-emitted primary failure."""
+    _, diagnostics_error = _emit_build_diagnostics_if_present(
+        diagnostics_enabled=diagnostics_enabled,
+        build_diagnostics_payload=build_diagnostics_payload,
         json_output=json_output,
         verbosity=verbosity,
     )
+    if diagnostics_error is not None:
+        print(diagnostics_error, file=sys.stderr)
+    return result
 
 
 def _wasm_link_operation_counts(
@@ -1136,6 +1197,7 @@ def _wasm_link_operation_counts(
                     str(name).startswith("split_app_")
                     or str(name).startswith("runtime_tree_shake_cache_")
                     or str(name).startswith("wasm_whole_artifact_")
+                    or name == "wasm_reloc_preflight_invocations"
                 )
                 and isinstance(value, (int, float))
                 and not isinstance(value, bool)
@@ -1150,14 +1212,18 @@ def _build_build_diagnostics_payload(
 ) -> tuple[dict[str, Any] | None, Path | None]:
     if not diagnostics_context.diagnostics_enabled:
         return None, None
+    completed_at = time.perf_counter()
     module_reason_map = {
         name: sorted(reasons)
         for name, reasons in sorted(diagnostics_context.module_reasons.items())
     }
-    total_sec = round(time.perf_counter() - diagnostics_context.diagnostics_start, 6)
-    phase_sec = _phase_duration_map(diagnostics_context.phase_starts)
+    total_sec = round(completed_at - diagnostics_context.diagnostics_start, 6)
+    phase_sec = _phase_duration_map(
+        diagnostics_context.phase_starts, ended_at=completed_at
+    )
     payload: dict[str, Any] = {
         "enabled": True,
+        "timing_scope": "build_preamble_to_terminal_result",
         "total_sec": total_sec,
         "phase_sec": phase_sec,
         "module_count": len(diagnostics_context.module_graph),

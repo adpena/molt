@@ -1547,6 +1547,29 @@ def test_gather_quiescence_not_quiet_when_build_active(monkeypatch) -> None:
     assert q["active_cargo_or_rustc_processes"]
 
 
+@pytest.mark.parametrize(
+    "image",
+    [
+        "molt-backend",
+        "molt-backend.native_backend.exe",
+        "molt-backend.wasm_backend",
+        "molt-backend.llvm_native_backend.exe",
+    ],
+)
+def test_feature_variant_compilers_are_build_processes(image) -> None:
+    assert ps._is_build_process_command(f"{image} --daemon", image_name=image)
+    assert not ps._is_build_process_command(f"tail {image}", image_name="tail")
+
+
+def test_backend_log_and_symbol_names_are_not_compiler_images() -> None:
+    for name in (
+        "molt-backend.log",
+        "molt-backend.pdb",
+        "molt-backend.native_backend.exe.log",
+    ):
+        assert not ps._is_build_process_command(name, image_name=name)
+
+
 def test_gather_quiescence_not_quiet_when_load_over_threshold(monkeypatch) -> None:
     # load 12 > 18*0.5=9 -> not quiet, even with no build process visible.
     monkeypatch.setattr(ps, "_list_build_processes", lambda: [])

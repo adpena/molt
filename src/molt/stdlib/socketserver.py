@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from abc import ABCMeta as _ABCMeta
 from io import BufferedIOBase
 import os
 import selectors
@@ -37,14 +36,6 @@ _MOLT_SOCKETSERVER_SET_RESPONSE = _require_intrinsic("molt_socketserver_set_resp
 
 # CPython exports `time` as the monotonic builtin.
 time = _require_intrinsic("molt_time_monotonic")
-
-if type(BufferedIOBase).__name__ != "ABCMeta":
-
-    class _BufferedIOBaseShim(metaclass=_ABCMeta):
-        pass
-
-    BufferedIOBase = _BufferedIOBaseShim
-
 
 class _FakeSocket:
     def __init__(self, request_bytes: bytes) -> None:

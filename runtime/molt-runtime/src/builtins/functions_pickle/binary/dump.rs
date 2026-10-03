@@ -1078,7 +1078,8 @@ pub(crate) fn pickle_dump_obj_binary(
             let _ = pickle_memo_store_if_absent(state, obj_bits);
             return Ok(());
         }
-        if type_id == TYPE_ID_LIST {
+        if type_id == TYPE_ID_LIST && unsafe { crate::object::iterable::builtin_receiver(_py, ptr) }
+        {
             state.push(PICKLE_OP_EMPTY_LIST);
             let _ = pickle_memo_store_if_absent(state, obj_bits);
             let Some(values) = (unsafe {

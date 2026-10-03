@@ -29,6 +29,7 @@ fn provider_function(name: &str, params: &[&str], returns_value: bool) -> Functi
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
 }
@@ -65,6 +66,7 @@ fn mixed_void_and_value_extern_fixture() -> (SimpleIR, molt_backend::NativeBacke
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let void_provider = provider_function("stdlib_void_helper", &[], false);
@@ -158,6 +160,7 @@ fn extern_call_mismatch_fixture(
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let provider = provider_function(
@@ -194,6 +197,7 @@ fn native_object_retains_exact_generated_object_abi_import() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -272,6 +276,7 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             }],
             profile: None,
@@ -325,6 +330,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -336,6 +342,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
                 source_file: None,
                 is_extern: true,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],

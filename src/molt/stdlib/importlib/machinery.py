@@ -228,6 +228,11 @@ class ExtensionFileLoader(_FileLoader):
         )
 
 
+# Admission follows this class identity through its current subclasses, even
+# after renaming or removal of the machinery facade from sys.modules.
+_require_intrinsic("molt_importlib_extension_loader_type_declare")(ExtensionFileLoader)
+
+
 class SourcelessFileLoader(_FileLoader):
     def __init__(self, fullname: str, path: str) -> None:
         self.name = fullname
@@ -382,8 +387,8 @@ def _check_loader_exec_result(result) -> None:
 
 
 def _raise_loader_pending_exception() -> None:
-    if _MOLT_EXCEPTION_PENDING():
-        exc = _MOLT_EXCEPTION_LAST_PENDING()
+    exc = _MOLT_EXCEPTION_LAST_PENDING()
+    if exc is not None:
         cleared = _MOLT_EXCEPTION_CLEAR()
         if cleared is not None:
             raise RuntimeError(
@@ -532,7 +537,6 @@ _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = None
 _MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC = None
 _MOLT_EXCEPTION_CLEAR = None
 _MOLT_EXCEPTION_LAST_PENDING = None
-_MOLT_EXCEPTION_PENDING = None
 _MOLT_IMPORTLIB_INTRINSICS_READY = False
 
 
@@ -555,7 +559,6 @@ def _ensure_intrinsics() -> None:
     global _MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC
     global _MOLT_EXCEPTION_CLEAR
     global _MOLT_EXCEPTION_LAST_PENDING
-    global _MOLT_EXCEPTION_PENDING
     global _MOLT_IMPORTLIB_INTRINSICS_READY
     if _MOLT_IMPORTLIB_INTRINSICS_READY:
         return
@@ -608,7 +611,6 @@ def _ensure_intrinsics() -> None:
     )
     exception_clear = _require_intrinsic("molt_exception_clear")
     exception_last_pending = _require_intrinsic("molt_exception_last_pending")
-    exception_pending = _require_intrinsic("molt_exception_pending")
 
     _MOLT_IMPORTLIB_READ_FILE = importlib_read_file
     _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = importlib_pathfinder_find_spec
@@ -644,7 +646,6 @@ def _ensure_intrinsics() -> None:
     _MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC = importlib_load_module_from_spec
     _MOLT_EXCEPTION_CLEAR = exception_clear
     _MOLT_EXCEPTION_LAST_PENDING = exception_last_pending
-    _MOLT_EXCEPTION_PENDING = exception_pending
     _MOLT_IMPORTLIB_INTRINSICS_READY = True
 
 

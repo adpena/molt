@@ -51,6 +51,8 @@ use crate::{
 };
 mod compile_codeop;
 mod function_abi;
+pub(crate) use function_abi::bound_method_new;
+pub(crate) mod native_callable;
 mod opcode_payload;
 mod tokenize;
 mod wasm_callables_generated;
@@ -60,7 +62,6 @@ pub use function_abi::*;
 pub use opcode_payload::*;
 pub use tokenize::*;
 
-pub(crate) use function_abi::python_builtin_functions_clear_runtime_state;
 pub(crate) use wasm_callables_generated::{
     PYTHON_BUILTIN_FUNCTIONS, runtime_callable_symbol_is_non_callable,
 };
@@ -575,7 +576,10 @@ pub extern "C" fn molt_pprint_format_object(
             _py, obj_bits, &mut seen, level, max_depth, -1,
         );
         // Return a tuple (repr_str, readable_bool, recursive_bool)
-        let repr_ptr = alloc_string(_py, repr.as_bytes());
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let repr_ptr = alloc_string(_py, &repr);
         if repr_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -583,6 +587,7 @@ pub extern "C" fn molt_pprint_format_object(
         let readable_bits = MoltObject::from_int(if readable { 1 } else { 0 }).bits();
         let recursive_bits = MoltObject::from_int(if recursive { 1 } else { 0 }).bits();
         let tup_ptr = crate::alloc_tuple(_py, &[repr_bits, readable_bits, recursive_bits]);
+        dec_ref_bits(_py, repr_bits);
         if tup_ptr.is_null() {
             return MoltObject::none().bits();
         }

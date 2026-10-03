@@ -135,8 +135,14 @@ admitted in canonical manifest order under both the global worker ceiling and
 the per-resource limits in `[[resource_policy]]`. The compiler-build resource
 remains serialized because its Cargo/link state is mutable, while independent
 repository, formal, runtime, and audit proofs use bounded parallel capacity.
-The first failed, timed-out, or source-mutating command stops admission and
-cancels live siblings through `guarded_exec` custody. Receipts are always written
+An ordinary failed command blocks its dependents while independent work
+continues. A deadline is local only when the guard proves process closure and
+Cargo recovery is complete or unnecessary under its native interruption
+inventory. Source mutation, unsafe resource pressure, unknown custody, signals,
+or operator interruption stop all work through `guarded_exec` custody.
+The exact failure rules are owned by
+[the testing contract](../spec/areas/testing/0007-testing.md#proof-executor-failure-and-candidate-binding).
+Receipts are always written
 in manifest order and include the observed peak fanout, resource peaks, wall
 time, cancellations, and the existing per-command peak-RSS/toolchain evidence.
 For every `github-job` family, the manifest validator simulates the deterministic

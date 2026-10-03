@@ -175,6 +175,26 @@ def main(argv: list[str] | None = None) -> int:
                 getattr(result, "infrastructure_failure", None)
             ),
             "temporary_artifacts": getattr(result, "temporary_artifacts", None),
+            "timed_out": bool(getattr(result, "timed_out", False)),
+            "exit_signal": (
+                None
+                if getattr(result, "timed_out", False)
+                or getattr(result, "violation", None) is not None
+                or getattr(result, "guard_signal", None) is not None
+                else harness_memory_guard.memory_guard.exit_signal_payload(
+                    int(result.returncode)
+                )
+            ),
+            "memory_violation": harness_memory_guard._rss_record_payload(
+                getattr(result, "violation", None)
+            ),
+            "guard_signal": getattr(result, "guard_signal", None),
+            "termination_reports": harness_memory_guard.memory_guard.termination_reports_payload(
+                getattr(result, "termination_reports", ())
+            ),
+            "cargo_incremental_quarantine": harness_memory_guard.memory_guard._cargo_incremental_quarantine_payload(
+                getattr(result, "cargo_incremental_quarantine", None)
+            ),
             "duration_seconds": getattr(result, "elapsed_s", None),
             "peak_process_rss_bytes": (
                 int(peak.rss_kb) * 1024

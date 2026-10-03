@@ -27,8 +27,10 @@ from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.build_output_layout import _resolve_build_output_layout
 from molt.cli.models import _BackendCacheSetup
 from molt.cli.project_roots import _find_project_root
-from molt.cli.runtime_paths import _cargo_profile_dir
+from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
 from molt.exact_json import canonical_json_sha256
+from molt.source_root import compiler_source_root
+from tests.compiler_identity_helper import compiler_build_admission, write_compiler_lock
 
 _EXE = ".exe" if os.name == "nt" else ""
 _MOLT_ROOT_MARKERS = (
@@ -108,9 +110,11 @@ def _isolated_molt_root(
     monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
     for name, value in env.items():
         monkeypatch.setenv(name, value)
+    write_compiler_lock(root)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", os.fspath(root))
     monkeypatch.chdir(root)
-    # The CLI spells every root from the working directory.
-    return Path.cwd()
+    # Compiler inputs follow explicit source selection, independently of cwd.
+    return compiler_source_root()
 
 
 def _dispatch(
@@ -247,34 +251,45 @@ def _build_backend_setup(target: str, tmp_path: Path) -> tuple[Any, Any]:
 def _fake_backend_toolchain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[list[list[str]], list[list[str]]]:
-    """Replace only the external processes and source hashing of admission."""
+    """Keep admission/receipts real around fixture plans and external processes."""
+    from molt.cli import compiler_identity
+
     cargo_calls: list[list[str]] = []
     probe_calls: list[list[str]] = []
+
+    def admission(root, features, profile, environment):
+        selected_environment = {
+            **environment,
+            "CARGO_TARGET_DIR": os.fspath(_cargo_target_root(root)),
+        }
+        admitted = compiler_build_admission(features, profile, selected_environment)
+        admitted.plan.project_root = root
+        return admitted
 
     def fingerprint(
         project_root: Path,
         *,
         cargo_profile: str,
-        rustflags: str,
+        build_admission: Any,
         backend_features: tuple[str, ...],
         stored_fingerprint: object = None,
     ) -> dict[str, str]:
-        # Varies with every selection input the real meta digest binds.
         del project_root, stored_fingerprint
         return {
             "hash": canonical_json_sha256(
-                [cargo_profile, rustflags, list(backend_features)]
+                [cargo_profile, build_admission.fingerprint, list(backend_features)]
             ),
             "rustc": "rustc-fixture",
             "inputs_digest": canonical_json_sha256("backend-inputs"),
             "meta_digest": canonical_json_sha256("backend-meta"),
         }
 
-    def cargo(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        cargo_calls.append(list(cmd))
+    def cargo(plan, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        cmd = list(plan.command)
+        cargo_calls.append(cmd)
         profile = cmd[cmd.index("--profile") + 1]
         output = (
-            Path(kwargs["env"]["CARGO_TARGET_DIR"])
+            Path(plan.environment["CARGO_TARGET_DIR"])
             / _cargo_profile_dir(profile)
             / f"molt-backend{_EXE}"
         )
@@ -287,8 +302,17 @@ def _fake_backend_toolchain(
         probe_calls.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
+    monkeypatch.setattr(cli_backend_binary, "backend_build_admission", admission)
+    monkeypatch.setattr(compiler_identity, "backend_build_admission", admission)
     monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fingerprint)
-    monkeypatch.setattr(cli_backend_binary, "_run_cargo_with_sccache_retry", cargo)
+    # The fixture has one source manifest; the live source-generation fence
+    # still captures it and Cargo.lock before/after every modeled build.
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_backend_source_paths",
+        lambda root, _features: [root / "runtime/molt-backend/Cargo.toml"],
+    )
+    monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", cargo)
     monkeypatch.setattr(
         cli_backend_binary, "_run_subprocess_captured_to_tempfiles", probe
     )
@@ -388,7 +412,7 @@ def test_prewarm_admits_the_backend_the_build_selects(
     [
         ("wasm", "molt-backend.wasm_backend", ("wasm-backend",)),
         ("luau", "molt-backend.luau_backend", ("luau-backend",)),
-        ("native", "molt-backend", ("native-backend",)),
+        ("native", "molt-backend.native_backend", ("native-backend",)),
         ("llvm", "molt-backend.llvm_native_backend", ("native-backend", "llvm")),
     ],
 )
@@ -567,10 +591,10 @@ def test_prewarm_fails_closed_when_admission_publishes_no_receipt(
 ) -> None:
     _isolated_molt_root(tmp_path, monkeypatch)
     cargo_calls, _probe_calls = _fake_backend_toolchain(monkeypatch)
-    # Unhashable backend sources: admission still builds and reports success
-    # but cannot publish a source/content receipt, so the next build rebuilds.
+    # A successful admission result cannot substitute for retained receipts.
+    # Inject lost publication after valid source and executable admission.
     monkeypatch.setattr(
-        cli_backend_binary, "_backend_fingerprint", lambda *_args, **_kwargs: None
+        cli_backend_binary, "_write_runtime_fingerprint", lambda *_args, **_kwargs: None
     )
 
     rc = _dispatch(["internal-backend-build", "--target", "wasm", "--json"])
@@ -594,7 +618,7 @@ def test_prewarm_cargo_failure_keeps_json_framing_and_stderr_detail(
     _fake_backend_toolchain(monkeypatch)
     monkeypatch.setattr(
         cli_backend_binary,
-        "_run_cargo_with_sccache_retry",
+        "_run_resolved_cargo_plan",
         lambda cmd, **_kwargs: subprocess.CompletedProcess(
             cmd, 101, "", "error: linking with `cc` failed"
         ),

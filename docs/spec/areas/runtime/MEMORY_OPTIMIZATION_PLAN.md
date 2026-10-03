@@ -102,7 +102,7 @@ All sizes below are **payload only** (after the 24-byte `MoltHeader`). The total
 | **Iter** | `u64 + usize` = 16 | `[target: u64][index: usize]` | |
 | **BoundMethod** | `2 * u64` = 16 | `[func: u64][self: u64]` | |
 | **Function** | `8 * u64` = 64 | `[fn_ptr][arity][dict][closure][code][trampoline][annotations][annotate]` | |
-| **Class (Type)** | `8 * u64` = 64 | `[name][dict][bases][mro][layout_ver][annotations][annotate][qualname]` | |
+| **Class (Type)** | `11 * u64` = 88 | `[name][dict][bases][mro][layout_ver][slots][field_layout][qualname][policy][layout_size][declarations]` | Class annotations and evaluators are namespace entries; no private annotation owners |
 | **Code** | `8 * u64` = 64 | `[filename][name][firstlineno][linetable][varnames][argcount][posonly][kwonly]` | |
 | **Exception** | ~72+ | 9 NaN-boxed fields | |
 | **Generator** | `48 + variable` | `[send][throw][closed][exc_depth][yield_from][...]` | + state machine payload |

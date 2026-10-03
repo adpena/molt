@@ -412,7 +412,7 @@ fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
     }
     if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
         let float_name_bits = intern_static_name(_py, b"__float__");
-        if let Some(call_bits) = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) }
+        if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, float_name_bits) }
         {
             let res_bits = call_callable0(_py, call_bits);
             dec_ref_bits(_py, call_bits);
@@ -435,7 +435,7 @@ fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
             return None;
         }
         let index_name_bits = intern_static_name(_py, b"__index__");
-        if let Some(call_bits) = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) }
+        if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, index_name_bits) }
         {
             let res_bits = call_callable0(_py, call_bits);
             dec_ref_bits(_py, call_bits);
@@ -483,7 +483,7 @@ fn coerce_real_named(_py: &PyToken, val_bits: u64, name: &str) -> Option<RealVal
     }
     if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
         let float_name_bits = intern_static_name(_py, b"__float__");
-        if let Some(call_bits) = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) }
+        if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, float_name_bits) }
         {
             let res_bits = call_callable0(_py, call_bits);
             dec_ref_bits(_py, call_bits);
@@ -506,7 +506,7 @@ fn coerce_real_named(_py: &PyToken, val_bits: u64, name: &str) -> Option<RealVal
             return None;
         }
         let index_name_bits = intern_static_name(_py, b"__index__");
-        if let Some(call_bits) = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) }
+        if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, index_name_bits) }
         {
             let res_bits = call_callable0(_py, call_bits);
             dec_ref_bits(_py, call_bits);
@@ -1750,7 +1750,7 @@ pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
             let floor_name_bits = intern_static_name(_py, b"__floor__");
             if let Some(call_bits) =
-                unsafe { attr_lookup_ptr_allow_missing(_py, ptr, floor_name_bits) }
+                unsafe { lookup_special_method(_py, ptr, floor_name_bits) }
             {
                 let callable_ok = compat_molt_is_callable(_py, call_bits);
                 if callable_ok {
@@ -1804,7 +1804,7 @@ pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
             let ceil_name_bits = intern_static_name(_py, b"__ceil__");
             if let Some(call_bits) =
-                unsafe { attr_lookup_ptr_allow_missing(_py, ptr, ceil_name_bits) }
+                unsafe { lookup_special_method(_py, ptr, ceil_name_bits) }
             {
                 let callable_ok = compat_molt_is_callable(_py, call_bits);
                 if callable_ok {
@@ -1858,7 +1858,7 @@ pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
             let trunc_name_bits = intern_static_name(_py, b"__trunc__");
             if let Some(call_bits) =
-                unsafe { attr_lookup_ptr_allow_missing(_py, ptr, trunc_name_bits) }
+                unsafe { lookup_special_method(_py, ptr, trunc_name_bits) }
             {
                 let callable_ok = compat_molt_is_callable(_py, call_bits);
                 if callable_ok {

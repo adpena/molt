@@ -18,6 +18,7 @@ from typing import Any, cast
 from tools.memory_guard_core.windows_snapshot import (
     ProcessSnapshotError,
     _windows_process_snapshot_rows_hard_timeout,
+    windows_current_process_started_at_ns,
 )
 
 
@@ -172,6 +173,7 @@ class ProcessTreeTracker:
     known_pids: set[int] | None = None
     known_pgids: set[int] | None = None
     known_identities: dict[int, ProcessIdentity] | None = None
+    released_identities: dict[int, ProcessIdentity] | None = None
 
     def __post_init__(self) -> None:
         if self.known_pids is None:
@@ -184,6 +186,8 @@ class ProcessTreeTracker:
             self.known_pgids.add(self.root_pid)
         if self.known_identities is None:
             self.known_identities = {}
+        if self.released_identities is None:
+            self.released_identities = {}
 
     def update(self, samples: Mapping[int, ProcessSample]) -> set[int]:
         """Return currently observed members of this process tree."""
@@ -191,6 +195,7 @@ class ProcessTreeTracker:
         assert self.known_pids is not None
         assert self.known_pgids is not None
         assert self.known_identities is not None
+        assert self.released_identities is not None
         for pid in list(self.known_pids):
             sample = samples.get(pid)
             if sample is None:
@@ -222,6 +227,13 @@ class ProcessTreeTracker:
             changed = False
             for sample in samples.values():
                 sample_pgid = sample_pgid_or_pid(sample)
+                released = self.released_identities.get(sample.pid)
+                current = process_identity(sample)
+                if released is not None and (
+                    not process_identity_has_creation_marker(current)
+                    or released == current
+                ):
+                    continue  # Exact receiver-owned instances cannot be re-adopted.
                 # Historical PIDs remain known so a live reparented descendant
                 # stays under custody.  An absent historical PID must not admit
                 # new children: Windows can reuse that stale number, otherwise
@@ -241,6 +253,47 @@ class ProcessTreeTracker:
                         self.known_pgids.add(sample_pgid)
                         changed = True
         return {pid for pid in self.known_pids if pid in samples}
+
+    def transfer_process_group(
+        self,
+        pgid: int,
+        *,
+        samples: Mapping[int, ProcessSample],
+        identities: Mapping[int, ProcessIdentity],
+    ) -> bool:
+        """Release exactly one explicitly adopted, birth-verified child group.
+
+        The receiving suite must acknowledge ownership before this is called.
+        A transfer never grants an exemption to this guard's own root group.
+        """
+        watched = self.update(samples)
+        members = {
+            pid for pid, sample in samples.items() if sample_pgid_or_pid(sample) == pgid
+        }
+        if (
+            pgid == self.root_pid
+            or self.root_pid in identities
+            or not members
+            or not members <= set(identities)
+            or not set(identities) <= watched
+        ):
+            return False
+        if any(
+            not process_identity_has_creation_marker(identities[pid])
+            or process_identity(samples[pid]) != identities[pid]
+            or self.custody_identities(identities).get(pid) != identities[pid]
+            for pid in identities
+        ):
+            return False
+        assert self.released_identities is not None
+        self.released_identities.update(identities)
+        assert self.known_pids is not None and self.known_identities is not None
+        assert self.known_pgids is not None
+        self.known_pids.difference_update(identities)
+        for pid in identities:
+            self.known_identities.pop(pid, None)
+        self.known_pgids.discard(pgid)
+        return True
 
     def custody_identities(
         self,
@@ -788,8 +841,10 @@ def _darwin_proc_command(pid: int) -> str | None:
 def process_started_at_ns(pid: int) -> int | None:
     """Read one process creation marker without authorizing a whole snapshot."""
 
-    if pid <= 0 or os.name == "nt":
+    if type(pid) is not int or pid <= 0:
         return None
+    if os.name == "nt":
+        return windows_current_process_started_at_ns() if pid == os.getpid() else None
     if sys.platform.startswith("linux"):
         return _linux_proc_started_at_ns(pid)
     if sys.platform == "darwin":
@@ -1387,3 +1442,61 @@ def find_rss_violation(
         rss_kb=worst.rss_kb,
         command=worst.command,
     )
+
+
+def birth_fenced_descendants(
+    samples: Mapping[int, ProcessSample], observed: Mapping[int, int]
+) -> tuple[dict[int, ProcessSample], set[int]]:
+    """Extend observed process instances through live birth-verified parents.
+
+    A historical PID without a current matching birth grants no ancestry.
+    Unknown or inconsistent child births remain unresolved, never signalable.
+    PGID changes do not sever independently verified ancestry.
+    """
+    owned = {
+        pid: samples[pid]
+        for pid, born in observed.items()
+        if type(born) is int
+        and born > 0
+        and pid in samples
+        and type(samples[pid].started_at_ns) is int
+        and samples[pid].started_at_ns == born
+    }
+    unresolved: set[int] = set()
+    changed = True
+    while changed:
+        changed = False
+        for pid, child in samples.items():
+            if pid in owned or child.ppid not in owned:
+                continue
+            parent_born = owned[child.ppid].started_at_ns
+            child_born = child.started_at_ns
+            if (
+                type(child_born) is not int
+                or child_born <= 0
+                or parent_born is None
+                or child_born < parent_born
+            ):
+                unresolved.add(pid)
+                continue
+            owned[pid] = child
+            unresolved.discard(pid)
+            changed = True
+    return owned, unresolved
+
+
+def process_command_argv(pid: int) -> tuple[str, ...] | None:
+    """Read authoritative argv within one native process-birth fence."""
+    if pid <= 0:
+        return None
+    if sys.platform.startswith("linux"):
+        before = _linux_proc_stat_identity(pid)
+        argv = _linux_proc_argv(pid)
+        after = _linux_proc_stat_identity(pid)
+    elif sys.platform == "darwin":
+        before = _darwin_proc_metadata(pid)
+        argv = _darwin_proc_argv(pid)
+        after = _darwin_proc_metadata(pid)
+    else:
+        return None
+    return argv if before is not None and before == after else None

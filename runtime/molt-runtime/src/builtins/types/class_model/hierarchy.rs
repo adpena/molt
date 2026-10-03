@@ -2,59 +2,6 @@ use super::*;
 use crate::TYPE_ID_OBJECT;
 use crate::object::seq_access::snapshot;
 
-fn c3_merge(seqs: Vec<Vec<u64>>) -> Option<Vec<u64>> {
-    let mut result = Vec::new();
-    let mut heads = vec![0usize; seqs.len()];
-    let mut tail_counts: HashMap<u64, usize> = HashMap::new();
-    for seq in &seqs {
-        for &value in seq.iter().skip(1) {
-            *tail_counts.entry(value).or_insert(0) += 1;
-        }
-    }
-    loop {
-        let mut remaining = 0usize;
-        for (idx, seq) in seqs.iter().enumerate() {
-            if heads[idx] < seq.len() {
-                remaining += 1;
-            }
-        }
-        if remaining == 0 {
-            return Some(result);
-        }
-        let mut candidate = None;
-        'outer: for (seq_idx, seq) in seqs.iter().enumerate() {
-            let head_idx = heads[seq_idx];
-            if head_idx >= seq.len() {
-                continue;
-            }
-            let head = seq[head_idx];
-            if tail_counts.get(&head).copied().unwrap_or(0) == 0 {
-                candidate = Some(head);
-                break 'outer;
-            }
-        }
-        let cand = candidate?;
-        result.push(cand);
-        for (idx, seq) in seqs.iter().enumerate() {
-            let head_idx = heads[idx];
-            if head_idx < seq.len() && seq[head_idx] == cand {
-                heads[idx] += 1;
-                let next_head_idx = heads[idx];
-                if next_head_idx < seq.len() {
-                    let next_head = seq[next_head_idx];
-                    if let Some(count) = tail_counts.get_mut(&next_head) {
-                        if *count <= 1 {
-                            tail_counts.remove(&next_head);
-                        } else {
-                            *count -= 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn compute_mro(class_bits: u64, bases: &[u64]) -> Option<Vec<u64>> {
     let mut seqs = Vec::with_capacity(bases.len() + 1);
     for base in bases {
@@ -62,7 +9,7 @@ fn compute_mro(class_bits: u64, bases: &[u64]) -> Option<Vec<u64>> {
     }
     seqs.push(bases.to_vec());
     let mut out = vec![class_bits];
-    let merged = c3_merge(seqs)?;
+    let merged = molt_obj_model::hierarchy::c3_merge(&seqs)?;
     out.extend(merged);
     Some(out)
 }
@@ -79,12 +26,8 @@ pub(crate) fn prepare_class_base_layout(
     crate::object::ObjectShapeId,
     molt_obj_model::ExceptionLayoutRoot,
 )> {
-    let mut inherited_instance_type_id = TYPE_ID_OBJECT;
-    let mut inherited_instance_shape = crate::object::ObjectShapeId::Plain;
-    let mut inherited_exception_layout_root = molt_obj_model::ExceptionLayoutRoot::Base;
-    for base in bases.iter() {
-        let base_obj = obj_from_bits(*base);
-        let Some(base_ptr) = base_obj.as_ptr() else {
+    for &base in bases {
+        let Some(base_ptr) = obj_from_bits(base).as_ptr() else {
             raise_exception::<()>(_py, "TypeError", "base must be a type object");
             return None;
         };
@@ -94,7 +37,7 @@ pub(crate) fn prepare_class_base_layout(
                 return None;
             }
             if crate::object::class_is_not_base(_py, base_ptr) {
-                let name = class_name_for_error(*base);
+                let name = class_name_for_error(base);
                 raise_exception::<()>(
                     _py,
                     "TypeError",
@@ -106,55 +49,21 @@ pub(crate) fn prepare_class_base_layout(
                 raise_exception::<()>(_py, "TypeError", "class cannot inherit from itself");
                 return None;
             }
-            let base_instance_type_id = crate::object::class_instance_type_id(base_ptr);
-            if base_instance_type_id != TYPE_ID_OBJECT {
-                if inherited_instance_type_id != TYPE_ID_OBJECT
-                    && inherited_instance_type_id != base_instance_type_id
-                {
-                    raise_exception::<()>(
-                        _py,
-                        "TypeError",
-                        "multiple bases define conflicting native instance kinds",
-                    );
-                    return None;
-                }
-                inherited_instance_type_id = base_instance_type_id;
-            }
-            let base_layout_root = crate::object::class_exception_layout_root(base_ptr);
-            if base_layout_root != molt_obj_model::ExceptionLayoutRoot::Base {
-                if inherited_exception_layout_root != molt_obj_model::ExceptionLayoutRoot::Base
-                    && inherited_exception_layout_root != base_layout_root
-                {
-                    raise_exception::<()>(
-                        _py,
-                        "TypeError",
-                        "multiple bases have instance lay-out conflict",
-                    );
-                    return None;
-                }
-                inherited_exception_layout_root = base_layout_root;
-            }
-            let base_instance_shape = crate::object::class_instance_shape_id(base_ptr);
-            if base_instance_shape != crate::object::ObjectShapeId::Plain {
-                if inherited_instance_shape != crate::object::ObjectShapeId::Plain
-                    && inherited_instance_shape != base_instance_shape
-                {
-                    raise_exception::<()>(
-                        _py,
-                        "TypeError",
-                        "multiple bases define conflicting native payload shapes",
-                    );
-                    return None;
-                }
-                inherited_instance_shape = base_instance_shape;
-            }
         }
     }
-    Some((
-        inherited_instance_type_id,
-        inherited_instance_shape,
-        inherited_exception_layout_root,
-    ))
+    match unsafe { crate::object::class_layout::select_best_base(_py, bases) } {
+        Ok(Some(best)) => Some((
+            best.native.type_id,
+            best.native.shape,
+            best.native.exception,
+        )),
+        Ok(None) => Some((
+            TYPE_ID_OBJECT,
+            crate::object::ObjectShapeId::Plain,
+            molt_obj_model::ExceptionLayoutRoot::Base,
+        )),
+        Err(()) => None,
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -168,22 +77,31 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
                 return MoltObject::none().bits();
             }
-            if crate::object::class_definition_is_finished(class_ptr) {
+            if crate::object::class_definition_is_finished(class_ptr)
+                || crate::object::layout::class_slot_declaration_bits(class_ptr) != 0
+            {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
-                    "class bases are immutable after definition",
+                    "class bases are immutable after slot admission",
                 );
             }
         }
+        inc_ref_bits(_py, class_bits);
+        let _class_owner = crate::PtrDropGuard::new(class_ptr);
+        let original_bases = unsafe { class_bases_bits(class_ptr) };
+        if original_bases != 0 {
+            inc_ref_bits(_py, original_bases);
+        }
+        let _original_bases_owner = obj_from_bits(original_bases)
+            .as_ptr()
+            .map(crate::PtrDropGuard::new);
         let mut bases_vec = Vec::new();
-        let bases_owned;
         let bases_bits = if obj_from_bits(base_bits).is_none() || base_bits == 0 {
             let tuple_ptr = alloc_tuple(_py, &[]);
             if tuple_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            bases_owned = true;
             MoltObject::from_ptr(tuple_ptr).bits()
         } else {
             let base_obj = obj_from_bits(base_bits);
@@ -202,7 +120,6 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                         if tuple_ptr.is_null() {
                             return MoltObject::none().bits();
                         }
-                        bases_owned = true;
                         MoltObject::from_ptr(tuple_ptr).bits()
                     }
                     TYPE_ID_TUPLE => {
@@ -216,7 +133,6 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                         if tuple_ptr.is_null() {
                             return MoltObject::none().bits();
                         }
-                        bases_owned = true;
                         MoltObject::from_ptr(tuple_ptr).bits()
                     }
                     _ => {
@@ -230,6 +146,11 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
             }
         };
 
+        let mut bases_owner = crate::PtrDropGuard::new(
+            obj_from_bits(bases_bits)
+                .as_ptr()
+                .expect("owned base tuple"),
+        );
         if bases_vec.is_empty() {
             bases_vec = class_bases_vec(bases_bits);
         }
@@ -280,6 +201,18 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
             );
         }
 
+        if unsafe {
+            class_bases_bits(class_ptr) != original_bases
+                || crate::object::class_definition_is_finished(class_ptr)
+                || crate::object::layout::class_slot_declaration_bits(class_ptr) != 0
+        } {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "class bases changed during hierarchy admission",
+            );
+        }
+
         let mro = match compute_mro(class_bits, &bases_vec) {
             Some(val) => val,
             None => {
@@ -298,14 +231,12 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
 
         unsafe {
             use crate::object::class_storage::ClassReferenceSlot;
-            if !bases_owned {
-                inc_ref_bits(_py, bases_bits);
-            }
             // Adopt both new edges before releasing either old one. Keep the
             // displaced owners through namespace and layout publication too:
             // replacing the dictionary projections may otherwise trigger a
             // finalizer observing a half-published hierarchy.
             let old_bases = ClassReferenceSlot::Bases.exchange_owned(class_ptr, bases_bits);
+            bases_owner.release();
             let old_mro = ClassReferenceSlot::Mro.exchange_owned(class_ptr, mro_bits);
             let bases_updated = old_bases != bases_bits;
             let mro_updated = old_mro != mro_bits;
@@ -367,7 +298,7 @@ pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
             // The public finalization entrypoint includes slot layout. The
             // canonical type constructor calls the descriptor phase directly
             // because it has already established layout and published cells.
-            if apply_class_slots_layout(_py, class_ptr) {
+            if crate::object::class_finish_definition(_py, class_ptr).is_ok() {
                 class_apply_descriptor_names(_py, class_ptr);
             }
         }
@@ -525,152 +456,170 @@ pub extern "C" fn molt_class_set_layout_version(class_bits: u64, version_bits: u
     })
 }
 
-unsafe fn max_slot_end_from_offsets_dict(offsets_ptr: *mut u8) -> usize {
-    unsafe {
-        if object_type_id(offsets_ptr) != TYPE_ID_DICT {
-            return 0;
-        }
-        let mut max_end = 0usize;
-        let entries = dict_order(offsets_ptr).clone();
-        for pair in entries.chunks(2) {
-            if pair.len() != 2 {
-                continue;
-            }
-            if let Some(offset) = obj_from_bits(pair[1]).as_int()
-                && offset >= 0
-            {
-                let end = (offset as usize).saturating_add(std::mem::size_of::<u64>());
-                if end > max_end {
-                    max_end = end;
-                }
-            }
-        }
-        max_end
-    }
-}
-
+/// Merge construction inputs only. A finished class's physical record is
+/// immutable; explicit callers must agree with that record instead of resizing
+/// it or reconstructing a competing extent from namespace dictionaries.
 unsafe fn merge_class_layout_metadata(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
+    py: &PyToken<'_>,
+    class: *mut u8,
     offsets_bits: u64,
     size_bits: u64,
 ) -> Result<(), u64> {
     unsafe {
-        let dict_bits = class_dict_bits(class_ptr);
-        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-            return Ok(());
+        let hinted_size = to_i64(obj_from_bits(size_bits))
+            .filter(|&size| size >= 0)
+            .and_then(|size| usize::try_from(size).ok())
+            .ok_or_else(|| {
+                raise_exception::<u64>(py, "TypeError", "__molt_layout_size__ must be int")
+            })?;
+        let source = if obj_from_bits(offsets_bits).is_none() {
+            None
+        } else {
+            Some(
+                obj_from_bits(offsets_bits)
+                    .as_ptr()
+                    .filter(|&ptr| object_type_id(ptr) == TYPE_ID_DICT)
+                    .ok_or_else(|| {
+                        raise_exception::<u64>(
+                            py,
+                            "TypeError",
+                            "__molt_field_offsets__ must be dict or None",
+                        )
+                    })?,
+            )
         };
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+        if let Some(source) = source {
+            inc_ref_bits(py, offsets_bits);
+            let _source_owner = crate::PtrDropGuard::new(source);
+            if crate::object::class_definition_is_finished(class) {
+                let size = crate::object::layout::class_cached_layout_size(class).unwrap();
+                let tail = crate::object::class_reserved_layout_tail(py, class);
+                crate::object::validate_class_field_offsets(
+                    py,
+                    source,
+                    0,
+                    size.saturating_sub(tail),
+                )
+                .map_err(|()| MoltObject::none().bits())?;
+                if hinted_size > size
+                    || dict_order(source).chunks_exact(2).any(|pair| {
+                        crate::builtins::attr::class_field_offset(py, class, pair[0])
+                            != obj_from_bits(pair[1])
+                                .as_int()
+                                .and_then(|offset| usize::try_from(offset).ok())
+                    })
+                {
+                    return Err(raise_exception::<u64>(
+                        py,
+                        "ValueError",
+                        "class layout hint disagrees with sealed physical storage",
+                    ));
+                }
+                return Ok(());
+            }
+        }
+        // A size-only dataclass/compiler hint describes its logical vector,
+        // not an additional physical storage claim on an already sealed class.
+        if crate::object::class_definition_is_finished(class) {
             return Ok(());
         }
-
-        let offsets_name_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.field_offsets_name,
+        let Some(namespace) = obj_from_bits(class_dict_bits(class))
+            .as_ptr()
+            .filter(|&ptr| object_type_id(ptr) == TYPE_ID_DICT)
+        else {
+            return Ok(());
+        };
+        inc_ref_bits(py, MoltObject::from_ptr(namespace).bits());
+        let _namespace_owner = crate::PtrDropGuard::new(namespace);
+        let offsets_name = intern_static_name(
+            py,
+            &runtime_state(py).interned.field_offsets_name,
             b"__molt_field_offsets__",
         );
-        let layout_name_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.molt_layout_size,
+        let size_name = intern_static_name(
+            py,
+            &runtime_state(py).interned.molt_layout_size,
             b"__molt_layout_size__",
         );
-
-        let mut merged_offsets_ptr: *mut u8 = std::ptr::null_mut();
-        if !obj_from_bits(offsets_bits).is_none() {
-            let Some(source_offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "__molt_field_offsets__ must be dict or None",
-                ));
-            };
-            if object_type_id(source_offsets_ptr) != TYPE_ID_DICT {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "__molt_field_offsets__ must be dict or None",
-                ));
-            }
-            let mut target_offsets_bits =
-                dict_get_in_place(_py, dict_ptr, offsets_name_bits).unwrap_or(0);
-            if obj_from_bits(target_offsets_bits).is_none() || target_offsets_bits == 0 {
-                let new_ptr = alloc_dict_with_pairs(_py, &[]);
-                if new_ptr.is_null() {
-                    return Err(MoltObject::none().bits());
-                }
-                target_offsets_bits = MoltObject::from_ptr(new_ptr).bits();
-                dict_set_in_place(_py, dict_ptr, offsets_name_bits, target_offsets_bits);
-            }
-            let Some(target_offsets_ptr) = obj_from_bits(target_offsets_bits).as_ptr() else {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "__molt_field_offsets__ must be dict",
-                ));
-            };
-            if object_type_id(target_offsets_ptr) != TYPE_ID_DICT {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "__molt_field_offsets__ must be dict",
-                ));
-            }
-            let entries = dict_order(source_offsets_ptr).clone();
-            for pair in entries.chunks(2) {
-                if pair.len() != 2 {
-                    continue;
-                }
-                if dict_get_in_place(_py, target_offsets_ptr, pair[0]).is_some() {
-                    continue;
-                }
-                dict_set_in_place(_py, target_offsets_ptr, pair[0], pair[1]);
-            }
-            merged_offsets_ptr = target_offsets_ptr;
-        } else if let Some(existing_offsets_bits) =
-            dict_get_in_place(_py, dict_ptr, offsets_name_bits)
-            && let Some(existing_offsets_ptr) = obj_from_bits(existing_offsets_bits).as_ptr()
-            && object_type_id(existing_offsets_ptr) == TYPE_ID_DICT
-        {
-            merged_offsets_ptr = existing_offsets_ptr;
-        }
-
-        let reserved_prefix = crate::object::class_reserved_layout_prefix(class_ptr);
-        let reserved_tail = crate::object::class_reserved_layout_tail(_py, class_ptr);
-        let mut layout_size = 0usize;
-        if let Some(existing_size_bits) = dict_get_in_place(_py, dict_ptr, layout_name_bits)
-            && let Some(existing_size) = obj_from_bits(existing_size_bits).as_int()
-            && existing_size > 0
-        {
-            layout_size = existing_size as usize;
-        }
-        let hinted_size = match to_i64(obj_from_bits(size_bits)) {
-            Some(value) if value >= 0 => value as usize,
-            _ => {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "__molt_layout_size__ must be int",
-                ));
-            }
-        };
-        layout_size = layout_size.max(hinted_size);
-        if !merged_offsets_ptr.is_null() {
-            let required = max_slot_end_from_offsets_dict(merged_offsets_ptr)
-                .max(reserved_prefix)
-                .saturating_add(reserved_tail);
-            layout_size = layout_size.max(required);
-        }
-        layout_size = layout_size.max(
-            reserved_prefix
-                .saturating_add(reserved_tail)
-                .max(std::mem::size_of::<u64>()),
-        );
-        let layout_bits = MoltObject::from_int(layout_size as i64).bits();
-        dict_set_in_place(_py, dict_ptr, layout_name_bits, layout_bits);
-        if !apply_class_slots_layout(_py, class_ptr) {
+        if exception_pending(py) {
             return Err(MoltObject::none().bits());
         }
-        Ok(())
+        if let Some(source) = source {
+            inc_ref_bits(py, offsets_bits);
+            let _source_owner = crate::PtrDropGuard::new(source);
+            crate::object::validate_class_field_offsets(py, source, 0, usize::MAX)
+                .map_err(|()| MoltObject::none().bits())?;
+            let target_bits = dict_get_in_place(py, namespace, offsets_name)
+                .filter(|&bits| !obj_from_bits(bits).is_none());
+            if exception_pending(py) {
+                return Err(MoltObject::none().bits());
+            }
+            let target = if let Some(bits) = target_bits {
+                let target = obj_from_bits(bits)
+                    .as_ptr()
+                    .filter(|&ptr| object_type_id(ptr) == TYPE_ID_DICT)
+                    .ok_or_else(|| {
+                        raise_exception::<u64>(
+                            py,
+                            "TypeError",
+                            "__molt_field_offsets__ must be dict",
+                        )
+                    })?;
+                inc_ref_bits(py, bits);
+                target
+            } else {
+                let target = alloc_dict_with_pairs(py, &[]);
+                if target.is_null() {
+                    return Err(MoltObject::none().bits());
+                }
+                dict_set_in_place(
+                    py,
+                    namespace,
+                    offsets_name,
+                    MoltObject::from_ptr(target).bits(),
+                );
+                target
+            };
+            let _target_owner = crate::PtrDropGuard::new(target);
+            if exception_pending(py) {
+                return Err(MoltObject::none().bits());
+            }
+            crate::object::validate_class_field_offsets(py, target, 0, usize::MAX)
+                .map_err(|()| MoltObject::none().bits())?;
+            let entries = dict_order(source).clone();
+            for pair in entries.chunks_exact(2) {
+                if let Some(prior) = dict_get_in_place(py, target, pair[0]) {
+                    if prior != pair[1] {
+                        return Err(raise_exception::<u64>(
+                            py,
+                            "ValueError",
+                            "conflicting explicit class field offsets",
+                        ));
+                    }
+                } else {
+                    dict_set_in_place(py, target, pair[0], pair[1]);
+                }
+                if exception_pending(py) {
+                    return Err(MoltObject::none().bits());
+                }
+            }
+        }
+        let previous = dict_get_in_place(py, namespace, size_name)
+            .and_then(|bits| obj_from_bits(bits).as_int())
+            .and_then(|size| usize::try_from(size).ok())
+            .unwrap_or(0);
+        if exception_pending(py) {
+            return Err(MoltObject::none().bits());
+        }
+        let size = i64::try_from(previous.max(hinted_size)).map_err(|_| {
+            raise_exception::<u64>(py, "OverflowError", "class instance layout is too large")
+        })?;
+        dict_set_in_place(py, namespace, size_name, MoltObject::from_int(size).bits());
+        if exception_pending(py) {
+            Err(MoltObject::none().bits())
+        } else {
+            Ok(())
+        }
     }
 }
 

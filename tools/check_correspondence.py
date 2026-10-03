@@ -86,7 +86,7 @@ CODEGEN_ABI_RS = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"
 LUAU_BACKEND_SRC = ROOT / "runtime" / "molt-backend-luau" / "src"
 LUAU_CORE_TESTS_RS = LUAU_BACKEND_SRC / "luau" / "tests" / "core.rs"
 LUAU_HELPERS_RS = LUAU_BACKEND_SRC / "luau" / "helpers.rs"
-LUAU_PIPELINE_RS = LUAU_BACKEND_SRC / "luau" / "compile_pipeline.rs"
+LUAU_RUNTIME_FRAGMENTS_RS = LUAU_BACKEND_SRC / "luau" / "runtime_fragments.rs"
 TIR_TYPES_RS = ROOT / "runtime" / "molt-ir" / "src" / "tir" / "types.rs"
 FRONTEND_TYPES_PY = ROOT / "src" / "molt" / "frontend" / "_types.py"
 LEAN_PASSES_DIR = LEAN_DIR / "MoltTIR" / "Passes"
@@ -623,7 +623,7 @@ def check_luau_identity_lowering() -> CategoryResult:
     emit_text = _read(LUAU_EMIT_LEAN)
     rust_tests = _read(LUAU_CORE_TESTS_RS)
     rust_helpers = _read(LUAU_HELPERS_RS)
-    rust_pipeline = _read(LUAU_PIPELINE_RS)
+    rust_runtime_fragments = _read(LUAU_RUNTIME_FRAGMENTS_RS)
 
     lean_match = re.search(
         r"theorem\s+identityLowering_complete_matrix\s*:.*?=\s*\[(?P<rhs>.*?)\]\s*:=\s*by\s*rfl",
@@ -698,7 +698,7 @@ def check_luau_identity_lowering() -> CategoryResult:
         "Rust Direct -> molt_rawequal": 'format!("molt_rawequal({lhs}, {rhs})")'
         in rust_helpers,
         "Rust captures trusted rawequal": "local molt_rawequal = rawequal"
-        in rust_pipeline,
+        in rust_runtime_fragments,
         "Rust Direct avoids equality metamethod": "let operator = if negated"
         not in rust_helpers,
     }

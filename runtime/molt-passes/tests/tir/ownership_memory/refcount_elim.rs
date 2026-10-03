@@ -680,8 +680,11 @@ fn post_drop_keeps_check_exception_edge_payload_retain_release() {
     );
 }
 
+/// A `TryStart` binds no payload, so DropInsertion never retains around it.
+/// It remains an impure region registration, and post-drop cleanup does not
+/// pair an `IncRef`/`DecRef` across it.
 #[test]
-fn post_drop_keeps_try_start_edge_payload_retain_release() {
+fn post_drop_keeps_rc_pair_across_try_start_registration() {
     let mut func = make_func();
     let payload = func.fresh_value();
     let handler = func.fresh_block();
@@ -727,7 +730,7 @@ fn post_drop_keeps_try_start_edge_payload_retain_release() {
 
     assert_eq!(
         stats.ops_removed, 0,
-        "post-drop cleanup must preserve the retain consumed by the try handler edge"
+        "post-drop cleanup must not pair across an impure region registration"
     );
     assert_eq!(
         func.blocks[&func.entry_block]

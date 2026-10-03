@@ -1,119 +1,161 @@
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 
-import molt.cli as cli
-from molt.cli import typecheck
-from molt.type_facts import TypeFacts
+import pytest
 
-_TYPECHECK_NAMES = (
-    "_collect_py_files",
-    "_collect_type_facts_for_build",
-    "_read_cached_type_facts",
-    "_run_ty_check",
-    "_type_facts_cache_key",
-    "_type_facts_cache_path",
-    "_type_facts_cache_root",
-    "_type_facts_source_identity",
-    "_type_facts_tooling_identity",
-    "_write_cached_type_facts",
-    "check",
-)
+import molt.cli as cli
+from molt.cli import frontend_pipeline, module_source, typecheck
+from molt.type_facts import collect_type_facts_from_paths
 
 
 def test_cli_typecheck_authority_is_single_home() -> None:
-    for name in _TYPECHECK_NAMES:
+    for name in ("_collect_py_files", "_run_ty_check", "check"):
         assert hasattr(typecheck, name)
         assert not hasattr(cli, name)
-
-    cli_source = inspect.getsource(cli)
-    for name in _TYPECHECK_NAMES:
-        assert f"def {name}(" not in cli_source
+        assert f"def {name}(" not in inspect.getsource(cli)
 
 
-def test_collect_type_facts_for_build_reuses_successful_ty_cache(
-    tmp_path: Path, monkeypatch
-) -> None:
-    source = tmp_path / "main.py"
-    source.write_text("VALUE: int = 1\n", encoding="utf-8")
-    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
-    ty_checks: list[Path] = []
-    collects: list[bool] = []
-
-    def fake_ty_check(path: Path) -> tuple[bool, str]:
-        ty_checks.append(path)
-        return True, "ok"
-
-    def fake_collect(paths, trust, infer=False):
-        collects.append(infer)
-        facts = TypeFacts(strict=(trust == "trusted"))
-        facts.tool = "fresh"
-        return facts
-
-    monkeypatch.setattr(typecheck, "_run_ty_check", fake_ty_check)
-    monkeypatch.setattr(typecheck, "collect_type_facts_from_paths", fake_collect)
-
-    first, first_ok = typecheck._collect_type_facts_for_build([source], "check", source)
-    second, second_ok = typecheck._collect_type_facts_for_build(
-        [source], "check", source
+def _prepare(source: Path, *, policy="check", is_wasm=False):
+    warnings: list[str] = []
+    details: dict = {}
+    config, failure = frontend_pipeline._prepare_frontend_lowering_config(
+        type_facts_path=None,
+        type_hint_policy=policy,
+        module_graph={"entry": source},
+        source_path=source,
+        json_output=True,
+        warnings=warnings,
+        module_deps={"entry": set()},
+        module_dep_closures={"entry": frozenset()},
+        has_back_edges=False,
+        known_modules={"entry"},
+        direct_call_modules={"entry"},
+        known_func_defaults={},
+        known_func_kinds={},
+        native_callable_exports={},
+        pgo_hot_function_names=set(),
+        generated_module_source_paths={},
+        entry_module="entry",
+        entry_execution_kind="script",
+        namespace_module_names=set(),
+        module_source_catalog=module_source._build_module_source_catalog(
+            {"entry": source}, module_sources={"entry": source.read_text()}
+        ),
+        is_wasm=is_wasm,
+        frontend_parallel_details=details,
+        frontend_phase_timeout=None,
     )
-
-    assert first_ok is True
-    assert second_ok is True
-    assert first is not None
-    assert second is not None
-    assert first.tool == "molt-check+ty+infer"
-    assert second.tool == "molt-check+ty+infer"
-    assert ty_checks == [source]
-    assert collects == [True]
+    return config, failure, warnings, details
 
 
-def test_collect_type_facts_cache_key_invalidates_on_source_edit(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("policy", ["check", "ignore"])
+@pytest.mark.parametrize("is_wasm", [False, True])
+def test_build_keeps_source_annotations_without_running_a_checker(
+    tmp_path, monkeypatch, policy, is_wasm
 ) -> None:
-    source = tmp_path / "main.py"
-    source.write_text("VALUE: int = 1\n", encoding="utf-8")
-    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
-    ty_checks = 0
+    source = tmp_path / "entry.py"
+    source.write_text("def f(x: int):\n    y = 1\n    y = 'text'\n    return y\n")
 
-    def fake_ty_check(path: Path) -> tuple[bool, str]:
-        nonlocal ty_checks
-        ty_checks += 1
-        return True, "ok"
+    def unexpected_check(*args, **kwargs):
+        pytest.fail("ordinary compilation must not consult an ambient checker")
 
-    monkeypatch.setattr(typecheck, "_run_ty_check", fake_ty_check)
-
-    typecheck._collect_type_facts_for_build([source], "check", source)
-    typecheck._collect_type_facts_for_build([source], "check", source)
-    source.write_text("VALUE: int = 2\n", encoding="utf-8")
-    typecheck._collect_type_facts_for_build([source], "check", source)
-
-    assert ty_checks == 2
+    monkeypatch.setattr(typecheck, "_run_ty_check", unexpected_check)
+    config, failure, warnings, _ = _prepare(source, policy=policy, is_wasm=is_wasm)
+    assert failure is None
+    assert config is not None
+    assert config.type_facts is None
+    assert warnings == []
 
 
-def test_collect_type_facts_does_not_cache_failed_ty_result(
-    tmp_path: Path, monkeypatch
+def test_trusted_build_revalidates_external_environment_and_reports_failure(
+    tmp_path, monkeypatch, capsys
 ) -> None:
-    source = tmp_path / "main.py"
-    source.write_text("VALUE: int = 1\n", encoding="utf-8")
-    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
-    ty_checks = 0
+    source = tmp_path / "entry.py"
+    source.write_text("value: int = 1\n")
+    outcomes = iter([(True, ""), (False, "dependency annotation changed")])
+    monkeypatch.setattr(typecheck, "_run_ty_check", lambda _: next(outcomes))
+    config, failure, _, details = _prepare(source, policy="trust")
+    assert failure is None and config is not None
+    assert config.type_facts is None
+    assert "validate_type_hints" in details["pipeline_stage_ms"]
+    config, failure, _, _ = _prepare(source, policy="trust")
+    assert config is None and failure is not None
+    assert "dependency annotation changed" in capsys.readouterr().out
 
-    def fake_ty_check(path: Path) -> tuple[bool, str]:
-        nonlocal ty_checks
-        ty_checks += 1
-        return False, "ty failed"
 
-    monkeypatch.setattr(typecheck, "_run_ty_check", fake_ty_check)
-
-    first, first_ok = typecheck._collect_type_facts_for_build([source], "check", source)
-    second, second_ok = typecheck._collect_type_facts_for_build(
-        [source], "check", source
+def test_type_fact_export_never_promotes_assignments_to_scope_wide_types(tmp_path):
+    source = tmp_path / "entry.py"
+    source.write_text(
+        "value = 1\nvalue = 'changed'\nannotated: int = 3\n"
+        "def f(flag, declared: int):\n"
+        "    local = []\n"
+        "    if flag:\n        local = {'key': 1}\n"
+        "    annotated_local: int = 4\n"
+        "    return local\n"
     )
+    for trust in ("guarded", "trusted"):
+        module = collect_type_facts_from_paths([source], trust).modules["entry"]
+        assert set(module.globals) == {"annotated"}
+        assert set(module.functions["f"].params) == {"declared"}
+        assert set(module.functions["f"].locals) == {"annotated_local"}
 
-    assert first is not None
-    assert second is not None
-    assert first_ok is False
-    assert second_ok is False
-    assert ty_checks == 2
+
+@pytest.mark.parametrize("ty_ok", [False, True])
+def test_check_exports_the_same_guarded_annotations_regardless_of_validation(
+    tmp_path, monkeypatch, ty_ok
+) -> None:
+    source = tmp_path / "entry.py"
+    source.write_text("annotated: int = 1\nunannotated = 2\n")
+    output = tmp_path / "facts.json"
+    monkeypatch.setattr(typecheck, "_run_ty_check", lambda _: (ty_ok, "diagnostic"))
+    assert (
+        typecheck.check(
+            str(source),
+            str(output),
+            strict=False,
+            deterministic=False,
+            json_output=True,
+        )
+        == 0
+    )
+    facts = json.loads(output.read_text())
+    assert facts["modules"]["entry"]["globals"] == {
+        "annotated": {"type": "int", "trust": "guarded"}
+    }
+    assert facts["tool"] == "molt-check"
+
+
+def test_failed_strict_check_never_publishes_facts_even_without_diagnostics(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "entry.py"
+    source.write_text("value: int = 1\n")
+    output = tmp_path / "facts.json"
+    output.write_text("previous artifact\n")
+    monkeypatch.setattr(typecheck, "_run_ty_check", lambda _: (False, ""))
+    assert (
+        typecheck.check(
+            str(source), str(output), strict=True, deterministic=False, json_output=True
+        )
+        != 0
+    )
+    assert output.read_text() == "previous artifact\n"
+
+
+def test_explicit_checker_cannot_import_a_project_shadow(tmp_path, monkeypatch):
+    source = tmp_path / "entry.py"
+    source.write_text("value: int = 1\n")
+    marker = tmp_path / "executed"
+    (tmp_path / "ty.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('shadow')\n"
+        "raise RuntimeError('project ty module executed')\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.setenv("MOLT_TY_TIMEOUT", "30")
+    ok, diagnostics = typecheck._run_ty_check(source)
+    assert ok, diagnostics
+    assert not marker.exists()

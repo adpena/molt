@@ -14,6 +14,7 @@ from typing import Literal, Mapping
 
 from molt.exact_json import canonical_json_bytes, loads_exact, read_exact
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+from tools.memory_guard_core.active_custody import MarkerRecord, read_marker_records
 from tools.proof_queue_pkg import command_admission, command_identity, custody, state
 from tools.proof_queue_pkg.diagnostic_model import (
     _diagnostic,
@@ -365,13 +366,19 @@ def _summary_guard_marker(
     marker_dir = root.resolve(strict=False) / "active"
     expected_command = summary.get("command")
     expected_created_at = summary.get("recorded_at")
-    matches: list[tuple[Path, dict[str, object]]] = []
+    matches: list[MarkerRecord] = []
+    unreadable = False
     try:
-        candidates = tuple(marker_dir.glob(f"guard-{guard_pid}-*.json"))
-    except OSError:
+        candidates = read_marker_records(marker_dir)
+    except (OSError, ValueError):
         return "unavailable", None, None, None
-    for path in candidates:
-        marker = _read_json_object(path)
+    for record in candidates:
+        if not record.path.name.startswith(f"guard-{guard_pid}-"):
+            continue
+        marker = record.payload
+        if marker is None:
+            unreadable = True
+            continue
         if marker.get("pid") != guard_pid:
             continue
         if (
@@ -385,27 +392,19 @@ def _summary_guard_marker(
             and marker.get("created_at") != expected_created_at
         ):
             continue
-        matches.append((path, marker))
+        matches.append(record)
     if not matches:
-        return "missing", None, None, None
-    path, marker = max(
+        return "unavailable" if unreadable else "missing", None, None, None
+    record = max(
         matches,
         key=lambda item: str(
-            item[1].get("updated_at") or item[1].get("created_at") or ""
+            (item.payload or {}).get("updated_at")
+            or (item.payload or {}).get("created_at")
+            or ""
         ),
     )
-    status = marker.get("status")
-    status_text = status.strip() if isinstance(status, str) and status.strip() else None
-    terminal_statuses = {
-        "completed",
-        "finalizer_completed",
-        "guard_exception",
-        "spawn_failed",
-    }
-    marker_state: GuardMarkerState = (
-        "terminal" if status_text in terminal_statuses else "nonterminal"
-    )
-    return marker_state, status_text, path, _log_age_seconds(path)
+    marker_state: GuardMarkerState = "terminal" if record.terminal else "nonterminal"
+    return marker_state, record.status, record.path, _log_age_seconds(record.path)
 
 
 def _log_age_seconds(path: Path) -> float | None:

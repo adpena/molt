@@ -5,6 +5,7 @@ use molt_proof_supervisor::{
     ClosureMode, EventJournal, Policy, RECEIPT_SCHEMA, Receipt, platform, sha256_bytes,
 };
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
@@ -236,7 +237,10 @@ fn verify_receipt(policy_path: &Path, receipt_path: &Path) -> Result<u8, String>
     let raw_policy: Policy = serde_json::from_slice(&policy_bytes)
         .map_err(|error| format!("invalid policy: {error}"))?;
     let policy = raw_policy.validate()?;
-    let receipt_bytes = fs::metadata(receipt_path)
+    let receipt_file = fs::File::open(receipt_path)
+        .map_err(|error| format!("cannot open receipt {}: {error}", receipt_path.display()))?;
+    let receipt_bytes = receipt_file
+        .metadata()
         .map_err(|error| format!("cannot stat receipt {}: {error}", receipt_path.display()))?
         .len();
     if receipt_bytes > MAX_RECEIPT_BYTES as u64 {
@@ -251,8 +255,23 @@ fn verify_receipt(policy_path: &Path, receipt_path: &Path) -> Result<u8, String>
         );
         return Ok(79);
     }
-    let bytes = fs::read(receipt_path)
+    let mut bytes = Vec::with_capacity(receipt_bytes as usize);
+    receipt_file
+        .take(MAX_RECEIPT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read receipt {}: {error}", receipt_path.display()))?;
+    if bytes.len() > MAX_RECEIPT_BYTES {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_valid": false,
+                "receipt_size_valid": false,
+                "receipt_bytes": bytes.len(),
+                "maximum_receipt_bytes": MAX_RECEIPT_BYTES,
+            })
+        );
+        return Ok(79);
+    }
     let receipt_size_valid = true;
     let receipt: Receipt =
         serde_json::from_slice(&bytes).map_err(|error| format!("invalid receipt: {error}"))?;
@@ -260,35 +279,41 @@ fn verify_receipt(policy_path: &Path, receipt_path: &Path) -> Result<u8, String>
     let terminal_consistent = receipt.terminal_is_consistent();
     let lifecycle_valid = receipt.lifecycle_is_valid();
     let schema_valid = receipt.schema == RECEIPT_SCHEMA;
+    let capability_valid =
+        platform::capability_contract_is_valid(&receipt.capability, policy.policy.mode);
     let policy_digest_valid = receipt.policy_sha256 == policy.policy_sha256;
     let nonce_digest_valid = receipt.nonce_sha256 == sha256_bytes(policy.policy.nonce.as_bytes());
     let event_verification = receipt
         .event_log
         .as_ref()
         .ok_or_else(|| "terminal receipt has no event log".to_owned())
-        .and_then(|event_log| verify_event_artifact(receipt_path, event_log));
+        .and_then(|event_log| {
+            verify_event_artifact(receipt_path, event_log, &policy, &receipt.capability)
+        });
     let event_log_valid = event_verification.is_ok();
     let derived_summary_valid = event_verification
         .as_ref()
         .is_ok_and(|verified| verified.derived_images == receipt.derived_image_summary);
-    let accounting_valid = event_verification.as_ref().is_ok_and(|verified| {
-        verified.accounting.total_processes == receipt.accounting.total_processes
-            && verified.accounting.active_processes == receipt.accounting.active_processes
-            && verified.accounting.observed_process_creates
-                == receipt.accounting.observed_process_creates
-            && verified.accounting.observed_process_exits
-                == receipt.accounting.observed_process_exits
-            && verified.accounting.observed_execs == receipt.accounting.observed_execs
-            && verified.accounting.root_execs == receipt.accounting.root_execs
+    let accounting_valid = event_verification
+        .as_ref()
+        .is_ok_and(|verified| verified.accounting == receipt.accounting);
+    let root_exit_valid = event_verification
+        .as_ref()
+        .is_ok_and(|verified| verified.root_exit_code == receipt.root_exit_code);
+    let violation_replay_valid = event_verification.as_ref().is_ok_and(|verified| {
+        verified.violation_count == receipt.violation_count
+            && verified.violations == receipt.violations
     });
+    let kernel_accounting_valid = receipt.kernel_accounting_is_valid();
     println!(
         "{}",
         serde_json::json!({
-            "capability": platform::capability(policy.policy.mode),
+            "capability": receipt.capability,
             "schema": receipt.schema,
             "state": receipt.state,
             "complete": receipt.complete,
             "schema_valid": schema_valid,
+            "capability_valid": capability_valid,
             "identity_valid": identity_valid,
             "terminal_consistent": terminal_consistent,
             "lifecycle_valid": lifecycle_valid,
@@ -298,11 +323,15 @@ fn verify_receipt(policy_path: &Path, receipt_path: &Path) -> Result<u8, String>
             "event_log_valid": event_log_valid,
             "derived_summary_valid": derived_summary_valid,
             "accounting_valid": accounting_valid,
+            "root_exit_valid": root_exit_valid,
+            "violation_replay_valid": violation_replay_valid,
+            "kernel_accounting_valid": kernel_accounting_valid,
             "event_log_error": event_verification.err(),
         })
     );
     Ok(
         if schema_valid
+            && capability_valid
             && identity_valid
             && terminal_consistent
             && lifecycle_valid
@@ -312,6 +341,9 @@ fn verify_receipt(policy_path: &Path, receipt_path: &Path) -> Result<u8, String>
             && event_log_valid
             && derived_summary_valid
             && accounting_valid
+            && root_exit_valid
+            && violation_replay_valid
+            && kernel_accounting_valid
         {
             0
         } else {
@@ -342,10 +374,11 @@ fn run_policy(policy_path: &Path, receipt_path: &Path, inventory: bool) -> Resul
             "inventory-tree policy must use the inventory command".to_owned()
         });
     }
-    let mut events = EventJournal::create(receipt_path)?;
-    let mut receipt = platform::run(&policy, &mut events);
+    let capability = platform::capability(policy.policy.mode);
+    let mut events = EventJournal::create(receipt_path, &policy, &capability)?;
+    let mut receipt = platform::run(&policy, &mut events, capability);
     let evidence = events.publish()?;
-    receipt.attach_evidence(evidence);
+    receipt.attach_evidence(evidence)?;
     write_receipt_atomic(receipt_path, &receipt)?;
     Ok(if receipt.complete { 0 } else { 78 })
 }

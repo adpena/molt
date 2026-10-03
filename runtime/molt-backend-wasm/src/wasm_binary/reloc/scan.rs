@@ -7,7 +7,7 @@ use wasmparser::{DataKind, ElementItems, ExternalKind, Operator, Parser, Payload
 
 use super::types::{FunctionImport, PendingReloc};
 
-fn checked_section_offset(position: usize, section_start: usize, context: &str) -> u32 {
+fn checked_section_offset(position: u64, section_start: u64, context: &str) -> u32 {
     let relative = position.checked_sub(section_start).unwrap_or_else(|| {
         panic!("{context} position {position} precedes section start {section_start}")
     });
@@ -21,11 +21,11 @@ pub(super) struct RelocScan {
     pub(super) defined_func_count: u32,
     pub(super) table_import_count: u32,
     pub(super) table_defined_count: u32,
-    pub(super) code_section_start: Option<usize>,
+    pub(super) code_section_start: Option<u64>,
     pub(super) code_section_index: Option<u32>,
     pub(super) data_section_index: Option<u32>,
     pub(super) element_section_index: Option<u32>,
-    pub(super) func_body_ranges: Vec<std::ops::Range<usize>>,
+    pub(super) func_body_ranges: Vec<std::ops::Range<u64>>,
     pub(super) pending_code: Vec<PendingReloc>,
     pub(super) pending_data: Vec<PendingReloc>,
     pub(super) pending_elem: Vec<PendingReloc>,
@@ -208,7 +208,7 @@ impl RelocScan {
         &mut self,
         bytes: &[u8],
         data_relocs: &[DataRelocSite],
-        code_section_start: usize,
+        code_section_start: u64,
     ) {
         for site in data_relocs {
             let def_index = site.defined_func_index as usize;
@@ -232,7 +232,7 @@ impl RelocScan {
         &mut self,
         bytes: &[u8],
         table_relocs: &[TableRelocSite],
-        code_section_start: usize,
+        code_section_start: u64,
     ) {
         for site in table_relocs {
             let def_index = site.defined_func_index as usize;
@@ -268,13 +268,13 @@ impl RelocScan {
 
 fn validate_padded_i32_operand(
     bytes: &[u8],
-    body: &std::ops::Range<usize>,
+    body: &std::ops::Range<u64>,
     section_offset: u32,
-    code_section_start: usize,
+    code_section_start: u64,
     label: &str,
 ) -> Result<(), String> {
     let operand = code_section_start
-        .checked_add(section_offset as usize)
+        .checked_add(u64::from(section_offset))
         .ok_or_else(|| format!("{label} relocation absolute offset overflow"))?;
     let opcode = operand
         .checked_sub(1)
@@ -288,6 +288,14 @@ fn validate_padded_i32_operand(
             body.start, body.end
         ));
     }
+    // Parser positions are u64 independently of host pointer width. Convert
+    // only at the byte-slice boundary, after validating the owning body.
+    let opcode = usize::try_from(opcode)
+        .map_err(|_| format!("{label} relocation opcode exceeds addressable bytes"))?;
+    let operand = usize::try_from(operand)
+        .map_err(|_| format!("{label} relocation operand exceeds addressable bytes"))?;
+    let encoded_end = usize::try_from(encoded_end)
+        .map_err(|_| format!("{label} relocation boundary exceeds addressable bytes"))?;
     if bytes.get(opcode) != Some(&0x41) {
         return Err(format!(
             "{label} relocation at {operand} is not the operand of i32.const"

@@ -67,6 +67,40 @@ operation-local rather than reading or publishing strict disk records. Function
 analysis caches retain defaults and kinds only; every consumer admits imports
 through the same source-request loader.
 
+Wrapper run/deploy commands resolve a fresh entry snapshot and target parse for
+each operation. A resolved entry is not a process-lifetime source cache: changing
+the file does not refresh its retained AST, and reusing that admission after
+mutation must fail the strict precomputed-scan content check.
+
+Wrapper cache publication retains the complete pre-build input payload and key.
+Its entry fences resolve the original selector with the child's explicit
+environment and working directory through the shared entry/root resolver.
+File selectors are anchored to the caller's directory before child execution;
+symlinks remain live selectors. A new package shadow or a retargeted selector
+cannot keep the old resolved entry as publication authority. The pre-build fence
+also rejects selector drift before a cache-hit output can be consumed.
+After the build child returns, the canonical closure/input builder is used again
+only as a final equality fence. A changed entry, dependency, resolution topology,
+target policy, or tooling identity cannot relabel the child's output with a later
+generation. Classified source-content drift, a missing final input, or a different
+final key makes the wrapper fail explicitly before returning a usable output
+contract. The child's output may remain on disk, but run/deploy cannot consume it
+through that failed operation. No new cache receipt is published, and an existing
+receipt is left byte-for-byte unchanged; its input and binary hashes still govern
+any later read. A subsequent operation resolves a new entry and must rebuild.
+Unrelated policy/programming exceptions are not recast as source drift.
+Receipt schema v3 excludes receipts made before this fence.
+A binary-hash or receipt-publication I/O failure also returns an explicit wrapper
+error with the output/receipt paths and underlying reason. The produced file stays
+on disk, but no usable contract or success signal is returned. The wrapper's
+path-only return contract does not carry optional-cache warnings to JSON callers.
+
+The child success contract supplies output paths, not an attestation of compiled
+source inputs. The wrapper fence prevents publication under a later observed
+generation; it does not certify an unobserved change-and-restore during the child.
+It applies to operations for which wrapper cache inputs can be captured; explicit
+no-cache/rebuild operations retain their existing child-build contract.
+
 Tooling dependency discovery returns one immutable receipt: ordered canonical
 paths, per-file hashes, a root-relative content digest, and captured byte count.
 Python and dynamic-import manifest identities use the exact bytes parsed by

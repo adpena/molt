@@ -161,7 +161,7 @@ def write_type_facts(path: Path, facts: TypeFacts) -> None:
 
 
 def collect_type_facts_from_paths(
-    paths: Iterable[Path], trust: TrustLevel, infer: bool = False
+    paths: Iterable[Path], trust: TrustLevel
 ) -> TypeFacts:
     facts = TypeFacts(strict=(trust == "trusted"))
     for path in paths:
@@ -169,7 +169,7 @@ def collect_type_facts_from_paths(
         with tokenize.open(path) as handle:
             source = handle.read()
         module = facts.module(module_name)
-        _collect_module_facts(module, source, trust, infer=infer)
+        _collect_module_facts(module, source, trust)
     return facts
 
 
@@ -270,57 +270,6 @@ def normalize_type_hint(value: str | None) -> str | None:
     return mapping.get(base_lower, base)
 
 
-def _infer_expr_type(node: ast.expr) -> str | None:
-    if isinstance(node, ast.Constant):
-        value = node.value
-        if isinstance(value, bool):
-            return "bool"
-        if isinstance(value, int):
-            return "int"
-        if isinstance(value, float):
-            return "float"
-        if isinstance(value, str):
-            return "str"
-        if isinstance(value, bytes):
-            return "bytes"
-        if value is None:
-            return "None"
-        return None
-    if isinstance(node, ast.List):
-        if not node.elts:
-            return "list"
-        elem_types = {_infer_expr_type(elt) for elt in node.elts}
-        if None in elem_types or len(elem_types) != 1:
-            return "list"
-        elem = elem_types.pop()
-        if elem in {"int", "float", "str", "bytes", "bytearray", "bool"}:
-            return f"list[{elem}]"
-        return "list"
-    if isinstance(node, ast.Tuple):
-        if not node.elts:
-            return "tuple"
-        elem_types = {_infer_expr_type(elt) for elt in node.elts}
-        if None in elem_types or len(elem_types) != 1:
-            return "tuple"
-        elem = elem_types.pop()
-        if elem in {"int", "float", "str", "bytes", "bytearray", "bool"}:
-            return f"tuple[{elem}]"
-        return "tuple"
-    if isinstance(node, ast.Dict):
-        if not node.keys:
-            return "dict"
-        key_types = {_infer_expr_type(key) for key in node.keys if key is not None}
-        val_types = {_infer_expr_type(val) for val in node.values}
-        if None in key_types or None in val_types:
-            return "dict"
-        if key_types == {"str"} and len(val_types) == 1:
-            val = next(iter(val_types))
-            if val in {"int", "float", "str", "bytes", "bytearray", "bool"}:
-                return f"dict[str,{val}]"
-        return "dict"
-    return None
-
-
 def _fact_from_dict(data: Any) -> Fact | None:
     if not isinstance(data, dict):
         return None
@@ -355,31 +304,20 @@ def _annotation_to_string(node: ast.expr) -> str | None:
         return None
 
 
-def _collect_module_facts(
-    module: ModuleFacts, source: str, trust: TrustLevel, infer: bool
-) -> None:
+def _collect_module_facts(module: ModuleFacts, source: str, trust: TrustLevel) -> None:
     tree = ast.parse(source)
     for stmt in tree.body:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            module.functions[stmt.name] = _collect_function_facts(
-                stmt, trust, infer=infer
-            )
+            module.functions[stmt.name] = _collect_function_facts(stmt, trust)
         elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
             hint = _annotation_to_string(stmt.annotation)
             normalized = normalize_type_hint(hint)
             if normalized and hint is not None:
                 module.globals[stmt.target.id] = Fact(hint, trust)
-        elif infer and isinstance(stmt, ast.Assign):
-            if len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
-                name = stmt.targets[0].id
-                if name not in module.globals:
-                    inferred = _infer_expr_type(stmt.value)
-                    if inferred:
-                        module.globals[name] = Fact(inferred, trust)
 
 
 def _collect_function_facts(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, trust: TrustLevel, infer: bool
+    node: ast.FunctionDef | ast.AsyncFunctionDef, trust: TrustLevel
 ) -> FunctionFacts:
     facts = FunctionFacts()
     for arg in node.args.args:
@@ -405,14 +343,5 @@ def _collect_function_facts(
             normalized = normalize_type_hint(hint)
             if normalized and hint is not None:
                 facts.locals[inner.target.id] = Fact(hint, trust)
-        elif infer and isinstance(inner, ast.Assign):
-            if (
-                len(inner.targets) == 1
-                and isinstance(inner.targets[0], ast.Name)
-                and inner.targets[0].id not in facts.locals
-            ):
-                inferred = _infer_expr_type(inner.value)
-                if inferred:
-                    facts.locals[inner.targets[0].id] = Fact(inferred, trust)
         stack.extend(ast.iter_child_nodes(inner))
     return facts

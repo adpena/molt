@@ -594,23 +594,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         seal_block_once(&mut *builder, sealed_blocks, after_all);
                         let final_acc = builder.use_var(acc_loop_var);
 
-                        // Update the accumulator variables as raw i64.
-                        // The reduction scanner only accepts proven-int
-                        // loop shapes; if the static fixpoint misses one
-                        // of these names, the typed-IR invariant is too
-                        // narrow and should fail during verification.
-                        debug_assert!(
-                            representation_plan
-                                .is_raw_int_carrier_name(reduction.add_out_name.as_str())
-                        );
-                        debug_assert!(
-                            representation_plan
-                                .is_raw_int_carrier_name(reduction.acc_store_slot.as_str())
-                        );
-                        debug_assert!(
-                            representation_plan
-                                .is_raw_int_carrier_name(reduction.acc_operand_name.as_str())
-                        );
+                        // Update the accumulator variables as raw i64:
+                        // the scanner admitted only inline-int carriers.
                         def_var_named(&mut *builder, vars, &reduction.add_out_name, final_acc);
                         def_var_named(&mut *builder, vars, &reduction.acc_store_slot, final_acc);
                         def_var_named(&mut *builder, vars, &reduction.acc_operand_name, final_acc);

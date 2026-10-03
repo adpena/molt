@@ -23,7 +23,9 @@ one protected promotion job can make a draft GitHub Release public.
 
 ## Packaging invariants
 
-- The Molt toolchain itself may depend on local Python/Rust toolchains to build software,
+- Installed Molt (bundle, package manager or platform wheel) ships its compiler and
+  runtime prebuilt and never needs Rust; a source checkout may depend on local
+  Python/Rust toolchains to build software,
   but binaries produced by `molt build` are expected to be standalone artifacts that run
   without a host Python installation.
 - Shipped artifacts must not rely on hidden host-CPython fallback or a production bridge lane.

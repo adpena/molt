@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import functools
 from pathlib import Path
 
 from molt.cli.output import fail as _fail
-from molt.compiler_distribution import installed_compiler
+from molt.compiler_distribution import MANIFEST_NAME
+from molt.cli.compiler_identity import installed_compiler_admission
 from molt.source_root import (
     MOLT_SOURCE_ROOT_ENV,
-    compiler_source_root_override,
     resolve_path_override,
 )
 
@@ -25,15 +24,6 @@ def _is_path_within(path: Path, container: Path) -> bool:
     except ValueError:
         return False
     return True
-
-
-def _resolve_root_override(var: str) -> Path | None:
-    path = resolve_path_override(var)
-    if path is None:
-        return None
-    if path.exists():
-        return path
-    return None
 
 
 def _has_molt_repo_markers(path: Path) -> bool:
@@ -56,53 +46,50 @@ def _has_project_markers(path: Path) -> bool:
     )
 
 
-@functools.lru_cache(maxsize=64)
-def _find_project_root_cached(start_text: str, override_text: str | None) -> Path:
-    if override_text:
-        override = Path(override_text)
-        if override.exists():
-            return override
-    start = Path(start_text)
-    for parent in [start] + list(start.parents):
+def _find_project_root(start: Path) -> Path:
+    """Discover the live user project independently of compiler inputs.
+
+    Directory topology is mutable, so a path-only cache cannot own this fact.
+    An explicit selection is preserved even when invalid; consumers diagnose it.
+    """
+    override = resolve_path_override("MOLT_PROJECT_ROOT")
+    if override is not None:
+        return override
+    start = start.expanduser().resolve()
+    directory = start if start.is_dir() else start.parent
+    for parent in (directory, *directory.parents):
         if _has_project_markers(parent):
             return parent
-    return start.parent
+    return directory
 
 
-def _find_project_root(start: Path) -> Path:
-    override = _resolve_root_override("MOLT_PROJECT_ROOT")
-    override_text = str(override) if override is not None else None
-    return _find_project_root_cached(str(start), override_text)
-
-
-@functools.lru_cache(maxsize=64)
-def _find_molt_root_cached(
-    candidate_texts: tuple[str, ...],
-    override_text: str | None,
-) -> Path:
-    if override_text:
-        return Path(override_text)
-    candidates = tuple(Path(text) for text in candidate_texts)
-    for candidate in candidates:
-        for parent in [candidate] + list(candidate.parents):
-            if _has_molt_repo_markers(parent):
-                return parent
-    module_path = Path(__file__).resolve()
-    for parent in [module_path] + list(module_path.parents):
-        if _has_molt_repo_markers(parent):
-            return parent
-    if candidates:
-        return candidates[0]
-    return Path.cwd()
-
-
-def _find_molt_root(*candidates: Path) -> Path:
-    override = compiler_source_root_override()
-    override_text = str(override) if override is not None else None
-    return _find_molt_root_cached(
-        tuple(str(candidate) for candidate in candidates),
-        override_text,
-    )
+def _require_project_root(
+    root: Path,
+    json_output: bool,
+    command: str,
+    *,
+    pyproject: bool = False,
+) -> int | None:
+    if not root.is_dir():
+        return _fail(
+            f"Project directory not found: {root}",
+            json_output,
+            command=command,
+        )
+    if (root / MANIFEST_NAME).exists():
+        return _fail(
+            f"Installed compiler inputs are immutable: {root}. Select your user project.",
+            json_output,
+            command=command,
+        )
+    if pyproject and not (root / "pyproject.toml").is_file():
+        return _fail(
+            f"Project pyproject.toml not found under {root}. "
+            "Run this command in your project or set MOLT_PROJECT_ROOT.",
+            json_output,
+            command=command,
+        )
+    return None
 
 
 def _require_molt_root(
@@ -112,9 +99,7 @@ def _require_molt_root(
 ) -> int | None:
     if _has_molt_repo_markers(molt_root):
         try:
-            installed = installed_compiler(molt_root)
-            if installed is not None:
-                installed.verify_sources()
+            installed_compiler_admission(molt_root)
         except (OSError, ValueError) as exc:
             return _fail(
                 f"Molt installed compiler sources are invalid: {exc}",
@@ -123,8 +108,10 @@ def _require_molt_root(
             )
         return None
     message = (
-        f"Molt compiler/runtime sources not found under {molt_root}. "
-        f"Set {MOLT_SOURCE_ROOT_ENV} to the compiler source root or use a "
-        "release bundle with its verified source payload."
+        f"Molt compiler/runtime sources not found under {molt_root}. This "
+        "installation has no prebuilt Molt distribution for this platform: "
+        "install the platform wheel, a package-manager release or a release "
+        f"bundle, or set {MOLT_SOURCE_ROOT_ENV} to a Molt source checkout for "
+        "an explicit source build."
     )
     return _fail(message, json_output, command=command)

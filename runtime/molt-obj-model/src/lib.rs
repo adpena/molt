@@ -1,15 +1,20 @@
 //! Core object representation for Molt.
 //! Uses NaN-boxing to represent primitives and heap pointers in 64 bits.
 
+pub mod byte_compare;
 pub mod exception_layout;
 pub mod float_bits;
+pub mod hash_policy;
+pub mod hierarchy;
 pub mod int_literal;
+pub mod sequence_compare;
 
 pub use exception_layout::{
-    BuiltinExceptionSpec, ExceptionBaseSpec, ExceptionFieldPolicy, ExceptionFieldStorage,
-    ExceptionLayoutKind, ExceptionLayoutRoot, ExceptionMissingRead, ExceptionTypedField,
-    MAX_EXCEPTION_TYPED_FIELDS, MAX_EXCEPTION_TYPED_TAIL_WORDS, builtin_exception_spec,
-    builtin_exception_specs,
+    BuiltinExceptionSpec, ExceptionAttributeDeclaration, ExceptionAttributeField,
+    ExceptionBaseSpec, ExceptionDescriptorKind, ExceptionFieldPolicy, ExceptionFieldStorage,
+    ExceptionLayoutKind, ExceptionLayoutRoot, ExceptionMissingRead, ExceptionStrSlot,
+    ExceptionTypedField, MAX_EXCEPTION_TYPED_FIELDS, MAX_EXCEPTION_TYPED_TAIL_WORDS,
+    builtin_exception_spec, builtin_exception_specs,
 };
 
 use std::backtrace::Backtrace;

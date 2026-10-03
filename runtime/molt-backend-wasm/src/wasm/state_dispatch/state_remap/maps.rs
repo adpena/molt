@@ -1,7 +1,4 @@
 use crate::OpIR;
-use molt_tir::tir::op_kinds_generated::{
-    simpleir_kind_is_wasm_state_resume_after, simpleir_kind_is_wasm_state_resume_at,
-};
 use std::collections::BTreeMap;
 
 use super::{STATE_REMAP_TABLE_MAX_ENTRIES, STATE_REMAP_TABLE_MAX_SPARSITY};
@@ -9,28 +6,27 @@ use super::{STATE_REMAP_TABLE_MAX_ENTRIES, STATE_REMAP_TABLE_MAX_SPARSITY};
 pub(in crate::wasm::state_dispatch) fn build_state_resume_maps(
     ops: &[OpIR],
     initial_dispatch_index: usize,
-) -> (BTreeMap<i64, usize>, BTreeMap<String, i64>) {
-    let mut state_map: BTreeMap<i64, usize> = BTreeMap::new();
-    state_map.insert(0, initial_dispatch_index);
-    let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
-
-    for (idx, op) in ops.iter().enumerate() {
-        if simpleir_kind_is_wasm_state_resume_after(op.kind.as_str()) {
-            if let Some(state_id) = op.value {
-                state_map.insert(state_id, idx + 1);
-            }
-        } else if simpleir_kind_is_wasm_state_resume_at(op.kind.as_str()) {
-            if let Some(state_id) = op.value {
-                state_map.insert(state_id, idx);
-            }
-        } else if op.kind.as_str() == "const"
-            && let (Some(out), Some(value)) = (op.out.as_ref(), op.value)
-        {
-            const_ints.insert(out.clone(), value);
-        }
+) -> BTreeMap<i64, usize> {
+    molt_ir::ir_schema::validate_state_dispatch(ops)
+        .unwrap_or_else(|error| panic!("invalid WASM state dispatch: {error}"));
+    let targets = ops
+        .iter()
+        .find_map(|op| op.state_targets.as_ref())
+        .expect("WASM state dispatch requires the shared terminal StateDispatch map");
+    let labels: BTreeMap<_, _> = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(index, op)| {
+            matches!(op.kind.as_str(), "label" | "state_label")
+                .then(|| op.value.map(|label| (label, index)))
+                .flatten()
+        })
+        .collect();
+    let mut state_map = BTreeMap::from([(0, initial_dispatch_index)]);
+    for &(state, label) in targets {
+        state_map.insert(state, labels[&label]);
     }
-
-    (state_map, const_ints)
+    state_map
 }
 
 pub(in crate::wasm::state_dispatch) fn stateful_entry_prologue_end(ops: &[OpIR]) -> usize {
@@ -124,14 +120,17 @@ mod tests {
         let ops = vec![
             op("exception_stack_enter", None),
             op("store_var", None),
-            op("state_switch", None),
+            OpIR {
+                state_targets: Some(vec![(5, 15)]),
+                ..op("state_switch", None)
+            },
             op("jump", Some(9)),
-            op("state_yield", Some(5)),
-            op("state_label", Some(5)),
+            op("state_set", Some(5)),
+            op("state_label", Some(15)),
             op("ret", None),
         ];
         let prologue_end = stateful_entry_prologue_end(&ops);
-        let (state_map, _) = build_state_resume_maps(&ops, prologue_end + 1);
+        let state_map = build_state_resume_maps(&ops, prologue_end + 1);
 
         assert_eq!(prologue_end, 2);
         assert_eq!(state_map.get(&0), Some(&3));

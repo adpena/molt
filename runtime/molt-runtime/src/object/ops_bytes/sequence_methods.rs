@@ -192,7 +192,7 @@ pub extern "C" fn molt_bytes_join(sep_bits: u64, items_bits: u64) -> u64 {
                 }
                 return MoltObject::none().bits();
             }
-            let mut cursor = out_ptr.add(std::mem::size_of::<usize>());
+            let mut cursor = crate::object::layout::InlineBytesStorage::data(out_ptr);
             if all_same && parts.len() > 1 {
                 let sep_len = sep_bytes.len();
                 let elem_len = first_len;

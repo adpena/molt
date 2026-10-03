@@ -546,13 +546,6 @@ local function molt_dict_popitem(dict: {[any]: any}): {any}
 	return molt_pack_tuple(key, value)
 end
 
-local function molt_dict_inc(dict: {[any]: any}, key: any, delta: any): any
-	local current = molt_dict_get(dict, key, 0)
-	local value = current + delta
-	molt_dict_set(dict, key, value)
-	return value
-end
-
 local function molt_dict_setdefault_empty_list(dict: {[any]: any}, key: any): any
 	if molt_dict_contains(dict, key) then return molt_dict_getitem(dict, key) end
 	local value = molt_pack_list()

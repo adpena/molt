@@ -24,13 +24,13 @@ class CallNamedBuiltinFallbackDispatchMixin(GeneratorMixinBase):
         self, node: ast.Call, func_id: str, needs_bind: bool
     ) -> Any:
         if func_id in BUILTIN_FUNC_SPECS:
-            if func_id == "open":
-                needs_bind = True
             spec = BUILTIN_FUNC_SPECS[func_id]
-            # CALL_FUNC bypasses argument binding; vararg/kwonly builtins must
-            # route through CALL_BIND to preserve Python call semantics.
+            # Publication declares special binding protocols. Keep this call's
+            # transport conservative; the live callee owns the actual binder.
             needs_bind = needs_bind or (
-                spec.vararg is not None or bool(spec.kwonly_params)
+                spec.bind_kind is not None
+                or spec.vararg is not None
+                or bool(spec.kwonly_params)
             )
             callee = self._emit_builtin_function(func_id)
             res = MoltValue(self.next_var(), type_hint="Any")

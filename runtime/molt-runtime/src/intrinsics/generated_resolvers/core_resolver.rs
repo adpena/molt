@@ -151,9 +151,17 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_io_class",
             crate::molt_io_class as *const (),
         )),
+        "molt_io_member_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_io_member_get",
+            crate::molt_io_member_get as *const (),
+        )),
         "molt_str_repeat" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_str_repeat",
             crate::molt_str_repeat as *const (),
+        )),
+        "molt_get_awaitable" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_get_awaitable",
+            crate::molt_get_awaitable as *const (),
         )),
         "molt_task_register_token_owned" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_task_register_token_owned",
@@ -199,6 +207,34 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_module_new",
             crate::molt_module_new as *const (),
         )),
+        "molt_module_type_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_module_type_new",
+            crate::molt_module_type_new as *const (),
+        )),
+        "molt_module_init" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_module_init",
+            crate::molt_module_init as *const (),
+        )),
+        "molt_module_getattribute" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_module_getattribute",
+            crate::molt_module_getattribute as *const (),
+        )),
+        "molt_module_setattr" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_module_setattr",
+            crate::molt_module_setattr as *const (),
+        )),
+        "molt_module_delattr" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_module_delattr",
+            crate::molt_module_delattr as *const (),
+        )),
+        "molt_module_dir" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_module_dir",
+            crate::molt_module_dir as *const (),
+        )),
+        "molt_module_repr" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_module_repr",
+            crate::molt_module_repr as *const (),
+        )),
         "molt_namespace_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_namespace_get",
             crate::molt_namespace_get as *const (),
@@ -221,6 +257,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_cpython_abi_run_static_extension_init as *const (),
             ))
         }
+        "molt_exception_match_handler" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_exception_match_handler",
+            crate::molt_exception_match_handler as *const (),
+        )),
         "molt_exception_active" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_exception_active",
             crate::molt_exception_active as *const (),
@@ -276,10 +316,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_gen_locals" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_gen_locals",
             crate::molt_gen_locals as *const (),
-        )),
-        "molt_frame_context_set" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_frame_context_set",
-            crate::molt_frame_context_set as *const (),
         )),
         "molt_super_from_frame" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_super_from_frame",
@@ -517,13 +553,21 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_stdlib_probe",
             crate::molt_stdlib_probe as *const (),
         )),
+        "molt_require_intrinsic_runtime" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_require_intrinsic_runtime",
+            crate::molt_require_intrinsic_runtime as *const (),
+        )),
+        "molt_load_intrinsic_runtime" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_load_intrinsic_runtime",
+            crate::molt_load_intrinsic_runtime as *const (),
+        )),
+        "molt_runtime_active_runtime" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_runtime_active_runtime",
+            crate::molt_runtime_active_runtime as *const (),
+        )),
         "molt_fcntl" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_fcntl",
             crate::molt_fcntl as *const (),
-        )),
-        "molt_type_of_borrowed" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_type_of_borrowed",
-            crate::molt_type_of_borrowed as *const (),
         )),
         "molt_dict_getitem_borrowed" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_dict_getitem_borrowed",
@@ -544,6 +588,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_profile_epoch_dump" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_profile_epoch_dump",
             crate::molt_profile_epoch_dump as *const (),
+        )),
+        "molt_iterator_throw" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_iterator_throw",
+            crate::molt_iterator_throw as *const (),
+        )),
+        "molt_dict_count_elements" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_dict_count_elements",
+            crate::molt_dict_count_elements as *const (),
         )),
         _ => None,
     }

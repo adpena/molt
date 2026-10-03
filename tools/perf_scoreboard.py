@@ -120,6 +120,7 @@ if str(SRC_ROOT) not in sys.path:
 import bench  # noqa: E402
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
+from molt.backend_executable_names import is_backend_executable_name  # noqa: E402
 from perf_schema import (  # noqa: E402
     CLASS_DIMENSIONAL_WIN,
     CLASS_GREEN,
@@ -243,8 +244,6 @@ _BUILD_IMAGE_NAMES = frozenset(
         "cargo.exe",
         "rustc",
         "rustc.exe",
-        "molt-backend",
-        "molt-backend.exe",
     }
 )
 _MOLT_CLI_IMAGE_NAMES = frozenset({"molt", "molt.exe"})
@@ -429,12 +428,14 @@ def _is_build_process_command(cmd: str, *, image_name: str | None = None) -> boo
     image = _process_arg_basename(image_name or "")
     if image in _OBSERVER_IMAGE_NAMES:
         return False
-    if image in _BUILD_IMAGE_NAMES:
+    if image in _BUILD_IMAGE_NAMES or is_backend_executable_name(image):
         return True
 
     args = _split_process_args(cmd)
     bases = [_process_arg_basename(arg) for arg in args]
-    if any(base in _BUILD_IMAGE_NAMES for base in bases):
+    if any(
+        base in _BUILD_IMAGE_NAMES or is_backend_executable_name(base) for base in bases
+    ):
         return True
 
     for idx, base in enumerate(bases):

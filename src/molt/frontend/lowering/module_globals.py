@@ -1,7 +1,7 @@
-"""ModuleGlobalsMixin: module cache, globals, and frame locals lowering.
+"""ModuleGlobalsMixin: execution namespaces and frame locals lowering.
 
 Move-only extraction from frontend/__init__.py. This lowering authority owns
-module-cache references, module global get/delete, synthesized ``globals`` and
+owned module operands, frame global get/delete, synthesized ``globals`` and
 ``locals`` backing dictionaries, and the frame-locals pin used by function,
 module, import, annotation, expression, and assignment lowering.
 First-class builtins use canonical runtime callable materialization, never
@@ -16,38 +16,28 @@ from molt.frontend._types import MoltOp, MoltValue
 
 
 class ModuleGlobalsMixin(GeneratorMixinBase):
-    def _get_or_emit_module_cache(self, module_name: str) -> MoltValue:
-        """Return a MoltValue for *module_name* from MODULE_CACHE_GET.
+    def _lexical_module_owner(self) -> MoltValue:
+        """Use the module execution owner, including an explicit chunk parameter."""
+        if self.module_obj is None:
+            raise RuntimeError("module execution has no owned namespace operand")
+        return self.module_obj
 
-        Emits a fresh CONST_STR + MODULE_CACHE_GET pair on every call.  Earlier
-        versions cached the MoltValue across the function scope, but state-machine
-        lowering (used for module init functions with jumps/labels) can place the
-        first MODULE_CACHE_GET in a branch that is skipped when a preceding
-        exception redirects the state machine.  Re-emitting the lookup each time
-        ensures the local is populated in the state that actually uses it.
+    def _emit_global_namespace_operand(self) -> MoltValue:
+        """Select frame-owned globals or the held module execution owner.
 
-        Note: this helper is only appropriate for simple, unconditional MODULE_CACHE_GET
-        calls (i.e. for the *current* module or other modules that are guaranteed already
-        loaded).  Use ``_emit_module_load`` for modules that may need lazy-initialisation.
+        Python function entry consumes FrameInvocationGuard's captured namespace.
+        MODULE_GET_GLOBAL and MODULE_DEL_GLOBAL select that active frame before
+        considering their optional module operand. No public import lookup is
+        part of lexical access, including after deletion or re-import.
         """
-        module_name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_name_val))
-        module_val = MoltValue(self.next_var(), type_hint="module")
-        self.emit(
-            MoltOp(
-                kind="MODULE_CACHE_GET",
-                args=[module_name_val],
-                result=module_val,
-            )
-        )
-        return module_val
+        if self._function_needs_frame_trace():
+            return self._emit_const_value(None)
+        return self._lexical_module_owner()
 
     def _emit_module_global_del(self, name: str) -> None:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        module_val = self.module_obj
-        if self.current_func_name != "molt_main" or module_val is None:
-            module_val = self._get_or_emit_module_cache(self.module_name)
+        module_val = self._emit_global_namespace_operand()
         self.emit(
             MoltOp(
                 kind="MODULE_DEL_GLOBAL",
@@ -59,9 +49,7 @@ class ModuleGlobalsMixin(GeneratorMixinBase):
     def _emit_module_global_del_safe(self, name: str) -> None:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        module_val = self.module_obj
-        if self.current_func_name != "molt_main" or module_val is None:
-            module_val = self._get_or_emit_module_cache(self.module_name)
+        module_val = self._emit_global_namespace_operand()
         self.emit(
             MoltOp(
                 kind="MODULE_DEL_GLOBAL_IF_PRESENT",
@@ -73,10 +61,7 @@ class ModuleGlobalsMixin(GeneratorMixinBase):
     def _emit_global_get(self, name: str) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        if self.current_func_name == "molt_main" and self.module_obj is not None:
-            module_val = self.module_obj
-        else:
-            module_val = self._get_or_emit_module_cache(self.module_name)
+        module_val = self._emit_global_namespace_operand()
         res = MoltValue(self.next_var(), type_hint="Any")
         module_name = self.imported_names.get(
             name, self.global_imported_names.get(name)
@@ -119,10 +104,7 @@ class ModuleGlobalsMixin(GeneratorMixinBase):
         Python execution must use ``_emit_globals_dict`` so rebound function
         objects observe their explicit globals mapping.
         """
-        if self.current_func_name == "molt_main" and self.module_obj is not None:
-            module_val = self.module_obj
-        else:
-            module_val = self._get_or_emit_module_cache(self.module_name)
+        module_val = self._lexical_module_owner()
         dict_name = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=["__dict__"], result=dict_name))
         res = MoltValue(self.next_var(), type_hint="dict")
@@ -130,30 +112,3 @@ class ModuleGlobalsMixin(GeneratorMixinBase):
             MoltOp(kind="MODULE_GET_ATTR", args=[module_val, dict_name], result=res)
         )
         return res
-
-    def _init_locals_cache(self) -> None:
-        if self.locals_cache_cell is not None:
-            return
-        cache_val = MoltValue(self.next_var(), type_hint="dict")
-        self.emit(MoltOp(kind="DICT_NEW", args=[], result=cache_val))
-        self.locals_cache_cell = self._new_scratch_cell(cache_val, type_hint="dict")
-
-    def _init_locals_cache_and_pin(self) -> None:
-        """Allocate the locals cache dict and pin it on the frame stack.
-
-        This should be called from function visitors when the function body
-        contains a ``locals()`` call.  It combines ``_init_locals_cache()``
-        with the ``FRAME_LOCALS_SET`` emission that was previously done
-        unconditionally in ``start_function()``.
-        """
-        self._init_locals_cache()
-        cache_cell = self.locals_cache_cell
-        if cache_cell is not None:
-            cache_val = self._load_scratch_cell(cache_cell)
-            self.emit(
-                MoltOp(
-                    kind="FRAME_LOCALS_SET",
-                    args=[cache_val],
-                    result=MoltValue("none"),
-                )
-            )

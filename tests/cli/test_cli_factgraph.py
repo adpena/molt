@@ -203,27 +203,42 @@ def test_backend_command_prefix_uses_canonical_split_table_boundary(
 
 def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    from molt.cli import backend_compile
+    from tests.cli.native_link_test_support import (
+        native_codegen_binding,
+        write_test_native_link_manifest,
+        write_test_static_archive,
+    )
+
     output = tmp_path / "facts" / "main.json"
     ir_file = tmp_path / "backend-ir.json"
     ir_file.write_text('{"functions":[]}\n', encoding="utf-8")
     emitted: list[dict[str, Any]] = []
     cleaned: list[bool] = []
 
-    def fake_prepare_backend_dispatch(**kwargs: object) -> tuple[Any, None]:
-        assert kwargs["start_daemon"] is False
-        return (
-            SimpleNamespace(
-                backend_bin=tmp_path / "molt-backend",
-                backend_env={},
-            ),
-            None,
-        )
+    backend_bin = tmp_path / "molt-backend"
+    backend_bin.write_bytes(b"admitted compiler fixture")
+    runtime_lib = tmp_path / "runtime.a"
+    write_test_static_archive(runtime_lib)
+    binding = native_codegen_binding(
+        runtime_lib, write_test_native_link_manifest(runtime_lib)
+    )
+    monkeypatch.setenv("MOLT_RUNTIME_CALLABLE_SYMBOLS", "foreign-operation")
+    monkeypatch.setenv("MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256", "0" * 64)
 
     def fake_run(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
-        del kwargs
+        env = kwargs["env"]
+        assert env["MOLT_RUNTIME_CALLABLE_SYMBOLS"] == str(
+            binding.callable_symbols.path
+        )
+        assert (
+            env["MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256"]
+            == binding.callable_symbols.sha256
+        )
         graph_output = Path(cmd[cmd.index("--fact-graph-output") + 1])
         graph_output.parent.mkdir(parents=True, exist_ok=True)
         graph_output.write_text(
@@ -254,8 +269,9 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         deterministic=True,
         profile="release",
         runtime_context=SimpleNamespace(
-            runtime_state=object(),
+            runtime_state=SimpleNamespace(native_runtime_codegen_binding=binding),
             ensure_runtime_wasm_both=lambda _modules: True,
+            backend_bin=backend_bin,
             backend_compiler_fingerprint=None,
         ),
         build_config=SimpleNamespace(
@@ -275,7 +291,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         verbose=False,
         target="native",
         entry_module="app",
-        prepare_backend_dispatch=fake_prepare_backend_dispatch,
+        prepare_backend_dispatch=backend_compile._prepare_backend_dispatch,
         ensure_backend_ir_file_path=lambda: ir_file,
         cleanup_backend_ir_file_path=lambda: cleaned.append(True),
         run_subprocess_captured_to_tempfiles=fake_run,

@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import re
 import sys
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from wasm_link_fact_provider import WasmFactsProvider
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -21,7 +23,12 @@ from molt.wasm_artifact import (  # noqa: E402
     parse_wasm_sections,
     parse_wasm_type_section_groups,
 )
-from molt.wasm_linking_symbols import parse_wasm_linking_symbols  # noqa: E402
+from molt.wasm_linking_symbols import (  # noqa: E402
+    SYMTAB_SUBSECTION_ID,
+    SYMBOL_KIND_FUNCTION,
+    FLAG_EXPLICIT_NAME,
+    FLAG_UNDEFINED,
+)
 
 WASM_MAGIC = b"\x00asm"
 
@@ -42,35 +49,6 @@ _STANDARD_SECTION_ORDER = {
     10: 12,
     11: 13,
 }
-
-SYMTAB_SUBSECTION_ID = 8
-
-SYMBOL_KIND_FUNCTION = 0
-
-FLAG_BINDING_GLOBAL = 0x1
-
-FLAG_UNDEFINED = 0x10
-
-FLAG_EXPORTED = 0x20
-
-FLAG_EXPLICIT_NAME = 0x40
-
-FLAG_NO_STRIP = 0x80
-
-FLAG_TOKEN_BITS = {
-    "BINDING_LOCAL": 0x0,
-    "BINDING_GLOBAL": FLAG_BINDING_GLOBAL,
-    "BINDING_WEAK": 0x2,
-    "VISIBILITY_HIDDEN": 0x4,
-    "UNDEFINED": FLAG_UNDEFINED,
-    "EXPORTED": FLAG_EXPORTED,
-    "EXPLICIT_NAME": FLAG_EXPLICIT_NAME,
-    "NO_STRIP": FLAG_NO_STRIP,
-}
-
-SYMBOL_DUMP_RE = re.compile(
-    r'Func\s+\{\s+flags:\s+SymbolFlags\(([^)]*)\),\s+index:\s+(\d+),\s+name:\s+Some\("([^"]+)"\)'
-)
 
 CALL_INDIRECT_RE = re.compile(r"molt_call_indirect(\d+)")
 
@@ -155,19 +133,6 @@ _EMPTY_FUNC_BODY = bytes([0x00, 0x0B])
 _ESSENTIAL_EXPORTS = _WASM_ABI.WASM_ESSENTIAL_EXPORTS
 
 _TRAP_STUB_BODY = bytes([0x00, 0x00, 0x0B])
-
-
-@dataclass(frozen=True, slots=True)
-class WasmModuleFacts:
-    imports: tuple[WasmImport, ...]
-    exports: frozenset[str]
-    function_exports: Mapping[str, int]
-    export_kinds: Mapping[str, tuple[int, int]]
-    custom_names: tuple[str, ...]
-    module_imports: Mapping[str, frozenset[str]]
-    table_import_mins: Mapping[tuple[str, str], int]
-    memory_import_mins: Mapping[tuple[str, str], int]
-    element_validation_error: str | None
 
 
 def _is_wasm_binary(data: bytes) -> bool:
@@ -291,22 +256,6 @@ def _build_linking_payload(version: int, subsections: list[tuple[int, bytes]]) -
     return bytes(output)
 
 
-def _parse_symbol_flags(flags_text: str) -> int:
-    flags_text = flags_text.strip()
-    if not flags_text or flags_text == "0x0":
-        return 0
-    flags = 0
-    for token in (part.strip() for part in flags_text.split("|")):
-        if not token:
-            continue
-        bit = FLAG_TOKEN_BITS.get(token)
-        if bit is None:
-            print(f"Unknown symbol flag token: {token}", file=sys.stderr)
-            continue
-        flags |= bit
-    return flags
-
-
 def _parse_indexed_symbol(
     payload: bytes, offset: int, flags: int
 ) -> tuple[int, str, int]:
@@ -368,18 +317,22 @@ def _require_encodable_function_symbol(
 
 
 def _append_linking_function_symbols(
-    data: bytes, entries: list[tuple[str, int, int]]
+    data: bytes,
+    entries: list[tuple[str, int, int]],
+    *,
+    facts_provider: WasmFactsProvider,
 ) -> bytes | None:
     if not entries:
         return None
     existing_names = {
         symbol.name
-        for symbol in parse_wasm_linking_symbols(data).function_symbols
+        for symbol in facts_provider(data).linking_symbols.function_symbols
         if symbol.name
     }
     sections = _parse_sections(data)
-    func_import_count = _count_func_imports(sections)
-    total_func_count = _get_total_func_count(data)
+    facts = facts_provider(data)
+    func_import_count = int(facts["function_import_count"])
+    total_func_count = func_import_count + int(facts["defined_function_count"])
     pending = []
     for name, index, flags in entries:
         if name in existing_names:
@@ -650,19 +603,6 @@ def _count_func_imports(sections: list[tuple[int, bytes]]) -> int:
     return 0
 
 
-def _get_total_func_count(data: bytes) -> int:
-    """Return the total number of functions (imports + defined) in the module."""
-    sections = _parse_sections(data)
-    import_count = _count_func_imports(sections)
-    defined_count = 0
-    for sid, payload in sections:
-        if sid == 3:  # function section
-            offset = 0
-            defined_count, _ = _read_varuint(payload, offset)
-            break
-    return import_count + defined_count
-
-
 def _collect_exports(data: bytes) -> set[str]:
     for section_id, payload in _parse_sections(data):
         if section_id == 7:
@@ -678,46 +618,16 @@ def _collect_imports(data: bytes) -> list[WasmImport]:
     return []
 
 
-def _has_table(data: bytes) -> bool:
-    for wasm_import in _collect_imports(data):
-        if wasm_import.kind == 1 and wasm_import.name == "__indirect_function_table":
-            return True
-    for section_id, _ in _parse_sections(data):
-        if section_id == 4:
-            return True
-    return False
-
-
-def _validate_linked_table_import_contract(
-    imports: tuple[WasmImport, ...],
-) -> tuple[bool, str | None]:
-    table_imports = [wasm_import for wasm_import in imports if wasm_import.kind == 1]
-    if not table_imports:
-        return True, None
-    if len(table_imports) > 1:
-        table_names = ", ".join(
-            f"{wasm_import.module}::{wasm_import.name}" for wasm_import in table_imports
-        )
-        return (
-            False,
-            "Linked wasm imports multiple tables "
-            f"({table_names}); only env::__indirect_function_table is supported.",
-        )
-    table_import = table_imports[0]
-    if table_import.module != "env" or table_import.name != "__indirect_function_table":
-        return (
-            False,
-            "Linked wasm imports unsupported table "
-            f"{table_import.module}::{table_import.name}; expected "
-            "env::__indirect_function_table.",
-        )
-    if table_import.limits_flags is None or table_import.minimum is None:
-        return False, "Linked wasm table import is missing its limits descriptor."
-    return True, None
-
-
-def _ensure_table_export(data: bytes, export_name: str = "molt_table") -> bytes | None:
-    if not _has_table(data):
+def _ensure_table_export(
+    data: bytes, export_name: str = "molt_table", *, facts_provider: WasmFactsProvider
+) -> bytes | None:
+    facts = facts_provider(data)
+    if not facts["tables"]:
+        return None
+    if any(
+        fact.kind == 1 and name in (export_name, "__indirect_function_table")
+        for name, fact in facts.exports.items()
+    ):
         return None
     sections = _parse_sections(data)
     new_sections: list[tuple[int, bytes]] = []
@@ -731,20 +641,6 @@ def _ensure_table_export(data: bytes, export_name: str = "molt_table") -> bytes 
         offset = 0
         count, offset = _read_varuint(payload, offset)
         entries_offset = offset
-        has_table_export = False
-        while offset < len(payload):
-            name, offset = _read_string(payload, offset)
-            if offset >= len(payload):
-                break
-            kind = payload[offset]
-            offset += 1
-            _, offset = _read_varuint(payload, offset)
-            if kind == 1 and name in (export_name, "__indirect_function_table"):
-                has_table_export = True
-                break
-        if has_table_export:
-            new_sections.append((section_id, payload))
-            continue
         entry = _write_string(export_name) + bytes([1]) + _write_varuint(0)
         new_payload = _write_varuint(count + 1) + payload[entries_offset:] + entry
         new_sections.append((section_id, new_payload))
@@ -759,19 +655,6 @@ def _ensure_table_export(data: bytes, export_name: str = "molt_table") -> bytes 
     return _build_sections(new_sections)
 
 
-def _find_func_import_index(
-    data: bytes, module_name: str, import_name: str
-) -> int | None:
-    func_index = 0
-    for wasm_import in _collect_imports(data):
-        if wasm_import.kind != 0:
-            continue
-        if wasm_import.module == module_name and wasm_import.name == import_name:
-            return func_index
-        func_index += 1
-    return None
-
-
 def _collect_custom_names(data: bytes) -> list[str]:
     names: list[str] = []
     for section_id, payload in _parse_sections(data):
@@ -783,93 +666,6 @@ def _collect_custom_names(data: bytes) -> list[str]:
             continue
         names.append(name)
     return names
-
-
-def _validate_elements(data: bytes) -> tuple[bool, str | None]:
-    for section_id, payload in _parse_sections(data):
-        if section_id == 9:
-            _, error = _parse_element_payload(payload)
-            return error is None, error
-    return True, None
-
-
-def _collect_module_imports(wasm_data: bytes, module_name: str) -> set[str]:
-    """Parse a WASM module and return the set of import names from *module_name*.
-
-    For example, if the app module imports ``(import "molt_runtime" "print_obj" ...)``,
-    calling ``_collect_module_imports(app_data, "molt_runtime")`` returns ``{"print_obj"}``.
-    """
-    for section_id, payload in _parse_sections(wasm_data):
-        if section_id == 2:
-            return {
-                wasm_import.name
-                for wasm_import in parse_wasm_import_section(payload)
-                if wasm_import.module == module_name
-            }
-    return set()
-
-
-def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
-    sections = _parse_sections(data)
-    imports: list[WasmImport] = []
-    exports: set[str] = set()
-    function_exports: dict[str, int] = {}
-    export_kinds: dict[str, tuple[int, int]] = {}
-    custom_names: list[str] = []
-    module_imports: dict[str, set[str]] = {}
-    table_import_mins: dict[tuple[str, str], int] = {}
-    memory_import_mins: dict[tuple[str, str], int] = {}
-    element_validation_error: str | None = None
-    saw_imports = False
-    saw_exports = False
-    saw_elements = False
-
-    for section_id, payload in sections:
-        if section_id == 0:
-            try:
-                name, _ = _parse_custom_section(payload)
-            except ValueError:
-                continue
-            custom_names.append(name)
-            continue
-        if section_id == 2 and not saw_imports:
-            imports = parse_wasm_import_section(payload)
-            for wasm_import in imports:
-                module_imports.setdefault(wasm_import.module, set()).add(
-                    wasm_import.name
-                )
-                if wasm_import.minimum is None:
-                    continue
-                key = (wasm_import.module, wasm_import.name)
-                if wasm_import.kind == 1:
-                    table_import_mins[key] = wasm_import.minimum
-                elif wasm_import.kind == 2:
-                    memory_import_mins[key] = wasm_import.minimum
-            saw_imports = True
-            continue
-        if section_id == 7 and not saw_exports:
-            exports, function_exports, export_kinds = _parse_export_payload(payload)
-            saw_exports = True
-            continue
-        if section_id == 9 and not saw_elements:
-            _, element_validation_error = _parse_element_payload(payload)
-            saw_elements = True
-            continue
-
-    frozen_module_imports = {
-        module: frozenset(names) for module, names in module_imports.items()
-    }
-    return WasmModuleFacts(
-        imports=tuple(imports),
-        exports=frozenset(exports),
-        function_exports=MappingProxyType(dict(function_exports)),
-        export_kinds=MappingProxyType(dict(export_kinds)),
-        custom_names=tuple(custom_names),
-        module_imports=MappingProxyType(frozen_module_imports),
-        table_import_mins=MappingProxyType(dict(table_import_mins)),
-        memory_import_mins=MappingProxyType(dict(memory_import_mins)),
-        element_validation_error=element_validation_error,
-    )
 
 
 def _parse_type_section(

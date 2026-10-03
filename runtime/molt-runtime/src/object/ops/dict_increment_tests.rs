@@ -6,20 +6,10 @@ static CALLBACK_DICT: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_KEY: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_MODE: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_CALLS: AtomicU64 = AtomicU64::new(0);
-static CALLBACK_INPUT_OWNERS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 extern "C" fn mutate_dictionary_during_add(self_bits: u64, _other: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         CALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
-        if CALLBACK_MODE.load(Ordering::SeqCst) == 3 {
-            // Release the original owners on the first token. Subsequent
-            // callbacks must be covered by the outer scan, not its caller or
-            // the now-completed first arithmetic invocation.
-            for owner in &CALLBACK_INPUT_OWNERS {
-                dec_ref_bits(py, owner.swap(0, Ordering::SeqCst));
-            }
-            return MoltObject::from_int(42).bits();
-        }
         let dictionary = CALLBACK_DICT.load(Ordering::SeqCst);
         let key = CALLBACK_KEY.load(Ordering::SeqCst);
         let ptr = obj_from_bits(dictionary).as_ptr().unwrap();
@@ -80,48 +70,67 @@ fn arithmetic_value(py: &PyToken<'_>, method_name: &[u8]) -> (u64, u64, u64) {
     (value, class, function)
 }
 
-unsafe fn increment(py: &PyToken<'_>, lane: u8, dictionary: u64, key: u64, delta: u64) -> bool {
-    unsafe {
-        let ptr = obj_from_bits(dictionary).as_ptr().unwrap();
-        match lane {
-            0 => dict_inc_in_place(py, ptr, key, delta),
-            1 => dict_inc_prehashed_string_key_in_place(py, ptr, key, delta)
-                .unwrap_or_else(|| dict_inc_in_place(py, ptr, key, delta)),
-            2 => {
-                let mut last = SplitDictIncrementLast::new(py);
-                let result = dict_inc_with_string_token(py, ptr, b"item", delta, &mut last);
-                if result {
-                    assert_eq!(
-                        string_obj_to_owned(obj_from_bits(last.bits.unwrap())).as_deref(),
-                        Some("item")
-                    );
-                }
-                result
-            }
-            3 | 4 => {
-                let line = MoltObject::from_ptr(alloc_string(py, b"item")).bits();
-                let result = if lane == 3 {
-                    molt_string_split_ws_dict_inc(line, dictionary, delta)
-                } else {
-                    let separator = MoltObject::from_ptr(alloc_string(py, b",")).bits();
-                    let result = molt_string_split_sep_dict_inc(line, separator, dictionary, delta);
-                    dec_ref_bits(py, separator);
-                    result
-                };
-                dec_ref_bits(py, result);
-                dec_ref_bits(py, line);
-                !exception_pending(py)
-            }
-            _ => unreachable!(),
+/// The in-place increment every fused lane commits through. Called directly it
+/// runs the value's `+` exactly as the statement does, callbacks included.
+unsafe fn in_place_increment(py: &PyToken<'_>, dictionary: u64, key: u64, delta: u64) -> bool {
+    unsafe { dict_inc_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), key, delta) }
+}
+
+/// The fused statement: `Some(done)`, or `None` with the exception pending.
+fn exact_statement(py: &PyToken<'_>, dictionary: u64, key: u64, delta: u64) -> Option<bool> {
+    unsafe { dict_increment_exact_statement(py, dictionary, key, delta) }.ok()
+}
+
+/// A fused split/count loop over `line`, whitespace words or `sep` words, with
+/// an unbound loop target. `(last, ok)`, owned.
+fn split_increment(
+    py: &PyToken<'_>,
+    line: &str,
+    sep: Option<&str>,
+    dictionary: u64,
+    delta: u64,
+    target: u64,
+) -> (u64, bool) {
+    let line = MoltObject::from_ptr(alloc_string(py, line.as_bytes())).bits();
+    let result = match sep {
+        Some(sep) => {
+            let sep = MoltObject::from_ptr(alloc_string(py, sep.as_bytes())).bits();
+            let result = molt_string_split_sep_dict_inc(line, sep, dictionary, delta, target);
+            dec_ref_bits(py, sep);
+            result
         }
-    }
+        None => molt_string_split_ws_dict_inc(line, dictionary, delta, target),
+    };
+    dec_ref_bits(py, line);
+    assert!(!exception_pending(py), "a fused split never raises");
+    let (last, ok) = unsafe {
+        crate::object::seq_access::with_immutable_tuple_slice(
+            obj_from_bits(result).as_ptr().unwrap(),
+            |parts| (parts[0], parts[1]),
+        )
+        .unwrap()
+    };
+    inc_ref_bits(py, last);
+    dec_ref_bits(py, result);
+    (last, ok == MoltObject::from_bool(true).bits())
+}
+
+fn missing_target(py: &PyToken<'_>) -> u64 {
+    missing_bits(py)
+}
+
+fn int_value(py: &PyToken<'_>, dictionary: u64, word: &str) -> Option<i64> {
+    let key = MoltObject::from_ptr(alloc_string(py, word.as_bytes())).bits();
+    let value = unsafe { dict_get_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), key) };
+    dec_ref_bits(py, key);
+    value.and_then(|bits| to_i64(obj_from_bits(bits)))
 }
 
 #[test]
-fn increment_arithmetic_reentry_reacquires_mapping_across_all_lanes() {
+fn in_place_increment_arithmetic_reentry_reacquires_mapping() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        for lane in 0..5 {
+        {
             for mode in 0..3 {
                 let key = MoltObject::from_ptr(alloc_string(py, b"item")).bits();
                 let (value, class, function) = arithmetic_value(py, b"__add__");
@@ -132,8 +141,9 @@ fn increment_arithmetic_reentry_reacquires_mapping_across_all_lanes() {
                 CALLBACK_KEY.store(key, Ordering::SeqCst);
                 CALLBACK_MODE.store(mode, Ordering::SeqCst);
                 CALLBACK_CALLS.store(0, Ordering::SeqCst);
-                let success =
-                    unsafe { increment(py, lane, dictionary, key, MoltObject::from_int(1).bits()) };
+                let success = unsafe {
+                    in_place_increment(py, dictionary, key, MoltObject::from_int(1).bits())
+                };
                 assert_eq!(success, mode != 2);
                 assert_eq!(exception_pending(py), mode == 2);
                 assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 1);
@@ -164,10 +174,10 @@ fn increment_arithmetic_reentry_reacquires_mapping_across_all_lanes() {
 }
 
 #[test]
-fn increment_missing_key_reverse_addition_rechecks_after_callback_insertion() {
+fn in_place_increment_missing_key_reverse_addition_rechecks_after_callback_insertion() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        for lane in 0..5 {
+        {
             let key = MoltObject::from_ptr(alloc_string(py, b"item")).bits();
             let (delta, class, function) = arithmetic_value(py, b"__radd__");
             let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
@@ -175,7 +185,7 @@ fn increment_missing_key_reverse_addition_rechecks_after_callback_insertion() {
             CALLBACK_KEY.store(key, Ordering::SeqCst);
             CALLBACK_MODE.store(0, Ordering::SeqCst);
             CALLBACK_CALLS.store(0, Ordering::SeqCst);
-            assert!(unsafe { increment(py, lane, dictionary, key, delta) });
+            assert!(unsafe { in_place_increment(py, dictionary, key, delta) });
             let ptr = obj_from_bits(dictionary).as_ptr().unwrap();
             assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 1);
             assert_eq!(
@@ -194,6 +204,229 @@ fn increment_missing_key_reverse_addition_rechecks_after_callback_insertion() {
 }
 
 #[test]
+fn exact_statement_declines_before_any_callback_or_mutation() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let key = MoltObject::from_ptr(alloc_string(py, b"item")).bits();
+        let (value, value_class, value_function) = arithmetic_value(py, b"__add__");
+        let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[key, value])).bits();
+        dec_ref_bits(py, value);
+        let one = MoltObject::from_int(1).bits();
+        CALLBACK_CALLS.store(0, Ordering::SeqCst);
+        // A value whose `+` is Python code: the statement runs itself.
+        assert_eq!(exact_statement(py, dictionary, key, one), Some(false));
+        // A delta whose `+` is Python code, on a missing key.
+        let other = MoltObject::from_ptr(alloc_string(py, b"other")).bits();
+        let (delta, delta_class, delta_function) = arithmetic_value(py, b"__radd__");
+        assert_eq!(exact_statement(py, dictionary, other, delta), Some(false));
+        // A key whose hash or equality could be Python code.
+        assert_eq!(exact_statement(py, dictionary, one, one), Some(false));
+        // Anything but an exact dict dispatches its own `get` and `__setitem__`.
+        let list = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+        assert_eq!(exact_statement(py, list, other, one), Some(false));
+        assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 0);
+        let ptr = obj_from_bits(dictionary).as_ptr().unwrap();
+        assert_eq!(unsafe { dict_order(ptr).len() }, 2, "nothing was inserted");
+        // Exact ints: the statement's value, the statement's key object.
+        assert_eq!(exact_statement(py, dictionary, other, one), Some(true));
+        assert_eq!(
+            exact_statement(py, dictionary, other, MoltObject::from_bool(true).bits()),
+            Some(true)
+        );
+        assert_eq!(int_value(py, dictionary, "other"), Some(2));
+        assert_eq!(unsafe { dict_order(ptr)[2] }, other);
+        assert!(!exception_pending(py));
+        for bits in [
+            dictionary,
+            key,
+            other,
+            delta,
+            list,
+            value_class,
+            value_function,
+            delta_class,
+            delta_function,
+        ] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn split_increment_declines_before_any_callback_or_mutation() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        for sep in [None, Some(",")] {
+            // A value whose `+` is Python code, found by the second word: the
+            // loop must run itself, so the first word stays unincremented too.
+            let first = MoltObject::from_ptr(alloc_string(py, b"first")).bits();
+            let key = MoltObject::from_ptr(alloc_string(py, b"item")).bits();
+            let (value, value_class, value_function) = arithmetic_value(py, b"__add__");
+            let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(
+                py,
+                &[first, MoltObject::from_int(2).bits(), key, value],
+            ))
+            .bits();
+            dec_ref_bits(py, value);
+            CALLBACK_CALLS.store(0, Ordering::SeqCst);
+            let line = if sep.is_some() {
+                "first,item"
+            } else {
+                "first item"
+            };
+            let (last, ok) = split_increment(
+                py,
+                line,
+                sep,
+                dictionary,
+                MoltObject::from_int(1).bits(),
+                missing_target(py),
+            );
+            assert!(!ok);
+            assert_eq!(last, MoltObject::none().bits());
+            assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 0);
+            assert_eq!(int_value(py, dictionary, "first"), Some(2));
+            // A delta whose `+` is Python code declines likewise.
+            let (delta, delta_class, delta_function) = arithmetic_value(py, b"__radd__");
+            let (_, ok) = split_increment(py, "first", sep, dictionary, delta, missing_target(py));
+            assert!(!ok);
+            assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 0);
+            assert_eq!(int_value(py, dictionary, "first"), Some(2));
+            for bits in [
+                dictionary,
+                first,
+                key,
+                delta,
+                value_class,
+                value_function,
+                delta_class,
+                delta_function,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn split_increment_declines_inputs_the_loop_would_dispatch_or_reject() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+        let one = MoltObject::from_int(1).bits();
+        // An empty separator raises in str.split; the loop reports it itself.
+        assert!(!split_increment(py, "a,b", Some(""), dictionary, one, missing_target(py)).1);
+        // An empty whitespace split runs zero iterations: the loop does that.
+        assert!(!split_increment(py, " \t ", None, dictionary, one, missing_target(py)).1);
+        // A non-str line dispatches `split` on its own type.
+        let number = MoltObject::from_int(5).bits();
+        let pair = molt_string_split_ws_dict_inc(number, dictionary, one, missing_target(py));
+        let ok = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(
+                obj_from_bits(pair).as_ptr().unwrap(),
+                |parts| parts[1],
+            )
+            .unwrap()
+        };
+        assert_eq!(ok, MoltObject::from_bool(false).bits());
+        dec_ref_bits(py, pair);
+        // A loop target whose previous value could run a finalizer when rebound.
+        let list = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+        assert!(!split_increment(py, "a", None, dictionary, one, list).1);
+        dec_ref_bits(py, list);
+        assert_eq!(
+            unsafe { dict_order(obj_from_bits(dictionary).as_ptr().unwrap()).len() },
+            0,
+            "every decline leaves the dict unchanged"
+        );
+        dec_ref_bits(py, dictionary);
+        assert!(!exception_pending(py));
+    });
+}
+
+#[test]
+fn split_increment_reads_words_through_str_split() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+        let two = MoltObject::from_int(2).bits();
+        // U+001C..U+001F and U+2003 are str whitespace; U+200B is not.
+        let (last, ok) = split_increment(
+            py,
+            "a\u{1c}b\u{1f}a\u{2003}c\u{200b}d",
+            None,
+            dictionary,
+            two,
+            missing_target(py),
+        );
+        assert!(ok);
+        assert_eq!(
+            string_obj_to_owned(obj_from_bits(last)).as_deref(),
+            Some("c\u{200b}d")
+        );
+        assert_eq!(int_value(py, dictionary, "a"), Some(4));
+        assert_eq!(int_value(py, dictionary, "b"), Some(2));
+        assert_eq!(int_value(py, dictionary, "c\u{200b}d"), Some(2));
+        dec_ref_bits(py, last);
+        // A separator split keeps empty words and multi-byte separators.
+        let (last, ok) = split_increment(
+            py,
+            "a::::b::",
+            Some("::"),
+            dictionary,
+            two,
+            missing_target(py),
+        );
+        assert!(ok);
+        assert_eq!(
+            string_obj_to_owned(obj_from_bits(last)).as_deref(),
+            Some("")
+        );
+        assert_eq!(int_value(py, dictionary, ""), Some(4));
+        assert_eq!(int_value(py, dictionary, "a"), Some(6));
+        dec_ref_bits(py, last);
+        dec_ref_bits(py, dictionary);
+        assert!(!exception_pending(py));
+    });
+}
+
+#[test]
+fn split_increment_binds_the_inserted_key_only_when_its_own_iteration_inserted_it() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+        let one = MoltObject::from_int(1).bits();
+        // Words long enough that no string cache can share their objects.
+        let (last, ok) = split_increment(
+            py,
+            "first-word second-word",
+            None,
+            dictionary,
+            one,
+            missing_target(py),
+        );
+        assert!(ok);
+        let ptr = obj_from_bits(dictionary).as_ptr().unwrap();
+        let inserted = unsafe { dict_order(ptr)[2] };
+        assert_eq!(last, inserted, "the loop target is the new key object");
+        dec_ref_bits(py, last);
+        let (last, ok) =
+            split_increment(py, "second-word", None, dictionary, one, missing_target(py));
+        assert!(ok);
+        assert_ne!(last, inserted, "an existing key keeps its own object");
+        assert_eq!(
+            string_obj_to_owned(obj_from_bits(last)).as_deref(),
+            Some("second-word")
+        );
+        assert_eq!(int_value(py, dictionary, "second-word"), Some(2));
+        dec_ref_bits(py, last);
+        dec_ref_bits(py, dictionary);
+        assert!(!exception_pending(py));
+    });
+}
+
+#[test]
 fn increment_scalar_result_respects_inline_carrier_boundary() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
@@ -205,15 +438,35 @@ fn increment_scalar_result_respects_inline_carrier_boundary() {
                     &[key, MoltObject::from_int(current).bits()],
                 ))
                 .bits();
-                assert!(unsafe {
-                    increment(
-                        py,
-                        lane,
-                        dictionary,
-                        key,
-                        MoltObject::from_int(delta).bits(),
-                    )
-                });
+                let delta_bits = MoltObject::from_int(delta).bits();
+                match lane {
+                    0 => assert!(unsafe { in_place_increment(py, dictionary, key, delta_bits) }),
+                    1 => assert_eq!(exact_statement(py, dictionary, key, delta_bits), Some(true)),
+                    2 => assert_eq!(
+                        unsafe {
+                            dict_increment_validated_word(
+                                py,
+                                obj_from_bits(dictionary).as_ptr().unwrap(),
+                                b"item",
+                                delta_bits,
+                            )
+                        },
+                        Some(None)
+                    ),
+                    _ => {
+                        let sep = (lane == 4).then_some(",");
+                        let (last, ok) = split_increment(
+                            py,
+                            "item",
+                            sep,
+                            dictionary,
+                            delta_bits,
+                            missing_target(py),
+                        );
+                        assert!(ok);
+                        dec_ref_bits(py, last);
+                    }
+                }
                 let result = unsafe {
                     dict_get_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), key).unwrap()
                 };
@@ -232,10 +485,10 @@ fn increment_scalar_result_respects_inline_carrier_boundary() {
 }
 
 #[test]
-fn increment_fast_paths_cannot_mutate_frozen_layout_maps() {
+fn increment_lanes_never_mutate_frozen_layout_maps() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        for lane in 0..5 {
+        for lane in 0..4 {
             let key = MoltObject::from_ptr(alloc_string(py, b"item")).bits();
             let value = MoltObject::from_int(4).bits();
             let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[key, value])).bits();
@@ -243,142 +496,25 @@ fn increment_fast_paths_cannot_mutate_frozen_layout_maps() {
             unsafe {
                 (*header_from_obj_ptr(ptr))
                     .fetch_or_flags(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP);
-                assert!(!increment(
-                    py,
-                    lane,
-                    dictionary,
-                    key,
-                    MoltObject::from_int(1).bits()
-                ));
             }
-            assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            let one = MoltObject::from_int(1).bits();
+            if lane == 0 {
+                assert!(!unsafe { in_place_increment(py, dictionary, key, one) });
+                assert!(exception_pending(py));
+                crate::molt_exception_clear();
+            } else if lane == 1 {
+                // The fused statement declines; the statement's own store raises.
+                assert_eq!(exact_statement(py, dictionary, key, one), Some(false));
+            } else {
+                // The fused loop declines; the loop's own store then raises.
+                let sep = (lane == 3).then_some(",");
+                let (_, ok) = split_increment(py, "item", sep, dictionary, one, missing_target(py));
+                assert!(!ok);
+            }
             assert_eq!(unsafe { dict_get_in_place(py, ptr, key) }, Some(value));
             for bits in [dictionary, key] {
                 dec_ref_bits(py, bits);
             }
-        }
-    });
-}
-
-#[test]
-fn increment_split_failure_releases_previous_token_owner() {
-    let _transaction = crate::test_support::RuntimeTestTransaction::new();
-    crate::with_gil_entry_nopanic!(py, {
-        for separator in [None, Some(b",".as_slice())] {
-            // The exact-string fast probe retains this existing dictionary key.
-            // Keep it mortal so a leaked last-token owner is observable.
-            let first =
-                MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(py, b"first"))
-                    .bits();
-            let key = MoltObject::from_ptr(alloc_string(py, b"item")).bits();
-            let (value, class, function) = arithmetic_value(py, b"__add__");
-            let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(
-                py,
-                &[first, MoltObject::from_int(2).bits(), key, value],
-            ))
-            .bits();
-            dec_ref_bits(py, value);
-            CALLBACK_DICT.store(dictionary, Ordering::SeqCst);
-            CALLBACK_KEY.store(key, Ordering::SeqCst);
-            CALLBACK_MODE.store(2, Ordering::SeqCst);
-            let line = MoltObject::from_ptr(alloc_string(
-                py,
-                if separator.is_some() {
-                    b"first,item"
-                } else {
-                    b"first item"
-                },
-            ))
-            .bits();
-            let result = if let Some(separator) = separator {
-                let separator = MoltObject::from_ptr(alloc_string(py, separator)).bits();
-                let result = molt_string_split_sep_dict_inc(
-                    line,
-                    separator,
-                    dictionary,
-                    MoltObject::from_int(1).bits(),
-                );
-                dec_ref_bits(py, separator);
-                result
-            } else {
-                molt_string_split_ws_dict_inc(line, dictionary, MoltObject::from_int(1).bits())
-            };
-            assert!(exception_pending(py));
-            crate::molt_exception_clear();
-            assert_eq!(
-                unsafe {
-                    (*header_from_obj_ptr(obj_from_bits(first).as_ptr().unwrap()))
-                        .ref_count_snapshot()
-                },
-                1,
-                "no leaked last-token owner after callback failure"
-            );
-            CALLBACK_DICT.store(0, Ordering::SeqCst);
-            CALLBACK_KEY.store(0, Ordering::SeqCst);
-            for bits in [result, line, dictionary, first, key, class, function] {
-                dec_ref_bits(py, bits);
-            }
-            assert!(!exception_pending(py));
-        }
-    });
-}
-
-#[test]
-fn increment_split_retains_all_inputs_across_successive_callbacks() {
-    let _transaction = crate::test_support::RuntimeTestTransaction::new();
-    crate::with_gil_entry_nopanic!(py, {
-        for (line_text, separator_text) in [
-            ("first next", None),
-            ("first\u{2003}next", None),
-            ("first,next", Some(",")),
-            ("first::next", Some("::")),
-        ] {
-            let (delta, class, function) = arithmetic_value(py, b"__radd__");
-            let line = MoltObject::from_ptr(alloc_string(py, line_text.as_bytes())).bits();
-            let separator = separator_text.map_or(MoltObject::none().bits(), |text| {
-                MoltObject::from_ptr(alloc_string(py, text.as_bytes())).bits()
-            });
-            let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
-            for (slot, bits) in CALLBACK_INPUT_OWNERS
-                .iter()
-                .zip([line, separator, dictionary, delta])
-            {
-                assert_eq!(slot.swap(bits, Ordering::SeqCst), 0);
-            }
-            CALLBACK_MODE.store(3, Ordering::SeqCst);
-            CALLBACK_CALLS.store(0, Ordering::SeqCst);
-            let result = if separator_text.is_some() {
-                molt_string_split_sep_dict_inc(line, separator, dictionary, delta)
-            } else {
-                molt_string_split_ws_dict_inc(line, dictionary, delta)
-            };
-            assert!(!exception_pending(py));
-            assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 2);
-            assert!(
-                CALLBACK_INPUT_OWNERS
-                    .iter()
-                    .all(|slot| slot.load(Ordering::SeqCst) == 0)
-            );
-            let (token, had_any) = unsafe {
-                crate::object::seq_access::with_immutable_tuple_slice(
-                    obj_from_bits(result).as_ptr().unwrap(),
-                    |parts| (parts[0], parts[1]),
-                )
-                .unwrap()
-            };
-            assert_eq!(
-                string_obj_to_owned(obj_from_bits(token)).as_deref(),
-                Some("next")
-            );
-            assert_eq!(had_any, MoltObject::from_bool(true).bits());
-            // The callback consumed every initial input owner. Only the
-            // returned token and the test's class/function owners remain here.
-            for bits in [result, class, function] {
-                dec_ref_bits(py, bits);
-            }
-            CALLBACK_MODE.store(0, Ordering::SeqCst);
-            assert!(!exception_pending(py));
         }
     });
 }

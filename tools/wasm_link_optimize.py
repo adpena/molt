@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import re
-import sys
-from collections.abc import Callable
+from molt.wasm_artifact import skip_wasm_import_description as _parse_import_desc
 
-from molt.wasm_artifact import (
-    skip_wasm_import_description as _parse_import_desc,
-)
+import sys
+from collections.abc import Mapping
+
 
 from wasm_link_edit import _strip_internal_exports
+from wasm_link_fact_provider import WasmFactsProvider
 from wasm_link_facts import (
     active_function_element_rows,
     fact_index_set,
@@ -17,36 +16,35 @@ from wasm_link_facts import (
 )
 from wasm_link_format import (
     _TRAP_STUB_BODY,
-    _build_sections,
-    _collect_function_exports,
-    _count_func_imports,
-    _parse_sections,
     _read_string,
     _read_varsint,
     _read_varuint,
-    _skip_init_expr,
-    _validate_elements,
     _write_string,
     _write_varuint,
+)
+from wasm_link_operations import (
+    strip_publication_sections,
+    build_sections as _build_sections,
+    parse_sections as _parse_sections,
 )
 
 
 def _fact_index_set(
-    facts: dict[str, object],
+    facts: Mapping[str, object],
     field: str,
 ) -> set[int]:
     return fact_index_set(facts, field)
 
 
-def _reachable_function_indices(facts: dict[str, object]) -> set[int]:
+def _reachable_function_indices(facts: Mapping[str, object]) -> set[int]:
     return _fact_index_set(facts, "reachable_function_indices")
 
 
-def _referenced_function_indices(facts: dict[str, object]) -> set[int]:
+def _referenced_function_indices(facts: Mapping[str, object]) -> set[int]:
     return _fact_index_set(facts, "referenced_function_indices")
 
 
-def _has_opaque_function_reference_dispatch(facts: dict[str, object]) -> bool:
+def _has_opaque_function_reference_dispatch(facts: Mapping[str, object]) -> bool:
     """Fail closed when typed function-reference targets are not fully attributable."""
 
     value = facts.get("reachable_function_reference_dispatch")
@@ -57,7 +55,7 @@ def _has_opaque_function_reference_dispatch(facts: dict[str, object]) -> bool:
 
 def _neutralize_dead_element_entries(
     data: bytes,
-    facts: dict[str, object],
+    facts: Mapping[str, object],
 ) -> bytes | None:
     """Replace indirect-call table entries for dead functions with the sentinel.
 
@@ -191,7 +189,7 @@ def _neutralize_dead_element_entries(
 
 def _stub_dead_functions(
     data: bytes,
-    facts: dict[str, object],
+    facts: Mapping[str, object],
 ) -> bytes | None:
     """Replace bodies of provably-dead functions with a minimal trap stub.
 
@@ -213,7 +211,7 @@ def _stub_dead_functions(
     if _has_opaque_function_reference_dispatch(facts):
         return None
 
-    import_count = _count_func_imports(sections)
+    import_count = int(facts["function_import_count"])
 
     reachable = _reachable_function_indices(facts)
 
@@ -264,9 +262,11 @@ def _strip_unused_module_function_imports(
     data: bytes,
     *,
     module_name: str,
-    facts: dict[str, object],
+    facts_provider: WasmFactsProvider,
 ) -> bytes | None:
     """Remove unreferenced function imports for a specific import module."""
+
+    facts = facts_provider(data)
 
     def _rewrite_init_expr_func_indices(
         blob: bytes, offset: int, remap_func_index
@@ -569,12 +569,11 @@ def _strip_unused_module_function_imports(
     referenced = _referenced_function_indices(facts)
 
     removed_sorted = sorted(
-        func_index
-        for module, _name, kind, _desc, func_index in import_entries
-        if kind == 0
-        and module == module_name
-        and func_index is not None
-        and func_index not in referenced
+        fact.index
+        for fact in facts.imports
+        if fact.kind == 0
+        and fact.module == module_name
+        and fact.index not in referenced
     )
     if not removed_sorted:
         return None
@@ -596,6 +595,13 @@ def _strip_unused_module_function_imports(
     try:
         new_sections: list[tuple[int, bytes]] = []
         for sid, payload in sections:
+            custom_name = _read_string(payload, 0)[0] if sid == 0 else None
+            if custom_name is not None and (
+                custom_name in {"name", "linking"} or custom_name.startswith("reloc.")
+            ):
+                # Function and local-name indices refer to the old import space.
+                # Other debug sections remain under the selected debug policy.
+                continue
             if sid == 2:
                 kept_entries = [
                     (module, name, kind, desc)
@@ -636,8 +642,9 @@ def _strip_unused_module_function_imports(
         return None
 
     updated = _build_sections(new_sections)
-    ok, _err = _validate_elements(updated)
-    if not ok:
+    try:
+        facts_provider(updated)
+    except ValueError:
         return None
 
     print(
@@ -648,157 +655,32 @@ def _strip_unused_module_function_imports(
     return updated
 
 
-def _dedup_data_segments(data: bytes) -> bytes | None:
-    """Strip embedded file paths from data segments to reduce binary size.
-
-    After wasm-ld merges modules, the data section contains Rust panic
-    location paths (/rustc/..., /Users/...) that leak build info and
-    waste space.  This pass rewrites those path bytes in-place with a
-    short placeholder, preserving segment layout so no relocation is
-    needed.
-
-    Also reports duplicate-segment statistics for diagnostics.
-    """
-    try:
-        sections = _parse_sections(data)
-    except ValueError:
-        return None
-
-    data_payload = None
-    for section_id, payload in sections:
-        if section_id == 11:
-            data_payload = payload
-            break
-
-    if data_payload is None:
-        return None
-
-    # Parse segments to find duplicates and collect data payloads
-    offset = 0
-    seg_count, offset = _read_varuint(data_payload, offset)
-    seg_headers: list[bytes] = []  # raw header bytes (flags + init_expr)
-    seg_raw: list[bytes] = []  # data payload bytes
-
-    parse_offset = offset
-    for _ in range(seg_count):
-        seg_start = parse_offset
-        flags_byte = data_payload[parse_offset]
-        parse_offset += 1
-        if flags_byte == 0:
-            # active, memory 0, init expr (i32.const <signed LEB128> end)
-            parse_offset = _skip_init_expr(data_payload, parse_offset)
-        elif flags_byte == 1:
-            # passive
-            pass
-        elif flags_byte == 2:
-            # active with explicit memory index, init expr
-            _, parse_offset = _read_varuint(data_payload, parse_offset)
-            parse_offset = _skip_init_expr(data_payload, parse_offset)
-        else:
-            # Unknown flags, bail
-            return None
-        header_end = parse_offset
-        # Read the data bytes
-        data_len, parse_offset = _read_varuint(data_payload, parse_offset)
-        seg_data = data_payload[parse_offset : parse_offset + data_len]
-        parse_offset += data_len
-        seg_headers.append(data_payload[seg_start:header_end])
-        seg_raw.append(seg_data)
-
-    if len(seg_raw) < 2:
-        return None
-
-    # --- Pass 1: report duplicate segment statistics ---
-    seen: dict[bytes, int] = {}
-    dup_bytes = 0
-    for raw in seg_raw:
-        if raw in seen:
-            dup_bytes += len(raw)
-        else:
-            seen[raw] = len(raw)
-
-    if dup_bytes >= 1024:
-        print(
-            f"Data section has ~{dup_bytes:,} bytes of duplicate segments "
-            f"({dup_bytes / 1024:.1f} KB).",
-            file=sys.stderr,
-        )
-
-    # --- Pass 2: scrub embedded file paths ---
-    # Replace embedded source/build file paths with a short tag, padded with
-    # null bytes to keep the same byte length (no relocation). Match only
-    # through the first plausible file-extension boundary; linked data
-    # segments can concatenate adjacent literals without NUL separators, so a
-    # greedy "[^\\x00]+" scrubber is unsound and can zero live payload bytes.
-    _PATH_EXT_RE = (
-        rb"(?:rs|py|pyi|toml|json|ron|ya?ml|c|cc|cpp|h|hpp|m|mm|swift|"
-        rb"js|jsx|ts|tsx|md|txt|lean|wat|wasm)"
-    )
-    _PATH_RE = re.compile(
-        rb"(?:/rustc/[0-9a-f]{20,}/[^\x00]{1,512}?\."
-        + _PATH_EXT_RE
-        + rb"|/Users/[^\x00]{1,512}?\."
-        + _PATH_EXT_RE
-        + rb")"
-    )
-    saved_path_bytes = 0
-    new_seg_raw: list[bytes] = []
-    for raw in seg_raw:
-        buf = bytearray(raw)
-        for m in reversed(list(_PATH_RE.finditer(buf))):
-            span_len = m.end() - m.start()
-            tag = b"<stripped>"
-            replacement = tag + b"\x00" * (span_len - len(tag))
-            buf[m.start() : m.end()] = replacement
-            saved_path_bytes += span_len - len(tag)
-        new_seg_raw.append(bytes(buf))
-
-    if saved_path_bytes == 0:
-        return None
-
-    # Rebuild the data section payload
-    new_data = bytearray(_write_varuint(seg_count))
-    for hdr, raw in zip(seg_headers, new_seg_raw):
-        new_data.extend(hdr)
-        new_data.extend(_write_varuint(len(raw)))
-        new_data.extend(raw)
-
-    # Replace the data section in the module
-    new_sections: list[tuple[int, bytes]] = []
-    for sid, payload in sections:
-        if sid == 11:
-            new_sections.append((sid, bytes(new_data)))
-        else:
-            new_sections.append((sid, payload))
-
-    print(
-        f"Scrubbed {saved_path_bytes:,} bytes of embedded file paths "
-        f"from data section (null-padded, no size change)",
-        file=sys.stderr,
-    )
-    return _build_sections(new_sections)
-
-
 def _post_link_optimize(
     data: bytes,
     *,
     reference_data: bytes | None = None,
     preserve_exports: set[str] | None = None,
     preserve_reference_exports: bool = True,
-    facts_provider: Callable[[bytes], dict[str, object]],
+    preserve_debug: bool = False,
+    facts_provider: WasmFactsProvider,
 ) -> bytes:
     """Apply post-link optimizations to reduce V8 compilation memory pressure.
 
-    Internal exports and duplicate data are removed here. Debug section
-    disposition belongs exclusively to final publication, after all linked
-    and split optimizer paths have completed.
+    This is the key fix for MOL-183/MOL-186: the linked artifact was
+    overwhelming V8 because of debug sections, internal exports, and
+    duplicate data.  Stripping them reduces the module size by 30-60%
+    which directly translates to less compilation memory.
 
-    *reference_data*, when provided, is the original (pre-link) user module;
-    its function exports are preserved through the internal-export strip.
+    *reference_data*, when provided, is the original (pre-link) user module.
+    Its public exports remain roots even when the post-link artifact renamed
+    or internalized them during linking.
     """
+    data = strip_publication_sections(
+        data, final_artifact=True, preserve_debug=preserve_debug
+    )
     preserved_export_names = set(preserve_exports or ())
     if preserve_reference_exports and reference_data is not None:
-        preserved_export_names.update(_collect_function_exports(reference_data))
+        preserved_export_names.update(facts_provider(reference_data).function_exports)
 
     updated = _strip_internal_exports(
         data,
@@ -807,24 +689,14 @@ def _post_link_optimize(
     if updated is not None:
         data = updated
 
-    # Iteratively neutralize dead element-table entries and stub dead functions.
-    # Each round of neutralization may expose new dead functions (whose only
-    # callers were themselves dead), which in turn frees more element entries.
-    # Typically converges in 2-3 rounds.
-    for _dce_round in range(5):
-        facts = facts_provider(data)
-        updated = _neutralize_dead_element_entries(data, facts)
-        if updated is not None:
-            data = updated
-            facts = facts_provider(data)
-
-        updated = _stub_dead_functions(data, facts)
-        if updated is not None:
-            data = updated
-        else:
-            break  # No new dead functions found -- converged
-
-    updated = _dedup_data_segments(data)
+    # The scanner computes transitive reachability to a fixed point. Reuse that
+    # one immutable fact set for both index-preserving rewrites; neither pass
+    # adds roots or changes the function index space.
+    facts = facts_provider(data)
+    updated = _neutralize_dead_element_entries(data, facts)
+    if updated is not None:
+        data = updated
+    updated = _stub_dead_functions(data, facts)
     if updated is not None:
         data = updated
 

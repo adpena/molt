@@ -1,4 +1,4 @@
-use super::super::publish::bytes_to_lower_hex;
+use molt_ir::content_digest::bytes_to_lower_hex;
 use sha2::{Digest, Sha256};
 use std::io::{self, Write};
 

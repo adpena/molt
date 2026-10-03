@@ -64,14 +64,14 @@ def _validate_string_list(value: Any, label: str) -> list[str]:
 class FrameSummary:
     def __init__(
         self,
-        *,
         filename: str,
         lineno: int,
-        end_lineno: int,
-        colno: int,
-        end_colno: int,
         name: str,
-        line: str,
+        *,
+        end_lineno: int | None = None,
+        colno: int | None = None,
+        end_colno: int | None = None,
+        line: str | None = None,
     ) -> None:
         self.filename = filename
         self.lineno = lineno
@@ -79,7 +79,21 @@ class FrameSummary:
         self.colno = colno
         self.end_colno = end_colno
         self.name = name
-        self.line = line
+        self._line = line
+        self.line
+
+    @property
+    def line(self) -> str:
+        if self._line is None:
+            payload = _MOLT_TRACEBACK_PAYLOAD(
+                [(self.filename, self.lineno, self.end_lineno, self.colno,
+                  self.end_colno, self.name, None)], None
+            )
+            self._line = payload[0][6]
+        if sys.version_info >= (3, 13):
+            lines = self._line.splitlines()
+            return lines[0].strip() if lines else ""
+        return self._line.strip()
 
 
 def _frame_payload_entries(frames: list[FrameSummary]) -> list[tuple[Any, ...]]:
@@ -91,7 +105,7 @@ def _frame_payload_entries(frames: list[FrameSummary]) -> list[tuple[Any, ...]]:
             frame.colno,
             frame.end_colno,
             frame.name,
-            frame.line,
+            frame._line,
         )
         for frame in frames
     ]
@@ -189,21 +203,12 @@ def _exception_chain_payload(
 
 
 class StackSummary:
-    def __init__(
-        self,
-        frames: list[FrameSummary],
-        source: Any | None = None,
-        limit: int | None = None,
-    ) -> None:
+    def __init__(self, frames: list[FrameSummary]) -> None:
         self._frames = list(frames)
-        self._source = (
-            source if source is not None else _frame_payload_entries(self._frames)
-        )
-        self._limit = limit
 
     @classmethod
     def extract(cls, source: Any, limit: int | None = None) -> "StackSummary":
-        return cls(_payload_frames(source, limit), source=source, limit=limit)
+        return cls(_payload_frames(source, limit))
 
     @classmethod
     def from_list(cls, extracted_list: list[Any]) -> "StackSummary":
@@ -221,13 +226,13 @@ class StackSummary:
                     filename=str(filename),
                     lineno=lineno_i,
                     end_lineno=lineno_i,
-                    colno=0,
-                    end_colno=0,
+                    colno=None,
+                    end_colno=None,
                     name=str(name),
-                    line="" if line is None else str(line),
+                    line=None if line is None else str(line),
                 )
             )
-        return cls(frames, source=_frame_payload_entries(frames), limit=None)
+        return cls(frames)
 
     def __iter__(self):
         return iter(self._frames)
@@ -239,7 +244,7 @@ class StackSummary:
         return self._frames[index]
 
     def format(self) -> list[str]:
-        lines = _MOLT_TRACEBACK_FORMAT_STACK(self._source, self._limit)
+        lines = _MOLT_TRACEBACK_FORMAT_STACK(_frame_payload_entries(self._frames), None)
         return _validate_string_list(lines, "traceback format stack intrinsic")
 
 
@@ -285,8 +290,6 @@ class TracebackException:
                 _payload_to_frames(
                     frames_payload, "traceback exception chain payload intrinsic"
                 ),
-                source=frames_payload,
-                limit=None,
             )
             current_exc = cls(current, stack)
             current_exc.__suppress_context__ = suppress_context
@@ -324,8 +327,6 @@ def extract_tb(tb: Any, limit: int | None = None) -> StackSummary:
     payload = _MOLT_TRACEBACK_EXTRACT_TB(tb, limit)
     return StackSummary(
         _payload_to_frames(payload, "traceback extract tb intrinsic"),
-        source=payload,
-        limit=None,
     )
 
 
@@ -338,12 +339,12 @@ def format_list(extracted_list: list[Any]) -> list[str]:
 def extract_stack(f: Any | None = None, limit: int | None = None) -> StackSummary:
     if f is None:
         f = _MOLT_GETFRAME(1)
-        if f is None:
-            raise RuntimeError("sys._getframe is unavailable")
     return StackSummary.extract(f, limit)
 
 
 def format_stack(f: Any | None = None, limit: int | None = None) -> list[str]:
+    if f is None:
+        f = _MOLT_GETFRAME(1)
     return extract_stack(f, limit).format()
 
 
@@ -386,8 +387,6 @@ def print_stack(
 ) -> None:
     if f is None:
         f = _MOLT_GETFRAME(1)
-        if f is None:
-            raise RuntimeError("sys._getframe is unavailable")
     out = "".join(format_stack(f, limit))
     if file is not None and hasattr(file, "write"):
         file.write(out)

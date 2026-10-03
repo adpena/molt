@@ -178,15 +178,14 @@ impl SimpleBackend {
             var_names,
             last_use,
             cfg_liveness,
+            mut ssa_values,
             alias_roots,
             if_to_end_if,
             if_to_else,
             else_to_end_if,
             label_ids,
             state_label_ids,
-            shared_resume_label_ids,
-            state_ids: _state_ids,
-            resume_states,
+            resume_targets,
             function_exception_label_id,
             exception_label_ids,
             const_int_map,
@@ -195,6 +194,22 @@ impl SimpleBackend {
             field_store_modes,
             drop_inserted,
         } = preanalyze_function_ir(&func_ir, representation_plan);
+        // Only the TIR drop plan moves or retains transferred references; the
+        // legacy value tracker would release a transferred operand twice, and
+        // could not plan an adopted parameter's releases.
+        let transfers = |custody: &[molt_ir::ParameterCustody]| {
+            custody.contains(&molt_ir::ParameterCustody::Transferred)
+        };
+        assert!(
+            drop_inserted
+                || !(transfers(&func_ir.parameter_custody)
+                    || func_ir
+                        .ops
+                        .iter()
+                        .any(|op| op.argument_custody.as_deref().is_some_and(transfers))),
+            "function `{}` carries reference custody but was not drop-inserted",
+            func_ir.name
+        );
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): the SimpleIR-level
         // inc/dec coalescer (`rc_coalescing`) elides matched inc_ref/dec_ref PAIRS
         // it discovers in the op stream. For drop-inserted functions the TIR drop
@@ -485,13 +500,10 @@ impl SimpleBackend {
         // Generated async-work polls bypass this pure-exception lane in
         // `handle_exception_control_op` and call the eval-breaker observer.
         let has_exc_handling = function_exception_label_id.is_some();
-        static INLINE_EXC_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let inline_exc_disabled = *INLINE_EXC_DISABLED.get_or_init(|| {
-            env_setting("MOLT_BACKEND_INLINE_EXC_DISABLED")
-                .as_deref()
-                .map(parse_truthy_env)
-                .unwrap_or(false)
-        });
+        let inline_exc_disabled = env_setting("MOLT_BACKEND_INLINE_EXC_DISABLED")
+            .as_deref()
+            .map(parse_truthy_env)
+            .unwrap_or(false);
         let exc_pending_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
             Some(import_func_ref(
                 &mut self.module,
@@ -826,6 +838,59 @@ impl SimpleBackend {
             );
         }
 
+        // A synchronous Python frame's homes are its binding storage: its frame
+        // entry takes them and compiled code borrows their base. A leading entry
+        // lends right here, before its adjacent exception check; a later entry
+        // lends at its own trace_enter_slot. A failed entry lends 0 with its
+        // exception pending and that check leaves for the entry-failure label
+        // before any home op runs. A split chunk has no entry: it borrows the
+        // homes of the frame it runs in at its own entry and, if none are lent,
+        // returns at once through the prologue-failure exit.
+        let frame_home_slots = func_ir
+            .ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.kind.as_str(),
+                    "frame_home_store"
+                        | "frame_home_cell"
+                        | "frame_home_private_cell"
+                        | "frame_home_load"
+                        | "frame_home_take"
+                        | "frame_home_clear"
+                )
+            })
+            .filter_map(|op| op.value)
+            .max()
+            .map(|slot| slot + 1);
+        let enters_later = leading_frame_code_id.is_none()
+            && func_ir.ops.iter().any(|op| op.kind == "trace_enter_slot");
+        let frame_homes = frame_home_slots.map(|slots| {
+            let homes = builder.declare_var(types::I64);
+            if enters_later {
+                let unlent = builder.ins().iconst(types::I64, 0);
+                builder.def_var(homes, unlent);
+            } else {
+                let base = fc::funcobj::emit_frame_homes_lend(
+                    homes,
+                    slots,
+                    &mut self.module,
+                    &mut self.import_ids,
+                    &mut builder,
+                );
+                if leading_frame_exception_check_idx.is_none() {
+                    let lent = builder.create_block();
+                    let failed = builder.ins().icmp_imm(IntCC::Equal, base, 0);
+                    let none = builder.ins().iconst(types::I64, box_none());
+                    let args = if returns_value { &[none][..] } else { &[] };
+                    brif_block(&mut builder, failed, master_return_block, args, lent, &[]);
+                    switch_to_block_materialized(&mut builder, lent);
+                    seal_block_once(&mut builder, &mut sealed_blocks, lent);
+                }
+            }
+            (homes, slots)
+        });
+
         let mut deferred_literal_materialization = if leading_frame_exception_check_idx.is_some() {
             Some(literal_materialization)
         } else {
@@ -850,6 +915,13 @@ impl SimpleBackend {
         // non-leading module markers stay at their IR position so module code can
         // bind its code/globals slot first. Both pop exactly once in the unified
         // return block.
+        ssa_values.project_variables(
+            &cfg_liveness.names,
+            &vars,
+            representation_plan,
+            &slot_backed_join_slots,
+        );
+        ssa_values.capture_parameters(&mut builder, &func_ir.params, &cfg_liveness.names);
         let label_transport_plans: BTreeMap<i64, BlockTransportPlan> = if stateful {
             // Stateful live-across-suspend values have frame custody, not a
             // simultaneously-live SSA predecessor. Their state-label ABI is a
@@ -869,11 +941,10 @@ impl SimpleBackend {
                         return None;
                     }
                     let block_id = cfg_liveness.block_for_op(op_idx);
-                    let plan = BlockTransportPlan::from_live_names(
-                        &cfg_liveness.live_in_by_block[block_id],
-                        &vars,
-                        representation_plan,
-                        &slot_backed_join_slots,
+                    let plan = BlockTransportPlan::from_live_ids(
+                        cfg_liveness.live_in_by_block[block_id].iter(),
+                        &ssa_values,
+                        crate::tir::dominators::SimpleProgramPoint::Before(op_idx),
                     );
                     Some((label_id, plan))
                 })
@@ -903,15 +974,13 @@ impl SimpleBackend {
                 plan.append_block_params(&mut builder, block);
             }
         }
-        for state_id in resume_states.iter().copied() {
-            let block = if shared_resume_label_ids.contains(&state_id) {
-                *label_blocks
-                    .entry(state_id)
-                    .or_insert_with(|| builder.create_block())
-            } else {
-                builder.create_block()
-            };
-            resume_blocks.insert(state_id, block);
+        if stateful {
+            let targets = resume_targets
+                .as_ref()
+                .expect("native state dispatch requires the shared terminal StateDispatch map");
+            for (&state, &label) in targets {
+                resume_blocks.insert(state, label_blocks[&label]);
+            }
         }
         let ops = &func_ir.ops;
         // 2. Implementation
@@ -939,8 +1008,35 @@ impl SimpleBackend {
                 }
             }
         }
+        let mut pending_definition_op = None;
         for op_idx in 0..ops.len() {
+            // Capture the preceding operation before any new label switch,
+            // including handlers that intentionally bypass the per-op epilogue.
+            if let Some(index) = pending_definition_op.take()
+                && builder
+                    .current_block()
+                    .is_some_and(|block| !block_has_terminator(&builder, block))
+            {
+                ssa_values.capture_operation(&mut builder, index, &ops[index], &cfg_liveness.names);
+            }
             if skip_ops.contains(&op_idx) || metadata_loop_ops.contains(&op_idx) {
+                // Structured lowering materializes SSA-only join operations at
+                // its merge. Consume their declared definitions at the logical
+                // source point even though no second instruction is emitted.
+                // All structured phi discovery paths share this boundary.
+                if skip_ops.contains(&op_idx)
+                    && crate::tir::op_kinds_generated::simpleir_kind_is_ssa_only(&ops[op_idx].kind)
+                    && builder
+                        .current_block()
+                        .is_some_and(|block| !block_has_terminator(&builder, block))
+                {
+                    ssa_values.capture_operation(
+                        &mut builder,
+                        op_idx,
+                        &ops[op_idx],
+                        &cfg_liveness.names,
+                    );
+                }
                 continue;
             }
             let op = ops[op_idx].clone();
@@ -1066,10 +1162,12 @@ impl SimpleBackend {
                     &mut builder,
                     cfg_liveness.live_after(op_idx),
                     &op,
-                    &vars,
-                    &slot_backed_join_slots,
+                    &cfg_liveness.names,
+                    &ssa_values,
+                    crate::tir::dominators::SimpleProgramPoint::Before(op_idx),
                 )
             };
+            pending_definition_op = Some(op_idx);
             match op.kind.as_str() {
                 _ if op_family == Some(fc::NativeOpFamily::ConstLiterals) => {
                     let __flow = fc::const_literals::handle_const_literal_op(
@@ -1110,6 +1208,8 @@ impl SimpleBackend {
                         &loop_stack,
                         scalar_fast_paths_enabled,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -1189,6 +1289,8 @@ impl SimpleBackend {
                         &mut scalarized_tuples,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -1234,6 +1336,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -1244,8 +1348,6 @@ impl SimpleBackend {
                 _ if op_family == Some(fc::NativeOpFamily::ListOps) => {
                     let __flow = fc::list_ops::handle_list_op(
                         &op,
-                        op_idx,
-                        &func_ir.name,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -1254,6 +1356,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -1264,8 +1368,6 @@ impl SimpleBackend {
                 _ if op_family == Some(fc::NativeOpFamily::DictOps) => {
                     let __flow = fc::dict_ops::handle_dict_op(
                         &op,
-                        op_idx,
-                        &func_ir.name,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -1320,6 +1422,8 @@ impl SimpleBackend {
                         scalar_fast_paths_enabled,
                         local_inc_ref_obj,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                 }
                 // Subscript write fast paths: mutating list/dict setitem lowering is its own unit.
@@ -1336,6 +1440,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                 }
                 // Thin delete/slice runtime-call lowering: separate from get/set fast paths.
@@ -1352,6 +1458,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                 }
                 // handle_text_predicate family — extracted to fc::text_predicates (M1)
@@ -1426,6 +1534,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                 }
                 // handle_memoryview_buffer_op family — extracted to fc::memoryview_buffer (M1)
@@ -1454,6 +1564,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                 }
                 // handle_compare_op family - extracted to fc::compare (M1)
@@ -1512,17 +1624,10 @@ impl SimpleBackend {
                 _ if op_family == Some(fc::NativeOpFamily::Coroutine) => {
                     let __flow = fc::coroutine::handle_coroutine_op(
                         &op,
-                        ops,
-                        op_idx,
                         entry_block,
-                        master_return_block,
-                        &resume_states,
                         &resume_blocks,
-                        &label_blocks,
                         &mut reachable_blocks,
                         &mut is_block_filled,
-                        rc_authority,
-                        returns_value,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -1532,13 +1637,7 @@ impl SimpleBackend {
                         representation_plan,
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
-                        &last_use,
-                        &mut cleanup_roots,
                         local_inc_ref_obj,
-                        local_dec_ref_obj,
-                        local_exc_pending_fast,
-                        exc_flag_ptr_slot,
-                        &maybe_debug_seal,
                         &nbc,
                     );
                     match __flow {
@@ -1552,6 +1651,7 @@ impl SimpleBackend {
                         &op,
                         op_idx,
                         owned_frame_entered,
+                        frame_homes,
                         leading_frame_entry_op_idx,
                         has_frame_slot,
                         is_block_filled,
@@ -1569,6 +1669,7 @@ impl SimpleBackend {
                         defined_functions,
                         known_function_arities,
                         function_has_ret,
+                        &self.function_entry_custody,
                         &mut self.trampoline_ids,
                         &mut self.declared_func_arities,
                         &mut local_closure_envs,
@@ -1711,6 +1812,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                 }
                 // Outlined class definition via molt_guarded_class_def
@@ -1780,6 +1883,7 @@ impl SimpleBackend {
                         loop_depth,
                         &label_blocks,
                         &label_transport_plans,
+                        &ssa_values,
                         &cfg_liveness,
                         &mut reachable_blocks,
                         &mut is_block_filled,
@@ -1791,7 +1895,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &slot_backed_join_slots,
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
                         &mut tracked_obj_vars,
@@ -1980,6 +2083,7 @@ impl SimpleBackend {
                         &mut reachable_blocks,
                         &label_blocks,
                         &label_transport_plans,
+                        &ssa_values,
                         &cfg_liveness,
                         function_exception_label_id,
                         &slot_backed_join_slots,

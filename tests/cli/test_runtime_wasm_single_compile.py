@@ -13,6 +13,11 @@ Verifies the combined-compile design invariants that make the dedup correct:
 
 from __future__ import annotations
 
+from molt.cli.runtime_wasm_validation import (
+    RuntimeWasmAdmissionIssue,
+    RuntimeWasmAdmissionReport,
+)
+
 from functools import partial
 
 import hashlib
@@ -56,7 +61,10 @@ from molt.cli.runtime_wasm_build_timings import (
     _reset_runtime_wasm_build_timings,
     _runtime_wasm_build_timings_snapshot,
 )
-from molt.cli.runtime_wasm_generation import publish_runtime_wasm_generation
+from molt.cli.runtime_wasm_generation import (
+    publish_runtime_wasm_generation,
+    runtime_wasm_generation_path,
+)
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     runtime_wasm_link_inputs,
@@ -75,6 +83,105 @@ _COMMON = dict(
     required_link_features=frozenset(),
     required_exports=None,
 )
+
+
+@pytest.mark.parametrize("cache", ["valid", "missing", "corrupt"])
+def test_disabled_pair_build_still_admits_hydrated_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cache: str
+) -> None:
+    monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+    shared = make_runtime_build_identity("shared", "cached")
+    reloc = make_runtime_build_identity("reloc", "cached")
+    state = _RuntimeArtifactState()
+    shared_spec, reloc_spec = _specs(tmp_path)
+    shared_path, reloc_path = (
+        tmp_path / "molt_runtime.wasm",
+        tmp_path / "molt_runtime_reloc.wasm",
+    )
+    ctx = runtime_wasm_pair_build._RuntimeWasmPairBuild(
+        runtime_state=state,
+        json_output=True,
+        cargo_profile="release",
+        cargo_timeout=5,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules=None,
+        required_link_features=frozenset(),
+        required_exports=None,
+        runtime_wasm=shared_path,
+        runtime_reloc_wasm=reloc_path,
+        shared_spec=shared_spec,
+        reloc_spec=reloc_spec,
+        toolchain_manifest_path=tmp_path / "toolchain.json",
+        generation_manifest=runtime_wasm_generation_path(shared_path),
+        pre_identity=runtime_wasm_pair_build._RuntimeWasmPairIdentity(
+            shared.toolchain_manifest, shared, reloc
+        ),
+    )
+
+    def hydrate(**_kwargs):
+        if cache == "missing":
+            return None
+        source_shared, source_reloc = (
+            tmp_path / "shared-source",
+            tmp_path / "reloc-source",
+        )
+        source_shared.write_bytes(b"shared")
+        source_reloc.write_bytes(b"reloc")
+        generation = publish_runtime_wasm_generation(
+            shared_path,
+            reloc_path,
+            shared_identity=shared,
+            reloc_identity=reloc,
+            source_shared=source_shared,
+            source_reloc=source_reloc,
+        )
+        if cache == "corrupt":
+            generation.shared.write_bytes(b"corrupt")
+        return generation
+
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "hydrate_runtime_wasm_pair_from_shared_cache", hydrate
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "_prepopulate_combined_runtime_wasm_target",
+        lambda **_k: pytest.fail("rebuild-disabled policy started a build"),
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build._RuntimeWasmPairBuild,
+        "provision_staging",
+        lambda _s: pytest.fail("rebuild-disabled policy provisioned a build"),
+    )
+
+    # Generation identity and content admission remain real. These fixtures
+    # contain synthetic module bytes, so only format/export validation is stubbed.
+    def synthetic_exports(generation, _required):
+        try:
+            generation.verify_members()
+        except ValueError as exc:
+            return RuntimeWasmAdmissionReport(
+                (RuntimeWasmAdmissionIssue("generation", "observation", str(exc)),)
+            )
+        return RuntimeWasmAdmissionReport()
+
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "runtime_wasm_generation_admission",
+        synthetic_exports,
+    )
+    outcome = runtime_wasm_pair_build._materialize_runtime_wasm_pair(ctx)
+    if cache == "valid":
+        assert outcome is runtime_wasm_pair_build._PairBuildOutcome.ACCEPTED
+    else:
+        assert outcome is runtime_wasm_pair_build._PairBuildOutcome.FAILED
+        failure = state.runtime_wasm_build_failure
+        assert failure is not None
+        assert failure.stage == (
+            "rebuild-policy" if cache == "missing" else "shared-cache-hydration"
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -226,9 +333,14 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         assert ctx.accept_generation()
         return runtime_wasm_pair_build._PairBuildOutcome.ACCEPTED
 
-    def shared_exports(path, required, *, reloc):
+    def shared_exports(generation, required):
+        generation.verify_members()
         admissions.append(required)
-        return not (outcome == "missing-export" and required == {"add", "hash_builtin"})
+        return RuntimeWasmAdmissionReport(
+            shared_missing_exports=("molt_hash_builtin",)
+            if outcome == "missing-export" and required == {"add", "hash_builtin"}
+            else ()
+        )
 
     monkeypatch.setattr(
         runtime_wasm_pair_build, "_prepare_runtime_wasm_pair_build", prepare
@@ -238,19 +350,8 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     )
     monkeypatch.setattr(
         runtime_wasm_pair_build,
-        "_is_valid_shared_runtime_wasm_artifact",
-        lambda path: True,
-    )
-    monkeypatch.setattr(
-        runtime_wasm_pair_build, "_is_valid_runtime_wasm_artifact", lambda path: True
-    )
-    monkeypatch.setattr(
-        runtime_wasm_pair_build, "_runtime_exports_satisfy_for_mode", shared_exports
-    )
-    monkeypatch.setattr(
-        runtime_wasm_pair_build._RuntimeWasmPairBuild,
-        "reloc_missing_required_symbols",
-        lambda self, path: set(),
+        "runtime_wasm_generation_admission",
+        shared_exports,
     )
     monkeypatch.setattr(
         runtime_wasm_pair_build._RuntimeWasmPairBuild,
@@ -401,12 +502,12 @@ def test_runtime_publication_authority_is_exact_and_content_addressed(
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(source.read_bytes())
 
-    before = runtime_wasm_build_spec._runtime_wasm_publication_authority(tmp_path)
+    _, before = runtime_build_identity._capture_runtime_build_trees(tmp_path, ())
     assert before["file_count"] == len(authority_paths)
 
     changed = tmp_path / "src/molt/cli/runtime_wasm_build.py"
     changed.write_bytes(changed.read_bytes() + b"\n# publication mutation\n")
-    after = runtime_wasm_build_spec._runtime_wasm_publication_authority(tmp_path)
+    _, after = runtime_build_identity._capture_runtime_build_trees(tmp_path, ())
     assert after["digest"] != before["digest"]
 
 
@@ -862,33 +963,6 @@ def test_pair_member_staging_is_identity_local_and_never_process_cached(
     assert not concurrent_root.exists()
     ctx.cleanup_staging()
     assert not first_root.exists()
-
-
-def test_reloc_pair_acceptance_uses_linking_definitions_with_fallback_semantics(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    ctx = _test_pair_context(tmp_path, required_exports={"add"})
-    observed: list[dict[str, str]] = []
-
-    def defined_names(_path: Path, expected: dict[str, str]) -> frozenset[str]:
-        observed.append(expected)
-        return frozenset({"molt_add"})
-
-    monkeypatch.setattr(
-        runtime_wasm_pair_build,
-        "wasm_linking_defined_names",
-        defined_names,
-    )
-    assert ctx.reloc_missing_required_symbols(tmp_path / "reloc-member") == set()
-    assert observed == [{"molt_add": "function"}]
-
-    monkeypatch.setattr(
-        runtime_wasm_pair_build,
-        "wasm_linking_defined_names",
-        lambda _path, _expected: frozenset(),
-    )
-    assert ctx.reloc_missing_required_symbols(tmp_path / "reloc-member") == {"molt_add"}
 
 
 def test_pair_target_materialization_keeps_canonical_spec_without_output_sidecar(
@@ -1630,3 +1704,241 @@ def test_precompile_build_failures_reach_exact_routing_boundary(
     assert len(report["errors"]) == 1 and diagnostic in report["errors"][0]
     assert native_path.read_bytes() == b"previous native generation"
     assert (tmp_path / "manifest.json").read_text() == '{"previous":"deployment"}\n'
+
+
+def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
+    """Real modules with a typed add export and an independent linking symbol."""
+    from molt._wasm_abi_generated import (
+        WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+        WASM_RESERVED_RUNTIME_CALLABLES,
+    )
+    from molt.wasm_artifact import _build_wasm_sections
+    from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
+
+    ctx = _test_pair_context(tmp_path, required_exports={"add"})
+    shared = tmp_path / "shared-source.wasm"
+    reloc = tmp_path / "reloc-source.wasm"
+    imports = (
+        b"\x02"
+        + _wasm_string("env")
+        + _wasm_string("__indirect_function_table")
+        + b"\x01\x70\x00\x80\x02"
+        + _wasm_string("env")
+        + _wasm_string("memory")
+        + b"\x02\x00\x02"
+    )
+    prefix = WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
+        WASM_RESERVED_RUNTIME_CALLABLES
+    )
+    signature = b"\x01\x60\x02\x7e\x7e\x01\x7e"
+    code = b"\x01\x04\x00\x42\x00\x0b"
+    shared.write_bytes(
+        _build_wasm_sections(
+            [
+                (1, signature),
+                (2, imports),
+                (3, b"\x01\x00"),
+                (7, b"\x01" + _wasm_string("molt_add") + b"\x00\x00"),
+                (9, b"\x01\x00\x41\x01\x0b" + _wasm_u32(prefix) + bytes(prefix)),
+                (10, code),
+            ]
+        )
+    )
+    # A valid extended-const global initializer irrelevant to reloc admission
+    # and split layout. It previously tripped the eager global parser.
+    reloc_imports = (
+        b"\x04"
+        + imports[1:]
+        + _wasm_string("env")
+        + _wasm_string("base")
+        + b"\x03\x7f\x00"
+        + _wasm_string("env")
+        + _wasm_string("external_add")
+        + b"\x00\x00"
+    )
+    symbol_index = 0 if flags & 0x10 else 1
+    symbol = (
+        b"\x01\x00"
+        + _wasm_u32(flags)
+        + _wasm_u32(symbol_index)
+        + _wasm_string("molt_add")
+    )
+    linking = _wasm_string("linking") + b"\x02\x08" + _wasm_u32(len(symbol)) + symbol
+    reloc.write_bytes(
+        _build_wasm_sections(
+            [
+                (1, signature),
+                (2, reloc_imports),
+                (3, b"\x01\x00"),
+                (6, b"\x01\x7f\x00\x23\x00\x41\x01\x6a\x0b"),
+                (10, code),
+                (0, linking),
+            ]
+        )
+    )
+    generation = publish_runtime_wasm_generation(
+        ctx.runtime_wasm,
+        ctx.runtime_reloc_wasm,
+        shared_identity=ctx.pre_identity.shared,
+        reloc_identity=ctx.pre_identity.reloc,
+        source_shared=shared,
+        source_reloc=reloc,
+    )
+    return ctx, generation
+
+
+@pytest.mark.parametrize("flags, accepted", [(0, True), (2, False), (0x50, False)])
+def test_generation_admission_and_diagnostic_share_typed_linking_obligations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: int, accepted: bool
+) -> None:
+    from molt.cli import runtime_wasm_validation
+
+    ctx, generation = _observed_pair_fixture(tmp_path, flags=flags)
+    # Structural wasm-tools execution is outside the observation/admission claim.
+    monkeypatch.setattr(
+        runtime_wasm_validation, "_validate_wasm_structural", lambda _: None
+    )
+    report = runtime_wasm_validation.runtime_wasm_generation_admission(
+        generation, {"add"}
+    )
+    assert report.accepted is accepted
+    assert report.shared_missing_exports == ()
+    assert report.reloc_missing_symbols == (() if accepted else ("molt_add",))
+    selected = ctx.accept_generation(observed_generation=generation)
+    assert (selected is generation) is accepted
+    assert ctx.generation_rejection_details() == report.details()
+
+
+def test_split_layout_ignores_reloc_sections_and_source_binding_reuses_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import toolchain_identity
+    from molt.cli import runtime_wasm_generation, runtime_wasm_validation
+    from molt.cli.wasm_codegen_layout import prepare_wasm_codegen_layout
+    from molt import wasm_linking_symbols
+
+    ctx, generation = _observed_pair_fixture(tmp_path)
+    reads, structural, linking = [], [], []
+    read = toolchain_identity.read_stable_regular_file
+    scan = wasm_linking_symbols.wasm_linking_defined_names
+
+    def capture(identity, **kwargs):
+        reads.append(identity.path)
+        return read(identity, **kwargs)
+
+    def structure(path):
+        structural.append(path)
+        return None
+
+    def names(path, expected, **kwargs):
+        linking.append(dict(expected))
+        return scan(path, expected, **kwargs)
+
+    monkeypatch.setattr(toolchain_identity, "read_stable_regular_file", capture)
+    monkeypatch.setattr(runtime_wasm_validation, "_validate_wasm_structural", structure)
+    monkeypatch.setattr(wasm_linking_symbols, "wasm_linking_defined_names", names)
+    binding = runtime_wasm_generation.bind_runtime_wasm_codegen(generation, {"add"})
+    layout = prepare_wasm_codegen_layout(binding, linked=True, split_runtime=True)
+    assert layout.table_base == 1
+    assert reads == [generation.shared]
+    assert (
+        ctx.accept_generation(observed_generation=binding.generation)
+        is binding.generation
+    )
+    assert reads == [generation.shared, generation.reloc]
+    # Once admitted, a replacement of the mutable pointer cannot redirect bind
+    # or force final admission to consume a second, unadmitted generation.
+    generation.manifest.write_bytes(b"corrupt mutable pointer")
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "read_runtime_wasm_generation",
+        lambda *args, **kwargs: pytest.fail(
+            "final admission reopened mutable selection"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_wasm_generation,
+        "stable_regular_file_identity",
+        lambda *args, **kwargs: pytest.fail("binding rehashed an admitted member"),
+    )
+    repinned = runtime_wasm_generation.bind_runtime_wasm_codegen(
+        ctx.accepted_generation, {"add"}
+    )
+    assert (
+        prepare_wasm_codegen_layout(repinned, linked=True, split_runtime=True) == layout
+    )
+    repinned.verify()
+    assert (
+        ctx.accept_generation(observed_generation=repinned.generation)
+        is repinned.generation
+    )
+    assert reads == [generation.shared, generation.reloc]
+    assert structural == [generation.shared, generation.reloc]
+    assert linking == [{"molt_add": "function"}]
+
+
+def test_generation_diagnostic_preserves_failed_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, generation = _observed_pair_fixture(tmp_path)
+    generation.reloc.write_bytes(b"changed after capture")
+    assert ctx.accept_generation(observed_generation=generation) is None
+    details = ctx.generation_rejection_details()
+    assert details["issues"][0]["reason"] == "observation"
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "read_runtime_wasm_generation",
+        lambda *args, **kwargs: pytest.fail(
+            "diagnostics observed a different generation"
+        ),
+    )
+    assert ctx.generation_rejection_details() == details
+
+
+def test_generation_linking_parse_failure_has_one_admission_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import runtime_wasm_validation
+    from molt.wasm_artifact import _build_wasm_sections, parse_wasm_sections
+    from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
+
+    ctx, generation = _observed_pair_fixture(tmp_path)
+    source = tmp_path / "bad-linking-source.wasm"
+    # A declared symbol-table count without a symbol is not missing exports;
+    # it is malformed linking metadata, which the diagnostic must report.
+    symbol_table = b"\x01"
+    linking = (
+        _wasm_string("linking")
+        + b"\x02\x08"
+        + _wasm_u32(len(symbol_table))
+        + symbol_table
+    )
+    source.write_bytes(
+        _build_wasm_sections(
+            [
+                *[
+                    (kind, data)
+                    for kind, data in parse_wasm_sections(generation.reloc.read_bytes())
+                    if kind != 0
+                ],
+                (0, linking),
+            ]
+        )
+    )
+    malformed = publish_runtime_wasm_generation(
+        ctx.runtime_wasm,
+        ctx.runtime_reloc_wasm,
+        shared_identity=generation.shared_identity,
+        reloc_identity=generation.reloc_identity,
+        source_shared=generation.shared,
+        source_reloc=source,
+    )
+    monkeypatch.setattr(
+        runtime_wasm_validation, "_validate_wasm_structural", lambda _: None
+    )
+    assert ctx.accept_generation(observed_generation=malformed) is None
+    details = ctx.generation_rejection_details()
+    assert [(item["member"], item["reason"]) for item in details["issues"]] == [
+        ("reloc", "linking")
+    ]
+    assert "Unexpected EOF" in details["issues"][0]["detail"]

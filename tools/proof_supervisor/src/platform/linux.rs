@@ -1,6 +1,6 @@
 use crate::{
-    Capability, ClosureMode, EventJournal, EventKind, FileIdentity, ImageCacheKey, ImageClass,
-    ImageHashCache, ProcessEvent, Receipt, RootExitDisposition, SupervisorState, ValidatedPolicy,
+    CAPABILITY_SCHEMA, Capability, ClosureMode, EventJournal, FileIdentity, ImageCacheKey,
+    ImageHashCache, KernelAccounting, ProcessEventKind, Receipt, ValidatedPolicy,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
@@ -8,61 +8,81 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::ptr::null_mut;
-use std::time::Instant;
 
 pub fn capability(mode: ClosureMode) -> Capability {
+    let (available, reason) = ptrace_availability();
     Capability {
-        schema: crate::CAPABILITY_SCHEMA.to_owned(),
+        schema: CAPABILITY_SCHEMA.to_owned(),
         platform: "linux".to_owned(),
         mode,
         backend: "ptrace-exitkill".to_owned(),
-        available: ptrace_scope_allows_children(),
+        available,
         pre_entry_exec_authority: true,
+        pre_entry_process_create_authority: true,
         recursive_descendant_authority: true,
         required_environment: super::required_environment(),
-        reason: (!ptrace_scope_allows_children())
-            .then(|| "ptrace of direct children is disabled by host policy".to_owned()),
+        reason,
     }
 }
 
-pub fn run(policy: &ValidatedPolicy, events: &mut EventJournal) -> Receipt {
-    let started = Instant::now();
-    let cap = capability(policy.policy.mode);
-    if !cap.available {
-        return Receipt::rejected(policy, &cap, cap.reason.clone().unwrap());
-    }
-    let mut receipt = Receipt::running(policy, &cap);
-    match unsafe { supervise(policy, &mut receipt, events) } {
-        Ok(()) => receipt
-            .transition(SupervisorState::Draining)
-            .expect("valid drain transition"),
-        Err(error) => receipt.record_error(error),
-    }
-    if receipt.accounting.root_execs == 0 {
-        receipt.record_error("root executable never reached an admitted exec stop");
-    }
-    receipt.elapsed_ns = started.elapsed().as_nanos();
-    let complete = receipt.errors.is_empty()
-        && receipt.violations.is_empty()
-        && receipt.accounting.active_processes == 0
-        && receipt.accounting.root_execs >= 1
-        && receipt.accounting.observed_process_creates == receipt.accounting.observed_process_exits
-        && receipt.accounting.total_processes == receipt.accounting.observed_process_creates;
-    receipt.finish(complete);
-    receipt
+pub fn run(policy: &ValidatedPolicy, events: &mut EventJournal, capability: Capability) -> Receipt {
+    super::run_backend(policy, events, capability, |policy, events| unsafe {
+        supervise(policy, events)
+    })
 }
 
-fn ptrace_scope_allows_children() -> bool {
-    std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
-        .map(|value| value.trim() != "3")
-        .unwrap_or(true)
+fn ptrace_availability() -> (bool, Option<String>) {
+    let scope = match std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope") {
+        Ok(value) => match value.trim().parse::<u8>() {
+            Ok(scope) => Some(scope),
+            Err(error) => {
+                return (
+                    false,
+                    Some(format!("cannot parse Yama ptrace_scope: {error}")),
+                );
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return (
+                false,
+                Some(format!("cannot read Yama ptrace_scope: {error}")),
+            );
+        }
+    };
+    match scope {
+        None | Some(0 | 1) => (true, None),
+        Some(2) if effective_cap_sys_ptrace() => (true, None),
+        Some(2) => (
+            false,
+            Some("Yama ptrace_scope=2 requires effective CAP_SYS_PTRACE".to_owned()),
+        ),
+        Some(3) => (false, Some("Yama ptrace_scope=3 forbids ptrace".to_owned())),
+        Some(value) => (
+            false,
+            Some(format!("unsupported Yama ptrace_scope value {value}")),
+        ),
+    }
+}
+
+fn effective_cap_sys_ptrace() -> bool {
+    const CAP_SYS_PTRACE: u32 = 19;
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return false;
+    };
+    let Some(encoded) = status
+        .lines()
+        .find_map(|line| line.strip_prefix("CapEff:").map(str::trim))
+    else {
+        return false;
+    };
+    u64::from_str_radix(encoded, 16).is_ok_and(|mask| mask & (1_u64 << CAP_SYS_PTRACE) != 0)
 }
 
 unsafe fn supervise(
     policy: &ValidatedPolicy,
-    receipt: &mut Receipt,
     events: &mut EventJournal,
-) -> Result<(), String> {
+) -> Result<Option<KernelAccounting>, String> {
     let argv = cstrings(&policy.policy.command, "command")?;
     let environment_strings: Vec<String> = policy
         .policy
@@ -138,27 +158,22 @@ unsafe fn supervise(
         return Err(os_error("ptrace(PTRACE_SETOPTIONS)"));
     }
 
-    let mut sequence = 1_u64;
+    let mut process_generation = 1_u64;
     let root_u32 = root as u32;
     let mut traced = BTreeSet::from([root]);
     let mut processes = BTreeSet::from([root]);
-    let mut parents = BTreeMap::from([(root, None)]);
-    let root_stable_id = stable_id(root, sequence);
+    let root_stable_id = stable_id(root, process_generation);
     let mut stable_ids = BTreeMap::from([(root, root_stable_id.clone())]);
     let mut images: BTreeMap<libc::pid_t, FileIdentity> = BTreeMap::new();
     let mut hash_cache = ImageHashCache::default();
-    receipt.accounting.total_processes = 1;
-    receipt.accounting.observed_process_creates = 1;
-    receipt.accounting.active_processes = 1;
-    if let Err(error) = events.record(&ProcessEvent {
-        sequence,
-        kind: EventKind::ProcessCreate,
-        process_id: root_u32,
-        parent_process_id: None,
-        stable_process_id: root_stable_id,
-        image: None,
-        exit_code: None,
-    }) {
+    if let Err(error) = events.record(
+        root_u32,
+        root_stable_id,
+        ProcessEventKind::ProcessCreate {
+            parent_process_id: None,
+            image: None,
+        },
+    ) {
         unsafe {
             libc::kill(root, libc::SIGKILL);
         }
@@ -194,51 +209,21 @@ unsafe fn supervise(
         if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
             traced.remove(&pid);
             if processes.remove(&pid) {
-                sequence += 1;
-                receipt.accounting.observed_process_exits += 1;
-                receipt.accounting.active_processes = processes.len() as u64;
                 let code = if libc::WIFEXITED(status) {
                     libc::WEXITSTATUS(status) as i64
                 } else {
                     (128 + libc::WTERMSIG(status)) as i64
                 };
-                if pid == root {
-                    receipt.root_exit_code = Some(code);
-                }
-                events.record(&ProcessEvent {
-                    sequence,
-                    kind: EventKind::ProcessExit,
-                    process_id: pid as u32,
-                    parent_process_id: parents
-                        .get(&pid)
-                        .copied()
-                        .flatten()
-                        .map(|value| value as u32),
-                    stable_process_id: stable_ids
+                let outcome = events.record(
+                    pid as u32,
+                    stable_ids
                         .remove(&pid)
                         .unwrap_or_else(|| format!("linux:{pid}:unclassified")),
-                    image: None,
-                    exit_code: Some(code),
-                })?;
+                    ProcessEventKind::ProcessExit { exit_code: code },
+                )?;
                 images.remove(&pid);
-                if pid == root && !processes.is_empty() {
-                    let non_auxiliary = processes
-                        .iter()
-                        .filter(|child| {
-                            images.get(child).is_none_or(|image| {
-                                policy.root_exit_disposition(&image.path)
-                                    != RootExitDisposition::Terminate
-                            })
-                        })
-                        .count();
-                    if non_auxiliary == 0 {
-                        receipt.accounting.root_exit_terminated_processes += processes.len() as u64;
-                    } else {
-                        receipt.record_violation(format!(
-                            "root exited before {non_auxiliary} non-auxiliary descendant process(es)"
-                        ));
-                        violated = true;
-                    }
+                if outcome.must_terminate_closure() {
+                    violated |= outcome.has_policy_violation();
                     terminate_tracees(&traced, root);
                 }
             }
@@ -272,61 +257,46 @@ unsafe fn supervise(
                 }
                 let child = child as libc::pid_t;
                 traced.insert(child);
-                sequence += 1;
+                process_generation = process_generation
+                    .checked_add(1)
+                    .ok_or_else(|| "process generation overflow".to_owned())?;
+                // ptrace identifies the creating task; the process ledger owns
+                // thread groups. A worker thread's fork inherits its process image.
+                let parent_process = thread_group_id(pid)
+                    .filter(|parent| processes.contains(parent))
+                    .ok_or_else(|| "clone event has no live process owner".to_owned())?;
                 let process = match classify_clone_event(event, child, thread_group_id(child)) {
                     Ok(process) => process,
                     Err(reason) => {
-                        events.record(&ProcessEvent {
-                            sequence,
-                            kind: EventKind::CloneUnclassified,
-                            process_id: child as u32,
-                            parent_process_id: Some(pid as u32),
-                            stable_process_id: stable_id(child, sequence),
-                            image: None,
-                            exit_code: None,
-                        })?;
-                        receipt.record_violation(reason);
-                        violated = true;
+                        let outcome = events.record(
+                            child as u32,
+                            stable_id(child, process_generation),
+                            ProcessEventKind::CloneUnclassified {
+                                parent_process_id: parent_process as u32,
+                                reason,
+                            },
+                        )?;
+                        violated |= outcome.has_policy_violation();
                         false
                     }
                 };
                 if process && !violated {
                     processes.insert(child);
-                    parents.insert(child, Some(pid));
-                    receipt.accounting.total_processes += 1;
-                    receipt.accounting.observed_process_creates += 1;
-                    receipt.accounting.active_processes = processes.len() as u64;
-                    let inherited = images.get(&pid).cloned();
+                    let inherited = images.get(&parent_process).cloned();
                     if let Some(image) = &inherited {
                         images.insert(child, image.clone());
                     }
-                    let child_stable_id = stable_id(child, sequence);
+                    let child_stable_id = stable_id(child, process_generation);
                     stable_ids.insert(child, child_stable_id.clone());
-                    events.record(&ProcessEvent {
-                        sequence,
-                        kind: EventKind::Fork,
-                        process_id: child as u32,
-                        parent_process_id: Some(pid as u32),
-                        stable_process_id: child_stable_id,
-                        image: inherited,
-                        exit_code: None,
-                    })?;
-                    if policy.policy.mode == ClosureMode::Leaf {
-                        receipt.record_violation(format!(
-                            "leaf closure observed descendant process {child}"
-                        ));
-                        violated = true;
-                    }
-                } else if !violated {
-                    events.record(&ProcessEvent {
-                        sequence,
-                        kind: EventKind::ThreadCreate,
-                        process_id: child as u32,
-                        parent_process_id: Some(pid as u32),
-                        stable_process_id: stable_id(child, sequence),
-                        image: None,
-                        exit_code: None,
-                    })?;
+                    let outcome = events.record(
+                        child as u32,
+                        child_stable_id,
+                        ProcessEventKind::Fork {
+                            parent_process_id: parent_process as u32,
+                            image: inherited,
+                        },
+                    )?;
+                    violated |= outcome.has_policy_violation();
                 }
             }
             libc::PTRACE_EVENT_EXEC => {
@@ -345,7 +315,6 @@ unsafe fn supervise(
                 }
                 let former_tid = former_tid as libc::pid_t;
                 reconcile_exec_tid(&mut traced, &mut images, former_tid, pid);
-                sequence += 1;
                 let image = match proc_image_identity(policy, pid, &mut hash_cache) {
                     Ok(image) => image,
                     Err(error) => {
@@ -353,40 +322,16 @@ unsafe fn supervise(
                         return Err(error);
                     }
                 };
-                let mut reason = None;
-                if image.class == ImageClass::Unknown
-                    && policy.policy.mode != ClosureMode::InventoryTree
-                {
-                    reason = Some(format!(
-                        "unadmitted executable image {} in process {pid}",
-                        image.path.display()
-                    ));
-                }
                 images.insert(pid, image.clone());
-                receipt.accounting.observed_execs += 1;
-                if pid == root {
-                    receipt.accounting.root_execs += 1;
-                }
-                events.record(&ProcessEvent {
-                    sequence,
-                    kind: EventKind::Exec,
-                    process_id: pid as u32,
-                    parent_process_id: parents
-                        .get(&pid)
-                        .copied()
-                        .flatten()
-                        .map(|value| value as u32),
-                    stable_process_id: stable_ids
+                let outcome = events.record(
+                    pid as u32,
+                    stable_ids
                         .get(&pid)
                         .cloned()
                         .unwrap_or_else(|| format!("linux:{pid}:unclassified")),
-                    image: Some(image),
-                    exit_code: None,
-                })?;
-                if let Some(reason) = reason {
-                    receipt.record_violation(reason);
-                    violated = true;
-                }
+                    ProcessEventKind::Exec { image },
+                )?;
+                violated |= outcome.has_policy_violation();
             }
             _ => {}
         }
@@ -410,11 +355,10 @@ unsafe fn supervise(
             }
         }
     }
-    receipt.accounting.active_processes = processes.len() as u64;
     if !traced.is_empty() {
-        receipt.record_error("trace set was not fully drained");
+        return Err("trace set was not fully drained".to_owned());
     }
-    Ok(())
+    Ok(None)
 }
 
 fn cstrings(values: &[String], label: &str) -> Result<Vec<CString>, String> {
@@ -508,12 +452,12 @@ fn terminate_tracees(tracees: &BTreeSet<libc::pid_t>, root: libc::pid_t) {
     }
 }
 
-fn stable_id(pid: libc::pid_t, sequence: u64) -> String {
+fn stable_id(pid: libc::pid_t, generation: u64) -> String {
     let start = std::fs::read_to_string(format!("/proc/{pid}/stat"))
         .ok()
         .and_then(|value| value.rsplit(')').next().map(str::to_owned))
         .and_then(|tail| tail.split_whitespace().nth(19).map(str::to_owned))
-        .unwrap_or_else(|| sequence.to_string());
+        .unwrap_or_else(|| generation.to_string());
     format!("linux:{pid}:{start}")
 }
 

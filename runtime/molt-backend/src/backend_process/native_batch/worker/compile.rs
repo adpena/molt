@@ -3,14 +3,13 @@ use std::{io, path::Path};
 use molt_backend::SimpleBackend;
 
 use super::super::super::io_limits::{read_json_artifact, write_output_path};
-use super::super::batching::{NativeBatchModuleMetadata, NativeBatchObjectJob};
+use super::super::batching::NativeBatchObjectJob;
 
 fn compile_native_batch_object_job(
     job: NativeBatchObjectJob,
     output_path: &Path,
 ) -> io::Result<()> {
-    let metadata: NativeBatchModuleMetadata =
-        read_json_artifact(&job.module_context_path, "native batch module metadata")?;
+    job.codegen_environment.validate_current()?;
     let mut backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
     backend.skip_ir_passes = true;
     backend.skip_shared_stdlib_partition = true;
@@ -18,7 +17,7 @@ fn compile_native_batch_object_job(
     backend.app_callable_manifest = job.app_callable_manifest;
     backend.external_function_names = job.external_function_names;
     backend.module_registry = job.module_registry;
-    backend.set_module_context(metadata.module_context);
+    backend.set_module_context(job.module_context);
     let output = backend.compile(job.ir);
     write_output_path(output_path, &output.bytes)
 }

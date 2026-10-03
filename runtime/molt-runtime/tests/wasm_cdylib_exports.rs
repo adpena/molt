@@ -89,6 +89,7 @@ fn expected_cpython_abi_requested_exports() -> BTreeSet<String> {
             "Py_None",
             "Py_EllipsisObject",
             "Py_GenericAliasType",
+            "PyRange_Type",
             "Py_NotImplementedSentinel",
             "Py_OptimizeFlag",
             "Py_Version",
@@ -99,6 +100,32 @@ fn expected_cpython_abi_requested_exports() -> BTreeSet<String> {
         .map(str::to_string),
     );
     names
+}
+
+fn requested_data_exports(exports: &BTreeSet<String>) -> Vec<String> {
+    let manifest: JsonValue =
+        serde_json::from_str(include_str!("../../../wasm/wasm_abi_generated.json"))
+            .expect("generated WASM ABI manifest");
+    let kinds = manifest["external_native_link_imports"]["symbol_kinds"]
+        .as_object()
+        .expect("generated external ABI symbol kinds");
+    exports
+        .iter()
+        .filter_map(|name| match kinds.get(name).and_then(JsonValue::as_str) {
+            Some("data") => Some(name.clone()),
+            Some("function") => None,
+            kind => panic!("requested ABI export {name} lacks a canonical symbol kind: {kind:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn requested_data_roots_use_canonical_abi_symbol_kinds() {
+    let exports = expected_cpython_abi_requested_exports();
+    let data = requested_data_exports(&exports);
+    assert!(data.iter().any(|name| name == "PyRange_Type"));
+    assert!(data.iter().any(|name| name == "PyExc_TypeError"));
+    assert!(!data.iter().any(|name| name == "PyObject_Init"));
 }
 
 fn read_export_names(path: &Path) -> BTreeSet<String> {
@@ -232,23 +259,8 @@ fn cargo_cdylib_selection_reports_runtime_wasm_with_fixed_abi_surface() {
         .cloned()
         .collect::<Vec<_>>()
         .join("\n");
-    let cpython_abi_requested_data_exports = expected_cpython_abi
-        .iter()
-        .filter(|name| {
-            matches!(
-                name.as_str(),
-                "Py_EllipsisObject"
-                    | "Py_GenericAliasType"
-                    | "Py_None"
-                    | "Py_NotImplementedSentinel"
-                    | "Py_OptimizeFlag"
-                    | "Py_Version"
-                    | "PyExc_TypeError"
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n");
+    let cpython_abi_requested_data_exports =
+        requested_data_exports(&expected_cpython_abi).join("\n");
     let cpython_abi_export_flags = expected_cpython_abi
         .iter()
         .map(|name| format!("-C link-arg=--export-if-defined={name}"))

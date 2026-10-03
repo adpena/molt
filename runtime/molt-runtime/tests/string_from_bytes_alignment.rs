@@ -1,6 +1,5 @@
 use std::sync::Once;
 
-use molt_obj_model::MoltObject;
 use molt_runtime::{
     lifecycle, molt_bigint_from_str, molt_bytes_from_bytes, molt_string_from_bytes,
 };

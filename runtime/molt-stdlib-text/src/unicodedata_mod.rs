@@ -15,8 +15,6 @@ use molt_runtime_core::prelude::*;
 // Unicode version
 // ---------------------------------------------------------------------------
 
-const UNIDATA_VERSION: &str = "15.1.0";
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_runtime_ready() -> u64 {
     MoltObject::from_bool(true).bits()
@@ -612,60 +610,6 @@ fn is_private_use(code: u32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// East Asian Width
-// ---------------------------------------------------------------------------
-
-fn east_asian_width(ch: char) -> &'static str {
-    let code = ch as u32;
-    match code {
-        // Fullwidth
-        0xFF01..=0xFF60 | 0xFFE0..=0xFFE6 => "F",
-        // Wide CJK
-        0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0x2000..=0x2FFF if !matches!(code, 0x2000..=0x200F | 0x2028..=0x202F | 0x2060..=0x206F) => {
-            "W"
-        }
-        0xF900..=0xFAFF
-        | 0x3000..=0x303F
-        | 0x3040..=0x309F
-        | 0x30A0..=0x30FF
-        | 0x31F0..=0x31FF
-        | 0x3200..=0x32FF
-        | 0x3300..=0x33FF
-        | 0xAC00..=0xD7AF
-        | 0x1F300..=0x1F9FF => "W",
-        // Halfwidth
-        0xFF61..=0xFFDC | 0xFFE8..=0xFFEE => "H",
-        // Narrow ASCII and Latin
-        0x0020..=0x007E | 0x00A2..=0x00A3 | 0x00A5..=0x00A6 | 0x00AC | 0x00AF => "Na",
-        // Ambiguous
-        0x00A1
-        | 0x00A4
-        | 0x00A7..=0x00A8
-        | 0x00AA
-        | 0x00AD
-        | 0x00AE
-        | 0x00B0..=0x00B4
-        | 0x00B6..=0x00BA
-        | 0x00BC..=0x00BF
-        | 0x00C6
-        | 0x00D0
-        | 0x00D7
-        | 0x00D8
-        | 0x00DE..=0x00E1
-        | 0x00E6
-        | 0x00E8..=0x00EA
-        | 0x00EC..=0x00ED
-        | 0x00F0
-        | 0x00F2..=0x00F3
-        | 0x00F7..=0x00FA
-        | 0x00FC
-        | 0x00FE => "A",
-        // Neutral (default)
-        _ => "N",
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Simple NFC/NFD normalization using Rust's char decomposition
 // ---------------------------------------------------------------------------
 
@@ -1150,16 +1094,10 @@ pub extern "C" fn molt_unicodedata_digit(ch_bits: u64, default_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_east_asian_width(ch_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let ch = match char_from_bits(_py, ch_bits) {
-            Ok(c) => c,
-            Err(exc) => return exc,
-        };
-        alloc_str(_py, east_asian_width(ch))
-    })
+    molt_runtime_core::with_core_gil!(_py, crate::bridge::east_asian_width(ch_bits))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_unidata_version() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, alloc_str(_py, UNIDATA_VERSION))
+    molt_runtime_core::with_core_gil!(_py, crate::bridge::unidata_version())
 }

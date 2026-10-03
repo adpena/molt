@@ -246,7 +246,11 @@ pub(super) fn urllib_attr_truthy(
         Some(bits) => {
             let out = is_truthy(_py, obj_from_bits(bits));
             dec_ref_bits(_py, bits);
-            Ok(out)
+            if exception_pending(_py) {
+                Err(MoltObject::none().bits())
+            } else {
+                Ok(out)
+            }
         }
         None => Ok(false),
     }

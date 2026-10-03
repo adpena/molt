@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from molt.source_root import compiler_source_root
 from molt.c_api_symbols import c_api_primitive_class, is_c_api_external_requirement
 from molt.cli.config_resolution import _config_value
 from molt.cli.deps import _load_toml
@@ -17,8 +18,6 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.project_roots import (
-    _find_molt_root,
-    _find_project_root,
     _require_molt_root,
 )
 
@@ -178,8 +177,7 @@ def extension_scan(
             command="extension-scan",
         )
 
-    cwd_root = _find_project_root(Path.cwd())
-    molt_root = _find_molt_root(project_root, cwd_root)
+    molt_root = compiler_source_root()
     root_error = _require_molt_root(molt_root, json_output, "extension-scan")
     if root_error is not None:
         return root_error

@@ -26,20 +26,10 @@ use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for `list` ops: construction, mutation, queries,
 /// and `tuple_from_list`. The central op effect boundary owns cache invalidation.
-///
-/// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
-/// Each arm body is byte-for-byte identical to the original; only the access
-/// path to the backend's split-borrowed fields changed (`self.module` ->
-/// `module`, `Self::` -> `SimpleBackend::`, owned locals -> reborrowed params,
-/// outer-loop `continue`/`break` -> `OpFlow` returns).
-/// The op-local closure `var_get_boxed_overflow_safe` is reconstructed with the
-/// same capture so the arm bodies are unchanged.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_list_op(
     op: &OpIR,
-    op_idx: usize,
-    func_name: &str,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
@@ -48,6 +38,8 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
+    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) -> OpFlow {
     // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
@@ -78,102 +70,20 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
     };
     match op.kind.as_str() {
         "list_new" => {
-            let empty_args: Vec<String> = Vec::new();
-            let args = op.args.as_ref().unwrap_or(&empty_args);
-            let Some(out_name) = op.out.as_ref() else {
-                return OpFlow::Continue;
-            };
-            let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
-
-            let new_callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_list_builder_new",
-                &[types::I64],
-                &[types::I64],
-            );
-            let new_local = module.declare_func_in_func(new_callee, builder.func);
-            let new_call = builder.ins().call(new_local, &[size]);
-            let builder_ptr = builder.inst_results(new_call)[0];
-            let abort = builder.create_block();
-            builder.set_cold_block(abort);
-            let append = builder.create_block();
-            let merge = builder.create_block();
-            builder.append_block_param(merge, types::I64);
-            let created = builder
-                .ins()
-                .icmp_imm(IntCC::NotEqual, builder_ptr, box_none());
-            builder.ins().brif(created, append, &[], abort, &[]);
-            switch_to_block_materialized(builder, append);
-            seal_block_once(builder, sealed_blocks, append);
-            let drop_local = import_func_ref(
+            emit_fixed_aggregate_constructor(
+                op,
+                FixedAggregateConstructor::List,
                 module,
                 import_ids,
                 builder,
                 import_refs,
-                "molt_dec_ref_obj",
-                &[types::I64],
-                &[],
+                sealed_blocks,
+                vars,
+                representation_plan,
+                nbc,
+                block_tracked_obj,
+                block_tracked_ptr,
             );
-
-            let append_callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_list_builder_append",
-                &[types::I64, types::I64],
-                &[types::I32],
-            );
-            let append_local = module.declare_func_in_func(append_callee, builder.func);
-            for name in args {
-                let val = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    name,
-                    representation_plan,
-                )
-                .unwrap_or_else(|| panic!("List elem not found in {} op {}", func_name, op_idx));
-                // Append borrows and retains only after successful admission.
-                // Boxing a raw integer may create a separate temporary owner;
-                // release it after append on both status paths, never the SSA owner.
-                let call = builder.ins().call(append_local, &[builder_ptr, *val]);
-                let status = builder.inst_results(call)[0];
-                if representation_plan.is_raw_int_carrier_name(name) {
-                    builder.ins().call(drop_local, &[*val]);
-                }
-                let admitted = builder.ins().icmp_imm(IntCC::Equal, status, 0);
-                let next = builder.create_block();
-                builder.ins().brif(admitted, next, &[], abort, &[]);
-                switch_to_block_materialized(builder, next);
-                seal_block_once(builder, sealed_blocks, next);
-            }
-
-            // The only finish consumes the builder's owned storage.
-            let finish_callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_list_builder_finish",
-                &[types::I64],
-                &[types::I64],
-            );
-            let finish_local = module.declare_func_in_func(finish_callee, builder.func);
-            let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
-            let list_bits = builder.inst_results(finish_call)[0];
-            jump_block(builder, merge, &[list_bits]);
-
-            switch_to_block_materialized(builder, abort);
-            seal_block_once(builder, sealed_blocks, abort);
-            builder.ins().call(drop_local, &[builder_ptr]);
-            let none = builder.ins().iconst(types::I64, box_none());
-            jump_block(builder, merge, &[none]);
-
-            switch_to_block_materialized(builder, merge);
-            seal_block_once(builder, sealed_blocks, merge);
-            let list_bits = builder.block_params(merge)[0];
-            def_var_named(&mut *builder, vars, out_name, list_bits);
         }
         "list_int_new" => {
             // Specialized flat i64 list: args = [count, fill_value]

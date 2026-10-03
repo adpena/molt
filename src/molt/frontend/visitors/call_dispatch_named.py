@@ -8,10 +8,6 @@ from typing import (
 )
 
 from molt.frontend._types import (
-    BUILTIN_FUNC_SPECS,
-    MOLT_DIRECT_CALL_BIND_ALWAYS,
-    MOLT_DIRECT_CALLS,
-    MOLT_REEXPORT_FUNCTIONS,
     MoltOp,
     MoltValue,
     _intrinsic_arity_exact,
@@ -25,70 +21,6 @@ from molt.frontend.sema import (
 
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 from molt.frontend._mixin_base import GeneratorMixinBase
-
-_BUILTINS_IMPORT_ALIAS_CALL_NAMES = frozenset(BUILTIN_FUNC_SPECS) | frozenset(
-    {
-        "BaseExceptionGroup",
-        "ExceptionGroup",
-        "abs",
-        "aiter",
-        "all",
-        "anext",
-        "any",
-        "bool",
-        "bytearray",
-        "bytes",
-        "callable",
-        "chr",
-        "classmethod",
-        "complex",
-        "delattr",
-        "dict",
-        "dir",
-        "enumerate",
-        "filter",
-        "float",
-        "frozenset",
-        "getattr",
-        "globals",
-        "hasattr",
-        "id",
-        "int",
-        "isinstance",
-        "issubclass",
-        "iter",
-        "len",
-        "list",
-        "locals",
-        "map",
-        "max",
-        "memoryview",
-        "min",
-        "next",
-        "object",
-        "open",
-        "ord",
-        "pow",
-        "print",
-        "property",
-        "range",
-        "repr",
-        "reversed",
-        "round",
-        "set",
-        "setattr",
-        "slice",
-        "sorted",
-        "staticmethod",
-        "str",
-        "sum",
-        "super",
-        "tuple",
-        "type",
-        "vars",
-        "zip",
-    }
-)
 
 
 class CallNamedDispatchMixin(GeneratorMixinBase):
@@ -173,6 +105,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
         normalized = self._normalize_allowlist_module(imported_from)
         visible_module = normalized or imported_from
         original_attr = self._imported_attr_name(func_id)
+        native_call = self._try_emit_published_native_object_call(
+            node, visible_module, original_attr
+        )
+        if native_call is not None:
+            return native_call
         imported_exception_ctor = self._try_emit_imported_exception_class_constructor(
             node,
             func_id=func_id,
@@ -180,71 +117,25 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
         )
         if imported_exception_ctor is not CALL_NOT_HANDLED:
             return imported_exception_ctor
-        target_module: str | None = None
-        direct_registry_authorized = False
-
-        if imported_from == "molt":
-            if original_attr in MOLT_DIRECT_CALLS.get("molt", set()):
-                target_module = MOLT_REEXPORT_FUNCTIONS.get(original_attr)
-                direct_registry_authorized = target_module is not None
-        elif (
-            normalized in MOLT_DIRECT_CALLS
-            and original_attr in MOLT_DIRECT_CALLS[normalized]
-        ):
-            target_module = normalized
-            direct_registry_authorized = True
-        elif (
-            imported_from in MOLT_DIRECT_CALLS
-            and original_attr in MOLT_DIRECT_CALLS[imported_from]
-        ):
-            target_module = imported_from
-            direct_registry_authorized = True
-
-        visible_import_authorized = (
-            imported_from in self.stdlib_allowlist
-            or (normalized is not None and normalized in self.stdlib_allowlist)
-            or self._is_internal_module(imported_from)
-            or self._is_known_project_module(imported_from)
-        )
-        if target_module is None and visible_import_authorized:
-            target_module = visible_module
-        if target_module is None:
+        visible_import_authorized = self._should_attempt_runtime_module_import(
+            imported_from
+        ) or self._is_internal_module(imported_from)
+        if not visible_import_authorized:
             return CALL_NOT_HANDLED
+        target_module = visible_module
 
-        force_bind = original_attr[
-            :1
-        ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
-            target_module, set()
-        )
         lowered_imported_call = self._try_emit_imported_module_direct_or_task_call(
             target_module,
             original_attr,
             node,
-            imported_from=imported_from,
-            normalized=normalized,
             needs_bind=needs_bind,
-            force_bind=force_bind,
-            direct_registry_authorized=direct_registry_authorized,
         )
         if lowered_imported_call is not None:
             return lowered_imported_call
-        if visible_import_authorized:
-            callee = self.visit(node.func)
-            if callee is None:
-                raise FrontendRejection(
-                    Diagnostic.CALL_TARGET, "Unsupported call target"
-                )
-            res = MoltValue(self.next_var(), type_hint="Any")
-            callargs = self._emit_call_args_builder(node)
-            self.emit(
-                MoltOp(
-                    kind="CALL_BIND",
-                    args=[callee, callargs],
-                    result=res,
-                )
-            )
-            return res
-        return CALL_NOT_HANDLED
+        callee = self.visit(node.func)
+        if callee is None:
+            raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
+        return self._emit_dynamic_call(node, callee)
 
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any:
         if isinstance(node.func, ast.Name):
@@ -269,15 +160,23 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             if is_local and imported_binding is None:
                 imported_from = None
             if imported_from == "builtins":
-                imported_attr = self._imported_attr_name(func_id)
-                if (
-                    imported_attr is not None
-                    and imported_attr in _BUILTINS_IMPORT_ALIAS_CALL_NAMES
-                ):
-                    func_id = imported_attr
+                # Proven shape specialization runs before named dispatch.
+                # An import origin never changes the source namespace binding
+                # that owns the callable, its rebinding, or its lifetime.
+                callee = self.visit(node.func)
+                if callee is None:
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported imported builtin target"
+                    )
+                return self._emit_dynamic_call(node, callee)
             if imported_from:
                 normalized = self._normalize_allowlist_module(imported_from)
                 allowlist_key = normalized or imported_from
+                native_call = self._try_emit_published_native_object_call(
+                    node, allowlist_key, self._imported_attr_name(func_id)
+                )
+                if native_call is not None:
+                    return native_call
                 if func_id == "field" and allowlist_key == "dataclasses":
                     return self._emit_dataclasses_field_call(allowlist_key, node)
                 if allowlist_key == "statistics" and func_id in {"mean", "stdev"}:
@@ -338,17 +237,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 or target_info is not None
             )
             if imported_binding_is_live:
-                target_module = self._normalize_allowlist_module(imported_from)
-                if target_module is None:
-                    target_module = imported_from
-                original_attr = self._imported_attr_name(func_id)
-                lowered_handle_ctor = self._try_emit_intrinsic_handle_class_constructor(
-                    target_module,
-                    original_attr,
-                    node,
-                )
-                if lowered_handle_ctor is not None:
-                    return lowered_handle_ctor
                 lowered_imported_call = self._try_emit_imported_named_call(
                     node,
                     func_id=func_id,
@@ -505,7 +393,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     locals_dict = self._emit_locals_dict()
                     keys = MoltValue(self.next_var(), type_hint="dict_keys")
                     self.emit(MoltOp(kind="DICT_KEYS", args=[locals_dict], result=keys))
-                    callee = self._emit_builtin_function("sorted")
                     key_none = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=key_none))
                     reverse_false = MoltValue(self.next_var(), type_hint="bool")
@@ -515,8 +402,8 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     res = MoltValue(self.next_var(), type_hint="list")
                     self.emit(
                         MoltOp(
-                            kind="CALL_FUNC",
-                            args=[callee, keys, key_none, reverse_false],
+                            kind="CALL",
+                            args=["molt_sorted_builtin", keys, key_none, reverse_false],
                             result=res,
                         )
                     )
@@ -985,11 +872,13 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     else:
                         class_ref = self._emit_global_get(class_id)
                 else:
-                    local_class = self._load_local_value(class_id)
-                    if local_class is not None:
-                        class_ref = local_class
-                    else:
-                        class_ref = self._emit_global_get(class_id)
+                    # The call's own read of the class name: its source fact,
+                    # frame storage and capture across the arguments.
+                    class_ref = self.visit(node.func)
+                    if class_ref is None:
+                        raise FrontendRejection(
+                            Diagnostic.CALL_TARGET, "Unsupported call target"
+                        )
                 if self._class_is_exception_subclass(class_id, class_info):
                     # Exception __init__ is a mutable Python descriptor too.
                     # Runtime class construction owns allocation and binding.
@@ -1047,8 +936,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     flags = 0
                     if class_info.get("frozen"):
                         flags |= 0x1
-                    if class_info.get("eq"):
-                        flags |= 0x2
                     if class_info.get("repr"):
                         flags |= 0x4
                     if class_info.get("slots"):
@@ -1292,13 +1179,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             if stateful_result is not None:
                 return stateful_result
             if target_info and str(target_info.type_hint).startswith("BoundMethod:"):
-                callee = target_info
-                if (
-                    self.current_func_name != "molt_main"
-                    and func_id not in self.locals
-                    and func_id not in self.async_locals
-                ):
-                    callee = self._emit_module_attr_get(func_id)
+                callee = self._named_callee_value(target_info, func_id, node)
                 res_hint = "Any"
                 if needs_bind:
                     callargs = self._emit_call_args_builder(node)
@@ -1324,14 +1205,13 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     if intrinsic_target
                     else "Any"
                 )
-                callee = target_info
-                if (
-                    not intrinsic_target
-                    and self.current_func_name != "molt_main"
-                    and func_id not in self.locals
-                    and func_id not in self.async_locals
-                ):
-                    callee = self._emit_module_attr_get(func_id)
+                # A registered intrinsic is called by its symbol; any other
+                # call, and one that binds its arguments, reads the name.
+                callee = (
+                    target_info
+                    if intrinsic_target
+                    else self._named_callee_value(target_info, func_id, node)
+                )
                 direct_ok = intrinsic_target or target_name in self.func_default_specs
                 if not direct_ok:
                     func_name = self.func_symbol_names.get(target_name)
@@ -1340,6 +1220,8 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     elif self._known_function_symbol_target(target_name) is not None:
                         direct_ok = True
                 if needs_bind or not direct_ok:
+                    if intrinsic_target:
+                        callee = self._named_callee_value(target_info, func_id, node)
                     callargs = self._emit_call_args_builder(node)
                     res = MoltValue(self.next_var(), type_hint=res_hint)
                     self.emit(
@@ -1499,25 +1381,16 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     )
                 )
                 return res
-            if imported_from is None:
+            if imported_from in {None, "builtins"}:
                 callee = self.visit(node.func)
                 if callee is not None:
                     return self._emit_dynamic_call(node, callee)
 
-            suggestion = self._call_allowlist_suggestion(func_id, imported_from)
-            if suggestion:
-                alternative = f"use {suggestion}"
-            else:
-                alternative = (
-                    "import from an allowlisted module (see docs/spec/"
-                    "areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)"
-                )
-            detail = (
-                "Tier 0 only allows direct calls to allowlisted module-level"
-                " functions; rebinding/monkey-patching is not observed"
+            alternative = (
+                "import from a supported module (see docs/spec/"
+                "areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)"
             )
-            if suggestion:
-                detail = f"{detail}. warning: allowlisted path is {suggestion}"
+            detail = "The module must be admitted by the compilation import graph."
             if self.fallback_policy == "bridge":
                 self.compat.bridge_unavailable(
                     node,

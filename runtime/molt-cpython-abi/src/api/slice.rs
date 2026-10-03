@@ -3,55 +3,52 @@
 use crate::abi_types::{Py_None, Py_ssize_t, PyObject, PySliceObject};
 use std::os::raw::c_int;
 
-pub unsafe extern "C" fn molt_slice_dealloc(op: *mut PyObject) {
-    if op.is_null() {
-        return;
-    }
-    let slice = op.cast::<PySliceObject>();
-    unsafe {
-        crate::api::refcount::Py_XDECREF((*slice).start);
-        crate::api::refcount::Py_XDECREF((*slice).stop);
-        crate::api::refcount::Py_XDECREF((*slice).step);
-        drop(Box::from_raw(slice));
-    }
-}
-
+/// The runtime owns every slice; C receives its canonical physical projection.
+/// Bounds are opaque retained objects. Index conversion belongs to the consumer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySlice_New(
     start: *mut PyObject,
     stop: *mut PyObject,
     step: *mut PyObject,
 ) -> *mut PyObject {
-    let start = if start.is_null() {
-        &raw mut Py_None
-    } else {
-        start
-    };
-    let stop = if stop.is_null() {
-        &raw mut Py_None
-    } else {
-        stop
-    };
-    let step = if step.is_null() {
-        &raw mut Py_None
-    } else {
-        step
-    };
-    unsafe {
-        crate::api::refcount::Py_INCREF(start);
-        crate::api::refcount::Py_INCREF(stop);
-        crate::api::refcount::Py_INCREF(step);
-    }
-    let slice = Box::new(PySliceObject {
-        ob_base: PyObject {
-            ob_refcnt: 1,
-            ob_type: &raw mut crate::abi_types::PySlice_Type,
-        },
-        start,
-        stop,
-        step,
+    let _gil = crate::hooks::RuntimeGilGuard::ensure();
+    let fields = [start, stop, step].map(|value| {
+        if value.is_null() {
+            &raw mut Py_None
+        } else {
+            value
+        }
     });
-    Box::into_raw(slice).cast::<PyObject>()
+    let Some(start) = (unsafe { crate::bridge::RuntimeValue::acquire_edge(fields[0]) }) else {
+        return std::ptr::null_mut();
+    };
+    let Some(stop) = (unsafe { crate::bridge::RuntimeValue::acquire_edge(fields[1]) }) else {
+        return std::ptr::null_mut();
+    };
+    let Some(step) = (unsafe { crate::bridge::RuntimeValue::acquire_edge(fields[2]) }) else {
+        return std::ptr::null_mut();
+    };
+    let result = unsafe {
+        (crate::hooks::hooks_or_stubs().slice_new)(start.bits(), stop.bits(), step.bits())
+    };
+    let bridge = &*crate::bridge::GLOBAL_BRIDGE;
+    let object = unsafe { bridge.owned_result_to_pyobj(result) };
+    if object.is_null() {
+        return object;
+    }
+    let Some(bits) = bridge.molt_handle_for_pyobj(object) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        unsafe { crate::api::errors::release_preserving_error(&[object]) };
+        return std::ptr::null_mut();
+    };
+    // Preserve the actual C bounds (including distinct equal numeric carriers),
+    // not newly materialized objects with merely equal values. The same staged
+    // projection transaction owns both cold population and these exact origins.
+    if !bridge.refresh_slice_view_with_origins(bits.bits(), Some(fields)) {
+        unsafe { crate::api::errors::release_preserving_error(&[object]) };
+        return std::ptr::null_mut();
+    }
+    object
 }
 
 #[unsafe(no_mangle)]

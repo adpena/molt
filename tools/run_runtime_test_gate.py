@@ -4,7 +4,10 @@
 Lifecycle tests intentionally mutate process-global publication/shutdown state.
 The isolated GIL custody case still launches real concurrent worker threads; its
 libtest harness has one test, not a single-threaded runtime. Performance probes
-are declared unrun and never credited as semantic passes.
+are declared unrun and never credited as semantic passes. Owning tests that
+re-execute the runtime image are credited only with their source/image-bound
+descendant receipts (tools/runtime_descendant_receipts.py); this gate has no
+CPython target-minor coordinate authority.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ ROOT = bind_repository_imports(__file__)
 
 from tools import cargo_test_binary_runner as runner  # noqa: E402
 from tools import run_cargo_test_truth as truth  # noqa: E402
+from tools import runtime_descendant_receipts as descendants  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.libtest_results import accounting_problem  # noqa: E402
 
@@ -90,10 +94,11 @@ def validate_children(
     run_id: str,
     binary: Path,
     identity: tuple[int, str],
-) -> None:
+) -> dict[str, dict[str, object] | None]:
     if set(children) != set(selection):
         raise RuntimeError("aggregate lacks exact complete child ledger")
     invocations: set[str] = set()
+    verified: dict[str, dict[str, object] | None] = {}
     for name, (argv, expected) in selection.items():
         receipts = children[name]
         if len(receipts) != 1:
@@ -139,6 +144,13 @@ def validate_children(
             raise RuntimeError(
                 f"{name}: ambiguous baseline/diagnostic execution custody"
             )
+        # Promotion re-opens the full parent and descendant captures itself;
+        # the loader's or runner's saved descendant summary is not evidence.
+        try:
+            verified[name] = descendants.verify_receipt(receipt)
+        except descendants.DescendantEvidenceError as exc:
+            raise RuntimeError(f"{name}: {exc}") from exc
+    return verified
 
 
 def validate_artifact(artifact: dict[str, str]) -> None:
@@ -406,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append(name)
         if failures:
             raise RuntimeError(f"failed child processes: {failures}")
-        validate_children(
+        aggregate["runtime_descendants"] = validate_children(
             children,
             selection,
             source=source,

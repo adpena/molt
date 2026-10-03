@@ -32,6 +32,7 @@ mod flow_dispatch;
 mod frame_runtime;
 mod function_body;
 mod helpers;
+mod numeric_error_policy_generated;
 mod op_attributes;
 mod op_calls;
 mod op_container_access;
@@ -53,6 +54,8 @@ mod op_sets;
 mod op_strings;
 mod op_tuples;
 mod op_values;
+mod runtime_fragments;
+mod runtime_prelude;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum IdentityProvenance {

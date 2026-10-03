@@ -51,6 +51,7 @@ fn counts_lir_scalar_representations() {
         },
     );
     let lir_func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "add_ints".into(),
         param_names: vec!["a".into(), "b".into()],
         param_types: vec![TirType::I64, TirType::I64],
@@ -106,6 +107,7 @@ fn counts_ref64_as_reference_not_semantic_scalar() {
         },
     );
     let lir_func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "alloc_point".into(),
         param_names: vec!["class".into()],
         param_types: vec![TirType::DynBox],
@@ -184,6 +186,7 @@ fn separates_plain_copy_from_fallback_semantic_copy() {
         },
     );
     let lir_func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "copy_kinds".into(),
         param_names: vec!["value".into()],
         param_types: vec![TirType::DynBox],

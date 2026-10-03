@@ -33,6 +33,10 @@ from molt.cli.runtime_wasm_build_timings import (
     _runtime_wasm_build_timings_snapshot,
 )
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
+from molt.cli.installed_runtime import (
+    installed_runtime_active,
+    select_installed_native_runtime,
+)
 
 
 def _initialize_runtime_artifact_state(
@@ -58,17 +62,35 @@ def _initialize_runtime_artifact_state(
     if is_rust_transpile:
         return state
     if is_wasm:
+        if installed_runtime_active(molt_root):
+            # Installed cells are selected with their typed WASM variant by
+            # _ensure_runtime_wasm_both; ambient runtime directories never apply.
+            return state
         state.runtime_wasm = _runtime_wasm_artifact_path(molt_root, "molt_runtime.wasm")
         state.runtime_reloc_wasm = _runtime_wasm_artifact_path(
             molt_root, "molt_runtime_reloc.wasm"
         )
         return state
     if emit_mode in {"bin", "obj"}:
-        state.runtime_lib = _runtime_lib_path(
+        # Installed Molt names the retained generation of one shipped cell and
+        # raises InstalledRuntimeError for an unshipped cell; only a source
+        # checkout projects Cargo output coordinates.
+        installed = select_installed_native_runtime(
             molt_root,
-            runtime_cargo_profile,
-            target_triple,
+            target_triple=target_triple,
+            cargo_profile=runtime_cargo_profile,
             stdlib_profile=stdlib_profile,
+            extra_runtime_features=state.extra_runtime_features,
+        )
+        state.runtime_lib = (
+            installed.runtime_lib
+            if installed is not None
+            else _runtime_lib_path(
+                molt_root,
+                runtime_cargo_profile,
+                target_triple,
+                stdlib_profile=stdlib_profile,
+            )
         )
     return state
 
@@ -107,6 +129,15 @@ def _prebuild_runtime_wasm(
             print(message, file=sys.stderr)
         return 1
 
+    try:
+        installed = installed_runtime_active(project_root)
+    except ValueError as exc:
+        return fail(str(exc))
+    if installed:
+        return fail(
+            "internal-runtime-wasm-build builds runtime artifacts from a Molt "
+            "source checkout; installed Molt uses its shipped runtime cells."
+        )
     cargo_profile, profile_error = _resolve_cargo_profile_name(build_profile)
     if profile_error is not None:
         return fail(profile_error)

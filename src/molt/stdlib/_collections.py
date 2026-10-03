@@ -11,6 +11,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["OrderedDict"]
 
+_count_elements = _require_intrinsic("molt_dict_count_elements")
+
 _MOLT_ORDEREDDICT_NEW = _require_intrinsic("molt_ordereddict_new")
 _MOLT_ORDEREDDICT_FROM_PAIRS = _require_intrinsic("molt_ordereddict_from_pairs")
 _MOLT_ORDEREDDICT_SETITEM = _require_intrinsic("molt_ordereddict_setitem")

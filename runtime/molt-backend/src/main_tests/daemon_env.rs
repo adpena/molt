@@ -3,7 +3,7 @@ use super::*;
 #[test]
 #[cfg(feature = "native-backend")]
 fn daemon_request_with_env_preserves_user_entry_archive() {
-    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt-daemon-request-env-{}-{}",
         std::process::id(),
@@ -36,6 +36,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
             "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
             "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
             "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
+            "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "cd85e5b7627ffa5a6821fde44e31407d23a4d3da80a6e07a5b675af8d0925784",
         },
         "jobs": [{
             "id": "job0",
@@ -92,6 +93,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -113,6 +115,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -127,6 +130,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -141,6 +145,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -155,6 +160,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -195,7 +201,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
 
 #[test]
 fn daemon_request_env_clears_omitted_stdlib_module_symbols() {
-    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     unsafe {
         std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"stale\"]");
         std::env::set_var("MOLT_ENTRY_MODULE", "stale_entry");
@@ -227,7 +233,7 @@ fn daemon_request_env_clears_omitted_stdlib_module_symbols() {
 
 #[test]
 fn daemon_request_env_clears_omitted_resource_and_trace_keys_between_requests() {
-    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let keys = [
         "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
         "MOLT_CLI_MEMORY_AVAILABLE_GB",
@@ -310,7 +316,7 @@ fn daemon_request_env_clears_omitted_resource_and_trace_keys_between_requests() 
 
 #[test]
 fn daemon_request_env_rejects_malformed_stdlib_module_symbols() {
-    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     unsafe {
         std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"stale\"]");
     }

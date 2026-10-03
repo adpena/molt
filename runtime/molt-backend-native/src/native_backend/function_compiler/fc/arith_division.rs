@@ -419,6 +419,16 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
                 let lhs_ff = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
                 let rhs_ff = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+                // Dynamic boxed floats have the same zero-divisor boundary as
+                // producer-known raw floats. Only the nonzero path may use fdiv.
+                let zero_f = builder.ins().f64const(0.0);
+                let rhs_zero = builder.ins().fcmp(FloatCC::Equal, rhs_ff, zero_f);
+                let nonzero_float_block = builder.create_block();
+                builder
+                    .ins()
+                    .brif(rhs_zero, call_block, &[], nonzero_float_block, &[]);
+                switch_to_block_materialized(&mut *builder, nonzero_float_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, nonzero_float_block);
                 let flt_quot = builder.ins().fdiv(lhs_ff, rhs_ff);
                 if gen_div_out_fp {
                     jump_block(&mut *builder, merge_block, &[flt_quot]);

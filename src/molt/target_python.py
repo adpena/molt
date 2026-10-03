@@ -225,7 +225,7 @@ def _resolve_target_python_version(
 
 
 def _parse_source_for_target(
-    source: str,
+    source: str | bytes,
     *,
     filename: str = "<unknown>",
     target_python: TargetPythonVersion,
@@ -234,8 +234,9 @@ def _parse_source_for_target(
     if frontend_version < target_python.feature_version:
         raise SyntaxError(
             f"Molt target Python {target_python.short} requires a Python "
-            f"{target_python.short}+ frontend; run the build with "
-            f"`uv run --python {target_python.short} -m molt.cli ...`"
+            f"{target_python.short}+ frontend; set PYTHON to a CPython "
+            f"{target_python.short}+ executable, run "
+            "`molt setup --install-cli-dependencies`, then retry `molt build`"
         )
     return ast.parse(
         source,

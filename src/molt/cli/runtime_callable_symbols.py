@@ -1,19 +1,35 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
-import os
 import time
 from pathlib import Path
 
 from molt._wasm_abi_generated import WASM_NON_RUNTIME_CALLABLE_INTRINSICS
-from molt.cli.atomic_io import _atomic_write_text
+from molt.file_publication import atomic_write_bytes
 from molt.cli import native_symbol_inspection
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
+from molt.cli.installed_runtime import (
+    InstalledNativeAdmission,
+    InstalledRuntimeCell,
+    installed_native_callable_projection,
+    select_installed_native_runtime,
+)
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
-from molt.cli.runtime_native_build import _ensure_native_runtime_lib_ready_before_link
+from molt.cli.runtime_native_build import _ensure_native_runtime_lib_ready_for_codegen
+from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
+from molt.cli.native_link_manifest import (
+    NativeLinkDependencyManifestError,
+    read_native_link_dependency_manifest,
+)
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    capture_stable_regular_file,
+    verify_stable_regular_file_identity,
+)
 
 
 def _record_runtime_callable_stage_ms(
@@ -29,11 +45,20 @@ def _record_runtime_callable_stage_ms(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeCallableProjection:
+    """Materialized generation admitted against immutable archive-derived bytes."""
+
+    identity: StableRegularFileIdentity
+    semantic_digest: str
+
+
 def _runtime_callable_symbols_file(
     runtime_lib: Path,
     *,
+    identity: StableRegularFileIdentity,
     target_triple: str | None = None,
-) -> tuple[Path | None, str | None]:
+) -> tuple[RuntimeCallableProjection | None, str | None]:
     """Project runtime callables from the shared, generation-bound archive facts.
 
     The reader owns candidate selection, target decoration, typed failures and
@@ -41,8 +66,8 @@ def _runtime_callable_symbols_file(
     its materialized input to native codegen.
     """
     try:
-        identity = native_symbol_inspection._native_symbol_artifact_identity(
-            runtime_lib
+        native_symbol_inspection._require_unchanged_symbol_artifact(
+            runtime_lib, identity
         )
         facts = native_symbol_inspection._native_archive_global_symbol_facts(
             runtime_lib,
@@ -53,47 +78,196 @@ def _runtime_callable_symbols_file(
                 excluded_functions=WASM_NON_RUNTIME_CALLABLE_INTRINSICS,
             ),
         )
-        symbols = sorted(
-            name
-            for name in facts.defined_functions
-            if name.startswith("molt_")
-            and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+        symbols = tuple(
+            sorted(
+                name
+                for name in facts.defined_functions
+                if name.startswith("molt_")
+                and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+            )
         )
         if not symbols:
             return None, "runtime staticlib defines no molt_* callable symbols"
-        content = "\n".join(symbols) + "\n"
-        projection_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        content = _runtime_callable_projection_content(symbols)
+        projection_digest = hashlib.sha256(content).hexdigest()
         cache_path = runtime_lib.with_name(
-            f"{runtime_lib.name}.callable_symbols.v3."
-            f"{identity.sha256}.{projection_digest}.txt"
+            _runtime_callable_projection_name(
+                runtime_lib.name,
+                archive_sha256=identity.sha256,
+                projection_sha256=projection_digest,
+            )
         )
+        # Content-addressed projections are immutable generations. A concurrent
+        # creator may publish first; admit its bytes without replacing the file
+        # already bound by that operation. Corruption and read failures fail
+        # closed below rather than invalidating another operation's generation.
         try:
-            cached = cache_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            cached = None
-        if cached != content:
-            _atomic_write_text(cache_path, content)
-        native_symbol_inspection._require_unchanged_symbol_artifact(
-            runtime_lib, identity
+            atomic_write_bytes(cache_path, content, exclusive=True)
+        except FileExistsError:
+            pass
+        return (
+            _admit_runtime_callable_projection(
+                cache_path,
+                runtime_lib=runtime_lib,
+                archive_identity=identity,
+                expected_sha256=projection_digest,
+            ),
+            None,
         )
-        return cache_path, None
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return None, f"runtime staticlib callable inspection failed: {exc}"
 
 
-def _runtime_callable_symbols_digest(symbols_file: Path | None) -> str:
-    if symbols_file is None:
-        return ""
+def _runtime_callable_projection_name(
+    runtime_lib_name: str, *, archive_sha256: str, projection_sha256: str
+) -> str:
+    """Content-addressed name binding one projection to one archive generation."""
+    return (
+        f"{runtime_lib_name}.callable_symbols.v3."
+        f"{archive_sha256}.{projection_sha256}.txt"
+    )
+
+
+def _runtime_callable_projection_content(symbols: tuple[str, ...]) -> bytes:
+    """The one canonical byte encoding native codegen consumes."""
+    return ("\n".join(symbols) + "\n").encode("utf-8")
+
+
+def _runtime_callable_projection_symbols(content: bytes) -> tuple[str, ...]:
+    """Decode only bytes that are exactly this module's canonical encoding."""
     try:
-        symbols = sorted(
-            {
-                line.strip()
-                for line in symbols_file.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            }
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("runtime callable projection is not canonical UTF-8") from exc
+    symbols = tuple(text[:-1].split("\n")) if text.endswith("\n") else ()
+    if (
+        not symbols
+        or _runtime_callable_projection_content(symbols) != content
+        or list(symbols) != sorted(set(symbols))
+        or any(
+            not name.startswith("molt_") or name in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+            for name in symbols
         )
-    except OSError:
-        return ""
+    ):
+        raise ValueError("runtime callable projection is not canonical")
+    return symbols
+
+
+def _admit_runtime_callable_projection(
+    path: Path,
+    *,
+    runtime_lib: Path,
+    archive_identity: StableRegularFileIdentity,
+    expected_sha256: str,
+    captured: tuple[StableRegularFileIdentity, bytes] | None = None,
+) -> RuntimeCallableProjection:
+    """Admit one materialized projection by bytes, archive binding and location.
+
+    The filename is a claim, never an authority: the captured bytes must have
+    the expected digest and canonical encoding, and the name must address both
+    those bytes and the exact archive generation beside which they are stored.
+    """
+    identity, content = (
+        captured
+        if captured is not None
+        else capture_stable_regular_file(
+            path, label="native runtime callable projection", max_bytes=16 * 1024 * 1024
+        )
+    )
+    if identity.path != path.absolute():
+        raise ValueError("runtime callable projection observation names another path")
+    if identity.sha256 != expected_sha256:
+        raise ValueError(
+            "runtime callable projection changed before archive-derived admission: "
+            f"{path}; content does not match its archive-derived digest"
+        )
+    if (
+        path.resolve(strict=True).parent
+        != archive_identity.path.resolve(strict=True).parent
+    ):
+        raise ValueError(
+            f"runtime callable projection {path} is not adjacent to its archive "
+            f"{archive_identity.path}"
+        )
+    if path.name != _runtime_callable_projection_name(
+        runtime_lib.name,
+        archive_sha256=archive_identity.sha256,
+        projection_sha256=identity.sha256,
+    ):
+        raise ValueError(
+            f"runtime callable projection {path} is not named for archive "
+            f"{archive_identity.sha256} and its own bytes"
+        )
+    symbols = _runtime_callable_projection_symbols(content)
+    verify_stable_regular_file_identity(
+        identity, label="native runtime callable projection"
+    )
+    native_symbol_inspection._require_unchanged_symbol_artifact(
+        runtime_lib, archive_identity
+    )
+    return RuntimeCallableProjection(
+        identity, _runtime_callable_symbols_digest(symbols)
+    )
+
+
+def _installed_runtime_callable_projection(
+    cell: InstalledRuntimeCell,
+    admission: InstalledNativeAdmission,
+) -> tuple[RuntimeCallableProjection | None, str | None]:
+    """Admit the signed cell's projection; installed Molt never reads symbols.
+
+    The release producer materialized these bytes with
+    ``_runtime_callable_symbols_file``. They must equal the signed cell record,
+    be canonical, and be addressed to the retained archive this operation
+    admitted. There is no symbol-reader fallback.
+    """
+    try:
+        installed_native_callable_projection(cell, admission)
+        return (
+            RuntimeCallableProjection(
+                admission.callable_projection, admission.callable_semantic_digest
+            ),
+            None,
+        )
+    except (OSError, ValueError) as exc:
+        return None, f"installed runtime callable projection admission failed: {exc}"
+
+
+def _runtime_callable_projection_for_codegen(
+    runtime_state: _RuntimeArtifactState,
+    runtime_lib: Path,
+    *,
+    identity: StableRegularFileIdentity,
+    target_triple: str | None,
+    runtime_cargo_profile: str,
+    molt_root: Path,
+    stdlib_profile: str | None,
+) -> tuple[RuntimeCallableProjection | None, str | None]:
+    """Installed cells ship their projection; source checkouts inspect the archive."""
+    try:
+        cell = select_installed_native_runtime(
+            molt_root,
+            target_triple=target_triple,
+            cargo_profile=runtime_cargo_profile,
+            stdlib_profile=stdlib_profile,
+            extra_runtime_features=runtime_state.extra_runtime_features,
+        )
+    except (OSError, ValueError) as exc:
+        return None, f"installed runtime selection failed: {exc}"
+    admission = runtime_state.installed_native_admission
+    if cell is None:
+        if admission is not None:
+            return None, "installed runtime selection changed after admission"
+        return _runtime_callable_symbols_file(
+            runtime_lib, identity=identity, target_triple=target_triple
+        )
+    if admission is None:
+        return None, "installed runtime has no admitted generation for code generation"
+    return _installed_runtime_callable_projection(cell, admission)
+
+
+def _runtime_callable_symbols_digest(symbols: tuple[str, ...]) -> str:
+    """Digest the same immutable symbol tuple used for the byte projection."""
     if not symbols:
         return ""
     payload = json.dumps(
@@ -124,11 +298,14 @@ def _stage_runtime_callable_symbols_for_native_codegen(
     stage_timings_ms: dict[str, float] | None = None,
 ) -> tuple[str, _CliFailure | None]:
     runtime_lib = runtime_state.runtime_lib
-    os.environ.pop("MOLT_RUNTIME_CALLABLE_SYMBOLS", None)
+    # Readiness may be an in-flight producer that already owns the build
+    # identity. Discard only the old codegen binding until it has completed.
+    runtime_state.native_runtime_codegen_binding = None
     if runtime_lib is None or is_wasm_freestanding:
+        runtime_state.revoke_native_runtime_admission()
         return "", None
     ensure_start = time.perf_counter()
-    runtime_ready = _ensure_native_runtime_lib_ready_before_link(
+    runtime_ready = _ensure_native_runtime_lib_ready_for_codegen(
         runtime_state,
         target_triple=target_triple,
         json_output=json_output,
@@ -146,7 +323,11 @@ def _stage_runtime_callable_symbols_for_native_codegen(
         "runtime_callable_symbols_ensure_runtime_lib",
         ensure_start,
     )
-    if not runtime_ready or not runtime_lib.exists():
+    # Readiness selects an immutable generation. The original coordinate names
+    # Cargo output and cannot authorize symbol projection or final linking.
+    runtime_lib = runtime_state.runtime_lib
+    if not runtime_ready or runtime_lib is None or not runtime_lib.exists():
+        runtime_state.revoke_native_runtime_admission()
         failure = runtime_state.native_runtime_build_failure
         failure_detail = ""
         failure_data: dict[str, object] | None = None
@@ -168,42 +349,91 @@ def _stage_runtime_callable_symbols_for_native_codegen(
             command="build",
             data=failure_data,
         )
+    build_identity = runtime_state.native_runtime_build_identity
+    if build_identity is None:
+        runtime_state.revoke_native_runtime_admission()
+        return "", _fail(
+            "native runtime readiness omitted its admitted build identity",
+            json_output,
+            command="build",
+        )
+    admission = runtime_state.installed_native_admission
+    try:
+        if admission is not None:
+            # The operation's installed admission hashed these retained members
+            # and validated their receipt and custody; bind that exact
+            # generation through its fences instead of reading it again.
+            if (
+                admission.runtime_lib != runtime_lib
+                or admission.build_identity != build_identity
+            ):
+                raise ValueError(
+                    "installed native runtime admission names another generation"
+                )
+            admission.verify()
+            archive_identity = admission.archive
+        else:
+            archive_identity = (
+                native_symbol_inspection._native_symbol_artifact_identity(runtime_lib)
+            )
+            read_native_link_dependency_manifest(
+                runtime_lib,
+                cargo_profile=runtime_cargo_profile,
+                target_triple=target_triple,
+                runtime_build_identity=build_identity,
+            )
+            native_symbol_inspection._require_unchanged_symbol_artifact(
+                runtime_lib, archive_identity
+            )
+    except (OSError, ValueError, NativeLinkDependencyManifestError) as exc:
+        runtime_state.revoke_native_runtime_admission()
+        return "", _fail(
+            f"native runtime changed before callable codegen admission: {exc}",
+            json_output,
+            command="build",
+        )
     symbol_file_start = time.perf_counter()
-    symbols_file, symbols_failure = _runtime_callable_symbols_file(
-        runtime_lib, target_triple=target_triple
+    projection, symbols_failure = _runtime_callable_projection_for_codegen(
+        runtime_state,
+        runtime_lib,
+        identity=archive_identity,
+        target_triple=target_triple,
+        runtime_cargo_profile=runtime_cargo_profile,
+        molt_root=molt_root,
+        stdlib_profile=stdlib_profile,
     )
     _record_runtime_callable_stage_ms(
         stage_timings_ms,
         "runtime_callable_symbols_file",
         symbol_file_start,
     )
-    if symbols_file is None:
+    if projection is None:
+        runtime_state.revoke_native_runtime_admission()
         return "", _fail(
-            "failed to extract the runtime staticlib's molt_* callable "
-            f"symbols from {runtime_lib}: {symbols_failure}. Native codegen "
-            "requires this set (the per-app resolver must not reference "
-            "symbols the linker cannot satisfy). Remediation: install an "
-            "LLVM matching your Rust toolchain (`brew install llvm` or "
-            "`rustup component add llvm-tools`) or repair the managed "
-            "MOLT_TARGET_ROOT toolchain family so its llvm-nm can read "
-            "the selected Rust bitcode.",
+            "failed to admit the runtime staticlib's molt_* callable "
+            f"symbols for {runtime_lib}: {symbols_failure}. Native codegen "
+            "requires callable inputs admitted from the selected runtime archive.",
             json_output,
             command="build",
         )
-    digest_start = time.perf_counter()
-    digest = _runtime_callable_symbols_digest(symbols_file)
-    _record_runtime_callable_stage_ms(
-        stage_timings_ms,
-        "runtime_callable_symbols_digest",
-        digest_start,
+    binding = NativeRuntimeCodegenBinding(
+        runtime_lib=runtime_lib,
+        build_identity=build_identity,
+        archive=archive_identity,
+        callable_symbols=projection.identity,
+        semantic_digest=projection.semantic_digest,
+        manifest=admission.manifest if admission is not None else None,
+        link_facts=admission.link_facts if admission is not None else None,
+        custody=admission.custody if admission is not None else None,
     )
-    if not digest:
+    try:
+        binding.verify()
+    except (OSError, ValueError) as exc:
+        runtime_state.revoke_native_runtime_admission()
         return "", _fail(
-            "failed to digest the runtime staticlib callable-symbol set "
-            f"from {symbols_file}; native backend cache identity requires "
-            "the exact resolver symbol authority.",
+            f"native runtime changed while binding code generation: {exc}",
             json_output,
             command="build",
         )
-    os.environ["MOLT_RUNTIME_CALLABLE_SYMBOLS"] = str(symbols_file)
-    return digest, None
+    runtime_state.native_runtime_codegen_binding = binding
+    return projection.semantic_digest, None

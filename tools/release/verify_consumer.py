@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tarfile
 import tempfile
 import time
@@ -33,6 +34,7 @@ from molt.exact_json import canonical_json_sha256, loads_exact
 from molt.file_publication import durable_remove_path
 from molt.python_interpreter import probe_python_command
 from molt.toolchain_identity import (
+    executable_candidates,
     executable_content_identity,
     stable_regular_file_content_identity,
 )
@@ -42,6 +44,13 @@ from molt.wasm_artifact import (
     wasm_runtime_manifest_path,
 )
 from .release_model import sha256_file, write_json
+from .binary_compatibility import (
+    WheelCompatibilityError,
+    audit_linked_executable,
+    audit_wheel,
+)
+from .runtime_cells import declared_cell_keys, inventory_cell_keys
+from .native_build import rust_channel
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -205,12 +214,15 @@ def _consumer_environment(root: Path) -> dict[str, str]:
         "MOLT_DEV_CARGO_PROFILE",
         "MOLT_RELEASE_CARGO_PROFILE",
         "MOLT_SKIP_RUNTIME_REBUILD",
+        "MOLT_WASM_RUNTIME_DIR",
+        "MOLT_WASM_CARGO_PROFILE",
+        "MOLT_RUNTIME_BUILD_PROFILE",
     ):
         env.pop(name, None)
     env["MOLT_HOME"] = str(root / "molt-home")
     env.pop("MOLT_PROJECT_ROOT", None)
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-    return env
+    return rust_toolchain_absent_environment(env, root=root)
 
 
 def _diagnosed_compiler(
@@ -249,6 +261,247 @@ def _linked_wasm_artifact(output: Path) -> dict[str, object]:
     return {"path": str(module), "sha256": identity["sha256"], "size": identity["size"]}
 
 
+_RUST_TOOLCHAIN_COMMANDS = ("cargo", "rustc", "rustup")
+_RUST_TOOLCHAIN_ENVIRONMENT = (
+    "CARGO",
+    "CARGO_BUILD_RUSTC",
+    "CARGO_BUILD_RUSTC_WRAPPER",
+    "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    "CARGO_TARGET_DIR",
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTDOC",
+    "RUSTUP_TOOLCHAIN",
+)
+
+
+def _same_directory(entry: str, directory: Path) -> bool:
+    raw = entry.strip().strip('"')
+    return bool(raw) and os.path.normcase(os.path.abspath(raw)) == os.path.normcase(
+        os.path.abspath(directory)
+    )
+
+
+def rust_toolchain_absent_environment(
+    env: dict[str, str], *, root: Path
+) -> dict[str, str]:
+    """Consumer environment in which no Rust toolchain can be resolved.
+
+    Installed Molt must compile guests with Cargo, rustc and rustup absent: Rust
+    selectors are removed, Cargo/rustup homes point at empty private roots, and
+    every PATH directory providing a Rust command is excluded through the shared
+    executable-search authority. A Rust tool that shares a directory with the
+    consumer's own tools fails closed instead of weakening the proof.
+    """
+    result = dict(env)
+    for name in _RUST_TOOLCHAIN_ENVIRONMENT:
+        result.pop(name, None)
+    empty = root / "rust-toolchain-absent"
+    for name, variable in (("cargo", "CARGO_HOME"), ("rustup", "RUSTUP_HOME")):
+        (empty / name).mkdir(parents=True, exist_ok=True)
+        result[variable] = str(empty / name)
+    providers = {
+        candidate.parent
+        for command in _RUST_TOOLCHAIN_COMMANDS
+        for candidate in executable_candidates(command, environment=result)
+    }
+    keys = [
+        key for key in result if (key.upper() if os.name == "nt" else key) == "PATH"
+    ] or ["PATH"]
+    for key in keys:
+        result[key] = os.pathsep.join(
+            entry
+            for entry in result.get(key, "").split(os.pathsep)
+            if entry and not any(_same_directory(entry, path) for path in providers)
+        )
+    remaining = [
+        str(candidate)
+        for command in _RUST_TOOLCHAIN_COMMANDS
+        for candidate in executable_candidates(command, environment=result)
+    ]
+    if remaining:
+        raise RuntimeError(
+            "release consumer cannot make the Rust toolchain unavailable: "
+            + ", ".join(remaining)
+        )
+    if not list(executable_candidates("uv", environment=result)):
+        raise RuntimeError(
+            "release consumer Rust toolchain shares a PATH directory with uv; "
+            "use a host whose Rust toolchain is installed separately"
+        )
+    return result
+
+
+def _require_no_cargo_runtime(home: Path) -> None:
+    built = (
+        sorted(path.name for path in (home / "target").rglob("*molt_runtime*"))
+        if (home / "target").exists()
+        else []
+    )
+    if built:
+        raise RuntimeError(
+            f"installed Molt built runtime artifacts with Cargo: {built[:5]}"
+        )
+
+
+def _record_compatibility_failure(
+    evidence_dir: Path,
+    error: WheelCompatibilityError,
+    artifact: Path,
+    *,
+    preserve: bool,
+) -> None:
+    """Keep the audit evidence, and a transient guest binary, for repair."""
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    preserved = evidence_dir / artifact.name if preserve else artifact
+    if preserve:
+        shutil.copy2(artifact, preserved)
+    write_json(
+        evidence_dir / f"{artifact.name}.compatibility.json",
+        {"error": str(error), "artifact": str(preserved), "evidence": error.evidence},
+    )
+
+
+def _audit_platform_wheel(
+    wheel: Path, *, target: dict[str, object], evidence_dir: Path
+) -> str:
+    """The candidate wheel's tag must be the one its own binaries admit."""
+    try:
+        return audit_wheel(
+            wheel, platform=str(target["platform"]), arch=str(target["arch"])
+        ).tag
+    except WheelCompatibilityError as exc:
+        _record_compatibility_failure(evidence_dir, exc, wheel, preserve=False)
+        raise
+
+
+def _audit_guest(
+    executable: Path, *, target: dict[str, object], wheel_tag: str, evidence_dir: Path
+) -> None:
+    """A program linked from shipped runtime cells must fit the wheel's claim."""
+    try:
+        audit_linked_executable(
+            executable,
+            platform=str(target["platform"]),
+            arch=str(target["arch"]),
+            claimed_tag=wheel_tag,
+        )
+    except WheelCompatibilityError as exc:
+        _record_compatibility_failure(evidence_dir, exc, executable, preserve=True)
+        raise
+
+
+def _verify_pip_distribution(
+    *,
+    root: Path,
+    wheel: Path,
+    wheel_record: dict[str, object],
+    compiler: InstalledCompiler,
+    minor: str,
+    reference: str,
+    target: dict[str, object],
+    wheel_tag: str,
+    evidence_dir: Path,
+) -> dict[str, Any]:
+    """Install the platform wheel with plain pip semantics and build natively."""
+    root.mkdir(parents=True)
+    env = _consumer_environment(root)
+    venv = root / "venv"
+    python = _venv_python(venv)
+    commands = [
+        _run(
+            ["uv", "venv", "--no-config", "--python", reference, str(venv)],
+            cwd=root,
+            env=env,
+            timeout=600,
+            role="pip_environment",
+        ),
+        _run(
+            [
+                "uv",
+                "pip",
+                "install",
+                "--no-config",
+                "--python",
+                str(python),
+                str(wheel),
+            ],
+            cwd=root,
+            env=env,
+            timeout=1800,
+            role="pip_install",
+        ),
+    ]
+    project = root / "project"
+    project.mkdir()
+    source = project / "release_consumer.py"
+    source.write_bytes(consumer_guest_source(minor).encode("utf-8"))
+    diagnostics = project / "diagnostics.json"
+    output = project / ("release_consumer" + (".exe" if os.name == "nt" else ""))
+    script = venv / ("Scripts/molt.exe" if os.name == "nt" else "bin/molt")
+    commands.append(
+        _run(
+            consumer_guest_command(
+                [str(script)],
+                target="native",
+                profile="release",
+                python_minor=minor,
+                diagnostics=str(diagnostics),
+                output=str(output),
+                source=str(source),
+            ),
+            cwd=root,
+            env=env,
+            timeout=2700,
+            role="pip_build_native_release",
+        )
+    )
+    _audit_guest(output, target=target, wheel_tag=wheel_tag, evidence_dir=evidence_dir)
+    identity = executable_content_identity(output, label="pip consumer executable")
+    commands.append(
+        _run(
+            [str(output), *CONSUMER_GUEST_ARGV],
+            cwd=project,
+            env=env,
+            timeout=60,
+            role="pip_run_native_release",
+            expected_stdout=CONSUMER_EXPECTED_STDOUT,
+        )
+    )
+    observed = loads_exact(diagnostics.read_text(encoding="utf-8"))
+    selected = observed.get("compiler") if isinstance(observed, dict) else None
+    if (
+        not isinstance(selected, dict)
+        or selected.get("sha256") != compiler.record["sha256"]
+        or venv.resolve() not in Path(str(selected.get("path", ""))).resolve().parents
+    ):
+        raise ValueError("pip consumer did not use the wheel's packaged compiler")
+    _require_no_cargo_runtime(root / "molt-home")
+    commands.append(
+        _run(
+            ["uv", "pip", "uninstall", "--python", str(python), "molt"],
+            cwd=root,
+            env=env,
+            timeout=600,
+            role="pip_uninstall",
+        )
+    )
+    _absent_probe(python, env=env, cwd=root)
+    return {
+        "wheel": {key: wheel_record[key] for key in ("filename", "sha256", "size")},
+        "python": minor,
+        "reference_python": reference,
+        "commands": commands,
+        "artifact": {
+            "path": str(output),
+            "sha256": identity["sha256"],
+            "size": identity["size"],
+        },
+        "compiler_sha256": compiler.record["sha256"],
+    }
+
+
 def _verify_python_coordinate(
     *,
     root: Path,
@@ -258,6 +511,8 @@ def _verify_python_coordinate(
     target: dict[str, object],
     minor: str,
     reference: str,
+    wheel_tag: str,
+    evidence_dir: Path,
 ) -> dict[str, Any]:
     project = root / "project"
     project.mkdir(parents=True)
@@ -350,6 +605,9 @@ def _verify_python_coordinate(
                 raise RuntimeError(
                     f"Molt did not produce the requested binary: {output}"
                 )
+            _audit_guest(
+                output, target=target, wheel_tag=wheel_tag, evidence_dir=evidence_dir
+            )
             identity = executable_content_identity(
                 output, label="release consumer guest executable"
             )
@@ -408,6 +666,7 @@ def _verify_python_coordinate(
         raise ValueError(
             "release consumer interpreter identity changed during verification"
         )
+    _require_no_cargo_runtime(root / "molt-home")
     return {
         "python": minor,
         "reference_python": reference,
@@ -524,6 +783,15 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
         worker = worker_root / "bin" / worker_name
         if not worker.is_file() or worker.stat().st_size == 0:
             raise ValueError(f"standalone worker bundle is missing {worker_name}")
+        worker_identity = stable_regular_file_content_identity(
+            worker, label="installed release worker"
+        )
+        if any(
+            worker_identity[key]
+            != candidate["native_build"]["artifacts"]["worker"][key]
+            for key in ("sha256", "size")
+        ):
+            raise ValueError("Bundle worker identity differs from native build receipt")
         if (bundle_root / "bin" / worker_name).exists():
             raise ValueError(
                 "compiler bundle must not duplicate standalone worker ownership"
@@ -532,13 +800,43 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
         compiler = installed_compiler(bundle_root / "source")
         if compiler is None or compiler.source_sha != candidate["source_sha"]:
             raise ValueError("Bundle compiler source differs from candidate")
+        if (
+            canonical_json_sha256(list(compiler.files))
+            != candidate["native_build"]["source"]["files_sha256"]
+        ):
+            raise ValueError(
+                "Bundle source inventory differs from native build receipt"
+            )
         if compiler.record != candidate["compiler"]:
             raise ValueError("Bundle compiler identity differs from candidate")
         if compiler.launcher != candidate["launcher"]:
             raise ValueError("Bundle launcher identity differs from candidate")
         compiler.verify_launcher()
         compiler.verify_sources()
+        if (
+            rust_channel((compiler.source_root / "rust-toolchain.toml").read_bytes())
+            != candidate["native_build"]["policy"]["rust_channel"]
+        ):
+            raise ValueError("Bundle Rust channel differs from native build receipt")
         compiler.verify_binary(("native-backend", "wasm-backend"), "release")
+        compiler.verify_runtime()
+        if compiler.runtime != candidate["runtime"]:
+            raise ValueError("Bundle runtime cells differ from candidate")
+        if inventory_cell_keys(compiler.runtime) != declared_cell_keys():
+            raise ValueError(
+                "Bundle runtime cells differ from the derived release policy"
+            )
+        wheel_records = [
+            record for record in artifacts if record.get("kind") == "wheel"
+        ]
+        if len(wheel_records) != 1:
+            raise ValueError("candidate must contain exactly one platform wheel")
+        evidence_dir = receipt.parent / "wheel-compatibility-evidence"
+        wheel_tag = _audit_platform_wheel(
+            candidate_dir / str(wheel_records[0]["filename"]),
+            target=candidate["target"],
+            evidence_dir=evidence_dir,
+        )
         if consumer_python_policy(
             bundle_root / "source/config/verified_subset.toml"
         ) != (
@@ -555,10 +853,25 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
                 target=candidate["target"],
                 minor=minor,
                 reference=reference,
+                wheel_tag=wheel_tag,
+                evidence_dir=evidence_dir,
             )
             for minor, reference in coordinates
         ]
         compiler.verify_sources()
+        compiler.verify_runtime()
+        minor, reference = coordinates[0]
+        pip_proof = _verify_pip_distribution(
+            root=root / "pip",
+            wheel=candidate_dir / str(wheel_records[0]["filename"]),
+            wheel_record=wheel_records[0],
+            compiler=compiler,
+            minor=minor,
+            reference=reference,
+            target=candidate["target"],
+            wheel_tag=wheel_tag,
+            evidence_dir=evidence_dir,
+        )
         _uninstall_and_replay_native(
             root=root,
             bundle_root=bundle_root,
@@ -581,6 +894,8 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             "errors": 0,
             "compiler": compiler.record,
             "launcher": compiler.launcher,
+            "runtime": compiler.runtime,
+            "pip_proof": pip_proof,
             "guest_cells": [list(cell) for cell in CONSUMER_GUEST_CELLS],
             "expected_stdout": CONSUMER_EXPECTED_STDOUT,
             "python_policy_sha256": policy_sha256,

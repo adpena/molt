@@ -77,9 +77,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::Instant;
 
 use crate::object::{
-    HEADER_FLAG_FINALIZER_RAN, HEADER_FLAG_GC_COLLECTING, HEADER_FLAG_GC_PINNED,
-    HEADER_FLAG_HAS_ABI_VIEW, PtrSlot, dec_ref_ptr, header_from_obj_ptr,
-    object_class_has_finalizer, object_type_id,
+    HEADER_FLAG_FINALIZER_RAN, HEADER_FLAG_GC_ACCOUNTED, HEADER_FLAG_GC_COLLECTING,
+    HEADER_FLAG_GC_PINNED, HEADER_FLAG_HAS_ABI_VIEW, PtrSlot, dec_ref_ptr, header_from_obj_ptr,
+    object_has_finalizer, object_type_id,
 };
 use crate::{
     GC_REGISTRY_LOCK_CONTENTION_COUNT, GC_REGISTRY_LOCK_WAIT_NS, GC_SNAPSHOT_ALLOC_FAILURE_COUNT,
@@ -840,57 +840,110 @@ pub(crate) fn may_form_cycle(type_id: u32) -> bool {
     )
 }
 
-unsafe fn gc_reproject_published(
-    py: &PyToken<'_>,
-    ptr: *mut u8,
-    projection: super::HeapTrackProjection,
-) {
-    if !unsafe { (*header_from_obj_ptr(ptr)).gc_is_published() } {
-        return;
-    }
-    if super::heap_track_projection(unsafe { object_type_id(ptr) }) != Some(projection) {
-        return;
-    }
-    let should_track = unsafe { super::heap_lifecycle::projected_track_state(py, ptr) };
-    if projection == super::HeapTrackProjection::ForeignDynamic && !should_track {
-        // Delayed foreign projection has not inserted an entry yet. A non-GC
-        // native identity is permanently atomic for this wrapper lifetime, so
-        // avoid even a runtime-registry shard lookup on its hot construction
-        // path.
-        return;
-    }
-    let shard_index = tracked_registry_shard_index(ptr);
-    let mut shard = lock_tracked_registry_shard(shard_index);
-    let slot = PtrSlot(ptr);
-    if should_track {
-        if let Entry::Vacant(entry) = shard.entries.entry(slot) {
-            let allocation_id = tracked_registry()
-                .next_allocation_id
-                .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
-                    next.checked_add(1)
-                })
-                .expect("GC allocation ordinal exhausted");
-            entry.insert(TrackedEntry {
-                allocation_id,
-                generation: 0,
-            });
-            if projection == super::HeapTrackProjection::ForeignDynamic {
-                crate::runtime_state(py).gc.on_allocation();
-            }
-            profile_gc_track();
-        }
-    } else if shard.entries.remove(&slot).is_some() {
-        profile_gc_untrack(1);
+/// The sole runtime-object membership insertion. Every admitted identity owns
+/// the one-shot allocation claim, including explicit tracking and promotion.
+/// Existing dictionary allocation claims are preserved without recounting.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum GcMembershipAdmission {
+    Inserted,
+    AlreadyTracked,
+    ImmortalRoot,
+}
+
+/// Allocation accounting outlives changes to membership and owned payloads.
+/// Constructors may enter more than once as a native class edge is initialized;
+/// the existing header owns the one allocation claim, not the current projection.
+#[inline]
+unsafe fn gc_account_allocation(py: &PyToken<'_>, ptr: *mut u8) {
+    let header = unsafe { &*header_from_obj_ptr(ptr) };
+    if header.fetch_or_flags(HEADER_FLAG_GC_ACCOUNTED) & HEADER_FLAG_GC_ACCOUNTED == 0 {
+        crate::runtime_state(py).gc.on_allocation();
     }
 }
 
-/// Re-evaluate an exact dict after its new contents have been fully published.
-/// Every dict mutation family calls this once per completed transaction. Tuples
-/// deliberately do not use this path: non-empty tuples start tracked and are
-/// only reprojected by the collector, matching CPython.
-pub(crate) unsafe fn gc_reproject_dict(py: &PyToken<'_>, ptr: *mut u8) {
-    unsafe {
-        gc_reproject_published(py, ptr, super::HeapTrackProjection::DictDynamic);
+fn gc_admit_membership(py: &PyToken<'_>, ptr: *mut u8) -> GcMembershipAdmission {
+    // Most allocations have no C view. Read an existing view's lifetime only
+    // after that header fastpath, and release the bridge lock before touching
+    // membership. Explicit C immortality is a process root; later dictionary
+    // promotion must not undo SetImmortal's untracking.
+    let immortal_root =
+        unsafe { (*header_from_obj_ptr(ptr)).has_flag(super::HEADER_FLAG_HAS_ABI_VIEW) }
+            && molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .is_immortal_c_view(MoltObject::from_ptr(ptr).bits());
+    let shard_index = tracked_registry_shard_index(ptr);
+    let mut shard = lock_tracked_registry_shard(shard_index);
+    let admission = if let Entry::Vacant(entry) = shard.entries.entry(PtrSlot(ptr)) {
+        if immortal_root {
+            return GcMembershipAdmission::ImmortalRoot;
+        }
+        let allocation_id = tracked_registry()
+            .next_allocation_id
+            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .expect("GC allocation ordinal exhausted");
+        entry.insert(TrackedEntry {
+            allocation_id,
+            generation: 0,
+        });
+        profile_gc_track();
+        GcMembershipAdmission::Inserted
+    } else {
+        GcMembershipAdmission::AlreadyTracked
+    };
+    drop(shard);
+    unsafe { gc_account_allocation(py, ptr) };
+    admission
+}
+
+/// Honor an explicit C-API tracking request for an already allocated runtime
+/// object. Dynamic dict/tuple demotion is a collector optimization, not a ban
+/// on explicit enrollment. Admission establishes the one-shot allocation claim
+/// and preserves an existing claim across untrack/retrack. Duplicate tracking
+/// violates the public C API precondition.
+pub(crate) unsafe fn gc_track_existing(py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    let projection = super::heap_track_projection(unsafe { object_type_id(ptr) });
+    match projection {
+        None | Some(super::HeapTrackProjection::Never) => return false,
+        Some(super::HeapTrackProjection::NativeSubtype)
+            if !unsafe { super::native_instance::has_fields(ptr) } =>
+        {
+            return false;
+        }
+        Some(super::HeapTrackProjection::ForeignDynamic)
+            if !unsafe { super::heap_lifecycle::projected_track_state(py, ptr) } =>
+        {
+            return false;
+        }
+        _ => {}
+    }
+    matches!(
+        gc_admit_membership(py, ptr),
+        GcMembershipAdmission::Inserted | GcMembershipAdmission::ImmortalRoot
+    )
+}
+
+/// Promote an exact dictionary without recounting its allocation. Unpublished
+/// construction uses the same sticky tracking law; the publication bit still
+/// prevents collector snapshots from observing an incomplete payload.
+/// Mutations never demote: CPython 3.12/3.13 untrack dictionaries only during a
+/// full collection; 3.14 keeps every dictionary tracked for its whole lifetime.
+pub(crate) unsafe fn gc_track_dict(py: &PyToken<'_>, ptr: *mut u8) {
+    gc_admit_membership(py, ptr);
+}
+
+/// Track only the newly published references, before releasing displaced edges.
+/// This is independent of dictionary size and shares the collector's child law.
+pub(crate) unsafe fn gc_track_dict_references(py: &PyToken<'_>, ptr: *mut u8, bits: &[u64]) {
+    if !unsafe { gc_is_tracked(ptr) }
+        && bits
+            .iter()
+            .copied()
+            .any(super::heap_lifecycle::value_requires_tracking)
+    {
+        unsafe {
+            gc_track_dict(py, ptr);
+        }
     }
 }
 
@@ -922,35 +975,41 @@ struct GcCandidate {
     node: GcNode,
 }
 
-unsafe fn reproject_reachable_immutable_tuples(
+unsafe fn reproject_reachable_containers(
     py: &PyToken<'_>,
     candidates: &[GcCandidate],
     marks: &[u8],
+    generation: u8,
 ) {
-    for (candidate_index, candidate) in candidates.iter().enumerate() {
-        // CPython runs deduce_unreachable first and untracks atomic tuples only
-        // from the reachable generation list. An unreachable tuple remains a
-        // candidate for this collection and contributes to gc.collect()'s count.
-        if marks[candidate_index] != 2 {
+    let untrack_dicts =
+        generation == OLDEST_GENERATION && crate::object::ops_sys::runtime_target_minor(py) < 14;
+    // Tuples must be demoted first, even when a referring dictionary was
+    // allocated earlier. Both phases precede weakref callbacks and finalizers.
+    for projection in [
+        super::HeapTrackProjection::TupleDynamic,
+        super::HeapTrackProjection::DictDynamic,
+    ] {
+        if projection == super::HeapTrackProjection::DictDynamic && !untrack_dicts {
             continue;
         }
-        let Some(ptr) = candidate.node.runtime_ptr() else {
-            continue;
-        };
-        if super::heap_track_projection(unsafe { object_type_id(ptr) })
-            != Some(super::HeapTrackProjection::TupleDynamic)
-            || unsafe { super::heap_lifecycle::projected_track_state(py, ptr) }
-        {
-            continue;
+        for (candidate_index, candidate) in candidates.iter().enumerate() {
+            // CPython runs deduce_unreachable first and untracks atomic tuples only
+            // from the reachable generation list. An unreachable tuple remains a
+            // candidate for this collection and contributes to gc.collect()'s count.
+            if marks[candidate_index] != 2 {
+                continue;
+            }
+            let Some(ptr) = candidate.node.runtime_ptr() else {
+                continue;
+            };
+            let type_id = unsafe { object_type_id(ptr) };
+            if super::heap_track_projection(type_id) != Some(projection)
+                || unsafe { super::heap_lifecycle::projected_track_state(py, ptr) }
+            {
+                continue;
+            }
+            unsafe { gc_untrack(py, ptr, type_id, GcUntrackReason::DynamicProjection) };
         }
-        unsafe {
-            gc_untrack(
-                py,
-                ptr,
-                super::TYPE_ID_TUPLE,
-                GcUntrackReason::DynamicProjection,
-            )
-        };
     }
 }
 
@@ -965,30 +1024,27 @@ pub(crate) unsafe fn gc_track_if_cyclic(py: &PyToken<'_>, ptr: *mut u8, type_id:
     if matches!(projection, None | Some(super::HeapTrackProjection::Never)) {
         return;
     }
+    if projection == Some(super::HeapTrackProjection::NativeSubtype)
+        && !unsafe { super::native_instance::has_fields(ptr) }
+    {
+        return;
+    }
     if projection == Some(super::HeapTrackProjection::ForeignDynamic) {
         // Foreign payload identity is not valid until constructor publication.
         // Its generated dynamic projection performs the first registry insert,
         // so non-GC wrappers never touch membership storage.
         return;
     }
-    let registry = tracked_registry();
-    let shard_index = tracked_registry_shard_index(ptr);
-    let mut shard = lock_tracked_registry_shard(shard_index);
-    let slot = PtrSlot(ptr);
-    if let Entry::Vacant(entry) = shard.entries.entry(slot) {
-        crate::runtime_state(py).gc.on_allocation();
-        let allocation_id = registry
-            .next_allocation_id
-            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
-                next.checked_add(1)
-            })
-            .expect("GC allocation ordinal exhausted");
-        entry.insert(TrackedEntry {
-            allocation_id,
-            generation: 0,
-        });
-        profile_gc_track();
+    if projection == Some(super::HeapTrackProjection::DictDynamic)
+        && crate::object::ops_sys::runtime_target_minor(py) < 14
+    {
+        // Count the allocation once even while the empty dictionary is
+        // untracked. Insertions promote it without recounting; deallocation
+        // retires this allocation independently of current membership.
+        unsafe { gc_account_allocation(py, ptr) };
+        return;
     }
+    gc_admit_membership(py, ptr);
 }
 
 /// Release-publish a completely initialized heap payload to the collector.
@@ -998,20 +1054,18 @@ pub(crate) unsafe fn gc_track_if_cyclic(py: &PyToken<'_>, ptr: *mut u8, type_id:
 #[inline]
 pub(crate) unsafe fn gc_publish_initialized(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe { (*header_from_obj_ptr(ptr)).gc_publish_initialized() };
-    match super::heap_track_projection(unsafe { object_type_id(ptr) }) {
-        Some(super::HeapTrackProjection::DictDynamic) => unsafe {
-            gc_reproject_published(py, ptr, super::HeapTrackProjection::DictDynamic)
-        },
-        Some(super::HeapTrackProjection::ForeignDynamic) => unsafe {
-            gc_reproject_published(py, ptr, super::HeapTrackProjection::ForeignDynamic)
-        },
-        _ => {}
+    if super::heap_track_projection(unsafe { object_type_id(ptr) })
+        == Some(super::HeapTrackProjection::ForeignDynamic)
+        && unsafe { super::heap_lifecycle::projected_track_state(py, ptr) }
+    {
+        gc_admit_membership(py, ptr);
     }
 }
 
 /// Remove an object from the tracked set as it is freed. Called from the
-/// deallocator for every freed object; a no-op (cheap set miss) for GREEN types and
-/// untracked objects.
+/// deallocator for every freed object. Unenrolled allocations return through the
+/// header fast path; previously enrolled objects retire even after clear has
+/// detached the native identity or class edge that originally admitted them.
 ///
 /// # Safety
 /// `ptr` identifies the object being freed.
@@ -1019,6 +1073,7 @@ pub(crate) unsafe fn gc_publish_initialized(py: &PyToken<'_>, ptr: *mut u8) {
 pub(crate) enum GcUntrackReason {
     Deallocation,
     DynamicProjection,
+    ExplicitControl,
 }
 
 pub(crate) unsafe fn gc_untrack(
@@ -1030,12 +1085,16 @@ pub(crate) unsafe fn gc_untrack(
     if !may_form_cycle(type_id) {
         return;
     }
-    let projection = super::heap_track_projection(type_id);
-    if projection == Some(super::HeapTrackProjection::ForeignDynamic)
-        && !unsafe { super::heap_lifecycle::projected_track_state(py, ptr) }
+    let header = unsafe { &*header_from_obj_ptr(ptr) };
+    if !header.has_flag(HEADER_FLAG_GC_ACCOUNTED) {
+        return;
+    }
+    if reason == GcUntrackReason::Deallocation
+        && header.fetch_and_flags(!HEADER_FLAG_GC_ACCOUNTED) & HEADER_FLAG_GC_ACCOUNTED == 0
     {
         return;
     }
+    let projection = super::heap_track_projection(type_id);
     let shard_index = tracked_registry_shard_index(ptr);
     let mut shard = lock_tracked_registry_shard(shard_index);
     let removed = shard.entries.remove(&PtrSlot(ptr)).is_some();
@@ -1054,11 +1113,15 @@ pub(crate) unsafe fn gc_untrack(
             "enrolled foreign wrapper lost dynamic GC membership before deallocation"
         );
     }
-    if reason == GcUntrackReason::Deallocation
-        && (projection != Some(super::HeapTrackProjection::ForeignDynamic) || removed)
-    {
+    if reason == GcUntrackReason::Deallocation {
         crate::runtime_state(py).gc.on_deallocation();
     }
+}
+
+/// The runtime header owns the one-shot finalizer state, independently of
+/// current collector membership. Untracking/retracking never clears this bit.
+pub(crate) unsafe fn gc_is_finalized(ptr: *mut u8) -> bool {
+    unsafe { (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_FINALIZER_RAN) }
 }
 
 /// Is this object currently in the tracked set? Backs `gc.is_tracked`.
@@ -1109,7 +1172,11 @@ pub(crate) fn native_gc_allocate(py: &PyToken<'_>, address: usize) -> bool {
     true
 }
 
-pub(crate) fn native_gc_track(address: usize) -> bool {
+/// Re-enroll a live native object unless its C header is a process-lifetime root.
+///
+/// # Safety
+/// An enrolled `address` must identify a live, initialized `PyObject` header.
+pub(crate) unsafe fn native_gc_track(address: usize) -> bool {
     if address == 0 {
         return false;
     }
@@ -1119,6 +1186,11 @@ pub(crate) fn native_gc_track(address: usize) -> bool {
         return false;
     };
     if !entry.tracked {
+        if molt_cpython_abi::abi_types::is_immortal_refcnt(unsafe {
+            molt_cpython_abi::native_gc_node_refcount(address)
+        }) {
+            return true;
+        }
         entry.tracked = true;
         entry.generation = 0;
         profile_gc_track();
@@ -1216,6 +1288,15 @@ fn native_gc_is_pinned(address: usize) -> bool {
         .native_nodes
         .get(&address)
         .is_some_and(|entry| entry.pinned)
+}
+
+/// Consult the existing allocation authority before forced interpreter type
+/// projection retirement. Native tp_clear/tp_dealloc can own C type references;
+/// their allocations must drain before those identities become invalid.
+pub(crate) fn gc_has_live_native_nodes() -> bool {
+    crate::gil_assert();
+    (0..TRACKED_REGISTRY_SHARDS)
+        .any(|index| !lock_tracked_registry_shard(index).native_nodes.is_empty())
 }
 
 /// Drop the entire tracked set without touching the objects. Used at runtime
@@ -1464,59 +1545,75 @@ pub(crate) unsafe fn molt_traverse(py: &PyToken<'_>, ptr: *mut u8, visit: &mut d
 }
 
 struct NativeVisitContext<'a> {
-    visit: &'a mut dyn FnMut(GcNode),
+    visit: &'a mut dyn FnMut(NativeGcEdge),
 }
 
-unsafe extern "C" fn native_gc_visit_edge(edge: NativeGcEdge, context: *mut c_void) -> c_int {
-    let context = unsafe { &mut *context.cast::<NativeVisitContext<'_>>() };
+fn node_from_native_gc_edge(edge: NativeGcEdge) -> Option<GcNode> {
     if edge.kind == NativeGcEdgeKind::ManagedHandle as u8 {
-        if let Some(ptr) = crate::obj_from_bits(edge.value).as_ptr() {
-            (context.visit)(GcNode::Runtime(PtrSlot(ptr)));
-        }
-        return 0;
+        return crate::obj_from_bits(edge.value)
+            .as_ptr()
+            .map(|ptr| GcNode::Runtime(PtrSlot(ptr)));
     }
     if edge.kind == NativeGcEdgeKind::NativePointer as u8 {
         let Ok(address) = usize::try_from(edge.value) else {
             std::process::abort();
         };
-        if address != 0 {
-            (context.visit)(GcNode::Native(address));
-        }
-        return 0;
+        return (address != 0).then_some(GcNode::Native(address));
     }
     std::process::abort();
+}
+
+unsafe extern "C" fn native_gc_visit_edge(edge: NativeGcEdge, context: *mut c_void) -> c_int {
+    let context = unsafe { &mut *context.cast::<NativeVisitContext<'_>>() };
+    (context.visit)(edge);
+    0
+}
+
+/// Keep the physical edge carrier until its consumer chooses collector-node
+/// identity or public API value identity. Both consumers retain the same native
+/// tp_traverse protocol, callback status handling, and edge multiplicity.
+unsafe fn visit_native_owned_edges(address: usize, visit: &mut dyn FnMut(NativeGcEdge)) -> bool {
+    let mut context = NativeVisitContext { visit };
+    let result = unsafe {
+        molt_cpython_abi::native_gc_node_visit(
+            address,
+            native_gc_visit_edge,
+            std::ptr::from_mut(&mut context).cast::<c_void>(),
+        )
+    };
+    result == 0
 }
 
 /// Visit the generalized shared-GC graph. Runtime owners use the generated
 /// lifecycle authority; `TYPE_ID_FOREIGN` contributes its enrolled native
 /// custody edge; native nodes delegate allocation-free traversal to
 /// their ABI layout authority.
-unsafe fn traverse_node(py: &PyToken<'_>, node: GcNode, visit: &mut dyn FnMut(GcNode)) {
+unsafe fn traverse_node(py: &PyToken<'_>, node: GcNode, visit: &mut dyn FnMut(GcNode)) -> bool {
     match node {
         GcNode::Runtime(ptr) => unsafe {
-            molt_traverse(py, ptr.0, &mut |child| {
-                visit(GcNode::Runtime(PtrSlot(child)))
+            let status = super::heap_lifecycle::visit_owned_gc_edges(py, ptr.0, &mut |edge| {
+                if let Some(child) = node_from_native_gc_edge(edge) {
+                    visit(child);
+                }
             });
+            if status != 0 {
+                return false;
+            }
             if object_type_id(ptr.0) == super::TYPE_ID_FOREIGN {
                 let address = super::foreign::foreign_ptr_from_obj(ptr.0);
                 if native_gc_is_enrolled(address) {
                     visit(GcNode::Native(address));
                 }
             }
+            true
         },
-        GcNode::Native(address) => {
-            let mut context = NativeVisitContext { visit };
-            let result = unsafe {
-                molt_cpython_abi::native_gc_node_visit(
-                    address,
-                    native_gc_visit_edge,
-                    std::ptr::from_mut(&mut context).cast::<c_void>(),
-                )
-            };
-            if result != 0 {
-                std::process::abort();
-            }
-        }
+        GcNode::Native(address) => unsafe {
+            visit_native_owned_edges(address, &mut |edge| {
+                if let Some(child) = node_from_native_gc_edge(edge) {
+                    visit(child);
+                }
+            })
+        },
     }
 }
 
@@ -1539,10 +1636,14 @@ pub(crate) unsafe fn molt_clear(py: &PyToken<'_>, ptr: *mut u8) {
 // The collector — deduce_unreachable + CPython 6-step destruction
 // ---------------------------------------------------------------------------
 
-/// Result of one `collect_cycles` invocation: the number of objects reclaimed (the
-/// `m` that `gc.collect()` returns; `n` = uncollectable = 0 for molt since
-/// `gc.garbage` is always empty under PEP 442).
+/// Result of one collection. Python's count includes unreachable objects kept
+/// by DEBUG_SAVEALL or a native clear callback; retirement separately measures
+/// whether the original tracked allocation cohort actually made progress.
 pub(crate) struct CollectStats {
+    /// Original unreachable allocation identities no longer in the tracked
+    /// cohort after releasing collector pins. Python's collected count also
+    /// includes retained garbage and does not establish fixed-point progress.
+    pub(crate) retired: usize,
     pub(crate) collected: usize,
     #[cfg(test)]
     pub(crate) scanned: usize,
@@ -1556,6 +1657,7 @@ pub(crate) enum GcCollectStatus {
     Completed,
     ReentrantNoop,
     ResourceError(&'static str),
+    CallbackError(&'static str),
     UnsupportedConcurrency,
 }
 
@@ -1564,6 +1666,7 @@ impl CollectStats {
         #[cfg(not(test))]
         let _ = (scanned, survivors);
         Self {
+            retired: 0,
             collected,
             #[cfg(test)]
             scanned,
@@ -1579,11 +1682,13 @@ impl CollectStats {
             GcCollectStatus::ReentrantNoop => 1,
             GcCollectStatus::ResourceError(_) => 2,
             GcCollectStatus::UnsupportedConcurrency => 3,
+            GcCollectStatus::CallbackError(_) => 4,
         };
         crate::runtime_state(py)
             .gc_last_failure
             .store(code, AtomicOrdering::Release);
         Self {
+            retired: 0,
             collected: 0,
             #[cfg(test)]
             scanned: 0,
@@ -1639,6 +1744,18 @@ unsafe fn effective_node_refcount(node: GcNode) -> i64 {
                 std::process::abort();
             }
             let mut effective = i64::try_from(raw).unwrap_or_else(|_| std::process::abort());
+            let mirrors =
+                i64::try_from(molt_cpython_abi::bridge::GLOBAL_BRIDGE.mirrored_c_refcount(address))
+                    .unwrap_or_else(|_| std::process::abort());
+            if mirrors > effective {
+                eprintln!(
+                    "molt fatal: native GC mirror references exceed C ownership: address={address:#x} refs={raw} mirrors={mirrors}"
+                );
+                std::process::abort();
+            }
+            // Private clean projections mirror the runtime graph even when
+            // their target is native. Ordinary physical C edges remain counted.
+            effective -= mirrors;
             if native_gc_is_pinned(address) {
                 effective -= 1;
             }
@@ -1677,18 +1794,6 @@ unsafe fn release_node_pin(py: &PyToken<'_>, node: GcNode) {
             native_gc_set_pinned(address, false);
             unsafe { molt_cpython_abi::native_gc_node_decref(address) };
         }
-    }
-}
-
-unsafe fn pin_unreachable(candidates: &[GcCandidate], indices: &[usize]) {
-    for &index in indices {
-        unsafe { pin_node(candidates[index].node) };
-    }
-}
-
-unsafe fn release_index_pins(py: &PyToken<'_>, candidates: &[GcCandidate], indices: &[usize]) {
-    for &index in indices {
-        unsafe { release_node_pin(py, candidates[index].node) };
     }
 }
 
@@ -1750,10 +1855,20 @@ unsafe fn clear_node(
     detached: &mut super::heap_lifecycle::DetachedEdgeSink,
 ) -> bool {
     match node {
-        GcNode::Runtime(ptr) => unsafe {
-            super::heap_lifecycle::clear_cycle_edges_with_sink(py, ptr.0, detached);
-            true
-        },
+        GcNode::Runtime(ptr) => {
+            // Public tp_clear owns callback errors. Collection reports them at
+            // this boundary and restores the caller's two error channels.
+            molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
+                let status =
+                    super::heap_lifecycle::try_clear_cycle_edges_with_sink(py, ptr.0, detached);
+                if status != 0 {
+                    let view = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .handle_to_borrowed_pyobj(MoltObject::from_ptr(ptr.0).bits());
+                    molt_cpython_abi::api::errors::PyErr_WriteUnraisable(view);
+                }
+                status == 0
+            })
+        }
         GcNode::Native(address) => {
             match unsafe { molt_cpython_abi::native_gc_node_clear(address) } {
                 0 | 1 => true,
@@ -1798,6 +1913,7 @@ impl GcScratch {
             .unwrap_or_default();
         GcScratchLease {
             scratch: Some(scratch),
+            candidate_pins: CandidatePins::None,
         }
     }
 
@@ -1858,8 +1974,64 @@ fn gc_scratch_pool() -> &'static Mutex<Vec<GcScratch>> {
     POOL.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CandidatePins {
+    None,
+    Collector,
+    Api,
+}
+
 struct GcScratchLease {
     scratch: Option<GcScratch>,
+    candidate_pins: CandidatePins,
+}
+
+impl GcScratchLease {
+    /// Raw snapshot identities must remain live across arbitrary extension
+    /// callbacks. Collector pins use the existing discounted lifetime owner;
+    /// nested API snapshots use ordinary holds, which are real temporary roots.
+    unsafe fn pin_candidates(&mut self, py: &PyToken<'_>, kind: CandidatePins) {
+        assert!(self.candidate_pins == CandidatePins::None);
+        assert!(kind != CandidatePins::None);
+        for candidate in &self.candidates {
+            unsafe {
+                match (kind, candidate.node) {
+                    (CandidatePins::Collector, node) => pin_node(node),
+                    (CandidatePins::Api, GcNode::Runtime(ptr)) => {
+                        crate::inc_ref_bits(py, MoltObject::from_ptr(ptr.0).bits())
+                    }
+                    (CandidatePins::Api, GcNode::Native(address)) => {
+                        molt_cpython_abi::native_gc_node_incref(address)
+                    }
+                    (CandidatePins::None, _) => unreachable!(),
+                }
+            }
+        }
+        self.candidate_pins = kind;
+    }
+
+    fn release_candidate_pins(&mut self, py: &PyToken<'_>) {
+        let kind = std::mem::replace(&mut self.candidate_pins, CandidatePins::None);
+        if kind == CandidatePins::None {
+            return;
+        }
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            for candidate in &self.candidates {
+                unsafe {
+                    match (kind, candidate.node) {
+                        (CandidatePins::Collector, node) => release_node_pin(py, node),
+                        (CandidatePins::Api, GcNode::Runtime(ptr)) => {
+                            crate::dec_ref_bits(py, MoltObject::from_ptr(ptr.0).bits())
+                        }
+                        (CandidatePins::Api, GcNode::Native(address)) => {
+                            molt_cpython_abi::native_gc_node_decref(address)
+                        }
+                        (CandidatePins::None, _) => unreachable!(),
+                    }
+                }
+            }
+        });
+    }
 }
 
 impl std::ops::Deref for GcScratchLease {
@@ -1878,6 +2050,9 @@ impl std::ops::DerefMut for GcScratchLease {
 
 impl Drop for GcScratchLease {
     fn drop(&mut self) {
+        if self.candidate_pins != CandidatePins::None {
+            crate::concurrency::gil::with_gil(|py| self.release_candidate_pins(&py));
+        }
         let mut scratch = self.scratch.take().expect("live GC workspace lease");
         scratch.clear_for_reuse();
         let mut pool = gc_scratch_pool()
@@ -1917,6 +2092,7 @@ fn snapshot_api_values(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GcIntrospectionError {
     Resource(&'static str),
+    Callback(&'static str),
     UnsupportedConcurrency,
 }
 
@@ -1957,6 +2133,71 @@ unsafe fn api_target_from_bits(bits: u64) -> GcApiTarget {
     GcApiTarget::Node(GcNode::Runtime(PtrSlot(ptr)))
 }
 
+/// A native physical pointer can already denote an inline numeric value,
+/// singleton, or registered runtime binding. Public referent/referrer identity
+/// uses that canonical value without observing mutable state or allocating a
+/// foreign wrapper merely to compare it. Unbound native objects keep their
+/// native identity; collector classification remains unchanged.
+unsafe fn api_target_from_native_gc_edge(edge: NativeGcEdge) -> Option<GcApiTarget> {
+    if edge.kind == NativeGcEdgeKind::ManagedHandle as u8 {
+        return Some(unsafe { api_target_from_bits(edge.value) });
+    }
+    let node = node_from_native_gc_edge(edge)?;
+    let GcNode::Native(address) = node else {
+        std::process::abort();
+    };
+    let pointer =
+        std::ptr::with_exposed_provenance_mut::<molt_cpython_abi::abi_types::PyObject>(address);
+    Some(
+        match molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(pointer) {
+            Some(value) => unsafe { api_target_from_bits(value.bits()) },
+            None => GcApiTarget::Node(node),
+        },
+    )
+}
+
+/// Introspection retains inline payload values and uses the same physical
+/// mixed-edge authority as collection. Foreign wrappers expose their native
+/// object's referents rather than the wrapper's private custody edge.
+unsafe fn visit_api_referents(
+    py: &PyToken<'_>,
+    node: GcNode,
+    visit: &mut dyn FnMut(GcApiTarget),
+) -> bool {
+    let node = match node {
+        GcNode::Runtime(ptr) => unsafe {
+            if object_type_id(ptr.0) == super::TYPE_ID_FOREIGN {
+                let address = super::foreign::foreign_ptr_from_obj(ptr.0);
+                if native_gc_is_enrolled(address) {
+                    GcNode::Native(address)
+                } else {
+                    node
+                }
+            } else {
+                node
+            }
+        },
+        GcNode::Native(_) => node,
+    };
+    unsafe {
+        match node {
+            GcNode::Runtime(ptr) => {
+                let status = super::heap_lifecycle::visit_owned_gc_edges(py, ptr.0, &mut |edge| {
+                    if let Some(target) = api_target_from_native_gc_edge(edge) {
+                        visit(target);
+                    }
+                });
+                status == 0
+            }
+            GcNode::Native(address) => visit_native_owned_edges(address, &mut |edge| {
+                if let Some(target) = api_target_from_native_gc_edge(edge) {
+                    visit(target);
+                }
+            }),
+        }
+    }
+}
+
 /// Build `gc.get_objects()` from the same deterministic registry snapshot used
 /// by collection. `None` excludes the permanent generation; `Some(g)` selects
 /// exactly one ordinary generation, matching CPython's public contract.
@@ -1968,6 +2209,7 @@ pub(crate) fn get_objects(
     let selection = generation.map_or(RegistrySelection::Ordinary, RegistrySelection::Exact);
     let mut scratch = GcScratch::acquire();
     snapshot_api_values(&mut scratch, selection)?;
+    unsafe { scratch.pin_candidates(py, CandidatePins::Api) };
     let GcScratch {
         candidates,
         api_values,
@@ -2020,77 +2262,77 @@ pub(crate) unsafe fn get_referents(
     objects_ptr: *mut u8,
 ) -> Result<*mut u8, GcIntrospectionError> {
     require_pointer_snapshot_epoch()?;
+    let objects = unsafe {
+        super::seq_access::snapshot(py, objects_ptr, "GC introspection argument snapshot failed")
+    }
+    .ok_or(GcIntrospectionError::Resource(
+        "GC introspection argument snapshot failed",
+    ))?;
     let mut scratch = GcScratch::acquire();
     scratch.api_values.clear();
-    let mut required = 0usize;
+    scratch.api_targets.clear();
     let mut projection_failed = false;
-    unsafe {
-        super::seq_access::with_borrowed(objects_ptr, |objects| {
-            for &bits in objects {
-                if let Some(ptr) = crate::obj_from_bits(bits).as_ptr() {
-                    if object_type_id(ptr) == super::TYPE_ID_FOREIGN {
-                        let address = super::foreign::foreign_ptr_from_obj(ptr);
-                        if native_gc_is_enrolled(address) {
-                            traverse_node(py, GcNode::Native(address), &mut |_| required += 1);
-                            continue;
-                        }
-                    }
-                    super::heap_lifecycle::visit_owned_values(py, ptr, &mut |_| required += 1);
+    let mut callback_failed = false;
+    // Traverse once outside argument-storage locks. Each yielded referent gets
+    // its own temporary owner before m_traverse may continue and clear state.
+    for &bits in objects.iter() {
+        let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
+            continue;
+        };
+        let traversed = unsafe {
+            visit_api_referents(py, GcNode::Runtime(PtrSlot(ptr)), &mut |child| {
+                if projection_failed {
+                    return;
                 }
-            }
-        });
-    }
-    if !try_reserve_total(&mut scratch.api_values, required)
-        || !try_reserve_total(&mut scratch.api_targets, required)
-    {
-        return Err(GcIntrospectionError::Resource(
-            "GC introspection result allocation failed",
-        ));
-    }
-    unsafe {
-        super::seq_access::with_borrowed(objects_ptr, |objects| {
-            for &bits in objects {
-                if let Some(ptr) = crate::obj_from_bits(bits).as_ptr() {
-                    if object_type_id(ptr) == super::TYPE_ID_FOREIGN {
-                        let address = super::foreign::foreign_ptr_from_obj(ptr);
-                        if native_gc_is_enrolled(address) {
-                            traverse_node(py, GcNode::Native(address), &mut |child| {
-                                let Some((child_bits, owned)) = node_api_value(py, child) else {
-                                    projection_failed = true;
-                                    return;
-                                };
-                                scratch.api_values.push(child_bits);
-                                if owned {
-                                    scratch.api_targets.push(child_bits);
-                                }
-                            });
-                            continue;
-                        }
-                    }
-                    super::heap_lifecycle::visit_owned_values(py, ptr, &mut |child| {
-                        scratch.api_values.push(child);
-                    });
+                if scratch.api_values.try_reserve(1).is_err()
+                    || scratch.api_targets.try_reserve(1).is_err()
+                {
+                    projection_failed = true;
+                    return;
                 }
-            }
-        });
+                let projected = match child {
+                    GcApiTarget::Inline(bits) => Some((bits, false)),
+                    GcApiTarget::Node(node) => node_api_value(py, node),
+                };
+                let Some((child_bits, owned)) = projected else {
+                    projection_failed = true;
+                    return;
+                };
+                if !owned {
+                    crate::inc_ref_bits(py, child_bits);
+                }
+                scratch.api_values.push(child_bits);
+                scratch.api_targets.push(child_bits);
+            })
+        };
+        callback_failed |= !traversed;
+        if projection_failed || callback_failed {
+            break;
+        }
     }
-    if projection_failed {
+    let result = if callback_failed {
+        Err(GcIntrospectionError::Callback(
+            "GC referent traversal failed",
+        ))
+    } else if projection_failed {
+        Err(GcIntrospectionError::Resource(
+            "GC referent projection failed",
+        ))
+    } else {
+        let result = crate::alloc_list(py, &scratch.api_values);
+        (!result.is_null())
+            .then_some(result)
+            .ok_or(GcIntrospectionError::Resource(
+                "GC introspection result allocation failed",
+            ))
+    };
+    molt_cpython_abi::api::errors::with_preserved_error(|| {
         for bits in scratch.api_targets.drain(..) {
             crate::dec_ref_bits(py, bits);
         }
-        return Err(GcIntrospectionError::Resource(
-            "GC native referent projection failed",
-        ));
-    }
-    let result = crate::alloc_list(py, &scratch.api_values);
-    for bits in scratch.api_targets.drain(..) {
-        crate::dec_ref_bits(py, bits);
-    }
-    (!result.is_null())
-        .then_some(result)
-        .ok_or(GcIntrospectionError::Resource(
-            "GC introspection result allocation failed",
-        ))
+        drop(objects);
+    });
+    result
 }
 
 /// Build `gc.get_referrers(*objects)` by scanning every tracked generation,
@@ -2103,6 +2345,7 @@ pub(crate) unsafe fn get_referrers(
     require_pointer_snapshot_epoch()?;
     let mut scratch = GcScratch::acquire();
     snapshot_api_values(&mut scratch, RegistrySelection::All)?;
+    unsafe { scratch.pin_candidates(py, CandidatePins::Api) };
     scratch.api_target_membership.clear();
     let target_count = unsafe { super::seq_access::with_borrowed(objects_ptr, <[u64]>::len) };
     if scratch.api_target_membership.capacity() < target_count
@@ -2146,22 +2389,23 @@ pub(crate) unsafe fn get_referrers(
     }
     for candidate in candidates.iter() {
         let mut refers = false;
-        match candidate.node {
-            GcNode::Runtime(ptr) => {
-                if ptr.0.expose_provenance() == args_identity {
-                    continue;
-                }
-                unsafe {
-                    super::heap_lifecycle::visit_owned_values(py, ptr.0, &mut |child| {
-                        refers |= api_target_membership.contains(&api_target_from_bits(child));
-                    });
-                }
+        if let GcNode::Runtime(ptr) = candidate.node
+            && ptr.0.expose_provenance() == args_identity
+        {
+            continue;
+        }
+        let traversed = unsafe {
+            visit_api_referents(py, candidate.node, &mut |child| {
+                refers |= api_target_membership.contains(&child);
+            })
+        };
+        if !traversed {
+            for bits in api_targets.drain(..) {
+                crate::dec_ref_bits(py, bits);
             }
-            GcNode::Native(_) => unsafe {
-                traverse_node(py, candidate.node, &mut |child| {
-                    refers |= api_target_membership.contains(&GcApiTarget::Node(child));
-                });
-            },
+            return Err(GcIntrospectionError::Callback(
+                "GC referrer traversal failed",
+            ));
         }
         if refers {
             let Some((bits, owned)) = (unsafe { node_api_value(py, candidate.node) }) else {
@@ -2216,7 +2460,7 @@ unsafe fn deduce_subset(
     workspace: &mut GcDeductionWorkspace<'_>,
     subset: Option<&[usize]>,
     output: &mut Vec<usize>,
-) {
+) -> bool {
     let candidates = workspace.candidates;
     let index = workspace.index;
     let refs = &mut *workspace.refs;
@@ -2268,15 +2512,19 @@ unsafe fn deduce_subset(
                     );
                 }
             }
-        });
+        })
     };
     if let Some(subset) = subset {
         for &candidate_index in subset {
-            subtract(candidate_index);
+            if !subtract(candidate_index) {
+                return false;
+            }
         }
     } else {
         for candidate_index in 0..candidates.len() {
-            subtract(candidate_index);
+            if !subtract(candidate_index) {
+                return false;
+            }
         }
     }
 
@@ -2311,7 +2559,7 @@ unsafe fn deduce_subset(
 
     while let Some(candidate_index) = queue.pop() {
         unsafe {
-            traverse_node(py, candidates[candidate_index].node, &mut |child| {
+            if !traverse_node(py, candidates[candidate_index].node, &mut |child| {
                 if let Some(&child_index) = index.get(&child)
                     && marks[child_index] == 1
                 {
@@ -2329,7 +2577,9 @@ unsafe fn deduce_subset(
                     marks[child_index] = 2;
                     scratch_push(queue, child_index);
                 }
-            });
+            }) {
+                return false;
+            }
         }
     }
 
@@ -2351,9 +2601,10 @@ unsafe fn deduce_subset(
             partition(candidate_index);
         }
     }
+    true
 }
 
-unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) {
+unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) -> bool {
     let GcScratch {
         candidates,
         index,
@@ -2371,7 +2622,9 @@ unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) {
         marks,
         queue,
     };
-    unsafe { deduce_subset(py, &mut workspace, None, first_unreachable) };
+    if !unsafe { deduce_subset(py, &mut workspace, None, first_unreachable) } {
+        return false;
+    }
     first_unreachable_runtime_ptrs.clear();
     for &candidate_index in first_unreachable.iter() {
         if let Some(ptr) = candidates[candidate_index].node.runtime_ptr() {
@@ -2381,9 +2634,10 @@ unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) {
             first_unreachable_runtime_ptrs.push(PtrSlot(ptr));
         }
     }
+    true
 }
 
-unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) {
+unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) -> bool {
     let GcScratch {
         candidates,
         index,
@@ -2409,7 +2663,7 @@ unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) {
             Some(first_unreachable.as_slice()),
             final_unreachable,
         )
-    };
+    }
 }
 
 fn gc_callback_info(
@@ -2529,6 +2783,37 @@ fn completed_collection(
     CollectStats::completed(collected, scanned, survivors)
 }
 
+/// Observe opaque allocation generations, never dereference a released pin.
+/// A native tp_clear may succeed without removing its cycle. Its public GC
+/// count is still positive, but the unchanged cohort supplies no progress.
+fn retired_unreachable_count(scratch: &GcScratch) -> usize {
+    if scratch.first_unreachable.is_empty() {
+        return 0;
+    }
+    let shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+        std::array::from_fn(lock_tracked_registry_shard);
+    scratch
+        .first_unreachable
+        .iter()
+        .filter(|&&index| {
+            let candidate = scratch.candidates[index];
+            let current = match candidate.node {
+                GcNode::Runtime(ptr) => shards[tracked_registry_shard_index(ptr.0)]
+                    .entries
+                    .get(&ptr)
+                    .map(|entry| entry.allocation_id),
+                GcNode::Native(address) => shards
+                    [tracked_registry_shard_index_from_address(address)]
+                .native_nodes
+                .get(&address)
+                .filter(|entry| entry.tracked)
+                .map(|entry| entry.allocation_id),
+            };
+            current != Some(candidate.allocation_id)
+        })
+        .count()
+}
+
 /// Collect one CPython generation, including every younger generation.
 /// Stop-the-world under the deterministic GIL.
 ///
@@ -2560,7 +2845,7 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
         if let Err(message) = invoke_gc_callbacks(py, &mut scratch, b"start", generation, 0) {
             return CollectStats::failure(py, GcCollectStatus::ResourceError(message));
         }
-        let outcome = (|| {
+        let mut outcome = (|| {
             crate::runtime_state(py).gc.begin_collection(generation);
 
             // Snapshot directly into the reusable collector workspace. The registry
@@ -2591,9 +2876,23 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                 );
             }
 
+            // Pin the entire snapshot before m_traverse can reenter and remove
+            // any original root. Keep these owners until every raw candidate
+            // identity has left the deduction/clear workspace; only effective
+            // GC refcounts discount them, through the existing pin flag.
+            scratch.pin_candidates(py, CandidatePins::Collector);
+
             // STEP 1-3: trial-deletion partition using one preallocated index/mark arena.
-            deduce_all(py, &mut scratch);
-            reproject_reachable_immutable_tuples(py, &scratch.candidates, &scratch.marks);
+            if !deduce_all(py, &mut scratch) {
+                for candidate in &scratch.candidates {
+                    node_set_collecting(candidate.node, false);
+                }
+                return CollectStats::failure(
+                    py,
+                    GcCollectStatus::CallbackError("GC traversal callback failed"),
+                );
+            }
+            reproject_reachable_containers(py, &scratch.candidates, &scratch.marks, generation);
             if gc_trace_enabled() || debug_flags & DEBUG_STATS != 0 {
                 eprintln!(
                     "molt gc: deduce_unreachable unreachable={}",
@@ -2639,9 +2938,6 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                 target_generation,
             );
 
-            // Pin the entire set before the first callback/finalizer.
-            pin_unreachable(&scratch.candidates, &scratch.first_unreachable);
-
             crate::object::weakref::weakref_handle_cycle_unreachable(
                 py,
                 &scratch.first_unreachable_runtime_ptrs,
@@ -2654,7 +2950,15 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
 
             // Reuse the exact same index, refs, mark, queue, and output storage.
             // No allocation is permitted in the post-callback resurrection partition.
-            deduce_after_finalizers(py, &mut scratch);
+            if !deduce_after_finalizers(py, &mut scratch) {
+                for &index in &scratch.first_unreachable {
+                    node_set_collecting(scratch.candidates[index].node, false);
+                }
+                return CollectStats::failure(
+                    py,
+                    GcCollectStatus::CallbackError("post-finalizer GC traversal callback failed"),
+                );
+            }
             survivors += promote_marked_candidates(
                 &scratch.candidates,
                 &scratch.marks,
@@ -2662,15 +2966,7 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                 target_generation,
             );
             if scratch.final_unreachable.is_empty() {
-                release_index_pins(py, &scratch.candidates, &scratch.first_unreachable);
                 return completed_collection(py, generation, 0, scanned, survivors);
-            }
-
-            // Marks == 2 are resurrected/reachable after the second partition.
-            for &candidate_index in &scratch.first_unreachable {
-                if scratch.marks[candidate_index] == 2 {
-                    release_node_pin(py, scratch.candidates[candidate_index].node);
-                }
             }
 
             let collected = scratch.final_unreachable.len();
@@ -2700,7 +2996,6 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                     for &candidate_index in &scratch.final_unreachable {
                         node_set_collecting(scratch.candidates[candidate_index].node, false);
                     }
-                    release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
                     return CollectStats::failure(
                         py,
                         GcCollectStatus::ResourceError(
@@ -2720,7 +3015,6 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                     for &candidate_index in &scratch.final_unreachable {
                         node_set_collecting(scratch.candidates[candidate_index].node, false);
                     }
-                    release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
                     return CollectStats::failure(
                         py,
                         GcCollectStatus::ResourceError("gc.garbage identity allocation failed"),
@@ -2757,7 +3051,6 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                 for &candidate_index in &scratch.final_unreachable {
                     node_set_collecting(scratch.candidates[candidate_index].node, false);
                 }
-                release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
                 if !appended_all {
                     return CollectStats::failure(
                         py,
@@ -2773,7 +3066,6 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                 for &candidate_index in &scratch.final_unreachable {
                     node_set_collecting(scratch.candidates[candidate_index].node, false);
                 }
-                release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
                 profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
                 return CollectStats::failure(
                     py,
@@ -2791,15 +3083,12 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                 cleared_all &=
                     clear_node(py, scratch.candidates[candidate_index].node, &mut detached);
             }
-            detached.release_all(py);
-            release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
+            molt_cpython_abi::api::errors::with_preserved_error(|| detached.release_all(py));
 
             if !cleared_all {
                 return CollectStats::failure(
                     py,
-                    GcCollectStatus::ResourceError(
-                        "native GC clear failed without an exception indicator",
-                    ),
+                    GcCollectStatus::CallbackError("GC clear failed"),
                 );
             }
 
@@ -2808,6 +3097,16 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                 .store(0, AtomicOrdering::Release);
             completed_collection(py, generation, collected, scanned, survivors)
         })();
+        scratch.release_candidate_pins(py);
+        if outcome.status == GcCollectStatus::Completed {
+            outcome.retired = retired_unreachable_count(&scratch);
+            if gc_trace_enabled() {
+                eprintln!(
+                    "molt gc: completed collected={} retired={}",
+                    outcome.collected, outcome.retired
+                );
+            }
+        }
         let _ = invoke_gc_callbacks(py, &mut scratch, b"stop", generation, outcome.collected);
         outcome
     }
@@ -2827,10 +3126,18 @@ pub(crate) unsafe fn collect_pending(py: &PyToken<'_>) -> CollectStats {
     let Some(generation) = state.take_scheduled_generation() else {
         return CollectStats::completed(0, 0, 0);
     };
-    let outcome = unsafe { collect_generation(py, generation) };
+    let outcome = molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
+        let outcome = collect_generation(py, generation);
+        if matches!(outcome.status, GcCollectStatus::CallbackError(_)) {
+            molt_cpython_abi::api::errors::PyErr_WriteUnraisable(std::ptr::null_mut());
+        }
+        outcome
+    });
     if matches!(
         outcome.status,
-        GcCollectStatus::ReentrantNoop | GcCollectStatus::ResourceError(_)
+        GcCollectStatus::ReentrantNoop
+            | GcCollectStatus::ResourceError(_)
+            | GcCollectStatus::CallbackError(_)
     ) {
         state.rearm_pending();
     }
@@ -2849,7 +3156,7 @@ pub(crate) unsafe fn collect_pending(py: &PyToken<'_>) -> CollectStats {
 unsafe fn run_finalizer_once(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        if !object_class_has_finalizer(py, ptr) {
+        if !object_has_finalizer(py, ptr) {
             return;
         }
         if (*header).has_flag(HEADER_FLAG_FINALIZER_RAN) {
@@ -2888,22 +3195,30 @@ mod tests {
     use crate::object::{
         TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_TUPLE,
     };
-    use crate::{DEALLOC_COUNT, obj_from_bits};
-    use molt_cpython_abi::abi_types::{PyList_Type, PyLong_Type, PyObject};
+    use crate::{DEALLOC_COUNT, dict_set_in_place, exception_pending, obj_from_bits};
+    use molt_cpython_abi::abi_types::{PyLong_Type, PyObject};
     use std::sync::atomic::Ordering;
 
     #[test]
     fn native_nodes_share_registry_order_and_retain_lifecycle_metadata() {
         let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
-            let first = 0x1010usize;
-            let second = 0x2020usize;
+            let mut first_object = PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut PyLong_Type,
+            };
+            let mut second_object = PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut PyLong_Type,
+            };
+            let first = std::ptr::from_mut(&mut first_object).expose_provenance();
+            let second = std::ptr::from_mut(&mut second_object).expose_provenance();
             assert!(native_gc_allocate(_py, first));
             assert!(native_gc_allocate(_py, first), "admission is idempotent");
             assert!(native_gc_allocate(_py, second));
             assert!(!native_gc_is_tracked(first));
-            assert!(native_gc_track(first));
-            assert!(native_gc_track(second));
+            assert!(unsafe { native_gc_track(first) });
+            assert!(unsafe { native_gc_track(second) });
 
             let mut candidates = Vec::new();
             assert!(snapshot_registry(&mut candidates, RegistrySelection::All));
@@ -2917,21 +3232,53 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(native, [first, second]);
+            let original_unreachable = candidates.iter().enumerate().filter_map(|(index, candidate)| {
+                matches!(candidate.node, GcNode::Native(address) if address == first || address == second).then_some(index)
+            }).collect();
+            let original = GcScratch {
+                candidates,
+                first_unreachable: original_unreachable,
+                ..Default::default()
+            };
+            assert_eq!(retired_unreachable_count(&original), 0);
 
             assert_eq!(native_gc_claim_finalizer(first), 1);
             assert_eq!(native_gc_claim_finalizer(first), 0);
             native_gc_untrack(first);
             assert!(!native_gc_is_tracked(first));
             assert!(native_gc_is_finalized(first));
-            assert!(native_gc_track(first));
+            assert!(unsafe { native_gc_track(first) });
             assert!(native_gc_is_finalized(first));
 
             native_gc_untrack(first);
+            first_object.ob_refcnt = molt_cpython_abi::abi_types::IMMORTAL_REFCNT;
+            assert!(unsafe { native_gc_track(first) });
+            assert_eq!(
+                first_object.ob_refcnt,
+                molt_cpython_abi::abi_types::IMMORTAL_REFCNT,
+                "tracking cannot change the native object's lifetime"
+            );
+            assert!(
+                !native_gc_is_tracked(first),
+                "native immortality remains untracked"
+            );
+            assert!(native_gc_is_finalized(first));
             native_gc_untrack(second);
             native_gc_deallocate(_py, first);
             native_gc_deallocate(_py, second);
             assert!(!native_gc_is_enrolled(first));
             assert!(!native_gc_is_enrolled(second));
+            unsafe {
+                (*std::ptr::with_exposed_provenance_mut::<PyObject>(first)).ob_refcnt = 1;
+            }
+            assert!(native_gc_allocate(_py, first));
+            assert!(unsafe { native_gc_track(first) });
+            assert_eq!(
+                retired_unreachable_count(&original),
+                2,
+                "reusing an address does not resurrect its original allocation generation"
+            );
+            native_gc_deallocate(_py, first);
         });
     }
 
@@ -2951,15 +3298,22 @@ mod tests {
 
     #[test]
     fn foreign_dynamic_projection_tracks_only_enrolled_native_identity() {
+        use molt_cpython_abi::api::refcount::OwnedPyObject;
+
         let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
-            let mut atomic_native = PyObject {
-                ob_refcnt: 1,
-                ob_type: &raw mut PyLong_Type,
+            let state = &crate::runtime_state(_py).gc;
+            state.set_enabled(false);
+            let allocation_count = state.counts()[0];
+            let atomic_owner = unsafe {
+                OwnedPyObject::from_owned(molt_cpython_abi::api::memory::_PyObject_New(
+                    &raw mut PyLong_Type,
+                ))
             };
-            let atomic_pointer = std::ptr::from_mut(&mut atomic_native);
+            let atomic_pointer = atomic_owner.as_ptr();
+            assert!(!atomic_pointer.is_null());
             let atomic_bits = unsafe {
                 molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(atomic_pointer)
             }
@@ -2968,16 +3322,24 @@ mod tests {
                 .as_ptr()
                 .expect("foreign wrapper");
             assert!(!unsafe { gc_is_tracked(atomic) });
+            assert_eq!(state.counts()[0], allocation_count);
             dec_ref_bits(_py, atomic_bits);
-            assert_eq!(atomic_native.ob_refcnt, 1);
+            assert_eq!(unsafe { (*atomic_pointer).ob_refcnt }, 1);
+            assert_eq!(state.counts()[0], allocation_count);
+            drop(atomic_owner);
 
-            let mut gc_native = PyObject {
-                ob_refcnt: 1,
-                ob_type: &raw mut PyList_Type,
+            // Cleanup collections also run during assertion unwinds. Use real
+            // native storage so an enrolled identity never outlives a stack
+            // header or exposes a list payload that was not allocated.
+            let gc_owner = unsafe {
+                OwnedPyObject::from_owned(molt_cpython_abi::api::memory::_PyObject_GC_New(
+                    &raw mut molt_cpython_abi::abi_types::PyExc_RuntimeError,
+                ))
             };
-            let gc_pointer = std::ptr::from_mut(&mut gc_native);
+            let gc_pointer = gc_owner.as_ptr();
+            assert!(!gc_pointer.is_null());
             let gc_address = gc_pointer.expose_provenance();
-            assert!(native_gc_allocate(_py, gc_address));
+            assert!(native_gc_is_enrolled(gc_address));
             let enrolled_bits =
                 unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(gc_pointer) }
                     .expect("enrolled foreign wrapper");
@@ -2985,10 +3347,125 @@ mod tests {
                 .as_ptr()
                 .expect("enrolled foreign wrapper");
             assert!(unsafe { gc_is_tracked(enrolled) });
+            assert_eq!(state.counts()[0], allocation_count + 2);
+            let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+            assert!(bridge.managed_handle_for_pyobj(gc_pointer).is_none());
+            assert_eq!(
+                unsafe { bridge.handle_to_borrowed_pyobj(enrolled_bits) },
+                gc_pointer
+            );
+            assert!(unsafe { native_gc_track(gc_address) });
+            unsafe { molt_cpython_abi::api::memory::PyObject_GC_UnTrack(gc_pointer.cast()) };
+            assert!(!native_gc_is_tracked(gc_address));
+            assert!(
+                unsafe { gc_is_tracked(enrolled) },
+                "native untracking preserves wrapper membership"
+            );
+            assert_eq!(state.counts()[0], allocation_count + 2);
+            // Exercise the collector's real clear-before-final-pin-release path.
+            // The native allocation still has its external C owner, but the
+            // wrapper no longer has the payload that admitted it to membership.
+            assert_eq!(
+                unsafe { super::super::heap_lifecycle::try_clear_cycle_edges(_py, enrolled) },
+                0
+            );
+            assert_eq!(
+                unsafe { super::super::foreign::foreign_ptr_from_obj(enrolled) },
+                0
+            );
+            assert!(unsafe { gc_is_tracked(enrolled) });
+            assert_eq!(unsafe { (*gc_pointer).ob_refcnt }, 1);
+            assert_eq!(state.counts()[0], allocation_count + 2);
             dec_ref_bits(_py, enrolled_bits);
             assert!(!unsafe { gc_is_tracked(enrolled) });
-            assert_eq!(gc_native.ob_refcnt, 1);
-            native_gc_deallocate(_py, gc_address);
+            assert_eq!(unsafe { (*gc_pointer).ob_refcnt }, 1);
+            assert_eq!(state.counts()[0], allocation_count + 1);
+            drop(gc_owner);
+            assert!(!native_gc_is_enrolled(gc_address));
+            assert_eq!(state.counts()[0], allocation_count);
+        });
+    }
+
+    #[test]
+    fn allocation_accounting_survives_membership_demotion_and_explicit_untracking() {
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            let state = &crate::runtime_state(py).gc;
+            state.set_enabled(false);
+            let allocation_count = state.counts()[0];
+            let dictionary = alloc_dict_with_pairs(py, &[]);
+            let tuple = alloc_tuple(py, &[MoltObject::from_int(7).bits()]);
+            let list = alloc_list(py, &[]);
+            assert!(!dictionary.is_null() && !tuple.is_null() && !list.is_null());
+            assert_eq!(state.counts()[0], allocation_count + 3);
+            unsafe {
+                gc_untrack(
+                    py,
+                    dictionary,
+                    TYPE_ID_DICT,
+                    GcUntrackReason::DynamicProjection,
+                );
+                gc_untrack(py, tuple, TYPE_ID_TUPLE, GcUntrackReason::DynamicProjection);
+                assert!(!gc_is_tracked(dictionary));
+                assert!(!gc_is_tracked(tuple));
+                for _ in 0..2 {
+                    gc_untrack(py, list, TYPE_ID_LIST, GcUntrackReason::ExplicitControl);
+                    assert!(!gc_is_tracked(list));
+                    assert_eq!(state.counts()[0], allocation_count + 3);
+                    assert!(gc_track_existing(py, list));
+                    assert!(gc_is_tracked(list));
+                    assert_eq!(state.counts()[0], allocation_count + 3);
+                }
+                gc_untrack(py, list, TYPE_ID_LIST, GcUntrackReason::ExplicitControl);
+            }
+            for (index, ptr) in [dictionary, tuple, list].into_iter().enumerate() {
+                dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+                assert!(!unsafe { gc_is_tracked(ptr) });
+                assert_eq!(state.counts()[0], allocation_count + 2 - index as i64);
+            }
+        });
+    }
+
+    #[test]
+    #[cfg(not(feature = "free-threaded"))]
+    fn promoted_scalar_lists_share_gc_lifetime_through_cycle_retirement() {
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            let state = &crate::runtime_state(py).gc;
+            state.set_enabled(false);
+            for family in ["int", "bool", "wide_int"] {
+                let allocation_count = state.counts()[0];
+                let ptr = match family {
+                    "int" => crate::object::builders::alloc_list_int_from_raw_slice(py, &[]),
+                    "bool" => crate::object::builders::alloc_list_bool_from_raw_slice(py, &[]),
+                    // The raw constructor calls integer promotion directly when
+                    // its first heap-sized value outgrows the scalar prefix.
+                    "wide_int" => {
+                        crate::object::builders::alloc_list_int_from_raw_slice(py, &[1, i64::MAX])
+                    }
+                    _ => unreachable!(),
+                }
+                .expect("scalar list allocation");
+                let bits = MoltObject::from_ptr(ptr).bits();
+                let already_promoted = family == "wide_int";
+                assert_eq!(unsafe { gc_is_tracked(ptr) }, already_promoted, "{family}");
+                assert_eq!(
+                    state.counts()[0],
+                    allocation_count + i64::from(already_promoted),
+                    "{family}",
+                );
+                crate::molt_list_append(bits, bits);
+                assert!(!exception_pending(py));
+                assert_eq!(unsafe { object_type_id(ptr) }, TYPE_ID_LIST);
+                assert!(unsafe { gc_is_tracked(ptr) }, "{family}");
+                assert_eq!(state.counts()[0], allocation_count + 1, "{family}");
+                dec_ref_bits(py, bits);
+                let outcome = unsafe { collect_cycles(py) };
+                assert_eq!(outcome.status, GcCollectStatus::Completed, "{family}");
+                // This opaque lookup also proves the collector did not leave
+                // the terminal object's old address in membership storage.
+                assert!(!unsafe { gc_is_tracked(ptr) }, "{family}");
+            }
         });
     }
 
@@ -3349,7 +3826,7 @@ mod tests {
     #[test]
     fn may_form_cycle_is_green_for_leaf_types() {
         // GREEN: leaf/atomic types pay zero — never tracked.
-        assert!(!may_form_cycle(crate::object::TYPE_ID_STRING));
+        assert!(may_form_cycle(crate::object::TYPE_ID_STRING));
         assert!(!may_form_cycle(crate::object::TYPE_ID_BIGINT));
         assert!(!may_form_cycle(crate::object::TYPE_ID_FLOAT));
         // Tracked: the canonical cycle formers.
@@ -3455,17 +3932,34 @@ mod tests {
     fn dynamic_dict_and_tuple_tracking_matches_cpython_timing() {
         let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
+            let state = crate::runtime_state(_py);
+            let saved_version = state.sys_version_info.lock().unwrap().clone();
+            for minor in [12, 13, 14] {
+                *state.sys_version_info.lock().unwrap() =
+                    Some(crate::state::runtime_state::PythonVersionInfo {
+                        major: 3,
+                        minor,
+                        micro: 0,
+                        releaselevel: "final".to_string(),
+                        serial: 0,
+                    });
+                check_dynamic_container_tracking(_py, minor);
+            }
+            *state.sys_version_info.lock().unwrap() = saved_version;
+        });
+    }
+
+    fn check_dynamic_container_tracking(_py: &PyToken<'_>, minor: i64) {
+        unsafe {
+            let always_track_dicts = minor >= 14;
             let empty_dict = alloc_dict_with_pairs(_py, &[]);
-            assert!(!unsafe { gc_is_tracked(empty_dict) });
+            assert_eq!(gc_is_tracked(empty_dict), always_track_dicts);
 
             let direct_dict_bits = crate::molt_dict_new(16);
             let direct_dict = obj_from_bits(direct_dict_bits)
                 .as_ptr()
                 .expect("direct dict allocation");
-            assert!(
-                !unsafe { gc_is_tracked(direct_dict) },
-                "every exact empty-dict constructor must apply dynamic projection"
-            );
+            assert_eq!(gc_is_tracked(direct_dict), always_track_dicts);
 
             let atomic_dict = alloc_dict_with_pairs(
                 _py,
@@ -3474,23 +3968,113 @@ mod tests {
                     MoltObject::from_int(2).bits(),
                 ],
             );
-            assert!(!unsafe { gc_is_tracked(atomic_dict) });
+            assert_eq!(gc_is_tracked(atomic_dict), always_track_dicts);
 
             let list = alloc_list(_py, &[]);
             let list_bits = MoltObject::from_ptr(list).bits();
             let container_dict =
                 alloc_dict_with_pairs(_py, &[MoltObject::from_int(1).bits(), list_bits]);
-            assert!(unsafe { gc_is_tracked(container_dict) });
+            assert!(gc_is_tracked(container_dict));
+
+            let key = MoltObject::from_int(1).bits();
+            let atomic = MoltObject::from_int(2).bits();
+            let duplicate = alloc_dict_with_pairs(_py, &[key, list_bits, key, atomic]);
+            assert!(
+                gc_is_tracked(duplicate),
+                "construction preserves sticky tracking"
+            );
+
+            // The dictionary is allocated and tracked BEFORE its new tuple.
+            // Candidate-order demotion would leave it tracked one GC too long.
+            let tuple_dict = alloc_dict_with_pairs(_py, &[key, list_bits]);
+            let late_tuple = alloc_tuple(_py, &[atomic]);
+            dict_set_in_place(
+                _py,
+                tuple_dict,
+                key,
+                MoltObject::from_ptr(late_tuple).bits(),
+            );
+            collect_cycles(_py);
+            assert!(!gc_is_tracked(late_tuple));
+            assert_eq!(
+                gc_is_tracked(tuple_dict),
+                always_track_dicts,
+                "tuple and dictionary must demote in the same full collection"
+            );
+
+            for operation in 0..6 {
+                let mapping = alloc_dict_with_pairs(_py, &[key, list_bits]);
+                let bits = MoltObject::from_ptr(mapping).bits();
+                match operation {
+                    0 => dict_set_in_place(_py, mapping, key, atomic),
+                    1 => {
+                        assert!(crate::object::ops::dict_del_in_place(_py, mapping, key));
+                    }
+                    2 => {
+                        let value = crate::object::ops_dict::molt_dict_pop(
+                            bits,
+                            key,
+                            MoltObject::none().bits(),
+                            MoltObject::from_int(0).bits(),
+                        );
+                        assert_eq!(value, list_bits);
+                        dec_ref_bits(_py, value);
+                    }
+                    3 => {
+                        let pair = crate::object::ops_dict::molt_dict_popitem(bits);
+                        assert!(obj_from_bits(pair).as_ptr().is_some());
+                        dec_ref_bits(_py, pair);
+                    }
+                    4 => crate::object::ops::dict_clear_in_place(_py, mapping),
+                    5 => {
+                        crate::object::ops_dict::dict_update_apply(
+                            _py,
+                            bits,
+                            crate::object::ops_dict::dict_update_set_in_place,
+                            MoltObject::from_ptr(atomic_dict).bits(),
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(!exception_pending(_py));
+                assert!(gc_is_tracked(mapping), "3.{minor}, operation={operation}");
+                for generation in [0, 1] {
+                    collect_generation(_py, generation);
+                    assert!(
+                        gc_is_tracked(mapping),
+                        "minor collection must not demote dicts"
+                    );
+                }
+                collect_cycles(_py);
+                assert_eq!(gc_is_tracked(mapping), always_track_dicts);
+                dec_ref_bits(_py, bits);
+            }
 
             let atomic_tuple = alloc_tuple(_py, &[MoltObject::from_int(1).bits()]);
-            assert!(unsafe { gc_is_tracked(atomic_tuple) });
-            let _ = unsafe { collect_cycles(_py) };
-            assert!(!unsafe { gc_is_tracked(atomic_tuple) });
+            assert!(gc_is_tracked(atomic_tuple));
+            let _ = collect_cycles(_py);
+            assert!(!gc_is_tracked(atomic_tuple));
 
             let container_tuple = alloc_tuple(_py, &[list_bits]);
-            assert!(unsafe { gc_is_tracked(container_tuple) });
-            let _ = unsafe { collect_cycles(_py) };
-            assert!(unsafe { gc_is_tracked(container_tuple) });
+            assert!(gc_is_tracked(container_tuple));
+            let _ = collect_cycles(_py);
+            assert!(gc_is_tracked(container_tuple));
+
+            // An untracked mutable child can acquire a back edge at any time.
+            let child = alloc_dict_with_pairs(_py, &[]);
+            let child_bits = MoltObject::from_ptr(child).bits();
+            let parent = alloc_dict_with_pairs(_py, &[key, child_bits]);
+            let parent_bits = MoltObject::from_ptr(parent).bits();
+            collect_cycles(_py);
+            assert!(gc_is_tracked(parent));
+            dict_set_in_place(_py, child, key, parent_bits);
+            dec_ref_bits(_py, child_bits);
+            dec_ref_bits(_py, parent_bits);
+            assert_eq!(
+                collect_cycles(_py).collected,
+                2,
+                "late back edge must be collectible"
+            );
 
             dec_ref_bits(_py, MoltObject::from_ptr(empty_dict).bits());
             dec_ref_bits(_py, direct_dict_bits);
@@ -3498,7 +4082,400 @@ mod tests {
             dec_ref_bits(_py, MoltObject::from_ptr(container_dict).bits());
             dec_ref_bits(_py, MoltObject::from_ptr(atomic_tuple).bits());
             dec_ref_bits(_py, MoltObject::from_ptr(container_tuple).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(duplicate).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(tuple_dict).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(late_tuple).bits());
             dec_ref_bits(_py, list_bits);
+        }
+    }
+
+    #[test]
+    fn physical_gc_edges_preserve_native_targets_and_managed_multiplicity() {
+        use molt_cpython_abi::abi_types::{PyBaseExceptionObject, PyExc_RuntimeError};
+        use molt_cpython_abi::api::refcount::{Py_DECREF, Py_INCREF};
+
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            let owner = crate::alloc_exception(py, "RuntimeError", "physical GC edge");
+            assert!(!owner.is_null());
+            let bits = MoltObject::from_ptr(owner).bits();
+            crate::builtins::exceptions::exception_replace_field_bits(
+                py,
+                bits,
+                crate::builtins::exceptions::ExceptionFieldSlot::Context,
+                bits,
+            )
+            .expect("runtime self edge");
+            let view =
+                unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
+            assert!(!view.is_null());
+            let owner_node = GcNode::Runtime(PtrSlot(owner));
+            let mut children = Vec::new();
+            unsafe { traverse_node(py, owner_node, &mut |child| children.push(child)) };
+            assert_eq!(
+                children
+                    .iter()
+                    .filter(|&&child| child == owner_node)
+                    .count(),
+                2,
+                "runtime context and its physical C owner are separate edges",
+            );
+
+            #[cfg(not(feature = "free-threaded"))]
+            unsafe {
+                let scalar_bits = MoltObject::from_int(37).bits();
+                let scalar =
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(scalar_bits);
+                assert!(!scalar.is_null());
+                assert!(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .managed_handle_for_pyobj(scalar)
+                        .is_none()
+                );
+                (*view.cast::<PyBaseExceptionObject>()).notes = scalar;
+                let args = alloc_tuple(py, &[bits]);
+                let referents = get_referents(py, args).expect("physical scalar referents");
+                assert!(super::super::seq_access::with_borrowed(
+                    referents,
+                    |values| { values.contains(&scalar_bits) }
+                ));
+                let targets = alloc_tuple(py, &[scalar_bits]);
+                let referrers = get_referrers(py, targets).expect("physical scalar referrers");
+                assert!(
+                    super::super::seq_access::with_borrowed(referrers, |values| {
+                        values.contains(&bits)
+                    }),
+                    "the physical C carrier must match the inline public target"
+                );
+                dec_ref_bits(py, MoltObject::from_ptr(referrers).bits());
+                dec_ref_bits(py, MoltObject::from_ptr(targets).bits());
+                dec_ref_bits(py, MoltObject::from_ptr(referents).bits());
+                dec_ref_bits(py, MoltObject::from_ptr(args).bits());
+                (*view.cast::<PyBaseExceptionObject>()).notes = std::ptr::null_mut();
+                Py_DECREF(scalar);
+            }
+
+            // Use the real C allocation/lifetime authority. An assertion unwind
+            // must not leave an enrolled address pointing into a dead Rust frame.
+            let native_owner = unsafe {
+                molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                    molt_cpython_abi::api::memory::_PyObject_GC_New(&raw mut PyExc_RuntimeError),
+                )
+            };
+            let native_ptr = native_owner.as_ptr();
+            assert!(!native_ptr.is_null());
+            let native = native_ptr.cast::<PyBaseExceptionObject>();
+            let address = native_ptr.expose_provenance();
+            assert!(native_gc_is_enrolled(address));
+            let native_bits =
+                unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(native_ptr) }
+                    .expect("native custody wrapper");
+            #[cfg(not(feature = "free-threaded"))]
+            unsafe {
+                assert!(native_gc_track(address));
+                let scalar_bits = MoltObject::from_int(120037).bits();
+                let scalar =
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(scalar_bits);
+                assert!(!scalar.is_null());
+                assert_eq!(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.managed_handle_for_pyobj(scalar),
+                    Some(scalar_bits),
+                    "noncached scalar C storage projects its canonical managed identity"
+                );
+                (*native).notes = scalar;
+                let args = alloc_tuple(py, &[native_bits]);
+                let referents =
+                    get_referents(py, args).expect("native tp_traverse scalar referents");
+                assert!(super::super::seq_access::with_borrowed(
+                    referents,
+                    |values| { values.contains(&scalar_bits) }
+                ));
+                let targets = alloc_tuple(py, &[scalar_bits]);
+                let referrers =
+                    get_referrers(py, targets).expect("native tp_traverse scalar referrers");
+                assert!(
+                    super::super::seq_access::with_borrowed(referrers, |values| {
+                        values.contains(&native_bits)
+                    }),
+                    "native tp_traverse uses the same public target identity"
+                );
+                dec_ref_bits(py, MoltObject::from_ptr(referrers).bits());
+                dec_ref_bits(py, MoltObject::from_ptr(targets).bits());
+                dec_ref_bits(py, MoltObject::from_ptr(referents).bits());
+                dec_ref_bits(py, MoltObject::from_ptr(args).bits());
+                (*native).notes = std::ptr::null_mut();
+                Py_DECREF(scalar);
+            }
+            let list = alloc_list(py, &[native_bits]);
+            assert!(!list.is_null());
+            let list_bits = MoltObject::from_ptr(list).bits();
+            assert!(
+                !unsafe {
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(list_bits)
+                }
+                .is_null()
+            );
+            assert_eq!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.mirrored_c_refcount(address),
+                1
+            );
+            assert_eq!(
+                unsafe { (*native).ob_base.ob_refcnt },
+                3,
+                "root, wrapper custody, clean list mirror"
+            );
+            assert_eq!(
+                unsafe { effective_node_refcount(GcNode::Native(address)) },
+                2
+            );
+            unsafe {
+                let physical = view.cast::<PyBaseExceptionObject>();
+                Py_INCREF(native_ptr);
+                Py_INCREF(native_ptr);
+                let old_context = std::mem::replace(&mut (*physical).context, native_ptr);
+                (*physical).cause = native_ptr;
+                Py_DECREF(old_context);
+            }
+            children.clear();
+            unsafe { traverse_node(py, owner_node, &mut |child| children.push(child)) };
+            assert_eq!(
+                children
+                    .iter()
+                    .filter(|&&child| child == GcNode::Native(address))
+                    .count(),
+                2,
+                "two C fields retain two native edges",
+            );
+            assert_eq!(
+                children
+                    .iter()
+                    .filter(|&&child| child == owner_node)
+                    .count(),
+                1
+            );
+            let mut referents = Vec::new();
+            unsafe { visit_api_referents(py, owner_node, &mut |child| referents.push(child)) };
+            assert_eq!(
+                referents
+                    .iter()
+                    .filter(|&&child| child == GcApiTarget::Node(GcNode::Native(address)))
+                    .count(),
+                2,
+                "introspection uses the same physical native-edge authority",
+            );
+            assert_eq!(
+                unsafe { (*native).ob_base.ob_refcnt },
+                5,
+                "visits do not acquire references"
+            );
+            assert_eq!(
+                unsafe { effective_node_refcount(GcNode::Native(address)) },
+                4
+            );
+            unsafe { molt_clear(py, owner) };
+            assert_eq!(
+                unsafe { (*native).ob_base.ob_refcnt },
+                3,
+                "clearing releases each physical edge once"
+            );
+            dec_ref_bits(py, bits);
+            dec_ref_bits(py, list_bits);
+            dec_ref_bits(py, native_bits);
+            assert_eq!(unsafe { (*native).ob_base.ob_refcnt }, 1);
+            assert_eq!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.mirrored_c_refcount(address),
+                0
+            );
+            drop(native_owner);
+            assert!(!native_gc_is_enrolled(address));
+        });
+    }
+
+    unsafe extern "C" fn physical_module_noop(
+        _self: *mut PyObject,
+        _args: *mut PyObject,
+    ) -> *mut PyObject {
+        unsafe {
+            molt_cpython_abi::api::object::Py_NewRef(&raw mut molt_cpython_abi::abi_types::Py_None)
+        }
+    }
+
+    #[test]
+    fn cfunction_self_module_cycle_retires_its_physical_view() {
+        use molt_cpython_abi::abi_types::{METH_NOARGS, PyCFunctionObject, PyMethodDef};
+        use molt_cpython_abi::api::{errors, object, refcount};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        crate::cpython_abi_hooks::register_cpython_hooks();
+        crate::with_gil_entry_nopanic!(py, {
+            let mut method = PyMethodDef {
+                ml_name: c"self_module_cycle".as_ptr(),
+                ml_meth: Some(physical_module_noop),
+                ml_flags: METH_NOARGS,
+                ml_doc: std::ptr::null(),
+            };
+            let callable = unsafe {
+                object::PyCFunction_NewEx(
+                    &raw mut method,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            assert!(!callable.is_null());
+            let bits = GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(callable)
+                .unwrap()
+                .bits();
+            let runtime = crate::obj_from_bits(bits).as_ptr().unwrap();
+            assert!(unsafe { gc_is_tracked(runtime) });
+            assert_eq!(
+                GLOBAL_BRIDGE.set_cfunction_module(bits, Some(bits)),
+                Some(true)
+            );
+            assert_eq!(
+                unsafe { (*callable.cast::<PyCFunctionObject>()).m_module },
+                callable
+            );
+            unsafe { refcount::Py_DECREF(callable) };
+            let result = unsafe { collect_cycles(py) };
+            assert!(
+                result.collected > 0,
+                "the independent physical self edge is cycle garbage"
+            );
+            assert!(
+                GLOBAL_BRIDGE.managed_handle_for_pyobj(callable).is_none(),
+                "the view must actually retire, not just be reported as collected",
+            );
+            assert!(!crate::exception_pending(py));
+            assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+        });
+    }
+
+    #[repr(C)]
+    struct ModuleClearWitness {
+        object: PyObject,
+        callable_bits: u64,
+        callable: *mut PyObject,
+        receiver: *mut PyObject,
+        releases: usize,
+        saw_empty_module: bool,
+        saw_receiver_mirror: bool,
+    }
+
+    unsafe extern "C" fn observe_module_clear(object: *mut PyObject) {
+        use molt_cpython_abi::abi_types::{PyCFunctionObject, PyExc_ValueError};
+        use molt_cpython_abi::api::errors;
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+
+        let witness = unsafe { &mut *object.cast::<ModuleClearWitness>() };
+        witness.releases += 1;
+        // Reenter the bridge: publication must have released its lock before
+        // this ordinary C decref invokes the module's finalizer.
+        witness.saw_empty_module = GLOBAL_BRIDGE.cfunction_module(witness.callable_bits)
+            == Some(Ok(MoltObject::none().bits()));
+        witness.saw_receiver_mirror =
+            unsafe { (*witness.callable.cast::<PyCFunctionObject>()).m_self == witness.receiver }
+                && GLOBAL_BRIDGE.mirrored_c_refcount(witness.receiver.addr()) > 0;
+        unsafe {
+            errors::PyErr_SetString(
+                (&raw mut PyExc_ValueError).cast(),
+                c"module finalizer".as_ptr(),
+            )
+        };
+    }
+
+    #[test]
+    fn cfunction_module_clear_defers_release_and_preserves_slot_mirrors() {
+        use molt_cpython_abi::abi_types::{
+            METH_NOARGS, PyCFunctionObject, PyMethodDef, PyTypeObject,
+        };
+        use molt_cpython_abi::api::{errors, object, refcount};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        crate::cpython_abi_hooks::register_cpython_hooks();
+        crate::with_gil_entry_nopanic!(py, {
+            let receiver = alloc_list(py, &[]);
+            assert!(!receiver.is_null());
+            let receiver_bits = MoltObject::from_ptr(receiver).bits();
+            let receiver_view = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(receiver_bits) };
+            assert!(!receiver_view.is_null());
+            let mut method = PyMethodDef {
+                ml_name: c"module_clear_witness".as_ptr(),
+                ml_meth: Some(physical_module_noop),
+                ml_flags: METH_NOARGS,
+                ml_doc: std::ptr::null(),
+            };
+            let callable = unsafe {
+                object::PyCFunction_NewEx(&raw mut method, receiver_view, std::ptr::null_mut())
+            };
+            assert!(!callable.is_null());
+            let bits = GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(callable)
+                .unwrap()
+                .bits();
+            let runtime = crate::obj_from_bits(bits).as_ptr().unwrap();
+            let mirrors = GLOBAL_BRIDGE.mirrored_c_refcount(receiver_view.addr());
+            assert!(mirrors > 0);
+            let mut module_type: PyTypeObject = unsafe { std::mem::zeroed() };
+            module_type.tp_name = c"ModuleClearWitness".as_ptr();
+            module_type.tp_dealloc = Some(observe_module_clear);
+            let mut module = ModuleClearWitness {
+                object: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: &raw mut module_type,
+                },
+                callable_bits: bits,
+                callable,
+                receiver: receiver_view,
+                releases: 0,
+                saw_empty_module: false,
+                saw_receiver_mirror: false,
+            };
+            // Transfer the fixture's sole ordinary C owner directly into the
+            // writable physical field. There is no mirrored ledger entry.
+            unsafe { (*callable.cast::<PyCFunctionObject>()).m_module = &raw mut module.object };
+            let (edges, resources) =
+                unsafe { super::super::heap_lifecycle::terminal_detach_capacity(py, runtime) };
+            assert!(
+                resources > 0,
+                "physical function fields reserve a detached resource"
+            );
+            let mut sink = super::super::heap_lifecycle::DetachedEdgeSink::terminal_with_capacities(
+                edges, resources,
+            );
+            unsafe {
+                super::super::heap_lifecycle::clear_cycle_edges_with_sink(py, runtime, &mut sink)
+            };
+            assert!(unsafe { (*callable.cast::<PyCFunctionObject>()).m_module }.is_null());
+            assert_eq!(module.releases, 0, "publishing NULL must not run callbacks");
+            sink.release_all(py);
+            assert_eq!(module.releases, 1);
+            assert!(module.saw_empty_module && module.saw_receiver_mirror);
+            assert_eq!(
+                GLOBAL_BRIDGE.mirrored_c_refcount(receiver_view.addr()),
+                mirrors
+            );
+            assert!(
+                unsafe { errors::PyErr_Occurred() }.is_null(),
+                "module-finalizer errors are drained"
+            );
+            unsafe {
+                super::super::heap_lifecycle::clear_cycle_edges_with_sink(py, runtime, &mut sink)
+            };
+            sink.release_all(py);
+            assert_eq!(module.releases, 1, "repeated clear is idempotent");
+            unsafe { refcount::Py_DECREF(callable) };
+            assert_eq!(
+                module.releases, 1,
+                "terminal release cannot release the old module twice"
+            );
+            assert_eq!(GLOBAL_BRIDGE.mirrored_c_refcount(receiver_view.addr()), 0);
+            dec_ref_bits(py, receiver_bits);
+            assert!(!crate::exception_pending(py));
         });
     }
 
@@ -3623,6 +4600,10 @@ mod tests {
 
             assert_eq!(stats.collected, 2, "both cycle members are collectable");
             assert_eq!(
+                stats.retired, 2,
+                "both original allocation identities retired"
+            );
+            assert_eq!(
                 after - before,
                 2,
                 "the deallocator must actually free both list objects"
@@ -3657,6 +4638,35 @@ mod tests {
             assert_eq!(stats.collected, 2);
             assert!(!unsafe { gc_is_tracked(list) });
             assert!(!unsafe { gc_is_tracked(tuple) });
+        });
+    }
+
+    #[test]
+    #[cfg(not(feature = "free-threaded"))]
+    fn retained_saveall_garbage_is_not_retirement_progress() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            let state = &crate::runtime_state(py).gc;
+            let garbage = state.garbage_bits(py);
+            state.set_debug_flags(DEBUG_SAVEALL);
+            let list = alloc_list(py, &[]);
+            let bits = MoltObject::from_ptr(list).bits();
+            crate::molt_list_append(bits, bits);
+            dec_ref_bits(py, bits);
+            let stats = unsafe { collect_cycles(py) };
+            assert_eq!(stats.status, GcCollectStatus::Completed);
+            assert_eq!(stats.collected, 1);
+            assert_eq!(
+                stats.retired, 0,
+                "retaining collectable garbage cannot keep teardown busy"
+            );
+            assert!(unsafe { gc_is_tracked(list) });
+            state.set_debug_flags(0);
+            crate::molt_list_clear(garbage);
+            dec_ref_bits(py, garbage);
+            let stats = unsafe { collect_cycles(py) };
+            assert_eq!((stats.collected, stats.retired), (1, 1));
+            assert!(!unsafe { gc_is_tracked(list) });
         });
     }
 

@@ -84,6 +84,11 @@ pub use control::{
     molt_file_seek, molt_file_seekable, molt_file_tell, molt_file_truncate, molt_file_writable,
 };
 
+#[path = "io/attributes.rs"]
+mod attributes;
+pub(crate) use attributes::io_publish_members;
+pub use attributes::molt_io_member_get;
+
 const DEFAULT_BUFFER_SIZE: i64 = 8192;
 
 pub(crate) struct IoRuntimeState {

@@ -145,7 +145,6 @@ def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
             "molt_task_new",
             "molt_json_parse_scalar",
             "molt_function_closure_bits",
-            "molt_type_of_borrowed",
             "molt_dict_getitem_borrowed",
             "molt_list_getitem_borrowed",
             "molt_tuple_getitem_borrowed",
@@ -163,6 +162,45 @@ def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
         OUT_RUNTIME_BOXED_ABI_RS
         == ROOT / "runtime/molt-ir/src/runtime_boxed_abi_generated.rs"
     )
+
+
+def test_vector_reduction_boxed_abi_is_compiler_only_and_owned() -> None:
+    data = _load_gen_wasm_abi().load_manifest()
+    entries = {entry["name"]: entry for entry in data["import"]}
+    specs = {
+        spec["runtime_name"]: spec for spec in manifest.runtime_boxed_call_specs(data)
+    }
+    contracts = manifest.runtime_import_return_specs(data)
+    for kind in ("vec_sum", "vec_prod", "vec_min", "vec_max"):
+        entry = entries[kind]
+        assert entry["boxed_call"] is True
+        assert "callable_arity" not in entry
+        assert "return_contract" not in entry
+        symbol = manifest.runtime_export_name(entry)
+        assert specs[symbol] == {
+            "runtime_name": symbol,
+            "arity": 3,
+            "result": "i64",
+        }
+        assert contracts[kind] == "owned_object"
+
+        # The machine carrier alone must not restore a lost boxed contract.
+        probe = {
+            "static_type": data["static_type"],
+            "import": [copy.deepcopy(entry)],
+        }
+        probe["import"][0].pop("boxed_call")
+        assert manifest.runtime_boxed_call_specs(probe) == []
+        with pytest.raises(
+            manifest.WasmAbiManifestError, match="unclassified i64 return"
+        ):
+            manifest.runtime_import_return_specs(probe)
+        probe["import"][0]["boxed_call"] = True
+        probe["import"][0]["return_contract"] = "owned_object"
+        with pytest.raises(
+            manifest.WasmAbiManifestError, match="boxed return authority"
+        ):
+            manifest.runtime_boxed_call_specs(probe)
 
 
 def _boxed_abi_fixture() -> dict:
@@ -401,6 +439,8 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     assert contracts["guard_type"] == "borrowed_object"
     assert contracts["dict_set"] == "borrowed_object"
     assert contracts["store_index"] == "borrowed_object"
+    for name in ("dict_setitem", "list_int_setitem", "del_index"):
+        assert contracts[name] == "borrowed_object", name
     assert contracts["io_wait"] == "poll_result"
     assert contracts["future_poll"] == "poll_result"
     assert contracts["gpu_thread_id"] == "owned_object"
@@ -412,7 +452,13 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
         assert contracts[name] == "raw_bits"
         entry = next(entry for entry in data["import"] if entry["name"] == name)
         assert "callable_arity" not in entry
-    assert contracts["frame_invocation_exit"] == "owned_object"
+    for kind in (
+        "frame_invocation_exit",
+        "trace_enter_slot",
+        "trace_exit",
+        "trace_set_line",
+    ):
+        assert contracts[kind] == "borrowed_object"
     boxed_names = {
         row["runtime_name"] for row in manifest.runtime_boxed_call_specs(data)
     }
@@ -458,6 +504,32 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     shared = gen.render_runtime_boxed_abi_rs(data)
     assert "RuntimeBoxedReturn::BorrowedValue" in shared
     assert "RuntimeBoxedReturn::PollValue" in shared
+
+
+def test_fixed_arity_constructors_take_raw_word_ranges_not_boxed_operands() -> None:
+    data = _load_gen_wasm_abi().load_manifest()
+    imports = {entry["name"]: entry for entry in data["import"]}
+    contracts = manifest.runtime_import_return_specs(data)
+    boxed = {row["runtime_name"] for row in manifest.runtime_boxed_call_specs(data)}
+    lir_calls = {row["import_name"]: row for row in data["lir_runtime_call"]}
+    # Tuple construction has one constructor; the builder finish is retired.
+    assert "tuple_builder_finish" not in imports
+    assert "tuple_builder_finish" not in lir_calls
+    for name, arity in (
+        ("tuple_from_values", 2),
+        ("list_from_values", 2),
+        ("dataclass_new_from_values", 5),
+    ):
+        entry = imports[name]
+        signature = data["static_type"][entry["type"]]
+        assert signature["params"] == ["i64"] * arity, name
+        assert signature["results"] == ["i64"], name
+        assert contracts[name] == "owned_object", name
+        # The range address and length are raw machine operands: generic boxed
+        # lowering and callable admission must never box or release them.
+        assert f"molt_{name}" not in boxed, name
+        assert "callable_arity" not in entry, name
+    assert "boxed_operand_count" not in lir_calls["tuple_from_values"]
 
 
 @pytest.mark.parametrize(
@@ -919,17 +991,13 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     static_types = data["static_type"]
     static_type_count = len(static_types)
 
-    assert static_type_count == 50
+    assert static_type_count == 49
     assert static_types[0] == {"params": [], "results": ["i64"]}
     assert static_types[1] == {"params": ["i64"], "results": []}
     assert {"params": [], "results": ["i32"]} in static_types
-    append = next(
-        entry for entry in data["import"] if entry["name"] == "list_builder_append"
+    assert not any(
+        entry["name"].startswith("list_builder_") for entry in data["import"]
     )
-    assert static_types[append["type"]] == {
-        "params": ["i64", "i64"],
-        "results": ["i32"],
-    }
     assert static_types[31] == {"params": ["i64"] * 9, "results": ["i64"]}
     assert static_types[34] == {"params": ["i64"] * 12, "results": ["i64"]}
     assert all(len(signature["results"]) <= 1 for signature in static_types)
@@ -1211,7 +1279,18 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         }
         for entry in reserved_callables
     ]
-    assert len(shared_callables) == len(reserved_callables)
+    assert {
+        entry["runtime_name"]: entry["callable_arity"]
+        for entry in shared_callables[len(reserved_callables) :]
+    } == {
+        "molt_coroutine_send_method": 2,
+        "molt_coroutine_throw_method": 2,
+        "molt_coroutine_close_method": 1,
+        "molt_awaitable_await": 1,
+        "molt_coroutine_wrapper_iter": 1,
+        "molt_coroutine_wrapper_next": 1,
+        "molt_generator_throw_method": 2,
+    }
     assert shared_callables[23] == {
         "index": 23,
         "runtime_name": "molt_importlib_import_transaction",
@@ -1366,6 +1445,11 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     )
     assert "ReservedRuntimeCallableDispatch::Trampoline" in rendered_rs
     assert "pub(crate) fn runtime_callable_import" in rendered_rs
+    callable_import_match = rendered_reserved_rs.split(
+        "pub(crate) fn runtime_callable_import", 1
+    )[1].split("pub(crate) fn runtime_callable_arity", 1)[0]
+    for entry in gen._shared_runtime_callables(data):
+        assert callable_import_match.count(f'"{entry["runtime_name"]}" =>') == 1
     assert '"molt_type_call" => Some(WasmRuntimeImport::TypeCall)' in rendered_rs
     assert (
         '"molt_importlib_import_transaction" => '
@@ -1414,6 +1498,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         offsets.append(rendered_builtin_rs.index(marker))
         assert (
             marker
+            + f'\n        python_module: "{entry["python_module"]}",'
             + f'\n        runtime_name: "{entry["runtime_name"]}",'
             + f"\n        arity: {entry['arity']},"
         ) in rendered_builtin_rs
@@ -1426,7 +1511,11 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "runtime metadata shares sorted lookup and enumeration"
     )
     assert '            python_name: "len",' in rendered_runtime_rs
-    assert "            index: 2," in rendered_runtime_rs
+    builtin_info_fields = rendered_runtime_rs.split(
+        "pub(crate) struct PythonBuiltinFunctionInfo {", 1
+    )[1].split("}", 1)[0]
+    assert "pub(crate) index:" not in builtin_info_fields
+    assert "pub(crate) python_module: &'static str" in builtin_info_fields
     assert '            runtime_name: "molt_len",' in rendered_runtime_rs
     assert "python_builtin_function_target_ptr" not in rendered_runtime_rs
     assert (
@@ -1456,10 +1545,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         '("file", GeneratedBuiltinDefaultValue::None), '
         '("flush", GeneratedBuiltinDefaultValue::Bool(false))],'
     ) in rendered_runtime_rs
-    assert (
-        "pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = PYTHON_BUILTIN_FUNCTIONS.len();"
-        in rendered_runtime_rs
-    )
+    assert "PYTHON_BUILTIN_FUNCTION_COUNT" not in rendered_runtime_rs
+    assert "pub(crate) text_signature: Option<&'static str>" in rendered_runtime_rs
     assert "RUNTIME_VOID_CALLABLE_NAMES" not in rendered_runtime_rs
     assert "VOID_CALLABLE_TARGETS" not in rendered_runtime_rs
     assert "crate::intrinsics::resolve_symbol" not in rendered_runtime_rs
@@ -1731,7 +1818,6 @@ def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
     assert "molt_json_parse_scalar" in data["non_runtime_callable_intrinsic"]
     assert "molt_gpu_prim_create_tensor" in data["non_runtime_callable_intrinsic"]
     assert {
-        "molt_type_of_borrowed",
         "molt_dict_getitem_borrowed",
         "molt_list_getitem_borrowed",
         "molt_tuple_getitem_borrowed",
@@ -1739,12 +1825,10 @@ def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
     assert "runtime_name" not in imports["json_parse_scalar"]
     assert "molt_json_parse_scalar" not in runtime_callables
     assert "molt_gpu_prim_create_tensor" not in runtime_callables
-    assert "molt_type_of_borrowed" not in runtime_callables
     assert "molt_dict_getitem_borrowed" not in runtime_callables
     assert "molt_list_getitem_borrowed" not in runtime_callables
     assert "molt_tuple_getitem_borrowed" not in runtime_callables
     for import_name in (
-        "type_of_borrowed",
         "dict_getitem_borrowed",
         "list_getitem_borrowed",
         "tuple_getitem_borrowed",
@@ -2220,12 +2304,15 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
     assert selectors["shl"] == ("lshift", "LShift", "LShift", 2, ("lshift",))
     assert selectors["bit_not"] == ("invert", "Invert", "Invert", 1, ("invert",))
     assert selectors["pow_mod"] == ("pow_mod", "PowMod", "PowMod", 3, ("pow_mod",))
-    assert selectors["vec_sum_int"] == (
-        "vec_sum_int",
+    assert selectors["vec_sum"] == (
+        "vec_sum",
         "VectorReduction",
         None,
         None,
-        ("vec_sum_int",),
+        ("vec_sum",),
+    )
+    assert not any(
+        kind.startswith("vec_") and kind.count("_") > 1 for kind in selectors
     )
 
     rendered_rs_modules = gen.render_rs_modules(data)
@@ -2508,7 +2595,7 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
         if "poll_table_slot" in entry
     }
     assert poll_slots["async_sleep_poll"] == 1
-    assert poll_slots["contextlib_async_exitstack_enter_context_poll"] == 32
+    assert poll_slots["contextlib_async_exitstack_enter_context_poll"] == 27
     assert sorted(poll_slots.values()) == list(range(1, len(poll_slots) + 1))
     broken = copy.deepcopy(data)
     for entry in broken["import"]:
@@ -2555,12 +2642,12 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert "import: WasmRuntimeImport::AsyncSleepPoll" in rendered_rs
     assert "pub(crate) const fn poll_table_import_slot" in rendered_rs
     assert (
-        "WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll => Some(32)"
+        "WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll => Some(27)"
         in rendered_rs
     )
     assert "POLL_TABLE_FUNCS" not in rendered_rs
     assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
-    assert '(32, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
+    assert '(27, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
     assert "WASM_DEFAULT_APP_TABLE_BASE" in rendered_py
     assert data["callable_table_publication"] == {
         "section_name": "molt.callable_table",

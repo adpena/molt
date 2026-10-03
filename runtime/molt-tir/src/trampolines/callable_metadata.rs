@@ -174,6 +174,7 @@ mod tests {
                 ..OpIR::default()
             }],
             codegen_partition: true,
+            parameter_custody: Vec::new(),
             ..FunctionIR::default()
         };
         retained.merge(CallableMetadata::from_functions(&[physical]));

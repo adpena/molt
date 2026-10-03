@@ -2,11 +2,11 @@
 use crate::libc_compat as libc;
 use crate::{
     MemoryViewFormat, MemoryViewFormatKind, MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES,
-    TYPE_ID_MEMORYVIEW, TYPE_ID_STRING, alloc_bytes, bigint_bits, bytes_data, bytes_len,
-    index_bigint_from_obj, is_truthy, memoryview_base_bits, memoryview_data,
-    memoryview_format_bits, memoryview_itemsize, memoryview_offset, memoryview_owner_bits,
-    memoryview_readonly, memoryview_released, memoryview_shape, memoryview_strides, obj_from_bits,
-    object_type_id, raise_exception, string_bytes, string_len, string_obj_to_owned,
+    TYPE_ID_MEMORYVIEW, TYPE_ID_STRING, alloc_bytes, bytes_data, bytes_len, index_bigint_from_obj,
+    is_truthy, memoryview_base_bits, memoryview_data, memoryview_format_bits, memoryview_itemsize,
+    memoryview_offset, memoryview_owner_bits, memoryview_readonly, memoryview_released,
+    memoryview_shape, memoryview_strides, obj_from_bits, object_type_id, raise_exception,
+    string_bytes, string_len, string_obj_to_owned,
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -104,6 +104,7 @@ pub(crate) struct TypedStridedStorage {
     pub(crate) offset: isize,
     pub(crate) base_bits: u64,
     pub(crate) owner_bits: u64,
+    pub(crate) native_lease: Option<molt_cpython_abi::api::memory::MemoryViewLease>,
     pub(crate) format_bits: u64,
     pub(crate) format: [u8; MOLT_BUFFER_FORMAT_CAP],
     pub(crate) shape: Vec<isize>,
@@ -149,6 +150,7 @@ impl TypedStridedStorage {
             offset,
             base_bits,
             owner_bits: base_bits,
+            native_lease: None,
             format_bits,
             format,
             shape,
@@ -186,6 +188,14 @@ impl TypedStridedStorage {
 
     pub(crate) fn with_owner(mut self, owner_bits: u64) -> Self {
         self.owner_bits = owner_bits;
+        self
+    }
+
+    pub(crate) fn with_native_lease(
+        mut self,
+        lease: Option<molt_cpython_abi::api::memory::MemoryViewLease>,
+    ) -> Self {
+        self.native_lease = lease;
         self
     }
 
@@ -273,7 +283,11 @@ impl TypedStridedStorage {
                 storage.shape.to_vec(),
                 storage.strides.to_vec(),
             )
-            .map(|storage| storage.with_owner(memoryview_owner_bits(ptr)))
+            .map(|storage| {
+                storage
+                    .with_owner(memoryview_owner_bits(ptr))
+                    .with_native_lease((*crate::memoryview_ptr(ptr)).native_lease.clone())
+            })
             .ok_or(TypedStridedStorageError::InvalidDescriptor)
         }
     }
@@ -284,9 +298,6 @@ impl MoltBufferView {
         if storage.shape.len() != storage.strides.len()
             || storage.shape.len() > MOLT_BUFFER_MAX_NDIM
         {
-            return None;
-        }
-        if storage.base_bits == 0 && storage.min_offset < 0 {
             return None;
         }
         let mut out = Self {
@@ -475,10 +486,26 @@ pub(crate) fn memoryview_linear_offset(index: usize, stride: isize) -> Option<is
     Some(offset as isize)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MemoryViewOrder {
+    C,
+    Fortran,
+    Any,
+}
+
 pub(crate) fn memoryview_is_c_contiguous(
     shape: &[isize],
     strides: &[isize],
     itemsize: usize,
+) -> bool {
+    memoryview_is_contiguous(shape, strides, itemsize, MemoryViewOrder::C)
+}
+
+fn memoryview_is_contiguous(
+    shape: &[isize],
+    strides: &[isize],
+    itemsize: usize,
+    order: MemoryViewOrder,
 ) -> bool {
     if shape.len() != strides.len() || itemsize == 0 || shape.iter().any(|&dim| dim < 0) {
         return false;
@@ -491,7 +518,12 @@ pub(crate) fn memoryview_is_c_contiguous(
     let Ok(mut expected) = isize::try_from(itemsize) else {
         return false;
     };
-    for idx in (0..shape.len()).rev() {
+    for step in 0..shape.len() {
+        let idx = if order == MemoryViewOrder::Fortran {
+            step
+        } else {
+            shape.len() - 1 - step
+        };
         let dim = shape[idx];
         let stride = strides[idx];
         // A singleton axis has no second element whose stride can matter.
@@ -550,11 +582,69 @@ pub(crate) unsafe fn memoryview_bytes_slice(ptr: *mut u8) -> Option<&'static [u8
     }
 }
 
+/// Materialize a borrowed normalized C export using the same validated bounds
+/// and byte traversal as memoryview. The ABI caller owns its native lease.
+pub(crate) unsafe fn collect_bytes_from_descriptor(
+    py: &PyToken<'_>,
+    view: &molt_cpython_abi::hooks::MoltBufferView,
+) -> Option<Vec<u8>> {
+    let rank = view.ndim as usize;
+    if rank > MOLT_BUFFER_MAX_NDIM || view.itemsize == 0 || view.itemsize > isize::MAX as u64 {
+        raise_exception::<()>(py, "BufferError", "invalid bytes buffer geometry");
+        return None;
+    }
+    let shape = &view.shape[..rank];
+    let strides = &view.strides[..rank];
+    let itemsize = view.itemsize as usize;
+    let Some(len) = memoryview_nbytes_big(shape, itemsize)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|&value| value <= isize::MAX as usize && value as u64 == view.len)
+    else {
+        raise_exception::<()>(py, "BufferError", "invalid bytes buffer length");
+        return None;
+    };
+    let Some(bounds) = memoryview_strided_bounds(shape, strides, itemsize) else {
+        raise_exception::<()>(py, "BufferError", "invalid bytes buffer strides");
+        return None;
+    };
+    if view.data.is_null() && len != 0 {
+        raise_exception::<()>(py, "BufferError", "bytes buffer has no data pointer");
+        return None;
+    }
+    let storage = BorrowedMemoryView {
+        data: view.data,
+        len,
+        itemsize,
+        shape,
+        strides,
+        min_offset: bounds.min_offset,
+        max_end_offset: bounds.max_end_offset,
+    };
+    let mut bytes = Vec::new();
+    if bytes.try_reserve_exact(len).is_err() {
+        raise_exception::<()>(py, "MemoryError", "bytes allocation failed");
+        return None;
+    }
+    unsafe {
+        storage.for_each_byte_chunk(len, MemoryViewOrder::C, |source, range| {
+            bytes.extend_from_slice(std::slice::from_raw_parts(source.cast_const(), range.len()));
+        })
+    };
+    Some(bytes)
+}
+
 pub(crate) unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
+    unsafe { memoryview_collect_bytes_in_order(ptr, MemoryViewOrder::C) }
+}
+
+pub(crate) unsafe fn memoryview_collect_bytes_in_order(
+    ptr: *mut u8,
+    order: MemoryViewOrder,
+) -> Option<Vec<u8>> {
     unsafe {
         let storage = memoryview_borrowed_storage(ptr).ok()?;
         let mut out = Vec::with_capacity(storage.len);
-        storage.for_each_byte_chunk(storage.len, |source, range| {
+        storage.for_each_byte_chunk(storage.len, order, |source, range| {
             out.extend_from_slice(std::slice::from_raw_parts(source.cast_const(), range.len()));
         });
         Some(out)
@@ -571,7 +661,10 @@ pub(crate) unsafe fn memoryview_read_scalar(
         return None;
     }
     let offset = offset as usize;
-    if offset + fmt.itemsize > data.len() {
+    if offset
+        .checked_add(fmt.itemsize)
+        .is_none_or(|end| end > data.len())
+    {
         return None;
     }
     match fmt.kind {
@@ -587,11 +680,11 @@ pub(crate) unsafe fn memoryview_read_scalar(
             if fmt.itemsize == 4 {
                 let bytes: [u8; 4] = data[offset..offset + 4].try_into().ok()?;
                 let val = f32::from_ne_bytes(bytes) as f64;
-                Some(MoltObject::from_float(val).bits())
+                Some(crate::object::ops::float_result_bits(_py, val))
             } else if fmt.itemsize == 8 {
                 let bytes: [u8; 8] = data[offset..offset + 8].try_into().ok()?;
                 let val = f64::from_ne_bytes(bytes);
-                Some(MoltObject::from_float(val).bits())
+                Some(crate::object::ops::float_result_bits(_py, val))
             } else {
                 None
             }
@@ -613,7 +706,7 @@ pub(crate) unsafe fn memoryview_read_scalar(
                 }
                 _ => return None,
             };
-            Some(MoltObject::from_int(val).bits())
+            Some(crate::int_bits_from_i128(_py, i128::from(val)))
         }
         MemoryViewFormatKind::Unsigned => {
             let val = match fmt.itemsize {
@@ -632,11 +725,7 @@ pub(crate) unsafe fn memoryview_read_scalar(
                 }
                 _ => return None,
             };
-            if val <= i64::MAX as u64 {
-                Some(MoltObject::from_int(val as i64).bits())
-            } else {
-                Some(bigint_bits(_py, BigInt::from(val)))
-            }
+            Some(crate::int_bits_from_i128(_py, i128::from(val)))
         }
     }
 }
@@ -648,8 +737,14 @@ pub(crate) unsafe fn memoryview_read_scalar_at(
     fmt: MemoryViewFormat,
 ) -> Option<u64> {
     let data = unsafe { memoryview_scalar_pointer(_py, view, offset, fmt)? };
-    let item = unsafe { std::slice::from_raw_parts(data.cast_const(), fmt.itemsize) };
-    unsafe { memoryview_read_scalar(_py, item, 0, fmt) }
+    // Boxing a wide integer or a character may allocate/reenter. Retain no
+    // borrowed exporter slice across that boundary.
+    let mut item = [0u8; 8];
+    if fmt.itemsize > item.len() {
+        return None;
+    }
+    unsafe { std::ptr::copy_nonoverlapping(data.cast_const(), item.as_mut_ptr(), fmt.itemsize) };
+    unsafe { memoryview_read_scalar(_py, &item[..fmt.itemsize], 0, fmt) }
 }
 
 /// Encode into caller-owned stack storage. No exporter bytes are borrowed while
@@ -885,17 +980,35 @@ impl BorrowedMemoryView<'_> {
 
     /// The descriptor has already proved every element's signed extent. Copy
     /// callbacks cannot run Python or mutate the descriptor/export lifetime.
-    /// Gathering consumes this C-order traversal without heap index allocation.
+    /// C, Fortran and physical-contiguous gathering share this traversal.
     unsafe fn for_each_byte_chunk(
         &self,
         len: usize,
+        order: MemoryViewOrder,
         mut copy: impl FnMut(*mut u8, std::ops::Range<usize>),
     ) {
         debug_assert!(len <= self.len);
         if len == 0 {
             return;
         }
-        if self.is_c_contiguous() {
+        let fortran_contiguous = memoryview_is_contiguous(
+            self.shape,
+            self.strides,
+            self.itemsize,
+            MemoryViewOrder::Fortran,
+        );
+        let order = if order == MemoryViewOrder::Any {
+            if fortran_contiguous {
+                MemoryViewOrder::Fortran
+            } else {
+                MemoryViewOrder::C
+            }
+        } else {
+            order
+        };
+        if (order == MemoryViewOrder::C && self.is_c_contiguous())
+            || (order == MemoryViewOrder::Fortran && fortran_contiguous)
+        {
             copy(self.data, 0..len);
             return;
         }
@@ -908,7 +1021,12 @@ impl BorrowedMemoryView<'_> {
             let end = copied + self.itemsize.min(len - copied);
             unsafe { copy(self.data.offset(offset), copied..end) };
             copied = end;
-            for axis in (0..indices.len()).rev() {
+            for step in 0..indices.len() {
+                let axis = if order == MemoryViewOrder::Fortran {
+                    step
+                } else {
+                    indices.len() - 1 - step
+                };
                 indices[axis] += 1;
                 if indices[axis] < self.shape[axis] {
                     break;
@@ -1165,7 +1283,7 @@ mod split_buffer_contract_tests {
                     assert!(crate::builtins::exceptions::exception_matches_builtin_name(
                         py, error, output
                     ));
-                    let message = crate::builtins::exceptions::exception_materialized_message_bits(
+                    let message = crate::builtins::exceptions::format_exception_message(
                         py,
                         obj_from_bits(error).as_ptr().unwrap(),
                     );
@@ -1173,10 +1291,7 @@ mod split_buffer_contract_tests {
                         || "scalar callback".to_string(),
                         |kind| format!("memoryview: invalid {kind} for format '{format}'"),
                     );
-                    assert_eq!(
-                        string_obj_to_owned(obj_from_bits(message)).unwrap(),
-                        expected
-                    );
+                    assert_eq!(message, expected);
                     clear_exception(py);
                     dec_ref_bits(py, error);
                 }
@@ -1305,14 +1420,58 @@ mod split_buffer_contract_tests {
     }
 
     #[test]
-    fn split_contract_gather_uses_validated_storage_and_c_order() {
+    fn split_contract_gather_uses_validated_storage_and_selected_order() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            for (shape, strides, offset, collected) in [
-                (vec![4], vec![1], 0, b"abcd".as_slice()),
-                (vec![2], vec![-2], 2, b"ca".as_slice()),
-                (vec![2, 2], vec![1, 2], 0, b"acbd".as_slice()),
-                (vec![0, 2], vec![4, 1], 0, b"".as_slice()),
+            for (shape, strides, offset, c, f, a) in [
+                (
+                    vec![4],
+                    vec![1],
+                    0,
+                    b"abcd".as_slice(),
+                    b"abcd".as_slice(),
+                    b"abcd".as_slice(),
+                ),
+                (
+                    vec![2],
+                    vec![-2],
+                    2,
+                    b"ca".as_slice(),
+                    b"ca".as_slice(),
+                    b"ca".as_slice(),
+                ),
+                (
+                    vec![2, 2],
+                    vec![1, 2],
+                    0,
+                    b"acbd".as_slice(),
+                    b"abcd".as_slice(),
+                    b"abcd".as_slice(),
+                ),
+                (
+                    vec![2, 2],
+                    vec![2, 1],
+                    0,
+                    b"abcd".as_slice(),
+                    b"acbd".as_slice(),
+                    b"abcd".as_slice(),
+                ),
+                (
+                    vec![2, 2],
+                    vec![-2, -1],
+                    3,
+                    b"dcba".as_slice(),
+                    b"dbca".as_slice(),
+                    b"dcba".as_slice(),
+                ),
+                (
+                    vec![0, 2],
+                    vec![4, 1],
+                    0,
+                    b"".as_slice(),
+                    b"".as_slice(),
+                    b"".as_slice(),
+                ),
             ] {
                 let base = alloc_bytearray(py, b"abcd");
                 let format = alloc_string(py, b"B");
@@ -1333,7 +1492,17 @@ mod split_buffer_contract_tests {
                 let view = crate::object::builders::alloc_memoryview_from_storage(py, storage);
                 assert!(!view.is_null());
                 unsafe {
-                    assert_eq!(memoryview_collect_bytes(view).unwrap(), collected);
+                    assert_eq!(memoryview_collect_bytes(view).unwrap(), c);
+                    for (order, expected) in [
+                        (MemoryViewOrder::C, c),
+                        (MemoryViewOrder::Fortran, f),
+                        (MemoryViewOrder::Any, a),
+                    ] {
+                        assert_eq!(
+                            memoryview_collect_bytes_in_order(view, order).unwrap(),
+                            expected
+                        );
+                    }
                     assert_eq!(bytes_like_slice_checked(base).unwrap(), b"abcd");
                 }
                 for bits in [MoltObject::from_ptr(view).bits(), format_bits, base_bits] {
@@ -1388,4 +1557,66 @@ mod split_buffer_contract_tests {
             assert!(!exception_pending(py));
         });
     }
+}
+
+/// Import an ABI descriptor into the ordinary runtime MemoryView. Format text
+/// stays a full runtime string; the fixed-size transport format is never the
+/// authority for a native memoryview's Python format or C export.
+pub(crate) unsafe fn from_native_descriptor(
+    py: &PyToken<'_>,
+    descriptor: &molt_cpython_abi::hooks::MoltBufferView,
+    format: *const std::ffi::c_char,
+    lease: Option<molt_cpython_abi::api::memory::MemoryViewLease>,
+) -> u64 {
+    let rank = descriptor.ndim as usize;
+    if rank > MOLT_BUFFER_MAX_NDIM
+        || descriptor.itemsize == 0
+        || descriptor.itemsize > isize::MAX as u64
+        || descriptor.readonly > 1
+        || (descriptor.len != 0 && descriptor.data.is_null())
+    {
+        return raise_exception(py, "BufferError", "invalid memoryview buffer descriptor");
+    }
+    let bytes = if format.is_null() {
+        b"B".as_slice()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(format) }.to_bytes()
+    };
+    let format_ptr = crate::alloc_string(py, bytes);
+    if format_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let format_bits = MoltObject::from_ptr(format_ptr).bits();
+    let storage = TypedStridedStorage::new(
+        descriptor.data,
+        descriptor.readonly != 0,
+        descriptor.itemsize as usize,
+        0,
+        0,
+        format_bits,
+        descriptor.shape[..rank].to_vec(),
+        descriptor.strides[..rank].to_vec(),
+    );
+    let output = match storage {
+        Some(mut storage) if storage.len as u64 == descriptor.len => {
+            // Offset measures index zero from the lowest addressed backing byte.
+            storage.offset = match storage.min_offset.checked_neg() {
+                Some(offset) => offset,
+                None => {
+                    crate::dec_ref_bits(py, format_bits);
+                    return raise_exception(py, "BufferError", "memoryview span overflow");
+                }
+            };
+            crate::alloc_memoryview_from_storage(py, storage.with_native_lease(lease))
+        }
+        _ => std::ptr::null_mut(),
+    };
+    crate::dec_ref_bits(py, format_bits);
+    if output.is_null() {
+        if crate::exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        return raise_exception(py, "BufferError", "invalid memoryview buffer geometry");
+    }
+    MoltObject::from_ptr(output).bits()
 }

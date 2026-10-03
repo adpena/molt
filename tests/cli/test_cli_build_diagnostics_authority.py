@@ -67,6 +67,7 @@ def test_build_phase_attribution_reports_relative_shares_and_link_children() -> 
         total_sec=20.0,
         phase_sec={"ir_lowering": 2.0, "backend_codegen": 8.0},
         pipeline_stage_ms={
+            "wasm_reloc_preflight": 750.0,
             "wasm_link_total": 6000.0,
             "split_runtime_processing": 1000.0,
             "wasm_strip": 500.0,
@@ -79,6 +80,9 @@ def test_build_phase_attribution_reports_relative_shares_and_link_children() -> 
     )
 
     assert attribution["phase_sec"]["wasm_link_core"] == 4.0
+    # Admission precedes the pipeline timer; it must not be subtracted from
+    # the pipeline's core or charged to frontend work.
+    assert attribution["phase_sec"]["wasm_reloc_preflight"] == 0.75
     assert attribution["phase_share"]["backend_codegen"] == 0.4
     assert attribution["phase_sec"]["frontend_lowering"] == 2.0
     assert attribution["ranked_phases"][0] == "backend_codegen"
@@ -88,6 +92,8 @@ def test_wasm_link_operation_counts_preserve_all_build_time_rungs() -> None:
     assert build_diagnostics._wasm_link_operation_counts(
         {
             "split_app_optimize_requests": 1,
+            "wasm_reloc_preflight_invocations": 1.0,
+            "wasm_reloc_preflight": 750.0,
             "split_app_wasm_opt_runs": 0,
             "runtime_tree_shake_cache_hits": 1.0,
             "runtime_tree_shake_cache_wall_ms": 0.25,
@@ -99,6 +105,7 @@ def test_wasm_link_operation_counts_preserve_all_build_time_rungs() -> None:
         }
     ) == {
         "split_app_optimize_requests": 1,
+        "wasm_reloc_preflight_invocations": 1,
         "split_app_wasm_opt_runs": 0,
         "runtime_tree_shake_cache_hits": 1,
         "wasm_whole_artifact_full_binary_parses": 17,
@@ -106,3 +113,36 @@ def test_wasm_link_operation_counts_preserve_all_build_time_rungs() -> None:
         "wasm_whole_artifact_reserializations": 11,
         "wasm_whole_artifact_section_walks": 29,
     }
+
+
+def test_warm_cache_phases_keep_runtime_and_backend_work_out_of_frontend():
+    phases = build_diagnostics._phase_duration_map(
+        {
+            "resolve_entry": 0.0,
+            "module_graph": 0.25,
+            "module_analysis": 1.0,
+            "ir_lowering": 2.0,
+            "backend_prepare": 4.0,
+            "cache_lookup": 40.0,
+            "runtime_setup": 40.25,
+        },
+        ended_at=52.0,
+    )
+    attribution = build_diagnostics._build_phase_attribution(
+        total_sec=52.0, phase_sec=phases, pipeline_stage_ms={}
+    )
+    actual = attribution["phase_sec"]
+    assert actual["frontend_lowering"] == 4.0
+    assert actual["ir_lowering"] == 2.0
+    assert actual["backend_prepare"] == 36.0
+    assert actual["runtime_setup"] == 11.75
+    assert actual["backend_codegen"] == 0.0
+    assert attribution["ranked_phases"][0] == "backend_prepare"
+
+
+def test_phase_attribution_preserves_observed_seal_duration() -> None:
+    attribution = build_diagnostics._build_phase_attribution(
+        total_sec=20.0, phase_sec={"link": 5.0, "seal": 7.0}, pipeline_stage_ms={}
+    )
+    assert attribution["phase_sec"]["seal"] == 7.0
+    assert attribution["phase_share"]["seal"] == 0.35

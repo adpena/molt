@@ -364,47 +364,15 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = string.rep({s}, {n})"));
                 }
             }
-            "string_split_ws_dict_inc" => {
+            // A fused split/count loop stands in for its loop only when it runs no
+            // Python code and reads words as `str.split` does; this target
+            // cannot check either, so the op declines, `(None, False)`, and the
+            // ordinary loop lowered beside it runs.
+            "string_split_ws_dict_inc" | "string_split_sep_dict_inc" => {
                 let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 3 {
-                    let line = sanitize_ident(&args[0]);
-                    let dict = sanitize_ident(&args[1]);
-                    let delta = sanitize_ident(&args[2]);
-                    self.emit_line(&format!(
-                        "local {out} = molt_string_split_ws_dict_inc({line}, {dict}, {delta})"
-                    ));
-                    if let Some(ref out_name) = op.out {
-                        self.tuple_vars.insert(out_name.clone());
-                    }
-                }
-            }
-            "string_split_sep_dict_inc" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 4 {
-                    let line = sanitize_ident(&args[0]);
-                    let sep = sanitize_ident(&args[1]);
-                    let dict = sanitize_ident(&args[2]);
-                    let delta = sanitize_ident(&args[3]);
-                    self.emit_line(&format!(
-                        "local {out} = molt_string_split_sep_dict_inc({line}, {sep}, {dict}, {delta})"
-                    ));
-                    if let Some(ref out_name) = op.out {
-                        self.tuple_vars.insert(out_name.clone());
-                    }
-                }
-            }
-            "taq_ingest_line" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 3 {
-                    let dict = sanitize_ident(&args[0]);
-                    let line = sanitize_ident(&args[1]);
-                    let bucket_size = sanitize_ident(&args[2]);
-                    self.emit_line(&format!(
-                        "local {out} = molt_taq_ingest_line({dict}, {line}, {bucket_size})"
-                    ));
+                self.emit_line(&format!("local {out} = {{nil, false}}"));
+                if let Some(ref out_name) = op.out {
+                    self.tuple_vars.insert(out_name.clone());
                 }
             }
 

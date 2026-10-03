@@ -98,3 +98,7 @@ class SemaResult:
     class_facts: ClassFacts
     const_dicts: dict[str, dict[str, Any]]
     function_meta: FunctionMeta
+    # Module-scope names an import binds (CPython's DEF_IMPORT symbols). The
+    # call-form rule reads them: a call on an imported name's attribute never
+    # takes the method-call form.
+    import_names: frozenset[str]

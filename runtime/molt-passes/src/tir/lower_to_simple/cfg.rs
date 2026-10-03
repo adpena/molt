@@ -81,7 +81,7 @@ pub(super) fn reverse_postorder(
     // state-machine resume blocks only reachable via state_switch dispatch).
     // These must still appear in the output so the native backend can create
     // state_blocks for their labels.
-    if (func.has_exception_handling || !state_yield_resume_after.is_empty())
+    if (func.has_exception_handling || func.has_state_machine())
         && postorder.len() < func.blocks.len()
     {
         let mut unreachable: Vec<BlockId> = func

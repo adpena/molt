@@ -8,6 +8,11 @@ application, container/dict/bytearray hint propagation, and runtime type guards.
 from __future__ import annotations
 
 import ast
+from molt.python_private_names import (
+    python_definition_name,
+    python_source_field,
+    python_source_unparse,
+)
 from typing import Sequence
 
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -253,7 +258,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
 
     def _iterable_element_hint(self, iterable: MoltValue) -> str | None:
         hint = iterable.type_hint
-        if hint in {"range", "intarray"}:
+        if hint == "range":
             return "int"
         if hint == "str":
             return "str"
@@ -280,12 +285,6 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                     else kind
                 )
         return self._iterable_element_hint(iterable)
-
-    def _reduction_acc_numeric_hint(self, name: str, value: MoltValue) -> str | None:
-        hint = self.boxed_local_hints.get(name) or value.type_hint
-        if hint in {"int", "float"}:
-            return hint
-        return None
 
     def _dict_value_hint(self, value: MoltValue) -> str | None:
         if value.name in self.dict_value_hints:
@@ -319,7 +318,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
 
     def _annotation_source(self, node: ast.expr) -> str:
         try:
-            return ast.unparse(node)
+            return python_source_unparse(node)
         except Exception as exc:
             raise FrontendRejection(
                 Diagnostic.TYPE_FORM, "Unsupported annotation expression"
@@ -363,9 +362,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
     def _publish_annotation_exec_map(self, name: str, exec_map: MoltValue) -> None:
         """Bind execution state where the deferred annotate body resolves it."""
         self._store_local_value(name, exec_map)
-        if self.current_func_name == "molt_main" or self.current_func_name.startswith(
-            "molt_init_"
-        ):
+        if self._is_module_entry():
             self.globals[name] = exec_map
             self._emit_module_attr_set(name, exec_map)
 
@@ -509,7 +506,13 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         for param in type_params:
             if isinstance(param, (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)):
                 name_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[param.name], result=name_val))
+                self.emit(
+                    MoltOp(
+                        kind="CONST_STR",
+                        args=[python_definition_name(param)],
+                        result=name_val,
+                    )
+                )
                 kind_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(
                     MoltOp(
@@ -638,7 +641,13 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         finally:
             self.annotation_type_params = previous_type_params
         name_value = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[node.name.id], result=name_value))
+        self.emit(
+            MoltOp(
+                kind="CONST_STR",
+                args=[python_source_field(node.name, "id")],
+                result=name_value,
+            )
+        )
         params_tuple = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=type_param_values, result=params_tuple))
         alias_value = MoltValue(self.next_var(), type_hint="Any")
@@ -731,12 +740,14 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                 class_scope=class_scope,
             )
         )
-        cell_vars = tuple(
-            sorted(
-                self._collect_scope_cell_vars(
-                    tuple(expr for _name, expr, _exec_id in items), {"format"}
-                )
-            )
+        evaluator_body = tuple(expr for _name, expr, _exec_id in items)
+        cell_plan = self._scope_cell_storage_plan(
+            evaluator_body,
+            ("format",),
+            {"format"},
+            global_decls=set(),
+            nonlocal_decls=set(),
+            private_storage=True,
         )
         func_hint = f"Func:{func_symbol}"
         if has_closure:
@@ -752,7 +763,19 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             )
         else:
             self.emit(MoltOp(kind="FUNC_NEW", args=[func_symbol, 1], result=func_val))
-        self._emit_function_metadata(
+        # The evaluator's code slots: `format`, then the PEP 709 locals of the
+        # comprehensions its annotations contain, then cells and free variables.
+        evaluator_varnames = self._collect_callable_name_layout(
+            posonly_params=["format"],
+            pos_or_kw_params=[],
+            kwonly_params=[],
+            vararg=None,
+            varkw=None,
+            body=[ast.Expr(value=expr) for expr in evaluator_body],
+            free_vars=free_vars_list,
+            cell_vars=cell_plan.cellvars,
+        ).varnames
+        code_slots = self._emit_function_metadata(
             func_val,
             code_symbol=func_symbol,
             name="__annotate__",
@@ -767,8 +790,9 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             kw_default_exprs=[],
             docstring=None,
             module_override=module_override,
+            varnames=list(evaluator_varnames),
             freevars=free_vars_list,
-            cellvars=cell_vars,
+            cellvars=cell_plan.cellvars,
         )
 
         prev_func = self.current_func_name
@@ -789,6 +813,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                 if self.target_python >= (3, 14)
                 else None
             ),
+            code_slots=code_slots,
         )
         self.parameter_bindings = parameter_bindings
         if has_closure:
@@ -823,11 +848,21 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         self.scope_assigned = set()
         self.del_targets = set()
         self.unbound_check_names = set()
-        format_val = self._parameter_value("format", type_hint="Any")
-        self.locals["format"] = format_val
-        self._prebox_scope_cell_vars(cell_vars)
+        self.locals["format"] = self._parameter_value("format", type_hint="Any")
+        self._prebox_scope_cell_vars(
+            cell_plan.captured, private_cells=cell_plan.private
+        )
+        self._emit_frame_home_prologue(["format"])
         # Source annotations may independently capture or resolve "format".
-        # Only the explicit parameter SSA owns the evaluator's argument zero.
+        # Only the explicit parameter owns the evaluator's argument zero, its
+        # first code slot, and the format guard below reads that binding
+        # directly rather than through the class-annotation mapping.
+        format_cell = self.boxed_locals.get("format")
+        format_val = (
+            self.locals["format"]
+            if format_cell is None
+            else self._emit_cell_get(format_cell, type_hint="Any")
+        )
         self._publish_python_frame_context()
 
         # CPython 3.14's generated evaluator guard accepts only a rich
@@ -983,7 +1018,6 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             "dataclass": 13,
             "buffer2d": 14,
             "memoryview": 15,
-            "intarray": 16,
             "set": 17,
             "frozenset": 18,
         }

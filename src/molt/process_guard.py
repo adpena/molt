@@ -235,3 +235,15 @@ def run_completed_command(
         setattr(error, "guarded_result", result)
         raise error
     return result
+
+
+def source_command_executor(prefix: str) -> Any:
+    """Use the existing interactive process owner from this compiler's sources."""
+    root = _molt_repo_root()
+    load_harness_memory_guard(root)
+    from tools import command_execution
+
+    expected = root / "tools" / "command_execution.py"
+    if Path(command_execution.__file__).resolve() != expected.resolve():
+        raise RuntimeError("interactive command execution source authority mismatch")
+    return command_execution.CommandExecutor(prefix=prefix, repo_root=root)

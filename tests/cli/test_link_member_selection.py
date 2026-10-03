@@ -38,15 +38,17 @@ def _facts(*names: str) -> _NativeGlobalSymbolFacts:
     )
 
 
+@pytest.mark.parametrize("suffix", (".a", ".lib", ".rlib", ".archive"))
 def test_gnu_trace_selects_only_extracted_ordinals_with_parenthesized_archive_path(
     tmp_path: Path,
+    suffix: str,
 ) -> None:
-    archive = (tmp_path / "dependency (space).a").resolve()
+    archive = (tmp_path / f"dependency (space){suffix}").resolve()
     entry = (tmp_path / "entry.o").resolve()
     selected = selected_archive_members(
         {archive: _facts("needed.o", "dormant.o")},
         dialect="elf-gnu",
-        stdout=f"{entry}\n{archive}(needed.o)\n",
+        stdout=f"{entry}\n{archive}\n{archive}(needed.o)\n",
         stderr="",
         why_extract=(
             f"reference\textracted\tsymbol\n{entry}\t{archive}(needed.o)\tdependency\n"
@@ -127,8 +129,11 @@ def test_full_path_matching_preserves_case_distinct_archive_identity(
     ) == {archive: ()}
 
 
-def test_coff_loaded_member_requires_unique_full_archive_read(tmp_path: Path) -> None:
-    archive = (tmp_path / "dependency (space).lib").resolve()
+@pytest.mark.parametrize("suffix", [".a", ".lib", ".rlib", ".archive"])
+def test_coff_loaded_member_requires_unique_full_archive_read(
+    tmp_path: Path, suffix: str
+) -> None:
+    archive = (tmp_path / f"dependency (space){suffix}").resolve()
     entry = (tmp_path / "entry.obj").resolve()
     basename_member = f"{archive.name}(needed.obj)"
     trace = (

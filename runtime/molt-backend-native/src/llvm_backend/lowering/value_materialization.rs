@@ -1,8 +1,740 @@
 use super::*;
 use crate::runtime_import_abi::{MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_REGISTER_TOKEN_OWNED};
 use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
+use std::collections::BTreeMap;
+
+/// A runtime-call argument: a borrowed operand of the lowered operation, or a
+/// raw machine word the runtime ABI fixes (an immediate, address or length).
+#[derive(Clone, Copy)]
+pub(super) enum RuntimeArg<'ctx> {
+    Operand(ValueId),
+    Word(inkwell::values::BasicMetadataValueEnum<'ctx>),
+}
+
+/// Custody of a runtime call's return word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RuntimeResultCustody {
+    /// The canonical boxed return (a generated boxed-ABI row or the manifest
+    /// return contract): an owned or poll word is bound or released, a
+    /// borrowed word is retained only when bound, and a void callee binds None.
+    Boxed(RuntimeBoxedReturn),
+    /// An immediate or immortal word (None, a boolean) with no owner: bound
+    /// as-is when requested and never released.
+    Unowned,
+    /// The call reports only through the exception state: its word is not
+    /// adopted and a requested result is None.
+    SideEffect,
+}
+
+/// Operation-local custody of borrowed boxed operands.
+///
+/// A lowered operation opens one custody, before its first failure edge, with
+/// every operand it may borrow. Only a raw integer carrier without an
+/// inline-safe proof can mint a heap owner (`materialization_mints_owner`).
+/// Such an operand gets a static entry-block slot, reset to None when custody
+/// opens, so a failure taken before the operand is requested releases nothing
+/// and a loop never releases a previous iteration's owner. Operands are
+/// materialized lazily, at their first request, and a later request of the same
+/// value reuses its word: one operation transports one identity per value. A
+/// failed mint and every consumer step routed through
+/// `borrowed_operands_continue_if` join one failure block, which skips all
+/// later work and keeps the first exception pending. Blocks are numbered only
+/// when custody creates one, so an operation with nothing that can fail leaves
+/// the CFG unchanged.
+pub(super) struct BorrowedOperands<'ctx> {
+    label: String,
+    suffix: Option<usize>,
+    requests: usize,
+    owners: BTreeMap<ValueId, inkwell::values::PointerValue<'ctx>>,
+    words: BTreeMap<ValueId, inkwell::values::IntValue<'ctx>>,
+    adopted_objects: Vec<inkwell::values::IntValue<'ctx>>,
+    adopted_callable: Option<inkwell::values::IntValue<'ctx>>,
+    abort: Option<BasicBlock<'ctx>>,
+}
+
+impl BorrowedOperands<'_> {
+    /// Whether a failure edge joins this custody, making its result a rejoined
+    /// value rather than the committed word itself.
+    pub(super) fn can_fail(&self) -> bool {
+        self.abort.is_some()
+    }
+}
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    fn none_word(&self) -> inkwell::values::IntValue<'ctx> {
+        self.backend
+            .context
+            .i64_type()
+            .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
+    }
+
+    /// Open custody over every operand the operation may borrow; see
+    /// [`BorrowedOperands`]. It must precede the operation's first failure edge.
+    pub(super) fn begin_borrowed_operands(
+        &mut self,
+        operands: &[ValueId],
+        label: &str,
+    ) -> BorrowedOperands<'ctx> {
+        let none = self.none_word();
+        let mut owners = BTreeMap::new();
+        for &operand in operands {
+            if !owners.contains_key(&operand) && self.materialization_mints_owner(operand) {
+                let slot = self.build_entry_i64_alloca(&format!("{label}_owner"));
+                self.backend.builder.build_store(slot, none).unwrap();
+                owners.insert(operand, slot);
+            }
+        }
+        BorrowedOperands {
+            label: label.to_owned(),
+            suffix: None,
+            requests: 0,
+            owners,
+            words: BTreeMap::new(),
+            adopted_objects: Vec::new(),
+            adopted_callable: None,
+            abort: None,
+        }
+    }
+
+    /// Open call custody before any materialization can fail. The instruction
+    /// already owns one reference per adopted object position; snapshot their
+    /// words now so abort cleanup dominates every later allocation failure.
+    /// Raw values have no preexisting owner and use the same operation-local
+    /// materialization as borrowed operands.
+    pub(super) fn begin_call_operands(
+        &mut self,
+        operands: &[ValueId],
+        adopted: &[ValueId],
+        callable: Option<ValueId>,
+        label: &str,
+    ) -> BorrowedOperands<'ctx> {
+        let adopted_objects = adopted
+            .iter()
+            .filter(|&&id| {
+                Self::tir_type_is_dynbox_like(self.value_types.get(&id).unwrap_or(&TirType::DynBox))
+            })
+            .map(|&id| self.ensure_i64(self.resolve(id)))
+            .collect();
+        let adopted_callable = callable
+            .filter(|id| {
+                Self::tir_type_is_dynbox_like(self.value_types.get(id).unwrap_or(&TirType::DynBox))
+            })
+            .map(|id| self.ensure_i64(self.resolve(id)));
+        let mut custody = self.begin_borrowed_operands(operands, label);
+        custody.adopted_objects = adopted_objects;
+        custody.adopted_callable = adopted_callable;
+        custody
+    }
+
+    fn borrowed_operands_suffix(&mut self, custody: &mut BorrowedOperands<'ctx>) -> usize {
+        if let Some(suffix) = custody.suffix {
+            return suffix;
+        }
+        let suffix = self.synthetic_block_counter;
+        self.synthetic_block_counter += 1;
+        custody.suffix = Some(suffix);
+        suffix
+    }
+
+    fn borrowed_operands_abort(
+        &mut self,
+        custody: &mut BorrowedOperands<'ctx>,
+    ) -> BasicBlock<'ctx> {
+        if let Some(abort) = custody.abort {
+            return abort;
+        }
+        let suffix = self.borrowed_operands_suffix(custody);
+        let abort = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, &format!("{}_abort{suffix}", custody.label));
+        self.all_llvm_blocks.push(abort);
+        custody.abort = Some(abort);
+        abort
+    }
+
+    /// The operand's boxed word, materialized at its first request.
+    pub(super) fn borrowed_operand(
+        &mut self,
+        custody: &mut BorrowedOperands<'ctx>,
+        operand: ValueId,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let position = custody.requests;
+        custody.requests += 1;
+        if let Some(&word) = custody.words.get(&operand) {
+            return word;
+        }
+        let word = match custody.owners.get(&operand).copied() {
+            Some(slot) => self.mint_borrowed_integer(custody, operand, slot, position),
+            None => {
+                assert!(
+                    !self.materialization_mints_owner(operand),
+                    "operand %{} can mint an owner but was not declared when `{}` custody opened",
+                    operand.0,
+                    custody.label
+                );
+                let value = self.resolve(operand);
+                let ty = self
+                    .value_types
+                    .get(&operand)
+                    .cloned()
+                    .unwrap_or(TirType::DynBox);
+                self.materialize_dynbox_bits(value, &ty)
+            }
+        };
+        custody.words.insert(operand, word);
+        word
+    }
+
+    /// Box a raw full-width integer for a borrowing consumer. Only the heap
+    /// branch can allocate or fail, and `molt_int_from_i64` returns None exactly
+    /// when it raised, so that branch records the owner and joins the failure
+    /// block on None. The inline branch needs neither: no exception-state poll
+    /// runs on the hot path.
+    fn mint_borrowed_integer(
+        &mut self,
+        custody: &mut BorrowedOperands<'ctx>,
+        operand: ValueId,
+        slot: inkwell::values::PointerValue<'ctx>,
+        position: usize,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let raw = self.ensure_i64(self.resolve(operand));
+        let context = self.backend.context;
+        let fits = inline_int_fits_with_builder(&self.backend.builder, context, raw);
+        let suffix = self.borrowed_operands_suffix(custody);
+        let inline_bb = context.append_basic_block(self.llvm_fn, "box_int_inline");
+        let heap_bb = context.append_basic_block(self.llvm_fn, "box_int_bigint");
+        let boxed_bb = context.append_basic_block(
+            self.llvm_fn,
+            &format!("{}_operand{suffix}_{position}", custody.label),
+        );
+        self.all_llvm_blocks.extend([inline_bb, heap_bb, boxed_bb]);
+        let source = self.backend.builder.get_insert_block().unwrap();
+        self.backend
+            .builder
+            .build_conditional_branch(fits, inline_bb, heap_bb)
+            .unwrap();
+        self.record_llvm_edge(source, inline_bb);
+        self.record_llvm_edge(source, heap_bb);
+
+        self.backend.builder.position_at_end(inline_bb);
+        let inline = inline_int_box_with_builder(&self.backend.builder, context, raw);
+        self.backend
+            .builder
+            .build_unconditional_branch(boxed_bb)
+            .unwrap();
+        self.record_llvm_edge(inline_bb, boxed_bb);
+
+        self.backend.builder.position_at_end(heap_bb);
+        let heap =
+            heap_int_box_with_builder(&self.backend.builder, context, &self.backend.module, raw);
+        self.backend.builder.build_store(slot, heap).unwrap();
+        let failed = self
+            .backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                heap,
+                self.none_word(),
+                &format!("{}_box_failed", custody.label),
+            )
+            .unwrap();
+        let abort = self.borrowed_operands_abort(custody);
+        self.backend
+            .builder
+            .build_conditional_branch(failed, abort, boxed_bb)
+            .unwrap();
+        self.record_llvm_edge(heap_bb, abort);
+        self.record_llvm_edge(heap_bb, boxed_bb);
+
+        self.backend.builder.position_at_end(boxed_bb);
+        let boxed = self
+            .backend
+            .builder
+            .build_phi(context.i64_type(), "boxed_int")
+            .unwrap();
+        boxed.add_incoming(&[(&inline, inline_bb), (&heap, heap_bb)]);
+        boxed.as_basic_value().into_int_value()
+    }
+
+    /// Continue past a consumer step only when `ok` holds; otherwise join the
+    /// custody's failure block. The continuation is named `{label}_{step}N`.
+    pub(super) fn borrowed_operands_continue_if(
+        &mut self,
+        custody: &mut BorrowedOperands<'ctx>,
+        ok: inkwell::values::IntValue<'ctx>,
+        step: &str,
+    ) {
+        let abort = self.borrowed_operands_abort(custody);
+        let suffix = self.borrowed_operands_suffix(custody);
+        let next = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, &format!("{}_{step}{suffix}", custody.label));
+        self.all_llvm_blocks.push(next);
+        let source = self.backend.builder.get_insert_block().unwrap();
+        self.backend
+            .builder
+            .build_conditional_branch(ok, next, abort)
+            .unwrap();
+        self.record_llvm_edge(source, next);
+        self.record_llvm_edge(source, abort);
+        self.backend.builder.position_at_end(next);
+    }
+
+    /// Continue past a consumer step that reports failure only through the
+    /// exception state.
+    pub(super) fn borrowed_operands_continue_if_clear(
+        &mut self,
+        custody: &mut BorrowedOperands<'ctx>,
+        step: &str,
+    ) {
+        let pending_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
+        let pending = self
+            .backend
+            .builder
+            .build_call(pending_fn, &[], &format!("{}_pending", custody.label))
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
+        let clear = self
+            .backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                pending,
+                self.backend.context.i64_type().const_zero(),
+                &format!("{}_no_exception", custody.label),
+            )
+            .unwrap();
+        self.borrowed_operands_continue_if(custody, clear, step);
+    }
+
+    /// Rejoin the committed path with the failure block, then release every
+    /// initialized owner once, after the consumer has retained what it keeps.
+    /// The result is `committed`, or None with the first exception pending.
+    /// `on_abort` runs on the failure path only, for consumer-owned cleanup such
+    /// as releasing a partly built aggregate or publishing None targets.
+    pub(super) fn finish_borrowed_operands(
+        &mut self,
+        mut custody: BorrowedOperands<'ctx>,
+        committed: inkwell::values::IntValue<'ctx>,
+        result_name: &str,
+        on_abort: impl FnOnce(&mut Self),
+    ) -> inkwell::values::IntValue<'ctx> {
+        let result = match custody.abort {
+            None => committed,
+            Some(abort) => {
+                let suffix = self.borrowed_operands_suffix(&mut custody);
+                let committed_bb = self.backend.builder.get_insert_block().unwrap();
+                let merge = self
+                    .backend
+                    .context
+                    .append_basic_block(self.llvm_fn, &format!("{}_merge{suffix}", custody.label));
+                self.all_llvm_blocks.push(merge);
+                self.backend
+                    .builder
+                    .build_unconditional_branch(merge)
+                    .unwrap();
+                self.record_llvm_edge(committed_bb, merge);
+                self.backend.builder.position_at_end(abort);
+                on_abort(&mut *self);
+                self.release_call_inputs(
+                    &self.backend.builder,
+                    custody.adopted_callable,
+                    &custody.adopted_objects,
+                );
+                let abort_end = self.backend.builder.get_insert_block().unwrap();
+                self.backend
+                    .builder
+                    .build_unconditional_branch(merge)
+                    .unwrap();
+                self.record_llvm_edge(abort_end, merge);
+                self.backend.builder.position_at_end(merge);
+                let none = self.none_word();
+                let result = self
+                    .backend
+                    .builder
+                    .build_phi(self.backend.context.i64_type(), result_name)
+                    .unwrap();
+                result.add_incoming(&[(&committed, committed_bb), (&none, abort_end)]);
+                result.as_basic_value().into_int_value()
+            }
+        };
+        self.release_borrowed_owners(&custody);
+        result
+    }
+
+    /// Release every initialized owner here, in descending value-id order.
+    /// `finish_borrowed_operands` does this on the rejoined path; an operation
+    /// that leaves the function early (a suspension) calls it before that exit.
+    pub(super) fn release_borrowed_owners(&self, custody: &BorrowedOperands<'ctx>) {
+        if custody.owners.is_empty() {
+            return;
+        }
+        let i64_ty = self.backend.context.i64_type();
+        let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+        for &slot in custody.owners.values().rev() {
+            let bits = self
+                .backend
+                .builder
+                .build_load(i64_ty, slot, &format!("{}_owner_bits", custody.label))
+                .unwrap();
+            self.backend
+                .builder
+                .build_call(release, &[bits.into()], "")
+                .unwrap();
+        }
+    }
+
+    /// Eager custody for a consumer that needs every operand word up front:
+    /// fixed constructors and positional runtime calls. Operands are requested
+    /// in order; `construct` receives one word per position and the name its
+    /// value should carry.
+    pub(super) fn with_borrowed_boxed_operands(
+        &mut self,
+        operands: &[ValueId],
+        label: &str,
+        construct: impl FnOnce(
+            &mut Self,
+            &[inkwell::values::IntValue<'ctx>],
+            &str,
+        ) -> inkwell::values::IntValue<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let mut custody = self.begin_borrowed_operands(operands, label);
+        let mut words = Vec::with_capacity(operands.len());
+        for &operand in operands {
+            words.push(self.borrowed_operand(&mut custody, operand));
+        }
+        let name = if custody.can_fail() {
+            format!("{label}_constructed")
+        } else {
+            format!("{label}_result")
+        };
+        let constructed = construct(&mut *self, words.as_slice(), name.as_str());
+        self.finish_borrowed_operands(custody, constructed, &format!("{label}_result"), |_| {})
+            .into()
+    }
+
+    /// One runtime call whose object arguments are borrowed operands of the
+    /// lowered operation and whose raw words pass unchanged. The value is the
+    /// callee's word, or None with the first exception pending when an argument
+    /// could not be materialized. With `retain_result`, a borrowed word the
+    /// caller keeps acquires its own reference on the committed path, before the
+    /// argument owners are released (it may alias one of them).
+    pub(super) fn borrowed_runtime_call_value(
+        &mut self,
+        callee: FunctionValue<'ctx>,
+        args: &[RuntimeArg<'ctx>],
+        retain_result: bool,
+        label: &str,
+        call_name: &str,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let operands: Vec<ValueId> = args
+            .iter()
+            .filter_map(|arg| match *arg {
+                RuntimeArg::Operand(operand) => Some(operand),
+                RuntimeArg::Word(_) => None,
+            })
+            .collect();
+        let mut custody = self.begin_borrowed_operands(&operands, label);
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(args.len());
+        for arg in args {
+            call_args.push(match *arg {
+                RuntimeArg::Operand(operand) => self.borrowed_operand(&mut custody, operand).into(),
+                RuntimeArg::Word(word) => word,
+            });
+        }
+        let returns_word = callee.get_type().get_return_type().is_some();
+        let call = self
+            .backend
+            .builder
+            .build_call(
+                callee,
+                &call_args,
+                if returns_word { call_name } else { "" },
+            )
+            .unwrap();
+        let value = match call.try_as_basic_value().basic() {
+            Some(word) => word.into_int_value(),
+            None => self.none_word(),
+        };
+        if retain_result && returns_word {
+            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+            self.backend
+                .builder
+                .build_call(retain, &[value.into()], "")
+                .unwrap();
+        }
+        self.finish_borrowed_operands(custody, value, &format!("{label}_result"), |_| {})
+    }
+
+    /// Emit a borrowed runtime call and bind or retire its word by `custody`.
+    pub(super) fn emit_borrowed_runtime_call(
+        &mut self,
+        op: &TirOp,
+        callee: FunctionValue<'ctx>,
+        args: &[RuntimeArg<'ctx>],
+        custody: RuntimeResultCustody,
+        label: &str,
+        call_name: &str,
+    ) {
+        let bound = !op.results.is_empty();
+        let retain =
+            bound && custody == RuntimeResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue);
+        let value = self.borrowed_runtime_call_value(callee, args, retain, label, call_name);
+        match custody {
+            RuntimeResultCustody::Boxed(
+                RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue,
+            ) => self.bind_owned_runtime_result(op, value.into()),
+            RuntimeResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue)
+            | RuntimeResultCustody::Unowned => {
+                if bound {
+                    self.bind_owned_runtime_result(op, value.into());
+                }
+            }
+            RuntimeResultCustody::Boxed(RuntimeBoxedReturn::Void)
+            | RuntimeResultCustody::SideEffect => {
+                let none: BasicValueEnum<'ctx> = self.none_word().into();
+                for &result in &op.results {
+                    self.values.insert(result, none);
+                    self.value_types.insert(result, TirType::DynBox);
+                }
+            }
+        }
+    }
+
+    /// `emit_borrowed_runtime_call` over every operand of `op`, in order.
+    pub(super) fn emit_positional_runtime_call(
+        &mut self,
+        op: &TirOp,
+        callee: FunctionValue<'ctx>,
+        custody: RuntimeResultCustody,
+        label: &str,
+        call_name: &str,
+    ) {
+        let args: Vec<RuntimeArg<'ctx>> = op
+            .operands
+            .iter()
+            .map(|&operand| RuntimeArg::Operand(operand))
+            .collect();
+        self.emit_borrowed_runtime_call(op, callee, &args, custody, label, call_name);
+    }
+
+    /// Return from this function with no value of its own: void, or None in
+    /// its linkage return carrier. The return of a body without a value, and
+    /// the early exit whose caller reads the pending exception instead.
+    pub(super) fn build_empty_return(&mut self) {
+        let linkage_abi = require_function_linkage_abi(self.func, self.backend);
+        match linkage_abi.return_type.clone() {
+            None => {
+                self.backend.builder.build_return(None).unwrap();
+            }
+            Some(return_type) => {
+                let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
+                let ret_val = self
+                    .backend
+                    .context
+                    .i64_type()
+                    .const_int(none_bits, false)
+                    .into();
+                let current_bb = self
+                    .backend
+                    .builder
+                    .get_insert_block()
+                    .expect("return must be lowered inside a basic block");
+                let ret_val =
+                    self.coerce_to_tir_type(ret_val, &TirType::DynBox, &return_type, current_bb);
+                let ret_val = self.coerce_to_type(
+                    ret_val,
+                    lower_type(self.backend.context, &return_type),
+                    current_bb,
+                );
+                self.backend.builder.build_return(Some(&ret_val)).unwrap();
+            }
+        }
+    }
+
+    /// The generated boxed-ABI return custody of a dedicated call whose symbol
+    /// has a canonical row; a missing row is generator drift, not a fallback.
+    pub(super) fn canonical_boxed_return(symbol: &str, arity: usize) -> RuntimeResultCustody {
+        let abi = runtime_boxed_abi(symbol, arity)
+            .unwrap_or_else(|| panic!("{symbol}/{arity} must have a generated boxed ABI row"));
+        RuntimeResultCustody::Boxed(abi.result)
+    }
+
+    /// A +1 owned word for a value the consumer stores or returns rather than
+    /// borrows. An object carrier is retained; a scalar carrier is boxed, and a
+    /// minted heap integer already is the new owner, so it is not retained
+    /// again. A failed mint yields None with MemoryError pending for the
+    /// enclosing operation's exception check.
+    pub(super) fn owned_operand_word(
+        &mut self,
+        operand: ValueId,
+        retain_name: &str,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let value = self.resolve(operand);
+        let ty = self
+            .value_types
+            .get(&operand)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        let word = self.materialize_dynbox_bits(value, &ty);
+        if Self::tir_type_is_dynbox_like(&ty) {
+            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+            self.backend
+                .builder
+                .build_call(retain, &[word.into()], retain_name)
+                .unwrap();
+        }
+        word
+    }
+
+    /// Transfer one source reference into a storage home, without retaining an
+    /// already-owned object. A raw scalar's materialization becomes the home's
+    /// owner. Calls must instead use operation-local call custody, since their
+    /// repeated positions and fallible preparation require shared identity and
+    /// atomic transfer. A failed mint yields None with MemoryError pending.
+    pub(super) fn adopted_storage_word(
+        &mut self,
+        operand: ValueId,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let value = self.resolve(operand);
+        let ty = self
+            .value_types
+            .get(&operand)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        self.materialize_dynbox_bits(value, &ty)
+    }
+
+    /// Commit one reference per adopted position while preserving one boxed
+    /// identity per value. Repeated transfers need additional references. If
+    /// the consumer also borrows that value, custody keeps its original owner
+    /// until the call returns; otherwise the first transfer takes that owner.
+    /// Call only after every fallible input preparation, just before entry.
+    pub(super) fn surrender_borrowed_owners(
+        &self,
+        custody: &BorrowedOperands<'ctx>,
+        operands: &[ValueId],
+        borrowed: &[ValueId],
+    ) {
+        let none = self.none_word();
+        let mut transfers = BTreeMap::<ValueId, usize>::new();
+        for &operand in operands {
+            if custody.owners.contains_key(&operand) {
+                *transfers.entry(operand).or_default() += 1;
+            }
+        }
+        for (operand, count) in transfers {
+            let slot = custody.owners[&operand];
+            let word = custody.words[&operand];
+            let keep_owner = borrowed.contains(&operand);
+            let retains = count - usize::from(!keep_owner);
+            if retains > 0 {
+                let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+                for _ in 0..retains {
+                    self.backend
+                        .builder
+                        .build_call(retain, &[word.into()], "")
+                        .unwrap();
+                }
+            }
+            if !keep_owner {
+                self.backend.builder.build_store(slot, none).unwrap();
+            }
+        }
+    }
+
+    pub(super) fn release_call_inputs(
+        &self,
+        builder: &inkwell::builder::Builder<'ctx>,
+        callable: Option<inkwell::values::IntValue<'ctx>>,
+        owners: &[inkwell::values::IntValue<'ctx>],
+    ) {
+        if owners.is_empty() && callable.is_none() {
+            return;
+        }
+        let (args_ptr, nargs) = self.spill_call_words_with_builder(builder, owners, "call_retired");
+        let release = self.ensure_runtime_void_fn("molt_call_inputs_release", 3);
+        let callable = callable.unwrap_or_else(|| self.backend.context.i64_type().const_zero());
+        builder
+            .build_call(
+                release,
+                &[callable.into(), args_ptr.into(), nargs.into()],
+                "",
+            )
+            .unwrap();
+    }
+
+    /// Spill call argument words into this operation's static entry-block
+    /// array: `(args_ptr, nargs)` words for an owned runtime entry, which
+    /// copies them out before any Python code can run.
+    pub(super) fn spill_call_words(
+        &self,
+        words: &[inkwell::values::IntValue<'ctx>],
+        name: &str,
+    ) -> (
+        inkwell::values::IntValue<'ctx>,
+        inkwell::values::IntValue<'ctx>,
+    ) {
+        self.spill_call_words_with_builder(&self.backend.builder, words, name)
+    }
+
+    /// Calls and their generated trampolines share the same static argument
+    /// transport; the supplied builder owns both stores and the entry alloca.
+    fn spill_call_words_with_builder(
+        &self,
+        builder: &inkwell::builder::Builder<'ctx>,
+        words: &[inkwell::values::IntValue<'ctx>],
+        name: &str,
+    ) -> (
+        inkwell::values::IntValue<'ctx>,
+        inkwell::values::IntValue<'ctx>,
+    ) {
+        let i64_ty = self.backend.context.i64_type();
+        let array = self
+            .entry_block_builder(builder)
+            .build_array_alloca(
+                i64_ty,
+                i64_ty.const_int(words.len().max(1) as u64, false),
+                name,
+            )
+            .unwrap();
+        for (index, &word) in words.iter().enumerate() {
+            let slot = unsafe {
+                builder
+                    .build_gep(
+                        i64_ty,
+                        array,
+                        &[i64_ty.const_int(index as u64, false)],
+                        &format!("{name}_{index}"),
+                    )
+                    .unwrap()
+            };
+            builder.build_store(slot, word).unwrap();
+        }
+        let args_ptr = builder
+            .build_ptr_to_int(array, i64_ty, &format!("{name}_ptr"))
+            .unwrap();
+        (args_ptr, i64_ty.const_int(words.len() as u64, false))
+    }
+
+    /// The boxed word of a compile-time integer inside the inline payload window
+    /// (IC site ids and similar); it owns nothing and can never fail.
+    pub(super) fn inline_int_constant(&self, value: i64) -> inkwell::values::IntValue<'ctx> {
+        assert!(
+            (nanbox::INT_MIN_INLINE..=nanbox::INT_MAX_INLINE).contains(&value),
+            "compile-time integer word {value} does not fit the inline payload"
+        );
+        self.backend.context.i64_type().const_int(
+            (value as u64 & nanbox::INT_MASK) | nanbox::QNAN | nanbox::TAG_INT,
+            false,
+        )
+    }
+
     // ── Representation authority ──
 
     /// Effective semantic carrier type for a block argument (phi).
@@ -110,7 +842,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .into_int_value()
     }
 
-    pub(super) fn materialize_dynbox_bits(
+    /// Representation boxing of a lowered value. A full-width integer boxed here
+    /// may mint a heap owner that nobody tracks, so this stays private to the
+    /// authority: borrowing consumers go through operation-local custody
+    /// (`borrowed_operand`) and storing or returning consumers through
+    /// `owned_operand_word`.
+    fn materialize_dynbox_bits(
         &self,
         operand: BasicValueEnum<'ctx>,
         operand_ty: &TirType,
@@ -125,44 +862,48 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         )
     }
 
-    pub(super) fn materialize_dynbox_operand(
-        &self,
-        operand_id: ValueId,
-    ) -> inkwell::values::IntValue<'ctx> {
-        self.materialize_dynbox_operand_with_temporary_owner(operand_id)
-            .0
+    /// Ownership authority for materialization: a raw full-width integer can
+    /// allocate a heap BigInt, while inline-safe raw integers and already-boxed
+    /// values transfer no owner. It is known before materializing, so custody
+    /// can initialize its owner slots before the operation's first failure edge.
+    fn materialization_mints_owner(&self, operand_id: ValueId) -> bool {
+        self.value_types.get(&operand_id) == Some(&TirType::I64)
+            && !self.repr_facts.is_inline_safe_int(operand_id)
     }
 
-    /// Materialize a borrowed boxed-runtime operand and report whether that
-    /// materialization minted a temporary owner which the caller must retire.
-    /// Raw full-width integers can allocate a heap BigInt; inline-safe raw
-    /// integers and already-boxed values do not transfer an owner.
-    pub(super) fn materialize_dynbox_operand_with_temporary_owner(
-        &self,
-        operand_id: ValueId,
-    ) -> (inkwell::values::IntValue<'ctx>, bool) {
-        let operand = self.resolve(operand_id);
-        let operand_ty = self
-            .value_types
-            .get(&operand_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
-        let owns_temporary =
-            operand_ty == TirType::I64 && !self.repr_facts.is_inline_safe_int(operand_id);
-        (
-            self.materialize_dynbox_bits(operand, &operand_ty),
-            owns_temporary,
-        )
-    }
-
+    /// One static entry-block word for an operation's out-parameter or owner
+    /// slot; allocating where the operation runs would grow the stack on each
+    /// loop iteration.
     pub(super) fn build_entry_i64_alloca(&self, name: &str) -> inkwell::values::PointerValue<'ctx> {
+        self.entry_block_builder(&self.backend.builder)
+            .build_alloca(self.backend.context.i64_type(), name)
+            .unwrap()
+    }
+
+    /// A fixed word range for one operation (list, tuple, dataclass,
+    /// class-definition or unpack transport). Every execution of the operation
+    /// reuses this static entry-block slot; allocating where the operation runs
+    /// would grow the stack on each loop iteration.
+    pub(super) fn build_entry_i64_array_alloca(
+        &self,
+        len: u64,
+        name: &str,
+    ) -> inkwell::values::PointerValue<'ctx> {
+        let i64_ty = self.backend.context.i64_type();
+        self.entry_block_builder(&self.backend.builder)
+            .build_array_alloca(i64_ty, i64_ty.const_int(len, false), name)
+            .unwrap()
+    }
+
+    fn entry_block_builder(
+        &self,
+        position: &inkwell::builder::Builder<'ctx>,
+    ) -> inkwell::builder::Builder<'ctx> {
         let builder = self.backend.context.create_builder();
-        let current_fn = self
-            .backend
-            .builder
+        let current_fn = position
             .get_insert_block()
             .and_then(|bb| bb.get_parent())
-            .expect("llvm function missing while allocating try baseline");
+            .expect("llvm function missing while allocating an entry-block slot");
         let entry = current_fn
             .get_first_basic_block()
             .expect("llvm function missing entry block");
@@ -172,29 +913,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             builder.position_at_end(entry);
         }
         builder
-            .build_alloca(self.backend.context.i64_type(), name)
-            .unwrap()
-    }
-
-    pub(super) fn call_runtime_2_boxed(
-        &self,
-        name: &str,
-        lhs_id: ValueId,
-        rhs_id: ValueId,
-    ) -> BasicValueEnum<'ctx> {
-        let func = self
-            .backend
-            .module
-            .get_function(name)
-            .unwrap_or_else(|| panic!("Runtime function '{}' not declared", name));
-        let lhs_i64 = self.materialize_dynbox_operand(lhs_id);
-        let rhs_i64 = self.materialize_dynbox_operand(rhs_id);
-        self.backend
-            .builder
-            .build_call(func, &[lhs_i64.into(), rhs_i64.into()], name)
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
     }
 
     pub(super) fn emit_box(&mut self, op: &crate::tir::ops::TirOp) {
@@ -220,16 +938,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         };
 
-        let boxed: BasicValueEnum<'ctx> = self.materialize_dynbox_bits(operand, &operand_ty).into();
         // BoxVal's borrowed operand never donates its owner. Scalar boxing
         // creates the result owner; an already-boxed carrier must retain it.
-        if Self::tir_type_is_dynbox_like(&operand_ty) {
-            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-            self.backend
-                .builder
-                .build_call(retain, &[boxed.into()], "box_result_retain")
-                .unwrap();
-        }
+        let boxed: BasicValueEnum<'ctx> = self
+            .owned_operand_word(operand_id, "box_result_retain")
+            .into();
 
         self.values.insert(result_id, boxed);
         self.value_types.insert(result_id, TirType::DynBox);
@@ -523,37 +1236,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let linkage_abi = require_function_linkage_abi(self.func, self.backend);
                 let linkage_return_type = linkage_abi.return_type.as_ref();
                 if values.is_empty() {
-                    match linkage_return_type {
-                        None => {
-                            self.backend.builder.build_return(None).unwrap();
-                        }
-                        Some(return_type) => {
-                            let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-                            let ret_val = self
-                                .backend
-                                .context
-                                .i64_type()
-                                .const_int(none_bits, false)
-                                .into();
-                            let current_bb = self
-                                .backend
-                                .builder
-                                .get_insert_block()
-                                .expect("return must be lowered inside a basic block");
-                            let ret_val = self.coerce_to_tir_type(
-                                ret_val,
-                                &TirType::DynBox,
-                                return_type,
-                                current_bb,
-                            );
-                            let ret_val = self.coerce_to_type(
-                                ret_val,
-                                lower_type(self.backend.context, return_type),
-                                current_bb,
-                            );
-                            self.backend.builder.build_return(Some(&ret_val)).unwrap();
-                        }
-                    }
+                    self.build_empty_return();
                 } else if values.len() == 1 {
                     let val = self.resolve(values[0]);
                     let return_type = linkage_return_type.unwrap_or_else(|| {
@@ -1221,9 +1904,30 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_int_to_ptr(task_ptr_bits, ptr_ty, "task_obj_ptr")
             .unwrap();
         let payload_base_words = (payload_base / 8) as usize;
-        let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+        // Every payload slot owns one reference. A repeated value keeps one
+        // identity: its first slot takes the operand's owned word (an object is
+        // retained, a scalar boxed once, and a minted heap integer is already
+        // that owner) and each later slot retains the same word. A failed mint
+        // stores None with MemoryError pending; no Python code runs before the
+        // enclosing operation's exception check observes it.
+        let mut transferred: BTreeMap<ValueId, inkwell::values::IntValue<'ctx>> = BTreeMap::new();
         for (idx, &arg_id) in payload_operands.iter().enumerate() {
-            let arg_bits = self.materialize_dynbox_operand(arg_id);
+            let arg_bits = match transferred.get(&arg_id).copied() {
+                Some(word) => {
+                    let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+                    let _ = self
+                        .backend
+                        .builder
+                        .build_call(inc_fn, &[word.into()], "task_payload_inc_ref")
+                        .unwrap();
+                    word
+                }
+                None => {
+                    let word = self.owned_operand_word(arg_id, "task_payload_inc_ref");
+                    transferred.insert(arg_id, word);
+                    word
+                }
+            };
             let field_ptr = unsafe {
                 self.backend
                     .builder
@@ -1238,11 +1942,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.backend
                 .builder
                 .build_store(field_ptr, arg_bits)
-                .unwrap();
-            let _ = self
-                .backend
-                .builder
-                .build_call(inc_fn, &[arg_bits.into()], "task_payload_inc_ref")
                 .unwrap();
         }
         match layout.completion() {

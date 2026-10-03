@@ -59,53 +59,46 @@
 //!   requires (mirrors `gvn.rs`). So `Copy(v)` never references a value before
 //!   its definition.
 //!
-//! ## Refcount safety (THE soundness keystone — a dropped IncRef is a UAF)
+//! ## Refcount safety (THE soundness keystone — equal values are not equal owners)
 //!
 //! A typed-slot load returns an **owned** reference: the runtime
 //! `molt_guarded_field_get` / `molt_object_field_get` path
 //! (`object_field_get_ptr_raw`) unconditionally `inc_ref_bits` the slot value
-//! before returning it, so the load's result `r` carries a +1 the frontend
-//! ownership model balances with a later `DecRef(r)`. A *bare* `Copy(v) → r`
-//! (`copy_var`, a plain pointer assignment) would NOT add that +1 — yet the
-//! frontend's `DecRef(r)` still runs, underflowing the object's refcount into a
-//! use-after-free. (`gvn.rs` never faces this: it value-numbers only const /
-//! primitive-typed pure ops — never a `LoadAttr` — so it has no precedent here.)
+//! before returning it, so the load's result `r` holds a +1 of its own. The drop
+//! plane releases it on its own, at `r`'s last use or at its binding's boundary.
+//! `r` equals the forwarded value but is a separate owner: a transparent
+//! `Copy(v) → r` would fold both names onto one reference, and the first
+//! release of either would free what the other still reads.
 //!
-//! Therefore every forward emits `IncRef(source); Copy(source) → r` in place of
-//! the load: the `IncRef` reproduces *exactly* the +1 the load itself performed
-//! (`inc_ref_bits` no-ops on inline non-pointer values, so the inc is the right
-//! action for a pointer source and a harmless no-op for an inline int source —
-//! identical to what the load did). The result `r` then owns its reference and
-//! the existing `DecRef(r)` balances. `copy_prop` later folds `r → source`,
-//! turning the pair into `IncRef(source) … DecRef(source)` — balanced. This
-//! holds for both forwarding flavors: an initialization independently takes the slot's own
-//! +1 (`object_field_set_ptr_raw` `inc_ref_bits(val)`), leaving the stored SSA
-//! value's ownership intact for the forwarded `IncRef`; and an earlier load's
-//! result is itself an owned +1 that the second owned load duplicated.
-//!
-//! `mem_gvn` runs AFTER `refcount_elim` in the pipeline, so the emitted `IncRef`
-//! is final — it is a genuinely required reference acquisition, not a redundant
-//! pair to be cleaned up.
+//! Therefore every forward goes through the shared replacement authority
+//! (`ownership_lattice_min::Replacements`, design 20 §1.2). The load becomes
+//! `Copy(source) → r`, an owned alias (`binding_alias`) whose lowering retains
+//! exactly the +1 the load performed. A raw source holds no reference, by the
+//! drop plane's own raw facts, so its forward stays a transparent `Copy`. No
+//! forward places a separate `IncRef`: beside a transparent `Copy`, that
+//! reference belongs to no owner the drop plane releases. This holds for both
+//! forwarding flavors: an initialization independently takes the slot's own +1
+//! (`object_field_set_ptr_raw` `inc_ref_bits(val)`), leaving the stored SSA
+//! value's ownership intact; and an earlier load's result is itself an owned +1
+//! that the second owned load duplicated.
 //!
 //! ## Repr safety (the `apply(f, 1<<60, 7)` bigint oracle class)
 //!
 //! The forwarded value is the *exact* SSA value the store wrote (`v`) or an
-//! earlier load's result. The new `Copy(source) → r` carries no `_original_kind`
-//! — a pure, representation-transparent SSA move (`copy_prop`/`dce` clean it up).
-//! The result `r` keeps its `ValueId`, so its repr in `representation_plan` is
-//! unchanged; and `source` carries whatever repr it was already assigned.
+//! earlier load's result, and the result `r` keeps its `ValueId`. A raw source
+//! forwards through a representation-transparent `Copy(source) → r` that
+//! carries the source's repr; an owned alias of a heap source stays boxed.
 //! Forwarding therefore can never introduce a repr *more aggressive* than what
-//! was already proven: if the stored field value is `MaybeBigInt`, the forwarded
-//! copy stays `MaybeBigInt`, and no trusted-unbox is created. (Differential:
-//! `struct_field_forwarding.py`, the `>= 1 << 60` field.)
+//! was already proven: if the stored field value is `MaybeBigInt`, the
+//! forwarded result stays boxed, and no trusted-unbox is created.
+//! (Differential: `struct_field_forwarding.py`, the `>= 1 << 60` field.)
 //!
 //! ## Mutation class
 //!
 //! [`Mutates::OpsOnly`](crate::tir::pass_manager::Mutates::OpsOnly): every
-//! rewrite replaces a `LoadAttr` op in place with a `Copy` op and inserts an
-//! `IncRef` immediately before it — same block, same result `ValueId`, no
-//! block/edge/terminator change and no exception-edge op added or removed
-//! (`IncRef`/`Copy` are pure, non-throwing, non-terminator ops). The
+//! rewrite replaces a `LoadAttr` op in place with a `Copy` op — same block,
+//! same result `ValueId`, no block/edge/terminator change and no exception-edge
+//! op added or removed (`Copy` is a non-throwing, non-terminator op). The
 //! CFG-structure analyses stay valid; the ops-sensitive caches (DefMap,
 //! AliasAnalysis, MemorySSA) are dropped by the manager's `invalidate_ops`
 //! afterward.
@@ -118,6 +111,8 @@ use std::collections::HashMap;
 use super::PassStats;
 use super::alias_analysis::{AliasAnalysis, AliasAnalysisResult};
 use super::memory_ssa::{MemAccess, MemorySSA, MemorySsaResult, typed_slot_store_value};
+use super::ownership_lattice_min::Replacements;
+use super::value_range::ValueRange;
 use crate::tir::analysis::{AnalysisManager, ImmediateDoms, StrictReachable};
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::dominates;
@@ -347,66 +342,44 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
     }
 
-    // Apply the rewrites. Each forwarded LoadAttr becomes, IN PLACE:
-    //
-    //     IncRef(source)
-    //     Copy(source) -> r       (r = the load's original result ValueId)
-    //
-    // The `IncRef` reproduces the +1 the owned-result load performed (see the
-    // module-level "Refcount safety" note — dropping it is a use-after-free);
-    // the `Copy` is the representation-transparent value move `copy_prop`/`dce`
-    // resolve. The load's result ValueId is preserved so downstream uses and the
-    // value's repr are unchanged.
-    //
-    // Inserting the `IncRef` shifts every op index at/after the insertion point,
-    // so per block we apply forwards in DESCENDING op_idx order: a rewrite at a
-    // higher index never perturbs the index of a still-pending lower one.
-    let mut by_block: HashMap<BlockId, Vec<&Forward>> = HashMap::new();
-    for fwd in &forwards {
-        by_block.entry(fwd.block).or_default().push(fwd);
+    // Apply the rewrites. Each forwarded LoadAttr becomes, IN PLACE,
+    // `Copy(source) -> r` (r = the load's original result ValueId), so
+    // downstream uses and the value's repr are unchanged. The load returned an
+    // owned reference, and the replacement authority keeps it: the Copy
+    // becomes an owned alias unless `source` is a raw carrier (see the
+    // module-level "Refcount safety" note). An in-place rewrite shifts no op
+    // index, so the forwards apply in any order.
+    if forwards.is_empty() {
+        return stats;
     }
-    for (block_id, mut block_forwards) in by_block {
-        block_forwards.sort_unstable_by_key(|f| std::cmp::Reverse(f.op_idx));
-        let Some(block) = func.blocks.get_mut(&block_id) else {
+    let mut owners = Replacements::new(func);
+    for fwd in &forwards {
+        let Some(load) = func
+            .blocks
+            .get_mut(&fwd.block)
+            .and_then(|block| block.ops.get_mut(fwd.op_idx))
+        else {
             continue;
         };
-        for fwd in block_forwards {
-            if fwd.op_idx >= block.ops.len() {
-                continue;
-            }
-            // Defensive: only rewrite if it is still the load we planned for.
-            if block.ops[fwd.op_idx].opcode != OpCode::LoadAttr {
-                continue;
-            }
-            let old = block.ops[fwd.op_idx].clone();
-            let result = old.results[0];
-            // Replace the load with the value Copy …
-            let mut copy_op = TirOp {
-                dialect: Dialect::Molt,
-                opcode: OpCode::Copy,
-                operands: vec![fwd.source],
-                results: vec![result],
-                attrs: Default::default(),
-                source_span: None,
-            };
-            copy_op.inherit_source_from(&old);
-            block.ops[fwd.op_idx] = copy_op;
-            // … and acquire the reference the load used to acquire, immediately
-            // before the Copy so `r` is owned at every use the load dominated.
-            let mut inc_ref = TirOp {
-                dialect: Dialect::Molt,
-                opcode: OpCode::IncRef,
-                operands: vec![fwd.source],
-                results: vec![],
-                attrs: Default::default(),
-                source_span: None,
-            };
-            inc_ref.inherit_source_from(&old);
-            block.ops.insert(fwd.op_idx, inc_ref);
-            stats.values_changed += 1;
-            stats.ops_added += 1;
+        // Defensive: only rewrite if it is still the load we planned for.
+        if load.opcode != OpCode::LoadAttr {
+            continue;
         }
+        let mut copy_op = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![fwd.source],
+            results: vec![load.results[0]],
+            attrs: Default::default(),
+            source_span: None,
+        };
+        copy_op.inherit_source_from(load);
+        owners.record(load);
+        *load = copy_op;
+        stats.values_changed += 1;
     }
+    let ranges = am.get::<ValueRange>(func);
+    owners.finish(func, Some(ranges));
 
     stats
 }

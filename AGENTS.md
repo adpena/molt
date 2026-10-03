@@ -7,187 +7,183 @@ tests, measurements, and explicit user direction over stale prose.
 
 ## Own the outcome
 
-- Carry an authorized task through implementation, integration, verification,
-  and cleanup. When enough information exists to act, act.
-- Match the requested action: questions and reviews authorize inspection;
-  change requests authorize in-scope implementation and relevant local checks.
-  Define completion for the current outcome, including its integration owner.
-- Pause only for input the user alone can provide, a real scope change, or a
-  destructive, irreversible, privileged, or externally consequential action
-  that was not already authorized. Proceed with safe, reversible work that
-  follows from the request.
-- Do not end on a plan, promise, checkpoint, commit, failed proof, compaction,
-  or status report while useful in-scope work remains. Recover from interrupted
-  tools and continue from durable repository and proof state.
-- Ground progress and completion claims in evidence from the current run. Say
-  plainly what passed, failed, was skipped, or remains unknown.
-- If project guidance conflicts with the live repository or has gone stale,
-  follow the safer current fact and repair the guidance in the same arc when it
-  is in scope.
+- Carry an authorized task through implementation, integration, verification, and cleanup. When
+  enough information exists to act, act.
+- Match the requested action: questions and reviews authorize inspection; change requests authorize
+  in-scope implementation and relevant local checks. Define completion for the current outcome,
+  including its integration owner.
+- Pause only for input the user alone can provide, a real scope change, or a destructive,
+  irreversible, privileged, or externally consequential action that was not already authorized.
+  Proceed with safe, reversible work that follows from the request.
+- Do not end on a plan, promise, checkpoint, commit, failed proof, compaction, or status report
+  while useful in-scope work remains. Recover from interrupted tools and continue from durable
+  repository and proof state.
+- Ground progress and completion claims in evidence from the current run. Say plainly what passed,
+  failed, was skipped, or remains unknown.
+- If project guidance conflicts with the live repository or has gone stale, follow the safer current
+  fact and repair the guidance in the same arc when it is in scope.
 
 ## Engineer coherent systems
 
-- Before each repair or optimization, map the operation/semantic family,
-  sibling sites across backend, profile and platform implementations, upstream
-  producers and assumptions, downstream consumers and exports, and lateral
-  analogous sites. Search by failure mechanism as well as symbol spelling.
-- Check family completeness before landing: prefer one structural correction
-  and explicit invariants, cover every truly affected site with family-wide
-  regression or differential tests, and have adversarial review challenge the
-  impact map. Record justified semantic exceptions and unverified coordinates;
-  do not mechanically change similar-looking sites with different semantics.
-- Enter through one concrete aperture, then follow the invariant through the
-  complete coherent authority class. The aperture bounds discovery; it does
-  not limit the engineering end state.
-- Keep one canonical authority for each fact, state transition, storage owner,
-  protocol, and generated table. Move all consumers together and delete the
-  replaced implementation. Do not preserve internal backward-compatibility
-  lanes, shims, duplicate registries, or speculative fallbacks.
-- Prefer the simplest direct design that satisfies the real constraints.
-  Introduce abstraction only when it removes duplication, makes an invariant
-  explicit, or enables measured optimization without obscuring ownership.
-- Systematize families instead of accumulating type-local or backend-local
-  fixes. Specialized representations are welcome when they materially improve
-  performance or correctness and still implement the shared protocol.
-- Treat frontend, IR, passes, backends, runtime, ABI, tooling, diagnostics,
-  packaging, tests, and docs as projections of the same architecture.
+- Before each repair or optimization, map the operation/semantic family, sibling sites across
+  backend, profile and platform implementations, upstream producers and assumptions, downstream
+  consumers and exports, and lateral analogous sites. Search by failure mechanism as well as symbol
+  spelling.
+- Check family completeness before landing: prefer one structural correction and explicit
+  invariants, cover every truly affected site with family-wide regression or differential tests, and
+  have adversarial review challenge the impact map. Record justified semantic exceptions and
+  unverified coordinates; do not mechanically change similar-looking sites with different semantics.
+- Enter through one concrete aperture, then follow the invariant through the complete coherent
+  authority class. The aperture bounds discovery; it does not limit the engineering end state.
+- Keep one canonical authority for each fact, state transition, storage owner, protocol, and
+  generated table. Move all consumers together and delete the replaced implementation. Do not
+  preserve internal backward-compatibility lanes, shims, duplicate registries, or speculative
+  fallbacks.
+- **Incomplete consumer migration is a correctness defect and a landing blocker.** A changed
+  authority, schema, API, ABI, identity or ownership rule is one indivisible migration through every
+  affected producer and consumer. Before implementation, reconcile existing solutions and preserved
+  WIP, then trace callers, generated projections, fixtures/mocks, build and installation paths,
+  release wiring, documentation, and applicable backend/target/platform cells. Migrate that complete
+  family and delete its replaced lane together. Search for obsolete contracts and signatures before
+  expensive validation; stale fixtures must implement the real boundary and retain their independent
+  oracle. Do not add aliases, adapters, permissive validators or fallback paths to hide an
+  unfinished internal migration. Do not report integration ready or land until the actual affected
+  consumers have exercised the new contract, all exposed migration failures are resolved, and
+  remaining unverified cells are stated explicitly. A green producer or isolated helper cannot prove
+  migration.
+- Prefer the simplest direct design that satisfies the real constraints. Introduce abstraction only
+  when it removes duplication, makes an invariant explicit, or enables measured optimization without
+  obscuring ownership.
+- Systematize families instead of accumulating type-local or backend-local fixes. Specialized
+  representations are welcome when they materially improve performance or correctness and still
+  implement the shared protocol.
+- Treat frontend, IR, passes, backends, runtime, ABI, tooling, diagnostics, packaging, tests, and
+  docs as projections of the same architecture.
 
 ## Project direction
 
-- Molt is an optimizing Python compiler and runtime, not a reimplementation of
-  NumPy, SciPy, or other upstream packages. Ecosystem support comes from
-  reusable compiler/runtime primitives, package and import custody, source-built
-  extensions, and correct C-API/ABI behavior. Audited forks or vendored patches
-  are acceptable only when they are the maintained, provenance-pinned solution
+- Molt is an optimizing Python compiler and runtime, not a reimplementation of NumPy, SciPy, or
+  other upstream packages. Ecosystem support comes from reusable compiler/runtime primitives,
+  package and import custody, source-built extensions, and correct C-API/ABI behavior. Audited forks
+  or vendored patches are acceptable only when they are the maintained, provenance-pinned solution
   to an upstream defect—not a hidden substitute implementation.
-- Native and WASM are co-equal frontier targets. LLVM, MLIR, the rest of the IR
-  stack, linkers, runtime memory management, and every shipped backend/profile
-  are first-class optimization surfaces.
-- Design for free-threaded and GIL-less execution while preserving deterministic
-  expected CPython behavior by default.
-- Support claims are explicit matrices over target OS, architecture, ABI,
-  Python version, concurrency mode, backend, profile, and optimization level.
-  Gate only on demonstrated capability, correctness, or performance—not on
-  implementation convenience. Unsupported cells fail early with useful
-  diagnostics.
-- Portability covers compiler/runtime, CLI, tests, build/release tooling, and
-  developer apparatus alike; host-specific assumptions must not leak into
-  target semantics or shared infrastructure.
+- Native and WASM are co-equal frontier targets. LLVM, MLIR, the rest of the IR stack, linkers,
+  runtime memory management, and every shipped backend/profile are first-class optimization
+  surfaces.
+- Design for free-threaded and GIL-less execution while preserving deterministic expected CPython
+  behavior by default.
+- Support claims are explicit matrices over target OS, architecture, ABI, Python version,
+  concurrency mode, backend, profile, and optimization level. Gate only on demonstrated capability,
+  correctness, or performance—not on implementation convenience. Unsupported cells fail early with
+  useful diagnostics.
+- Portability covers compiler/runtime, CLI, tests, build/release tooling, and developer apparatus
+  alike; host-specific assumptions must not leak into target semantics or shared infrastructure.
 
 ## Performance is part of correctness
 
-- Measure before and after load-bearing changes. Select the metrics that expose
-  the changed contract: latency, throughput, startup, allocations, bytes, peak
-  live memory, process-tree RSS/commit, cache behavior, atomics, contention,
-  code size, link time, artifact size, and failure atomicity.
-- Optimize per platform and architecture through typed capability and target
-  plans. Do not use post-failure retries or silent fallback as feature
-  detection.
-- Build missing telemetry, profilers, benchmarks, or inspection tools when they
-  materially shorten the path to a correct decision. Reuse one instrumentation
-  authority across targets wherever possible.
-- A local benchmark win does not justify duplicated control paths, weaker
-  determinism, or unbounded memory. Record the relevant tradeoffs and gate the
-  policy on reproducible evidence.
+- Measure before and after load-bearing changes. Select the metrics that expose the changed
+  contract: latency, throughput, startup, allocations, bytes, peak live memory, process-tree
+  RSS/commit, cache behavior, atomics, contention, code size, link time, artifact size, and failure
+  atomicity.
+- Optimize per platform and architecture through typed capability and target plans. Do not use
+  post-failure retries or silent fallback as feature detection.
+- Build missing telemetry, profilers, benchmarks, or inspection tools when they materially shorten
+  the path to a correct decision. Reuse one instrumentation authority across targets wherever
+  possible.
+- A local benchmark win does not justify duplicated control paths, weaker determinism, or unbounded
+  memory. Record the relevant tradeoffs and gate the policy on reproducible evidence.
 
 ## Work with the live repository
 
-- Start whole-project discovery with `uv run --python 3.12 python tools/agent_coordination.py context`; use `--json` for the versioned agent-facing model.
-- Start with `git status`, applicable nested instructions, and the current
-  source/proof state. For active multi-agent or Pact work, read the relevant
-  sections of `docs/agent/ORCHESTRATION.md`; do not preload the entire historical
-  board when a narrow live section is enough.
-- Preserve user and parallel-agent work. Never reset, clean, overwrite, revert,
-  or broadly stage unrelated changes. Integrate with pathspecs and review every
-  diff that will be committed or landed.
-- Generated files are projections. Change their declarative source or generator
-  and regenerate them in the same arc.
-- Prefer existing project commands and helpers when they express the current
-  contract. Improve or replace them when live evidence shows they are stale,
-  ambiguous, duplicated, or wasteful.
-- Keep operational history, machine-specific incidents, long procedures, and
-  subsystem tutorials out of this always-loaded file. Put durable detail in the
-  relevant design, spec, runbook, skill, test, or live board and retrieve it
-  when needed.
-- Keep per-run logs, scratch plans and worker handoffs out of tracked source;
-  follow the public source boundary in `docs/ROOT_LAYOUT.md`. Preserve private
-  evidence locally and fold durable conclusions into the owning public contract.
+- Start whole-project discovery with `uv run --python 3.12 python tools/agent_coordination.py
+  context`; use `--json` for the versioned agent-facing model.
+- Start with `git status`, applicable nested instructions, and the current source/proof state. For
+  active multi-agent or Pact work, read the relevant sections of `docs/agent/ORCHESTRATION.md`; do
+  not preload the entire historical board when a narrow live section is enough.
+- Preserve user and parallel-agent work. Never reset, clean, overwrite, revert, or broadly stage
+  unrelated changes. Integrate with pathspecs and review every diff that will be committed or
+  landed.
+- Generated files are projections. Change their declarative source or generator and regenerate them
+  in the same arc.
+- Prefer existing project commands and helpers when they express the current contract. Improve or
+  replace them when live evidence shows they are stale, ambiguous, duplicated, or wasteful.
+- Keep operational history, machine-specific incidents, long procedures, and subsystem tutorials out
+  of this always-loaded file. Put durable detail in the relevant design, spec, runbook, skill, test,
+  or live board and retrieve it when needed.
+- Keep per-run logs, scratch plans and worker handoffs out of tracked source; follow the public
+  source boundary in `docs/ROOT_LAYOUT.md`. Preserve private evidence locally and fold durable
+  conclusions into the owning public contract.
 
 ## Delegate deliberately
 
-- Before designing, implementing, or deleting, every worker must search the
-  current canonical authority, relevant history and recorded handoffs, and
-  preserved WIP/donor trees for an existing solution. Report what already owns
-  the invariant and what will be reused, reconciled, or retired. Task messages
-  and remembered summaries are leads to verify, not permission to build a
-  second implementation. Ask the integrator when ownership or custody is unclear.
-- Use subagents for independent, bounded work that benefits from parallel
-  attention or would pollute the orchestrator context: exploration, audits, log
-  analysis, proof review, mechanical migration, and disjoint implementation.
-- Keep working while subagents run. Communicate asynchronously, redirect a lane
-  that drifts, and integrate their evidence rather than forwarding raw output.
-- Avoid overlapping write ownership and redundant proof fanout. The parent owns
-  the final architecture, integration, verification, and cleanup.
-- Record active worker ownership and handoff state in the existing coordination
-  records described in `docs/ops/MULTI_AGENT_COORDINATION.md`. Task messages and
-  worktree names do not substitute for those records or enforce a source lock.
-- Match model speed and reasoning effort to the task: strongest available
-  reasoning for load-bearing architecture and correctness; faster workers for
-  well-bounded scans and mechanical work.
-- Respect the operator's active concurrency limits for Codex and external workers.
-  Use Astra for the most complex, mission-critical or long-running reasoning;
-  calibrate other workers' models and effort to their scopes. Claude Fable/Opus
-  may provide independent design or review when available, under the same search,
-  ownership and evidence discipline; they do not create a second integration lane.
+- Before designing, implementing, or deleting, every worker must search the current canonical
+  authority, relevant history and recorded handoffs, and preserved WIP/donor trees for an existing
+  solution. Report what already owns the invariant and what will be reused, reconciled, or retired.
+  Task messages and remembered summaries are leads to verify, not permission to build a second
+  implementation. Ask the integrator when ownership or custody is unclear.
+- Use subagents for independent, bounded work that benefits from parallel attention or would pollute
+  the orchestrator context: exploration, audits, log analysis, proof review, mechanical migration,
+  and disjoint implementation.
+- Keep working while subagents run. Communicate asynchronously, redirect a lane that drifts, and
+  integrate their evidence rather than forwarding raw output.
+- Avoid overlapping write ownership and redundant proof fanout. The parent owns the final
+  architecture, integration, verification, and cleanup.
+- Record active worker ownership and handoff state in the existing coordination records described in
+  `docs/ops/MULTI_AGENT_COORDINATION.md`. Task messages and worktree names do not substitute for
+  those records or enforce a source lock.
+- Match model speed and reasoning effort to the task: strongest available reasoning for load-bearing
+  architecture and correctness; faster workers for well-bounded scans and mechanical work.
+- Respect the operator's active concurrency limits for Codex and external workers. Use Astra for the
+  most complex, mission-critical or long-running reasoning; calibrate other workers' models and
+  effort to their scopes. Claude Fable/Opus may provide independent design or review when available,
+  under the same search, ownership and evidence discipline; they do not create a second integration
+  lane.
 
 ## Verify the claim, not the ritual
 
-- Tests must distinguish correct behavior from a plausible defect using an
-  independent oracle. Extend the existing test authority; avoid implementation
-  mirrors, mock-only success, and test-count or coverage quotas. When adding or
-  reviewing tests, use `docs/spec/areas/testing/0007-testing.md` for test quality.
-- Prove the exact changed contract first, then widen in proportion to the claim.
-  Use focused static checks, unit tests, differential tests, integration tests,
-  target execution, profiling, and benchmarks as appropriate.
-- One green backend/profile/target cell does not prove a family-wide claim.
-  Conversely, do not run broad expensive suites when a narrow check completely
-  proves the owned invariant.
-- After relevant checks pass, repeat or broaden them only for changed inputs,
-  a new failure, or an unresolved claim; otherwise proceed to integration.
-- Treat a frozen or silent process as unknown until logs, artifacts, guard
-  state, or live process evidence establishes its result.
-- Before completion, review the owned diff, generated synchronization, docs,
-  diagnostics, failure paths, allocations, and cleanup. Fix newly exposed
-  in-scope defects rather than converting them into a report.
-- Keep public documentation aligned in the same change: prioritize `README.md`
-  and onboarding, then the owning contract/status projections. Link to canonical
-  matrices instead of duplicating them; distinguish implementation, verified
-  cells, and release acceptance. Keep local proof history out of public overviews.
+- Tests must distinguish correct behavior from a plausible defect using an independent oracle.
+  Extend the existing test authority; avoid implementation mirrors, mock-only success, and
+  test-count or coverage quotas. When adding or reviewing tests, use
+  `docs/spec/areas/testing/0007-testing.md` for test quality.
+- Prove the exact changed contract first, then widen in proportion to the claim. Use focused static
+  checks, unit tests, differential tests, integration tests, target execution, profiling, and
+  benchmarks as appropriate.
+- One green backend/profile/target cell does not prove a family-wide claim. Conversely, do not run
+  broad expensive suites when a narrow check completely proves the owned invariant.
+- After relevant checks pass, repeat or broaden them only for changed inputs, a new failure, or an
+  unresolved claim; otherwise proceed to integration.
+- Treat a frozen or silent process as unknown until logs, artifacts, guard state, or live process
+  evidence establishes its result.
+- Before completion, review the owned diff, generated synchronization, docs, diagnostics, failure
+  paths, allocations, and cleanup. Fix newly exposed in-scope defects rather than converting them
+  into a report.
+- Keep public documentation aligned in the same change: prioritize `README.md` and onboarding, then
+  the owning contract/status projections. Link to canonical matrices instead of duplicating them;
+  distinguish implementation, verified cells, and release acceptance. Keep local proof history out
+  of public overviews.
 
 ## Safety and custody
 
-- Preserve unrelated files, credentials, external systems, and people. Do not
-  publish, message, file issues, push, or mutate external state unless the user
-  authorized that action or it is an explicit step of the requested workflow.
-- Never use destructive Git operations or broad filesystem cleanup without
-  explicit authorization and verified targets.
-- Molt process cleanup may target only a live-proved Molt-owned child or worker.
-  Never target Codex, Claude, app/renderer/server helpers, MCP/plugin processes,
-  shell hosts, Git pollers, ancestors, or ambiguous host control-plane
-  processes. Preserve evidence and repair custody when identity is unclear.
-- Before a risky or long-running proof, leave a recoverable command/cwd/status/
-  evidence capsule under the established guard/incident machinery. Prefer
-  detached project custody for expensive or contention-heavy work; see
-  `docs/agent/PROOF_QUEUE.md` when that machinery is actually needed.
+- Preserve unrelated files, credentials, external systems, and people. Do not publish, message, file
+  issues, push, or mutate external state unless the user authorized that action or it is an explicit
+  step of the requested workflow.
+- Never use destructive Git operations or broad filesystem cleanup without explicit authorization
+  and verified targets.
+- Molt process cleanup may target only a live-proved Molt-owned child or worker. Never target Codex,
+  Claude, app/renderer/server helpers, MCP/plugin processes, shell hosts, Git pollers, ancestors, or
+  ambiguous host control-plane processes. Preserve evidence and repair custody when identity is
+  unclear.
+- Before a risky or long-running proof, leave a recoverable command/cwd/status/ evidence capsule
+  under the established guard/incident machinery. Prefer detached project custody for expensive or
+  contention-heavy work; see `docs/agent/PROOF_QUEUE.md` when that machinery is actually needed.
 
 ## Useful authorities
 
 - Live multi-agent/Pact state: `docs/agent/ORCHESTRATION.md`
-- Canonical architecture and documentation map: `docs/CANONICALS.md`,
-  `docs/INDEX.md`, `docs/spec/README.md`
+- Canonical architecture and documentation map: `docs/CANONICALS.md`, `docs/INDEX.md`,
+  `docs/spec/README.md`
 - Proof-queue operations: `docs/agent/PROOF_QUEUE.md`
-- TIR facts and generation: `runtime/molt-ir/src/tir/op_kinds.toml`,
-  `tools/gen_op_kinds.py`
+- TIR facts and generation: `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py`
 - Runtime and ABI manifests: `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
 

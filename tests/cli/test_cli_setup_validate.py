@@ -312,10 +312,14 @@ def test_cli_validate_luau_backend_filter_reports_guarded_luau_steps() -> None:
     assert all("luau" in entry["backends"] for entry in steps)
 
 
+@pytest.mark.parametrize(
+    "bypass", ["MOLT_SKIP_BINARY_VALIDITY_CHECK", "MOLT_SKIP_CARGO_LOCK"]
+)
 def test_cli_validate_rejects_proof_bypass_environment(
     monkeypatch: pytest.MonkeyPatch,
+    bypass: str,
 ) -> None:
-    monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+    monkeypatch.setenv(bypass, "1")
 
     res = _run_cli(["validate", "--check", "--json", "--suite", "smoke"])
 
@@ -323,7 +327,18 @@ def test_cli_validate_rejects_proof_bypass_environment(
     payload = json.loads(res.stdout)
     assert payload["command"] == "validate"
     assert payload["status"] == "error"
-    assert "MOLT_SKIP_RUNTIME_REBUILD=1 disables" in payload["errors"][0]
+    assert f"{bypass}=1 disables" in payload["errors"][0]
+
+
+def test_cli_validate_allows_no_build_policy_without_bypassing_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+    res = _run_cli(["validate", "--check", "--json", "--suite", "smoke"])
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    assert payload["command"] == "validate"
+    assert payload["data"]["steps"]
 
 
 def test_cli_validate_check_json_writes_explicit_summary_out(tmp_path: Path) -> None:
@@ -688,6 +703,11 @@ def test_cli_build_toolchain_probes_use_memory_guard(
 
     assert cli._git_rev(ROOT) == "abc123"
     assert COMPILER_METADATA._rustc_version() == "rustc 1.91.0"
+    monkeypatch.setattr(
+        RUNTIME_WASM_VALIDATION,
+        "run_pinned_tool",
+        lambda _name, args, *, run, **kwargs: run(["wasm-tools", *args], **kwargs),
+    )
     assert RUNTIME_WASM_VALIDATION._validate_wasm_structural(wasm_path) is None
     assert (
         wasm_link_inputs.rust_target_libdir("wasm32-wasip1") == target_libdir.resolve()
@@ -714,7 +734,12 @@ def test_runtime_wasm_structural_validation_fails_loud_without_wasm_tools(
 ) -> None:
     wasm_path = tmp_path / "runtime.wasm"
     wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
-    monkeypatch.setattr(RUNTIME_WASM_VALIDATION.shutil, "which", lambda _name: None)
+    from molt.tool_releases import ToolReleaseError
+
+    def unavailable(*_args, **_kwargs):
+        raise ToolReleaseError("wasm-tools is required; reuse is disabled")
+
+    monkeypatch.setattr(RUNTIME_WASM_VALIDATION, "run_pinned_tool", unavailable)
 
     error = RUNTIME_WASM_VALIDATION._validate_wasm_structural(wasm_path)
 
@@ -737,7 +762,7 @@ def test_cli_diff_command_uses_diff_memory_guard(
         return 0
 
     monkeypatch.setattr(
-        script_commands, "_find_molt_root", lambda *args: ROOT, raising=True
+        script_commands, "compiler_source_root", lambda: ROOT, raising=True
     )
     monkeypatch.setattr(script_commands, "_run_command", fake_run_command, raising=True)
 
@@ -784,8 +809,8 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
     )
     monkeypatch.setattr(
         script_commands,
-        "_find_molt_root",
-        lambda start, cwd=None: ROOT,
+        "compiler_source_root",
+        lambda: ROOT,
         raising=True,
     )
     monkeypatch.setattr(
@@ -861,8 +886,8 @@ def test_cli_cross_run_uses_cross_memory_guard(
     )
     monkeypatch.setattr(
         script_commands,
-        "_find_molt_root",
-        lambda start, cwd=None: ROOT,
+        "compiler_source_root",
+        lambda: ROOT,
         raising=True,
     )
     monkeypatch.setattr(
@@ -937,7 +962,7 @@ def test_cli_pytest_uses_shared_uv_project_python_authority(
         return 0
 
     monkeypatch.setattr(
-        quality_commands, "_find_molt_root", lambda _cwd: ROOT, raising=True
+        quality_commands, "compiler_source_root", lambda: ROOT, raising=True
     )
     monkeypatch.setattr(
         quality_commands, "_run_command", fake_run_command, raising=True
@@ -995,8 +1020,8 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
 
     monkeypatch.setattr(
         TOOLCHAIN_VALIDATION,
-        "_find_molt_root",
-        lambda *args: ROOT,
+        "compiler_source_root",
+        lambda: ROOT,
         raising=True,
     )
     monkeypatch.setattr(
@@ -1084,8 +1109,8 @@ def test_cli_validate_defaults_execution_summary_to_logs(
 
     monkeypatch.setattr(
         TOOLCHAIN_VALIDATION,
-        "_find_molt_root",
-        lambda *args: tmp_path,
+        "compiler_source_root",
+        lambda: tmp_path,
         raising=True,
     )
     monkeypatch.setattr(
@@ -1196,8 +1221,8 @@ def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(
         TOOLCHAIN_VALIDATION,
-        "_find_molt_root",
-        lambda _cwd: ROOT,
+        "compiler_source_root",
+        lambda: ROOT,
         raising=True,
     )
     monkeypatch.setattr(
@@ -1409,48 +1434,25 @@ def test_windows_msvc_env_reports_inactive_dev_shell(
     assert any("VsDevCmd.bat" in advice for advice in msvc["advice"])
 
 
-def test_windows_vsdevcmd_probe_uses_build_guard(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    vswhere = tmp_path / "vswhere.exe"
-    vswhere.write_text("", encoding="utf-8")
+def test_windows_vsdevcmd_advice_uses_shared_installation_selection(
+    tmp_path, monkeypatch
+):
+    from molt import platform_toolchain
+
     installation = tmp_path / "Visual Studio"
-    vsdevcmd = installation / "Common7" / "Tools" / "VsDevCmd.bat"
-    vsdevcmd.parent.mkdir(parents=True)
-    vsdevcmd.write_text("", encoding="utf-8")
-    captured: dict[str, object] = {}
+    script = installation / "Common7/Tools/VsDevCmd.bat"
+    script.parent.mkdir(parents=True)
+    script.write_text("")
+    selected = []
 
-    def fake_run(command: list[str], **kwargs: object):
-        captured["command"] = command
-        captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(command, 0, f"{installation}\n", "")
+    def discover(component, env):
+        selected.append(component)
+        return installation
 
-    monkeypatch.setattr(
-        SETUP_READINESS, "_windows_vswhere_path", lambda: vswhere, raising=True
-    )
-    monkeypatch.setattr(
-        SETUP_READINESS, "_run_completed_command", fake_run, raising=True
-    )
-
-    assert SETUP_READINESS._windows_vsdevcmd_path() == vsdevcmd
-    assert captured["command"] == [
-        str(vswhere),
-        "-latest",
-        "-products",
-        "*",
-        "-requires",
-        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-        "-property",
-        "installationPath",
-    ]
-    assert captured["kwargs"] == {
-        "env": None,
-        "cwd": None,
-        "capture_output": True,
-        "memory_guard_prefix": "MOLT_BUILD",
-        "timeout": 10,
-    }
+    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(platform_toolchain, "visual_studio_installation", discover)
+    assert SETUP_READINESS._windows_vsdevcmd_path() == script
+    assert selected == ["Microsoft.VisualStudio.Component.VC.Tools.x86.x64"]
 
 
 def test_update_toolchain_plan_uses_pinned_rust_and_wasi_target(
@@ -1545,7 +1547,10 @@ def test_cli_install_uses_memory_guard_for_venv_and_uv(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(deps, "_ensure_uv", lambda: "uv", raising=True)
-    monkeypatch.setattr(deps, "_find_molt_root", lambda _cwd: tmp_path, raising=True)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "user-project"\nversion = "0.0.0"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         deps, "_run_completed_command", fake_run_completed, raising=True
     )
@@ -1610,3 +1615,30 @@ def test_install_wrappers_require_explicit_dependency_setup() -> None:
     for text in (shell_text, powershell_text):
         assert "setup --install-cli-dependencies" in text
         assert "No CLI dependencies or toolchains were installed" in text
+
+
+def test_update_provisions_managed_validator_even_with_ambient_tool(monkeypatch):
+    monkeypatch.setattr(TOOLCHAIN_VALIDATION, "pinned_executable", lambda *_a: None)
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION.shutil,
+        "which",
+        lambda name: name if name == "wasm-tools" else None,
+    )
+    steps, _ = TOOLCHAIN_VALIDATION._planned_update_steps(
+        ROOT,
+        include_toolchains=True,
+        include_locks=False,
+        include_manifests=False,
+    )
+    managed = [step for step in steps if step.name == "provision-pinned-wasm-tools"]
+    assert len(managed) == 1
+    assert managed[0].cmd == [
+        sys.executable,
+        "-m",
+        "molt.tool_releases",
+        "provision",
+        "wasm-tools",
+        "--repo-root",
+        str(ROOT),
+    ]
+    assert all(step.name != "cargo-install-wasm-tools" for step in steps)

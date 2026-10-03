@@ -33,7 +33,7 @@ fn const_str(value: &str, result: ValueId) -> TirOp {
     let mut result_op = op(OpCode::ConstStr, vec![], vec![result]);
     result_op
         .attrs
-        .insert("value".into(), AttrValue::Str(value.into()));
+        .insert("s_value".into(), AttrValue::Str(value.into()));
     result_op
 }
 

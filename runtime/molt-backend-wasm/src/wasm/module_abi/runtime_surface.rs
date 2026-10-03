@@ -264,6 +264,7 @@ mod tests {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             }],
             profile: None,
@@ -293,6 +294,22 @@ mod tests {
                 .contains_key("molt_open_builtin")
         );
         assert!(pure.builtin_trampoline_specs.contains_key("molt_len"));
+    }
+
+    #[test]
+    fn foreign_provider_publication_preserves_profile_admission() {
+        let mut ir = builtin_publication_ir(vec![]);
+        ir.functions[0].ops[0].s_value = Some("_io".into());
+        let pure = WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Pure);
+        assert!(pure.builtin_trampoline_specs.is_empty());
+        for profile in [WasmProfile::Auto, WasmProfile::Full] {
+            let plan = WasmRuntimeSurfacePlan::build(&ir, profile);
+            assert_eq!(plan.builtin_trampoline_specs.len(), 1);
+            assert_eq!(
+                plan.builtin_trampoline_specs.get("molt_open_builtin"),
+                Some(&8),
+            );
+        }
     }
 
     #[test]
@@ -381,6 +398,7 @@ mod tests {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             }],
             profile: None,
@@ -424,6 +442,7 @@ mod tests {
                         source_file: None,
                         is_extern: false,
                         codegen_partition: false,
+                        parameter_custody: Vec::new(),
                         execution_context: Default::default(),
                     }],
                     profile: None,
@@ -477,6 +496,7 @@ mod tests {
                     source_file: None,
                     is_extern: false,
                     codegen_partition: false,
+                    parameter_custody: Vec::new(),
                     execution_context: Default::default(),
                 }],
                 profile: None,

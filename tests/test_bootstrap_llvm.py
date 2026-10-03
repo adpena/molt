@@ -1121,123 +1121,14 @@ def test_arch_contract_windows_rows_are_complete() -> None:
     )
 
 
-def test_windows_arm64_activation_uses_contract_arches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    vsdevcmd = tmp_path / "Common7" / "Tools" / "VsDevCmd.bat"
-    vsdevcmd.parent.mkdir(parents=True)
-    vsdevcmd.write_text("", encoding="utf-8")
-    include = tmp_path / "VC" / "Tools" / "include"
-    include.mkdir(parents=True)
-    (include / "atlbase.h").write_text("", encoding="utf-8")
-    observed: list[str] = []
-
-    def run(command, **_kwargs):
-        observed.extend(command)
-        return SimpleNamespace(
-            returncode=0,
-            stdout=(
-                "PATH=activated\n"
-                f"INCLUDE={include}\n"
-                "VSCMD_ARG_TGT_ARCH=arm64\nVSCMD_ARG_HOST_ARCH=arm64\n"
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr(bootstrap_llvm.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        bootstrap_llvm, "_visual_studio_installation", lambda _component: tmp_path
-    )
-    monkeypatch.setattr(bootstrap_llvm.subprocess, "run", run)
-    monkeypatch.setattr(
-        bootstrap_llvm.shutil,
-        "which",
-        lambda name, path=None: (
-            "cl.exe" if name == "cl" and path == "activated" else None
-        ),
-    )
-
-    env = bootstrap_llvm._windows_msvc_env({"PATH": "base"}, machine="ARM64")
-
-    assert env["VSCMD_ARG_TGT_ARCH"] == "arm64"
-    assert env["VSCMD_ARG_HOST_ARCH"] == "arm64"
-    assert any("-arch=arm64 -host_arch=arm64" in part for part in observed)
-    assert any(part.startswith("call %MOLT_LLVM_VSDEVCMD_CALL%") for part in observed)
-
-
-@pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe and batch semantics")
-def test_windows_activation_executes_batch_path_with_spaces(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    install = tmp_path / "Visual Studio Build Tools"
-    vsdevcmd = install / "Common7" / "Tools" / "VsDevCmd.bat"
-    vsdevcmd.parent.mkdir(parents=True)
-    include = tmp_path / "VC" / "Tools" / "include"
-    include.mkdir(parents=True)
-    (include / "atlbase.h").write_text("", encoding="utf-8")
-    vsdevcmd.write_text(
-        "@echo off\n"
-        'set "PATH=activated"\n'
-        f'set "INCLUDE={include}"\n'
-        'set "VSCMD_ARG_TGT_ARCH=x64"\n'
-        'set "VSCMD_ARG_HOST_ARCH=x64"\n',
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(bootstrap_llvm.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        bootstrap_llvm, "_visual_studio_installation", lambda _component: install
-    )
-    monkeypatch.setattr(
-        bootstrap_llvm.shutil,
-        "which",
-        lambda name, path=None: (
-            "cl.exe" if name == "cl" and path == "activated" else None
-        ),
-    )
-
-    env = bootstrap_llvm._windows_msvc_env({"PATH": "base"}, machine="AMD64")
-
-    assert env["PATH"] == "activated"
-    assert env["VSCMD_ARG_TGT_ARCH"] == "x64"
-    assert env["VSCMD_ARG_HOST_ARCH"] == "x64"
-    assert "MOLT_LLVM_VSDEVCMD_CALL" not in env
-
-
-def test_windows_activation_fails_before_build_when_atl_is_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    install = tmp_path / "Visual Studio Build Tools"
-    vsdevcmd = install / "Common7" / "Tools" / "VsDevCmd.bat"
-    vsdevcmd.parent.mkdir(parents=True)
-    vsdevcmd.write_text("", encoding="utf-8")
-
-    monkeypatch.setattr(bootstrap_llvm.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        bootstrap_llvm, "_visual_studio_installation", lambda _component: install
-    )
-    monkeypatch.setattr(
-        bootstrap_llvm.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout=(
-                "PATH=activated\nINCLUDE=missing\n"
-                "VSCMD_ARG_TGT_ARCH=x64\nVSCMD_ARG_HOST_ARCH=x64\n"
-            ),
-            stderr="",
-        ),
-    )
-    monkeypatch.setattr(
-        bootstrap_llvm.shutil,
-        "which",
-        lambda name, path=None: (
-            "cl.exe" if name == "cl" and path == "activated" else None
-        ),
-    )
-
+def test_llvm_alone_requires_atl_after_shared_msvc_activation(tmp_path):
+    include = tmp_path / "include"
+    include.mkdir()
+    env = {"INCLUDE": str(include)}
     with pytest.raises(SystemExit, match="Microsoft.VisualStudio.Component.VC.ATL"):
-        bootstrap_llvm._windows_msvc_env({"PATH": "base"}, machine="AMD64")
+        bootstrap_llvm._require_windows_atl(env, tmp_path)
+    (include / "atlbase.h").write_text("")
+    bootstrap_llvm._require_windows_atl(env, tmp_path)
 
 
 def test_resource_preflight_rejects_insufficient_disk(

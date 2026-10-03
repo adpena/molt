@@ -11,6 +11,7 @@ fn test_compile_checked_lowers_type_check_helpers() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -93,9 +94,9 @@ fn test_compile_checked_lowers_type_check_helpers() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
     assert!(
-        source.contains("local function molt_builtin_type")
-            && source.contains("local function molt_issubclass")
-            && source.contains("local function molt_isinstance"),
+        source.contains("function molt_builtin_type")
+            && source.contains("function molt_issubclass")
+            && source.contains("function molt_isinstance"),
         "type-check helper authority should be emitted, got:\n{source}"
     );
     assert!(
@@ -126,6 +127,7 @@ fn test_compile_checked_lowers_callable_builtin_through_invocation_authority() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -184,6 +186,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
@@ -375,6 +378,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -389,6 +393,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -403,6 +408,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -417,6 +423,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -431,6 +438,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -445,6 +453,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -457,10 +466,10 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
     assert!(
-        source.contains("local function molt_get_attr")
-            && source.contains("local function molt_has_attr")
-            && source.contains("local function molt_set_attr")
-            && source.contains("local function molt_del_attr"),
+        source.contains("function molt_get_attr")
+            && source.contains("function molt_has_attr")
+            && source.contains("function molt_set_attr")
+            && source.contains("function molt_del_attr"),
         "descriptor-aware attribute helpers should be emitted, got:\n{source}"
     );
     assert!(
@@ -520,6 +529,7 @@ fn test_compile_checked_lowers_class_apply_set_name_authority() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
@@ -579,6 +589,7 @@ fn test_compile_checked_lowers_class_apply_set_name_authority() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -591,7 +602,7 @@ fn test_compile_checked_lowers_class_apply_set_name_authority() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
     assert!(
-        source.contains("local function molt_class_apply_set_name")
+        source.contains("function molt_class_apply_set_name")
             && source.contains("local entries = {}")
             && source.contains("local hook = molt_get_attr(value, \"__set_name__\")")
             && source.contains("if hook ~= nil then hook(cls, name) end"),
@@ -622,6 +633,7 @@ fn test_compile_checked_rejects_unavailable_lexical_cell_transport() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "function_closure_bits".to_string(),
@@ -655,6 +667,7 @@ fn test_compile_checked_lowers_bridge_unavailable_to_runtime_error() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -700,6 +713,7 @@ fn test_compile_checked_lowers_invoke_ffi_to_luau_capability_error() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "invoke_ffi".to_string(),
@@ -734,6 +748,7 @@ fn test_compile_checked_lowers_object_set_class_metatable() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -778,6 +793,7 @@ fn test_compile_checked_lowers_class_layout_metadata() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -881,6 +897,7 @@ fn test_default_luau_dispatch_uses_checked_path() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "unknown_luau_op".to_string(),
@@ -918,6 +935,7 @@ fn test_luau_repr_authority_typed_list_call_method_dispatch() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {

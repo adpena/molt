@@ -1097,9 +1097,7 @@ def _capture_config(path: Path, *, label: str) -> CargoConfigurationInput:
             and not Path(command).is_absolute()
         ):
             table[key] = str((path.parent.parent / command).resolve(strict=False))
-    return CargoConfigurationInput(
-        label, identity, cast(Mapping[str, object], _freeze_json(value))
-    )
+    return CargoConfigurationInput(label, identity, _freeze_json(value))
 
 
 def _command_options(command: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
@@ -1571,6 +1569,38 @@ class RuntimeCargoPlan:
         self.rust_resources.verify()
         self.link_resources.verify()
 
+    def rust_resource_identity(self) -> dict[str, object]:
+        return {
+            "host_triple": self.host_target,
+            "selected_target": self.target,
+            "content": self.rust_resources.content_identity(),
+        }
+
+    def toolchain_identity(self) -> dict[str, object]:
+        """Project Cargo's admitted tools/resources, without consumer extras.
+
+        A runtime build may additionally execute Python generators. The compiler
+        build does not inherit those runtime-only inputs or interpreter probes.
+        """
+        tools: dict[str, object] = {}
+        wrappers: dict[str, object] = {}
+        for item in self.executable_custody:
+            group, role = item.label.split("/", 1)
+            destination = tools if group == "tool" else wrappers
+            destination[role] = {
+                "logical_name": role if group == "tool" else role.casefold(),
+                **item.content_record(),
+            }
+        return {
+            "tools": tools,
+            "wrappers": wrappers,
+            "cargo_configuration": self.configuration_identity(),
+            "effective_target": self.target,
+            "rust_resources": self.rust_resource_identity(),
+            "sysroots": {},
+            "archives": [],
+        }
+
     def configuration_identity(self) -> dict[str, object]:
         self.verify()
         entries = [
@@ -1723,6 +1753,8 @@ def resolve_runtime_cargo_plan(
     cargo_command: Sequence[str],
     requested_target: str | None,
     host_target: str | None = None,
+    environment_transform: Callable[[Mapping[str, str]], Mapping[str, str]]
+    | None = None,
     rustflags_transform: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
     capture_inputs: Callable[
         [Mapping[str, str], Mapping[str, Path], tuple[CargoResourceRoot, ...]], None
@@ -1790,6 +1822,10 @@ def resolve_runtime_cargo_plan(
     environment, forced_environment, environment_resources = _apply_cargo_environment(
         configuration, cli, environment, environment_origins
     )
+    if environment_transform is not None:
+        environment = _CargoEnvironment(
+            environment_transform(MappingProxyType(environment))
+        )
     rustc_selector = _selected(
         configuration,
         cli,
@@ -2069,8 +2105,8 @@ def resolve_runtime_cargo_plan(
         rustflags,
         tuple(inputs),
         paths,
-        cast(Mapping[str, object], _freeze_json(cli)),
-        cast(Mapping[str, object], _freeze_json(profiles)),
+        _freeze_json(cli),
+        _freeze_json(profiles),
         executable_custody,
         resources,
         resource_paths,

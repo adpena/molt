@@ -1211,7 +1211,7 @@ class Tensor:
             element_type, format_char = _storage_for_dtype(dtype)
             out_buf = alloc(self.size, element_type, format_char=format_char)
             for idx, value in enumerate(self._data_list()):
-                out_buf[idx] = int(value)
+                out_buf[idx] = value != 0 if format_char == "?" else int(value)
             return Tensor(out_buf, shape=self._shape, dtype=element_type)
         raise TypeError(f"unsupported cast dtype {dtype!r}")
 

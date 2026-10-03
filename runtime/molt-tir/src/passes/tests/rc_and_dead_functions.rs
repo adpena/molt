@@ -17,6 +17,7 @@ fn constant_integer_facts_require_one_canonical_producer() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
                 constant("stable"),
@@ -68,6 +69,7 @@ fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "x"),
@@ -93,6 +95,7 @@ fn rc_coalescing_preserves_pair_across_control_flow() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "x"),
@@ -118,6 +121,7 @@ fn rc_coalescing_handles_borrow_release_pair() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
             make_ref_op("borrow", "y"),
@@ -142,6 +146,7 @@ fn rc_coalescing_preserves_pair_with_intervening_use() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "x"),
@@ -168,6 +173,7 @@ fn rc_coalescing_eliminates_different_vars_independently() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "a"),
@@ -214,6 +220,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -237,6 +244,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -248,6 +256,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -286,6 +295,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -309,6 +319,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -320,6 +331,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -363,6 +375,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -379,6 +392,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -390,6 +404,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -401,6 +416,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -433,6 +449,7 @@ fn generated_function_references_retain_exact_symbols_without_guessed_companions
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         for target in ["opaque_body", "opaque_body_poll", "undefined"] {
@@ -480,6 +497,7 @@ fn non_reference_operations_do_not_retain_defined_functions() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         let mut ir = SimpleIR {

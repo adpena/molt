@@ -8,25 +8,26 @@
 //! ABI: NaN-boxed u64 in/out.  Handles are opaque i64 IDs stored in
 //! runtime-owned, mutex-protected maps shared by executor and caller threads.
 
+use crate::audit::AuditArgs;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
 // ── Future state ──────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum FutureOutcome {
     /// Task is pending / in flight.
     Pending,
     /// Task completed successfully; holds the result bits.
     Done(u64),
-    /// Task raised an exception; holds exception message.
-    Exception(String),
+    /// Task raised an exception; owns the original Python exception object.
+    Exception(u64),
     /// Task was cancelled before it started.
     Cancelled,
 }
@@ -36,6 +37,7 @@ struct FutureState {
     running: bool,
     registered: bool,
     callbacks: Vec<u64>, // owned callable bits to fire when done
+    completion: Arc<Condvar>,
 }
 
 impl FutureState {
@@ -45,6 +47,7 @@ impl FutureState {
             running: false,
             registered: true,
             callbacks: Vec::new(),
+            completion: Arc::new(Condvar::new()),
         }
     }
 
@@ -63,9 +66,12 @@ fn release_future_owners(py: &PyToken<'_>, future: &SharedFuture, workers_stoppe
     let (result, callbacks) = {
         let mut state = future.lock().unwrap();
         state.registered = false;
-        let result = if matches!(state.outcome, FutureOutcome::Done(_)) {
+        let result = if matches!(
+            state.outcome,
+            FutureOutcome::Done(_) | FutureOutcome::Exception(_)
+        ) {
             match std::mem::replace(&mut state.outcome, FutureOutcome::Cancelled) {
-                FutureOutcome::Done(bits) => Some(bits),
+                FutureOutcome::Done(bits) | FutureOutcome::Exception(bits) => Some(bits),
                 _ => unreachable!(),
             }
         } else {
@@ -92,6 +98,8 @@ fn release_future_owners(py: &PyToken<'_>, future: &SharedFuture, workers_stoppe
 
 struct WorkItem {
     future: SharedFuture,
+    future_id: i64,
+    pending: Arc<Mutex<HashMap<i64, SharedFuture>>>,
     /// Owned callable and argument references retained through worker dispatch.
     fn_bits: u64,
     args_bits: u64,
@@ -104,6 +112,7 @@ struct ThreadPoolState {
     _workers: Vec<thread::JoinHandle<()>>,
     max_workers: usize,
     shutdown: bool,
+    pending: Arc<Mutex<HashMap<i64, SharedFuture>>>,
 }
 
 // ── Handle-id counter ─────────────────────────────────────────────────────
@@ -203,6 +212,7 @@ fn worker_loop_inner(receiver: Receiver<Option<WorkItem>>) {
         let gil = GilGuard::new();
         let token = gil.token();
         let py = &token;
+        item.pending.lock().unwrap().remove(&item.future_id);
         let cancelled = {
             let mut state = item.future.lock().unwrap();
             let cancelled = state.is_cancelled();
@@ -214,8 +224,6 @@ fn worker_loop_inner(receiver: Receiver<Option<WorkItem>>) {
         // No future mutex survives dispatch, result destruction, or callbacks.
         let result = if cancelled {
             FutureOutcome::Cancelled
-        } else if obj_from_bits(item.fn_bits).is_none() {
-            FutureOutcome::Exception("callable is None".to_string())
         } else {
             let bits = if obj_from_bits(item.args_bits).is_none() {
                 unsafe { call_callable0(py, item.fn_bits) }
@@ -223,11 +231,10 @@ fn worker_loop_inner(receiver: Receiver<Option<WorkItem>>) {
                 unsafe { call_callable1(py, item.fn_bits, item.args_bits) }
             };
             if exception_pending(py) {
-                let exc_bits = exception_last_bits_noinc(py).unwrap_or(MoltObject::none().bits());
-                let msg = format_obj_str(py, obj_from_bits(exc_bits));
+                let exc_bits = molt_exception_last_pending();
                 clear_exception(py);
                 dec_ref_bits(py, bits);
-                FutureOutcome::Exception(msg)
+                FutureOutcome::Exception(exc_bits)
             } else {
                 FutureOutcome::Done(bits)
             }
@@ -236,7 +243,7 @@ fn worker_loop_inner(receiver: Receiver<Option<WorkItem>>) {
             let mut state = item.future.lock().unwrap();
             state.running = false;
             let discarded_result = match result {
-                FutureOutcome::Done(bits) if !state.registered => {
+                FutureOutcome::Done(bits) | FutureOutcome::Exception(bits) if !state.registered => {
                     state.outcome = FutureOutcome::Cancelled;
                     Some(bits)
                 }
@@ -245,13 +252,14 @@ fn worker_loop_inner(receiver: Receiver<Option<WorkItem>>) {
                     None
                 }
             };
+            state.completion.notify_all();
             (std::mem::take(&mut state.callbacks), discarded_result)
         };
         if let Some(bits) = discarded_result {
             dec_ref_bits(py, bits);
         }
         for cb_bits in callbacks {
-            let out = unsafe { call_callable1(py, cb_bits, item.fn_bits) };
+            let out = unsafe { call_callable1(py, cb_bits, int_bits_from_i64(py, item.future_id)) };
             if exception_pending(py) {
                 clear_exception(py);
             }
@@ -268,6 +276,11 @@ fn worker_loop_inner(receiver: Receiver<Option<WorkItem>>) {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if let Err(error) =
+            require_operation(_py, crate::OperationId::ThreadSpawnShared, AuditArgs::None)
+        {
+            return error;
+        }
         let max_workers = to_i64(obj_from_bits(max_workers_bits)).unwrap_or(0).max(1) as usize;
         let workers_capped = max_workers.min(512);
 
@@ -287,6 +300,7 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
                 _workers: handles,
                 max_workers: workers_capped,
                 shutdown: false,
+                pending: Arc::new(Mutex::new(HashMap::new())),
             },
         );
         int_bits_from_i64(_py, id)
@@ -320,10 +334,20 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
                 } else {
                     let item = WorkItem {
                         future: future_shared.clone(),
+                        future_id,
+                        pending: Arc::clone(&pool.pending),
                         fn_bits,
                         args_bits,
                     };
-                    pool.sender.send(Some(item)).is_ok()
+                    pool.pending
+                        .lock()
+                        .unwrap()
+                        .insert(future_id, future_shared.clone());
+                    let sent = pool.sender.send(Some(item)).is_ok();
+                    if !sent {
+                        pool.pending.lock().unwrap().remove(&future_id);
+                    }
+                    sent
                 }
             } else {
                 false
@@ -353,7 +377,7 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
 pub extern "C" fn molt_concurrent_threadpool_shutdown(
     handle_bits: u64,
     wait_bits: u64,
-    _cancel_futures_bits: u64,
+    cancel_futures_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let pool_id = match to_i64(obj_from_bits(handle_bits)) {
@@ -363,10 +387,15 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
             }
         };
         let wait = is_truthy(_py, obj_from_bits(wait_bits));
+        let cancel_futures = is_truthy(_py, obj_from_bits(cancel_futures_bits));
+        let mut pending = HashMap::new();
 
         let pool = {
             let mut pools = pool_registry(_py).lock().unwrap();
             if let Some(pool) = pools.get_mut(&pool_id) {
+                if cancel_futures {
+                    pending = std::mem::take(&mut *pool.pending.lock().unwrap());
+                }
                 if !pool.shutdown {
                     pool.shutdown = true;
                     for _ in 0..pool.max_workers {
@@ -378,6 +407,10 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
             // owns the join handles until every already-submitted job finishes.
             if wait { pools.remove(&pool_id) } else { None }
         };
+        // Cancel and invoke user callbacks only after releasing registry locks.
+        for (id, future) in pending {
+            cancel_future(_py, &future, int_bits_from_i64(_py, id));
+        }
         if let Some(pool) = pool {
             let _release = GilReleaseGuard::suspend();
             for handle in pool._workers {
@@ -401,112 +434,169 @@ fn get_future(_py: &PyToken<'_>, id: i64) -> Option<SharedFuture> {
     future_registry(_py).lock().unwrap().get(&id).cloned()
 }
 
-fn wait_for_future(future: &SharedFuture, timeout_secs: Option<f64>) -> Result<(), ()> {
-    use std::time::Instant;
-    let deadline = timeout_secs.map(|t| Instant::now() + Duration::from_secs_f64(t));
-    loop {
-        {
-            let state = future.lock().unwrap();
-            if state.is_done() {
-                return Ok(());
+fn wait_for_future(future: &SharedFuture, timeout: Option<Duration>) -> Result<(), ()> {
+    let state = future.lock().unwrap();
+    let completion = Arc::clone(&state.completion);
+    if let Some(timeout) = timeout {
+        let (state, _) = completion
+            .wait_timeout_while(state, timeout, |state| !state.is_done())
+            .unwrap();
+        if state.is_done() { Ok(()) } else { Err(()) }
+    } else {
+        drop(
+            completion
+                .wait_while(state, |state| !state.is_done())
+                .unwrap(),
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FutureReadKind {
+    Result,
+    Exception,
+}
+
+enum FutureReadOutcome {
+    /// Each payload is an independent owner, acquired with the GIL held.
+    Return(u64),
+    Raise(u64),
+    Cancelled,
+    TimedOut,
+}
+
+fn snapshot_future_outcome(
+    py: &PyToken<'_>,
+    future: &SharedFuture,
+    kind: FutureReadKind,
+) -> Option<FutureReadOutcome> {
+    let state = future.lock().unwrap();
+    Some(match state.outcome {
+        FutureOutcome::Done(bits) => match kind {
+            FutureReadKind::Result => {
+                inc_ref_bits(py, bits);
+                FutureReadOutcome::Return(bits)
+            }
+            FutureReadKind::Exception => FutureReadOutcome::Return(MoltObject::none().bits()),
+        },
+        FutureOutcome::Exception(bits) => {
+            inc_ref_bits(py, bits);
+            match kind {
+                FutureReadKind::Result => FutureReadOutcome::Raise(bits),
+                FutureReadKind::Exception => FutureReadOutcome::Return(bits),
             }
         }
-        if deadline.is_some_and(|dl| Instant::now() >= dl) {
-            return Err(());
+        FutureOutcome::Cancelled => FutureReadOutcome::Cancelled,
+        FutureOutcome::Pending => return None,
+    })
+}
+
+fn read_future_outcome(
+    py: &PyToken<'_>,
+    future: &SharedFuture,
+    timeout_bits: u64,
+    kind: FutureReadKind,
+) -> Result<FutureReadOutcome, u64> {
+    // Terminal reads never inspect timeout, including user comparison/index
+    // methods. Snapshot/retain under the GIL, then release the mutex.
+    if let Some(outcome) = snapshot_future_outcome(py, future, kind) {
+        return Ok(outcome);
+    }
+    let timeout = crate::builtins::threading_helpers::parse_thread_timeout(
+        py,
+        timeout_bits,
+        crate::builtins::threading_helpers::ThreadTimeoutPolicy::Condition,
+    )?;
+    {
+        let _release = GilReleaseGuard::suspend();
+        let _ = wait_for_future(future, timeout);
+    }
+    // Reacquire the GIL before retaining; a completion/cancel delivered while
+    // reacquiring takes precedence over timeout, matching Condition.wait.
+    Ok(snapshot_future_outcome(py, future, kind).unwrap_or(FutureReadOutcome::TimedOut))
+}
+
+fn raise_future_error(py: &PyToken<'_>, error_class: u64) -> u64 {
+    // The Python module owns exception identity. Construct its class through
+    // normal call dispatch, outside the future lock, with no dotted-name cache.
+    let exception = unsafe { call_callable0(py, error_class) };
+    if exception_pending(py) {
+        dec_ref_bits(py, exception);
+        return MoltObject::none().bits();
+    }
+    let result = molt_raise(exception);
+    dec_ref_bits(py, exception);
+    result
+}
+
+fn read_future(
+    py: &PyToken<'_>,
+    handle_bits: u64,
+    timeout_bits: u64,
+    cancelled_error: u64,
+    timeout_error: u64,
+    kind: FutureReadKind,
+) -> u64 {
+    let id = match to_i64(obj_from_bits(handle_bits)) {
+        Some(v) => v,
+        None => return raise_exception::<u64>(py, "TypeError", "future handle must be int"),
+    };
+    let future = match get_future(py, id) {
+        Some(f) => f,
+        None => return raise_exception::<u64>(py, "ValueError", "invalid future handle"),
+    };
+    let outcome = match read_future_outcome(py, &future, timeout_bits, kind) {
+        Ok(outcome) => outcome,
+        Err(bits) => return bits,
+    };
+    match outcome {
+        FutureReadOutcome::Return(bits) => bits,
+        FutureReadOutcome::Raise(bits) => {
+            let result = molt_raise(bits);
+            dec_ref_bits(py, bits);
+            result
         }
-        thread::sleep(Duration::from_millis(1));
+        FutureReadOutcome::Cancelled => raise_future_error(py, cancelled_error),
+        FutureReadOutcome::TimedOut => raise_future_error(py, timeout_error),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_future_result(handle_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let id = match to_i64(obj_from_bits(handle_bits)) {
-            Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
-        };
-        let future = match get_future(_py, id) {
-            Some(f) => f,
-            None => return raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
-        };
-        let timeout = {
-            let obj = obj_from_bits(timeout_bits);
-            if obj.is_none() { None } else { to_f64(obj) }
-        };
-        let timed_out = {
-            let _release = GilReleaseGuard::suspend();
-            wait_for_future(&future, timeout).is_err()
-        };
-        if timed_out {
-            return raise_exception::<u64>(
-                _py,
-                "concurrent.futures.TimeoutError",
-                "future result timed out",
-            );
-        }
-        let outcome = {
-            let state = future.lock().unwrap();
-            if let FutureOutcome::Done(bits) = state.outcome {
-                inc_ref_bits(_py, bits);
-            }
-            state.outcome.clone()
-        };
-        match outcome {
-            FutureOutcome::Done(bits) => bits,
-            FutureOutcome::Exception(msg) => {
-                raise_exception::<u64>(_py, "concurrent.futures.CancelledError", &msg)
-            }
-            FutureOutcome::Cancelled => raise_exception::<u64>(
-                _py,
-                "concurrent.futures.CancelledError",
-                "future was cancelled",
-            ),
-            FutureOutcome::Pending => {
-                raise_exception::<u64>(_py, "RuntimeError", "future is still pending")
-            }
-        }
+pub extern "C" fn molt_concurrent_future_result(
+    handle_bits: u64,
+    timeout_bits: u64,
+    cancelled_error: u64,
+    timeout_error: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        read_future(
+            py,
+            handle_bits,
+            timeout_bits,
+            cancelled_error,
+            timeout_error,
+            FutureReadKind::Result,
+        )
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_future_exception(handle_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let id = match to_i64(obj_from_bits(handle_bits)) {
-            Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
-        };
-        let future = match get_future(_py, id) {
-            Some(f) => f,
-            None => return raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
-        };
-        let timeout = {
-            let obj = obj_from_bits(timeout_bits);
-            if obj.is_none() { None } else { to_f64(obj) }
-        };
-        let timed_out = {
-            let _release = GilReleaseGuard::suspend();
-            wait_for_future(&future, timeout).is_err()
-        };
-        if timed_out {
-            return raise_exception::<u64>(
-                _py,
-                "concurrent.futures.TimeoutError",
-                "future exception timed out",
-            );
-        }
-        let outcome = future.lock().unwrap().outcome.clone();
-        match outcome {
-            FutureOutcome::Exception(msg) => {
-                // Return a string representation — the Python layer wraps it.
-                let ptr = alloc_string(_py, msg.as_bytes());
-                if ptr.is_null() {
-                    raise_exception::<u64>(_py, "MemoryError", "out of memory")
-                } else {
-                    MoltObject::from_ptr(ptr).bits()
-                }
-            }
-            _ => MoltObject::none().bits(),
-        }
+pub extern "C" fn molt_concurrent_future_exception(
+    handle_bits: u64,
+    timeout_bits: u64,
+    cancelled_error: u64,
+    timeout_error: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        read_future(
+            py,
+            handle_bits,
+            timeout_bits,
+            cancelled_error,
+            timeout_error,
+            FutureReadKind::Exception,
+        )
     })
 }
 
@@ -553,17 +643,33 @@ pub extern "C" fn molt_concurrent_future_cancel(handle_bits: u64) -> u64 {
         };
         match get_future(_py, id) {
             None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
-            Some(f) => {
-                let mut state = f.lock().unwrap();
-                if state.is_done() || state.running {
-                    MoltObject::from_bool(false).bits()
-                } else {
-                    state.outcome = FutureOutcome::Cancelled;
-                    MoltObject::from_bool(true).bits()
-                }
-            }
+            Some(f) => MoltObject::from_bool(cancel_future(_py, &f, handle_bits)).bits(),
         }
     })
+}
+
+fn cancel_future(py: &PyToken<'_>, future: &SharedFuture, handle: u64) -> bool {
+    let callbacks = {
+        let mut state = future.lock().unwrap();
+        if state.is_cancelled() {
+            return true;
+        }
+        if state.is_done() || state.running {
+            return false;
+        }
+        state.outcome = FutureOutcome::Cancelled;
+        state.completion.notify_all();
+        std::mem::take(&mut state.callbacks)
+    };
+    for callback in callbacks {
+        let result = unsafe { call_callable1(py, callback, handle) };
+        if exception_pending(py) {
+            clear_exception(py);
+        }
+        dec_ref_bits(py, result);
+        dec_ref_bits(py, callback);
+    }
+    true
 }
 
 #[unsafe(no_mangle)]
@@ -936,7 +1042,12 @@ mod tests {
                 if unlocked {
                     let handle = MoltObject::from_int(id).bits();
                     let done = molt_concurrent_future_done(handle);
-                    let result = molt_concurrent_future_result(handle, MoltObject::none().bits());
+                    let result = molt_concurrent_future_result(
+                        handle,
+                        MoltObject::none().bits(),
+                        builtin_classes(py).exception,
+                        builtin_classes(py).exception,
+                    );
                     REENTRANT_CALLBACK_OK.store(
                         done == MoltObject::from_bool(true).bits() && !exception_pending(py),
                         Ordering::Release,
@@ -952,6 +1063,163 @@ mod tests {
     extern "C" fn owned_callback_result(callable_bits: u64) -> u64 {
         CALLBACK_CALLS.fetch_add(1, Ordering::AcqRel);
         retained_argument(callable_bits)
+    }
+
+    extern "C" fn worker_failure(_bits: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            raise_exception::<u64>(py, "ValueError", "original worker failure")
+        })
+    }
+
+    #[test]
+    fn worker_exception_preserves_identity_and_independent_owners() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            concurrent_clear_runtime_state(py, runtime_state(py));
+            let callable = native_callable(py, worker_failure as *const ());
+            let pool = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+            let future =
+                molt_concurrent_threadpool_submit(pool, callable, MoltObject::from_int(0).bits());
+            molt_concurrent_threadpool_shutdown(
+                pool,
+                MoltObject::from_bool(true).bits(),
+                MoltObject::none().bits(),
+            );
+            let exception = molt_concurrent_future_exception(
+                future,
+                MoltObject::none().bits(),
+                builtin_classes(py).exception,
+                builtin_classes(py).exception,
+            );
+            assert!(!exception_pending(py));
+            let baseline = owner_count(exception);
+            let second = molt_concurrent_future_exception(
+                future,
+                MoltObject::none().bits(),
+                builtin_classes(py).exception,
+                builtin_classes(py).exception,
+            );
+            assert_eq!(second, exception);
+            assert_eq!(owner_count(exception), baseline + 1);
+            dec_ref_bits(py, second);
+            molt_concurrent_future_result(
+                future,
+                MoltObject::none().bits(),
+                builtin_classes(py).exception,
+                builtin_classes(py).exception,
+            );
+            assert!(exception_pending(py));
+            let pending = molt_exception_last_pending();
+            assert_eq!(pending, exception);
+            clear_exception(py);
+            dec_ref_bits(py, pending);
+            molt_concurrent_future_drop(future);
+            // The caller still owns a live exception after its future is gone.
+            assert!(obj_from_bits(exception).as_ptr().is_some());
+            dec_ref_bits(py, exception);
+            dec_ref_bits(py, callable);
+        });
+    }
+
+    #[test]
+    fn future_errors_use_supplied_classes_and_release_temporary_exception_owners() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            concurrent_clear_runtime_state(py, runtime_state(py));
+            let new_error_class = |name: &[u8]| {
+                let name_bits = MoltObject::from_ptr(alloc_string(py, name)).bits();
+                let class = molt_class_new(name_bits);
+                dec_ref_bits(py, name_bits);
+                molt_class_set_base(class, builtin_classes(py).exception);
+                assert!(!exception_pending(py));
+                class
+            };
+            let cancelled_error = new_error_class(b"ModuleCancelledError");
+            let timeout_error = new_error_class(b"ModuleTimeoutError");
+            let id = next_future_id(py);
+            let handle = MoltObject::from_int(id).bits();
+            let future = Arc::new(Mutex::new(FutureState::new()));
+            future_registry(py)
+                .lock()
+                .unwrap()
+                .insert(id, future.clone());
+            let zero_timeout = MoltObject::from_int(0).bits();
+            let readers: [extern "C" fn(u64, u64, u64, u64) -> u64; 2] = [
+                molt_concurrent_future_result,
+                molt_concurrent_future_exception,
+            ];
+            for cancelled in [false, true] {
+                if cancelled {
+                    assert_eq!(
+                        molt_concurrent_future_cancel(handle),
+                        MoltObject::from_bool(true).bits()
+                    );
+                }
+                for read in readers {
+                    let result = read(handle, zero_timeout, cancelled_error, timeout_error);
+                    assert_eq!(result, MoltObject::none().bits());
+                    assert!(exception_pending(py));
+                    let pending = molt_exception_last_pending();
+                    let pending_ptr = obj_from_bits(pending).as_ptr().unwrap();
+                    assert_eq!(
+                        unsafe { object_class_bits(pending_ptr) },
+                        if cancelled {
+                            cancelled_error
+                        } else {
+                            timeout_error
+                        }
+                    );
+                    clear_exception(py);
+                    assert_eq!(
+                        owner_count(pending),
+                        1,
+                        "only the test's returned exception owner remains"
+                    );
+                    dec_ref_bits(py, pending);
+                    assert_eq!(future.lock().unwrap().is_done(), cancelled);
+                }
+            }
+            molt_concurrent_future_drop(handle);
+            dec_ref_bits(py, cancelled_error);
+            dec_ref_bits(py, timeout_error);
+        });
+    }
+
+    #[test]
+    fn cancellation_notifies_callbacks_once_before_worker_dispatch() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            concurrent_clear_runtime_state(py, runtime_state(py));
+            CALLBACK_CALLS.store(0, Ordering::Release);
+            let callable = native_callable(py, retained_argument as *const ());
+            let callback = native_callable(py, owned_callback_result as *const ());
+            let pool = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+            let future =
+                molt_concurrent_threadpool_submit(pool, callable, MoltObject::from_int(7).bits());
+            molt_concurrent_future_add_done_callback(future, callback);
+            assert_eq!(
+                molt_concurrent_future_cancel(future),
+                MoltObject::from_bool(true).bits()
+            );
+            assert_eq!(CALLBACK_CALLS.load(Ordering::Acquire), 1);
+            assert_eq!(
+                molt_concurrent_future_cancel(future),
+                MoltObject::from_bool(true).bits()
+            );
+            molt_concurrent_threadpool_shutdown(
+                pool,
+                MoltObject::from_bool(true).bits(),
+                MoltObject::from_bool(true).bits(),
+            );
+            assert_eq!(CALLBACK_CALLS.load(Ordering::Acquire), 1);
+            assert_eq!(
+                molt_concurrent_future_cancelled(future),
+                MoltObject::from_bool(true).bits()
+            );
+            molt_concurrent_future_drop(future);
+            dec_ref_bits(py, callable);
+            dec_ref_bits(py, callback);
+        });
     }
 
     #[test]
@@ -975,8 +1243,31 @@ mod tests {
                 baseline + 1,
                 "completed future owns its result"
             );
-            let first = molt_concurrent_future_result(future, MoltObject::none().bits());
-            let second = molt_concurrent_future_result(future, MoltObject::none().bits());
+            let exception = molt_concurrent_future_exception(
+                future,
+                MoltObject::none().bits(),
+                builtin_classes(py).exception,
+                builtin_classes(py).exception,
+            );
+            assert_eq!(exception, MoltObject::none().bits());
+            assert!(!exception_pending(py));
+            assert_eq!(
+                owner_count(payload),
+                baseline + 1,
+                "exception() does not retain a successful result"
+            );
+            let first = molt_concurrent_future_result(
+                future,
+                MoltObject::none().bits(),
+                builtin_classes(py).exception,
+                builtin_classes(py).exception,
+            );
+            let second = molt_concurrent_future_result(
+                future,
+                MoltObject::none().bits(),
+                builtin_classes(py).exception,
+                builtin_classes(py).exception,
+            );
             assert_eq!((first, second), (payload, payload));
             assert_eq!(owner_count(payload), baseline + 3);
             dec_ref_bits(py, first);

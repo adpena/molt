@@ -1,21 +1,23 @@
 from __future__ import annotations
 
+from molt.cli.runtime_build_python import build_python_scope
+
 import contextlib
 import json
 import os
 import shlex
 import subprocess
 import sys
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 from typing import (
     Any,
-    Sequence,
     Mapping,
+    Sequence,
 )
 
-from molt.cli import wasm_link_inputs
-from molt.cli import wasm_toolchain
+from molt.cargo_execution_policy import source_build_disabled_reason
+from molt.cli import wasm_link_inputs, wasm_toolchain
 from molt.cli.artifact_state import (
     _build_state_root,
     _runtime_fingerprint_path,
@@ -25,11 +27,11 @@ from molt.cli.build_locks import _build_lock
 from molt.cli.cargo_execution import (
     CargoExecutionResult,
     CargoPlanExecutionError,
-    cargo_execution_evidence,
-    _text_output,
     _build_slot,
     _cargo_build_env,
     _run_resolved_cargo_plan,
+    _text_output,
+    cargo_execution_evidence,
 )
 from molt.cli.command_runtime import (
     _run_completed_command,
@@ -37,7 +39,6 @@ from molt.cli.command_runtime import (
 )
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.models import _RuntimeArtifactState
-from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
     RuntimeCrateType,
@@ -45,19 +46,12 @@ from molt.cli.runtime_artifact_selection import (
 from molt.cli.runtime_build_identity import (
     resolve_wasm_cpython_abi_build_identity,
     runtime_build_fingerprint,
-    runtime_build_tooling_authority,
 )
 from molt.cli.runtime_cargo_plan import (
     CargoExecutableCustody,
     RuntimeCargoPlan,
     resolve_runtime_cargo_plan,
 )
-from molt.toolchain_identity import (
-    StableRegularFileIdentity,
-    stable_regular_file_identity,
-    verify_stable_regular_file_identity,
-)
-from molt.file_publication import durable_replace, staged_file_path
 from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
     _refresh_runtime_fingerprint_metadata,
@@ -73,6 +67,7 @@ from molt.cli.runtime_wasm_build_policy import _resolve_wasm_cargo_profile
 from molt.cli.runtime_wasm_build_timings import (
     _record_runtime_wasm_longdouble_archives,
 )
+from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
 from molt.cli.runtime_wasm_validation import (
     _is_valid_runtime_wasm_artifact,
     _runtime_wasm_exports_satisfy,
@@ -82,9 +77,16 @@ from molt.cli.runtime_wasm_validation import (
 )
 from molt.cli.wasm_link_args import (
     wasm_link_args_from_rustflags as _wasm_link_args_from_rustflags,
+    wasm_link_output_arguments,
 )
 from molt.cli.wasm_link_args import (
     write_wasm_link_args_response_file as _write_wasm_link_args_response_file,
+)
+from molt.file_publication import durable_replace, staged_file_path
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    stable_regular_file_identity,
+    verify_stable_regular_file_identity,
 )
 
 
@@ -235,174 +237,175 @@ def _ensure_wasm_cpython_abi_staticlib(
             ),
         )
 
-    try:
-        cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
-        profile_dir = _cargo_profile_dir(cargo_profile)
-        target_root = _cargo_target_root(root)
-        staticlib_path = _wasm_cpython_abi_staticlib_path(target_root, profile_dir)
-        target_label = "wasm32-wasip1.cpython-abi"
-        fingerprint_path = _runtime_fingerprint_path(
-            root, staticlib_path, cargo_profile, target_label
-        )
-        env = _cargo_build_env()
-        env["CARGO_TARGET_DIR"] = str(target_root)
-        _configure_wasm_cc_env(env)
-        _configure_wasi_sysroot_env(env)
-        cmd = [
-            env.get("CARGO", "cargo"),
-            "rustc",
-            "--package",
-            "molt-lang-cpython-abi",
-            "--profile",
-            cargo_profile,
-            "--target",
-            "wasm32-wasip1",
-            "--lib",
-        ]
-        RUNTIME_STATICLIB_ARTIFACTS.select_in(cmd)
-        command = _cargo_cmd_with_json_artifact_messages(cmd)
-        stage = "cargo-plan"
-        plan = resolve_runtime_cargo_plan(
-            root,
-            env=env,
-            cargo_command=command,
-            requested_target="wasm32-wasip1",
-            rustflags_transform=lambda flags: _wasm_runtime_codegen_flags(
-                flags,
-                simd_enabled=True,
-                freestanding=False,
-            ),
-        )
-        command = plan.command
-        stage = "effective-configuration"
-        sysroot_raw = plan.environment.get("MOLT_WASI_SYSROOT") or plan.environment.get(
-            "WASI_SYSROOT"
-        )
-        if not sysroot_raw:
-            return fail("CPython ABI wasm build has no resolved WASI sysroot.")
-
-        def resolve_identity():
-            return resolve_wasm_cpython_abi_build_identity(
+    with build_python_scope(state):
+        try:
+            cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
+            profile_dir = _cargo_profile_dir(cargo_profile)
+            target_root = _cargo_target_root(root)
+            staticlib_path = _wasm_cpython_abi_staticlib_path(target_root, profile_dir)
+            target_label = "wasm32-wasip1.cpython-abi"
+            fingerprint_path = _runtime_fingerprint_path(
+                root, staticlib_path, cargo_profile, target_label
+            )
+            env = _cargo_build_env()
+            env["CARGO_TARGET_DIR"] = str(target_root)
+            _configure_wasm_cc_env(env)
+            _configure_wasi_sysroot_env(env)
+            cmd = [
+                env.get("CARGO", "cargo"),
+                "rustc",
+                "--package",
+                "molt-lang-cpython-abi",
+                "--profile",
+                cargo_profile,
+                "--target",
+                "wasm32-wasip1",
+                "--lib",
+            ]
+            RUNTIME_STATICLIB_ARTIFACTS.select_in(cmd)
+            command = _cargo_cmd_with_json_artifact_messages(cmd)
+            stage = "cargo-plan"
+            plan = resolve_runtime_cargo_plan(
                 root,
-                env=plan.environment,
-                cargo_profile=cargo_profile,
-                target_triple="wasm32-wasip1",
-                rustflags=shlex.join(plan.rustflags),
-                cargo_command=plan.command,
-                cargo_plan=plan,
-                artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
-                publication_authority=runtime_build_tooling_authority(root),
-                wasi_sysroot=Path(sysroot_raw),
+                env=env,
+                cargo_command=command,
+                requested_target="wasm32-wasip1",
+                rustflags_transform=lambda flags: _wasm_runtime_codegen_flags(
+                    flags,
+                    simd_enabled=True,
+                    freestanding=False,
+                ),
             )
+            command = plan.command
+            stage = "effective-configuration"
+            sysroot_raw = plan.environment.get(
+                "MOLT_WASI_SYSROOT"
+            ) or plan.environment.get("WASI_SYSROOT")
+            if not sysroot_raw:
+                return fail("CPython ABI wasm build has no resolved WASI sysroot.")
 
-        stage = "lock"
-        lock_name = f"runtime.{cargo_profile}.wasm32-wasip1.cpython-abi"
-        build_state_root = _build_state_root(root)
-        with _build_lock(
-            root,
-            lock_name,
-            default_timeout_s=cargo_timeout if cargo_timeout is not None else 300.0,
-        ):
-            stage = "pre-build-identity"
-            pre_identity = resolve_identity()
-            fingerprint = runtime_build_fingerprint(pre_identity)
-            stage = "metadata-admission"
-            stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
-            current = _current_runtime_target_artifact(
-                _wasm_cpython_abi_staticlib_candidates(target_root, profile_dir),
-                build_state_root=build_state_root,
-                cargo_profile=cargo_profile,
-                target_label=target_label,
-                fingerprint=fingerprint,
-            )
-            if current is not None:
-                stage = "target-admission"
-                if resolve_identity() != pre_identity:
-                    return fail(
-                        "CPython ABI wasm identity changed during target admission."
-                    )
-                return current[0]
-            if _runtime_artifact_fingerprint_matches(
-                staticlib_path,
-                fingerprint,
-                fingerprint_path,
-                require_artifact_digest=True,
+            def resolve_identity():
+                return resolve_wasm_cpython_abi_build_identity(
+                    root,
+                    env=plan.environment,
+                    cargo_profile=cargo_profile,
+                    target_triple="wasm32-wasip1",
+                    rustflags=shlex.join(plan.rustflags),
+                    cargo_command=plan.command,
+                    cargo_plan=plan,
+                    artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
+                    wasi_sysroot=Path(sysroot_raw),
+                    build_python_admission=state.build_python_admission,
+                )
+
+            stage = "lock"
+            lock_name = f"runtime.{cargo_profile}.wasm32-wasip1.cpython-abi"
+            build_state_root = _build_state_root(root)
+            with _build_lock(
+                root,
+                lock_name,
+                default_timeout_s=cargo_timeout if cargo_timeout is not None else 300.0,
             ):
-                if _runtime_fingerprint_metadata_needs_refresh(
-                    stored_fingerprint,
+                stage = "pre-build-identity"
+                pre_identity = resolve_identity()
+                fingerprint = runtime_build_fingerprint(pre_identity)
+                stage = "metadata-admission"
+                stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+                current = _current_runtime_target_artifact(
+                    _wasm_cpython_abi_staticlib_candidates(target_root, profile_dir),
+                    build_state_root=build_state_root,
+                    cargo_profile=cargo_profile,
+                    target_label=target_label,
+                    fingerprint=fingerprint,
+                )
+                if current is not None:
+                    stage = "target-admission"
+                    if resolve_identity() != pre_identity:
+                        return fail(
+                            "CPython ABI wasm identity changed during target admission."
+                        )
+                    return current[0]
+                if _runtime_artifact_fingerprint_matches(
+                    staticlib_path,
                     fingerprint,
+                    fingerprint_path,
+                    require_artifact_digest=True,
                 ):
-                    stage = "metadata-refresh"
-                    _refresh_runtime_fingerprint_metadata(
-                        fingerprint_path,
+                    if _runtime_fingerprint_metadata_needs_refresh(
+                        stored_fingerprint,
                         fingerprint,
+                    ):
+                        stage = "metadata-refresh"
+                        _refresh_runtime_fingerprint_metadata(
+                            fingerprint_path,
+                            fingerprint,
+                        )
+                    stage = "artifact-admission"
+                    if resolve_identity() != pre_identity:
+                        return fail(
+                            "CPython ABI wasm identity changed during artifact admission."
+                        )
+                    return staticlib_path
+                if reason := source_build_disabled_reason("CPython ABI WASM provider"):
+                    stage = "rebuild-policy"
+                    return fail(reason)
+                if not json_output:
+                    print("Building wasm CPython ABI link provider...", file=sys.stderr)
+                stage = "cargo-execution"
+                with _build_slot() as _slot:
+                    build = _run_resolved_cargo_plan(
+                        plan,
+                        timeout=cargo_timeout,
+                        json_output=json_output,
+                        label="CPython ABI wasm build",
+                        tempfile_runner=_run_subprocess_captured_to_tempfiles,
+                        progress_label=None
+                        if json_output
+                        else "CPython ABI wasm build",
                     )
-                stage = "artifact-admission"
+                if build.returncode != 0:
+                    return fail("CPython ABI wasm build failed.")
+                stage = "cargo-artifact"
+                provider = _reported_cpython_abi_staticlib_from_cargo_stdout(
+                    build.stdout,
+                    target_root=target_root,
+                )
+                if provider is None or not provider.exists():
+                    return fail(
+                        "CPython ABI wasm build succeeded but Cargo did not report the staticlib artifact."
+                    )
+                stage = "post-build-identity"
                 if resolve_identity() != pre_identity:
                     return fail(
-                        "CPython ABI wasm identity changed during artifact admission."
+                        "CPython ABI wasm identity changed during Cargo; refusing publication."
                     )
-                return staticlib_path
-            if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
-                stage = "rebuild-policy"
-                return fail(
-                    "CPython ABI wasm exact artifact is unavailable and rebuilds are disabled."
+                stage = "metadata-publication"
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(
+                    fingerprint_path,
+                    fingerprint,
+                    artifact=provider,
                 )
-            if not json_output:
-                print("Building wasm CPython ABI link provider...", file=sys.stderr)
-            stage = "cargo-execution"
-            with _build_slot() as _slot:
-                build = _run_resolved_cargo_plan(
-                    plan,
-                    timeout=cargo_timeout,
-                    json_output=json_output,
-                    label="CPython ABI wasm build",
-                    tempfile_runner=_run_subprocess_captured_to_tempfiles,
-                    progress_label=None if json_output else "CPython ABI wasm build",
+                provider_fingerprint_path = _runtime_target_fingerprint_path(
+                    build_state_root,
+                    provider,
+                    cargo_profile=cargo_profile,
+                    target_label=target_label,
                 )
-            if build.returncode != 0:
-                return fail("CPython ABI wasm build failed.")
-            stage = "cargo-artifact"
-            provider = _reported_cpython_abi_staticlib_from_cargo_stdout(
-                build.stdout,
-                target_root=target_root,
-            )
-            if provider is None or not provider.exists():
-                return fail(
-                    "CPython ABI wasm build succeeded but Cargo did not report the staticlib artifact."
+                provider_fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(
+                    provider_fingerprint_path,
+                    fingerprint,
+                    artifact=provider,
                 )
-            stage = "post-build-identity"
-            if resolve_identity() != pre_identity:
-                return fail(
-                    "CPython ABI wasm identity changed during Cargo; refusing publication."
-                )
-            stage = "metadata-publication"
-            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_runtime_fingerprint(
-                fingerprint_path,
-                fingerprint,
-                artifact=provider,
-            )
-            provider_fingerprint_path = _runtime_target_fingerprint_path(
-                build_state_root,
-                provider,
-                cargo_profile=cargo_profile,
-                target_label=target_label,
-            )
-            provider_fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_runtime_fingerprint(
-                provider_fingerprint_path,
-                fingerprint,
-                artifact=provider,
-            )
-            return provider
-    except CargoPlanExecutionError as exc:
-        build = exc.cargo_result
-        return fail(f"CPython ABI wasm exact Cargo plan changed: {exc}")
-    except subprocess.TimeoutExpired as exc:
-        return fail(f"CPython ABI wasm {stage} timed out: {exc}", timeout=exc)
-    except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as exc:
-        return fail(f"CPython ABI wasm {stage} failed: {exc}")
+                return provider
+        except CargoPlanExecutionError as exc:
+            build = exc.cargo_result
+            return fail(f"CPython ABI wasm exact Cargo plan changed: {exc}")
+        except subprocess.TimeoutExpired as exc:
+            return fail(f"CPython ABI wasm {stage} timed out: {exc}", timeout=exc)
+        except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as exc:
+            return fail(f"CPython ABI wasm {stage} failed: {exc}")
 
 
 def _wasm_runtime_wasm_candidates(target_root: Path, profile_dir: str) -> list[Path]:
@@ -637,6 +640,31 @@ def _wasm_runtime_codegen_flags(
     return tuple(result)
 
 
+def wasm_runtime_simd_enabled(flags: Sequence[str]) -> bool:
+    """Read SIMD128 from resolved Cargo flags with rustc target-feature precedence.
+
+    The last ``simd128`` toggle of the last ``target-feature`` argument wins,
+    the same rule ``_wasm_runtime_codegen_flags`` relies on.
+    """
+    enabled = False
+    items = list(flags)
+    for index, argument in enumerate(items):
+        if argument.startswith("-Ctarget-feature="):
+            value = argument[len("-Ctarget-feature=") :]
+        elif (
+            argument.startswith("target-feature=")
+            and index
+            and items[index - 1] == "-C"
+        ):
+            value = argument[len("target-feature=") :]
+        else:
+            continue
+        for feature in value.split(","):
+            if feature in {"+simd128", "-simd128"}:
+                enabled = feature == "+simd128"
+    return enabled
+
+
 def _run_runtime_wasm_cargo_build(
     *,
     cargo_plan: RuntimeCargoPlan,
@@ -802,8 +830,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
         "-r",
         *export_args,
         *long_double_argv,
-        "-o",
-        str(tmp_output_path),
+        *wasm_link_output_arguments(output_path, staged_output=tmp_output_path),
     )
     process = None
     staticlib_identity = stable_regular_file_identity(

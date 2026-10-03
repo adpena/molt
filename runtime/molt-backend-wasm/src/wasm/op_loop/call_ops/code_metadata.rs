@@ -15,19 +15,12 @@ pub(super) fn emit_code_metadata_call_op(
         "code_slot_set" => {
             emit_value_then_two_locals_drop_call(call_ctx, func, op, WasmRuntimeImport::CodeSlotSet)
         }
-        "asyncgen_locals_register" => emit_table_two_local_drop_call(
+        "stateful_locals_register" => emit_table_two_local_drop_call(
             call_ctx,
             func,
             op,
-            "asyncgen_locals_register",
-            WasmRuntimeImport::AsyncgenLocalsRegister,
-        ),
-        "gen_locals_register" => emit_table_two_local_drop_call(
-            call_ctx,
-            func,
-            op,
-            "gen_locals_register",
-            WasmRuntimeImport::GenLocalsRegister,
+            "stateful_locals_register",
+            WasmRuntimeImport::StatefulLocalsRegister,
         ),
         "code_slots_init" => emit_value_drop_call(
             call_ctx,
@@ -35,13 +28,94 @@ pub(super) fn emit_code_metadata_call_op(
             op.value.expect("admitted code_slots_init count"),
             WasmRuntimeImport::CodeSlotsInit,
         ),
-        "trace_enter_slot" => emit_value_drop_call(
-            call_ctx,
+        "trace_enter_slot" => call_ctx.frame.emit_owned_frame_entry(
             func,
             op.value.expect("admitted trace_enter_slot ID"),
-            WasmRuntimeImport::TraceEnterSlot,
+            call_ctx.import_ids,
+            call_ctx.reloc_enabled,
         ),
-        "trace_exit" => emit_no_arg_drop_call(call_ctx, func, WasmRuntimeImport::TraceExit),
+        // Authored lifecycle marker; activation cleanup owns the actual exit,
+        // including return edges introduced by this backend (yield/failure).
+        "trace_exit" => {}
+        // A home store hands operand 0's reference to the frame's home; its
+        // result is a view of the operand that owns nothing.
+        "frame_home_store" | "frame_home_cell" | "frame_home_private_cell" => {
+            let args = op.args.as_ref().expect("admitted frame home operand");
+            let value = call_ctx.locals[&args[0]];
+            let kind = match op.kind.as_str() {
+                "frame_home_cell" => molt_codegen_abi::FRAME_HOME_CELL,
+                "frame_home_private_cell" => molt_codegen_abi::FRAME_HOME_PRIVATE_CELL,
+                _ => molt_codegen_abi::FRAME_HOME_PLAIN,
+            };
+            call_ctx.frame.emit_frame_home_store(
+                func,
+                op.value.expect("admitted frame home slot"),
+                kind,
+                value,
+                call_ctx.import_ids,
+                call_ctx.reloc_enabled,
+            );
+            if let Some(out) = call_ctx.locals.bound_op_result_slot(op) {
+                func.instruction(&Instruction::LocalGet(value));
+                func.instruction(&Instruction::LocalSet(out));
+            }
+        }
+        // A borrowed view of the slot's binding, valid until its next write.
+        "frame_home_load" => {
+            call_ctx.frame.emit_frame_home_load(
+                func,
+                op.value.expect("admitted frame home slot"),
+                call_ctx.import_ids,
+                call_ctx.reloc_enabled,
+            );
+            match call_ctx.locals.bound_op_result_slot(op) {
+                Some(out) => func.instruction(&Instruction::LocalSet(out)),
+                None => func.instruction(&Instruction::Drop),
+            };
+        }
+        // PEP 709's save of an enclosing binding: moved out, owned.
+        "frame_home_take" => {
+            call_ctx
+                .frame
+                .emit_frame_home_address(func, op.value.expect("admitted frame home slot"));
+            emit_call(
+                func,
+                call_ctx.reloc_enabled,
+                call_ctx.import_ids[WasmRuntimeImport::FrameHomeTake],
+            );
+            store_runtime_result(
+                func,
+                op,
+                call_ctx.locals,
+                call_ctx.import_ids,
+                call_ctx.reloc_enabled,
+                WasmRuntimeImport::FrameHomeTake,
+            );
+        }
+        "frame_home_clear" => {
+            call_ctx.frame.emit_frame_home_clear(
+                func,
+                op.value.expect("admitted frame home slot"),
+                call_ctx.import_ids,
+                call_ctx.reloc_enabled,
+            );
+        }
+        // `locals()`: the runtime's one authority over the executing frame.
+        "frame_locals" => {
+            emit_call(
+                func,
+                call_ctx.reloc_enabled,
+                call_ctx.import_ids[WasmRuntimeImport::LocalsBuiltin],
+            );
+            store_runtime_result(
+                func,
+                op,
+                call_ctx.locals,
+                call_ctx.import_ids,
+                call_ctx.reloc_enabled,
+                WasmRuntimeImport::LocalsBuiltin,
+            );
+        }
         "line" => emit_value_drop_call(
             call_ctx,
             func,
@@ -123,15 +197,6 @@ fn emit_value_drop_call(
     import: WasmRuntimeImport,
 ) {
     func.instruction(&Instruction::I64Const(value));
-    emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
-}
-
-fn emit_no_arg_drop_call(
-    call_ctx: &CallOpContext<'_, '_, '_>,
-    func: &mut Function,
-    import: WasmRuntimeImport,
-) {
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
     discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
 }

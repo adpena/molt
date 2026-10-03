@@ -23,7 +23,6 @@ from molt.cli.runtime_fingerprints import (
     _runtime_artifact_fingerprint_matches,
     _write_runtime_fingerprint,
 )
-from molt.cli.runtime_native_build import _runtime_archives_semantically_match
 from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
 from tools.native_link_benchmark import collect_input_facts
 
@@ -316,7 +315,8 @@ def test_fingerprint_and_manifest_share_semantic_archive_authority(
     scratch = tmp_path / "scratch" / "libmolt_runtime.a"
     scratch.parent.mkdir()
     _archive(scratch, style="coff", rustc_id="third777", timestamp=99)
-    assert _runtime_archives_semantically_match(runtime, scratch)
+    assert runtime.read_bytes() != scratch.read_bytes()
+    assert artifact_content_identity(runtime) == artifact_content_identity(scratch)
     equivalent_link = _link_fingerprint(
         project_root=tmp_path,
         inputs=[runtime],
@@ -349,7 +349,7 @@ def test_fingerprint_and_manifest_share_semantic_archive_authority(
             ("dependency", b"object-dependency"),
         ),
     )
-    assert not _runtime_archives_semantically_match(runtime, scratch)
+    assert artifact_content_identity(runtime) != artifact_content_identity(scratch)
     changed_link = _link_fingerprint(
         project_root=tmp_path,
         inputs=[runtime],

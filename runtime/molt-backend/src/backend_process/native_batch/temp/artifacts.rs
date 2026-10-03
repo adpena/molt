@@ -11,8 +11,7 @@ pub(crate) fn preserve_native_batch_worker_failure_artifacts(
     job_path: &Path,
     object_path: &Path,
 ) -> io::Result<PathBuf> {
-    let mut job: NativeBatchObjectJob =
-        read_json_artifact(job_path, "failed native batch object job")?;
+    let job: NativeBatchObjectJob = read_json_artifact(job_path, "failed native batch object job")?;
     let job_stem = job_path
         .file_stem()
         .and_then(|name| name.to_str())
@@ -33,10 +32,6 @@ pub(crate) fn preserve_native_batch_worker_failure_artifacts(
         .to_path_buf();
     std::fs::create_dir_all(&artifact_dir)?;
 
-    let copied_module_context = preserve_module_context(&job, &artifact_dir)?;
-    let original_module_context_path = job.module_context_path.clone();
-    job.module_context_path = copied_module_context.clone();
-
     let copied_job = artifact_dir.join(
         job_path
             .file_name()
@@ -47,15 +42,16 @@ pub(crate) fn preserve_native_batch_worker_failure_artifacts(
     let copied_object = preserve_partial_object(object_path, &artifact_dir)?;
     let replay_object = artifact_dir.join("replay.o");
     let manifest = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "label": label,
         "source_job_path": job_path.display().to_string(),
         "source_object_path": object_path.display().to_string(),
-        "source_module_context_path": original_module_context_path.display().to_string(),
         "copied_job_path": copied_job.display().to_string(),
         "copied_object_path": copied_object.as_ref().map(|path| path.display().to_string()),
-        "copied_module_context_path": copied_module_context.display().to_string(),
+        "module_context": "embedded-in-job",
         "replay": {
+            "environment": job.codegen_environment.values,
+            "environment_null_means": "unset before replay",
             "argv": [
                 "target/debug/molt-backend",
                 "--native-batch-job-file",
@@ -67,21 +63,6 @@ pub(crate) fn preserve_native_batch_worker_failure_artifacts(
     });
     write_json_artifact(&manifest_marker, &manifest)?;
     Ok(artifact_dir)
-}
-
-fn preserve_module_context(job: &NativeBatchObjectJob, artifact_dir: &Path) -> io::Result<PathBuf> {
-    let copied_module_context = artifact_dir.join("module_context.json");
-    std::fs::copy(&job.module_context_path, &copied_module_context).map_err(|err| {
-        io::Error::new(
-            err.kind(),
-            format!(
-                "failed to preserve native batch module context '{}' to '{}': {err}",
-                job.module_context_path.display(),
-                copied_module_context.display()
-            ),
-        )
-    })?;
-    Ok(copied_module_context)
 }
 
 fn preserve_partial_object(object_path: &Path, artifact_dir: &Path) -> io::Result<Option<PathBuf>> {

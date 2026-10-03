@@ -280,10 +280,12 @@ def test_nested_namedexpr_preserves_value_without_erasing_bindings() -> None:
     assert result.evaluation_required
 
 
-@pytest.mark.parametrize("arguments", ["*items", "**mapping"])
-def test_pure_call_identity_does_not_erase_expansion_callbacks(arguments: str) -> None:
+@pytest.mark.parametrize("arguments", ["", "1", "*items", "**mapping"])
+def test_call_spelling_never_proves_purity_or_erases_expansion_callbacks(
+    arguments: str,
+) -> None:
     expression = ast.parse(f"pure({arguments})", mode="eval").body
-    assert expression_may_execute_python(expression, proven_pure_calls={"pure"})
+    assert expression_may_execute_python(expression)
 
 
 def test_unknown_rich_comparison_exit_is_not_the_false_singleton():

@@ -133,7 +133,7 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
     }
 
     match type_id {
-        TYPE_ID_LIST => {
+        TYPE_ID_LIST if unsafe { crate::object::iterable::builtin_receiver(_py, ptr) } => {
             // Shallow copy: new list with same element refs
             unsafe {
                 let new_ptr =
@@ -232,7 +232,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
     }
 
     match type_id {
-        TYPE_ID_LIST => {
+        TYPE_ID_LIST if unsafe { crate::object::iterable::builtin_receiver(_py, ptr) } => {
             // Deep copy: recursively copy each element.
             // Allocate empty list first, register in memo to break cycles.
             let new_ptr = alloc_list(_py, &[]);

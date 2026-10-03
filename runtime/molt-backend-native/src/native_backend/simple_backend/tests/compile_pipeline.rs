@@ -476,7 +476,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
                         return_abi: molt_ir::FunctionReturnAbi::Value,
                         name: "callable_result_target".into(),
                         params: if kind == "func_new_closure" {
-                            vec!["closure".into()]
+                            vec![molt_ir::MOLT_CLOSURE_PARAM_NAME.into()]
                         } else {
                             vec![]
                         },
@@ -898,6 +898,7 @@ fn native_compiles_canonical_bare_get_attr() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     // Must not panic at the dispatch's no-codegen catch-all; the canonical
@@ -1383,7 +1384,7 @@ fn static_calls_transport_closure_arguments_with_the_declared_abi() {
                             molt_ir::FunctionReturnAbi::Void
                         },
                         name: "closure_target".into(),
-                        params: vec!["environment".into(), "value".into()],
+                        params: vec![molt_ir::MOLT_CLOSURE_PARAM_NAME.into(), "value".into()],
                         ops: vec![OpIR {
                             kind: if returns_value { "ret" } else { "ret_void" }.into(),
                             args: returns_value.then(|| vec!["value".into()]),
@@ -1533,6 +1534,7 @@ fn native_backend_skips_profile_store_imports_when_function_has_no_store_ops() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1590,6 +1592,7 @@ fn native_backend_keeps_profile_store_imports_when_function_has_store_ops() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1637,6 +1640,7 @@ fn compile_check_exception_target_shape(name: &str, target: Option<i64>) {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         name,
@@ -1796,6 +1800,7 @@ fn native_backend_compiles_exception_label_guard_if_without_else() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1942,6 +1947,7 @@ fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_els
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -2075,6 +2081,7 @@ fn native_backend_compiles_tir_roundtripped_nested_loops() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 

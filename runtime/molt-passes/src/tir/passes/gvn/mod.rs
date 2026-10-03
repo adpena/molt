@@ -4,6 +4,9 @@
 //! compute the same result (same opcode, same operand value numbers), the
 //! second is replaced with a Copy of the first.  This subsumes common
 //! subexpression elimination (CSE) and catches redundancies that SCCP misses.
+//! Equal values are not equal owners: where the second result held a heap
+//! reference of its own, its Copy is an owned alias that keeps it
+//! (`ownership_lattice_min::Replacements`, design 20 §1.2).
 //!
 //! Algorithm: dominator-tree-scoped hash-based value numbering.  A scoped
 //! hash table is maintained as the dominator tree is walked in pre-order.

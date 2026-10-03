@@ -57,8 +57,8 @@ fn runtime_functions_are_declared() {
             .get_function("molt_function_defaults_version")
             .is_some()
     );
-    // The augmented-assignment entries the boxed `emit_binary_arith` path
-    // calls through `call_runtime_2` (which requires pre-declaration). A
+    // The augmented-assignment entries the boxed `emit_binary_arith` fallback
+    // calls are fixed declarations. A
     // TIR→LLVM-lowered function carrying `+=`/`-=`/`*=` (an inlined or
     // generator-fused caller) panics without these.
     assert!(module.get_function("molt_inplace_add").is_some());
@@ -204,6 +204,9 @@ fn raw_integer_carriers_do_not_authorize_boxed_calls() {
         ("molt_is_truthy", 1),
         ("molt_obj_get_state", 1),
         ("molt_object_field_get_ptr", 2),
+        ("molt_tuple_from_values", 2),
+        ("molt_list_from_values", 2),
+        ("molt_dataclass_new_from_values", 5),
     ] {
         assert!(
             runtime_import_return_abi(symbol, arity).is_some(),
@@ -398,9 +401,8 @@ fn function_and_code_runtime_functions_are_declared() {
 
     let memory_kind = Attribute::get_named_enum_kind_id("memory");
     for (name, arity) in &[
-        ("molt_func_new", 3usize),
-        ("molt_func_new_builtin_named", 4),
-        ("molt_func_new_closure", 4),
+        ("molt_func_new", 4usize),
+        ("molt_func_new_closure", 5),
         ("molt_code_new", 9),
         ("molt_code_slot_set", 3),
         ("molt_code_slots_init", 1),
@@ -628,13 +630,15 @@ fn lowering_literal_runtime_imports_are_declared_or_classified() {
 }
 
 #[test]
-fn module_namespace_runtime_functions_are_declared() {
+fn module_namespace_and_named_acquisition_have_callback_safe_declarations() {
     let ctx = Context::create();
     let module = ctx.create_module("test_module_runtime");
     declare_runtime_functions(&ctx, &module);
 
     for (name, arity) in &[
-        ("molt_module_new", 1usize),
+        ("molt_func_new_builtin_named", 4usize),
+        ("molt_module_import", 1),
+        ("molt_module_new", 1),
         ("molt_module_cache_get", 1),
         ("molt_module_cache_del", 1),
         ("molt_module_cache_set", 2),
@@ -655,10 +659,51 @@ fn module_namespace_runtime_functions_are_declared() {
             "{name} should have {arity} i64 parameters"
         );
         assert!(has_fn_attr(func, "nounwind"), "{name} should have nounwind");
-        assert!(
-            has_fn_attr(func, "willreturn"),
-            "{name} should have willreturn"
+        for attr in ["willreturn", "memory", "readonly", "readnone"] {
+            let kind = Attribute::get_named_enum_kind_id(attr);
+            if kind != 0 {
+                assert!(
+                    func.get_enum_attribute(AttributeLoc::Function, kind)
+                        .is_none(),
+                    "{name} can execute namespace callbacks and must not promise {attr}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dynamic_namespace_mapping_imports_keep_conservative_attributes() {
+    let ctx = Context::create();
+    let module = ctx.create_module("test_dynamic_namespace_runtime");
+    for (name, arity) in [("molt_namespace_get", 3), ("molt_namespace_del", 2)] {
+        assert_eq!(
+            runtime_import_return_abi(name, arity),
+            Some(RuntimeReturnAbi::I64)
         );
+        let signature = RuntimeImportSignature {
+            name,
+            param_count: arity,
+            return_abi: RuntimeReturnAbi::I64,
+        };
+        let function = declare_conservative_runtime_function(
+            &ctx,
+            &module,
+            name,
+            runtime_function_type(&ctx, signature),
+        );
+        assert!(has_fn_attr(function, "nounwind"));
+        for attr in ["willreturn", "memory", "readonly", "readnone"] {
+            let kind = Attribute::get_named_enum_kind_id(attr);
+            if kind != 0 {
+                assert!(
+                    function
+                        .get_enum_attribute(AttributeLoc::Function, kind)
+                        .is_none(),
+                    "{name} may execute mapping callbacks and must not promise {attr}"
+                );
+            }
+        }
     }
 }
 

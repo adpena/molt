@@ -8,14 +8,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
-_builtin_cancelled = getattr(_builtins, "CancelledError", None)
-if _builtin_cancelled is None:
-
-    class CancelledError(BaseException):
-        pass
-
-else:
-    CancelledError = _builtin_cancelled
+CancelledError = _require_intrinsic("molt_builtin_class_lookup")("CancelledError")
 
 
 TimeoutError = _builtins.TimeoutError

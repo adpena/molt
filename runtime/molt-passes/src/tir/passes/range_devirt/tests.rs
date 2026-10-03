@@ -393,6 +393,64 @@ fn no_devirt_non_range_loop() {
     assert_eq!(stats.values_changed, 0);
 }
 
+/// The value defining the step (the third range operand) of a fixture.
+fn step_operand(func: &TirFunction) -> ValueId {
+    let entry = &func.blocks[&func.entry_block];
+    let call = entry
+        .ops
+        .iter()
+        .find(|op| op.opcode == OpCode::CallBuiltin)
+        .expect("range call");
+    call.operands[2]
+}
+
+#[test]
+fn no_devirt_without_a_nonzero_constant_step() {
+    // A step computed at run time: its sign is unknown, and it may be zero.
+    let mut dynamic = build_range_for_loop(&[0, 10, 1]);
+    let step = step_operand(&dynamic);
+    let entry = dynamic.entry_block;
+    for op in &mut dynamic.blocks.get_mut(&entry).unwrap().ops {
+        if op.results == [step] {
+            op.opcode = OpCode::Copy;
+            op.attrs.clear();
+        }
+    }
+    let stats = run(&mut dynamic);
+    assert_eq!(stats.ops_removed, 0, "a dynamic step keeps range_new");
+
+    // A zero step must raise range()'s ValueError, not loop forever.
+    let mut zero = build_range_for_loop(&[0, 10, 0]);
+    let stats = run(&mut zero);
+    assert_eq!(stats.ops_removed, 0, "a zero step keeps range_new");
+}
+
+#[test]
+fn no_devirt_when_the_iterator_has_another_use() {
+    let mut func = build_range_for_loop(&[10]);
+    let entry = func.entry_block;
+    let iter_val = func.blocks[&entry]
+        .ops
+        .iter()
+        .find(|op| op.opcode == OpCode::GetIter)
+        .expect("iterator")
+        .results[0];
+    let exit = func
+        .blocks
+        .iter()
+        .find(|(_, block)| matches!(block.terminator, Terminator::Return { .. }))
+        .map(|(id, _)| *id)
+        .expect("exit block");
+    func.blocks.get_mut(&exit).unwrap().terminator = Terminator::Return {
+        values: vec![iter_val],
+    };
+    let stats = run(&mut func);
+    assert_eq!(
+        stats.ops_removed, 0,
+        "an escaping iterator keeps the protocol"
+    );
+}
+
 #[test]
 fn devirt_preserves_loop_break_kind() {
     let mut func = build_range_for_loop(&[10]);

@@ -520,6 +520,10 @@ pub fn run_cached_tir_pipeline<F>(
 where
     F: Fn(&mut FunctionIR) + Sync,
 {
+    // Reusing optimized TIR would suppress pass dumps, audits and instruments.
+    let cache_reuse_allowed = !options.tir_dump
+        && !options.tir_stats
+        && !molt_ir::backend_environment::compilation_diagnostics_requested();
     let mut cached_tir_custody = CachedTirCustody::new();
     let mut tir_cache =
         CompilationCache::open(options.cache_dir.clone().unwrap_or_else(backend_cache_dir));
@@ -571,7 +575,8 @@ where
             for input in inputs {
                 let index = input.index;
                 let content_hash = &input.prepared_function.content_hash;
-                if let Some(cached_bytes) = tir_cache.get(content_hash)
+                if cache_reuse_allowed
+                    && let Some(cached_bytes) = tir_cache.get(content_hash)
                     && let Some(cached_tir_func) =
                         super::serialize::deserialize_tir_function(&cached_bytes)
                 {
@@ -682,6 +687,44 @@ where
         cached_tir: cached_tir_custody,
         uncached_count,
     }
+}
+
+/// Partition optimized bodies before the terminal ownership phase.
+///
+/// Only newly generated stubs/chunks lose their old function analysis. Every
+/// unchanged function keeps its optimized TIR; its cache is neither rehashed
+/// nor rebuilt. Transport allocations and reads must enter DropInsertion along
+/// with the body they serve, never inherit another function's completed drops.
+pub fn partition_cached_functions_before_drops(
+    ir: &mut crate::SimpleIR,
+    cached_tir: &mut CachedTirCustody,
+    target_info: &TargetInfo,
+    partition: impl FnOnce(&mut crate::SimpleIR) -> BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let sources = partition(ir);
+    if sources.is_empty() {
+        return sources;
+    }
+    let changed: HashSet<&str> = sources
+        .keys()
+        .chain(sources.values())
+        .map(String::as_str)
+        .collect();
+    for function in &mut ir.functions {
+        if !changed.contains(function.name.as_str()) {
+            continue;
+        }
+        let mut tir = super::lower_from_simple::lower_to_tir_for_target(function, target_info);
+        super::type_refine::refine_types(&mut tir);
+        // The new function boundary changes SSA, dominance and parameter facts.
+        // Optimize the changed bodies under the same target before module-wide
+        // analysis; this pipeline deliberately does not insert terminal drops.
+        super::passes::run_pipeline(&mut tir, target_info);
+        super::type_refine::refine_types(&mut tir);
+        function.ops = super::lower_to_simple::lower_to_simple_ir(&tir);
+        cached_tir.insert(function.name.clone(), tir);
+    }
+    sources
 }
 
 pub fn run_simple_ir_module_pipeline_from_cached_tir(
@@ -987,6 +1030,124 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cached_partition_preserves_unmodified_tir_and_plans_every_new_transport() {
+        for target in [
+            TargetInfo::native_release_fast(),
+            TargetInfo::wasm_release_fast(),
+        ] {
+            let large = FunctionIR {
+                name: "split_transport_owner".into(),
+                execution_context: crate::ExecutionContextPolicy::Inherited,
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                params: vec!["input".into()],
+                ops: vec![
+                    OpIR {
+                        kind: "line".into(),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "list_new".into(),
+                        args: Some(vec!["input".into()]),
+                        out: Some("kept".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "line".into(),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "list_new".into(),
+                        args: Some(vec!["kept".into()]),
+                        out: Some("outer".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".into(),
+                        args: Some(vec!["outer".into()]),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            };
+            let unchanged = FunctionIR {
+                name: "unchanged".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                params: vec!["arg".into()],
+                ops: vec![OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["arg".into()]),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            };
+            let mut ir = crate::SimpleIR {
+                functions: vec![large, unchanged],
+                profile: None,
+            };
+            crate::validate_simple_ir(&ir).expect("valid source before outlining");
+            let mut cache = CachedTirCustody::new();
+            for function in &ir.functions {
+                cache.insert(
+                    function.name.clone(),
+                    super::super::lower_from_simple::lower_to_tir_for_target(function, &target),
+                );
+            }
+            let unchanged_params = cache.optimized_tir_by_name["unchanged"]
+                .param_names
+                .as_ptr();
+            let sources =
+                partition_cached_functions_before_drops(&mut ir, &mut cache, &target, |ir| {
+                    let original = ir.functions.remove(0);
+                    let mut names = ir.functions.iter().map(|f| f.name.clone()).collect();
+                    let (stub, chunks) =
+                        crate::passes::split_large_function(original, 3, &mut names)
+                            .expect("fixture must exercise actual cross-chunk transport");
+                    assert!(
+                        chunks
+                            .iter()
+                            .any(|chunk| chunk.ops.iter().any(|op| op.kind == "index"))
+                    );
+                    let sources = chunks
+                        .iter()
+                        .map(|chunk| (chunk.name.clone(), stub.name.clone()))
+                        .collect();
+                    ir.functions.extend(chunks);
+                    ir.functions.push(stub);
+                    sources
+                });
+            assert!(!sources.is_empty());
+            assert_eq!(
+                unchanged_params,
+                cache.optimized_tir_by_name["unchanged"]
+                    .param_names
+                    .as_ptr()
+            );
+            for function in &ir.functions {
+                assert!(cache.contains_function(&function.name));
+                assert!(
+                    !cache.optimized_tir_by_name[&function.name]
+                        .attrs
+                        .contains_key(super::super::passes::drop_insertion::DROP_INSERTED_ATTR)
+                );
+            }
+            finalize_simple_ir_drops_from_cached_tir(&mut ir.functions, &target, &mut cache);
+            for function in &ir.functions {
+                assert!(
+                    function
+                        .ops
+                        .iter()
+                        .any(|op| op.kind
+                            == super::super::passes::drop_insertion::DROP_INSERTED_ATTR),
+                    "{} must receive its own terminal drop plan",
+                    function.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn work_partition_respects_count_and_op_budgets() {
         let by_count: Vec<TirOptimizationWorkItem> = (0..(TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT
             + 1))
@@ -1116,6 +1277,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: crate::ExecutionContextPolicy::None,
         };
 
@@ -1282,6 +1444,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: crate::ExecutionContextPolicy::None,
         };
         let options = |cache_dir: &std::path::Path| TirPipelineRunOptions {
@@ -1343,6 +1506,29 @@ mod tests {
             3,
             "preparation must run before every lookup so hits and misses use the same identity"
         );
+        for (tir_dump, tir_stats) in [(true, false), (false, true)] {
+            let mut diagnostic_options = options(&cache_dir);
+            diagnostic_options.tir_dump = tir_dump;
+            diagnostic_options.tir_stats = tir_stats;
+            let mut functions = vec![base.clone()];
+            let diagnostic_run =
+                run_cached_tir_pipeline(&mut functions, diagnostic_options, |function| {
+                    function.source_file = Some("second.py".to_string())
+                });
+            assert_eq!(
+                diagnostic_run.uncached_count, 1,
+                "requested pass diagnostics must execute even with matching cached TIR"
+            );
+            assert_eq!(
+                cached_source(&diagnostic_run),
+                cached_source(&matching_preprocessing_hit)
+            );
+        }
+        assert_eq!(
+            run_with_source("second.py").uncached_count,
+            0,
+            "diagnostic execution must preserve ordinary TIR cache reuse"
+        );
         let _ = std::fs::remove_dir_all(cache_dir);
     }
 
@@ -1366,6 +1552,7 @@ mod tests {
             source_file: Some("policy.py".to_string()),
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: crate::ExecutionContextPolicy::None,
         };
         let hash = |policy| {
@@ -1433,6 +1620,7 @@ mod tests {
             source_file: Some("app.py".to_string()),
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: crate::ExecutionContextPolicy::Inherited,
         }];
         let target_info = TargetInfo::native_release_fast();

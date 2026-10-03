@@ -78,11 +78,13 @@ impl WasmCallableTablePlan {
         &'a self,
         escaped_callable_targets: &'a BTreeSet<String>,
         call_func_spill_offset: u32,
+        entry_custody: &'a BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
     ) -> WasmCallableCallSiteAbi<'a> {
         WasmCallableCallSiteAbi::from_table_plan(
             self,
             escaped_callable_targets,
             call_func_spill_offset,
+            entry_custody,
         )
     }
 
@@ -551,6 +553,7 @@ mod tests {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             }],
             profile: None,

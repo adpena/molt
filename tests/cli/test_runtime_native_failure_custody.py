@@ -58,58 +58,47 @@ def plan(
             cargo_command=("cargo", "rustc"),
         ),
         fingerprint_features=("stdlib_micro",),
-        fingerprint_path=tmp_path / "runtime.fingerprint",
-        stored_fingerprint={},
-        fingerprint=runtime.runtime_build_fingerprint(identity),
         build_identity=identity,
-        session_key=None,
+        candidates=(),
     )
 
 
-@pytest.mark.parametrize("error_type", [OSError, ValueError])
-@pytest.mark.parametrize("operation", ["publication", "refresh"])
-def test_native_fingerprint_failure_rejects_artifact(
-    plan, monkeypatch: pytest.MonkeyPatch, error_type, operation: str
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        OSError,
+        ValueError,
+        runtime.NativeLinkCustodyError,
+        runtime.NativeLinkDependencyManifestError,
+    ],
+)
+def test_native_generation_failure_rejects_artifact(
+    plan, monkeypatch: pytest.MonkeyPatch, error_type
 ) -> None:
     def fail(*_args, **_kwargs):
-        raise error_type("fingerprint custody failure")
+        raise error_type("generation custody failure")
 
-    if operation == "publication":
-        monkeypatch.setattr(
-            runtime, "write_native_link_dependency_manifest", lambda *_a, **_k: None
-        )
-        monkeypatch.setattr(runtime, "_write_runtime_fingerprint", fail)
-        result = CargoExecutionResult(
-            subprocess.CompletedProcess(plan.cmd, 0, "cargo output", "cargo warning"),
-            attempts=(),
-            retry_reason=None,
-        )
-        assert not runtime._publish_native_runtime_build(plan, result)
-    else:
-        monkeypatch.setattr(
-            runtime, "_runtime_artifact_fingerprint_matches", lambda *_a, **_k: True
-        )
-        monkeypatch.setattr(
-            runtime, "_runtime_fingerprint_metadata_needs_refresh", lambda *_a: True
-        )
-        monkeypatch.setattr(runtime, "_refresh_runtime_fingerprint_metadata", fail)
-        assert runtime._reuse_native_runtime_under_lock(plan) is False
+    monkeypatch.setattr(runtime, "publish_native_runtime_generation", fail)
+    result = CargoExecutionResult(
+        subprocess.CompletedProcess(plan.cmd, 0, "cargo output", "cargo warning"),
+        attempts=(),
+        retry_reason=None,
+    )
+    assert not runtime._publish_native_runtime_build(plan, result)
     failure = plan.runtime_state.native_runtime_build_failure
     assert failure is not None
-    assert failure.stage == f"fingerprint-{operation}"
-    assert "fingerprint custody failure" in failure.summary
+    assert failure.stage == "generation-publication"
+    assert "generation custody failure" in failure.summary
     assert failure.evidence_path is not None
     payload = json.loads(failure.evidence_path.read_text(encoding="utf-8"))
     assert payload["command"] == plan.cmd
-    if operation == "publication":
-        assert payload["cargo_stdout"] == "cargo output"
-        assert payload["cargo_stderr"] == "cargo warning"
+    assert payload["cargo_stdout"] == "cargo output"
+    assert payload["cargo_stderr"] == "cargo warning"
 
 
-@pytest.mark.parametrize("refresh", [False, True])
 @pytest.mark.parametrize("as_bytes", [False, True])
 def test_native_cargo_timeout_retains_partial_output(
-    plan, monkeypatch: pytest.MonkeyPatch, refresh: bool, as_bytes: bool
+    plan, monkeypatch: pytest.MonkeyPatch, as_bytes: bool
 ) -> None:
     stdout = "partial Cargo artifact message"
     stderr = "error: partial compiler diagnostic"
@@ -123,11 +112,7 @@ def test_native_cargo_timeout_retains_partial_output(
         )
 
     monkeypatch.setattr(runtime, "_run_resolved_cargo_plan", timeout)
-    assert not (
-        plan.refresh_manifest()
-        if refresh
-        else runtime._build_native_runtime_under_lock(plan)
-    )
+    assert not runtime._build_native_runtime_under_lock(plan)
     failure = plan.runtime_state.native_runtime_build_failure
     assert failure is not None and failure.timed_out
     assert "partial compiler diagnostic" in failure.summary
@@ -171,7 +156,9 @@ def test_native_build_lock_failure_retains_structured_evidence_and_timing(
     from molt.cli import build_locks
 
     monkeypatch.setattr(
-        runtime, "_prepare_native_runtime_build", lambda *_a, **_k: plan
+        runtime,
+        "_prepare_native_runtime_build",
+        lambda *_a, **_k: pytest.fail("input capture must wait for the build lock"),
     )
 
     def unavailable(*args, **kwargs):
@@ -201,7 +188,7 @@ def test_native_locked_work_runtime_error_is_not_mislabeled(plan, monkeypatch):
     def broken(*args, **kwargs):
         raise RuntimeError("native locked invariant failed")
 
-    monkeypatch.setattr(runtime, "_reuse_native_runtime_under_lock", broken)
+    monkeypatch.setattr(runtime, "_build_native_runtime_under_lock", broken)
     with pytest.raises(RuntimeError, match="native locked invariant failed"):
         runtime._ensure_runtime_lib(
             plan.runtime_lib,
@@ -213,3 +200,21 @@ def test_native_locked_work_runtime_error_is_not_mislabeled(plan, monkeypatch):
             runtime_state=plan.runtime_state,
         )
     assert plan.runtime_state.native_runtime_build_failure is None
+
+
+def test_disabled_native_rebuild_never_runs_cargo_for_provenance(
+    plan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+    monkeypatch.setattr(
+        runtime,
+        "_run_resolved_cargo_plan",
+        lambda *_a, **_k: pytest.fail("rebuild-disabled policy invoked Cargo"),
+    )
+    assert not runtime._build_native_runtime_under_lock(plan)
+    failure = plan.runtime_state.native_runtime_build_failure
+    assert failure is not None and failure.stage == "rebuild-policy"
+    assert "MOLT_SKIP_RUNTIME_REBUILD=1" in failure.summary
+    assert failure.evidence_path is not None
+    payload = json.loads(failure.evidence_path.read_text(encoding="utf-8"))
+    assert payload["command"] == plan.cmd

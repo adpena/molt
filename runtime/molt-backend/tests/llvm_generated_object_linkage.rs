@@ -20,6 +20,7 @@ fn llvm_object_retains_exact_generated_object_abi_through_dead_strip() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,

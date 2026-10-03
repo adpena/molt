@@ -9,30 +9,24 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "state_switch",
     "state_transition",
     "state_yield",
+    "state_set",
+    "is_pending",
+    "task_wait",
     "call_async",
 ];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for coroutine, generator, and async-task
-/// state-machine ops. Extracted from `compile_func_inner` as a
-/// move-only function split: block/reachability state, suspend cleanup authority,
-/// and debug sealing are threaded explicitly.
+/// state-machine primitives. Shared TIR owns activation exits and cleanup.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     op: &OpIR,
-    ops: &[OpIR],
-    op_idx: usize,
     entry_block: Block,
-    master_return_block: Block,
-    resume_states: &BTreeSet<i64>,
     resume_blocks: &BTreeMap<i64, Block>,
-    label_blocks: &BTreeMap<i64, Block>,
     reachable_blocks: &mut BTreeSet<Block>,
     is_block_filled: &mut bool,
-    rc_authority: NativeRcAuthority,
-    returns_value: bool,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
@@ -42,13 +36,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     representation_plan: &ScalarRepresentationPlan,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    last_use: &BTreeMap<String, usize>,
-    cleanup_roots: &mut NativeCleanupRoots,
     local_inc_ref_obj: FuncRef,
-    local_dec_ref_obj: FuncRef,
-    local_exc_pending_fast: FuncRef,
-    exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
-    maybe_debug_seal: &dyn Fn(&str, usize, Block),
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -98,12 +86,9 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             let self_bits = box_ptr_value(&mut *builder, self_ptr, nbc);
             def_var_named(&mut *builder, vars, "self", self_bits);
 
-            let mut sorted_states: Vec<_> = resume_states.iter().copied().collect();
-            sorted_states.sort();
             let fallback_block = builder.create_block();
             let mut switch = Switch::new();
-            for id in sorted_states {
-                let block = resume_blocks[&id];
+            for (&id, &block) in resume_blocks {
                 switch.set_entry((id as u64) as u128, block);
                 reachable_blocks.insert(block);
             }
@@ -111,68 +96,17 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             switch.emit(&mut *builder, state, fallback_block);
             crate::switch_to_block_tracking(&mut *builder, fallback_block, &mut *is_block_filled);
         }
-        "state_transition" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let future = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Future not found");
-            let future_ptr = unbox_ptr_value(&mut *builder, *future, nbc);
-            let (slot_bits, pending_state_bits) = if args.len() == 2 {
-                (
-                    None,
-                    *var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        &args[1],
-                        representation_plan,
-                    )
-                    .expect("Pending state not found"),
-                )
-            } else {
-                (
-                    Some(
-                        *var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            &mut *import_refs,
-                            &mut *sealed_blocks,
-                            vars,
-                            &args[1],
-                            representation_plan,
-                        )
-                        .expect("Await slot not found"),
-                    ),
-                    *var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        &args[2],
-                        representation_plan,
-                    )
-                    .expect("Pending state not found"),
-                )
-            };
-            let next_state_id = op.value.unwrap_or(0);
+        kind @ ("state_transition" | "state_yield") => panic!(
+            "native backend: `{kind}` reached codegen; the shared terminal drop pass must expose it as explicit activation exits"
+        ),
+        "state_set" => {
+            // The state is an attribute of the transition. Saving it through
+            // the poll frame neither suspends nor returns. A ready wait saves
+            // its running state, which no resume dispatches to.
+            let state = op.value.expect("state_set requires its state");
             let self_ptr = builder.block_params(entry_block)[0];
-
-            let pending_state_id = unbox_int(&mut *builder, pending_state_bits, nbc);
-            let set_state_ref = import_func_ref(
+            let state_val = builder.ins().iconst(types::I64, state);
+            let set_state = import_func_ref(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
@@ -181,214 +115,56 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &[types::I64, types::I64],
                 &[],
             );
-            builder
-                .ins()
-                .call(set_state_ref, &[self_ptr, pending_state_id]);
-
-            let poll_callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_future_poll",
-                &[types::I64],
-                &[types::I64],
+            builder.ins().call(set_state, &[self_ptr, state_val]);
+        }
+        "is_pending" => {
+            // The scheduler sentinel is one exact word: no truthiness, no
+            // callback and no owner.
+            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let [poll] = args.as_slice() else {
+                panic!("is_pending expects one poll result");
+            };
+            let word = activation_object_word(
+                &mut *builder,
+                vars,
+                representation_plan,
+                poll,
+                "is_pending",
             );
-            let local_poll = module.declare_func_in_func(poll_callee, builder.func);
-            let poll_call = builder.ins().call(local_poll, &[*future]);
-            let res = builder.inst_results(poll_call)[0];
-
-            if let Some(target_id) = next_check_exception_target(ops, op_idx)
-                && let Some(&target_block) = label_blocks.get(&target_id)
-            {
-                let fallthrough = builder.create_block();
-                reachable_blocks.insert(target_block);
-                reachable_blocks.insert(fallthrough);
-                let has_exception = emit_exception_pending_condition(
-                    &mut *builder,
-                    local_exc_pending_fast,
-                    exc_flag_ptr_slot,
-                );
-                brif_block(
-                    &mut *builder,
-                    has_exception,
-                    target_block,
-                    &[],
-                    fallthrough,
-                    &[],
-                );
-                if sealed_blocks.insert(fallthrough) {
-                    maybe_debug_seal(
-                        "state_transition_exception_fallthrough",
-                        op_idx,
-                        fallthrough,
-                    );
-                    seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough);
-                }
-                crate::switch_to_block_tracking(&mut *builder, fallthrough, &mut *is_block_filled);
-                *is_block_filled = false;
+            let pending_word = builder.ins().iconst(types::I64, pending_bits());
+            let pending = builder.ins().icmp(IntCC::Equal, word, pending_word);
+            if let Some(out) = op.out.as_ref() {
+                let raw = builder.ins().uextend(types::I64, pending);
+                def_raw_bool_value(&mut *builder, vars, representation_plan, out, raw, nbc);
             }
-
-            let pending_const = builder.ins().iconst(types::I64, pending_bits());
-            let is_pending = builder.ins().icmp(IntCC::Equal, res, pending_const);
-
-            let next_block = resume_blocks[&next_state_id];
-            let pending_path = builder.create_block();
-            let ready_path = builder.create_block();
-            if let Some(current_block) = builder.current_block() {
-                builder.insert_block_after(pending_path, current_block);
-                builder.insert_block_after(ready_path, pending_path);
-            }
-            reachable_blocks.insert(pending_path);
-            reachable_blocks.insert(ready_path);
-            reachable_blocks.insert(next_block);
-            builder
-                .ins()
-                .brif(is_pending, pending_path, &[], ready_path, &[]);
-
-            crate::switch_to_block_tracking(&mut *builder, pending_path, &mut *is_block_filled);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, pending_path);
-            let sleep_callee = SimpleBackend::import_func_id_split(
+        }
+        "task_wait" => {
+            // Wake this activation when the future completes. Registration
+            // takes the frame and the future's object address and retains
+            // nothing: explicit TIR still owns the future.
+            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let [future] = args.as_slice() else {
+                panic!("task_wait expects one future");
+            };
+            let word = activation_object_word(
+                &mut *builder,
+                vars,
+                representation_plan,
+                future,
+                "task_wait",
+            );
+            let self_ptr = builder.block_params(entry_block)[0];
+            let future_ptr = unbox_ptr_value(&mut *builder, word, nbc);
+            let sleep_register = import_func_ref(
                 &mut *module,
                 &mut *import_ids,
+                &mut *builder,
+                &mut *import_refs,
                 "molt_sleep_register",
                 &[types::I64, types::I64],
                 &[types::I64],
             );
-            let local_sleep = module.declare_func_in_func(sleep_callee, builder.func);
-            builder.ins().call(local_sleep, &[self_ptr, future_ptr]);
-            reachable_blocks.insert(master_return_block);
-            // Suspend-boundary cleanup: an async `_poll` returns the PENDING
-            // sentinel here and is re-entered on the next resume, so dead
-            // per-iteration heap temporaries must be released now rather than
-            // deferred to the per-await return (see
-            // `drain_dead_block_temps_for_suspend`).
-            drain_dead_block_temps_for_suspend(
-                rc_authority,
-                &mut *builder,
-                &mut *block_tracked_obj,
-                &mut *block_tracked_ptr,
-                last_use,
-                &mut *cleanup_roots,
-                local_dec_ref_obj,
-                op_idx,
-            );
-            jump_block(&mut *builder, master_return_block, &[pending_const]);
-
-            crate::switch_to_block_tracking(&mut *builder, ready_path, &mut *is_block_filled);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, ready_path);
-            if let Some(bits) = slot_bits {
-                let offset = unbox_int(&mut *builder, bits, nbc);
-                let callee = SimpleBackend::import_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    "molt_closure_store",
-                    &[types::I64, types::I64, types::I64],
-                    &[types::I64],
-                );
-                let local_callee = module.declare_func_in_func(callee, builder.func);
-                builder.ins().call(local_callee, &[self_ptr, offset, res]);
-            }
-            let state_val = builder.ins().iconst(types::I64, next_state_id);
-            let set_state_ref2 = import_func_ref(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                "molt_obj_set_state",
-                &[types::I64, types::I64],
-                &[],
-            );
-            builder.ins().call(set_state_ref2, &[self_ptr, state_val]);
-            if args.len() <= 1
-                && let Some(out__) = op.out.as_ref()
-            {
-                def_var_from_boxed_transport(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    out__,
-                    res,
-                );
-            }
-            jump_block(&mut *builder, next_block, &[]);
-
-            crate::switch_to_block_tracking(&mut *builder, next_block, &mut *is_block_filled);
-        }
-        "state_yield" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let pair = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Yield pair not found");
-            let next_state_id = op.value.unwrap_or(0);
-            let self_ptr = builder.block_params(entry_block)[0];
-
-            let state_val = builder.ins().iconst(types::I64, next_state_id);
-            let set_state_yield = import_func_ref(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                "molt_obj_set_state",
-                &[types::I64, types::I64],
-                &[],
-            );
-            builder.ins().call(set_state_yield, &[self_ptr, state_val]);
-
-            reachable_blocks.insert(master_return_block);
-            if returns_value {
-                // Suspension returns an owned value to the caller; explicitly
-                // retain it here so downstream cleanup/control-flow lowering cannot
-                // invalidate yielded data before next()/send()/throw() unwraps it.
-                emit_inc_ref_obj(&mut *builder, *pair, local_inc_ref_obj);
-            }
-            // ── Suspend-boundary cleanup of dead per-iteration temporaries ──
-            //
-            // A `_poll` returns on every yield, so this jump-to-return is the
-            // per-iteration scope exit for any heap temporary that is dead
-            // before the suspend.  The headline case is the `(value, done)`
-            // pair tuple built by `tuple_new` right before this op: it was
-            // allocated rc=1, retained to rc=2 above (so it survives the
-            // return), and is registered as a block-tracked temporary whose
-            // real `last_use` is THIS op (kept un-extended for stateful
-            // functions — see `stateful_per_iter_temps`).  Draining it here
-            // takes its alloc reference back to rc=1, so the consumer's single
-            // release frees it — closing the per-yield (and, under delegation,
-            // O(iterations × depth)) tuple leak.  Loop-carried values survive
-            // because their `last_use` was extended past this op and the
-            // `last <= op_idx` gate keeps them live.
-            drain_dead_block_temps_for_suspend(
-                rc_authority,
-                &mut *builder,
-                &mut *block_tracked_obj,
-                &mut *block_tracked_ptr,
-                last_use,
-                &mut *cleanup_roots,
-                local_dec_ref_obj,
-                op_idx,
-            );
-            if returns_value {
-                jump_block(&mut *builder, master_return_block, &[*pair]);
-            } else {
-                jump_block(&mut *builder, master_return_block, &[]);
-            }
-
-            let next_block = resume_blocks[&next_state_id];
-            if reachable_blocks.contains(&next_block) {
-                crate::switch_to_block_tracking(&mut *builder, next_block, &mut *is_block_filled);
-            } else {
-                *is_block_filled = true;
-            }
+            builder.ins().call(sleep_register, &[self_ptr, future_ptr]);
         }
         "call_async" => {
             let out_name = op
@@ -466,4 +242,24 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
         _ => unreachable!("non-coroutine op routed to handle_coroutine_op"),
     }
     OpFlow::Proceed
+}
+
+/// Scheduler words are objects: a poll result or an awaited future. A raw
+/// scalar carrier could alias the sentinel's bits and would need a box that
+/// nothing owns, so reaching one here is a lowering defect.
+#[cfg(feature = "native-backend")]
+fn activation_object_word(
+    builder: &mut FunctionBuilder<'_>,
+    vars: &BTreeMap<String, Variable>,
+    representation_plan: &ScalarRepresentationPlan,
+    name: &str,
+    kind: &str,
+) -> Value {
+    assert!(
+        !representation_plan.is_raw_int_carrier_name(name)
+            && !representation_plan.is_float_unboxed(name)
+            && !representation_plan.is_bool_unboxed(name),
+        "{kind} operand `{name}` must be an object carrier"
+    );
+    *var_get(builder, vars, name).unwrap_or_else(|| panic!("{kind} operand `{name}` not found"))
 }

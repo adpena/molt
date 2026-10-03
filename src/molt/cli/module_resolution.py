@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from molt.cli import module_source as _module_source
-from molt.source_root import compiler_source_root_override
+from molt.source_root import compiler_source_root
 from molt.cli.models import (
     ImportScanMode,
     _ImportDiscoveryProjection,
@@ -220,18 +220,9 @@ def _module_name_from_resolved_path(
 
 
 def _stdlib_root_path() -> Path:
-    source_root = compiler_source_root_override()
-    if source_root is not None:
-        # Invalid explicit sources remain authoritative for fail-closed admission.
-        return (source_root / "src/molt/stdlib").resolve(strict=False)
-    package_root = Path(__file__).resolve().parents[1]
-    candidate = package_root / "stdlib"
-    if candidate.exists():
-        return candidate.resolve()
-    candidate = Path(__file__).resolve().parent / "stdlib"
-    if candidate.exists():
-        return candidate.resolve()
-    return Path("src/molt/stdlib").resolve()
+    # Compiler and stdlib inputs always come from the same selected source.
+    # Missing installation data must never borrow a guest/cwd stdlib tree.
+    return (compiler_source_root() / "src/molt/stdlib").resolve(strict=False)
 
 
 def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:

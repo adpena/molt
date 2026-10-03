@@ -17,6 +17,7 @@ from molt.cli.static_archive_identity import (
     static_archive_member_identities,
 )
 import pytest
+from tools.command_execution import CommandExecutor
 
 from molt.cli import backend_cache as cache
 from molt.cli.backend_artifact_contract import (
@@ -25,6 +26,9 @@ from molt.cli.backend_artifact_contract import (
 )
 from tests.cli.native_link_test_support import static_archive_bytes
 from tests.native_artifact_fixtures import native_relocatable_object
+
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 @pytest.fixture(autouse=True)
@@ -198,6 +202,110 @@ def test_object_and_archive_caches_share_parsing_protocol_identity(
         native_symbol_inspection, "_NATIVE_SYMBOL_FACTS_PROTOCOL", "test.next-protocol"
     )
     assert reader(artifact).defined == {"after"}
+
+
+@pytest.mark.parametrize("change", ["environment", "metadata", "location"])
+@pytest.mark.parametrize("persistent", [False, True])
+@pytest.mark.parametrize("archive", [False, True])
+def test_symbol_facts_reuse_exact_bytes_and_reader_across_incidental_changes(
+    tmp_path, monkeypatch, change, persistent, archive
+):
+    artifact = tmp_path / "archive.a"
+    artifact.write_bytes(static_archive_bytes(b"same-member"))
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    _tool(monkeypatch, stdout="object.o:\n0000 T preserved\n")
+    read = (
+        native_symbol_inspection._native_archive_global_symbol_facts
+        if archive
+        else native_symbol_inspection._native_object_global_symbol_facts
+    )
+    assert read(artifact).defined == {"preserved"}
+    if persistent:
+        native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+        native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    if change == "environment":
+        monkeypatch.setenv(
+            "PATH", os.environ.get("PATH", "") + os.pathsep + "unrelated"
+        )
+        monkeypatch.setenv("MOLT_NM_TIMEOUT_SEC", "121")
+    elif change == "metadata":
+        before = artifact.stat()
+        os.utime(artifact, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000000))
+    else:
+        other = tmp_path / "retained" / "archive.a"
+        other.parent.mkdir()
+        other.write_bytes(artifact.read_bytes())
+        if persistent and not archive:
+            sidecar = native_symbol_inspection._native_object_symbol_facts_sidecar_path
+            sidecar(other).write_bytes(sidecar(artifact).read_bytes())
+        artifact = other
+
+    def unexpected_extraction(*args, **kwargs):
+        raise AssertionError("unchanged admitted artifact/reader was re-extracted")
+
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_read_native_global_symbol_facts",
+        unexpected_extraction,
+    )
+    assert read(artifact).defined == {"preserved"}
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_symbol_fact_retention_bounds_persistent_and_memory_admission(
+    tmp_path, monkeypatch, archive
+):
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    _tool(monkeypatch, stdout="object.o:\n0000 T preserved\n")
+    read = (
+        native_symbol_inspection._native_archive_global_symbol_facts
+        if archive
+        else native_symbol_inspection._native_object_global_symbol_facts
+    )
+    cache = (
+        native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
+        if archive
+        else native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT"
+        if archive
+        else "_NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT",
+        2,
+    )
+    artifacts = []
+    for index in range(4):
+        path = tmp_path / f"{index}.a"
+        path.write_bytes(static_archive_bytes(str(index).encode()))
+        artifacts.append(path)
+        assert read(path).defined == {"preserved"}
+        assert len(cache) <= 2
+    cache.clear()
+
+    def unexpected_extraction(*args, **kwargs):
+        raise AssertionError("persistent facts were unnecessarily re-extracted")
+
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_read_native_global_symbol_facts",
+        unexpected_extraction,
+    )
+    # Persistent admissions obey the same bound; a memory hit retains its entry.
+    for index in (0, 1, 0, 2, 3):
+        assert read(artifacts[index]).defined == {"preserved"}
+        assert len(cache) <= 2
+        if index == 2:
+            assert {key.artifact_digest for key in cache} == {
+                hashlib.sha256(artifacts[i].read_bytes()).hexdigest() for i in (0, 2)
+            }
+    assert {key.artifact_digest for key in cache} == {
+        hashlib.sha256(artifacts[i].read_bytes()).hexdigest() for i in (2, 3)
+    }
 
 
 def test_missing_tools_and_decode_failures_preserve_typed_diagnostics(monkeypatch):
@@ -545,17 +653,12 @@ def test_symbol_read_replacement_cannot_publish_facts_for_previous_bytes(
     assert not native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
 
 
-def test_provider_cache_identity_includes_content_not_only_windows_metadata(
-    tmp_path, monkeypatch
-):
+def test_provider_facts_reject_changed_bytes_with_restored_mtime(tmp_path, monkeypatch):
     artifact = tmp_path / "archive.a"
     artifact.write_bytes(static_archive_bytes(b"A"))
     timestamp = artifact.stat().st_mtime_ns
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection, "content_change_time_ns", lambda path, stat: 42
     )
 
     def inspect(path, **kwargs):
@@ -1075,6 +1178,124 @@ def test_member_cache_codec_cannot_replace_current_content_custody(tmp_path, mut
     )
 
 
+def _symbol_codec_payload(table, members):
+    if members is None:
+        return {"object": table}
+    return {
+        "members": [
+            {
+                "ordinal": item.ordinal,
+                "name": item.member.name,
+                "offset": item.member.content_offset,
+                "size": item.member.size,
+                "sha256": item.sha256,
+                "symbols": table,
+            }
+            for item in members
+        ]
+    }
+
+
+def _symbol_codec_table(symbols):
+    return {
+        "defined": list(symbols),
+        "undefined": [],
+        "defined_functions": list(symbols),
+        "weak_undefined": [],
+        "weak_defined": [],
+    }
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_symbol_cache_codec_preserves_unicode_whitespace_semantics(tmp_path, archive):
+    members = _two_member_archive(tmp_path / "archive.a") if archive else None
+    # Python's Unicode whitespace includes the four ASCII information separators
+    # as well as non-ASCII separators; ASCII-only matching would admit bad names.
+    whitespace = (
+        "\t\n\v\f\r\x1c\x1d\x1e\x1f \x85\xa0\u1680"
+        "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
+        "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+    )
+    for character in whitespace:
+        assert character.isspace()
+        table = _symbol_codec_table([f"left{character}right"])
+        assert (
+            native_symbol_inspection._decode_symbol_facts(
+                _symbol_codec_payload(table, members),
+                artifact_digest="digest",
+                members=members,
+            )
+            is None
+        )
+    # These code points are not whitespace and must retain the existing codec's
+    # acceptance, including format characters and the embedded NUL boundary.
+    names = sorted(["plain", "文", "a\u200bb", "a\ufeffb", "a\x00b"])
+    facts = native_symbol_inspection._decode_symbol_facts(
+        _symbol_codec_payload(_symbol_codec_table(names), members),
+        artifact_digest="digest",
+        members=members,
+    )
+    assert facts is not None
+    assert facts.defined == facts.defined_functions == frozenset(names)
+
+
+@pytest.mark.parametrize("archive", [False, True])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"defined": ["z", "a"]},
+        {"defined": ["a", "a"]},
+        {"defined": [""]},
+        {"defined": [1]},
+        {"defined": ["a", None]},
+        {"defined": "a"},
+        {"defined_functions": ["missing"]},
+        {"weak_defined": ["missing"]},
+        {"unexpected": []},
+    ],
+)
+def test_symbol_cache_codec_rejects_noncanonical_tables(tmp_path, archive, change):
+    members = _two_member_archive(tmp_path / "archive.a") if archive else None
+    table = _symbol_codec_table(["a"]) | change
+    assert (
+        native_symbol_inspection._decode_symbol_facts(
+            _symbol_codec_payload(table, members),
+            artifact_digest="digest",
+            members=members,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_symbol_cache_codec_reuses_lexical_checks_only_within_payload(
+    tmp_path, monkeypatch, archive
+):
+    members = _two_member_archive(tmp_path / "archive.a") if archive else None
+    pattern = native_symbol_inspection._SYMBOL_WHITESPACE
+    checked = []
+
+    class ObservedWhitespace:
+        def search(self, symbol):
+            checked.append(symbol)
+            return pattern.search(symbol)
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "_SYMBOL_WHITESPACE", ObservedWhitespace()
+    )
+    names = ["a", "shared_" + "long_name_" * 32, "文"]
+    payload = _symbol_codec_payload(_symbol_codec_table(names), members)
+    for admission in (1, 2):
+        facts = native_symbol_inspection._decode_symbol_facts(
+            payload, artifact_digest="digest", members=members
+        )
+        assert facts is not None
+        assert facts.defined == facts.defined_functions == frozenset(names)
+        # Each string appears in two fields and, for archives, two members. Its
+        # immutable lexical property is checked once in each payload admission.
+        assert checked == names * admission
+
+
 def test_empty_archive_is_distinct_from_object_and_missing_member_output(
     tmp_path, monkeypatch
 ):
@@ -1161,7 +1382,7 @@ def _assert_real_archive_member_symbols(tmp_path, monkeypatch, target):
         source_path.write_text(source, encoding="utf-8")
         # Deliberate duplicate archive names in three different directories.
         output = directory / "object.o"
-        result = subprocess.run(
+        result = _COMMANDS.run(
             [cc, f"--target={target}", "-c", str(source_path), "-o", str(output)],
             capture_output=True,
             text=True,
@@ -1170,7 +1391,7 @@ def _assert_real_archive_member_symbols(tmp_path, monkeypatch, target):
         assert result.returncode == 0, result.stderr
         objects.append(output)
     archive = tmp_path / "members.a"
-    result = subprocess.run(
+    result = _COMMANDS.run(
         [ar, "qcD", str(archive), *map(str, objects)],
         capture_output=True,
         text=True,

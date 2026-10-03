@@ -90,6 +90,11 @@ fn native_archive_target<'a>(
     Ok(target)
 }
 
+/// Constituent admission uses the archive producer's exact object contract.
+pub(crate) fn validate_native_object_bytes(bytes: &[u8]) -> io::Result<()> {
+    native_archive_target([Ok(bytes)]).map(|_| ())
+}
+
 fn publish_native_archive(output: &Path, members: &[NewArchiveMember<'_>]) -> io::Result<()> {
     let target = native_archive_target(members.iter().map(|member| Ok((*member.buf).as_ref())))?;
     let kind = target.archive_kind()?;

@@ -44,12 +44,14 @@ pub extern "C" fn __molt_asyncio_runtime_state_clear_and_drop(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn asyncio_core_clear_state(_py: &PyToken<'_>) {
     crate::gil_assert();
     let _ = _py;
     molt_runtime_asyncio::asyncio_core_clear_state();
 }
 
+#[cfg(test)]
 pub(crate) fn asyncio_queue_clear_state(_py: &PyToken<'_>) {
     crate::gil_assert();
     let _ = _py;
@@ -68,19 +70,6 @@ pub extern "C" fn __molt_asyncio_to_i64(bits: u64, out: *mut i64) -> i32 {
         }
         None => 0,
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_asyncio_type_name(
-    bits: u64,
-    out_ptr: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let name = type_name(_py, obj_from_bits(bits));
-        let bytes = name.into_owned().into_bytes().into_boxed_slice();
-        unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
 }
 
 #[cfg(test)]
@@ -104,7 +93,8 @@ mod tests {
             let future = molt_runtime_asyncio::molt_asyncio_future_new();
             let set_result =
                 molt_runtime_asyncio::molt_asyncio_future_set_result_fast(future, future_bits);
-            assert_eq!(to_i64(obj_from_bits(set_result)), Some(0));
+            assert_eq!(set_result, MoltObject::none().bits());
+            assert!(!crate::exception_pending(_py));
             assert_eq!(ref_count(future_ptr), future_refs_initial + 1);
 
             let queue_ptr = alloc_string(_py, b"asyncio-queue-state-item");

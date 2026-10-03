@@ -1,5 +1,5 @@
 local molt_json_dumps
-do
+;(function()
 	local function escape_json(value: string): string
 		return string.gsub(value, '[%z\1-\31\\"]', function(character)
 			if character == '\\' or character == '"' then return '\\' .. character end
@@ -62,6 +62,6 @@ do
 	molt_json_dumps = function(value: any): string
 		return serialize(value, {})
 	end
-end
+end)()
 
 local json = {dumps = molt_json_dumps}

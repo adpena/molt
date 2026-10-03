@@ -28,3 +28,49 @@ pub(crate) use truthiness::emit_branch_truthiness_i32;
 pub(crate) fn emit_boxed_none(func: &mut wasm_encoder::Function) {
     func.instruction(&wasm_encoder::Instruction::I64Const(box_none()));
 }
+
+/// Correct a truncating signed quotient/remainder to Python divisor-sign semantics.
+/// Callers prove a nonzero divisor and exclude the i64::MIN / -1 trap before
+/// entering this helper. The result local contains the raw quotient/remainder.
+pub(crate) fn push_python_signed_divrem_adjust(
+    mut push: impl FnMut(wasm_encoder::Instruction<'static>),
+    lhs: u32,
+    rhs: u32,
+    result: u32,
+    kind: crate::wasm_abi_generated::WasmNumericOpLoopKind,
+) {
+    use crate::wasm_abi_generated::WasmNumericOpLoopKind;
+    use wasm_encoder::{BlockType, Instruction};
+    match kind {
+        WasmNumericOpLoopKind::FloorDiv => {
+            push(Instruction::LocalGet(lhs));
+            push(Instruction::LocalGet(rhs));
+            push(Instruction::I64RemS);
+        }
+        WasmNumericOpLoopKind::Mod => push(Instruction::LocalGet(result)),
+        _ => unreachable!("non-divrem operation entered signed correction"),
+    }
+    push(Instruction::I64Const(0));
+    push(Instruction::I64Ne);
+    push(Instruction::LocalGet(lhs));
+    push(Instruction::LocalGet(rhs));
+    push(Instruction::I64Xor);
+    push(Instruction::I64Const(0));
+    push(Instruction::I64LtS);
+    push(Instruction::I32And);
+    push(Instruction::If(BlockType::Empty));
+    push(Instruction::LocalGet(result));
+    match kind {
+        WasmNumericOpLoopKind::FloorDiv => {
+            push(Instruction::I64Const(1));
+            push(Instruction::I64Sub);
+        }
+        WasmNumericOpLoopKind::Mod => {
+            push(Instruction::LocalGet(rhs));
+            push(Instruction::I64Add);
+        }
+        _ => unreachable!(),
+    }
+    push(Instruction::LocalSet(result));
+    push(Instruction::End);
+}

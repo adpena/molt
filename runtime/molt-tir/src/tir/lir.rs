@@ -169,6 +169,9 @@ pub struct LirBlock {
 /// A function in representation-aware LIR.
 #[derive(Debug, Clone)]
 pub struct LirFunction {
+    /// Physical storage facts proved on the source TIR after alias/mutation/
+    /// escape closure. Backends consume this projection without reseeding it.
+    pub container_storage: HashMap<ValueId, crate::repr::ContainerStorageFact>,
     pub name: String,
     pub param_names: Vec<String>,
     pub param_types: Vec<TirType>,

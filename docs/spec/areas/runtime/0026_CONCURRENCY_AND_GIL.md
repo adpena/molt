@@ -5,6 +5,76 @@ This document defines the runtime's thread-safety and locking contract: what is
 serialized, what is permitted to run concurrently, and how locks must be
 ordered to avoid deadlocks and performance regressions.
 
+## Timed wait conversion
+
+`builtins/threading_helpers.rs` owns signed nanosecond conversion and the guest
+target's timed-lock limit. `_thread.TIMEOUT_MAX` is its whole-second projection;
+`threading.TIMEOUT_MAX` references the same value. Native and WASM lock/condition
+consumers share that conversion before projecting to their waiting mechanisms.
+
+Lock acquisition accepts actual floats or the integer index protocol, then checks
+the `-1` sentinel and blocking mode. Condition waits first compare the original
+object with zero: nonpositive values, including NaN, make an immediate probe.
+Thread join applies its negative clamp before lock conversion. Python deadline
+arithmetic in `Condition.wait_for` and `Semaphore.acquire` remains normal object
+arithmetic and reaches the same condition timeout boundary. Numeric strings and
+`__float__` alone do not substitute for the lock's integer index protocol.
+
+Completed or cancelled Future reads and already-set Event waits ignore timeout
+objects. Pending reads evaluate timeout outside runtime state mutexes, release the
+GIL while waiting, and retain terminal payloads only after reacquiring the GIL.
+Invalid and overflowing inputs raise Python errors before any host duration is
+constructed. This conversion contract does not enlarge target/thread capability
+or release acceptance claims.
+
+## Async-generator hooks
+
+`sys.set_asyncgen_hooks` accepts positional and keyword arguments. Explicit
+`None` clears a hook; omission skips its forward update. CPython 3.12 validates,
+audits, and publishes finalizer before independently processing firstiter. A
+firstiter failure therefore leaves a committed finalizer in place.
+
+CPython 3.13+ validates both provided arguments first (finalizer, then firstiter).
+It updates in the same order; a rejected firstiter audit attempts an audited
+restoration of the previous finalizer, even if finalizer was omitted. A rejected
+rollback audit replaces the firstiter failure; otherwise that failure survives.
+
+Audit callbacks observe the old slot. Replacement retains and publishes the new
+value under its per-thread owner lock, then unlocks before releasing the old
+value. Finalizers and weakref callbacks may reenter and mutate either slot.
+The rollback identity uses a private generation-tagged borrow in the existing
+weak-reference registry, without holding an extra strong reference, exposing a
+Python weakref, or changing public weakref eligibility. Committed death retires
+the borrow; resurrection retains the allocation's identity. Successful rollback
+upgrades that identity only after its audit, through the registry's live retain.
+
+The pinned CPython 3.13/3.14 implementations keep a borrowed old-finalizer pointer
+across its possible destruction. Rolling back after it has died is undefined
+upstream behavior. Molt still emits the rollback audit, but never dereferences
+or revives a dead identity: it preserves the current finalizer and the firstiter
+failure when that audit succeeds. Defined live/resurrected cases remain oracle
+comparisons; the dead-identity safety rule requires runtime ownership tests.
+
+Audit dispatch visits the live hook list in registration order, including hooks
+appended during a callback. It pins one current hook under its owner lock, then
+unlocks for the call and release. `sys.addaudithook` audits before registration:
+a failure derived from canonical `Exception` suppresses registration and is
+cleared; other `BaseException` failures propagate. Class spelling does not decide
+suppression. Registration accepts a noncallable object; dispatch reports its
+callability error if reached. Each hook's optional `__cantrace__` attribute uses
+public attribute lookup and truth testing; missing `AttributeError` is ignored,
+while other lookup and truthiness errors stop dispatch. The current trace-hook
+surface stores hooks but does not implement trace-event execution; this contract
+does not claim tracing delivery.
+
+Audit detaches the incoming raised exception before allocations and callbacks,
+restores its exact owner on success, and replaces it on failure. This shares the
+raised-exception transfer authority with unraisable reporting; handled exception
+state remains visible and unchanged by the audit boundary itself.
+Public audit event names use string storage without invoking user conversion,
+normalize subclasses to plain strings, and terminate at an embedded NUL as the
+CPython C audit-name boundary does.
+
 ## 2. Definitions
 - Runtime instance: a single `RuntimeState` with its owned caches, registries,
   scheduler state, and object model allocation pools.
@@ -175,6 +245,23 @@ still run in separate processes to avoid unrelated live owners.
   must only be acquired while holding the GIL unless a subsystem explicitly
   documents a GIL-free path.
 - Host I/O, sleeps, or blocking calls must not occur while holding the GIL.
+- An idle asyncio loop blocks with the GIL and every runtime lock released.
+  The raw signal handler touches only atomics and `write(2)`, preserves
+  `errno`, and records a delivery before writing any wake fd. Retiring state a
+  delivery can reach (the active signal state, a published park route, a
+  replaced wakeup fd) withdraws it first and waits, without the GIL, for every
+  delivery admitted before the withdrawal.
+- C pending calls publish to their existing ring before notifying the same
+  admitted main-thread park route. The publisher holds its lifecycle lease
+  through notification, without a queue/runtime lock, GIL, or allocation. Queue
+  publication and route arm/recheck use paired sequentially consistent fences;
+  signal flags and queue slots remain the only readiness facts. Windows uses a
+  kernel event so a reentrant low-level publisher never takes a Rust mutex.
+- Python signal handlers run only on the thread registered as process main at
+  runtime initialization while attached to the active process runtime, at the
+  generated eval-breaker safepoint (before
+  pending calls), in `signal.signal`/`raise_signal`/`pause`, and in C
+  `PyErr_CheckSignals`.
 - The Rust async runtime event loop and I/O poller now provide the default
   `asyncio` core: timer cancellation propagates into the runtime scheduler,
   readiness waiter cancellation is removed from poll queues, and equal-deadline

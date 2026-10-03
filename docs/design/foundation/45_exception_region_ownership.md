@@ -120,9 +120,9 @@ ExceptionFinallySave(exc) / ExceptionFinallyRestore(exc) / ExceptionFinallyDisca
 Once named, the compiler/runtime places DecRef / transfer obligations correctly
 at each. This is the same generated-fact discipline as the op-semantics ladder
 (#70/#72/#73/#74) — exception ownership becomes a *region* fact on the #58
-ownership-boundary lattice (region-lifetime facts; `InteriorBorrowKeepAlive`
-#73 and `ConditionalValidOnlyOnEdge` #74 are the path-sensitive siblings that
-prove the lattice can carry exactly this kind of boundary).
+ownership-boundary lattice. Region-lifetime facts and `ConditionalValidOnlyOnEdge`
+initialization facts describe distinct obligations. Ordinary attribute and index
+results own their references independently; they do not borrow their receivers.
 
 ## 8. Minimal implementation — phased (prove the model before the edge cases)
 
@@ -162,6 +162,15 @@ SSA author handler payload operands exactly once. The normal case fuses the
 poll with `CheckException`. Generated `finally` arbitration instead marks its
 existing `exception_finally_pending_observer`, preserving the branchless path
 that performs exception replacement and `__context__` chaining.
+
+Internal frame-context publication uses the first-class `FrameContextSet`
+operation. It borrows three boxed operands and produces no SSA result; replacing
+the previous frame owners can run finalizers and raise, so it retains arbitrary
+heap effects and refcount-barrier semantics. It is not a Python call-return
+scheduling point. Publication after a state transition follows the authored
+pending-exception match/clear continuation; genuine calls and loop backedges
+retain their asynchronous-work polls. Generic callable transport of the backend
+service is rejected by the canonical kind-to-service admission relation.
 
 Placement identity and source provenance are deliberately separate. A
 placement preview temporarily numbers the exact post-rewrite SimpleIR stream,

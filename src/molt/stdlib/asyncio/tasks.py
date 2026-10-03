@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio as _asyncio
 import concurrent
+import concurrent.futures
 import contextvars
 from dataclasses import dataclass
 import functools
 import inspect
 import itertools
 import sys as _sys
+import signal as _signal
+import threading as _threading
 import time as _time
 import types as _types
 import warnings
@@ -17,31 +20,20 @@ import weakref
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-from ._debug import (
-    _debug_exc_state,
-    _debug_task_summary,
-    _debug_tasks_enabled,
-    _debug_write,
-)
-
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
-from .futures import Future
+from .futures import Future, _get_loop, _subscribe_completion, _unsubscribe_completion
+from . import constants as _constants
 from asyncio import (
     TimeoutError,
-    _DEBUG_ASYNCIO_SHUTDOWN,
     _EXPOSE_GRAPH,
     _VERSION_INFO,
-    _asyncio_cancel_pending_tasks,
     _asyncio_future_transfer,
-    _asyncio_taskgroup_on_task_done,
     _asyncio_tasks_add_done_callback,
     _is_cancelled_exc,
     _require_asyncio_intrinsic,
     _task_registry_contains,
     _task_registry_current_for_loop,
-    _task_registry_get,
-    _task_registry_move,
     _task_registry_pop,
     _task_registry_set,
     _event_waiters_register,
@@ -51,15 +43,10 @@ from asyncio import (
     molt_async_sleep,
     molt_asyncio_future_cancelled,
     molt_asyncio_future_done,
-    molt_asyncio_gather_new,
-    molt_asyncio_taskgroup_request_cancel,
     molt_asyncio_task_cancel_apply,
     molt_asyncio_task_last_exception_clear,
     molt_asyncio_task_registry_live_set,
     molt_asyncio_task_uncancel_apply,
-    molt_asyncio_to_thread,
-    molt_asyncio_wait_for_new,
-    molt_asyncio_wait_new,
     molt_cancel_token_cancel,
     molt_cancel_token_clone,
     molt_cancel_token_drop,
@@ -224,7 +211,7 @@ class Task(Future):
     _cancel_requested: int
     _cancel_message: Any | None
     _context: Any | None
-    _runner_spawned: bool
+    _fut_waiter: Future | None
 
     def __init__(
         self,
@@ -233,18 +220,19 @@ class Task(Future):
         loop: "EventLoop | None" = None,
         name: str | None = None,
         context: Any | None = None,
-        _spawn_runner: bool = True,
     ) -> None:
-        super().__init__()
+        super().__init__(loop=loop)
+        if not iscoroutine(coro):
+            raise TypeError("a coroutine was expected, got {!r}".format(coro))
         self._coro = coro
         task_dict = getattr(self, "__dict__", None)
         if isinstance(task_dict, dict):
             task_dict["_coro"] = coro
         self._runner_task: Any | None = None
-        self._token = CancellationToken()
+        self._token = CancellationToken.detached()
         if loop is not None:
             self._loop = loop
-        self._name = name or _next_task_name()
+        self._name = _next_task_name() if name is None else str(name)
         self._cancel_requested = 0
         self._cancel_message: Any | None = None
         if context is None:
@@ -255,57 +243,36 @@ class Task(Future):
             context,
         )
         _task_registry_set(self._token.token_id(), self)
-        self._runner_spawned = _spawn_runner
+        self._fut_waiter = None
         token_id = self._token.token_id()
         if molt_task_register_token_owned is not None:  # type: ignore[name-defined]
             molt_task_register_token_owned(self._coro, token_id)  # type: ignore[name-defined]
-        if _spawn_runner:
-            prev_id = _swap_current_token(self._token)
-            try:
-                runner = self._runner(self._coro)
-                self._runner_task = runner
-                if molt_task_register_token_owned is not None:  # type: ignore[name-defined]
-                    molt_task_register_token_owned(  # type: ignore[name-defined]
-                        runner, token_id
-                    )
-                spawn(runner)
-            finally:
-                _restore_token_id(prev_id)
+        prev_id = _swap_current_token(self._token)
+        try:
+            runner = self._runner(self._coro)
+            self._runner_task = runner
+            if molt_task_register_token_owned is not None:  # type: ignore[name-defined]
+                molt_task_register_token_owned(  # type: ignore[name-defined]
+                    runner, token_id
+                )
+            self._loop._spawn_task(runner)
+        except BaseException:
+            self._runner_task = None
+            _task_registry_pop(token_id)
+            _contextvars._clear_context_for_token(token_id)
+            raise
+        finally:
+            _restore_token_id(prev_id)
 
-    def _rebind_token(self, token: CancellationToken) -> None:
-        old_token = self._token
-        old_id = old_token.token_id()
-        new_id = token.token_id()
-        if new_id == old_id:
-            return
-        if _task_registry_get(old_id) is self:
-            _task_registry_move(old_id, new_id)
-        else:
-            _task_registry_set(new_id, self)
-        self._token = token
-        _set_ctx = getattr(_contextvars, "_set_context_for_token", None)
-        if callable(_set_ctx):
-            _set_ctx(new_id, self._context)
-        _clear_ctx = getattr(_contextvars, "_clear_context_for_token", None)
-        if callable(_clear_ctx):
-            _clear_ctx(old_id)
 
     def cancel(self, msg: Any | None = None) -> bool:
-        if molt_asyncio_future_done(self._fut_handle):
+        if self.done():
             return False
         self._cancel_requested += 1
-        if msg is None:
-            self._cancel_message = None
-        else:
-            self._cancel_message = msg
-        if _debug_tasks_enabled():
-            token_id = self._token.token_id()
-            _debug_write(
-                "asyncio_task_cancel token={token} msg={msg!r}".format(
-                    token=token_id, msg=msg
-                )
-            )
-        self._token.cancel()
+        waiter = self._fut_waiter
+        if waiter is not None and waiter.cancel(msg=msg):
+            return True
+        self._cancel_message = msg
         _require_asyncio_intrinsic(
             molt_asyncio_task_cancel_apply, "asyncio_task_cancel_apply"
         )(self._coro, msg)
@@ -324,7 +291,7 @@ class Task(Future):
         return self._name
 
     def set_name(self, value: str) -> None:
-        self._name = value
+        self._name = str(value)
 
     def get_context(self) -> Any:
         return self._context
@@ -336,7 +303,7 @@ class Task(Future):
         if self._cancel_requested <= 0:
             return 0
         self._cancel_requested -= 1
-        if self._cancel_requested == 0:
+        if self._cancel_requested == 0 and _VERSION_INFO >= (3, 13):
             self._cancel_message = None
             _require_asyncio_intrinsic(
                 molt_asyncio_task_uncancel_apply, "asyncio_task_uncancel_apply"
@@ -355,47 +322,38 @@ class Task(Future):
         ):
             _task_registry_set(current_id, self)
             extra_token_id = current_id
-        if _debug_tasks_enabled():
-            token_id = self._token.token_id()
-            coro_name = getattr(coro, "__qualname__", None) or getattr(
-                coro, "__name__", None
-            )
-            if coro_name is None:
-                coro_name = type(coro).__name__
-            _debug_write(f"asyncio_task_start token={token_id} coro={coro_name}")
         try:
             result = await coro
         except BaseException as err:
             exc = err
-            if _debug_tasks_enabled():
-                token_id = self._token.token_id()
-                _debug_write(
-                    "asyncio_task_exc token={token_id} type={exc_type}".format(
-                        token_id=token_id,
-                        exc_type=type(err).__name__,
-                    )
-                )
         if exc is None:
             if not molt_asyncio_future_done(self._fut_handle):
-                self.set_result(result)
-                if _debug_tasks_enabled():
-                    token_id = self._token.token_id()
-                    _debug_write(f"asyncio_task_done token={token_id}")
+                Future.set_result(self, result)
             molt_asyncio_task_last_exception_clear(coro)
         else:
             if not molt_asyncio_future_done(self._fut_handle):
-                self.set_exception(exc)
+                if _is_cancelled_exc(exc):
+                    self._set_cancelled(exc, self._cancel_message)
+                else:
+                    Future.set_exception(self, exc)
+        self._fut_waiter = None
         _cleanup_event_waiters_for_token(self._token.token_id())
-        _debug_exc_state("task_runner_after_cleanup_event_waiters")
         _task_registry_pop(self._token.token_id())
-        _debug_exc_state("task_runner_after_task_registry_pop")
         if extra_token_id is not None:
             _task_registry_pop(extra_token_id)
-            _debug_exc_state("task_runner_after_extra_task_registry_pop")
         _contextvars._clear_context_for_token(  # type: ignore[unresolved-attribute]
             self._token.token_id()
         )
-        _debug_exc_state("task_runner_after_clear_context")
+        self._runner_task = None
+
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise exc
+
+    def set_result(self, result: Any) -> None:
+        raise RuntimeError("Task does not support set_result operation")
+
+    def set_exception(self, exception: BaseException) -> None:
+        raise RuntimeError("Task does not support set_exception operation")
 
     def __repr__(self) -> str:
         if molt_asyncio_future_cancelled(self._fut_handle):
@@ -406,165 +364,201 @@ class Task(Future):
             state = "pending"
         return f"<Task {self._name} {state}>"
 
-    def __await__(self) -> Any:
-        if molt_asyncio_future_done(self._fut_handle):
-            return self._wait().__await__()
-        waiter = Future()
-
-        def _transfer(done: Future) -> None:
-            if waiter.done():
-                return
-            try:
-                if _asyncio_future_transfer(done, waiter):
-                    return
-                if hasattr(done, "cancelled") and done.cancelled():
-                    cancel_msg = getattr(done, "_cancel_message", None)
-                    waiter.cancel(cancel_msg)
-                    return
-                exc = done.exception()
-                if exc is not None:
-                    waiter.set_exception(exc)
-                    return
-                waiter.set_result(done.result())
-            except BaseException as exc:
-                if not waiter.done():
-                    waiter.set_exception(exc)
-
-        self.add_done_callback(lambda _fut: _transfer(_fut))
-        return waiter.__await__()
-
 class TaskGroup:
     def __init__(self) -> None:
-        self._tasks: set[Task] = set()
-        self._errors: list[BaseException] = []
-        self._loop: EventLoop | None = None
         self._entered = False
         self._exiting = False
-        self._cancel_handle: Handle | None = None
+        self._aborting = False
+        self._loop: Any = None
+        self._parent_task: Any = None
+        self._parent_cancel_requested = False
+        self._tasks: set[Task] = set()
+        self._errors: list[BaseException] = []
+        self._base_error: BaseException | None = None
+        self._on_completed_fut: Future | None = None
 
     async def __aenter__(self) -> "TaskGroup":
+        if self._entered:
+            raise RuntimeError("TaskGroup has already been entered")
         self._loop = get_running_loop()
+        self._parent_task = current_task(self._loop)
+        if self._parent_task is None:
+            raise RuntimeError("TaskGroup cannot determine the parent task")
         self._entered = True
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        try:
+            return await self._aexit(exc_type, exc)
+        finally:
+            self._parent_task = None
+            self._errors = []
+            self._base_error = None
+            self._on_completed_fut = None
+
+    async def _aexit(self, exc_type: Any, exc: Any) -> bool:
         self._exiting = True
-        if exc is not None:
-            self._cancel_all()
-        await self._wait_tasks()
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            if self._base_error is None:
+                self._base_error = exc
+        cancellation = exc if _is_cancelled_exc(exc) else None
+        # 3.13 moved this balancing operation after the children finish.
+        if _VERSION_INFO < (3, 13) and self._parent_cancel_requested:
+            if self._parent_task.uncancel() == 0:
+                cancellation = None
+        if exc_type is not None and not self._aborting:
+            self._abort()
+        while self._tasks:
+            self._on_completed_fut = self._loop.create_future()
+            try:
+                await self._on_completed_fut
+            except _asyncio.CancelledError as err:
+                if not self._aborting:
+                    cancellation = err
+                    self._abort()
+            finally:
+                self._on_completed_fut = None
+        if self._base_error is not None:
+            raise self._base_error
+        if _VERSION_INFO >= (3, 13) and self._parent_cancel_requested:
+            if self._parent_task.uncancel() == 0:
+                cancellation = None
+        if cancellation is not None and not self._errors:
+            raise cancellation
+        if exc_type is not None and not _is_cancelled_exc(exc):
+            self._errors.append(exc)
         if self._errors:
-            if any(not isinstance(err, Exception) for err in self._errors):
-                raise BaseExceptionGroup("unhandled errors in TaskGroup", self._errors)
-            exceptions = [err for err in self._errors if isinstance(err, Exception)]
-            raise ExceptionGroup("unhandled errors in TaskGroup", exceptions)
+            if _VERSION_INFO >= (3, 13) and self._parent_task.cancelling():
+                self._parent_task.uncancel()
+                self._parent_task.cancel()
+            raise BaseExceptionGroup("unhandled errors in a TaskGroup", self._errors) from None
         return False
 
     def create_task(
         self, coro: Any, *, name: str | None = None, context: Any | None = None
     ) -> Task:
+        error = None
         if not self._entered:
-            raise RuntimeError("TaskGroup has not been entered")
-        loop = self._loop or get_running_loop()
-        task = loop.create_task(coro, name=name, context=context)
+            error = "TaskGroup has not been entered"
+        elif self._exiting and not self._tasks:
+            error = "TaskGroup is finished"
+        elif self._aborting:
+            error = "TaskGroup is shutting down"
+        if error is not None:
+            if _VERSION_INFO >= (3, 13):
+                coro.close()
+            raise RuntimeError(error)
+        task = self._loop.create_task(coro, name=name, context=context)
         self._tasks.add(task)
         task.add_done_callback(self._on_task_done)
         return task
 
+    def _abort(self) -> None:
+        self._aborting = True
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+
     def _on_task_done(self, task: Future) -> None:
-        if _asyncio_taskgroup_on_task_done(self._tasks, self._errors, task):
-            self._request_cancel()
-
-    def _request_cancel(self) -> None:
-        self._cancel_handle = _require_asyncio_intrinsic(
-            molt_asyncio_taskgroup_request_cancel, "asyncio_taskgroup_request_cancel"
-        )(self._loop, self._cancel_all, self._cancel_handle)
-
-    async def _wait_tasks(self) -> None:
-        if not self._tasks:
+        self._tasks.discard(task)
+        waiter = self._on_completed_fut
+        if waiter is not None and not self._tasks and not waiter.done():
+            waiter.set_result(None)
+        if task.cancelled():
             return
-        waiter = _require_asyncio_intrinsic(
-            molt_asyncio_gather_new, "asyncio_gather_new"
-        )(list(self._tasks), True)
-        try:
-            await waiter
-        except BaseException:
-            pass
-
-    def _cancel_all(self) -> None:
-        self._cancel_handle = None
-        if not self._tasks:
+        exc = task.exception()
+        if exc is None:
             return
-        _asyncio_cancel_pending_tasks(self._tasks)
+        self._errors.append(exc)
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)) and self._base_error is None:
+            self._base_error = exc
+        if self._parent_task.done():
+            self._loop.call_exception_handler({
+                "message": "Task has errored out but its parent task is already completed",
+                "exception": exc,
+                "task": task,
+            })
+        elif not self._aborting and not self._parent_cancel_requested:
+            self._abort()
+            self._parent_cancel_requested = True
+            self._parent_task.cancel()
+
 
 class _Timeout:
     def __init__(self, when: float | None) -> None:
         self._when = when
-        self._loop: EventLoop | None = None
+        self._state = "created"
         self._task: Task | None = None
-        self._handle: TimerHandle | None = None
-        self._timed_out = False
+        self._handle: Any = None
+        self._cancelling = 0
 
     def when(self) -> float | None:
-        """Return the current deadline, or ``None`` if not set."""
         return self._when
 
     def reschedule(self, when: float | None) -> None:
-        """Reschedule the timeout to *when* (absolute loop time), or disable if ``None``."""
-        if self._task is None:
-            raise RuntimeError("Timeout has not been entered")
+        if self._state != "active":
+            if self._state == "created":
+                raise RuntimeError("Timeout has not been entered")
+            raise RuntimeError(f"Cannot change state of {self._state} Timeout")
         self._when = when
-        # Cancel the old timer if one is pending.
         if self._handle is not None:
-            cancel = getattr(self._handle, "cancel", None)
-            if callable(cancel):
-                cancel()
+            self._handle.cancel()
             self._handle = None
-        # If no deadline, nothing more to do.
-        if when is None:
-            return
-        loop = self._loop
-        if loop is None:
-            return
-        delay = when - loop.time()
-        if delay <= 0:
-            self._timed_out = True
-            self._task.cancel()
-        else:
-            self._handle = loop.call_later(delay, self._on_timeout)
+        if when is not None:
+            loop = get_running_loop()
+            if when <= loop.time():
+                self._handle = loop.call_soon(self._on_timeout)
+            else:
+                self._handle = loop.call_at(when, self._on_timeout)
 
     def expired(self) -> bool:
-        """Return ``True`` if the timeout has expired (the inner body was cancelled)."""
-        return self._timed_out
+        return self._state in ("expiring", "expired")
 
     def _on_timeout(self) -> None:
-        if self._task is None or self._timed_out:
-            return
-        self._timed_out = True
         self._task.cancel()
+        self._state = "expiring"
+        self._handle = None
 
     async def __aenter__(self) -> "_Timeout":
-        self._loop = get_running_loop()
-        self._task = current_task(self._loop)
-        if self._when is None or self._task is None:
-            return self
-        delay = self._when - self._loop.time()
-        if delay <= 0:
-            self._timed_out = True
-            self._task.cancel()
-            return self
-        self._handle = self._loop.call_later(delay, self._on_timeout)
+        if self._state != "created":
+            raise RuntimeError("Timeout has already been entered")
+        task = current_task()
+        if task is None:
+            raise RuntimeError("Timeout should be used inside a task")
+        self._task = task
+        self._cancelling = task.cancelling()
+        self._state = "active"
+        self.reschedule(self._when)
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         if self._handle is not None:
             self._handle.cancel()
-        if exc is None:
-            return False
-        if self._timed_out and _is_cancelled_exc(exc):
-            if self._task is not None:
-                self._task.uncancel()
-            raise TimeoutError
+            self._handle = None
+        if self._state == "expiring":
+            self._state = "expired"
+            if self._task.uncancel() <= self._cancelling and exc is not None:
+                if _is_cancelled_exc(exc):
+                    raise TimeoutError from exc
+                if _VERSION_INFO >= (3, 13):
+                    self._insert_timeout_error(exc)
+                    if isinstance(exc, ExceptionGroup):
+                        for child in exc.exceptions:
+                            self._insert_timeout_error(child)
+        elif self._state == "active":
+            self._state = "finished"
         return False
+
+    @staticmethod
+    def _insert_timeout_error(exc: BaseException) -> None:
+        while exc.__context__ is not None:
+            if _is_cancelled_exc(exc.__context__):
+                timeout_error = TimeoutError()
+                timeout_error.__cause__ = exc.__context__
+                timeout_error.__context__ = exc.__context__
+                exc.__context__ = timeout_error
+                return
+            exc = exc.__context__
 
 class Runner:
     def __init__(
@@ -573,76 +567,116 @@ class Runner:
         debug: bool | None = None,
         loop_factory: Callable[[], "EventLoop"] | None = None,
     ) -> None:
+        self._state = "created"
         self._loop: EventLoop | None = None
         self._debug = debug
         self._loop_factory = loop_factory
         self._context: Any | None = None
+        self._set_event_loop = False
+        self._interrupt_count = 0
 
     def __enter__(self) -> "Runner":
-        if self._loop is None:
-            if self._loop_factory is not None:
-                self._loop = self._loop_factory()
-            else:
-                self._loop = new_event_loop()
-            if self._debug is not None:
-                self._loop.set_debug(self._debug)
-            self._context = _contextvars.copy_context()
-            set_event_loop(self._loop)
+        self._lazy_init()
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.close()
 
+    def _lazy_init(self) -> None:
+        if self._state == "closed":
+            raise RuntimeError("Runner is closed")
+        if self._state == "initialized":
+            return
+        if self._loop_factory is None:
+            self._loop = new_event_loop()
+            if not self._set_event_loop:
+                set_event_loop(self._loop)
+                self._set_event_loop = True
+        else:
+            self._loop = self._loop_factory()
+        if self._debug is not None:
+            self._loop.set_debug(self._debug)
+        self._context = _contextvars.copy_context()
+        self._state = "initialized"
+
     def get_loop(self) -> EventLoop:
-        if self._loop is None:
-            raise RuntimeError("Runner is not initialized")
+        self._lazy_init()
         return self._loop
 
     def run(self, coro: Any, *, context: Any | None = None) -> Any:
-        if self._loop is None:
-            self.__enter__()
-        loop = self.get_loop()
-        if loop.is_running():
-            raise RuntimeError("Runner loop is already running")
+        if _VERSION_INFO < (3, 14) and not iscoroutine(coro):
+            raise ValueError("a coroutine was expected, got {!r}".format(coro))
+        if _get_running_loop() is not None:
+            raise RuntimeError(
+                "Runner.run() cannot be called from a running event loop"
+            )
+        self._lazy_init()
+        if _VERSION_INFO >= (3, 14) and not iscoroutine(coro):
+            if not inspect.isawaitable(coro):
+                raise TypeError("An asyncio.Future, a coroutine or an awaitable is required")
+
+            async def await_result(awaitable: Any) -> Any:
+                return await awaitable
+
+            coro = await_result(coro)
+        loop = self._loop
         if context is None:
             context = self._context
-        task = Task(coro, loop=loop, context=context, _spawn_runner=False)
+        task = loop.create_task(coro, context=context)
+
+        sigint_handler = None
+        if (
+            _sys.platform not in ("emscripten", "wasi")
+            and _MOLT_CAPABILITIES_HAS("signal.signal")
+            and _threading.current_thread() is _threading.main_thread()
+            and _signal.getsignal(_signal.SIGINT) is _signal.default_int_handler
+        ):
+            sigint_handler = functools.partial(self._on_sigint, main_task=task)
+            try:
+                _signal.signal(_signal.SIGINT, sigint_handler)
+            except ValueError:
+                sigint_handler = None
+        self._interrupt_count = 0
         try:
-            loop.run_until_complete(task)
-            result = task.result()
-            if _DEBUG_ASYNCIO_SHUTDOWN:
-                _debug_write(
-                    "asyncio_runner_run_after_complete {summary}".format(
-                        summary=_debug_task_summary(task)
-                    )
-                )
-        except BaseException:
-            _cancel_all_tasks(loop)
-            shutdown = globals().get("molt_asyncgen_shutdown")
-            if shutdown is not None:
-                shutdown()
+            return loop.run_until_complete(task)
+        except _asyncio.CancelledError:
+            if self._interrupt_count > 0:
+                uncancel = getattr(task, "uncancel", None)
+                if uncancel is not None and uncancel() == 0:
+                    raise KeyboardInterrupt()
             raise
-        _cancel_all_tasks(loop)
-        shutdown = globals().get("molt_asyncgen_shutdown")
-        if shutdown is not None:
-            shutdown()
-        return result
+        finally:
+            if (
+                sigint_handler is not None
+                and _signal.getsignal(_signal.SIGINT) is sigint_handler
+            ):
+                _signal.signal(_signal.SIGINT, _signal.default_int_handler)
+
+    def _on_sigint(self, signum: Any, frame: Any, main_task: Any) -> None:
+        self._interrupt_count += 1
+        if self._interrupt_count == 1 and not main_task.done():
+            main_task.cancel()
+            self._loop.call_soon_threadsafe(lambda: None)
+            return
+        raise KeyboardInterrupt()
 
     def close(self) -> None:
-        if self._loop is None:
+        if self._state != "initialized":
             return
-        if not self._loop.is_closed():
-            if _DEBUG_ASYNCIO_SHUTDOWN:
-                _debug_write("asyncio_runner_close_begin")
-            _cancel_all_tasks(self._loop)
-            shutdown = globals().get("molt_asyncgen_shutdown")
-            if shutdown is not None:
-                shutdown()
-            self._loop.close()
-            if _DEBUG_ASYNCIO_SHUTDOWN:
-                _debug_write("asyncio_runner_close_end")
-        set_event_loop(None)
-        self._context = None
+        loop = self._loop
+        try:
+            _cancel_all_tasks(loop)
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(
+                loop.shutdown_default_executor(_constants.THREAD_JOIN_TIMEOUT)
+            )
+        finally:
+            if self._set_event_loop:
+                set_event_loop(None)
+            loop.close()
+            self._loop = None
+            self._state = "closed"
+
 
 def run(
     awaitable: Any,
@@ -652,24 +686,8 @@ def run(
 ) -> Any:
     if _get_running_loop() is not None:
         raise RuntimeError("asyncio.run() cannot be called from a running event loop")
-    runner = Runner(debug=debug, loop_factory=loop_factory)
-    exc: BaseException | None = None
-    result: Any = None
-    runner.__enter__()
-    try:
-        try:
-            result = runner.run(awaitable)
-        except BaseException as err:
-            exc = err
-    finally:
-        try:
-            runner.close()
-        except BaseException as close_exc:
-            if exc is None:
-                exc = close_exc
-    if exc is not None:
-        raise exc
-    return result
+    with Runner(debug=debug, loop_factory=loop_factory) as runner:
+        return runner.run(awaitable)
 
 async def sleep(delay: float = 0.0, result: Any | None = None) -> Any:
     if delay <= 0:
@@ -680,45 +698,38 @@ async def sleep(delay: float = 0.0, result: Any | None = None) -> Any:
     return await fut
 
 async def to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
-    args_tuple = args if args else None
-    kwargs_dict = kwargs if kwargs else None
-    return await molt_asyncio_to_thread(func, args_tuple, kwargs_dict)
+    loop = get_running_loop()
+    context = _contextvars.copy_context()
+    call = functools.partial(func, *args, **kwargs)
+    return await loop.run_in_executor(None, context.run, call)
 
-async def shield(awaitable: Any) -> Any:
-    fut: Future
-    if isinstance(awaitable, Future):
-        fut = awaitable
-    else:
-        root = CancellationToken()
-        prev_id = _swap_current_token(root)
-        try:
-            fut = ensure_future(awaitable)
-        finally:
-            _restore_token_id(prev_id)
-    current_id = _current_token_id()
-    if isinstance(fut, Task):
-        token = getattr(fut, "_token", None)
-        token_id = token.token_id() if token is not None else None
-        if token_id == current_id:
-            shield_token = CancellationToken.detached()
-            fut._rebind_token(shield_token)
-            if molt_task_register_token_owned is not None:  # type: ignore[name-defined]
-                molt_task_register_token_owned(  # type: ignore[name-defined]
-                    fut._coro, shield_token.token_id()
-                )
-            setattr(fut, "__molt_shield_token__", shield_token)
+def shield(awaitable: Any) -> Future:
+    inner = ensure_future(awaitable)
+    if inner.done():
+        return inner
+    outer = _get_loop(inner).create_future()
 
-            def _clear_shield_token(done: Future) -> None:
-                if hasattr(done, "__molt_shield_token__"):
-                    delattr(done, "__molt_shield_token__")
+    def inner_done(done: Future) -> None:
+        if outer.cancelled():
+            if not done.cancelled():
+                done.exception()
+            return
+        if done.cancelled():
+            outer.cancel()
+        else:
+            exc = done.exception()
+            if exc is not None:
+                outer.set_exception(exc)
+            else:
+                outer.set_result(done.result())
 
-            fut.add_done_callback(_clear_shield_token)
-    try:
-        return await fut
-    except BaseException as exc:
-        if _is_cancelled_exc(exc):
-            raise
-        raise
+    def outer_done(done: Future) -> None:
+        if not inner.done():
+            _unsubscribe_completion(inner, subscription)
+
+    subscription = _subscribe_completion(inner, inner_done)
+    outer.add_done_callback(outer_done)
+    return outer
 
 def eager_task_factory(
     loop: EventLoop,
@@ -767,86 +778,95 @@ def create_task(
     return loop.create_task(coro, name=name, context=context)
 
 def ensure_future(awaitable: Any, *, loop: EventLoop | None = None) -> Future:
-    if isinstance(awaitable, Future):
+    if _asyncio.isfuture(awaitable):
+        if loop is not None and loop is not _get_loop(awaitable):
+            raise ValueError("The future belongs to a different loop than the one specified as the loop argument")
         return awaitable
-    if loop is None:
-        try:
-            loop = get_running_loop()
-        except RuntimeError:
-            loop = get_event_loop()
-    return Task(awaitable, loop=loop)
+    should_close = True
+    if not iscoroutine(awaitable):
+        if not inspect.isawaitable(awaitable):
+            raise TypeError("An asyncio.Future, a coroutine or an awaitable is required")
 
-def run_coroutine_threadsafe(coro: Any, loop: EventLoop) -> Future:
-    fut = Future()
+        async def await_result(value: Any) -> Any:
+            return await value
+
+        awaitable = await_result(awaitable)
+        should_close = False
+    if loop is None:
+        loop = get_event_loop()
+    try:
+        return loop.create_task(awaitable)
+    except RuntimeError:
+        if should_close:
+            awaitable.close()
+        raise
+
+def run_coroutine_threadsafe(coro: Any, loop: EventLoop) -> concurrent.futures.Future:
+    if not iscoroutine(coro):
+        raise TypeError("A coroutine object is required")
+    fut = concurrent.futures.Future()
 
     def _schedule() -> None:
         try:
             task = loop.create_task(coro)
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except BaseException as exc:
-            fut.set_exception(exc)
-            return
+            if fut.set_running_or_notify_cancel():
+                fut.set_exception(exc)
+            raise
+
+        def cancel_task(done: concurrent.futures.Future) -> None:
+            if done.cancelled() and not loop.is_closed():
+                loop.call_soon_threadsafe(task.cancel)
 
         def _transfer(done: Future) -> None:
-            try:
-                fut.set_result(done.result())
-            except BaseException as exc:
-                fut.set_exception(exc)
+            if done.cancelled():
+                fut.cancel()
+            elif fut.set_running_or_notify_cancel():
+                exception = done.exception()
+                if exception is not None:
+                    fut.set_exception(exception)
+                else:
+                    fut.set_result(done.result())
 
+        fut.add_done_callback(cancel_task)
         task.add_done_callback(_transfer)
 
-    try:
-        loop.call_soon_threadsafe(_schedule)
-    except BaseException as exc:
-        fut.set_exception(exc)
+    loop.call_soon_threadsafe(_schedule)
     return fut
 
 def wrap_future(fut: Any, *, loop: EventLoop | None = None) -> Future:
-    if isinstance(fut, Future):
+    if _asyncio.isfuture(fut):
         return fut
-    if isinstance(fut, Task):
-        return fut
+    if not isinstance(fut, concurrent.futures.Future):
+        raise TypeError("concurrent.futures.Future is required")
     if loop is None:
-        try:
-            loop = get_running_loop()
-        except RuntimeError:
-            loop = get_event_loop()
-    proxy = Future()
+        loop = get_event_loop()
+    proxy = Future(loop=loop)
 
-    def _transfer(done_obj: Any) -> None:
-        try:
-            if _asyncio_future_transfer(done_obj, proxy):
-                return
-            if hasattr(done_obj, "cancelled") and done_obj.cancelled():
-                proxy.cancel()
-                return
-            if hasattr(done_obj, "exception"):
-                exc = done_obj.exception()
-                if exc is not None:
-                    proxy.set_exception(exc)
-                    return
-            if hasattr(done_obj, "result"):
-                proxy.set_result(done_obj.result())
-                return
-        except BaseException as exc:
-            if not proxy.done():
-                proxy.set_exception(exc)
+    def transfer(done: Any) -> None:
+        if proxy.done():
             return
-        if not proxy.done():
-            proxy.set_result(None)
-
-    def _schedule_transfer(done_obj: Any) -> None:
-        try:
-            loop.call_soon_threadsafe(_transfer, done_obj)
-        except BaseException:
-            _transfer(done_obj)
-
-    try:
-        if hasattr(fut, "add_done_callback"):
-            fut.add_done_callback(_schedule_transfer)
+        if done.cancelled():
+            proxy.cancel()
+            return
+        exc = done.exception()
+        if exc is not None:
+            proxy.set_exception(exc)
         else:
-            _schedule_transfer(fut)
-    except BaseException as exc:
-        proxy.set_exception(exc)
+            proxy.set_result(done.result())
+
+    def schedule_transfer(done: Any) -> None:
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(transfer, done)
+
+    def cancel_source(done: Future) -> None:
+        if done.cancelled():
+            fut.cancel()
+
+    proxy.add_done_callback(cancel_source)
+    fut.add_done_callback(schedule_transfer)
     return proxy
 
 def current_task(loop: EventLoop | None = None) -> Task | None:
@@ -1037,39 +1057,80 @@ def print_call_graph(
 ) -> None:
     print(format_call_graph(future, depth=depth, limit=limit), file=file)
 
+
+def _release_waiter(waiter: Future, *args: Any) -> None:
+    if not waiter.done():
+        waiter.set_result(None)
+
+
 async def wait(
     aws: Any,
     timeout: float | None = None,
     return_when: object = ALL_COMPLETED,
 ) -> tuple[set[Future], set[Future]]:
-    get_running_loop()
-    aws_list = list(aws)
-    tasks: list[Future] = []
-    for aw in aws_list:
-        if iscoroutine(aw):
-            raise TypeError("Passing coroutines is forbidden, use tasks explicitly.")
-        tasks.append(ensure_future(aw))
-    if not tasks:
-        raise ValueError("asyncio.wait() requires at least one awaitable")
+    if _asyncio.isfuture(aws) or iscoroutine(aws):
+        raise TypeError("expect a list of futures, not a single future or coroutine")
     if return_when not in (ALL_COMPLETED, FIRST_COMPLETED, FIRST_EXCEPTION):
         raise ValueError("Invalid return_when value")
-    if return_when is ALL_COMPLETED:
-        return_code = 0
-    elif return_when is FIRST_COMPLETED:
-        return_code = 1
-    else:
-        return_code = 2
-    waiter = _require_asyncio_intrinsic(molt_asyncio_wait_new, "asyncio_wait_new")(
-        tasks, timeout, return_code
-    )
-    return await waiter
+    tasks = set(aws)
+    if not tasks:
+        raise ValueError("Set of Tasks/Futures is empty.")
+    for task in tasks:
+        if iscoroutine(task):
+            raise TypeError("Passing coroutines is forbidden, use tasks explicitly.")
+    loop = get_running_loop()
+    waiter = loop.create_future()
+    timer = None
+    remaining = len(tasks)
+
+    def done(task: Future) -> None:
+        nonlocal remaining
+        remaining -= 1
+        if (
+            remaining == 0
+            or return_when is FIRST_COMPLETED
+            or (return_when is FIRST_EXCEPTION and not task.cancelled() and task.exception() is not None)
+        ):
+            if timer is not None:
+                timer.cancel()
+            _release_waiter(waiter)
+
+    if timeout is not None:
+        timer = loop.call_later(timeout, _release_waiter, waiter)
+    subscriptions = [(task, _subscribe_completion(task, done)) for task in tasks]
+    try:
+        await waiter
+    finally:
+        if timer is not None:
+            timer.cancel()
+        for task, subscription in subscriptions:
+            _unsubscribe_completion(task, subscription)
+    return ({task for task in tasks if task.done()}, {task for task in tasks if not task.done()})
+
+
+async def _cancel_and_wait(fut: Future) -> None:
+    waiter = get_running_loop().create_future()
+    callback = functools.partial(_release_waiter, waiter)
+    subscription = _subscribe_completion(fut, callback)
+    try:
+        fut.cancel()
+        await waiter
+    finally:
+        _unsubscribe_completion(fut, subscription)
+
 
 async def wait_for(awaitable: Any, timeout: float | None) -> Any:
-    fut = ensure_future(awaitable)
-    waiter = _require_asyncio_intrinsic(
-        molt_asyncio_wait_for_new, "asyncio_wait_for_new"
-    )(fut, timeout)
-    return await waiter
+    if timeout is not None and timeout <= 0:
+        fut = ensure_future(awaitable)
+        if fut.done():
+            return fut.result()
+        await _cancel_and_wait(fut)
+        try:
+            return fut.result()
+        except _asyncio.CancelledError as exc:
+            raise TimeoutError from exc
+    async with _Timeout(None if timeout is None else get_running_loop().time() + timeout):
+        return await awaitable
 
 def timeout(delay: float | None) -> _Timeout:
     if delay is None:
@@ -1080,14 +1141,101 @@ def timeout(delay: float | None) -> _Timeout:
 def timeout_at(when: float) -> _Timeout:
     return _Timeout(float(when))
 
-async def gather(*aws: Any, return_exceptions: bool = False) -> list[Any]:
+def _cancelled_error(fut: Future) -> BaseException:
+    try:
+        fut.result()
+    except _asyncio.CancelledError as exc:
+        return exc
+    return _asyncio.CancelledError()
+
+
+class _GatheringFuture(Future):
+    def __init__(self, children: list[Future], remaining: int, return_exceptions: bool, loop: Any) -> None:
+        super().__init__(loop=loop)
+        self._children = children
+        self._remaining = remaining
+        self._results: list[Any] = [None] * len(children)
+        self._return_exceptions = return_exceptions
+        self._cancel_requested = False
+
+    def cancel(self, msg: Any = None) -> bool:
+        if self.done():
+            return False
+        accepted = False
+        for child in self._children:
+            if child.cancel(msg=msg):
+                accepted = True
+        if accepted:
+            self._cancel_requested = True
+            self._cancel_message = msg
+        return accepted
+
+    def _finish_exception(self, exc: BaseException) -> None:
+        self._children = []
+        self._results = []
+        self.set_exception(exc)
+
+    def _child_done(self, positions: list[int], child: Future) -> None:
+        self._remaining -= 1
+        if self.done():
+            if not child.cancelled():
+                child.exception()
+            return
+        if child.cancelled():
+            if not self._return_exceptions:
+                self._finish_exception(_cancelled_error(child))
+                return
+            result: Any = _asyncio.CancelledError(
+                "" if child._cancel_message is None else child._cancel_message
+            )
+        else:
+            exc = child.exception()
+            if exc is not None and not self._return_exceptions:
+                self._finish_exception(exc)
+                return
+            result = child.result() if exc is None else exc
+        for position in positions:
+            self._results[position] = result
+        if self._remaining == 0:
+            if self._cancel_requested:
+                if self._cancel_message is None:
+                    exc = _asyncio.CancelledError()
+                else:
+                    exc = _asyncio.CancelledError(self._cancel_message)
+                self._finish_exception(exc)
+            else:
+                results = self._results
+                self._children = []
+                self._results = []
+                self.set_result(results)
+
+
+def gather(*aws: Any, return_exceptions: bool = False) -> Future:
     if not aws:
-        return []
-    tasks = [ensure_future(aw) for aw in aws]
-    waiter = _require_asyncio_intrinsic(molt_asyncio_gather_new, "asyncio_gather_new")(
-        tasks, return_exceptions
-    )
-    return await waiter
+        result = get_event_loop().create_future()
+        result.set_result([])
+        return result
+    by_arg: dict[Any, Future] = {}
+    positions: dict[Future, list[int]] = {}
+    children: list[Future] = []
+    loop = None
+    for index, awaitable in enumerate(aws):
+        if awaitable not in by_arg:
+            child = ensure_future(awaitable, loop=loop)
+            if loop is None:
+                loop = _get_loop(child)
+            by_arg[awaitable] = child
+            positions[child] = []
+        child = by_arg[awaitable]
+        children.append(child)
+        positions[child].append(index)
+    outer = _GatheringFuture(children, len(positions), return_exceptions, loop)
+    for child, indices in positions.items():
+        if child.done():
+            outer._child_done(indices, child)
+        else:
+            child.add_done_callback(functools.partial(outer._child_done, indices))
+    return outer
 
 async def _wait_one(queue: "Queue", timeout: float | None) -> Any:
     if timeout is None:
@@ -1153,7 +1301,7 @@ def as_completed(aws: Iterable[Any], timeout: float | None = None) -> Iterator[A
         normalized_timeout: float | None = None
     else:
         normalized_timeout = float(timeout)
-    queue: Queue = Queue()
+    queue: Queue = _asyncio.Queue()
 
     def _enqueue(task: Future, _queue: "Queue" = queue) -> None:
         if not _queue.full():

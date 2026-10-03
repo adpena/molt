@@ -22,6 +22,7 @@ from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
 
 from molt import process_guard as _process_guard
+from molt.cli.project_roots import _find_project_root, _require_project_root
 from molt.cli.atomic_io import _atomic_copy_file
 from molt.cli.lockfiles import _check_lockfiles
 
@@ -39,14 +40,6 @@ def _molt_venv_path(project_root: Path) -> Path:
 
 def _run_completed_command(*args: Any, **kwargs: Any) -> Any:
     return _cli_module()._run_completed_command(*args, **kwargs)
-
-
-def _find_molt_root(*candidates: Path) -> Path:
-    return _cli_module()._find_molt_root(*candidates)
-
-
-def _require_molt_root(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._require_molt_root(*args, **kwargs)
 
 
 def _json_payload(*args: Any, **kwargs: Any) -> Any:
@@ -221,8 +214,8 @@ def _clone_git_source(
 
 
 def deps(include_dev: bool, json_output: bool = False, verbose: bool = False) -> int:
-    root = _find_molt_root(Path.cwd())
-    root_error = _require_molt_root(root, json_output, "deps")
+    root = _find_project_root(Path.cwd())
+    root_error = _require_project_root(root, json_output, "deps", pyproject=True)
     if root_error is not None:
         return root_error
     pyproject = _load_toml(root / "pyproject.toml")
@@ -284,7 +277,11 @@ def _ensure_molt_venv(
     was freshly created.
     """
     venv = _molt_venv_path(project_root)
+    if not venv.resolve().is_relative_to(project_root.resolve()):
+        raise RuntimeError(f"Project environment leaves its project root: {venv}")
     if venv.exists():
+        if not (venv / "pyvenv.cfg").is_file() or not _molt_venv_python(venv).is_file():
+            raise RuntimeError(f"Invalid project environment: {venv}")
         return venv, False
     uv = _ensure_uv()
     if uv is None:
@@ -297,7 +294,7 @@ def _ensure_molt_venv(
         "venv",
         str(venv),
         "--python",
-        f"{sys.version_info.major}.{sys.version_info.minor}",
+        sys.executable,
     ]
     if verbose:
         print(f"[molt install] creating venv: {' '.join(cmd)}")
@@ -315,25 +312,19 @@ def _ensure_molt_venv(
     return venv, True
 
 
-def _read_requirements_txt(path: Path) -> list[str]:
-    """Read non-comment, non-empty lines from a requirements.txt file."""
-    if not path.exists():
-        return []
-    reqs: list[str] = []
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if line and not line.startswith("#") and not line.startswith("-"):
-            reqs.append(line)
-    return reqs
+def _molt_venv_python(venv: Path) -> Path:
+    # The compiler host, not the guest target, owns the dependency environment.
+    return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def _read_pyproject_deps(project_root: Path) -> list[str]:
-    """Read ``[project.dependencies]`` from pyproject.toml."""
-    pyproject_path = project_root / "pyproject.toml"
-    if not pyproject_path.exists():
-        return []
-    data = _load_toml(pyproject_path)
-    return list(data.get("project", {}).get("dependencies", []))
+def _project_dependency_env(venv: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["UV_PROJECT_ENVIRONMENT"] = str(venv)
+    env.pop("VIRTUAL_ENV", None)
+    # These operations promise to apply the current project's declarations.
+    env.pop("UV_NO_SYNC", None)
+    env.pop("UV_FROZEN", None)
+    return env
 
 
 def install(
@@ -344,94 +335,160 @@ def install(
     verbose: bool = False,
     sync: bool = False,
 ) -> int:
-    """Install packages into ``.molt-venv/`` using UV.
-
-    If *packages* are given on the CLI they are installed directly.
-    If *requirements* points to a file (``requirements.txt``), its contents are
-    used.  If *sync* is ``True`` (or no explicit packages / requirements file),
-    dependencies are read from ``pyproject.toml`` and ``requirements.txt`` (if
-    present) and the venv is synced to match.
-    """
-    uv = _ensure_uv()
-    if uv is None:
+    """Install project dependencies; default/--sync reconciles the environment."""
+    if packages and requirements:
         return _fail(
-            "uv is not installed. Install it with: "
-            "curl -LsSf https://astral.sh/uv/install.sh | sh",
+            "Choose packages or a requirements file, not both.",
             json_output,
             command="install",
         )
-
-    project_root = _find_molt_root(Path.cwd())
-
-    # Ensure the venv exists.
+    if sync and (packages or requirements):
+        return _fail(
+            "--sync uses project dependencies; omit packages and -r.",
+            json_output,
+            command="install",
+        )
+    project_root = _find_project_root(Path.cwd())
+    root_error = _require_project_root(project_root, json_output, "install")
+    if root_error is not None:
+        return root_error
+    uv = _ensure_uv()
+    if uv is None:
+        return _fail(
+            "uv is required to manage project dependencies.",
+            json_output,
+            command="install",
+        )
+    synchronize = sync or (not packages and requirements is None)
+    requirement_files: list[Path] = []
     try:
-        venv, created = _ensure_molt_venv(
+        if requirements:
+            # Explicit command-line paths are relative to the invoking directory.
+            req_path = Path(requirements).expanduser().resolve(strict=True)
+            if not req_path.is_file():
+                raise OSError(f"Requirements file is not a file: {req_path}")
+            requirement_files.append(req_path)
+        elif synchronize:
+            req_path = project_root / "requirements.txt"
+            if req_path.is_file():
+                requirement_files.append(req_path)
+        specs = list(packages or [])
+        project = _load_toml(project_root / "pyproject.toml").get("project")
+        if synchronize and isinstance(project, dict):
+            specs.extend(project.get("dependencies", []))
+        venv, _ = _ensure_molt_venv(
             project_root, json_output=json_output, verbose=verbose
         )
-    except RuntimeError as exc:
+        cmd = [
+            uv,
+            "pip",
+            "sync" if synchronize else "install",
+            "--python",
+            str(_molt_venv_python(venv)),
+        ]
+        env = _project_dependency_env(venv)
+        # uv owns includes, constraints, hashes, markers and transitive closure.
+        # Resolve the complete graph before an exact sync; direct project specs
+        # alone are not a lock and would leave dependencies uninstalled.
+        with tempfile.TemporaryDirectory(prefix="molt-install-") as temp:
+            if synchronize:
+                project_lock = Path(temp) / "project-requirements.txt"
+                if isinstance(project, dict):
+                    # Export the actual project lock, including uv source overrides,
+                    # rather than rebuilding its semantics from requirement strings.
+                    export_cmd = [
+                        uv,
+                        "export",
+                        "--project",
+                        str(project_root),
+                        "--python",
+                        str(_molt_venv_python(venv)),
+                        "--no-default-groups",
+                        "--no-emit-project",
+                        "--output-file",
+                        str(project_lock),
+                    ]
+                    exported = _run_completed_command(
+                        export_cmd,
+                        cwd=project_root,
+                        env=env,
+                        capture_output=True,
+                        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
+                    )
+                    if exported.returncode != 0:
+                        return _fail(
+                            f"uv project export failed (exit {exported.returncode}):\n{exported.stderr}",
+                            json_output,
+                            command="install",
+                        )
+                else:
+                    project_lock.write_text("", encoding="utf-8")
+                locked = project_lock
+                if requirement_files:
+                    locked = Path(temp) / "resolved-requirements.txt"
+                    resolve_cmd = [
+                        uv,
+                        "pip",
+                        "compile",
+                        "--python",
+                        str(_molt_venv_python(venv)),
+                        "--output-file",
+                        str(locked),
+                        str(project_lock),
+                        *[str(path) for path in requirement_files],
+                    ]
+                    resolved = _run_completed_command(
+                        resolve_cmd,
+                        cwd=project_root,
+                        env=env,
+                        capture_output=True,
+                        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
+                    )
+                    if resolved.returncode != 0:
+                        return _fail(
+                            f"uv dependency resolution failed (exit {resolved.returncode}):\n{resolved.stderr}",
+                            json_output,
+                            command="install",
+                        )
+                cmd.extend(["--allow-empty-requirements", str(locked)])
+            else:
+                cmd.extend(specs)
+                for path in requirement_files:
+                    cmd.extend(["-r", str(path)])
+            if verbose and not json_output:
+                print(f"[molt install] {' '.join(cmd)}")
+            result = _run_completed_command(
+                cmd,
+                cwd=project_root if synchronize else Path.cwd(),
+                env=env,
+                capture_output=json_output,
+                memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
+            )
+    except (OSError, RuntimeError, ValueError) as exc:
         return _fail(str(exc), json_output, command="install")
-
-    if created and not json_output:
-        print(f"Created {MOLT_VENV_DIR}/ in {project_root}")
-
-    # Decide what to install.
-    specs: list[str] = []
-    if packages:
-        specs.extend(packages)
-    elif requirements:
-        req_path = Path(requirements).expanduser()
-        if not req_path.exists():
-            return _fail(
-                f"Requirements file not found: {req_path}",
-                json_output,
-                command="install",
-            )
-        specs.extend(_read_requirements_txt(req_path))
-    else:
-        # Gather install specs from the local project when no explicit source is provided.
-        specs.extend(_read_pyproject_deps(project_root))
-        specs.extend(_read_requirements_txt(project_root / "requirements.txt"))
-
-    if not specs:
-        if not json_output:
-            print("Nothing to install (no dependencies found).")
-        if json_output:
-            payload = _json_payload(
-                "install", "ok", data={"installed": [], "venv": str(venv)}
-            )
-            _emit_json(payload, json_output)
-        return 0
-
-    # Run uv pip install into the .molt-venv.
-    cmd = [uv, "pip", "install", "--python", str(venv / "bin" / "python")]
-    cmd.extend(specs)
-
-    if verbose and not json_output:
-        print(f"[molt install] {' '.join(cmd)}")
-
-    result = _run_completed_command(
-        cmd,
-        cwd=project_root,
-        env=None,
-        capture_output=json_output,
-        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
-    )
     if result.returncode != 0:
-        msg = f"uv pip install failed (exit {result.returncode})"
-        if json_output and result.stderr:
-            msg += f":\n{result.stderr}"
-        return _fail(msg, json_output, command="install")
-
-    if json_output:
-        payload = _json_payload(
-            "install",
-            "ok",
-            data={"installed": specs, "venv": str(venv)},
+        detail = f":\n{result.stderr}" if json_output and result.stderr else ""
+        return _fail(
+            f"uv pip failed (exit {result.returncode}){detail}",
+            json_output,
+            command="install",
         )
-        _emit_json(payload, json_output)
-    elif not verbose:
-        print(f"Installed {len(specs)} package(s) into {MOLT_VENV_DIR}/")
-
+    if json_output:
+        _emit_json(
+            _json_payload(
+                "install",
+                "ok",
+                data={
+                    "installed": specs,
+                    "requirements": [str(path) for path in requirement_files],
+                    "venv": str(venv),
+                    "sync": synchronize,
+                },
+            ),
+            json_output,
+        )
+    else:
+        print(f"{'Synced' if synchronize else 'Installed'} dependencies in {venv}")
     return 0
 
 
@@ -441,87 +498,62 @@ def install_add(
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
-    """Add one or more packages: install into .molt-venv and append to
-    ``[project.dependencies]`` in pyproject.toml via ``uv add``."""
+    """Persist and sync project dependencies with uv's single project operation."""
+    if not packages:
+        return _fail("No packages specified.", json_output, command="install")
+    project_root = _find_project_root(Path.cwd())
+    root_error = _require_project_root(
+        project_root, json_output, "install", pyproject=True
+    )
+    if root_error is not None:
+        return root_error
     uv = _ensure_uv()
     if uv is None:
         return _fail(
-            "uv is not installed. Install it with: "
-            "curl -LsSf https://astral.sh/uv/install.sh | sh",
+            "uv is required to manage project dependencies.",
             json_output,
             command="install",
         )
-
-    if not packages:
-        return _fail("No packages specified.", json_output, command="install")
-
-    project_root = _find_molt_root(Path.cwd())
-
-    # Ensure venv exists.
     try:
-        venv, created = _ensure_molt_venv(
+        venv, _ = _ensure_molt_venv(
             project_root, json_output=json_output, verbose=verbose
         )
-    except RuntimeError as exc:
-        return _fail(str(exc), json_output, command="install")
-
-    if created and not json_output:
-        print(f"Created {MOLT_VENV_DIR}/ in {project_root}")
-
-    # Use `uv pip install` into the molt venv.
-    pip_cmd = [
-        uv,
-        "pip",
-        "install",
-        "--python",
-        str(venv / "bin" / "python"),
-        *packages,
-    ]
-    if verbose and not json_output:
-        print(f"[molt install add] {' '.join(pip_cmd)}")
-
-    result = _run_completed_command(
-        pip_cmd,
-        cwd=project_root,
-        env=None,
-        capture_output=json_output,
-        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
-    )
-    if result.returncode != 0:
-        msg = f"uv pip install failed (exit {result.returncode})"
-        if json_output and result.stderr:
-            msg += f":\n{result.stderr}"
-        return _fail(msg, json_output, command="install")
-
-    # Also run `uv add` to persist the dependency in pyproject.toml.
-    pyproject_path = project_root / "pyproject.toml"
-    if pyproject_path.exists():
-        add_cmd = [uv, "add", *packages]
+        env = _project_dependency_env(venv)
+        cmd = [
+            uv,
+            "add",
+            "--project",
+            str(project_root),
+            "--python",
+            str(_molt_venv_python(venv)),
+            "--no-install-project",
+            *packages,
+        ]
         if verbose and not json_output:
-            print(f"[molt install add] {' '.join(add_cmd)}")
-        add_result = _run_completed_command(
-            add_cmd,
-            cwd=project_root,
-            env=None,
+            print(f"[molt install add] {' '.join(cmd)}")
+        result = _run_completed_command(
+            cmd,
+            cwd=Path.cwd(),
+            env=env,
             capture_output=json_output,
             memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
         )
-        if add_result.returncode != 0 and verbose and not json_output:
-            print(
-                f"Warning: uv add failed (dependencies installed but not "
-                f"persisted to pyproject.toml): {add_result.stderr}"
-            )
-
-    if json_output:
-        payload = _json_payload(
-            "install",
-            "ok",
-            data={"added": packages, "venv": str(venv)},
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _fail(str(exc), json_output, command="install")
+    if result.returncode != 0:
+        detail = f":\n{result.stderr}" if json_output and result.stderr else ""
+        return _fail(
+            f"uv add failed (exit {result.returncode}){detail}",
+            json_output,
+            command="install",
         )
-        _emit_json(payload, json_output)
+    if json_output:
+        _emit_json(
+            _json_payload("install", "ok", data={"added": packages, "venv": str(venv)}),
+            json_output,
+        )
     else:
-        print(f"Added {', '.join(packages)} to {MOLT_VENV_DIR}/")
-
+        print(f"Added {', '.join(packages)} to {venv} and pyproject.toml")
     return 0
 
 
@@ -536,8 +568,8 @@ def vendor(
     deterministic: bool = True,
     deterministic_warn: bool = False,
 ) -> int:
-    root = _find_molt_root(Path.cwd())
-    root_error = _require_molt_root(root, json_output, "vendor")
+    root = _find_project_root(Path.cwd())
+    root_error = _require_project_root(root, json_output, "vendor", pyproject=True)
     if root_error is not None:
         return root_error
     warnings: list[str] = []
@@ -625,7 +657,9 @@ def vendor(
             print(f"- {entry['name']} {version} {entry['tier']} {entry['reason']}")
         return 2
 
-    output_dir = Path(output) if output else Path("vendor")
+    output_dir = Path(output).expanduser() if output else root / "vendor"
+    if not output_dir.is_absolute():
+        output_dir = root / output_dir
     package_dir = output_dir / "packages"
     local_dir = output_dir / "local"
     manifest: dict[str, Any] = {

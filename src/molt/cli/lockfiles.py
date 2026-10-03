@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from molt.cargo_workspace import workspace_manifest_facts
-from molt.compiler_distribution import installed_compiler
+from molt.cli.compiler_identity import installed_compiler_admission
 from molt.file_hashing import _sha256_file_with_size
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.command_runtime import _run_completed_command
@@ -32,9 +32,8 @@ def _check_lockfiles(
     # own installed compiler dependencies for every command. Guest projects and
     # source checkouts still use the lock-resolution checks below.
     try:
-        installed = installed_compiler(project_root)
+        installed = installed_compiler_admission(project_root)
         if installed is not None:
-            installed.verify_sources()
             return None
     except (OSError, ValueError) as exc:
         return _fail(
@@ -47,16 +46,18 @@ def _check_lockfiles(
         return None
     lock_path = project_root / "uv.lock"
     cargo_lock = project_root / "Cargo.lock"
+    has_cargo_project = (project_root / "Cargo.toml").is_file()
     missing = []
     if not lock_path.exists():
         missing.append("uv.lock")
-    if not cargo_lock.exists():
+    if has_cargo_project and not cargo_lock.exists():
         missing.append("Cargo.lock")
     if missing and deterministic:
         missing_text = ", ".join(missing)
-        message = (
-            f"Missing lockfiles ({missing_text}); run `uv lock` and ensure Cargo.lock."
-        )
+        remedy = "run `uv lock`"
+        if has_cargo_project:
+            remedy += " and ensure Cargo.lock"
+        message = f"Missing lockfiles ({missing_text}); {remedy}."
         if deterministic_warn:
             warnings.append(message)
         else:
@@ -76,9 +77,9 @@ def _check_lockfiles(
                 else:
                     return _fail(uv_error, json_output, command=command)
         skip_cargo_lock = os.environ.get("MOLT_SKIP_CARGO_LOCK") == "1"
-        if skip_cargo_lock:
+        if has_cargo_project and skip_cargo_lock:
             warnings.append("Skipping Cargo.lock check because MOLT_SKIP_CARGO_LOCK=1.")
-        else:
+        elif has_cargo_project:
             cargo_error = _verify_cargo_lock(project_root)
             if cargo_error is not None:
                 if deterministic_warn:

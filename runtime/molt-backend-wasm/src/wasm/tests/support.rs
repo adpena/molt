@@ -49,6 +49,7 @@ pub(super) fn wasm_test_function(
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
 }
@@ -80,6 +81,16 @@ pub(super) fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
         ..WasmCompileOptions::default()
     })
     .emit_wasm_module(ir, BTreeMap::new(), trampoline_analysis)
+}
+
+/// Activation fixtures exercise the shared terminal ownership boundary before
+/// final emission. Other op-loop fixtures continue to author final IR directly.
+pub(super) fn wasm_compile_activation_fixture(mut ir: SimpleIR) -> WasmCompileOutput {
+    crate::tir::drop_phase::finalize_simple_ir_drops(
+        &mut ir.functions,
+        &crate::tir::TargetInfo::wasm_release_fast(),
+    );
+    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir)
 }
 
 pub(super) fn wasm_object_new_bound_ir(kind: &str, payload_size: Option<i64>) -> SimpleIR {
@@ -126,6 +137,7 @@ pub(super) fn wasm_method_ic_ir(kind: &str, extra_arg_count: usize) -> SimpleIR 
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,

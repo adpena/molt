@@ -2,8 +2,44 @@ use super::*;
 use crate::call::type_policy::{ObjectConstructorCall, object_constructor_extra_args_allowed};
 use crate::{dict_update_apply, dict_update_set_in_place};
 
-type BuiltinArgumentBinder =
-    unsafe fn(&PyToken<'_>, *mut u8, &PreparedCallArgs<'_, '_>) -> Option<Vec<u64>>;
+/// Builtin binders read a borrowed view of the call's argument vector; the
+/// vector keeps ownership and releases after the call.
+type BuiltinArgumentBinder = unsafe fn(
+    &PyToken<'_>,
+    *mut u8,
+    &CallArgumentView<'_>,
+    &mut BuiltinArgumentStorage,
+) -> Option<Vec<u64>>;
+
+/// Owns materialized arguments borrowed by a builtin ABI. The caller's
+/// CallArguments still owns the original values. This scope ends before that
+/// vector, on binding failure and on either outcome of the call, so temporary
+/// packing cannot leak arguments or change their finalizer order.
+#[derive(Default)]
+pub(super) struct BuiltinArgumentStorage {
+    owners: Vec<PtrDropGuard>,
+}
+
+impl BuiltinArgumentStorage {
+    fn own(&mut self, py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
+        let owner = PtrDropGuard::preserving(ptr);
+        if ptr.is_null() {
+            if !exception_pending(py) {
+                raise_exception::<()>(py, "MemoryError", "builtin argument allocation failed");
+            }
+            return None;
+        }
+        if self.owners.try_reserve(1).is_err() {
+            return raise_exception(
+                py,
+                "MemoryError",
+                "builtin argument custody allocation failed",
+            );
+        }
+        self.owners.push(owner);
+        Some(MoltObject::from_ptr(ptr).bits())
+    }
+}
 
 /// One selection owns both raw-call admission and specialized execution.
 /// Trampoline presence and Python signature metadata cannot bypass this plan.
@@ -20,14 +56,17 @@ impl BuiltinCallBinding {
         py: &PyToken<'_>,
         func_bits: u64,
         func_ptr: *mut u8,
-        args: &PreparedCallArgs<'_, '_>,
+        args: &CallArgumentView<'_>,
     ) -> u64 {
         unsafe {
             match self {
-                Self::Arguments(bind) => match bind(py, func_ptr, args) {
-                    Some(bound) => call_function_obj_bound_vec(py, func_bits, &bound),
-                    None => MoltObject::none().bits(),
-                },
+                Self::Arguments(bind) => {
+                    let mut storage = BuiltinArgumentStorage::default();
+                    match bind(py, func_ptr, args, &mut storage) {
+                        Some(bound) => call_function_obj_bound_vec(py, func_bits, &bound),
+                        None => MoltObject::none().bits(),
+                    }
+                }
                 Self::DictionaryUpdate => bind_builtin_dict_update(py, args),
                 Self::OwnedExceptionInit => {
                     let Some(bound) = bind_builtin_exception_init_owned(py, args) else {
@@ -65,15 +104,17 @@ pub(super) unsafe fn builtin_call_binding(
                 )
             };
         }
-        let bind_kind =
-            obj_from_bits(function_binding_meta(py, func_ptr, b"__molt_bind_kind__")).as_int();
-        if bind_kind == Some(BIND_KIND_OPEN) || matches_builtin!(molt_open_builtin) {
-            return Some(BuiltinCallBinding::Arguments(|py, _, args| {
-                bind_builtin_open(py, args)
-            }));
+        let bind_kind = obj_from_bits(function_binding_meta(
+            py,
+            func_ptr,
+            crate::call::function::FunctionBindingField::BindKind,
+        ))
+        .as_int();
+        if bind_kind == Some(BIND_KIND_CLINIC_NAMED) {
+            return Some(BuiltinCallBinding::Arguments(bind_builtin_named));
         }
         if matches_builtin!(crate::builtins::exceptions::molt_exception_new_bound) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_exception_args(_py, args, true)
             }));
         }
@@ -83,105 +124,103 @@ pub(super) unsafe fn builtin_call_binding(
         if matches_builtin!(crate::builtins::exceptions::molt_exception_init)
             || matches_builtin!(crate::builtins::exceptions::molt_exceptiongroup_init)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_exception_args(_py, args, false)
             }));
         }
         if matches_builtin!(molt_object_init_subclass) {
-            return Some(BuiltinCallBinding::Arguments(|py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|py, _, args, _storage| {
                 bind_builtin_class_hook(py, args)
             }));
         }
         if matches_builtin!(molt_object_init) {
-            return Some(BuiltinCallBinding::Arguments(|py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|py, _, args, _storage| {
                 bind_builtin_object_constructor(py, args, ObjectConstructorCall::Init)
             }));
         }
         if matches_builtin!(molt_object_new_bound) {
-            return Some(BuiltinCallBinding::Arguments(|py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|py, _, args, _storage| {
                 bind_builtin_object_constructor(py, args, ObjectConstructorCall::New)
             }));
         }
-        if matches_builtin!(molt_int_new) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_int_new(_py, args)
-            }));
-        }
         if matches_builtin!(molt_int_to_bytes) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_int_bytes_codec(_py, args, "length", "byteorder")
             }));
         }
         if matches_builtin!(molt_int_from_bytes) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_int_bytes_codec(_py, args, "bytes", "byteorder")
             }));
         }
         if matches_builtin!(crate::object::ops_builtins::molt_print_builtin) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_print(_py, args)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_print(_py, args, _storage)
             }));
         }
         if bind_kind == Some(BIND_KIND_TYPE_NEW_INIT) {
-            return Some(BuiltinCallBinding::Arguments(|_py, func_ptr, args| {
-                let fn_ptr = function_fn_ptr(func_ptr);
-                if matches!(
-                    std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
-                    Some("1")
-                ) {
-                    // `__molt_bind_kind__` is the dispatch authority; the raw
-                    // function pointer is only a diagnostic label.
-                    let kind = if fn_ptr == fn_addr!(molt_type_new) {
-                        "type.__new__"
-                    } else if fn_ptr == fn_addr!(molt_type_init) {
-                        "type.__init__"
-                    } else {
-                        "type.__new__/__init__"
-                    };
-                    let self_bits = args.pos.first().copied().unwrap_or(0);
-                    let mut meta_label = "<unknown>".to_string();
-                    let self_label = if let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() {
-                        let self_type_id = object_type_id(self_ptr);
-                        if self_type_id == TYPE_ID_TYPE {
-                            let label =
-                                string_obj_to_owned(obj_from_bits(class_name_bits(self_ptr)))
-                                    .unwrap_or_else(|| "<type>".to_string());
-                            let meta_bits = object_class_bits(self_ptr);
-                            if meta_bits != 0
-                                && let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr()
-                                && object_type_id(meta_ptr) == TYPE_ID_TYPE
-                            {
-                                meta_label =
-                                    string_obj_to_owned(obj_from_bits(class_name_bits(meta_ptr)))
-                                        .unwrap_or_else(|| "<meta>".to_string());
-                            }
-                            label
-                        } else {
-                            format!("<type_id={self_type_id}>")
-                        }
-                    } else {
-                        type_name(_py, obj_from_bits(self_bits)).to_string()
-                    };
-                    eprintln!(
-                        "molt bind: {} self={} meta={} pos_len={} kw_len={}",
-                        kind,
-                        self_label,
-                        meta_label,
-                        args.pos.len(),
-                        args.kw_names.len(),
-                    );
+            return Some(BuiltinCallBinding::Arguments(
+                |_py, func_ptr, args, _storage| {
+                    let fn_ptr = function_fn_ptr(func_ptr);
                     if matches!(
-                        std::env::var("MOLT_TRACE_TYPE_NEW_INIT_BT").ok().as_deref(),
+                        std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
                         Some("1")
                     ) {
-                        eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
+                        // `__molt_bind_kind__` is the dispatch authority; the raw
+                        // function pointer is only a diagnostic label.
+                        let kind = if fn_ptr == fn_addr!(molt_type_new) {
+                            "type.__new__"
+                        } else if fn_ptr == fn_addr!(molt_type_init) {
+                            "type.__init__"
+                        } else {
+                            "type.__new__/__init__"
+                        };
+                        let self_bits = args.pos.first().copied().unwrap_or(0);
+                        let mut meta_label = "<unknown>".to_string();
+                        let self_label = if let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() {
+                            let self_type_id = object_type_id(self_ptr);
+                            if self_type_id == TYPE_ID_TYPE {
+                                let label =
+                                    string_obj_to_owned(obj_from_bits(class_name_bits(self_ptr)))
+                                        .unwrap_or_else(|| "<type>".to_string());
+                                let meta_bits = object_class_bits(self_ptr);
+                                if meta_bits != 0
+                                    && let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr()
+                                    && object_type_id(meta_ptr) == TYPE_ID_TYPE
+                                {
+                                    meta_label = string_obj_to_owned(obj_from_bits(
+                                        class_name_bits(meta_ptr),
+                                    ))
+                                    .unwrap_or_else(|| "<meta>".to_string());
+                                }
+                                label
+                            } else {
+                                format!("<type_id={self_type_id}>")
+                            }
+                        } else {
+                            type_name(_py, obj_from_bits(self_bits)).to_string()
+                        };
+                        eprintln!(
+                            "molt bind: {} self={} meta={} pos_len={} kw_len={}",
+                            kind,
+                            self_label,
+                            meta_label,
+                            args.pos.len(),
+                            args.kw_names.len(),
+                        );
+                        if matches!(
+                            std::env::var("MOLT_TRACE_TYPE_NEW_INIT_BT").ok().as_deref(),
+                            Some("1")
+                        ) {
+                            eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
+                        }
                     }
-                }
-                return bind_builtin_type_new_init(_py, args);
-            }));
+                    return bind_builtin_type_new_init(_py, args, _storage);
+                },
+            ));
         }
         if matches_builtin!(dict_get_method) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_keywords(
                     _py,
                     args,
@@ -192,7 +231,7 @@ pub(super) unsafe fn builtin_call_binding(
             }));
         }
         if matches_builtin!(dict_setdefault_method) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_keywords(
                     _py,
                     args,
@@ -203,7 +242,7 @@ pub(super) unsafe fn builtin_call_binding(
             }));
         }
         if matches_builtin!(dict_fromkeys_method) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_keywords(
                     _py,
                     args,
@@ -217,7 +256,7 @@ pub(super) unsafe fn builtin_call_binding(
             return Some(BuiltinCallBinding::DictionaryUpdate);
         }
         if matches_builtin!(molt_dict_pop_method) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_keywords(
                     _py,
                     args,
@@ -228,32 +267,32 @@ pub(super) unsafe fn builtin_call_binding(
             }));
         }
         if matches_builtin!(molt_list_sort) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_list_sort(_py, args)
             }));
         }
         if matches_builtin!(molt_list_pop) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_list_pop(_py, args)
             }));
         }
         if matches_builtin!(molt_bytearray_pop) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_list_pop(_py, args)
             }));
         }
         if matches_builtin!(molt_list_index_range) || matches_builtin!(molt_tuple_index_range) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_list_index_range(_py, args)
             }));
         }
         if matches_builtin!(molt_string_find_slice) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_string_find(_py, args, "find")
             }));
         }
         if matches_builtin!(molt_string_rfind_slice) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_string_find(_py, args, "rfind")
             }));
         }
@@ -261,7 +300,7 @@ pub(super) unsafe fn builtin_call_binding(
             || matches_builtin!(molt_bytes_index_slice)
             || matches_builtin!(molt_bytearray_index_slice)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_string_find(_py, args, "index")
             }));
         }
@@ -269,18 +308,18 @@ pub(super) unsafe fn builtin_call_binding(
             || matches_builtin!(molt_bytes_rindex_slice)
             || matches_builtin!(molt_bytearray_rindex_slice)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_string_find(_py, args, "rindex")
             }));
         }
         if matches_builtin!(molt_bytes_find_slice) || matches_builtin!(molt_bytearray_find_slice) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_string_find(_py, args, "find")
             }));
         }
         if matches_builtin!(molt_bytes_rfind_slice) || matches_builtin!(molt_bytearray_rfind_slice)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_string_find(_py, args, "rfind")
             }));
         }
@@ -288,7 +327,7 @@ pub(super) unsafe fn builtin_call_binding(
             || matches_builtin!(molt_bytes_split_max)
             || matches_builtin!(molt_bytearray_split_max)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_split(_py, args, "split")
             }));
         }
@@ -296,7 +335,7 @@ pub(super) unsafe fn builtin_call_binding(
             || matches_builtin!(molt_bytes_rsplit_max)
             || matches_builtin!(molt_bytearray_rsplit_max)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_split(_py, args, "rsplit")
             }));
         }
@@ -304,31 +343,31 @@ pub(super) unsafe fn builtin_call_binding(
             || matches_builtin!(molt_bytes_count_slice)
             || matches_builtin!(molt_bytearray_count_slice)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_count(_py, args, "count")
             }));
         }
         if matches_builtin!(molt_string_startswith_slice) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_prefix_check(_py, args, "startswith", "prefix")
             }));
         }
         if matches_builtin!(molt_string_endswith_slice) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_prefix_check(_py, args, "endswith", "suffix")
             }));
         }
         if matches_builtin!(molt_bytes_startswith_slice)
             || matches_builtin!(molt_bytearray_startswith_slice)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_prefix_check(_py, args, "startswith", "prefix")
             }));
         }
         if matches_builtin!(molt_bytes_endswith_slice)
             || matches_builtin!(molt_bytearray_endswith_slice)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_prefix_check(_py, args, "endswith", "suffix")
             }));
         }
@@ -336,75 +375,96 @@ pub(super) unsafe fn builtin_call_binding(
             || matches_builtin!(molt_bytearray_hex)
             || matches_builtin!(molt_memoryview_hex)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_bytes_hex(_py, args)
             }));
         }
         if matches_builtin!(molt_string_format_method) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_string_format(_py, args)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_string_format(_py, args, _storage)
             }));
         }
         if matches_builtin!(molt_string_splitlines)
             || matches_builtin!(molt_bytes_splitlines)
             || matches_builtin!(molt_bytearray_splitlines)
         {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_splitlines(_py, args)
             }));
         }
         if matches_builtin!(molt_set_union_multi) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_set_multi(_py, args, "union", "set", TYPE_ID_SET)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_set_multi(_py, args, _storage, "union", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_frozenset_union_multi) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_set_multi(_py, args, "union", "frozenset", TYPE_ID_FROZENSET)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_set_multi(_py, args, _storage, "union", "frozenset", TYPE_ID_FROZENSET)
             }));
         }
         if matches_builtin!(molt_set_intersection_multi) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_set_multi(_py, args, "intersection", "set", TYPE_ID_SET)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_set_multi(_py, args, _storage, "intersection", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_frozenset_intersection_multi) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_set_multi(_py, args, "intersection", "frozenset", TYPE_ID_FROZENSET)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_set_multi(
+                    _py,
+                    args,
+                    _storage,
+                    "intersection",
+                    "frozenset",
+                    TYPE_ID_FROZENSET,
+                )
             }));
         }
         if matches_builtin!(molt_set_difference_multi) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_set_multi(_py, args, "difference", "set", TYPE_ID_SET)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_set_multi(_py, args, _storage, "difference", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_frozenset_difference_multi) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_set_multi(_py, args, "difference", "frozenset", TYPE_ID_FROZENSET)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_set_multi(
+                    _py,
+                    args,
+                    _storage,
+                    "difference",
+                    "frozenset",
+                    TYPE_ID_FROZENSET,
+                )
             }));
         }
         if matches_builtin!(molt_set_update_multi) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_set_multi(_py, args, "update", "set", TYPE_ID_SET)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_set_multi(_py, args, _storage, "update", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_set_intersection_update_multi) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_set_multi(_py, args, "intersection_update", "set", TYPE_ID_SET)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_set_multi(
+                    _py,
+                    args,
+                    _storage,
+                    "intersection_update",
+                    "set",
+                    TYPE_ID_SET,
+                )
             }));
         }
         if matches_builtin!(molt_set_difference_update_multi) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
-                bind_builtin_set_multi(_py, args, "difference_update", "set", TYPE_ID_SET)
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
+                bind_builtin_set_multi(_py, args, _storage, "difference_update", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_set_symmetric_difference) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_single(_py, args, "symmetric_difference", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_frozenset_symmetric_difference) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_single(
                     _py,
                     args,
@@ -415,7 +475,7 @@ pub(super) unsafe fn builtin_call_binding(
             }));
         }
         if matches_builtin!(molt_set_symmetric_difference_update) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_single(
                     _py,
                     args,
@@ -426,72 +486,72 @@ pub(super) unsafe fn builtin_call_binding(
             }));
         }
         if matches_builtin!(molt_set_isdisjoint) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_single(_py, args, "isdisjoint", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_frozenset_isdisjoint) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_single(_py, args, "isdisjoint", "frozenset", TYPE_ID_FROZENSET)
             }));
         }
         if matches_builtin!(molt_set_issubset) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_single(_py, args, "issubset", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_frozenset_issubset) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_single(_py, args, "issubset", "frozenset", TYPE_ID_FROZENSET)
             }));
         }
         if matches_builtin!(molt_set_issuperset) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_single(_py, args, "issuperset", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_frozenset_issuperset) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_single(_py, args, "issuperset", "frozenset", TYPE_ID_FROZENSET)
             }));
         }
         if matches_builtin!(molt_set_copy_method) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_noargs(_py, args, "copy", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_frozenset_copy_method) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_noargs(_py, args, "copy", "frozenset", TYPE_ID_FROZENSET)
             }));
         }
         if matches_builtin!(molt_set_clear) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_noargs(_py, args, "clear", "set", TYPE_ID_SET)
             }));
         }
         if matches_builtin!(molt_string_encode) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_text_codec(_py, args, "encode")
             }));
         }
         if matches_builtin!(molt_bytes_decode) || matches_builtin!(molt_bytearray_decode) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_text_codec(_py, args, "decode")
             }));
         }
         if matches_builtin!(molt_memoryview_cast) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_memoryview_cast(_py, args)
             }));
         }
         if matches_builtin!(molt_file_reconfigure) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_file_reconfigure(_py, args)
             }));
         }
         if matches_builtin!(molt_bytes_maketrans) {
-            return Some(BuiltinCallBinding::Arguments(|py, _, args| {
+            return Some(BuiltinCallBinding::Arguments(|py, _, args, _storage| {
                 if !args.kw_names.is_empty() {
                     return raise_exception(
                         py,
@@ -515,7 +575,7 @@ pub(super) unsafe fn builtin_call_binding(
 
 unsafe fn bind_builtin_class_hook(
     py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     let Some(&receiver) = args.pos.first() else {
         return raise_exception(
@@ -547,7 +607,7 @@ unsafe fn bind_builtin_class_hook(
 
 unsafe fn bind_builtin_object_constructor(
     py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     call: ObjectConstructorCall,
 ) -> Option<Vec<u64>> {
     let name = match call {
@@ -588,7 +648,7 @@ pub(super) unsafe fn bind_positional_builtin_call(
     _py: &PyToken<'_>,
     func_bits: u64,
     func_ptr: *mut u8,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     unsafe {
         if !args.kw_names.is_empty() {
@@ -661,7 +721,7 @@ pub(super) unsafe fn bind_positional_builtin_call(
 
 fn bind_builtin_exception_args(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     allow_keywords: bool,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
@@ -692,7 +752,7 @@ fn bind_builtin_exception_args(
 
 fn bind_builtin_exception_init_owned(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required arguments");
@@ -716,54 +776,7 @@ fn bind_builtin_exception_init_owned(
     ])
 }
 
-unsafe fn bind_builtin_int_new(
-    _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
-) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'cls'");
-    }
-    if args.pos.len() > 3 {
-        return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
-    }
-    let cls_bits = args.pos[0];
-    let mut value_bits = args.pos.get(1).copied();
-    let mut base_bits = args.pos.get(2).copied();
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        match name_str.as_str() {
-            "x" => {
-                if value_bits.is_some() {
-                    let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                value_bits = Some(val_bits);
-            }
-            "base" => {
-                if base_bits.is_some() {
-                    let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                base_bits = Some(val_bits);
-            }
-            _ => {
-                let msg = format!("got an unexpected keyword '{name_str}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-        }
-    }
-    let value_bits = value_bits.unwrap_or_else(|| MoltObject::from_int(0).bits());
-    let base_bits = base_bits.unwrap_or_else(|| missing_bits(_py));
-    Some(vec![cls_bits, value_bits, base_bits])
-}
-
-unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &PreparedCallArgs<'_, '_>) -> u64 {
+unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &CallArgumentView<'_>) -> u64 {
     unsafe {
         if args.pos.is_empty() {
             return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -815,24 +828,9 @@ unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &PreparedCallArgs<'_
     }
 }
 
-fn default_open_mode_bits(_py: &PyToken<'_>) -> u64 {
-    init_atomic_bits(
-        _py,
-        &runtime_state(_py).special_cache.open_default_mode,
-        || {
-            let ptr = alloc_string(_py, b"r");
-            if ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            }
-        },
-    )
-}
-
 unsafe fn bind_builtin_bytes_hex(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -879,7 +877,7 @@ unsafe fn bind_builtin_bytes_hex(
 
 unsafe fn bind_builtin_keywords(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     names: &[&str],
     default_bits: Option<u64>,
     extra_bits: Option<u64>,
@@ -945,7 +943,7 @@ unsafe fn bind_builtin_keywords(
 
 unsafe fn bind_builtin_int_bytes_codec(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     required_0: &str,
     required_1: &str,
 ) -> Option<Vec<u64>> {
@@ -1008,7 +1006,7 @@ unsafe fn bind_builtin_int_bytes_codec(
 
 pub(super) unsafe fn bind_builtin_class_text_io_wrapper(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     const NAMES: [&str; 6] = [
         "buffer",
@@ -1068,7 +1066,7 @@ pub(super) unsafe fn bind_builtin_class_text_io_wrapper(
 
 pub(super) unsafe fn bind_builtin_class_string_io(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     const NAMES: [&str; 2] = ["initial_value", "newline"];
     if args.pos.len() > NAMES.len() {
@@ -1119,16 +1117,16 @@ pub(super) unsafe fn bind_builtin_class_string_io(
 /// The first param is a tuple of the `*args` vararg.
 unsafe fn bind_builtin_print(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
+    storage: &mut BuiltinArgumentStorage,
 ) -> Option<Vec<u64>> {
     // Build the *args tuple from positional arguments.
     let args_ptr = crate::object::builders::alloc_tuple(_py, args.pos);
-    let args_tuple = MoltObject::from_ptr(args_ptr).bits();
-    // Keyword-only defaults.
-    let default_sep = crate::object::builders::alloc_string(_py, b" ");
-    let default_end = crate::object::builders::alloc_string(_py, b"\n");
-    let sep_default = MoltObject::from_ptr(default_sep).bits();
-    let end_default = MoltObject::from_ptr(default_end).bits();
+    let args_tuple = storage.own(_py, args_ptr)?;
+    // The public print ABI accepts None for its separators and supplies the
+    // defaults after flush/stream validation. Binding needs no default strings.
+    let sep_default = MoltObject::none().bits();
+    let end_default = MoltObject::none().bits();
     let file_default = MoltObject::none().bits();
     let flush_default = MoltObject::from_bool(false).bits();
     let mut sep = sep_default;
@@ -1158,105 +1156,78 @@ unsafe fn bind_builtin_print(
     Some(vec![args_tuple, sep, end, file, flush])
 }
 
-unsafe fn bind_builtin_open(
-    _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+/// The sealed protocol tag chooses binding; names and defaults remain owned by
+/// the published callable's typed metadata. No public spelling is executable.
+unsafe fn bind_builtin_named(
+    py: &PyToken<'_>, func_ptr: *mut u8, args: &CallArgumentView<'_>,
+    storage: &mut BuiltinArgumentStorage,
 ) -> Option<Vec<u64>> {
-    const NAMES: [&str; 8] = [
-        "file",
-        "mode",
-        "buffering",
-        "encoding",
-        "errors",
-        "newline",
-        "closefd",
-        "opener",
-    ];
-    let mut values: [Option<u64>; 8] = [None; 8];
-    for (idx, val) in args.pos.iter().copied().enumerate() {
-        if idx >= values.len() {
-            let msg = format!(
-                "open() takes at most 8 arguments ({} given)",
-                args.pos.len()
-            );
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        }
-        values[idx] = Some(val);
-    }
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        let mut matched = false;
-        for (idx, expected) in NAMES.iter().enumerate() {
-            if name_str == *expected {
-                if values[idx].is_some() {
-                    let msg = if idx < args.pos.len() {
-                        format!(
-                            "argument for open() given by name ('{name_str}') and position ({})",
-                            idx + 1
-                        )
-                    } else {
-                        format!("open() got multiple values for argument '{name_str}'")
-                    };
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                values[idx] = Some(val_bits);
-                matched = true;
-                break;
+    use crate::builtins::native_arguments::{NativeKeywords, bind_named_slots};
+    unsafe {
+        let name = string_obj_to_owned(obj_from_bits(function_name_bits(py, func_ptr)))?;
+        let mut tuple_ptrs = [std::ptr::null_mut(); 3];
+        for (slot, field) in tuple_ptrs.iter_mut().zip([
+            FunctionBindingField::ArgumentNames,
+            FunctionBindingField::Defaults,
+            FunctionBindingField::KeywordOnlyNames,
+        ]) {
+            let bits = function_binding_meta(py, func_ptr, field);
+            let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                return raise_exception(py, "SystemError", "invalid named builtin tuple metadata");
+            };
+            if object_type_id(ptr) != TYPE_ID_TUPLE {
+                return raise_exception(py, "SystemError", "invalid named builtin tuple metadata");
             }
+            // Keep the exact tuples through the native body, including defaults
+            // whose values are borrowed by the returned ABI argument vector.
+            inc_ref_bits(py, bits);
+            storage.own(py, ptr)?;
+            *slot = ptr;
         }
-        if !matched {
-            let msg = format!("open() got an unexpected keyword argument '{name_str}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+        let names = crate::object::seq_access::pin_tuple(py, tuple_ptrs[0])?;
+        let defaults = crate::object::seq_access::pin_tuple(py, tuple_ptrs[1])?;
+        let kwonly = crate::object::seq_access::pin_tuple(py, tuple_ptrs[2])?;
+        if !kwonly.is_empty() || defaults.len() > names.len()
+            || obj_from_bits(function_binding_meta(py, func_ptr, FunctionBindingField::PositionalOnly)).as_int() != Some(0)
+            || !obj_from_bits(function_binding_meta(py, func_ptr, FunctionBindingField::Varargs)).is_none()
+            || !obj_from_bits(function_binding_meta(py, func_ptr, FunctionBindingField::VarKeywords)).is_none()
+            || function_arity_usize(func_ptr) != Some(names.len())
+            || args.kw_names.len() != args.kw_values.len()
+        {
+            return raise_exception(py, "SystemError", "invalid fixed named builtin metadata");
         }
-    }
-    if values[0].is_none() {
-        return raise_exception::<_>(
-            _py,
-            "TypeError",
-            "open() missing required argument 'file' (pos 1)",
-        );
-    }
-    if values[1].is_none() {
-        let mode_bits = default_open_mode_bits(_py);
-        if obj_from_bits(mode_bits).is_none() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        let required = names.len() - defaults.len();
+        let mut slots = Vec::new();
+        let mut out = Vec::new();
+        if slots.try_reserve_exact(names.len()).is_err()
+            || out.try_reserve_exact(names.len()).is_err()
+        {
+            return raise_exception(py, "MemoryError", "named builtin argument allocation failed");
         }
-        values[1] = Some(mode_bits);
+        slots.resize(names.len(), None);
+        let bound = bind_named_slots(py, &name, args.pos,
+            NativeKeywords::vector(args.kw_names, args.kw_values),
+            &names, required, slots,
+        )?;
+        let (slots, owners) = bound.into_parts();
+        if storage.owners.try_reserve(owners.len()).is_err() {
+            return raise_exception(py, "MemoryError", "named builtin custody allocation failed");
+        }
+        storage.owners.extend(owners);
+        for (index, value) in slots.into_iter().enumerate() {
+            out.push(match value {
+                Some(bits) => bits,
+                None => defaults[index - required],
+            });
+        }
+        Some(out)
     }
-    if values[2].is_none() {
-        values[2] = Some(MoltObject::from_int(-1).bits());
-    }
-    if values[3].is_none() {
-        values[3] = Some(MoltObject::none().bits());
-    }
-    if values[4].is_none() {
-        values[4] = Some(MoltObject::none().bits());
-    }
-    if values[5].is_none() {
-        values[5] = Some(MoltObject::none().bits());
-    }
-    if values[6].is_none() {
-        values[6] = Some(MoltObject::from_bool(true).bits());
-    }
-    if values[7].is_none() {
-        values[7] = Some(MoltObject::none().bits());
-    }
-    let mut out = Vec::with_capacity(values.len());
-    for val in values {
-        out.push(val.unwrap());
-    }
-    Some(out)
 }
 
 unsafe fn bind_builtin_type_new_init(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
+    storage: &mut BuiltinArgumentStorage,
 ) -> Option<Vec<u64>> {
     unsafe {
         if args.pos.is_empty() {
@@ -1329,17 +1300,14 @@ unsafe fn bind_builtin_type_new_init(
             return Some(out);
         }
         let dict_ptr = alloc_dict_with_pairs(_py, &extra_pairs);
-        if dict_ptr.is_null() {
-            return Some(out);
-        }
-        out.push(MoltObject::from_ptr(dict_ptr).bits());
+        out.push(storage.own(_py, dict_ptr)?);
         Some(out)
     }
 }
 
 unsafe fn bind_builtin_list_sort(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -1387,7 +1355,7 @@ unsafe fn bind_builtin_list_sort(
 
 unsafe fn bind_builtin_list_pop(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -1411,7 +1379,7 @@ unsafe fn bind_builtin_list_pop(
 
 unsafe fn bind_builtin_list_index_range(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -1442,7 +1410,7 @@ unsafe fn bind_builtin_list_index_range(
 
 unsafe fn bind_builtin_string_find(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
@@ -1520,7 +1488,7 @@ unsafe fn bind_builtin_string_find(
 
 unsafe fn bind_builtin_count(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
@@ -1598,7 +1566,7 @@ unsafe fn bind_builtin_count(
 
 unsafe fn bind_builtin_split(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
@@ -1657,7 +1625,7 @@ unsafe fn bind_builtin_split(
 
 unsafe fn bind_builtin_splitlines(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -1713,7 +1681,8 @@ unsafe fn bind_builtin_splitlines(
 
 unsafe fn bind_builtin_set_multi(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
+    storage: &mut BuiltinArgumentStorage,
     method: &str,
     owner_name: &str,
     owner_type_id: u32,
@@ -1742,17 +1711,14 @@ unsafe fn bind_builtin_set_multi(
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
         let tuple_ptr = alloc_tuple(_py, &args.pos[1..]);
-        if tuple_ptr.is_null() {
-            return None;
-        }
-        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+        let tuple_bits = storage.own(_py, tuple_ptr)?;
         Some(vec![args.pos[0], tuple_bits])
     }
 }
 
 unsafe fn bind_builtin_set_single(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     method: &str,
     owner_name: &str,
     owner_type_id: u32,
@@ -1795,7 +1761,7 @@ unsafe fn bind_builtin_set_single(
 
 unsafe fn bind_builtin_set_noargs(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     method: &str,
     owner_name: &str,
     owner_type_id: u32,
@@ -1838,7 +1804,7 @@ unsafe fn bind_builtin_set_noargs(
 
 unsafe fn bind_builtin_prefix_check(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     func_name: &str,
     needle_name: &str,
 ) -> Option<Vec<u64>> {
@@ -1918,17 +1884,15 @@ unsafe fn bind_builtin_prefix_check(
 
 unsafe fn bind_builtin_string_format(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
+    storage: &mut BuiltinArgumentStorage,
 ) -> Option<Vec<u64>> {
     unsafe {
         if args.pos.is_empty() {
             return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
         }
         let tuple_ptr = alloc_tuple(_py, &args.pos[1..]);
-        if tuple_ptr.is_null() {
-            return None;
-        }
-        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+        let tuple_bits = storage.own(_py, tuple_ptr)?;
         let mut pairs = Vec::with_capacity(args.kw_names.len() * 2);
         for (name_bits, val_bits) in args
             .kw_names
@@ -1947,17 +1911,14 @@ unsafe fn bind_builtin_string_format(
             pairs.push(val_bits);
         }
         let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        if dict_ptr.is_null() {
-            return None;
-        }
-        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+        let dict_bits = storage.own(_py, dict_ptr)?;
         Some(vec![args.pos[0], tuple_bits, dict_bits])
     }
 }
 
 unsafe fn bind_builtin_memoryview_cast(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -2013,7 +1974,7 @@ unsafe fn bind_builtin_memoryview_cast(
 
 unsafe fn bind_builtin_file_reconfigure(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -2103,7 +2064,7 @@ unsafe fn bind_builtin_file_reconfigure(
 
 unsafe fn bind_builtin_text_codec(
     _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
+    args: &CallArgumentView<'_>,
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
@@ -2156,3 +2117,7 @@ unsafe fn bind_builtin_text_codec(
     }
     Some(vec![args.pos[0], encoding_bits, errors_bits])
 }
+
+#[cfg(test)]
+#[path = "builtin_args_tests.rs"]
+mod tests;

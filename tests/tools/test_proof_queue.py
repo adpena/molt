@@ -3510,10 +3510,12 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
     supervisor = context["process_supervisor"]
     assert supervisor["schema"] == "molt.proof-process-supervision.v1"
     assert supervisor["supervisor_returncode"] == 0
-    assert supervisor["receipt"]["schema"] == ("molt.proof-process-closure-receipt.v3")
+    assert supervisor["receipt"]["schema"] == (
+        supervisor_custody.SUPERVISOR_RECEIPT_SCHEMA
+    )
     assert supervisor["receipt"]["state"] == "COMPLETE"
     assert supervisor["receipt"]["complete"] is True
-    assert supervisor["receipt"]["accounting"]["total_processes"] == 1
+    assert supervisor["receipt"]["accounting"]["process_creates"] == 1
     capture = context["toolchain_capture"]
     assert capture["telemetry"]["capture"]["full_capture_count"] == 1
     assert capture["verification"]["stable"] is True

@@ -573,7 +573,7 @@ def test_cli_doctor_strict_treats_warning_only_dx_advice_as_nonfatal(
         profiles={},
     )
 
-    monkeypatch.setattr(SETUP_READINESS, "_find_molt_root", lambda _cwd: ROOT)
+    monkeypatch.setattr(SETUP_READINESS, "compiler_source_root", lambda: ROOT)
     monkeypatch.setattr(
         SETUP_READINESS, "_build_toolchain_report", lambda _root: report
     )

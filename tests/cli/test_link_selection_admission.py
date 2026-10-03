@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-import subprocess
 from pathlib import Path
 
 import pytest
+from tools.command_execution import CommandExecutor
 
 from molt.cli.link_selection_admission import LinkSelectionAdmission
 from molt.cli.source_extension_link_requirements import (
@@ -14,6 +14,9 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
     source_extension_link_file,
 )
+
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 @pytest.mark.parametrize(
@@ -123,7 +126,7 @@ def test_real_selection_dormant_api_is_ignored_but_selected_api_is_rejected(
         )
 
     def run(command):
-        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        result = _COMMANDS.run(command, capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
         return result
 

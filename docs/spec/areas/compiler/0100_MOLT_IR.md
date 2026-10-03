@@ -26,6 +26,18 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
   lifetime-boundary consumers.
 - Backend-specific shadow state or side-channel unboxed tracking is
   implementation debt and must not be treated as a stable interface.
+- Container constructor result types come from
+  `molt_ir::tir::op_semantics::container_constructor_result_type`, consumed by
+  shared type refinement and exact allocator provenance. Constructor results
+  cannot inherit their first element's scalar type; retained binding snapshots
+  preserve the constructor's semantic container type. Representation planning
+  does not reseed result facts from output names.
+- Container alias identity consumes generated canonical alias roles and copy
+  classifications. Pure copies, type guards and owned binding captures preserve
+  heap identity; a capture's retain remains an ownership effect. Escape and
+  mutation invalidate physical-storage proofs across those aliases. Semantic
+  container type, exact builtin class, physical layout and ownership remain
+  distinct facts, and ambiguous producers cannot authorize direct storage access.
 - Native int, bool, and float lowering have retired their raw scalar shadow
   lanes. Integer raw-carriers are proven by the value-keyed
   `repr_by_value_for` / `value_range_for` path and projected through
@@ -72,18 +84,25 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   runtime operations, not structural SSA copies; passes must preserve their
   cache/module-dict mutation, raising, and reference-count behavior even when
   results appear dead.
-- **Object/layout**: `Alloc`, `LoadAttr`, `StoreAttr`, `GetAttrGenericPtr`, `SetAttrGenericPtr`, `GetAttrGenericObj`, `SetAttrGenericObj`, `LoadIndex`, `StoreIndex`, `Index`, `Iter`, `Enumerate`, `IterNext`, `ListNew`, `DictNew`, `Len`, `Slice`, `SliceNew`, `BytearrayFromObj`, `IntArrayFromSeq`, `MemoryViewNew`, `MemoryViewToBytes`, `RangeNew`, `Buffer2DNew`, `Buffer2DGet`, `Buffer2DSet`, `Buffer2DMatmul`, `ClosureLoad`, `ClosureStore`.
+- **Object/layout**: `Alloc`, `LoadAttr`, `StoreAttr`, `GetAttrGenericPtr`, `SetAttrGenericPtr`, `GetAttrGenericObj`, `SetAttrGenericObj`, `LoadIndex`, `StoreIndex`, `Index`, `Iter`, `Enumerate`, `IterNext`, `ListNew`, `DictNew`, `Len`, `Slice`, `SliceNew`, `BytearrayFromObj`, `RangeNew`, `Buffer2DNew`, `Buffer2DGet`, `Buffer2DSet`, `Buffer2DMatmul`, `ClosureLoad`, `ClosureStore`.
 - **Bytes/Bytearray/String**: `BytesFind`, `BytesSplit`, `BytesReplace`, `BytearrayFind`, `BytearraySplit`, `BytearrayReplace`, `StringFind`, `StringFormat`, `StringSplit`, `StringCapitalize`, `StringStrip`, `StringReplace`, `StringStartswith`, `StringEndswith`, `StringCount`, `StringJoin`.
 - **Exceptions**: `ExceptionNew`, `ExceptionLast`, `ExceptionClear`, `ExceptionKind`, `ExceptionMessage`, `ExceptionSetCause`, `ExceptionContextSet`, `Raise` (raise sets implicit `__context__`; `ExceptionSetCause` sets explicit `__cause__` and suppresses context).
-- **Generators/async**: `AllocGenerator`, `GenSend`, `GenThrow`, `GenClose`, `IsGenerator`, `AIter`, `ANext`, `CallAsync`, `StateSwitch`, `StateTransition`, `StateYield`.
-  - `StateSwitch` dispatches based on the state slot (`self` payload -16). `StateTransition`/`StateYield` advance the state and return `Pending` when awaiting.
-  - Implementations may encode resume targets in the state slot (for example,
-    bitwise NOT of the resume op index) to avoid collisions with logical state
-    ids; `StateSwitch` must decode before dispatch.
+- **Generators/async**: `AllocGenerator`, `GenSend`, `GenThrow`, `GenClose`, `IsGenerator`, `AIter`, `ANext`, `CallAsync`, `StateSwitch`, `StateTransition`, `StateYield`, `StateSet`, `IsPending`, `TaskWait`.
+  - Source `StateTransition`/`StateYield` become explicit activation exits before
+    terminal ownership: state writes, a canonical poll call, exact pending test,
+    conditional wait registration, and ordinary returns. Closure storage owns
+    values that persist across invocations.
+  - `StateSwitch` reads the saved state slot (`self` payload -16). Its final
+    transport carries an explicit `state_targets` map from saved state IDs to
+    control-label IDs; backends neither equate the two namespaces nor infer
+    resume points from operation indices. `StateSet` also permits running states
+    that are not dispatch targets. Hidden suspension ops are rejected at native,
+    LLVM, and WASM emission.
   - Channel operations are runtime-bound calls. Their owning async wrappers
     explicitly await when a runtime call returns pending; channel names do not
     create source-level suspension or channel-specific IR opcodes.
-- **Vector**: `VecSumInt`, `VecProdInt`, `VecMinInt`, `VecMaxInt` (guarded reductions; emit `(result, ok)` tuples), plus trusted variants (`VecSumIntTrusted`, `VecProdIntTrusted`, `VecMinIntTrusted`, `VecMaxIntTrusted`) that skip per-element checks when type facts are trusted. Range-aware variants (`Vec*IntRange`, `Vec*IntRangeTrusted`) accept a start offset for `range(k, len(xs))` patterns.
+- **Vector**: `VecSum`, `VecProd`, `VecMin`, `VecMax` (one bounded chunk of a fused-loop reduction over the loop's own iterator of a list, tuple or range; operands the iterator, the accumulator and the loop target's previous value; result the tuple (result, last, count, more). The op consumes the `count` next items whose updates provably run no Python code, and result and last are then exactly the accumulator and loop target the loop leaves after them; it stops before the first item it does not admit, at the iterator's end, or at its chunk bound (more). The frontend runs it in a chunk loop that publishes both bindings before each back edge and rereads them, and then the ordinary loop on the same iterator. See 0190 "Fused loops".)
+- **Index**: `OperatorIndex` (`operator.index(x)`: range()'s conversion of a bound to an exact int, calling `__index__` where the value is not already an int.)
 - **Guards (Tier 1)**: `GuardType`, `GuardTag`, `GuardLayout`, `GuardDictShape`.
 - **RC ops (LIR)**: `IncRef`, `DecRef`, `Borrow`, `Release`.
 - **Conversions**: `Box`, `Unbox`, `Cast`, `Widen`, `StrFromObj`.

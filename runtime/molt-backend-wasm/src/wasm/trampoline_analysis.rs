@@ -12,6 +12,9 @@ pub(super) struct WasmTrampolineAnalysis {
     /// materializes None); extern declarations follow their canonical
     /// FunctionIR signature.
     pub(super) function_abi_returns_value: BTreeMap<String, bool>,
+    /// The entry custody of each function's function object, derived from
+    /// its own parameter declaration (bodies and extern declarations alike).
+    pub(super) function_entry_custody: BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
 }
 
 #[cfg(test)]
@@ -33,11 +36,25 @@ pub(super) fn analyze_wasm_trampolines_with_source(
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     let mut default_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
     let mut function_abi_returns_value: BTreeMap<String, bool> = BTreeMap::new();
+    let mut function_entry_custody = BTreeMap::new();
     for func_ir in &ir.functions {
         let default_has_closure = func_ir
             .params
             .first()
             .is_some_and(|name| name == crate::MOLT_CLOSURE_PARAM_NAME);
+        let transferred: Vec<bool> = func_ir
+            .parameter_custody
+            .iter()
+            .map(|custody| matches!(custody, molt_ir::ParameterCustody::Transferred))
+            .collect();
+        function_entry_custody.insert(
+            func_ir.name.clone(),
+            molt_codegen_abi::EntryCustodyDeclaration::declare(
+                default_has_closure,
+                func_ir.params.len(),
+                &transferred,
+            ),
+        );
         let mut default_arity = func_ir.params.len();
         if default_has_closure && default_arity > 0 {
             default_arity = default_arity.saturating_sub(1);
@@ -64,6 +81,7 @@ pub(super) fn analyze_wasm_trampolines_with_source(
         task_closure_sizes,
         default_trampoline_spec,
         function_abi_returns_value,
+        function_entry_custody,
     }
 }
 
@@ -97,6 +115,7 @@ mod tests {
                     name: "opaque_partition".into(),
                     params: vec!["frame".into()],
                     codegen_partition: true,
+                    parameter_custody: Vec::new(),
                     ..crate::FunctionIR::default()
                 },
             ],

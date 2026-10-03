@@ -456,24 +456,58 @@ end
 "#;
 
 /// Definition-time namespace capture shares one callable-frame authority.
-/// Emitted after dictionary helpers and the module cache exist.
+/// Emitted after dictionary, binding, special lookup, exception, and module helpers exist.
 pub(super) const CALLABLE_FRAME_RUNTIME: &str = r#"
 local function molt_frame_namespace_get(namespace: any, name: any): (boolean, any)
-	if type(namespace) ~= "table" then return false, nil end
+	if type(namespace) ~= "table" then
+		error({__type="TypeError", __msg="namespace object is not subscriptable"}, 0)
+	end
+	local cls = getmetatable(namespace)
+	if type(cls) == "table" and rawget(cls, "__molt_is_type") == true then
+		-- Special lookup is type-owned; an instance __getitem__ cannot shadow it.
+		local raw = molt_class_lookup(cls, "__getitem__")
+		if raw == nil then error({__type="TypeError", __msg="namespace object is not subscriptable"}, 0) end
+		-- Keep the selected namespace and returned value live across callbacks.
+		-- A successful nil is Python None, distinct from a missing key.
+		local ok, value = pcall(function()
+			return molt_call_checked(molt_bind_attr(namespace, cls, raw), name)
+		end)
+		if ok then return true, value end
+		if molt_exception_match(value, "KeyError") then return false, nil end
+		error(value, 0)
+	end
 	if molt_dict_is_ordered(namespace) then
 		if molt_dict_contains(namespace, name) then return true, molt_dict_getitem(namespace, name) end
 		return false, nil
+	end
+	-- Unadorned tables are the backend's module namespaces. Tagged Python
+	-- containers and other instances must not masquerade as empty namespaces.
+	if cls ~= nil or rawget(namespace, "__molt_is_type") == true
+		or rawget(namespace, molt_sequence_kind_key) ~= nil
+		or molt_set_is(namespace) or molt_dict_view_is(namespace)
+		or molt_binary_metadata[namespace] ~= nil then
+		error({__type="TypeError", __msg="namespace object is not subscriptable"}, 0)
 	end
 	local value = rawget(namespace, name)
 	return value ~= nil, value
 end
 
 local function molt_frame_effective_builtins(globals: any): any
-	local present, selected = molt_frame_namespace_get(globals, "__builtins__")
-	if present then return selected end
+	if globals ~= nil then
+		local present, selected = molt_frame_namespace_get(globals, "__builtins__")
+		if present then return selected end
+	end
 	local context = molt_frame_context()
 	if context.depth > 0 then return context.builtins[context.depth] end
 	return molt_module_cache["builtins"]
+end
+
+local function molt_frame_builtin_get(name: any): any
+	if type(name) ~= "string" then error({__type="TypeError", __msg="builtin name must be str"}, 0) end
+	local namespace = molt_frame_effective_builtins(nil)
+	local present, value = molt_frame_namespace_get(namespace, name)
+	if present then return value end
+	error({__type="NameError", __msg="name '" .. name .. "' is not defined"}, 0)
 end
 
 local function molt_frame_bind_code(id: number, code: any, globals: any): any

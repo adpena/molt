@@ -10,14 +10,16 @@
 //! column is the `MODULE_INIT_TABLE`; the C main stub installs it here before
 //! `molt_runtime_init`.
 //!
-//! `molt_module_ensure(id)` is the ONLY module-state transition owner
-//! (invariant I4): compiled literal import sites call it with a constant id,
+//! This module owns every module-state transition (invariant I4). Compiled
+//! literal import sites call `molt_module_ensure(id)` with a constant id,
 //! and every dynamic lane (importlib transaction, `__import__`,
 //! `PyImport_*`, runpy, thread payload imports) resolves string→id at most
 //! once per call (`module_id_of`, binary search over the sorted name table —
-//! the design's sanctioned resolver) and enters the same function.  The hot
-//! cached path is two loads plus an increment: `states[id]`, `slots[id]`,
-//! inc_ref — no strings, no hashing, no locks (invariant I1/§8.1).
+//! the design's sanctioned resolver) and enters the same function. Normal
+//! imports project the current public sys.modules dictionary before accessing
+//! registered state; dynamic callers transfer their existing projection. This
+//! path includes name lookup and locking. Bootstrap and suppressed execution
+//! can use the private table/cache lane; its cost is not the public-import cost.
 //!
 //! Five observable states per row: {Uninit, Initializing, Ready, Tombstone,
 //! Replaced}, plus an internal `ExecutionReserved` custody state used only by
@@ -25,22 +27,23 @@
 //! `Uninit→Initializing` CAS (invariant
 //! I5); publication happens before body execution (invariant I6) via the
 //! body's own `MODULE_CACHE_SET`, which mirrors into `slots[id]` while this
-//! ensure transaction is open (`publish_from_cache_set`).  The two dict-view
-//! mutation entry points (`module_table_view_replace`/`_tombstone`) are part
-//! of the same compiled unit per design §4.4; PR2 wires them to the
-//! `sys.modules` table-backed view.
+//! ensure transaction is open (`publish_from_cache_set`). Public replacement
+//! and deletion are reconciled at ensure entry through the existing typed
+//! `module_table_view_replace`/`_tombstone` transitions. Trusted extension
+//! publication uses the same projection transition immediately, releasing an
+//! obsolete READY owner before its public replacement returns. A foreign initializer
+//! still owns completion, so an observed partial module cannot bypass its wait.
 //!
-//! PR1 seams (documented, deleted in later PRs):
-//! * The legacy `module_cache` HashMap + `sys.modules` dict remain the
-//!   module-object store PR2 collapses into this table; `ensure` bridges via
-//!   an adoption path (Uninit + legacy entry ⇒ adopt) and publication hooks
-//!   from `molt_module_cache_set`/`_del` so the two can never disagree about
-//!   init custody.
+//! The private module_cache stores admitted runtime publications for bootstrap
+//! and explicit runpy/loader execution. Public reads never populate it. Once
+//! sys.modules exists, its misses and arbitrary values are authoritative for
+//! normal imports; stale private entries cannot adopt a publicly deleted name.
+//!
 //! * wasm32 projects the same table through an app-owned integer ModuleId
 //!   dispatcher.  Module names never cross the app/runtime ABI.
-//! * Extension reinit-after-tombstone (CPython m_copy semantics, parity row
-//!   5.8) requires the first-init dict snapshot that lands in PR4; until then
-//!   that transition fails closed with a named diagnostic.
+//! * Extension tombstones reenter the same initializer transaction. The
+//!   extension primitive owns phase-aware reinitialization and legacy m_copy
+//!   snapshots in the existing C-API runtime state owner.
 //!
 //! Platform note: everything here is target-neutral by construction (atomics +
 //! GIL discipline; thread ids from `crate::concurrency::current_thread_id`);
@@ -52,7 +55,6 @@ use std::sync::{Mutex, OnceLock};
 use molt_obj_model::MoltObject;
 
 use crate::PyToken;
-use crate::builtins::attr::clear_attribute_error_if_pending;
 use crate::{
     alloc_string, dec_ref_bits, exception_pending, inc_ref_bits, obj_from_bits, raise_exception,
     runtime_state,
@@ -442,6 +444,126 @@ pub(crate) fn module_catalog_name_by_origin(origin: &str) -> Option<&'static str
 
 // ─── ModuleTable (one per isolate, design §4.1) ─────────────────────────────
 
+const STATE_RETIRED: u8 = 6;
+
+/// One interpreter-owned sys namespace, distinct from mutable import views.
+/// Zero is uninitialized; None is terminal retirement. Only the current
+/// canonical initializer may establish the first module owner.
+pub(crate) struct InterpreterSysNamespace(AtomicU64);
+
+impl InterpreterSysNamespace {
+    pub(crate) fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    /// Borrow under the GIL. Public cache edits cannot release this owner.
+    pub(crate) fn module(&self, _py: &PyToken<'_>) -> Option<u64> {
+        crate::gil_assert();
+        let bits = self.0.load(Ordering::Acquire);
+        (bits != 0 && !is_none_bits(bits)).then_some(bits)
+    }
+
+    pub(crate) fn allows_bootstrap(&self, _py: &PyToken<'_>) -> bool {
+        crate::gil_assert();
+        self.0.load(Ordering::Acquire) == 0
+    }
+
+    fn publish(&self, py: &PyToken<'_>, bits: u64) -> bool {
+        crate::gil_assert();
+        if !obj_from_bits(bits)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { crate::object_type_id(ptr) == crate::TYPE_ID_MODULE })
+        {
+            raise_exception::<u64>(
+                py,
+                "TypeError",
+                "canonical sys initializer must publish a module",
+            );
+            return false;
+        }
+        inc_ref_bits(py, bits);
+        if self
+            .0
+            .compare_exchange(0, bits, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            dec_ref_bits(py, bits);
+        }
+        true
+    }
+
+    /// Transfer exactly one owner to ModuleRetirement's sys cohort.
+    pub(crate) fn take_for_shutdown(&self, _py: &PyToken<'_>) -> Option<u64> {
+        crate::gil_assert();
+        let bits = self.0.swap(none_bits(), Ordering::AcqRel);
+        (bits != 0 && !is_none_bits(bits)).then_some(bits)
+    }
+}
+
+/// Synthetic test namespaces enter through the real initializer publication
+/// bridge. RuntimeTestTransaction escrows and restores this role and table row.
+#[cfg(test)]
+pub(crate) fn publish_interpreter_sys_for_test(py: &PyToken<'_>, bits: u64) -> u64 {
+    tests::install_test_registry();
+    let table = module_table(py).unwrap();
+    let index = module_id_of("sys").unwrap() as usize;
+    let previous = table.slots[index].swap(0, Ordering::AcqRel);
+    table.states[index].store(STATE_INITIALIZING, Ordering::Release);
+    table.owners[index].store(crate::concurrency::current_thread_id(), Ordering::Release);
+    let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+    let result = crate::builtins::modules::molt_module_cache_set(name, bits);
+    dec_ref_bits(py, name);
+    table.owners[index].store(0, Ordering::Release);
+    table.states[index].store(STATE_READY, Ordering::Release);
+    if previous != 0 {
+        dec_ref_bits(py, previous);
+    }
+    result
+}
+
+#[cfg(test)]
+pub(crate) struct InterpreterSysTestSnapshot {
+    namespace: u64,
+    table: Option<(u8, u64, u64)>,
+}
+
+#[cfg(test)]
+impl InterpreterSysTestSnapshot {
+    pub(crate) fn detach(py: &PyToken<'_>) -> Self {
+        let state = runtime_state(py);
+        let namespace = state.interpreter_sys.0.swap(0, Ordering::AcqRel);
+        let table = state.module_table.get().and_then(|table| {
+            let index = module_id_of("sys")? as usize;
+            Some((
+                table.states[index].swap(STATE_UNINIT, Ordering::AcqRel),
+                table.slots[index].swap(0, Ordering::AcqRel),
+                table.owners[index].swap(0, Ordering::AcqRel),
+            ))
+        });
+        Self { namespace, table }
+    }
+
+    pub(crate) fn restore(self, py: &PyToken<'_>) {
+        let state = runtime_state(py);
+        let current = state
+            .interpreter_sys
+            .0
+            .swap(self.namespace, Ordering::AcqRel);
+        let current_table = state.module_table.get().and_then(|table| {
+            let index = module_id_of("sys")? as usize;
+            let (status, bits, owner) = self.table.unwrap_or((STATE_UNINIT, 0, 0));
+            table.states[index].store(status, Ordering::Release);
+            table.owners[index].store(owner, Ordering::Release);
+            Some(table.slots[index].swap(bits, Ordering::AcqRel))
+        });
+        for bits in [Some(current), current_table].into_iter().flatten() {
+            if bits != 0 && !is_none_bits(bits) {
+                dec_ref_bits(py, bits);
+            }
+        }
+    }
+}
+
 pub(crate) struct ModuleTable {
     states: Box<[AtomicU8]>,
     slots: Box<[AtomicU64]>,
@@ -462,6 +584,50 @@ impl ModuleTable {
             blocking_on: Mutex::new(HashMap::new()),
         }
     }
+}
+
+/// Retain a canonical role independently of its mutable public/private views.
+pub(crate) fn retain_shutdown_namespace(
+    py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+    name: &str,
+) -> Option<u64> {
+    crate::gil_assert();
+    let table = state.module_table.get()?;
+    let id = module_registry()?.id_of(name)?;
+    let bits = table.slots[id as usize].load(Ordering::Acquire);
+    if bits == 0 || is_none_bits(bits) {
+        return None;
+    }
+    inc_ref_bits(py, bits);
+    Some(bits)
+}
+
+/// Transfer the selected registry owners to the shared shutdown cohort.
+/// No callback runs until all selected rows have terminal state and zero slots.
+pub(crate) fn take_module_roots_for_shutdown(
+    _py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+    keep: impl Fn(&str, u64) -> bool,
+) -> Vec<u64> {
+    crate::gil_assert();
+    let (Some(table), Some(registry)) = (state.module_table.get(), module_registry()) else {
+        return Vec::new();
+    };
+    let mut detached = Vec::with_capacity(table.slots.len());
+    for (index, slot) in table.slots.iter().enumerate() {
+        let bits = slot.load(Ordering::Acquire);
+        if keep(registry.name_of(index as u32), bits) {
+            continue;
+        }
+        table.states[index].store(STATE_RETIRED, Ordering::Release);
+        table.owners[index].store(0, Ordering::Release);
+        let bits = slot.swap(0, Ordering::AcqRel);
+        if bits != 0 {
+            detached.push(bits);
+        }
+    }
+    detached
 }
 
 fn module_table(_py: &PyToken<'_>) -> Option<&'static ModuleTable> {
@@ -497,8 +663,7 @@ fn legacy_cache_set(_py: &PyToken<'_>, name: &str, bits: u64) {
     dec_ref_bits(_py, name_bits);
 }
 
-// Reached through the §4.4 view entry points (PR2 wires the sys.modules
-// table-backed view; gate G4 exercises the transitions now).
+// Used by the typed deletion transition after a public cache miss.
 #[allow(dead_code)]
 fn legacy_cache_del(_py: &PyToken<'_>, name: &str) {
     let name_ptr = alloc_string(_py, name.as_bytes());
@@ -536,58 +701,112 @@ pub(crate) fn publish_from_cache_set(_py: &PyToken<'_>, name: &str, bits: u64) {
     let Some(slot) = initializing_publication_slot(_py, name) else {
         return;
     };
+    if name == "sys" && !runtime_state(_py).interpreter_sys.publish(_py, bits) {
+        return;
+    }
     inc_ref_bits(_py, bits);
     slot.store(bits, Ordering::Release);
 }
 
-/// Mirror a failed-init `MODULE_CACHE_DEL` cleanup (module bodies emit it on
-/// their exception path) into the table while the ensure transaction is open.
-pub(crate) fn unpublish_from_cache_del(_py: &PyToken<'_>, name: &str) {
-    let Some(registry) = module_registry() else {
-        return;
+/// A trusted extension result reconciles quiescent public-cache projections
+/// immediately. An active foreign initializer or reserved loader execution
+/// retains its custody. Return the displaced owner for release after all cache
+/// stores agree, without manufacturing a READY transition.
+pub(crate) fn publish_extension_result(py: &PyToken<'_>, name: &str, bits: u64) -> u64 {
+    let Some(id) = module_id_of(name) else {
+        return 0;
     };
-    let Some(id) = registry.id_of(name) else {
-        return;
-    };
-    let Some(table) = module_table(_py) else {
-        return;
+    let Some(table) = module_table(py) else {
+        return 0;
     };
     let idx = id as usize;
-    if table.states[idx].load(Ordering::Acquire) != STATE_INITIALIZING {
-        return;
+    match table.states[idx].load(Ordering::Acquire) {
+        STATE_INITIALIZING => {
+            if table.owners[idx].load(Ordering::Acquire) != crate::concurrency::current_thread_id()
+            {
+                return 0;
+            }
+            inc_ref_bits(py, bits);
+            table.slots[idx].swap(bits, Ordering::AcqRel)
+        }
+        STATE_EXECUTION_RESERVED => 0,
+        _ => module_table_view_replace_deferred(py, id, bits),
     }
-    if table.owners[idx].load(Ordering::Acquire) != crate::concurrency::current_thread_id() {
-        return;
+}
+
+/// Detach failed-init publication while the current ensure transaction owns
+/// it, or an identity-matched quiescent publication being explicitly removed.
+/// Ready and replaced slots have the same owning-cache retirement obligation;
+/// foreign initializers and reserved execution retain their custody.
+pub(crate) fn detach_cache_publication(
+    _py: &PyToken<'_>,
+    name: &str,
+    expected: Option<u64>,
+) -> u64 {
+    let Some(registry) = module_registry() else {
+        return 0;
+    };
+    let Some(id) = registry.id_of(name) else {
+        return 0;
+    };
+    let Some(table) = module_table(_py) else {
+        return 0;
+    };
+    let idx = id as usize;
+    let state = table.states[idx].load(Ordering::Acquire);
+    if state == STATE_INITIALIZING {
+        if table.owners[idx].load(Ordering::Acquire) != crate::concurrency::current_thread_id() {
+            return 0;
+        }
+    } else if expected.is_some() && matches!(state, STATE_READY | STATE_REPLACED) {
+        let own = expected.unwrap();
+        if table.slots[idx]
+            .compare_exchange(own, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            table.states[idx].store(STATE_TOMBSTONE, Ordering::Release);
+            return own;
+        }
+        return 0;
+    } else {
+        return 0;
     }
-    let previous = table.slots[idx].swap(0, Ordering::AcqRel);
-    if previous != 0 {
-        dec_ref_bits(_py, previous);
+    match expected {
+        Some(bits) => table.slots[idx]
+            .compare_exchange(bits, 0, Ordering::AcqRel, Ordering::Acquire)
+            .unwrap_or(0),
+        None => table.slots[idx].swap(0, Ordering::AcqRel),
     }
 }
 
 // ─── The dict-view mutation entry points (design §4.4; wired to the
-//     sys.modules table-backed view in PR2, exercised by gate G4 now) ────────
+//     public-cache projection at ensure entry) ────────
 
 /// `sys.modules[name] = obj` over a registry name → `Replaced(obj)`.
-/// One of the two §4.4 view-mutation entry points; the PR2 dict view is the
-/// production caller (gate G4 drives it now).
-#[allow(dead_code)]
+/// Called by normal ensure after observing the public cache; also tested directly.
 pub(crate) fn module_table_view_replace(_py: &PyToken<'_>, id: u32, bits: u64) {
-    let Some(table) = module_table(_py) else {
-        return;
-    };
-    let idx = id as usize;
-    inc_ref_bits(_py, bits);
-    let previous = table.slots[idx].swap(bits, Ordering::AcqRel);
-    table.states[idx].store(STATE_REPLACED, Ordering::Release);
+    let previous = module_table_view_replace_deferred(_py, id, bits);
     if previous != 0 {
         dec_ref_bits(_py, previous);
     }
 }
 
+fn module_table_view_replace_deferred(_py: &PyToken<'_>, id: u32, bits: u64) -> u64 {
+    let Some(table) = module_table(_py) else {
+        return 0;
+    };
+    let idx = id as usize;
+    if table.states[idx].load(Ordering::Acquire) == STATE_RETIRED {
+        return 0;
+    }
+    inc_ref_bits(_py, bits);
+    let previous = table.slots[idx].swap(bits, Ordering::AcqRel);
+    table.states[idx].store(STATE_REPLACED, Ordering::Release);
+    previous
+}
+
 /// `del sys.modules[name]` over a registry name → `Tombstone`.
-/// One of the two §4.4 view-mutation entry points; the PR2 dict view is the
-/// production caller (gate G4 drives it now).
+/// Called by normal ensure after observing the public cache; also tested directly.
 #[allow(dead_code)]
 pub(crate) fn module_table_view_tombstone(_py: &PyToken<'_>, id: u32) {
     let Some(table) = module_table(_py) else {
@@ -597,14 +816,23 @@ pub(crate) fn module_table_view_tombstone(_py: &PyToken<'_>, id: u32) {
         return;
     };
     let idx = id as usize;
+    if table.states[idx].load(Ordering::Acquire) == STATE_RETIRED {
+        return;
+    }
     table.states[idx].store(STATE_TOMBSTONE, Ordering::Release);
     let previous = table.slots[idx].swap(0, Ordering::AcqRel);
-    if previous != 0 {
-        dec_ref_bits(_py, previous);
+    let private = {
+        let cache = crate::builtins::exceptions::internals::module_cache(_py);
+        let mut guard = cache.lock().unwrap();
+        guard.remove(registry.name_of(id))
+    };
+    // Public absence was observed by the caller. Detach both remaining owners
+    // before any finalizer can reimport; never delete its new publication later.
+    for bits in [Some(previous), private].into_iter().flatten() {
+        if bits != 0 {
+            dec_ref_bits(_py, bits);
+        }
     }
-    // PR1 store coherence: the legacy store is still the dict `sys.modules`
-    // reads; drop its entry with the same transition.
-    legacy_cache_del(_py, registry.name_of(id));
 }
 
 // ─── ensure: the only state-transition owner (design §4.3) ──────────────────
@@ -632,6 +860,13 @@ pub(crate) fn begin_module_execution(
         return Ok(None);
     };
     let idx = id as usize;
+    if table.states[idx].load(Ordering::Acquire) == STATE_RETIRED {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            "module namespace has been retired during runtime shutdown",
+        ));
+    }
     let self_tid = crate::concurrency::current_thread_id();
     let state = loop {
         let state = table.states[idx].load(Ordering::Acquire);
@@ -744,8 +979,21 @@ pub extern "C" fn molt_module_ensure(id_bits: u64) -> u64 {
     })
 }
 
-pub(crate) fn module_ensure(_py: &PyToken<'_>, id: u32) -> u64 {
+pub(crate) fn module_ensure(py: &PyToken<'_>, id: u32) -> u64 {
+    module_ensure_with_cache(py, id, None)
+}
+
+/// Consume an already observed public-cache owner from the dynamic importer,
+/// or acquire that projection once for a direct compiled import.
+pub(crate) fn module_ensure_with_cache(
+    _py: &PyToken<'_>,
+    id: u32,
+    observed: Option<crate::builtins::modules::PublicModuleCache>,
+) -> u64 {
     let Some(registry) = module_registry() else {
+        if let Some(crate::builtins::modules::PublicModuleCache::Present(bits)) = observed {
+            dec_ref_bits(_py, bits);
+        }
         return raise_exception::<_>(
             _py,
             "SystemError",
@@ -754,44 +1002,139 @@ pub(crate) fn module_ensure(_py: &PyToken<'_>, id: u32) -> u64 {
         );
     };
     if id >= registry.count() {
+        if let Some(crate::builtins::modules::PublicModuleCache::Present(bits)) = observed {
+            dec_ref_bits(_py, bits);
+        }
         return raise_exception::<_>(_py, "SystemError", "module id outside the registry");
     }
     let depth = ENSURE_DEPTH.fetch_add(1, Ordering::Relaxed);
     let result = if depth >= ENSURE_MAX_DEPTH {
+        if let Some(crate::builtins::modules::PublicModuleCache::Present(bits)) = observed {
+            dec_ref_bits(_py, bits);
+        }
         raise_exception::<_>(
             _py,
             "RecursionError",
             "module ensure recursion limit exceeded (registry cycle?)",
         )
     } else {
-        module_ensure_inner(_py, registry, id)
+        module_ensure_inner(_py, registry, id, observed)
     };
     ENSURE_DEPTH.fetch_sub(1, Ordering::Relaxed);
     result
 }
 
-fn module_ensure_inner(_py: &PyToken<'_>, registry: &'static ModuleRegistry, id: u32) -> u64 {
+fn module_ensure_inner(
+    _py: &PyToken<'_>,
+    registry: &'static ModuleRegistry,
+    id: u32,
+    mut observed: Option<crate::builtins::modules::PublicModuleCache>,
+) -> u64 {
     let row = registry.row(id);
-    if row.kind == MODULE_KIND_ALIAS {
-        // Aliases own no init and no separate transaction: resolve the
-        // target, co-publish under the alias row (design §4.3).
-        let target = row.alias_target.expect("alias target validated at install");
-        let bits = module_ensure(_py, target);
-        if exception_pending(_py) || is_none_bits(bits) {
-            return bits;
-        }
-        publish_alias(_py, registry, id, bits);
-        return bits;
-    }
     let Some(table) = module_table(_py) else {
+        if let Some(crate::builtins::modules::PublicModuleCache::Present(bits)) = observed {
+            dec_ref_bits(_py, bits);
+        }
         return raise_exception::<_>(_py, "SystemError", "module table unavailable");
     };
     let idx = id as usize;
+    if table.states[idx].load(Ordering::Acquire) == STATE_RETIRED {
+        if let Some(crate::builtins::modules::PublicModuleCache::Present(bits)) = observed {
+            dec_ref_bits(_py, bits);
+        }
+        return raise_exception::<_>(
+            _py,
+            "ImportError",
+            "module namespace has been retired during runtime shutdown",
+        );
+    }
     let self_tid = crate::concurrency::current_thread_id();
+    let mut parent_ready = false;
     loop {
+        // Normal compiled imports see the same cache as dynamic imports. The
+        // existing typed view transitions retire stale registered slots on public
+        // deletion/replacement; bootstrap and explicit execution scopes bypass it.
+        let public = match observed.take() {
+            Some(public) => public,
+            None => match crate::builtins::modules::public_module_cache_lookup(
+                _py,
+                registry.name_of(id),
+            ) {
+                Ok(public) => public,
+                Err(error) => return error,
+            },
+        };
+        let private_cache_available = match public {
+            crate::builtins::modules::PublicModuleCache::Present(bits) => {
+                let foreign_execution = module_table(_py).is_some_and(|table| {
+                    matches!(
+                        table.states[id as usize].load(Ordering::Acquire),
+                        STATE_INITIALIZING | STATE_EXECUTION_RESERVED
+                    ) && table.owners[id as usize].load(Ordering::Acquire)
+                        != crate::concurrency::current_thread_id()
+                });
+                if foreign_execution {
+                    // A visible partial/old namespace cannot bypass the existing
+                    // wait-for and cycle handling for a foreign initializer.
+                    dec_ref_bits(_py, bits);
+                    false
+                } else {
+                    if obj_from_bits(bits).is_none() {
+                        dec_ref_bits(_py, bits);
+                        return raise_exception::<_>(
+                            _py,
+                            "ModuleNotFoundError",
+                            &format!(
+                                "import of {} halted; None in sys.modules",
+                                registry.name_of(id)
+                            ),
+                        );
+                    }
+                    if let Some(table) = module_table(_py)
+                        && table.slots[id as usize].load(Ordering::Acquire) != bits
+                        && !matches!(
+                            table.states[id as usize].load(Ordering::Acquire),
+                            STATE_INITIALIZING | STATE_EXECUTION_RESERVED
+                        )
+                    {
+                        module_table_view_replace(_py, id, bits);
+                    }
+                    return bits;
+                }
+            }
+            crate::builtins::modules::PublicModuleCache::Missing => {
+                let state = table.states[idx].load(Ordering::Acquire);
+                // Bootstrap may have published privately before this row was
+                // first ensured. A public deletion retires that owner too;
+                // otherwise the initializer's publication would revive it.
+                if matches!(state, STATE_READY | STATE_REPLACED)
+                    || (state == STATE_UNINIT
+                        && legacy_cache_lookup(_py, registry.name_of(id)).is_some())
+                {
+                    module_table_view_tombstone(_py, id);
+                    if exception_pending(_py) {
+                        return none_bits();
+                    }
+                    continue;
+                }
+                false
+            }
+            crate::builtins::modules::PublicModuleCache::Unavailable => true,
+        };
+        if row.kind == MODULE_KIND_ALIAS {
+            // Aliases own no init and no separate transaction: resolve the
+            // target, co-publish under the alias row (design §4.3).
+            let target = row.alias_target.expect("alias target validated at install");
+            let bits = module_ensure(_py, target);
+            if exception_pending(_py) || is_none_bits(bits) {
+                return bits;
+            }
+            publish_alias(_py, registry, id, bits);
+            return bits;
+        }
         match table.states[idx].load(Ordering::Acquire) {
             STATE_READY => {
-                // HOT PATH: two loads + inc_ref (design §8.1).
+                // Registered result after public-cache/suppression admission.
                 let bits = table.slots[idx].load(Ordering::Acquire);
                 inc_ref_bits(_py, bits);
                 return bits;
@@ -880,44 +1223,29 @@ fn module_ensure_inner(_py: &PyToken<'_>, registry: &'static ModuleRegistry, id:
                 continue;
             }
             STATE_TOMBSTONE => {
-                match row.kind {
-                    MODULE_KIND_EXTENSION => {
-                        // Parity row 5.8 needs the first-init dict snapshot
-                        // (m_copy analog) that lands with the extension lane
-                        // in PR4; fail closed with the named channel.
-                        let name = registry.name_of(id);
-                        return raise_exception::<_>(
-                            _py,
-                            "ImportError",
-                            &format!(
-                                "extension module '{name}' cannot be re-imported after \
-                                 `del sys.modules[...]` yet (single-phase snapshot \
-                                 custody lands with the extension import lane)"
-                            ),
-                        );
+                if !parent_ready {
+                    if !ensure_parent_ready(_py, &row) {
+                        return none_bits();
                     }
-                    _ => {
-                        if !ensure_parent_ready(_py, &row) {
-                            return none_bits();
-                        }
-                        // Source reinit policy: full re-execution with a NEW
-                        // module object (parity row 5.3).  Take the transition
-                        // and fall through to the Uninit body below.
-                        if table.states[idx]
-                            .compare_exchange(
-                                STATE_TOMBSTONE,
-                                STATE_INITIALIZING,
-                                Ordering::AcqRel,
-                                Ordering::Acquire,
-                            )
-                            .is_err()
-                        {
-                            continue;
-                        }
-                        table.owners[idx].store(self_tid, Ordering::Release);
-                        return run_init_transaction(_py, registry, table, id, row.init_ptr);
-                    }
+                    parent_ready = true;
+                    // Parent code can publish/replace this child.
+                    continue;
                 }
+                // The existing initializer owns reconstruction: source bodies
+                // rerun, while extension_init applies the phase-specific rule.
+                if table.states[idx]
+                    .compare_exchange(
+                        STATE_TOMBSTONE,
+                        STATE_INITIALIZING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+                table.owners[idx].store(self_tid, Ordering::Release);
+                return run_init_transaction(_py, registry, table, id, row.init_ptr);
             }
             STATE_UNINIT => {
                 // Parent-first must precede the child's state transition.  If
@@ -926,13 +1254,20 @@ fn module_ensure_inner(_py: &PyToken<'_>, registry: &'static ModuleRegistry, id:
                 // below then loses and re-reads the completed state.  Marking
                 // the child Initializing first creates a false slot-less
                 // circular import.
-                if !ensure_parent_ready(_py, &row) {
-                    return none_bits();
+                if !parent_ready {
+                    if !ensure_parent_ready(_py, &row) {
+                        return none_bits();
+                    }
+                    parent_ready = true;
+                    // Refresh public child state before claiming execution.
+                    continue;
                 }
                 // PR1 adoption bridge: the legacy store may already own the
                 // module (entry-module dual publication, host preloads).  The
                 // adoption is itself an ensure-owned transition.
-                if let Some(bits) = legacy_cache_lookup(_py, registry.name_of(id)) {
+                if private_cache_available
+                    && let Some(bits) = legacy_cache_lookup(_py, registry.name_of(id))
+                {
                     if table.states[idx]
                         .compare_exchange(
                             STATE_UNINIT,
@@ -1117,42 +1452,41 @@ fn run_init_transaction(
         Ordering::Acquire,
     );
 
-    bind_parent_attr(_py, registry, table, id, bits);
-
+    // Publication callbacks may remove the table/sys.modules references. The
+    // caller's owner must exist before entering them, not be minted afterward.
     inc_ref_bits(_py, bits);
+    if let Err(error) = bind_parent_attr(_py, registry, table, id, bits) {
+        dec_ref_bits(_py, bits);
+        return error;
+    }
     bits
 }
 
-/// `setattr(parent, leaf, module)` after init (parity row 5.5); an
-/// AttributeError degrades to a warning-level condition, never an import
-/// failure — mirror CPython's ImportWarning downgrade by clearing it.
+/// Fresh-load completion owns the one observable parent-attribute publication.
 fn bind_parent_attr(
     _py: &PyToken<'_>,
     registry: &'static ModuleRegistry,
     table: &'static ModuleTable,
     id: u32,
     bits: u64,
-) {
+) -> Result<(), u64> {
     let row = registry.row(id);
     let Some(parent) = row.parent else {
-        return;
+        return Ok(());
     };
     let parent_bits = table.slots[parent as usize].load(Ordering::Acquire);
     if parent_bits == 0 || is_none_bits(parent_bits) {
-        return;
+        return Ok(());
     }
     let name = registry.name_of(id);
     let leaf = name.rsplit('.').next().unwrap_or(name);
-    let leaf_ptr = alloc_string(_py, leaf.as_bytes());
-    if leaf_ptr.is_null() {
-        return;
-    }
-    let leaf_bits = MoltObject::from_ptr(leaf_ptr).bits();
-    let _ = crate::builtins::modules::molt_module_set_attr(parent_bits, leaf_bits, bits);
-    dec_ref_bits(_py, leaf_bits);
-    if exception_pending(_py) {
-        let _ = clear_attribute_error_if_pending(_py);
-    }
+    crate::builtins::modules::publish_import_child(
+        _py,
+        parent_bits,
+        registry.name_of(parent),
+        leaf,
+        bits,
+    )
 }
 
 /// Alias co-publication inside the target's resolution (design §4.3): the
@@ -1163,7 +1497,10 @@ fn publish_alias(_py: &PyToken<'_>, registry: &'static ModuleRegistry, id: u32, 
         return;
     };
     let idx = id as usize;
-    if table.states[idx].load(Ordering::Acquire) == STATE_READY {
+    if matches!(
+        table.states[idx].load(Ordering::Acquire),
+        STATE_READY | STATE_RETIRED
+    ) {
         return;
     }
     inc_ref_bits(_py, bits);
@@ -1217,20 +1554,19 @@ fn wait_for_foreign_init(
 // ─── Dynamic dispatch entry (name resolution is cold; both targets execute
 //     through the ModuleId table) ───────────────────────────────────────────
 
-/// Name-keyed cold dispatch for the dynamic import lanes
-/// (`molt_module_import`, runpy, thread payloads).  Registry hit → ensure;
-/// miss → the legacy per-process store (the old dispatch chain's head probe),
-/// then none-bits without an exception so callers keep their existing
-/// ModuleNotFoundError / importlib-fallback semantics.
-pub(crate) fn isolate_import_dispatch(_py: &PyToken<'_>, name: &str) -> u64 {
-    if let Some(id) = module_id_of(name) {
-        return module_ensure(_py, id);
+/// Isolate callers share the same typed resolution and cache projection as
+/// public dynamic imports. This ABI retains its non-raising miss sentinel.
+pub(crate) fn isolate_import_dispatch(py: &PyToken<'_>, name: &str) -> u64 {
+    let Some(key) = crate::attr_name_bits_from_bytes(py, name.as_bytes()) else {
+        return none_bits();
+    };
+    let result = crate::builtins::modules::module_import_attempt(key);
+    dec_ref_bits(py, key);
+    match result {
+        Ok(crate::builtins::modules::ModuleImportOutcome::Imported(bits)) => bits,
+        Ok(crate::builtins::modules::ModuleImportOutcome::Missing { .. }) => none_bits(),
+        Err(error) => error,
     }
-    if let Some(bits) = legacy_cache_lookup(_py, name) {
-        inc_ref_bits(_py, bits);
-        return bits;
-    }
-    none_bits()
 }
 
 // ─── Gate G4: the ensure state machine, driven transition by transition ─────
@@ -1321,7 +1657,9 @@ mod tests {
         }
     }
 
+    static PARENT_CHILD_OVERRIDE: TestCounter = TestCounter::new(0);
     static INIT_RUNS: TestCounter = TestCounter::new(0);
+    static SYS_INIT_RUNS: TestCounter = TestCounter::new(0);
     static CYCLE_OBSERVED_PARTIAL: TestCounter = TestCounter::new(0);
     static EXT_FAIL_RUNS: TestCounter = TestCounter::new(0);
 
@@ -1331,12 +1669,37 @@ mod tests {
             assert!(!name_ptr.is_null());
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let module_bits = crate::builtins::modules::molt_module_new(name_bits);
-            let set_bits = crate::builtins::modules::molt_module_cache_set(name_bits, module_bits);
+            let set_bits = if name == "sys" {
+                publish_interpreter_sys_for_test(_py, module_bits)
+            } else {
+                crate::builtins::modules::molt_module_cache_set(name_bits, module_bits)
+            };
             if !is_none_bits(set_bits) {
                 dec_ref_bits(_py, set_bits);
             }
             dec_ref_bits(_py, name_bits);
             module_bits
+        })
+    }
+
+    // Model a linked builtin initializer, including explicit loader reimports.
+    // Publication alone is insufficient: a loader can remove its public cache
+    // entry, after which the actual registry initializer owns reconstruction.
+    extern "C" fn init_test_sys() -> u64 {
+        SYS_INIT_RUNS.fetch_add(1, Ordering::SeqCst);
+        crate::with_gil_entry_nopanic!(py, {
+            let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+            let module = if let Some(module) = crate::builtins::modules::interpreter_sys_module(py)
+            {
+                inc_ref_bits(py, module);
+                module
+            } else {
+                crate::builtins::modules::molt_module_new(name)
+            };
+            let result = crate::builtins::modules::molt_module_cache_set(name, module);
+            dec_ref_bits(py, module);
+            dec_ref_bits(py, name);
+            result
         })
     }
 
@@ -1370,6 +1733,17 @@ mod tests {
     extern "C" fn init_g4_pkg() -> u64 {
         let bits = publish_test_module("g4_pkg");
         crate::with_gil_entry_nopanic!(_py, {
+            let replacement = PARENT_CHILD_OVERRIDE.load(Ordering::Relaxed);
+            if replacement != 0 {
+                let sys = legacy_cache_lookup(_py, "sys").unwrap();
+                let modules_bits =
+                    crate::builtins::modules::sys_modules_dict_bits(_py, sys).unwrap();
+                let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
+                let _modules_owner = crate::PtrDropGuard::new(modules);
+                let child = crate::attr_name_bits_from_bytes(_py, b"g4_pkg.sub").unwrap();
+                unsafe { crate::dict_set_in_place(_py, modules, child, replacement) };
+                dec_ref_bits(_py, child);
+            }
             dec_ref_bits(_py, bits);
         });
         0
@@ -1447,7 +1821,7 @@ mod tests {
 
     /// Install the synthetic registry exactly once per test process.  Rows
     /// are pre-sorted; ids are their positions.
-    fn install_test_registry() {
+    pub(super) fn install_test_registry() {
         static INSTALL: std::sync::Once = std::sync::Once::new();
         INSTALL.call_once(|| {
             // Ids are declaration positions (rows pre-sorted; the builder
@@ -1539,9 +1913,309 @@ mod tests {
                     None,
                     MODULE_KIND_EXTENSION,
                     0,
+                )
+                .row(
+                    "sys",
+                    init_test_sys as *const () as usize as u64,
+                    None,
+                    None,
+                    MODULE_KIND_RUNTIME_BUILTIN,
+                    0,
                 );
             let blob: &'static [u8] = Box::leak(builder.build().into_boxed_slice());
             assert_eq!(molt_module_registry_install(blob.as_ptr()), 0);
+        });
+    }
+
+    #[test]
+    fn interpreter_sys_publication_requires_initializer_and_rejects_dictionary_payload() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        install_test_registry();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+            legacy_cache_del(py, "sys");
+            let module = crate::molt_module_new(name);
+            let unrelated = crate::molt_module_new(name);
+            crate::molt_module_cache_set(name, unrelated);
+            assert!(runtime_state(py).interpreter_sys.module(py).is_none());
+            let table = module_table(py).unwrap();
+            let index = module_id_of("sys").unwrap() as usize;
+            table.states[index].store(STATE_INITIALIZING, Ordering::Release);
+            table.owners[index].store(crate::concurrency::current_thread_id(), Ordering::Release);
+            let dictionary = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
+            crate::molt_module_cache_set(name, dictionary);
+            assert!(exception_pending(py));
+            assert!(runtime_state(py).interpreter_sys.module(py).is_none());
+            assert_eq!(table.slots[index].load(Ordering::Acquire), 0);
+            assert_eq!(legacy_cache_lookup(py, "sys"), Some(unrelated));
+            crate::clear_exception(py);
+            crate::molt_module_cache_set(name, module);
+            assert!(!exception_pending(py));
+            assert_eq!(runtime_state(py).interpreter_sys.module(py), Some(module));
+            assert_eq!(
+                legacy_cache_lookup(py, "sys"),
+                Some(module),
+                "initializer replaces the unrelated prepublication"
+            );
+            legacy_cache_del(py, "sys");
+            assert_eq!(runtime_state(py).interpreter_sys.module(py), Some(module));
+            for bits in [dictionary, unrelated, module, name] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn interpreter_sys_republication_and_version_setup_preserve_user_namespace() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        install_test_registry();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+            legacy_cache_del(py, "sys");
+            let id = test_registry_id("sys");
+            let sys = module_ensure(py, id);
+            assert!(!exception_pending(py));
+            assert_eq!(runtime_state(py).interpreter_sys.module(py), Some(sys));
+            let initialized = SYS_INIT_RUNS.load(Ordering::SeqCst);
+            let sys_ptr = obj_from_bits(sys).as_ptr().unwrap();
+            let dict = obj_from_bits(unsafe { crate::module_dict_bits(sys_ptr) })
+                .as_ptr()
+                .unwrap();
+            let version_key = crate::attr_name_bits_from_bytes(py, b"version_info").unwrap();
+            let implementation_key =
+                crate::attr_name_bits_from_bytes(py, b"implementation").unwrap();
+            let path_key = crate::attr_name_bits_from_bytes(py, b"path").unwrap();
+            let stdout_key = crate::attr_name_bits_from_bytes(py, b"stdout").unwrap();
+            let marker =
+                MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(82).bits()]))
+                    .bits();
+            unsafe {
+                assert!(crate::dict_get_in_place(py, dict, version_key).is_some());
+                crate::dict_del_in_place(py, dict, version_key);
+                crate::dict_del_in_place(py, dict, stdout_key);
+                crate::dict_set_in_place(py, dict, implementation_key, marker);
+                crate::dict_set_in_place(py, dict, path_key, marker);
+            }
+            assert!(!exception_pending(py));
+
+            crate::molt_module_cache_set(name, sys);
+            assert!(!exception_pending(py));
+            let table = module_table(py).unwrap();
+            assert_eq!(
+                table.states[id as usize].load(Ordering::Acquire),
+                STATE_READY
+            );
+            assert_eq!(
+                detach_cache_publication(py, "sys", Some(marker)),
+                0,
+                "a different owner's removal cannot detach the ready sys namespace"
+            );
+            assert_eq!(table.slots[id as usize].load(Ordering::Acquire), sys);
+            crate::builtins::modules::module_cache_remove(name, Some(sys));
+            assert!(!exception_pending(py));
+            assert_eq!(
+                module_table(py).unwrap().states[id as usize].load(Ordering::Acquire),
+                STATE_TOMBSTONE
+            );
+            assert_eq!(table.slots[id as usize].load(Ordering::Acquire), 0);
+            assert!(legacy_cache_lookup(py, "sys").is_none());
+            let reimported = module_ensure(py, id);
+            assert!(!exception_pending(py));
+            assert_eq!(
+                SYS_INIT_RUNS.load(Ordering::SeqCst),
+                initialized + 1,
+                "reimport must run the registered initializer through module_ensure"
+            );
+            assert_eq!(
+                table.states[id as usize].load(Ordering::Acquire),
+                STATE_READY
+            );
+            assert_eq!(
+                reimported, sys,
+                "test initializer republishes its retained builtin namespace"
+            );
+
+            // Host entry setup can repeat for the same target, but must never
+            // replace finalized Python shapes or recreate deleted public keys.
+            let (info, _) = crate::object::ops_sys::current_sys_version_info(runtime_state(py));
+            let release =
+                MoltObject::from_ptr(alloc_string(py, info.releaselevel.as_bytes())).bits();
+            let version = crate::molt_sys_version();
+            crate::molt_sys_set_version_info(
+                MoltObject::from_int(info.major).bits(),
+                MoltObject::from_int(info.minor).bits(),
+                MoltObject::from_int(info.micro).bits(),
+                release,
+                MoltObject::from_int(info.serial).bits(),
+                version,
+            );
+            assert!(!exception_pending(py));
+            unsafe {
+                assert!(crate::dict_get_in_place(py, dict, version_key).is_none());
+                assert!(crate::dict_get_in_place(py, dict, stdout_key).is_none());
+                assert_eq!(
+                    crate::dict_get_in_place(py, dict, implementation_key),
+                    Some(marker)
+                );
+                assert_eq!(crate::dict_get_in_place(py, dict, path_key), Some(marker));
+            }
+            for bits in [
+                version,
+                release,
+                marker,
+                version_key,
+                implementation_key,
+                path_key,
+                stdout_key,
+                reimported,
+                sys,
+                name,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn extension_publication_retires_ready_owner_and_preserves_foreign_custody() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        install_test_registry();
+        crate::with_gil_entry_nopanic!(py, {
+            legacy_cache_del(py, "sys");
+            let sys = publish_test_module("sys");
+            let id = test_registry_id("g4_src");
+            let table = module_table(py).unwrap();
+            let idx = id as usize;
+            let old = module_ensure(py, id);
+            assert!(!exception_pending(py));
+            assert_eq!(table.states[idx].load(Ordering::Acquire), STATE_READY);
+            let name = crate::attr_name_bits_from_bytes(py, b"g4_src").unwrap();
+            let new = crate::builtins::modules::molt_module_new(name);
+            crate::builtins::modules::module_cache_publish(
+                name,
+                new,
+                crate::builtins::modules::ModuleCachePublication::Extension,
+            );
+            assert!(!exception_pending(py));
+            assert_eq!(table.slots[idx].load(Ordering::Acquire), new);
+            assert_eq!(table.states[idx].load(Ordering::Acquire), STATE_REPLACED);
+            let old_ptr = obj_from_bits(old).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { (*crate::object::header_from_obj_ptr(old_ptr)).ref_count_snapshot() },
+                1,
+                "public/private/table replacement must leave only the caller owner"
+            );
+            crate::builtins::modules::module_cache_remove(name, Some(new));
+            assert_eq!(table.slots[idx].load(Ordering::Acquire), 0);
+            assert_eq!(table.states[idx].load(Ordering::Acquire), STATE_TOMBSTONE);
+
+            inc_ref_bits(py, old);
+            table.slots[idx].store(old, Ordering::Release);
+            table.states[idx].store(STATE_INITIALIZING, Ordering::Release);
+            table.owners[idx].store(
+                crate::concurrency::current_thread_id().wrapping_add(1),
+                Ordering::Release,
+            );
+            assert_eq!(publish_extension_result(py, "g4_src", new), 0);
+            assert_eq!(table.slots[idx].load(Ordering::Acquire), old);
+            assert_eq!(
+                table.states[idx].load(Ordering::Acquire),
+                STATE_INITIALIZING
+            );
+            table.owners[idx].store(crate::concurrency::current_thread_id(), Ordering::Release);
+            let retired = publish_extension_result(py, "g4_src", new);
+            assert_eq!(retired, old);
+            assert_eq!(table.slots[idx].load(Ordering::Acquire), new);
+            assert_eq!(
+                table.states[idx].load(Ordering::Acquire),
+                STATE_INITIALIZING
+            );
+            dec_ref_bits(py, retired);
+            let retired = detach_cache_publication(py, "g4_src", Some(new));
+            dec_ref_bits(py, retired);
+            table.owners[idx].store(0, Ordering::Release);
+            table.states[idx].store(STATE_UNINIT, Ordering::Release);
+            for bits in [old, new, name, sys] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+    #[test]
+    fn import_outcome_registered_cache_refresh_preserves_initializer_custody() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        install_test_registry();
+        crate::with_gil_entry_nopanic!(py, {
+            let previous_sys = legacy_cache_lookup(py, "sys");
+            if let Some(bits) = previous_sys {
+                inc_ref_bits(py, bits);
+            }
+            legacy_cache_del(py, "sys");
+            let sys = publish_test_module("sys");
+            let modules_bits = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
+            let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
+            let _modules_owner = crate::PtrDropGuard::new(modules);
+            let name = crate::attr_name_bits_from_bytes(py, b"g4_src").unwrap();
+            let id = test_registry_id("g4_src");
+            unsafe { crate::object::ops::dict_del_in_place(py, modules, name) };
+            module_table_view_tombstone(py, id);
+            let table = module_table(py).unwrap();
+            table.states[id as usize].store(STATE_UNINIT, Ordering::Release);
+            let previous = publish_test_module("g4_src");
+            assert!(unsafe { crate::object::ops::dict_del_in_place(py, modules, name) });
+            let runs = INIT_RUNS.load(Ordering::SeqCst);
+            let current = module_ensure(py, id);
+            assert!(!exception_pending(py));
+            assert_ne!(
+                current, previous,
+                "a public miss must retire a stale private publication"
+            );
+            assert_eq!(INIT_RUNS.load(Ordering::SeqCst), runs + 1);
+
+            // Same-thread self-import during initialization sees replacement
+            // without taking the active initializer's transaction slot/state.
+            table.states[id as usize].store(STATE_INITIALIZING, Ordering::Release);
+            table.owners[id as usize]
+                .store(crate::concurrency::current_thread_id(), Ordering::Release);
+            let replacement = MoltObject::from_int(42).bits();
+            unsafe { crate::dict_set_in_place(py, modules, name, replacement) };
+            assert!(
+                matches!(crate::builtins::modules::module_import_attempt(name),
+                Ok(crate::builtins::modules::ModuleImportOutcome::Imported(bits)) if bits == replacement)
+            );
+            assert_eq!(table.slots[id as usize].load(Ordering::Acquire), current);
+            assert_eq!(
+                table.states[id as usize].load(Ordering::Acquire),
+                STATE_INITIALIZING
+            );
+            table.owners[id as usize].store(0, Ordering::Release);
+            table.states[id as usize].store(STATE_READY, Ordering::Release);
+            unsafe { crate::dict_set_in_place(py, modules, name, current) };
+
+            // Parent initialization may publish its child's public replacement
+            // without invoking child ensure. The subsequent loop observes it.
+            for text in ["g4_pkg.sub", "g4_pkg"] {
+                let key = crate::attr_name_bits_from_bytes(py, text.as_bytes()).unwrap();
+                unsafe { crate::object::ops::dict_del_in_place(py, modules, key) };
+                module_table_view_tombstone(py, test_registry_id(text));
+                dec_ref_bits(py, key);
+            }
+            PARENT_CHILD_OVERRIDE.store(replacement, Ordering::Relaxed);
+            assert_eq!(
+                module_ensure(py, test_registry_id("g4_pkg.sub")),
+                replacement
+            );
+            PARENT_CHILD_OVERRIDE.store(0, Ordering::Relaxed);
+
+            for bits in [previous, current, name] {
+                dec_ref_bits(py, bits);
+            }
+            legacy_cache_del(py, "sys");
+            if let Some(bits) = previous_sys {
+                legacy_cache_set(py, "sys", bits);
+                dec_ref_bits(py, bits);
+            }
+            dec_ref_bits(py, sys);
+            assert!(!exception_pending(py));
         });
     }
 
@@ -1572,7 +2246,7 @@ mod tests {
             crate::builtins::frames::frame_effective_builtins_bits(_py, globals_bits);
         inc_ref_bits(_py, globals_bits);
         inc_ref_bits(_py, builtins_bits);
-        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals_bits, builtins_bits);
+        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals_bits, builtins_bits, 0);
         // A conflicting module argument proves the active-frame dictionary is
         // the authority for this sibling of the direct-module lookup path.
         let result = crate::builtins::modules::molt_module_get_global(none_bits(), name_bits);
@@ -1843,12 +2517,17 @@ mod tests {
         });
     }
 
-    #[test]
-    fn g4_ensure_state_machine_transitions() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        install_test_registry();
+    fn assert_g4_ensure_state_machine_transitions(public_cache: bool) {
         crate::with_gil_entry_nopanic!(_py, {
             let _ = crate::molt_exception_clear();
+            let sys = public_cache.then(|| publish_test_module("sys"));
+            let modules_bits = sys.map(|bits| {
+                crate::builtins::modules::sys_modules_dict_bits(_py, bits)
+                    .expect("published sys.modules")
+            });
+            let modules = modules_bits.map(|bits| obj_from_bits(bits).as_ptr().unwrap());
+            let _modules_owner = modules.map(crate::PtrDropGuard::new);
+            let src_name = crate::attr_name_bits_from_bytes(_py, b"g4_src").unwrap();
 
             // ── Uninit → Initializing → Ready; init exactly once (I5) ──
             let runs_before = INIT_RUNS.load(Ordering::SeqCst);
@@ -1995,6 +2674,9 @@ mod tests {
             let tomb_id = test_registry_id("g4_tomb");
             let before = module_ensure(_py, tomb_id);
             assert!(!exception_pending(_py));
+            // The view transition projects a public deletion; it does not
+            // itself mutate sys.modules. Remove the real publication first.
+            legacy_cache_del(_py, "g4_tomb");
             module_table_view_tombstone(_py, tomb_id);
             let after = module_ensure(_py, tomb_id);
             assert!(!exception_pending(_py));
@@ -2006,21 +2688,26 @@ mod tests {
             dec_ref_bits(_py, before);
             dec_ref_bits(_py, after);
 
-            // ── Tombstone → Extension: fails closed until PR4 snapshots ──
+            // The registry does not invent extension reinit policy. It runs
+            // the admitted initializer; real C phase behavior is tested there.
             let ext_id = test_registry_id("g4_tomb_ext");
             let ext = module_ensure(_py, ext_id);
             assert!(!exception_pending(_py));
-            dec_ref_bits(_py, ext);
+            legacy_cache_del(_py, "g4_tomb_ext");
             module_table_view_tombstone(_py, ext_id);
             let resurrect = module_ensure(_py, ext_id);
-            assert!(is_none_bits(resurrect));
-            let text = pending_exception_text(_py);
-            assert!(text.contains("g4_tomb_ext"), "{text}");
-            assert!(text.contains("re-imported"), "{text}");
+            assert!(!exception_pending(_py));
+            assert!(!is_none_bits(resurrect));
+            assert_ne!(ext, resurrect);
+            dec_ref_bits(_py, ext);
+            dec_ref_bits(_py, resurrect);
 
             // ── Replaced(obj): pass-through; Replaced(None): halted (5.2) ──
             let src_bits = module_ensure(_py, src_id);
             let replacement = module_ensure(_py, target_id);
+            if let Some(modules) = modules {
+                unsafe { crate::dict_set_in_place(_py, modules, src_name, replacement) };
+            }
             module_table_view_replace(_py, src_id, replacement);
             let via_replace = module_ensure(_py, src_id);
             assert_eq!(
@@ -2028,6 +2715,9 @@ mod tests {
                 "Replaced(obj) must return the user object as-is (row 5.1)"
             );
             dec_ref_bits(_py, via_replace);
+            if let Some(modules) = modules {
+                unsafe { crate::dict_set_in_place(_py, modules, src_name, none_bits()) };
+            }
             module_table_view_replace(_py, src_id, none_bits());
             let halted = module_ensure(_py, src_id);
             assert!(is_none_bits(halted));
@@ -2053,7 +2743,23 @@ mod tests {
             let missing = isolate_import_dispatch(_py, "g4_not_a_module");
             assert!(is_none_bits(missing));
             assert!(!exception_pending(_py));
+            dec_ref_bits(_py, src_name);
+            if let Some(sys) = sys {
+                dec_ref_bits(_py, sys);
+            }
         });
+    }
+
+    #[test]
+    fn g4_ensure_state_machine_transitions() {
+        // Both cache regimes have the same state-machine contract. Fresh
+        // runtime custody prevents earlier tests from selecting the regime.
+        for public_cache in [false, true] {
+            crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+                install_test_registry();
+                assert_g4_ensure_state_machine_transitions(public_cache);
+            });
+        }
     }
 
     #[test]
@@ -2098,6 +2804,50 @@ mod tests {
                 "retry must re-enter the extension init path instead of observing \
                  a wedged Initializing row"
             );
+        });
+    }
+
+    #[test]
+    fn shutdown_registry_releases_owned_aliases_and_refuses_reconstruction() {
+        install_test_registry();
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let module = publish_test_module("g4_target");
+                let target = test_registry_id("g4_target");
+                let alias = test_registry_id("g4_alias");
+                module_table_view_replace(py, target, module);
+                module_table_view_replace(py, alias, module);
+                let roots = take_module_roots_for_shutdown(py, runtime_state(py), |name, _| {
+                    name == "builtins"
+                });
+                assert_eq!(roots.iter().filter(|&&bits| bits == module).count(), 2);
+                for bits in roots {
+                    dec_ref_bits(py, bits);
+                }
+                let table = module_table(py).unwrap();
+                assert_eq!(table.slots[target as usize].load(Ordering::Acquire), 0);
+                assert_eq!(table.slots[alias as usize].load(Ordering::Acquire), 0);
+                for id in [target, alias] {
+                    inc_ref_bits(py, module);
+                    let result = module_ensure_with_cache(
+                        py,
+                        id,
+                        Some(crate::builtins::modules::PublicModuleCache::Present(module)),
+                    );
+                    assert!(is_none_bits(result));
+                    assert!(exception_pending(py));
+                    crate::clear_exception(py);
+                }
+                assert!(begin_module_execution(py, "g4_target").is_err());
+                crate::clear_exception(py);
+                module_table_view_replace(py, target, module);
+                module_table_view_tombstone(py, target);
+                assert_eq!(
+                    table.states[target as usize].load(Ordering::Acquire),
+                    STATE_RETIRED
+                );
+                dec_ref_bits(py, module);
+            });
         });
     }
 

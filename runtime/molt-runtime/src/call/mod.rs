@@ -11,6 +11,29 @@ use crate::{
     object_type_id, raise_exception, raise_not_callable, runtime_state, staticmethod_func_bits,
 };
 
+/// Preserve the caller's handler-stack baseline across every runtime invocation.
+/// This scalar marker is distinct from the exception stack and pending exception;
+/// callbacks may change those objects, and this guard never clears or replaces them.
+pub(crate) struct ExceptionBaselineGuard {
+    previous: usize,
+}
+
+impl ExceptionBaselineGuard {
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self {
+            previous: crate::exception_stack_baseline_get(),
+        }
+    }
+}
+
+impl Drop for ExceptionBaselineGuard {
+    #[inline]
+    fn drop(&mut self) {
+        crate::exception_stack_baseline_set(self.previous);
+    }
+}
+
 /// Consume the owned result of a call whose value is intentionally ignored.
 ///
 /// All Python-call boundaries return a new owning reference, including the

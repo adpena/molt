@@ -18,17 +18,9 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "set_symdiff_update",
 ];
 use super::OpFlow;
-use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for `set`/`frozenset` ops: construction (`set_new`/`frozenset_new`), membership mutation (`add`/`add_probe`/`discard`/`remove`/`pop`), and in-place algebra (`update`/`intersection_update`/`difference_update`/`symdiff_update`).
-///
-/// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
-/// Each arm body is byte-for-byte identical to the original; only the access
-/// path to the backend's split-borrowed fields changed (`self.module` ->
-/// `module`, `Self::` -> `SimpleBackend::`, owned locals -> reborrowed params,
-/// outer-loop `continue`/`break` -> `OpFlow` returns).
-/// The op-local closure `var_get_boxed_overflow_safe` is reconstructed with the
-/// same capture so the arm bodies are unchanged.
+/// Hash-container operations share operand ownership, first-error cleanup,
+/// and generated runtime return ownership with other boxed consumers.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_set_op(
@@ -44,34 +36,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) -> OpFlow {
-    // Reconstruct the original op-local closure (captures representation_plan +
-    // nbc; all other state threads through explicit params) so the moved arm
-    // bodies call it exactly as they did inline.
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
-    match op.kind.as_str() {
+    let symbol = match op.kind.as_str() {
         "set_new" | "frozenset_new" => {
             emit_hash_container_constructor(
                 op,
@@ -86,379 +51,35 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 block_tracked_obj,
                 block_tracked_ptr,
             );
+            return OpFlow::Proceed;
         }
-        "set_add" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let set_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Set not found");
-            let key_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Set key not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_add",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "set_add_probe" => {
-            // Probe-only realization (intersection/intersection_update/
-            // issubset operand): bare unhashable context on every version.
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let set_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Set not found");
-            let key_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Set key not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_add_probe",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "frozenset_add" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let set_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Frozenset not found");
-            let key_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Frozenset key not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_frozenset_add",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "set_discard" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let set_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Set not found");
-            let key_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Set key not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_discard",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "set_remove" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let set_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Set not found");
-            let key_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Set key not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_remove",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "set_pop" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let set_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Set not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_pop",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*set_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "set_update" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let set_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Set not found");
-            let other_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Set update arg not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_update",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "set_intersection_update" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let set_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Set not found");
-            let other_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Set intersection update arg not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_intersection_update",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "set_difference_update" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let set_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Set not found");
-            let other_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Set difference update arg not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_difference_update",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "set_symdiff_update" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let set_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Set not found");
-            let other_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Set symdiff update arg not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_symdiff_update",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
+        "set_add" => "molt_set_add",
+        "set_add_probe" => "molt_set_add_probe",
+        "frozenset_add" => "molt_frozenset_add",
+        "set_discard" => "molt_set_discard",
+        "set_remove" => "molt_set_remove",
+        "set_pop" => "molt_set_pop",
+        "set_update" => "molt_set_update",
+        "set_intersection_update" => "molt_set_intersection_update",
+        "set_difference_update" => "molt_set_difference_update",
+        "set_symdiff_update" => "molt_set_symdiff_update",
         _ => unreachable!("handler invoked with non-matching op.kind"),
-    }
+    };
+    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+    emit_operand_transaction_call(
+        op,
+        args,
+        symbol,
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        sealed_blocks,
+        vars,
+        representation_plan,
+        nbc,
+        block_tracked_obj,
+        block_tracked_ptr,
+    );
     OpFlow::Proceed
 }

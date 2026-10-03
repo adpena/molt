@@ -6,17 +6,26 @@ molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavail
     "molt-runtime/debug_call_bind"
 ));
 
+#[allow(dead_code)]
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
+mod captured_runtime_children {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/captured_runtime_children.rs"
+    ));
+}
+
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;
     fn molt_runtime_exit(code_bits: u64) -> u64;
     fn molt_exception_clear() -> u64;
     fn molt_object_getattr_bytes(obj_bits: u64, name_ptr: *const u8, name_len: u64) -> u64;
-    fn molt_object_setattr_bytes(
-        obj_bits: u64,
-        name_ptr: *const u8,
-        name_len: u64,
-        val_bits: u64,
-    ) -> i32;
     fn molt_object_call(callable_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64;
     fn molt_bool_builtin(val_bits: u64) -> u64;
     fn molt_func_new_builtin(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64;
@@ -70,18 +79,6 @@ fn append_method_bits(list_bits: u64) -> u64 {
     unsafe { molt_object_getattr_bytes(list_bits, b"append".as_ptr(), 6) }
 }
 
-fn setattr_bytes(obj_bits: u64, name: &[u8], value_bits: u64) {
-    let rc = unsafe {
-        molt_object_setattr_bytes(obj_bits, name.as_ptr(), name.len() as u64, value_bits)
-    };
-    assert_eq!(
-        rc,
-        0,
-        "setattr failed for {:?}",
-        std::str::from_utf8(name).ok()
-    );
-}
-
 fn function_with_required_kwonly_metadata() -> u64 {
     let fn_ptr = molt_bool_builtin as *const () as usize as u64;
     let func_bits = unsafe { molt_func_new_builtin(fn_ptr, fn_ptr, 1) };
@@ -94,13 +91,26 @@ fn function_with_required_kwonly_metadata() -> u64 {
     let kwonly_names_bits = unsafe { molt_tuple_from_list(kwonly_list_bits) };
     let zero_bits = int(0);
     let none_bits = none();
-    setattr_bytes(func_bits, b"__molt_arg_names__", arg_names_bits);
-    setattr_bytes(func_bits, b"__molt_posonly__", zero_bits);
-    setattr_bytes(func_bits, b"__molt_kwonly_names__", kwonly_names_bits);
-    setattr_bytes(func_bits, b"__molt_vararg__", none_bits);
-    setattr_bytes(func_bits, b"__molt_varkw__", none_bits);
-    setattr_bytes(func_bits, b"__defaults__", none_bits);
-    setattr_bytes(func_bits, b"__kwdefaults__", none_bits);
+    // Construction metadata uses the runtime initializer. Private-looking
+    // public attributes must not alter the executable argument contract.
+    let function_name = string_bits("required_keyword_only");
+    molt_runtime::molt_function_init_metadata(
+        func_bits,
+        function_name,
+        function_name,
+        none_bits,
+        arg_names_bits,
+        zero_bits,
+        kwonly_names_bits,
+        none_bits,
+        none_bits,
+        none_bits,
+        none_bits,
+        none_bits,
+        none_bits,
+        none_bits,
+    );
+    molt_runtime::molt_dec_ref_obj(function_name);
     molt_runtime::molt_dec_ref_obj(kwonly_names_bits);
     molt_runtime::molt_dec_ref_obj(kwonly_name_bits);
     molt_runtime::molt_dec_ref_obj(kwonly_list_bits);
@@ -111,12 +121,15 @@ fn function_with_required_kwonly_metadata() -> u64 {
 fn spawn_child(test_name: &str, envs: &[(&str, &str)]) -> std::process::Output {
     let exe = std::env::current_exe().expect("current test executable");
     let mut cmd = Command::new(exe);
-    cmd.arg("--exact").arg(test_name).arg("--nocapture");
+    cmd.arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .arg("--test-threads=1");
     cmd.env("MOLT_TRACE_CHILD", "1");
     for (key, value) in envs {
         cmd.env(key, value);
     }
-    cmd.output().expect("spawn trace child")
+    captured_runtime_children::capture(&mut cmd, "trace-call-binding", test_name)
 }
 
 fn finish_trace_child() -> ! {

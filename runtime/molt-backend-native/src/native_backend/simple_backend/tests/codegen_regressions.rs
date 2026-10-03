@@ -16,6 +16,7 @@ fn annotate_function_object_compiles_without_signature_mismatch() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -39,6 +40,7 @@ fn annotate_function_object_compiles_without_signature_mismatch() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -66,6 +68,7 @@ fn guarded_void_function_object_compiles_without_result_panic() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -97,6 +100,7 @@ fn guarded_void_function_object_compiles_without_result_panic() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -150,6 +154,7 @@ fn direct_imported_runtime_call_avoids_guarded_call_wrapper() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -191,6 +196,7 @@ fn direct_call_minicfg_preserves_unrelated_live_parameter() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -225,6 +231,7 @@ fn native_boxed_or_retains_selected_operand_result() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -314,6 +321,7 @@ fn native_shift_lowering_uses_runtime_without_shift_count_proof() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -431,6 +439,7 @@ fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         "molt_main",
@@ -461,8 +470,8 @@ fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
 }
 
 #[test]
-fn semantic_branch_edges_explicitly_transport_live_parameter() {
-    let clif = compile_function_to_clif_text(
+fn semantic_branch_edges_preserve_actual_dominating_parameter_without_phi() {
+    let function = compile_function_to_clif(
         vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "semantic_edge_transport".to_string(),
@@ -494,25 +503,18 @@ fn semantic_branch_edges_explicitly_transport_live_parameter() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         "semantic_edge_transport",
     );
 
-    let semantic_branch = clif
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("brif "))
-        .unwrap_or_else(|| panic!("semantic br_if must reach CLIF:\n{clif}"));
-    assert!(
-        semantic_branch.matches('(').count() >= 2,
-        "both semantic successors must receive explicit live-value arguments:\n{semantic_branch}\n\n{clif}"
-    );
+    assert_branch_preserves_parameter_without_phi(&function, 0);
 }
 
 #[test]
-fn exception_edges_explicitly_transport_live_parameter() {
-    let clif = compile_function_to_clif_text(
+fn exception_edges_preserve_actual_dominating_parameter_without_phi() {
+    let function = compile_function_to_clif(
         vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "exception_edge_transport".to_string(),
@@ -543,20 +545,47 @@ fn exception_edges_explicitly_transport_live_parameter() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         "exception_edge_transport",
     );
 
-    let exception_branch = clif
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("brif "))
-        .unwrap_or_else(|| panic!("check_exception must reach CLIF:\n{clif}"));
-    assert!(
-        exception_branch.matches('(').count() >= 2,
-        "handler and fallthrough must both receive explicit live-value arguments:\n{exception_branch}\n\n{clif}"
-    );
+    assert_branch_preserves_parameter_without_phi(&function, 0);
+}
+
+fn assert_branch_preserves_parameter_without_phi(function: &Function, parameter: usize) {
+    let entry = function.layout.entry_block().expect("entry block");
+    let expected = function.dfg.block_params(entry)[parameter];
+    let mut returns = 0;
+    let mut branches = 0;
+    for block in function.layout.blocks() {
+        for inst in function.layout.block_insts(block) {
+            if let InstructionData::Brif { blocks, .. } = &function.dfg.insts[inst] {
+                branches += 1;
+                for destination in blocks {
+                    assert_eq!(
+                        destination.args(&function.dfg.value_lists).count(),
+                        0,
+                        "immutable parameter needs no incoming phi transport: {}",
+                        function.display()
+                    );
+                }
+            }
+            if function.dfg.insts[inst].opcode() == Opcode::Return {
+                returns += 1;
+                let [actual] = function.dfg.inst_args(inst) else {
+                    panic!("value return");
+                };
+                assert!(
+                    value_originates_only_from(function, *actual, expected),
+                    "every returning path must return the actual function parameter, never a placeholder: {}",
+                    function.display()
+                );
+            }
+        }
+    }
+    assert!(returns != 0 && branches != 0, "{}", function.display());
 }
 
 #[test]
@@ -609,6 +638,7 @@ fn fast_int_overflow_result_does_not_unbox_merged_bigint_result() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         "molt_main",
@@ -703,6 +733,7 @@ fn bool_primary_loop_compare_does_not_materialize_boxed_bool() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         "molt_main",
@@ -716,4 +747,272 @@ fn bool_primary_loop_compare_does_not_materialize_boxed_bool() {
         !clif.contains("0x7ffa_0000_0000_0000"),
         "bool-primary loop compare should not materialize a NaN-boxed bool:\n{clif}"
     );
+}
+
+fn structured_phi_transport_fixture(name: &str, tail: Vec<OpIR>) -> FunctionIR {
+    let mut ops = vec![
+        OpIR {
+            kind: "if".into(),
+            args: Some(vec!["cond".into()]),
+            ..Default::default()
+        },
+        OpIR {
+            kind: "else".into(),
+            ..Default::default()
+        },
+        OpIR {
+            kind: "end_if".into(),
+            ..Default::default()
+        },
+        OpIR {
+            kind: "phi".into(),
+            out: Some("merged".into()),
+            args: Some(vec!["lhs".into(), "rhs".into()]),
+            ..Default::default()
+        },
+    ];
+    ops.extend(tail);
+    FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        name: name.into(),
+        params: vec![
+            "_bb1_arg0".into(),
+            "lhs".into(),
+            "rhs".into(),
+            "cond".into(),
+        ],
+        ops,
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        codegen_partition: false,
+        parameter_custody: Vec::new(),
+        execution_context: Default::default(),
+    }
+}
+
+fn assert_return_parameter_sources(function: &Function, parameters: &[usize]) {
+    let entry = function.layout.entry_block().unwrap();
+    let expected: BTreeSet<_> = parameters
+        .iter()
+        .map(|&index| function.dfg.block_params(entry)[index])
+        .collect();
+    let mut returns = 0;
+    for block in function.layout.blocks() {
+        for inst in function.layout.block_insts(block) {
+            if function.dfg.insts[inst].opcode() == Opcode::Return {
+                returns += 1;
+                let [value] = function.dfg.inst_args(inst) else {
+                    panic!("value return");
+                };
+                assert_eq!(
+                    canonical_value_sources(function, *value),
+                    expected,
+                    "return must originate from precisely the declared semantic inputs: {}",
+                    function.display()
+                );
+            }
+        }
+    }
+    assert!(returns != 0);
+}
+
+#[test]
+fn structured_phi_actual_selected_value_survives_label_transport() {
+    let name = "structured_phi_label";
+    let function = compile_function_to_clif(
+        vec![structured_phi_transport_fixture(
+            name,
+            vec![
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(7),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["merged".into()]),
+                    ..Default::default()
+                },
+            ],
+        )],
+        name,
+    );
+    assert_return_parameter_sources(&function, &[1, 2]);
+}
+
+#[test]
+fn structured_phi_actual_selected_value_survives_live_through_snapshot() {
+    let name = "structured_phi_live_through";
+    let function = compile_function_to_clif(
+        vec![structured_phi_transport_fixture(
+            name,
+            vec![
+                OpIR {
+                    kind: "const".into(),
+                    out: Some("unrelated".into()),
+                    value: Some(8),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["merged".into()]),
+                    ..Default::default()
+                },
+            ],
+        )],
+        name,
+    );
+    assert_return_parameter_sources(&function, &[1, 2]);
+}
+
+#[test]
+fn structured_phi_does_not_define_a_neighboring_load_source_by_its_name() {
+    let name = "structured_phi_load_source";
+    let function = compile_function_to_clif(
+        vec![structured_phi_transport_fixture(
+            name,
+            vec![
+                OpIR {
+                    kind: "load_var".into(),
+                    var: Some("_bb1_arg0".into()),
+                    out: Some("result".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["result".into()]),
+                    ..Default::default()
+                },
+            ],
+        )],
+        name,
+    );
+    assert_return_parameter_sources(&function, &[0]);
+}
+
+#[test]
+fn structured_phi_explicit_binding_updates_its_declared_destination() {
+    let name = "structured_phi_explicit_binding";
+    let function = compile_function_to_clif(
+        vec![structured_phi_transport_fixture(
+            name,
+            vec![
+                OpIR {
+                    kind: "store_var".into(),
+                    var: Some("lhs".into()),
+                    args: Some(vec!["merged".into()]),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(7),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "load_var".into(),
+                    var: Some("lhs".into()),
+                    out: Some("result".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["result".into()]),
+                    ..Default::default()
+                },
+            ],
+        )],
+        name,
+    );
+    assert_return_parameter_sources(&function, &[1, 2]);
+}
+
+#[test]
+fn statement_output_metadata_never_defines_or_overwrites_a_value() {
+    // Real deletion IR carries an `out` diagnostic name. Neither a fresh name
+    // nor a collision with a live value may manufacture a result definition.
+    // Exercise the complete native statement family through actual codegen.
+    let cases: &[(&str, &[&str])] = &[
+        ("set_attr", &["receiver", "value"]),
+        ("set_attr_name", &["receiver", "key", "value"]),
+        ("set_attr_generic_ptr", &["receiver", "value"]),
+        ("set_attr_generic_obj", &["receiver", "value"]),
+        ("del_attr", &["receiver"]),
+        ("del_attr_name", &["receiver", "key"]),
+        ("del_attr_generic_ptr", &["receiver"]),
+        ("del_attr_generic_obj", &["receiver"]),
+        ("module_cache_set", &["key", "receiver"]),
+        ("module_cache_del", &["key"]),
+        ("module_set_attr", &["receiver", "key", "value"]),
+        ("module_del_global", &["receiver", "key"]),
+        ("module_del_global_if_present", &["receiver", "key"]),
+        ("store", &["receiver", "value"]),
+        (
+            "guarded_field_set",
+            &["receiver", "class", "version", "value"],
+        ),
+        ("store_index", &["receiver", "key", "value"]),
+        ("del_index", &["receiver", "key"]),
+        ("raise", &["receiver"]),
+        ("inc_ref", &["receiver"]),
+        ("dec_ref", &["receiver"]),
+    ];
+    for &(kind, args) in cases {
+        assert!(crate::tir::op_kinds_generated::simpleir_out_field_is_metadata(kind));
+        for output in [None, Some("fresh_metadata"), Some("keep"), Some("none")] {
+            let statement = OpIR {
+                kind: kind.into(),
+                args: Some(args.iter().map(|name| (*name).into()).collect()),
+                out: output.map(str::to_owned),
+                s_value: Some("field".into()),
+                value: Some(0),
+                source_op_idx: Some(7),
+                ..Default::default()
+            };
+            let mut ops = vec![OpIR {
+                kind: "drop_inserted".into(),
+                ..Default::default()
+            }];
+            if kind == "dec_ref" {
+                ops.push(OpIR {
+                    kind: "inc_ref".into(),
+                    args: Some(vec!["receiver".into()]),
+                    ..Default::default()
+                });
+            }
+            ops.push(statement);
+            if kind == "inc_ref" {
+                ops.push(OpIR {
+                    kind: "dec_ref".into(),
+                    args: Some(vec!["receiver".into()]),
+                    ..Default::default()
+                });
+            }
+            ops.push(OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["keep".into()]),
+                ..Default::default()
+            });
+            let name = format!("metadata_{kind}");
+            let function = compile_function_to_clif(
+                vec![FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
+                    name: name.clone(),
+                    params: ["keep", "receiver", "key", "value", "class", "version"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                    ops,
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    codegen_partition: false,
+                    parameter_custody: Vec::new(),
+                    execution_context: Default::default(),
+                }],
+                &name,
+            );
+            assert_return_parameter_sources(&function, &[0]);
+        }
+    }
 }

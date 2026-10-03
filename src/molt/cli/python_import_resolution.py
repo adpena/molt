@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from molt.python_private_names import python_source_field
 import stat
 import sys
 from dataclasses import asdict, dataclass, field, replace
@@ -16,6 +17,7 @@ from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     PythonBindingIndex,
     analyze_python_bindings,
+    python_dynamic_import_facts_required,
 )
 
 from molt.compiler_analysis.python_imports import (
@@ -355,6 +357,12 @@ def _dynamic_import_target(
         arguments = bind_static_import_call_arguments(call, kind)
     except ValueError as exc:
         raise ValueError(f"{exc} in {path}") from exc
+    if arguments is None:
+        return ()
+    if arguments.requires_runtime_binding:
+        raise ValueError(
+            f"dynamic import argument expansion requires a manifest in {path}"
+        )
     name_arg = arguments.name
     if not isinstance(name_arg, ast.Constant) or not isinstance(name_arg.value, str):
         raise ValueError(f"non-literal dynamic Python import in {path}")
@@ -431,7 +439,7 @@ def analyze_local_imports(
     """Project source requests; demand binding facts only for semantic queries.
 
     Absolute statement candidates do not depend on package metadata or alias
-    identity. Relative statements and every possible dynamic call continue to
+    identity. Relative statements and sources with dynamic identity origins continue to
     use the canonical binding/import-flow authority, including deferred aliases.
     This is a conservative dependency graph, not an execution-reachability proof.
     """
@@ -494,7 +502,7 @@ def analyze_local_imports(
         request = StaticImportRequest.statement(
             node.module or "",
             level=node.level,
-            fromlist=tuple(alias.name for alias in node.names),
+            fromlist=tuple(python_source_field(alias, "name") for alias in node.names),
         )
         projection_errors: list[ValueError] = []
         contexts = contexts_for(node) if node.level else (base_context,)
@@ -513,7 +521,7 @@ def analyze_local_imports(
             raise projection_errors[0]
 
     diagnostics: list[LocalPythonImportDiagnostic] = []
-    if not policy.module_level_only:
+    if not policy.module_level_only and python_dynamic_import_facts_required(tree):
         for node in nodes:
             if not isinstance(node, ast.Call):
                 continue
@@ -553,6 +561,8 @@ def analyze_local_imports(
                 )
                 for target in sorted(targets_for_call)
             )
+
+    if not policy.module_level_only:
         requests.extend(
             LocalPythonImportRequest("manifest", (target,))
             for target in nonliteral_dynamic_import_targets

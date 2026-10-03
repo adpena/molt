@@ -1,18 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import cast
 
 
-def _rows(facts: Mapping[str, object], field: str, width: int) -> list[list[object]]:
+def _rows(
+    facts: Mapping[str, object],
+    field: str,
+    width: int,
+) -> list[Sequence[object]]:
     raw_rows = facts.get(field)
-    if not isinstance(raw_rows, list):
-        raise ValueError(f"WASM facts {field} must be a list")
-    rows: list[list[object]] = []
+    if not isinstance(raw_rows, (list, tuple)):
+        raise ValueError(f"WASM facts {field} must be an array")
+    rows: list[Sequence[object]] = []
     for raw_row in raw_rows:
-        if not isinstance(raw_row, list) or len(raw_row) != width:
+        if not isinstance(raw_row, (list, tuple)) or len(raw_row) != width:
             raise ValueError(f"WASM facts {field} rows must have width {width}")
-        rows.append(cast(list[object], raw_row))
+        rows.append(cast(Sequence[object], raw_row))
     return rows
 
 
@@ -24,8 +28,8 @@ def _index(value: object, field: str) -> int:
 
 def fact_index_set(facts: Mapping[str, object], field: str) -> set[int]:
     raw_indices = facts.get(field)
-    if not isinstance(raw_indices, list):
-        raise ValueError(f"WASM facts {field} must be a list")
+    if not isinstance(raw_indices, (list, tuple)):
+        raise ValueError(f"WASM facts {field} must be an array")
     return {_index(value, field) for value in raw_indices}
 
 

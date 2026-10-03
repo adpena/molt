@@ -142,6 +142,26 @@ def _unlink_owned_file(path: Path, identity: os.stat_result | None) -> None:
         path.unlink()
 
 
+def stable_regular_file_path_is_current(
+    identity: StableRegularFileVersion, metadata: os.stat_result
+) -> bool:
+    """Whether no-follow path metadata still names the captured generation.
+
+    This path-level fence compares object, type, length, mtime and content
+    change time without reopening the payload. Handle-level custody remains
+    ``verify_stable_regular_file_identity``.
+    """
+
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and not metadata_is_link_like(metadata)
+        and _path_handle_identity(metadata)
+        == _stored_path_handle_identity(identity._stat_identity)
+        and content_change_time_ns(identity.path, metadata)
+        == identity._content_change_time_ns
+    )
+
+
 def _unlink_stable_file_identity(identity: StableRegularFileIdentity) -> None:
     """Unlink only a path that still names the attested file generation."""
 
@@ -149,14 +169,8 @@ def _unlink_stable_file_identity(identity: StableRegularFileIdentity) -> None:
         current = identity.path.lstat()
     except FileNotFoundError:
         return
-    if _path_handle_identity(current) != _stored_path_handle_identity(
-        identity._stat_identity
-    ):
-        return
-    current_change_time_ns = content_change_time_ns(identity.path, current)
-    if current_change_time_ns != identity._content_change_time_ns:
-        return
-    identity.path.unlink()
+    if stable_regular_file_path_is_current(identity, current):
+        identity.path.unlink()
 
 
 def _executable_paths(path: Path, *, label: str) -> tuple[Path, Path]:
@@ -486,12 +500,21 @@ def open_stable_regular_file(
     path: Path,
     *,
     label: str,
+    expected_path_stat: os.stat_result | None = None,
+    observed: StableRegularFileVersion | None = None,
 ) -> Iterator[StableRegularFileHandle]:
-    """Open one direct regular file without following path indirection."""
+    """Open one direct regular file, optionally bound to a no-follow snapshot row.
+
+    Supplied metadata replaces only the opening path lookup. The freshly opened
+    handle and path must agree with it before bytes are read; all closing path,
+    handle and content-change-time fences remain mandatory.
+    """
 
     lexical = path.expanduser().absolute()
     try:
-        before_path = lexical.lstat()
+        before_path = (
+            lexical.lstat() if expected_path_stat is None else expected_path_stat
+        )
     except OSError as exc:
         raise StableRegularFileError(f"{label} is unavailable: {lexical}") from exc
     if not stat.S_ISREG(before_path.st_mode) or metadata_is_link_like(before_path):
@@ -558,6 +581,14 @@ def open_stable_regular_file(
             stat=before_handle,
             content_change_time_ns=before_change,
         )
+        if observed is not None and (
+            opened.path != observed.path
+            or _stat_identity(before_handle) != observed._stat_identity
+            or before_change != observed._content_change_time_ns
+        ):
+            raise StableRegularFileChangedError(
+                f"{label} changed since identity capture: {lexical}"
+            )
         yield opened
         try:
             after_handle = os.fstat(stream.fileno())
@@ -592,11 +623,14 @@ def _stable_regular_file_snapshot(
     *,
     label: str,
     hash_content: bool,
+    expected_path_stat: os.stat_result | None = None,
 ) -> tuple[Path, os.stat_result, int, str | None]:
     """Read one direct regular file's stable open-handle identity."""
 
     try:
-        with open_stable_regular_file(path, label=label) as opened:
+        with open_stable_regular_file(
+            path, label=label, expected_path_stat=expected_path_stat
+        ) as opened:
             digest = _sha256_stream(opened.stream) if hash_content else None
     except OSError as exc:
         operation = "hashed" if hash_content else "verified"
@@ -618,11 +652,23 @@ def _regular_file_identity(
 
 
 def capture_stable_regular_file(
-    path: Path, *, label: str
+    path: Path, *, label: str, max_bytes: int | None = None
 ) -> tuple[StableRegularFileIdentity, bytes]:
     """Capture bytes and their mutation identity from one stable no-follow read."""
     with open_stable_regular_file(path, label=label) as opened:
-        data = opened.stream.read()
+        if max_bytes is not None and (
+            type(max_bytes) is not int
+            or max_bytes <= 0
+            or opened.stat.st_size > max_bytes
+        ):
+            raise ValueError(f"{label} exceeds size limit: {path}")
+        data = (
+            opened.stream.read()
+            if max_bytes is None
+            else opened.stream.read(max_bytes + 1)
+        )
+        if max_bytes is not None and len(data) > max_bytes:
+            raise ValueError(f"{label} exceeds size limit: {path}")
         if len(data) != opened.stat.st_size:
             raise StableRegularFileChangedError(
                 f"{label} size changed during capture: {opened.path}"
@@ -640,6 +686,7 @@ def stable_regular_file_identity(
     path: Path,
     *,
     label: str,
+    expected_path_stat: os.stat_result | None = None,
 ) -> StableRegularFileIdentity:
     """Hash one direct regular file and retain its cheap mutation identity."""
 
@@ -647,6 +694,7 @@ def stable_regular_file_identity(
         path,
         label=label,
         hash_content=True,
+        expected_path_stat=expected_path_stat,
     )
     if digest is None:
         raise RuntimeError("stable regular-file identity omitted its content digest")
@@ -763,6 +811,7 @@ def verify_stable_regular_file_identity(
     identity: StableRegularFileVersion,
     *,
     label: str,
+    expected_path_stat: os.stat_result | None = None,
 ) -> None:
     """Fail unless a file still has the captured handle and mutation identity."""
 
@@ -770,6 +819,7 @@ def verify_stable_regular_file_identity(
         identity.path,
         label=label,
         hash_content=False,
+        expected_path_stat=expected_path_stat,
     )
     if (
         _stat_identity(file_stat) != identity._stat_identity
@@ -783,7 +833,9 @@ def read_stable_regular_file(
 ) -> bytes:
     """Read attested bytes without rehashing or retaining a second content cache."""
 
-    with open_stable_regular_file(identity.path, label=label) as opened:
+    with open_stable_regular_file(
+        identity.path, label=label, observed=identity
+    ) as opened:
         if (
             _stat_identity(opened.stat) != identity._stat_identity
             or opened.content_change_time_ns != identity._content_change_time_ns

@@ -3,6 +3,12 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        "molt_importlib_extension_loader_type_declare" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_extension_loader_type_declare",
+                crate::molt_importlib_extension_loader_type_declare as *const (),
+            ))
+        }
         "molt_importlib_extension_loader_payload" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_extension_loader_payload",

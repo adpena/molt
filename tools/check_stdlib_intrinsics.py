@@ -887,7 +887,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
         "- Compiled binaries must not execute Python stdlib implementations.",
         "- Every stdlib module must be backed by Rust intrinsics (Python files are allowed only as thin, intrinsic-forwarding wrappers).",
         "- Modules without intrinsic implementation or proven intrinsic-owned support are forbidden in compiled builds and must raise immediately until fully lowered.",
-        "- Pure private forwarding facades inherit support only from all resolved intrinsic implementation owners; forwarding cycles alone cannot establish support. This classification is not runtime conformance evidence.",
+        "- Pure forwarding facades inherit support only from all resolved intrinsic implementation owners, regardless of module spelling; forwarding cycles alone cannot establish support. This classification is not runtime conformance evidence.",
         "- Each audit scan reports all failed gates. `--json-out` preserves diagnostics on failure and marks incomplete analysis explicitly; `--update-doc` publishes this document only after all gates pass.",
         "",
         "## Progress Summary (Generated)",
@@ -920,7 +920,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
     lines.extend(f"- `{name}`" for name in intrinsic)
     lines.extend(["", "### Intrinsic-backed modules (partial lowering pending)"])
     lines.extend(f"- `{name}`" for name in intrinsic_partial)
-    lines.extend(["", "### Intrinsic-owned private support fragments and facades"])
+    lines.extend(["", "### Intrinsic-owned support fragments and forwarding facades"])
     lines.extend(f"- `{name}`" for name in intrinsic_support)
     lines.extend(["", "### Fail-closed policy-gate modules"])
     lines.extend(f"- `{name}`" for name in policy_gate)
@@ -976,7 +976,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
             "",
             "## Full-Coverage Attestation Rule",
             "- Global rule: any module/submodule not explicitly attested as full CPython 3.12+ API/PEP coverage is classified as `intrinsic-partial`.",
-            "- Private `intrinsic-support` modules are owned implementation fragments or proven pure forwarding facades of intrinsic implementations; they are not public full-coverage attestations.",
+            "- `intrinsic-support` modules are owned implementation fragments or proven pure forwarding facades of intrinsic implementations; they are not full-coverage attestations.",
             "- Attestation source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_FULLY_COVERED_MODULES`).",
             "- Full-coverage intrinsic contract source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_REQUIRED_INTRINSICS_BY_MODULE`).",
             "- Gate rule: each attested full-coverage module must stay `intrinsic-backed`, declare its required intrinsic set, and wire every declared intrinsic in-module.",
@@ -1023,7 +1023,7 @@ def _finish_audit(
         for message in messages:
             print(message)
     report.update(
-        schema="molt.stdlib-intrinsics-audit.v1",
+        schema="molt.stdlib-intrinsics-audit.v2",
         analysis_complete=analysis_complete,
         ok=not diagnostics,
         diagnostics=[
@@ -1752,7 +1752,7 @@ def _run_audit(args: argparse.Namespace) -> int:
             for root, bad in strict_import_violations
         ],
         "unresolved_intrinsic_imports": unresolved_intrinsic_imports,
-        "private_facades": intrinsic_classification.private_facades_payload(),
+        "facades": intrinsic_classification.facades_payload(),
         "strict_fallback_violations": [
             {"module": root, "errors": list(errors)}
             for root, errors in strict_fallback_violations

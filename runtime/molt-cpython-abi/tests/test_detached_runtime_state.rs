@@ -46,7 +46,7 @@ fn detached_mutex_and_unique_reference_queries_keep_real_state() {
         unsafe {
             molt_cpython_abi::api::object::PyUnstable_Object_IsUniqueReferencedTemporary(&mut obj)
         },
-        1
+        0
     );
     obj.ob_refcnt = 2;
     assert_eq!(
@@ -60,4 +60,58 @@ fn detached_mutex_and_unique_reference_queries_keep_real_state() {
         0
     );
     assert_eq!(unsafe { Py_OptimizeFlag }, 0);
+}
+
+#[test]
+fn detached_immortal_promotion_reports_status_and_rejects_shared_or_unicode_objects() {
+    use molt_cpython_abi::abi_types::{
+        IMMORTAL_REFCNT, PyBaseObject_Type, PyTypeObject, PyUnicode_Type,
+    };
+    use molt_cpython_abi::api::{object, refcount};
+
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    let mut shared = PyObject {
+        ob_refcnt: 2,
+        ob_type: &raw mut PyBaseObject_Type,
+    };
+    assert_eq!(unsafe { object::PyUnstable_SetImmortal(&mut shared) }, 0);
+    assert_eq!(shared.ob_refcnt, 2);
+
+    let mut unicode_subtype: PyTypeObject = unsafe { std::mem::zeroed() };
+    unicode_subtype.tp_base = &raw mut PyUnicode_Type;
+    for kind in [&raw mut PyUnicode_Type, &raw mut unicode_subtype] {
+        let mut unicode = PyObject {
+            ob_refcnt: 1,
+            ob_type: kind,
+        };
+        assert_eq!(unsafe { object::PyUnstable_SetImmortal(&mut unicode) }, 0);
+        assert_eq!(unicode.ob_refcnt, 1);
+    }
+
+    let mut unique = PyObject {
+        ob_refcnt: 1,
+        ob_type: &raw mut PyBaseObject_Type,
+    };
+    assert_eq!(
+        unsafe { object::PyUnstable_Object_EnableDeferredRefcount(&mut unique) },
+        0
+    );
+    assert_eq!(unique.ob_refcnt, 1);
+    assert_eq!(unsafe { object::PyUnstable_SetImmortal(&mut unique) }, 1);
+    assert_eq!(unique.ob_refcnt, IMMORTAL_REFCNT);
+    unsafe {
+        refcount::Py_INCREF(&mut unique);
+        refcount::Py_DECREF(&mut unique);
+    }
+    assert_eq!(unique.ob_refcnt, IMMORTAL_REFCNT);
+    assert_eq!(
+        unsafe { object::PyUnstable_Object_IsUniquelyReferenced(&mut unique) },
+        0
+    );
+    assert_eq!(unsafe { object::PyUnstable_SetImmortal(&mut unique) }, 0);
+    assert_eq!(
+        unsafe { object::PyUnstable_SetImmortal(ptr::null_mut()) },
+        0
+    );
+    assert!(unsafe { object::_PyThreadState_UncheckedGet() }.is_null());
 }

@@ -1,7 +1,9 @@
 use super::boxed::emit_boxed_binary_call;
 use super::operands::BinaryOperands;
 use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal};
-use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_abi_generated::{
+    WasmNumericOpLoopKind, WasmRuntimeImport, wasm_numeric_runtime_selection,
+};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::emit_f64_to_i64_canonical;
 use wasm_encoder::{BlockType, Function, Instruction, ValType};
@@ -29,6 +31,17 @@ pub(in crate::wasm::op_loop::numeric_ops) fn emit_plain_f64_binary_result_or_box
     emit_f64_result: impl FnOnce(&mut Function, u32),
 ) {
     emit_plain_f64_binary_guard(func, operands);
+    // The generated operation selector owns binary/in-place family identity.
+    // IEEE division by either signed zero must reach Python exception dispatch.
+    if wasm_numeric_runtime_selection(import.name())
+        .is_some_and(|selection| matches!(selection.op_loop_kind, WasmNumericOpLoopKind::TrueDiv))
+    {
+        func.instruction(&Instruction::LocalGet(operands.rhs));
+        func.instruction(&Instruction::F64ReinterpretI64);
+        func.instruction(&Instruction::F64Const(0.0.into()));
+        func.instruction(&Instruction::F64Ne);
+        func.instruction(&Instruction::I32And);
+    }
     func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
     emit_plain_f64_binary_result(func, operands, locals, emit_f64_result);
     func.instruction(&Instruction::Else);

@@ -48,6 +48,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     reachable_blocks: &mut BTreeSet<Block>,
     label_blocks: &BTreeMap<i64, Block>,
     label_transport_plans: &BTreeMap<i64, BlockTransportPlan>,
+    ssa_values: &NativeSsaValues,
     cfg_liveness: &crate::tir::cfg_liveness::SimpleCfgLiveness,
     function_exception_label_id: Option<i64>,
     slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
@@ -175,18 +176,16 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             let fallthrough_block = builder.create_block();
             let fallthrough_transport = if op_idx + 1 < func_ops.len() {
                 let block_id = cfg_liveness.block_for_op(op_idx + 1);
-                BlockTransportPlan::from_live_names(
-                    &cfg_liveness.live_in_by_block[block_id],
-                    vars,
-                    representation_plan,
-                    slot_backed_join_slots,
+                BlockTransportPlan::from_live_ids(
+                    cfg_liveness.live_in_by_block[block_id].iter(),
+                    ssa_values,
+                    crate::tir::dominators::SimpleProgramPoint::After(op_idx),
                 )
             } else {
-                BlockTransportPlan::from_live_names(
-                    &BTreeSet::new(),
-                    vars,
-                    representation_plan,
-                    slot_backed_join_slots,
+                BlockTransportPlan::from_live_ids(
+                    std::iter::empty(),
+                    ssa_values,
+                    crate::tir::dominators::SimpleProgramPoint::After(op_idx),
                 )
             };
             fallthrough_transport.append_block_params(&mut *builder, fallthrough_block);
@@ -347,7 +346,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 fallthrough_block,
                 &mut *is_block_filled,
             );
-            fallthrough_transport.bind_block_params(&mut *builder, fallthrough_block);
+            fallthrough_transport.bind_block_params(&mut *builder, fallthrough_block, ssa_values);
             maybe_debug_seal("br_if_fallthrough", op_idx, fallthrough_block);
             seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough_block);
         }
@@ -374,7 +373,13 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // hot execution path for better i-cache/branch behavior.
                 builder.set_cold_block(block);
                 reachable_blocks.insert(block);
-                materialize_label_block(&mut *builder, block, &mut *is_block_filled, transport);
+                materialize_label_block(
+                    &mut *builder,
+                    block,
+                    &mut *is_block_filled,
+                    transport,
+                    ssa_values,
+                );
                 if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref() == Ok(func_name) {
                     eprintln!(
                         "LABEL_BIND {} label={} block={:?} params={:?}",
@@ -390,7 +395,13 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // the block even when no already-emitted predecessor
                 // has reached it yet; later backedges / deferred
                 // branches may still target it.
-                materialize_label_block(&mut *builder, block, &mut *is_block_filled, transport);
+                materialize_label_block(
+                    &mut *builder,
+                    block,
+                    &mut *is_block_filled,
+                    transport,
+                    ssa_values,
+                );
                 if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref() == Ok(func_name) {
                     eprintln!(
                         "LABEL_BIND {} label={} block={:?} params={:?}",

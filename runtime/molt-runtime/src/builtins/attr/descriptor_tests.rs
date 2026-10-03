@@ -14,6 +14,106 @@ static CALL1_ARGUMENT_BITS: AtomicU64 = AtomicU64::new(0);
 static MUTATING_GET_SELF_BITS: AtomicU64 = AtomicU64::new(0);
 static MUTATING_GET_OWNER_BITS: AtomicU64 = AtomicU64::new(0);
 static MUTATING_GET_RETURN_CALLABLE_BITS: AtomicU64 = AtomicU64::new(0);
+static EVICTION_TARGET_CLASS: AtomicU64 = AtomicU64::new(0);
+static EVICTION_TARGET_NAME: AtomicU64 = AtomicU64::new(0);
+static EVICTION_CALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
+
+extern "C" fn cache_eviction_removes_selected_method(_: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        EVICTION_CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst);
+        let result = crate::molt_del_attr_name(
+            EVICTION_TARGET_CLASS.load(Ordering::SeqCst),
+            EVICTION_TARGET_NAME.load(Ordering::SeqCst),
+        );
+        dec_ref_bits(py, result);
+        // Reentrant lookup/clear can retire the new cache entry as well as
+        // the class's edge. Only the in-flight snapshot may now own it.
+        clear_attr_tls_caches(py);
+        MoltObject::none().bits()
+    })
+}
+
+#[test]
+fn method_resolution_owns_selection_through_reentrant_cache_eviction_and_consumer_pin() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        clear_attr_tls_caches(py);
+        let method = runtime_function_bits(
+            py,
+            "eviction_target_method",
+            scalar_attr_identity as *const (),
+            1,
+        );
+        let owner = test_class_bits(py, b"EvictionMethodOwner", &[(b"method", method)]);
+        let receiver = unsafe { call_callable0(py, owner) };
+        let name = string_bits(py, b"method");
+        assert!(!exception_pending(py));
+        dec_ref_bits(py, method);
+
+        let finalizer = runtime_function_bits(
+            py,
+            "cache_eviction_removes_selected_method",
+            cache_eviction_removes_selected_method as *const (),
+            1,
+        );
+        let retiring_class = test_class_bits(py, b"RetiringCacheValue", &[(b"__del__", finalizer)]);
+        let retiring = unsafe { call_callable0(py, retiring_class) };
+        assert!(!exception_pending(py));
+        dec_ref_bits(py, finalizer);
+        EVICTION_TARGET_CLASS.store(owner, Ordering::SeqCst);
+        EVICTION_TARGET_NAME.store(name, Ordering::SeqCst);
+        EVICTION_CALLBACK_COUNT.store(0, Ordering::SeqCst);
+        descriptor_cache_store(py, retiring_class, name, 1, None, Some(retiring));
+        dec_ref_bits(py, retiring);
+
+        let selected = unsafe {
+            object_method_ic_resolve(
+                py,
+                obj_from_bits(receiver).as_ptr().unwrap(),
+                name,
+                |info| {
+                    assert_eq!(EVICTION_CALLBACK_COUNT.load(Ordering::SeqCst), 1);
+                    assert_eq!(
+                        class_attr_lookup_raw_mro(py, obj_from_bits(owner).as_ptr().unwrap(), name),
+                        None,
+                        "retirement must remove the class's method owner"
+                    );
+                    assert_eq!(info.func_bits, method);
+                    assert_eq!(
+                        object_type_id(obj_from_bits(info.func_bits).as_ptr().unwrap()),
+                        TYPE_ID_FUNCTION
+                    );
+                    assert_eq!(
+                        heap_refcount(info.func_bits),
+                        1,
+                        "only the snapshot owns selection"
+                    );
+                    // This is the same ownership handoff as the fused-call consumer.
+                    inc_ref_bits(py, info.func_bits);
+                    info.func_bits
+                },
+            )
+        }
+        .expect("the original selected method survives reentrant removal");
+        assert!(!exception_pending(py));
+        assert_eq!(
+            heap_refcount(selected),
+            1,
+            "only the consumer owns selection"
+        );
+        let result = unsafe { call_callable1(py, selected, receiver) };
+        assert_eq!(result, receiver);
+        assert!(!exception_pending(py));
+        dec_ref_bits(py, result);
+        dec_ref_bits(py, selected);
+        EVICTION_TARGET_CLASS.store(0, Ordering::SeqCst);
+        EVICTION_TARGET_NAME.store(0, Ordering::SeqCst);
+        clear_attr_tls_caches(py);
+        for bits in [name, receiver, owner, retiring_class] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
 
 extern "C" fn scalar_attr_identity(value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -167,51 +267,38 @@ fn test_class_bits(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> u6
 }
 
 #[test]
-fn descriptor_function_receiver_uses_canonical_slot_wrapper_identity() {
+fn descriptor_function_receiver_uses_declared_wrapper_identity() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let owner_bits = builtin_classes(_py).int;
-        let owner_ptr = obj_from_bits(owner_bits).as_ptr().unwrap();
-        let scalar_bits = MoltObject::from_int(7).bits();
-        for (name, target, arity) in [
-            (
-                "molt_object_getattribute",
-                crate::molt_object_getattribute as *const (),
-                2,
-            ),
-            (
-                "molt_object_setattr",
-                crate::molt_object_setattr as *const (),
-                3,
-            ),
-            (
-                "molt_object_delattr",
-                crate::molt_object_delattr as *const (),
-                2,
-            ),
-        ] {
-            let function_bits = runtime_function_bits(_py, name, target, arity);
-            let function_ptr = obj_from_bits(function_bits).as_ptr().unwrap();
+        let owner = builtin_classes(_py).int;
+        let scalar = MoltObject::from_int(7).bits();
+        for name in ["__getattribute__", "__setattr__", "__delattr__"] {
+            let function = crate::builtins::methods::object_method_bits(_py, name).unwrap();
+            let pointer = obj_from_bits(function).as_ptr().unwrap();
             unsafe {
-                assert_eq!(
-                    function_descriptor_receiver(function_ptr, Some(owner_bits)),
-                    None
-                );
-                assert_eq!(
-                    function_descriptor_receiver(function_ptr, Some(scalar_bits)),
-                    Some(scalar_bits)
-                );
-                let class_value = descriptor_bind(
-                    _py,
-                    function_bits,
-                    Some(MoltObject::from_ptr(owner_ptr).bits()),
-                    Some(owner_bits),
-                )
-                .unwrap();
-                assert_eq!(class_value, function_bits);
-                dec_ref_bits(_py, class_value);
+                assert!(matches!(
+                    function_descriptor_receiver(_py, pointer, Some(owner), None),
+                    Ok(None)
+                ));
+                for receiver in [scalar, owner] {
+                    let admitted =
+                        function_descriptor_receiver(_py, pointer, Some(owner), Some(receiver))
+                            .expect("descriptor receiver admission")
+                            .expect("bound descriptor receiver");
+                    assert_eq!(admitted.bits(), receiver);
+                    let bound =
+                        descriptor_bind(_py, function, Some(owner), Some(receiver)).unwrap();
+                    assert_eq!(
+                        crate::bound_method_self_bits(obj_from_bits(bound).as_ptr().unwrap()),
+                        receiver
+                    );
+                    dec_ref_bits(_py, bound);
+                }
+                let unbound = descriptor_bind(_py, function, Some(owner), None).unwrap();
+                assert_eq!(unbound, function);
+                dec_ref_bits(_py, unbound);
             }
-            dec_ref_bits(_py, function_bits);
+            assert!(!exception_pending(_py));
         }
     });
 }

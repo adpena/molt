@@ -9,109 +9,47 @@
 //! marked ready while missing methods, surfacing much later as an
 //! `AttributeError` / wrong dispatch with no exec-time failure.
 //!
-//! CPython's `add_methods` (Objects/typeobject.c) propagates a `PyDict` store
-//! failure as -1 so `PyType_Ready` FAILS CLOSED. This test reproduces the store
-//! failure deterministically: it installs a runtime backend WITHOUT
-//! `register_c_function`, so `PyCFunction_NewEx` falls back to a raw,
-//! non-bridge-registered object that `PyDict_SetItem` cannot store ("unresolved
-//! value") — the exact witness failure shape. It asserts `PyType_Ready` returns
-//! -1 with a pending exception (never READY-with-dropped-method).
-//!
-//! Pre-fix this test FAILS (rc == 0, no exception, method missing); post-fix it
-//! PASSES (rc == -1, exception pending). Dedicated test binary so it owns a
-//! fresh runtime-hooks `OnceLock` with the `register_c_function` stub intact.
+//! CPython's add_methods propagates a dictionary-store error. The fixture
+//! supplies normal native-callable crossing and dictionary ownership, then
+//! rejects the declared "reduce" entry in the dict_set hook. An attempt counter
+//! proves readiness failed at that store, rather than at missing fake runtime
+//! capabilities before method publication.
 
 #![allow(non_snake_case)]
 
 mod support;
 
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
-use molt_lang_obj_model::MoltObject;
-use std::collections::HashMap;
+use molt_cpython_abi::hooks::RuntimeHooks;
 use std::os::raw::c_char;
 use std::ptr;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-static NEXT_HANDLE: AtomicU64 = AtomicU64::new(0x6100_0000);
-static DICTS: Mutex<Option<HashMap<u64, HashMap<u64, u64>>>> = Mutex::new(None);
+static METHOD_STORE_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
-fn fresh_handle() -> u64 {
-    let address = NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed) as usize;
-    MoltObject::from_ptr(ptr::with_exposed_provenance_mut(address)).bits()
-}
-
-fn dicts() -> std::sync::MutexGuard<'static, Option<HashMap<u64, HashMap<u64, u64>>>> {
-    let mut g = DICTS.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    g
-}
-
-unsafe extern "C" fn fake_alloc_dict() -> u64 {
-    let h = fresh_handle();
-    dicts().as_mut().unwrap().insert(h, HashMap::new());
-    h
-}
-
-unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> i32 {
-    if let Some(m) = dicts().as_mut().unwrap().get_mut(&dict_bits) {
-        m.insert(key_bits, val_bits);
-    }
-    0
-}
-
-unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult {
-    match dicts()
-        .as_ref()
-        .unwrap()
-        .get(&dict_bits)
-        .and_then(|m| m.get(&key_bits).copied())
-    {
-        Some(bits) => BorrowedHandleResult::ok(bits),
-        None => BorrowedHandleResult::missing(),
-    }
-}
-
-unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
-    static STR_HANDLES: Mutex<Option<HashMap<Vec<u8>, u64>>> = Mutex::new(None);
-    let bytes = if data.is_null() {
-        Vec::new()
+unsafe extern "C" fn reject_method_store(dict: u64, key: u64, value: u64) -> i32 {
+    let mut len = 0;
+    let bytes = unsafe { support::fake_runtime::str_data(key, &mut len) };
+    if !bytes.is_null() && unsafe { std::slice::from_raw_parts(bytes, len) } == b"reduce" {
+        METHOD_STORE_FAILURES.fetch_add(1, Ordering::Relaxed);
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut PyExc_RuntimeError).cast(),
+                c"fixture method store rejected".as_ptr(),
+            );
+        }
+        -1
     } else {
-        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
-    };
-    let mut g = STR_HANDLES.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
+        unsafe { support::fake_runtime::dict_set(dict, key, value) }
     }
-    *g.as_mut()
-        .unwrap()
-        .entry(bytes)
-        .or_insert_with(fresh_handle)
 }
 
-unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
-    0xFF
-}
-
-unsafe extern "C" fn fake_noop_ref(_bits: u64) {}
-
-/// Install a dict/str backend but deliberately leave `register_c_function` as
-/// the STUB (returns 0), so `PyCFunction_NewEx` yields a raw, non-bridge-
-/// registered object that cannot be stored in a dict.
-fn install_hooks_without_cfunction_registration() {
+fn install_hooks_with_rejected_method_store() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_dict = fake_alloc_dict;
-    hooks.dict_set = fake_dict_set;
-    hooks.dict_get = fake_dict_get;
-    hooks.alloc_str = fake_alloc_str;
-    hooks.classify_heap = fake_classify_heap;
-    hooks.inc_ref = fake_noop_ref;
-    hooks.dec_ref = fake_noop_ref;
-    // NOTE: hooks.register_c_function is intentionally left as the stub.
+    support::fake_runtime::wire(&mut hooks);
+    hooks.dict_set = reject_method_store;
     support::prepare_abi_test_thread(hooks);
+    METHOD_STORE_FAILURES.store(0, Ordering::Relaxed);
 }
 
 unsafe extern "C" fn dummy_method(_self: *mut PyObject, _args: *mut PyObject) -> *mut PyObject {
@@ -129,7 +67,7 @@ fn method_def(name: &'static [u8]) -> PyMethodDef {
 
 #[test]
 fn type_ready_fails_closed_when_method_store_fails() {
-    install_hooks_without_cfunction_registration();
+    install_hooks_with_rejected_method_store();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let mut methods = [
@@ -141,12 +79,17 @@ fn type_ready_fails_closed_when_method_store_fails() {
             ml_doc: ptr::null(),
         },
     ];
-    let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    let mut tp = support::StaticType::new();
     tp.tp_name = c"scalar_store_fail".as_ptr();
     tp.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
     tp.tp_methods = methods.as_mut_ptr();
 
-    let rc = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
+    let rc = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(tp.as_ptr()) };
+    assert_eq!(
+        METHOD_STORE_FAILURES.load(Ordering::Relaxed),
+        1,
+        "readiness must reach the declared method store"
+    );
 
     // The whole point of the fix: a method that cannot be stored in tp_dict must
     // FAIL PyType_Ready, not leave a "ready" type with a silently-dropped method.

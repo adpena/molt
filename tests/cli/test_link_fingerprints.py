@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.cli.native_link_test_support import native_codegen_binding
+
 from copy import deepcopy
 import json
 import os
@@ -18,6 +20,93 @@ from tests.cli.native_link_test_support import (
     write_test_native_link_manifest,
     write_test_static_archive,
 )
+
+
+@pytest.mark.parametrize("route", ["execute", "cached"])
+@pytest.mark.parametrize("which", ["archive", "callable_symbols"])
+def test_native_link_consumer_rejects_codegen_generation_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, which: str
+) -> None:
+    import contextlib
+
+    target = "x86_64-unknown-linux-gnu"
+    monkeypatch.setattr(
+        native_link_command,
+        "_build_native_link_driver_command",
+        lambda **kwargs: (["clang", "-target", target], None, target),
+    )
+    monkeypatch.setattr(link_pipeline, "native_link_cache_tool_facts", lambda _plan: [])
+    monkeypatch.setattr(
+        link_pipeline,
+        "native_link_selection",
+        lambda *_a, **_k: contextlib.nullcontext(None),
+    )
+    monkeypatch.setattr(
+        link_pipeline,
+        "_native_link_execution_command",
+        lambda plan, **kwargs: contextlib.nullcontext(
+            [
+                str(kwargs["execution_output"])
+                if item == str(kwargs["planned_output"])
+                else item
+                for item in plan.command
+            ]
+        ),
+    )
+    runtime = tmp_path / "runtime.a"
+    app = tmp_path / "app.a"
+    write_test_static_archive(runtime)
+    write_test_static_archive(app)
+    identity = write_test_native_link_manifest(runtime, target_triple=target)
+    binding = native_codegen_binding(runtime, identity)
+    selected_path = getattr(binding, which).path
+    binary = tmp_path / "app"
+    binary.write_bytes(b"previously-published")
+    candidates = []
+
+    def replace_generation():
+        original = selected_path.stat()
+        replacement = selected_path.with_name(selected_path.name + ".replacement")
+        replacement.write_bytes(selected_path.read_bytes())
+        replacement.replace(selected_path)
+        os.utime(selected_path, ns=(original.st_atime_ns, original.st_mtime_ns))
+
+    def cached(**kwargs):
+        if route == "cached":
+            replace_generation()
+            return True
+        return False
+
+    def run(*, link_cmd, **kwargs):
+        assert route == "execute"
+        candidate = Path(link_cmd[link_cmd.index("-o") + 1])
+        candidate.write_bytes(b"new-unpublished")
+        candidates.append(candidate)
+        replace_generation()
+        return subprocess.CompletedProcess(link_cmd, 0, "", "")
+
+    monkeypatch.setattr(receipts, "_link_outputs_match", cached)
+    monkeypatch.setattr(link_pipeline, "_run_native_link_command", run)
+    prepared, failure = link_pipeline._prepare_native_link(
+        output_artifact=app,
+        resolved_capability_policy=CapabilityManifest().resolve(),
+        artifacts_root=tmp_path,
+        json_output=True,
+        output_binary=binary,
+        runtime_codegen_binding=binding,
+        target_triple=target,
+        sysroot_path=None,
+        profile="dev",
+        project_root=tmp_path,
+        diagnostics_enabled=False,
+        phase_starts={},
+        link_timeout=None,
+        warnings=[],
+    )
+    assert prepared is None and failure == 2
+    assert binary.read_bytes() == b"previously-published"
+    assert all(not path.exists() for path in candidates)
+    assert len(candidates) == (1 if route == "execute" else 0)
 
 
 def _publish_receipt(tmp_path: Path, outputs: dict[str, Path]):
@@ -362,26 +451,25 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
     policy = CapabilityManifest().resolve()
 
     def prepare():
+        phases: dict[str, float] = {}
         result, failure = link_pipeline._prepare_native_link(
             output_artifact=app,
             resolved_capability_policy=policy,
             artifacts_root=tmp_path,
             json_output=True,
             output_binary=binary,
-            runtime_lib=runtime,
-            runtime_build_identity=identity,
-            molt_root=tmp_path,
-            runtime_cargo_profile="dev-fast",
+            runtime_codegen_binding=native_codegen_binding(runtime, identity),
             target_triple=target,
             sysroot_path=None,
             profile="dev",
             project_root=tmp_path,
-            diagnostics_enabled=False,
-            phase_starts={},
+            diagnostics_enabled=True,
+            phase_starts=phases,
             link_timeout=None,
             warnings=[],
         )
         assert failure is None and result is not None
+        assert "link" in phases
         return result
 
     first = prepare()
@@ -419,8 +507,8 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
         stub_path=first.stub_path,
         runtime_lib=runtime,
         external_native_artifacts=(),
-        diagnostics_payload=None,
-        diagnostics_path=None,
+        diagnostics_enabled=False,
+        build_diagnostics_payload=lambda: (None, None),
         pgo_profile_payload=None,
         runtime_feedback_payload=None,
         emit_ir_path=None,

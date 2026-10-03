@@ -6,6 +6,27 @@ import json
 from pathlib import Path
 
 
+INTERNAL_LAUNCH_ID_ENV = "MOLT_MEMORY_GUARD_LAUNCH_ID"
+INTERNAL_STARTUP_PATH_ENV = "MOLT_MEMORY_GUARD_STARTUP_JSON"
+
+
+def interactive_launch(environ: Mapping[str, str]) -> tuple[str, Path] | None:
+    """One launch capability survives interpreter/launcher delegation."""
+    launch_id = environ.get(INTERNAL_LAUNCH_ID_ENV)
+    startup_path = environ.get(INTERNAL_STARTUP_PATH_ENV)
+    if launch_id is None and startup_path is None:
+        return None
+    if (
+        not isinstance(launch_id, str)
+        or len(launch_id) != 32
+        or any(character not in "0123456789abcdef" for character in launch_id)
+        or not startup_path
+        or not Path(startup_path).is_absolute()
+    ):
+        raise ValueError("interactive guard launch capability is invalid")
+    return launch_id, Path(startup_path)
+
+
 def parser(
     *,
     default_poll_interval_sec: float,
@@ -99,6 +120,9 @@ def parser(
         type=float,
         help="Abort the command if wall-clock runtime exceeds this many seconds.",
     )
+    result.add_argument(
+        "--cancel-file", help="Exclusive owner cancellation request path."
+    )
     result.add_argument("command", nargs=argparse.REMAINDER)
     return result
 
@@ -144,10 +168,16 @@ def worker_env(
     *,
     worker_env_name: str,
     command_env_name: str,
+    launch_id: str | None = None,
+    startup_json: str | None = None,
 ) -> dict[str, str]:
     result = dict(environ)
     result[command_env_name] = json.dumps(list(command))
     result[worker_env_name] = "1"
+    if launch_id is not None or startup_json is not None:
+        result[INTERNAL_LAUNCH_ID_ENV] = launch_id or ""
+        result[INTERNAL_STARTUP_PATH_ENV] = startup_json or ""
+        interactive_launch(result)
     return result
 
 
@@ -180,4 +210,6 @@ def worker_argv(
         result.extend(["--child-rlimit-gb", str(args.child_rlimit_gb)])
     if args.timeout is not None:
         result.extend(["--timeout", str(args.timeout)])
+    if args.cancel_file:
+        result.extend(["--cancel-file", args.cancel_file])
     return result

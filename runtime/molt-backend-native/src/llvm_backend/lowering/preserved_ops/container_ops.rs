@@ -89,23 +89,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if expected != op.results.len() {
                     return false;
                 }
-                let out_alloca = self
-                    .backend
-                    .builder
-                    .build_array_alloca(
-                        i64_ty,
-                        i64_ty.const_int(expected.max(1) as u64, false),
-                        "unpack_out",
-                    )
-                    .unwrap();
+                let out_alloca =
+                    self.build_entry_i64_array_alloca(expected.max(1) as u64, "unpack_out");
                 let out_ptr_bits = self
                     .backend
                     .builder
                     .build_ptr_to_int(out_alloca, i64_ty, "unpack_out_ptr")
                     .unwrap();
                 let unpack_fn = self.ensure_runtime_i64_fn("molt_unpack_sequence", 3);
-                let (seq_bits, owns_seq_temporary) =
-                    self.materialize_dynbox_operand_with_temporary_owner(seq_id);
+                let mut custody = self.begin_borrowed_operands(&op.operands, "unpack");
+                let seq_bits = self.borrowed_operand(&mut custody, seq_id);
                 let unpack_result = self
                     .backend
                     .builder
@@ -122,16 +115,29 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-                if owns_seq_temporary {
-                    self.backend
-                        .builder
-                        .build_call(release, &[seq_bits.into()], "unpack_input_release")
-                        .unwrap();
-                }
                 self.backend
                     .builder
                     .build_call(release, &[unpack_result.into()], "unpack_result_release")
                     .unwrap();
+                // A sequence that could not be materialized skips the runtime,
+                // so its targets are published as None.
+                let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
+                self.finish_borrowed_operands(custody, none, "unpack_status", |this| {
+                    for idx in 0..expected {
+                        let slot = unsafe {
+                            this.backend
+                                .builder
+                                .build_gep(
+                                    i64_ty,
+                                    out_alloca,
+                                    &[i64_ty.const_int(idx as u64, false)],
+                                    "unpack_abort_slot",
+                                )
+                                .unwrap()
+                        };
+                        this.backend.builder.build_store(slot, none).unwrap();
+                    }
+                });
                 for (idx, &result_id) in op.results.iter().enumerate() {
                     let elem_ptr = unsafe {
                         self.backend

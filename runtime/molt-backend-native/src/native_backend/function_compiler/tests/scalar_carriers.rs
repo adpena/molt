@@ -598,7 +598,7 @@ fn native_container_dispatch_ignores_transport_only_container_type() {
 }
 
 #[test]
-fn native_generic_list_reads_inline_but_stores_use_runtime_authority() {
+fn native_list_annotations_keep_reads_and_stores_in_runtime_authority() {
     let list_index = OpIR {
         kind: "index".to_string(),
         args: Some(vec!["items".to_string(), "idx".to_string()]),
@@ -611,8 +611,13 @@ fn native_generic_list_reads_inline_but_stores_use_runtime_authority() {
         std::slice::from_ref(&list_index),
     );
 
-    assert!(generic_list_int_lane_eligible(&plan, &list_index, true));
+    assert!(!generic_list_int_lane_eligible(&plan, &list_index, true));
     assert!(!generic_list_int_lane_eligible(&plan, &list_index, false));
+    assert_eq!(
+        index_fallback_import_name(&plan, &list_index, true),
+        "molt_list_getitem_int_fast",
+        "a List annotation requires runtime class dispatch",
+    );
 
     let list_store = OpIR {
         kind: "store_index".to_string(),
@@ -633,7 +638,7 @@ fn native_generic_list_reads_inline_but_stores_use_runtime_authority() {
         "molt_store_index"
     );
 
-    let list_int_new = OpIR {
+    let mut list_int_new = OpIR {
         kind: "list_int_new".to_string(),
         out: Some("flat_items".to_string()),
         ..OpIR::default()
@@ -648,10 +653,36 @@ fn native_generic_list_reads_inline_but_stores_use_runtime_authority() {
         out: Some("flat_result".to_string()),
         ..OpIR::default()
     };
-    let flat_ops = [list_int_new, flat_store.clone()];
-    let flat_plan =
-        representation_plan_for_typed_ops(&["idx", "value"], Some(vec!["int", "int"]), &flat_ops);
-    assert!(flat_plan.op_has_container_storage(1, &flat_store, ContainerStorageKind::FlatListInt,));
+    // An opcode with no allocator inputs, plus Python int annotations, cannot
+    // establish inline fill/value custody or a physical representation.
+    let incomplete = [list_int_new.clone(), flat_store.clone()];
+    let incomplete_plan =
+        representation_plan_for_typed_ops(&["idx", "value"], Some(vec!["int", "int"]), &incomplete);
+    assert!(!incomplete_plan.op_has_container_storage(
+        1,
+        &flat_store,
+        ContainerStorageKind::FlatListInt
+    ));
+    assert_eq!(
+        store_index_fallback_import_name(&incomplete_plan, &flat_store),
+        "molt_store_index"
+    );
+
+    // The positive storage case has a complete allocator and producer-derived
+    // inline constants, rather than relying on that malformed fixture.
+    list_int_new.args = Some(vec!["count".to_string(), "fill".to_string()]);
+    let mut flat_ops: Vec<OpIR> = [("count", 4), ("fill", 0), ("idx", 0), ("value", 7)]
+        .into_iter()
+        .map(|(name, value)| OpIR {
+            kind: "const".to_string(),
+            out: Some(name.to_string()),
+            value: Some(value),
+            ..OpIR::default()
+        })
+        .collect();
+    flat_ops.extend([list_int_new, flat_store.clone()]);
+    let flat_plan = representation_plan_for_typed_ops(&[], None, &flat_ops);
+    assert!(flat_plan.op_has_container_storage(5, &flat_store, ContainerStorageKind::FlatListInt));
     assert_eq!(
         store_index_fallback_import_name(&flat_plan, &flat_store),
         "molt_store_index",
@@ -976,6 +1007,7 @@ fn semantic_type_hint_does_not_create_native_scalar_lane_for_generic_ops() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 

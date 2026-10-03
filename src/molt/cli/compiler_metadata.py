@@ -103,9 +103,9 @@ def _git_clean_head(root: Path) -> str | None:
     return head
 
 
-@functools.lru_cache(maxsize=16)
-def _compiler_clean_source_state_cached(root_str: str) -> dict[str, str | int] | None:
-    root = Path(root_str)
+def _compiler_clean_source_state(root: Path) -> dict[str, str | int] | None:
+    # Cleanliness is live state. A second operation in this process must observe
+    # edits even when HEAD itself has not moved.
     git_rev = _git_clean_head(root)
     if git_rev is None:
         return None
@@ -114,14 +114,6 @@ def _compiler_clean_source_state_cached(root_str: str) -> dict[str, str | int] |
         "kind": "git-clean-head",
         "head": git_rev,
     }
-
-
-def _compiler_clean_source_state(root: Path) -> dict[str, str | int] | None:
-    try:
-        resolved = root.resolve()
-    except OSError:
-        resolved = root
-    return _compiler_clean_source_state_cached(os.fspath(resolved))
 
 
 def _clean_pathspecs_for_root(
@@ -357,6 +349,13 @@ def _write_cached_rustc_version(identity_digest: str, rustc_version: str) -> Non
 
 @functools.lru_cache(maxsize=1)
 def _rustc_version() -> str | None:
+    # An installed compiler and its runtime cells are prebuilt release inputs:
+    # the host Rust toolchain is neither a cache-key input nor probed.
+    try:
+        if installed_compiler(_compiler_root()) is not None:
+            return None
+    except (OSError, ValueError):
+        return None
     identity = _rustc_version_cache_identity()
     identity_digest = _rustc_version_cache_digest(identity)
     cached = _read_cached_rustc_version(identity_digest)

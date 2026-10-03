@@ -451,220 +451,40 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         deps: &[WasmRuntimeImport::StringEq],
     },
     WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_int",
+        kind: "vec_sum",
         selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumInt,
+            import: WasmRuntimeImport::VecSum,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
             lir_runtime_call: None,
         },
-        deps: &[WasmRuntimeImport::VecSumInt],
+        deps: &[WasmRuntimeImport::VecSum],
     },
     WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_int_trusted",
+        kind: "vec_prod",
         selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumIntTrusted,
+            import: WasmRuntimeImport::VecProd,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
             lir_runtime_call: None,
         },
-        deps: &[WasmRuntimeImport::VecSumIntTrusted],
+        deps: &[WasmRuntimeImport::VecProd],
     },
     WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_int_range_iter",
+        kind: "vec_min",
         selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumIntRangeIter,
+            import: WasmRuntimeImport::VecMin,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
             lir_runtime_call: None,
         },
-        deps: &[WasmRuntimeImport::VecSumIntRangeIter],
+        deps: &[WasmRuntimeImport::VecMin],
     },
     WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_int_range_iter_trusted",
+        kind: "vec_max",
         selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumIntRangeIterTrusted,
+            import: WasmRuntimeImport::VecMax,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
             lir_runtime_call: None,
         },
-        deps: &[WasmRuntimeImport::VecSumIntRangeIterTrusted],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_int_range",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumIntRange,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecSumIntRange],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_int_range_trusted",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumIntRangeTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecSumIntRangeTrusted],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_float",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloat,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecSumFloat],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_float_trusted",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloatTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecSumFloatTrusted],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_float_range_iter",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloatRangeIter,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecSumFloatRangeIter],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_float_range_iter_trusted",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloatRangeIterTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecSumFloatRangeIterTrusted],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_float_range",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloatRange,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecSumFloatRange],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_sum_float_range_trusted",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloatRangeTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecSumFloatRangeTrusted],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_prod_int",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecProdInt,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecProdInt],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_prod_int_trusted",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecProdIntTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecProdIntTrusted],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_prod_int_range",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecProdIntRange,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecProdIntRange],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_prod_int_range_trusted",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecProdIntRangeTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecProdIntRangeTrusted],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_min_int",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMinInt,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecMinInt],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_min_int_trusted",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMinIntTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecMinIntTrusted],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_min_int_range",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMinIntRange,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecMinIntRange],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_min_int_range_trusted",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMinIntRangeTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecMinIntRangeTrusted],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_max_int",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMaxInt,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecMaxInt],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_max_int_trusted",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMaxIntTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecMaxIntTrusted],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_max_int_range",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMaxIntRange,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecMaxIntRange],
-    },
-    WasmNumericRuntimeSelectorSpec {
-        kind: "vec_max_int_range_trusted",
-        selection: WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMaxIntRangeTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        },
-        deps: &[WasmRuntimeImport::VecMaxIntRangeTrusted],
+        deps: &[WasmRuntimeImport::VecMax],
     },
 ];
 
@@ -891,123 +711,23 @@ pub(crate) fn wasm_numeric_runtime_selection(kind: &str) -> Option<WasmNumericRu
             op_loop_kind: WasmNumericOpLoopKind::StringEq,
             lir_runtime_call: Some(LirRuntimeCall::StringEq),
         }),
-        "vec_sum_int" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumInt,
+        "vec_sum" => Some(WasmNumericRuntimeSelection {
+            import: WasmRuntimeImport::VecSum,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
             lir_runtime_call: None,
         }),
-        "vec_sum_int_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumIntTrusted,
+        "vec_prod" => Some(WasmNumericRuntimeSelection {
+            import: WasmRuntimeImport::VecProd,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
             lir_runtime_call: None,
         }),
-        "vec_sum_int_range_iter" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumIntRangeIter,
+        "vec_min" => Some(WasmNumericRuntimeSelection {
+            import: WasmRuntimeImport::VecMin,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
             lir_runtime_call: None,
         }),
-        "vec_sum_int_range_iter_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumIntRangeIterTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_sum_int_range" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumIntRange,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_sum_int_range_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumIntRangeTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_sum_float" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloat,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_sum_float_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloatTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_sum_float_range_iter" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloatRangeIter,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_sum_float_range_iter_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloatRangeIterTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_sum_float_range" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloatRange,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_sum_float_range_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecSumFloatRangeTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_prod_int" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecProdInt,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_prod_int_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecProdIntTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_prod_int_range" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecProdIntRange,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_prod_int_range_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecProdIntRangeTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_min_int" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMinInt,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_min_int_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMinIntTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_min_int_range" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMinIntRange,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_min_int_range_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMinIntRangeTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_max_int" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMaxInt,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_max_int_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMaxIntTrusted,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_max_int_range" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMaxIntRange,
-            op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
-        }),
-        "vec_max_int_range_trusted" => Some(WasmNumericRuntimeSelection {
-            import: WasmRuntimeImport::VecMaxIntRangeTrusted,
+        "vec_max" => Some(WasmNumericRuntimeSelection {
+            import: WasmRuntimeImport::VecMax,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
             lir_runtime_call: None,
         }),

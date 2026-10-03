@@ -81,6 +81,10 @@ def record_runtime_wasm_failure(
         timed_out=timed_out,
         details=dict(details or {}),
     )
+    if runtime_state.build_python_admission is not None:
+        runtime_state.build_python_admission.record_failure(
+            runtime_state.runtime_wasm_build_failure
+        )
     print(compact, file=sys.stderr)
     if evidence_path is not None:
         print(f"Runtime WASM failure evidence: {evidence_path}", file=sys.stderr)

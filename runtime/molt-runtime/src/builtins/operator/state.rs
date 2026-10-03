@@ -52,3 +52,17 @@ pub(crate) fn operator_clear_runtime_state(
     let slots = state.operator.slots();
     crate::state::cache::clear_atomic_slots(_py, &slots)
 }
+
+pub(crate) fn operator_runtime_class_roots(
+    py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) -> Vec<u64> {
+    crate::state::cache::cached_runtime_class_roots(py, &state.operator.slots())
+}
+
+pub(crate) fn operator_clear_runtime_callbacks(
+    py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) -> bool {
+    crate::state::cache::clear_cached_runtime_callbacks(py, &state.operator.slots())
+}

@@ -1,6 +1,104 @@
 use super::*;
 
 #[test]
+fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
+    let function = FunctionIR {
+        name: "caller".into(),
+        ops: vec![
+            OpIR {
+                kind: "call_indirect".into(),
+                s_value: Some("indirect_target".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "func_new_closure".into(),
+                s_value: Some("taken_target".into()),
+                value: Some(0),
+                task_kind: Some("generator".into()),
+                task_closure_size: Some(48),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "alloc_task".into(),
+                s_value: Some("task_target".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_str".into(),
+                s_value: Some("unrelated".into()),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let names = NativeBackendModuleContext::object_dependencies(&[function]);
+    assert_eq!(
+        names,
+        BTreeSet::from(
+            ["caller", "indirect_target", "taken_target", "task_target"].map(str::to_string)
+        )
+    );
+    let signature = FunctionIR {
+        name: "taken_target".into(),
+        ..FunctionIR::default()
+    }
+    .function_signature()
+    .unwrap();
+    let linkage = crate::NativeFunctionLinkageAbi {
+        source_signature: signature,
+        parameter_custody: Vec::new(),
+        param_types: Vec::new(),
+        return_type: Some(crate::tir::types::TirType::DynBox),
+    };
+    let mut context = NativeBackendModuleContext {
+        partition_sources: BTreeMap::from([
+            ("caller".into(), "older_part".into()),
+            ("older_part".into(), "source_owner".into()),
+            ("unrelated".into(), "other_owner".into()),
+        ]),
+        function_arities: BTreeMap::from([("taken_target".into(), 1), ("unrelated".into(), 2)]),
+        function_has_ret: BTreeMap::from([
+            ("taken_target".into(), true),
+            ("unrelated".into(), false),
+        ]),
+        closure_functions: BTreeSet::from(["taken_target".into(), "unrelated".into()]),
+        task_kinds: BTreeMap::from([
+            ("taken_target".into(), TrampolineKind::Generator),
+            ("unrelated".into(), TrampolineKind::Plain),
+        ]),
+        task_closure_sizes: BTreeMap::from([("taken_target".into(), 48), ("unrelated".into(), 0)]),
+        function_linkage_abis: BTreeMap::from([
+            ("taken_target".into(), linkage.clone()),
+            ("unrelated".into(), linkage),
+        ]),
+    };
+    let closed = context.project_object_dependencies(&names);
+    assert_eq!(closed.original_function_name("caller"), "source_owner");
+    assert_eq!(closed.function_arities.get("taken_target"), Some(&1));
+    assert_eq!(closed.function_has_ret.get("taken_target"), Some(&true));
+    assert!(closed.closure_functions.contains("taken_target"));
+    assert_eq!(
+        closed.task_kinds.get("taken_target"),
+        Some(&TrampolineKind::Generator)
+    );
+    assert_eq!(closed.task_closure_sizes.get("taken_target"), Some(&48));
+    assert!(closed.function_linkage_abis.contains_key("taken_target"));
+    let encoded = serde_json::to_value(&closed).unwrap();
+    assert!(!encoded.to_string().contains("unrelated"));
+    context.function_arities.insert("unrelated".into(), 99);
+    context.task_closure_sizes.insert("unrelated".into(), 999);
+    assert_eq!(
+        encoded,
+        serde_json::to_value(context.project_object_dependencies(&names)).unwrap()
+    );
+    context.task_closure_sizes.insert("taken_target".into(), 56);
+    assert_ne!(
+        encoded,
+        serde_json::to_value(context.project_object_dependencies(&names)).unwrap()
+    );
+}
+
+#[test]
 fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
     let result = compute_function_has_ret(&[
         FunctionIR {
@@ -15,6 +113,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -41,6 +140,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
     ]);
@@ -71,6 +171,7 @@ fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     crate::externalize_function_with_signature(&mut func);
@@ -103,6 +204,7 @@ fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     crate::externalize_function_with_signature(&mut func);
@@ -143,6 +245,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     crate::externalize_function_with_signature(&mut extern_helper);
@@ -168,6 +271,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let mut functions = vec![caller.clone(), extern_helper.clone()];
@@ -223,6 +327,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -239,6 +344,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
     ]);
@@ -267,6 +373,7 @@ fn compute_function_has_ret_treats_state_machines_as_value_returning() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }]);
 
@@ -337,4 +444,33 @@ fn native_module_context_roundtrip_preserves_partition_sources() {
         restored.original_function_name("__molt_chunk_v1_user"),
         "__molt_chunk_v1_user"
     );
+}
+
+// Entry custody is part of the frozen linkage row: a consumer declaration in
+// another object must adopt exactly what the provider's entry takes over.
+#[test]
+fn native_linkage_abi_freezes_entry_custody_for_consumer_declarations() {
+    let provider = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        name: "owns_argument".to_string(),
+        params: vec!["argument".to_string()],
+        parameter_custody: vec![molt_ir::ParameterCustody::Transferred],
+        ops: vec![OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        }],
+        ..FunctionIR::default()
+    };
+    let mut functions = vec![provider.clone()];
+    let context = SimpleBackend::prepare_module_context(&mut functions);
+    let declaration = provider.extern_declaration().unwrap();
+    context
+        .validate_function_linkage_abis(std::slice::from_ref(&declaration))
+        .expect("a declaration projected from its provider keeps the provider's custody");
+    let mut drifted = declaration;
+    drifted.parameter_custody.clear();
+    let error = context
+        .validate_function_linkage_abis(&[drifted])
+        .unwrap_err();
+    assert!(error.contains("parameter custody"), "{error}");
 }

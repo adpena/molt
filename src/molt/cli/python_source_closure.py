@@ -65,9 +65,9 @@ class LocalPythonSourceClosure:
 
 
 @contextmanager
-def local_python_import_graph_transaction() -> Iterator[None]:
+def local_python_import_graph_transaction(*, fresh: bool = False) -> Iterator[None]:
     """Reuse immutable tooling closure queries only within one build command."""
-    if _GRAPH_TRANSACTION.get() is not None:
+    if not fresh and _GRAPH_TRANSACTION.get() is not None:
         yield
         return
     previous_context = _GRAPH_TRANSACTION.set({})

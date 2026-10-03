@@ -24,6 +24,7 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let provider = FunctionIR {
@@ -38,6 +39,7 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let module_context =

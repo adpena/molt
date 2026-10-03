@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.cli.native_link_test_support import native_codegen_binding
+
 import os
 import subprocess
 from pathlib import Path
@@ -152,10 +154,9 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
         artifacts_root=artifacts_root,
         json_output=False,
         output_binary=output_binary,
-        runtime_lib=runtime_lib,
-        runtime_build_identity=runtime_build_identity,
-        molt_root=project_root,
-        runtime_cargo_profile="dev-fast",
+        runtime_codegen_binding=native_codegen_binding(
+            runtime_lib, runtime_build_identity
+        ),
         target_triple=link_target,
         sysroot_path=None,
         profile="dev",
@@ -233,10 +234,9 @@ def test_prepare_native_link_snapshots_same_root_stdlib_input(
         artifacts_root=artifacts_root,
         json_output=False,
         output_binary=output_binary,
-        runtime_lib=runtime_lib,
-        runtime_build_identity=runtime_build_identity,
-        molt_root=project_root,
-        runtime_cargo_profile="dev-fast",
+        runtime_codegen_binding=native_codegen_binding(
+            runtime_lib, runtime_build_identity
+        ),
         target_triple=link_target,
         sysroot_path=None,
         profile="dev",

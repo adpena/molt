@@ -4,90 +4,14 @@ use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results
 impl LuauBackend {
     pub(super) fn emit_scalar_kernel_op(&mut self, op: &OpIR) -> bool {
         match op.kind.as_str() {
-            kind if kind.starts_with("vec_sum_")
-                || kind.starts_with("vec_prod_")
-                || kind.starts_with("vec_min_")
-                || kind.starts_with("vec_max_") =>
-            {
+            // A fused-loop reduction may stand in for items of its loop only
+            // when the result is exactly the loop's: exact ints and in-order
+            // IEEE float operations. Luau numbers cannot hold Python ints
+            // exactly, so the op consumes nothing, `(None, None, 0, False)`,
+            // and the ordinary loop lowered after it runs every item.
+            "vec_sum" | "vec_prod" | "vec_min" | "vec_max" => {
                 let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(iterable) = args.first() {
-                    let iterable = sanitize_ident(iterable);
-                    let (init, body_op) = if kind.starts_with("vec_sum_") {
-                        ("0", "acc = acc + v")
-                    } else if kind.starts_with("vec_prod_") {
-                        ("1", "acc = acc * v")
-                    } else if kind.starts_with("vec_min_") {
-                        ("math.huge", "if v < acc then acc = v end")
-                    } else {
-                        ("-math.huge", "if v > acc then acc = v end")
-                    };
-                    self.emit_line(&format!("local {out}"));
-                    self.emit_line("do");
-                    self.push_indent();
-                    self.emit_line(&format!(
-                        "if type({iterable}) == \"table\" and #({iterable}) > 0 then"
-                    ));
-                    self.push_indent();
-                    self.emit_line(&format!("local acc = {init}"));
-                    self.emit_line(&format!(
-                        "for __vi = 1, #{iterable} do local v = {iterable}[__vi]; {body_op} end"
-                    ));
-                    self.emit_line(&format!("{out} = {{acc, false}}"));
-                    self.pop_indent();
-                    self.emit_line("else");
-                    self.push_indent();
-                    self.emit_line(&format!("{out} = {{nil, true}}"));
-                    self.pop_indent();
-                    self.emit_line("end");
-                    self.pop_indent();
-                    self.emit_line("end");
-                } else {
-                    self.emit_line(&format!(
-                        "local {out} = {{nil, true}} -- [vectorized: {kind}]"
-                    ));
-                }
-            }
-            "intarray_from_seq" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(seq) = args.first() {
-                    let seq = sanitize_ident(seq);
-                    self.emit_line(&format!("local {out}"));
-                    self.emit_line("do");
-                    self.push_indent();
-                    self.emit_line(&format!("local __seq = {seq}"));
-                    self.emit_line("if type(__seq) == \"table\" then");
-                    self.push_indent();
-                    self.emit_line("local __arr = {}");
-                    self.emit_line("local __ok = true");
-                    self.emit_line("for __i = 1, #__seq do");
-                    self.push_indent();
-                    self.emit_line("local __v = __seq[__i]");
-                    self.emit_line("if type(__v) == \"number\" and math.floor(__v) == __v then");
-                    self.push_indent();
-                    self.emit_line("__arr[__i] = __v");
-                    self.pop_indent();
-                    self.emit_line("else");
-                    self.push_indent();
-                    self.emit_line("__ok = false");
-                    self.emit_line("break");
-                    self.pop_indent();
-                    self.emit_line("end");
-                    self.pop_indent();
-                    self.emit_line("end");
-                    self.emit_line(&format!("{out} = if __ok then __arr else nil"));
-                    self.pop_indent();
-                    self.emit_line("else");
-                    self.push_indent();
-                    self.emit_line(&format!("{out} = nil"));
-                    self.pop_indent();
-                    self.emit_line("end");
-                    self.pop_indent();
-                    self.emit_line("end");
-                } else {
-                    self.emit_line(&format!("local {out} = nil"));
-                }
+                self.emit_line(&format!("local {out} = {{nil, nil, 0, false}}"));
             }
             "checked_add" => {
                 let args = op.args.as_deref().unwrap_or(&[]);

@@ -54,8 +54,7 @@ unsafe extern "C" fn method_stub(_self: *mut PyObject, _args: *mut PyObject) -> 
 #[test]
 fn pycmethod_new_requires_and_stores_defining_class() {
     support::prepare_abi_test_thread(support::stub_runtime_hooks());
-    unsafe { molt_cpython_abi::abi_types::init_static_types() };
-    molt_cpython_abi::bridge::init_tag_table();
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut definition = PyMethodDef {
         ml_name: c"method".as_ptr(),
         ml_meth: Some(method_stub),
@@ -102,7 +101,7 @@ fn size_t_entry_points_are_linked_and_execute() {
 #[test]
 fn new_exception_rejects_unqualified_name() {
     support::prepare_abi_test_thread(support::stub_runtime_hooks());
-    unsafe { molt_cpython_abi::abi_types::init_static_types() };
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
     let bad = unsafe {
         molt_cpython_abi::api::errors::PyErr_NewException(
             c"Unqualified".as_ptr(),

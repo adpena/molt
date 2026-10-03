@@ -88,7 +88,11 @@ pub(in crate::wasm::state_dispatch) fn emit_stateful_resume_prelude(
         func.instruction(&Instruction::If(BlockType::Empty));
         func.instruction(&Instruction::LocalGet(remap_value_local));
         func.instruction(&Instruction::LocalSet(locals.state_local));
+        func.instruction(&Instruction::Else);
+        func.instruction(&Instruction::Unreachable);
         func.instruction(&Instruction::End);
+        func.instruction(&Instruction::Else);
+        func.instruction(&Instruction::Unreachable);
         func.instruction(&Instruction::End);
     } else {
         emit_sparse_state_remap_lookup(

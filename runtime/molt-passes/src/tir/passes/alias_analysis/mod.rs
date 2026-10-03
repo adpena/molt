@@ -89,8 +89,7 @@ use regions::{opcode_is_rc_barrier, typed_slot_obj_offset};
 pub use copy_kind::copy_kind_reaches_no_incref_passthrough;
 pub(crate) use copy_kind::{
     CopyLowering, classify_copy_kind, copy_kind_is_exception_creation_ref,
-    copy_kind_is_explicit_no_heap_move, copy_kind_mints_fresh_owned_ref,
-    copy_kind_raw_carrier_type,
+    copy_kind_is_explicit_no_heap_move, copy_kind_mints_owned_value, copy_kind_raw_carrier_type,
 };
 use copy_kind::{copy_is_known_local_alias, copy_kind_is_memory_inert, copy_original_kind};
 
@@ -117,137 +116,6 @@ pub fn build_alias_union_find(func: &TirFunction) -> AliasUnionFind {
         }
     }
     aliases
-}
-
-// ===========================================================================
-// Borrow provenance — the interior-borrow keepalive relation (RC drop-insertion
-// substrate, design 20).
-// ===========================================================================
-
-/// The operand value `op`'s result interior-borrows (a BORROW into — or an opaque
-/// HANDLE indexing — that operand's backing store), or `None`. Such a result keeps
-/// its source object semantically alive: freeing the source (running its
-/// finalizer) can invalidate the result.
-///
-/// REGISTRY-DRIVEN (design 27 §1.5 / §2.1, op-semantics ladder #73): the borrow-of
-/// fact is no longer a hardcoded `LoadAttr | Index` match here — it is the
-/// per-position `operand_ownership = "interior_borrow_keepalive"` row in
-/// `op_kinds.toml`, generated into
-/// [`crate::tir::op_kinds_generated::opcode_borrows_source_operand`] (which returns
-/// the interior-borrowed operand INDEX, or `None`). The single declarative
-/// authority means a FUTURE op whose result borrows into an operand (a `memoryview`
-/// op, a slice-view intrinsic) gets correct keepalive by setting that operand's
-/// position in op_kinds.toml — never by editing this function — retiring the
-/// per-pass borrow-of hand list (the C4 interior-borrow-lifetime class).
-///
-/// The fact it encodes (byte-identical to the prior match): `LoadAttr` / `Index`
-/// interior-borrow operand 0. `Index`'s key operand and `OrdAt` (an `i64` code
-/// point copied out of the element, not a reference into the container) carry NO
-/// keepalive — they are classified `borrowed` / left off the table.
-///
-/// This is DISTINCT from the transparent-alias relation (`copy_is_known_local_alias`):
-/// a borrow result is NOT bit-identical to the source and must NOT be unioned into
-/// the source's alias root (that would let MemGVN forward a store on the source to
-/// a load of the result — a miscompile). It is a one-directional LIVENESS coupling
-/// only: "the source must outlive this result."
-///
-/// FAIL-CLOSED (conservative superset). Every `LoadAttr` and `Index` is treated as
-/// potentially borrowing, including the `ProvenPure` typed-slot forms. For an
-/// owned-result load (the common case — a normal `obj.field` whose result carries
-/// its own `+1`) the coupling only DEFERS the source's drop to after the result's
-/// last use, which is harmless (a slightly later drop, never a leak, never a UAF).
-/// For the borrow / opaque-handle case it is mandatory for soundness:
-///
-/// > The intrinsic-handle stdlib classes (`collections.Counter`, …) store their
-/// > native data in a global registry keyed by a RAW-INTEGER handle held in an
-/// > instance slot (`self._handle`). The fast-path lowering inlines `len(c)` /
-/// > `c[k]` as `h = get_attr(c, "_handle")` then `molt_counter_len(h)` /
-/// > `molt_counter_getitem(h, k)`. The handle `h` is a raw int (no refcount), and
-/// > the registry entry is owned by the wrapper's `__del__` (`molt_counter_drop`).
-/// > If the drop pass releases the wrapper `c` at its last DIRECT operand use (the
-/// > `get_attr`), the wrapper's finalizer destroys the registry entry BEFORE the
-/// > intrinsic call reads `h` → the call sees an empty/destroyed counter (the
-/// > round-6 BLOCKER-1 use-after-free: `len(Counter(...))` returned 0).
-fn op_borrow_source(op: &TirOp) -> Option<ValueId> {
-    let idx = crate::tir::op_kinds_generated::opcode_borrows_source_operand(op.opcode)?;
-    op.operands.get(idx).copied()
-}
-
-/// The interior-borrow keepalive relation for a function: maps each borrowing-read
-/// result (the result of a [`OpCode::LoadAttr`] / [`OpCode::Index`]) to the alias
-/// ROOT of the source object it borrows from. Both the liveness analysis and the
-/// drop pass consume this single relation so the source-object liveness is extended
-/// — identically — through the borrow result's uses (see [`op_borrow_source`]).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct BorrowProvenance {
-    /// borrow-result value → alias root of its immediate source object.
-    immediate_source: HashMap<ValueId, ValueId>,
-}
-
-impl BorrowProvenance {
-    /// The transitive set of source-object alias roots that `value` borrows from —
-    /// the roots that must remain live wherever `value` is live. Empty when `value`
-    /// is not (transitively) a borrow result. Resolves chains
-    /// (`h2 = LoadAttr(h1); h1 = LoadAttr(obj)` → using `h2` keeps both `h1`'s root
-    /// and `obj`'s root alive). `canon` maps any value to its transparent-alias
-    /// root (so a `Copy` of a borrow result resolves to the same sources).
-    pub fn keepalive_roots(
-        &self,
-        value: ValueId,
-        canon: &dyn Fn(ValueId) -> ValueId,
-    ) -> Vec<ValueId> {
-        let mut out: Vec<ValueId> = Vec::new();
-        let mut seen: HashSet<ValueId> = HashSet::new();
-        // Seed with the value's own root and the value itself (a borrow result may
-        // be referenced either by its raw SSA id or through a transparent Copy).
-        let mut work: Vec<ValueId> = vec![value, canon(value)];
-        while let Some(v) = work.pop() {
-            if !seen.insert(v) {
-                continue;
-            }
-            if let Some(&src_root) = self.immediate_source.get(&v) {
-                if out.iter().all(|&r| r != src_root) {
-                    out.push(src_root);
-                }
-                // The source root may itself be a borrow result (chain). Walk it.
-                work.push(src_root);
-                work.push(canon(src_root));
-            }
-        }
-        out
-    }
-
-    /// True if the relation is empty (no borrowing reads in the function) — lets a
-    /// consumer skip the per-use keepalive walk entirely on the common path.
-    pub fn is_empty(&self) -> bool {
-        self.immediate_source.is_empty()
-    }
-}
-
-/// Build the [`BorrowProvenance`] relation for `func`. Keyed by the borrow-result
-/// SSA id; the value is the source's alias root (canonicalized through the shared
-/// transparent-alias union-find, so a borrow of a `Copy`-aliased object records the
-/// underlying owned root). One forward scan, mirroring [`build_alias_union_find`].
-pub fn build_borrow_provenance(func: &TirFunction, aliases: &AliasUnionFind) -> BorrowProvenance {
-    let mut bp = BorrowProvenance::default();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            let Some(src) = op_borrow_source(op) else {
-                continue;
-            };
-            let src_root = aliases.root(src);
-            for &result in &op.results {
-                // A self-referential edge (result aliases its own source) would
-                // loop the keepalive walk; the `seen` guard in `keepalive_roots`
-                // already breaks cycles, but never record an identity edge.
-                if aliases.root(result) == src_root {
-                    continue;
-                }
-                bp.immediate_source.insert(result, src_root);
-            }
-        }
-    }
-    bp
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

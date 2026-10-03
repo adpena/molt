@@ -39,6 +39,22 @@ impl WasmFunctionAnalysis {
     pub(super) fn for_function(func: &FunctionIR) -> Self {
         let last_use = molt_tir::passes::build_last_use_map(&func.ops);
         let drop_inserted = func.ops.iter().any(|op| op.kind == "drop_inserted");
+        // Only the TIR drop plan moves or retains transferred references; the
+        // legacy coalescer would release a transferred operand twice, and could
+        // not plan an adopted parameter's releases.
+        let transfers = |custody: &[molt_ir::ParameterCustody]| {
+            custody.contains(&molt_ir::ParameterCustody::Transferred)
+        };
+        assert!(
+            drop_inserted
+                || !(transfers(&func.parameter_custody)
+                    || func
+                        .ops
+                        .iter()
+                        .any(|op| op.argument_custody.as_deref().is_some_and(transfers))),
+            "function `{}` carries reference custody but was not drop-inserted",
+            func.name
+        );
         let (rc_skip_inc, rc_skip_dec) = if drop_inserted {
             (HashSet::new(), HashSet::new())
         } else {
@@ -77,11 +93,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) fn scalar_plan(&self) -> &ScalarRepresentationPlan {
         self.frame.scalar_plan()
     }
-
-    pub(super) fn emit_const_anchor_releases(&self, func: &mut wasm_encoder::Function) {
-        self.frame
-            .emit_const_anchor_releases(func, self.import_ids, self.reloc_enabled);
-    }
 }
 
 #[cfg(test)]
@@ -108,6 +119,7 @@ mod analysis_tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }
     }

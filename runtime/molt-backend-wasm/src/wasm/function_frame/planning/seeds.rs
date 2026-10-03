@@ -2,6 +2,7 @@ use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm::frame_locals::{WasmFrameAnonymousLocal, WasmLiteralScratchLocals};
+use crate::wasm::local_analysis::ValueOccupancy;
 use crate::wasm_abi_generated::WasmConstLiteralPayload;
 use crate::wasm_values::box_none;
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,6 +33,9 @@ pub(super) struct FrameConstSeedPlan {
 }
 
 impl FrameConstSeedPlan {
+    /// `seed_at_entry` admits an inline constant to the dispatch entry seeds.
+    /// A seed is a write at function entry, needed only by a value that can be
+    /// observed there before its defining operation runs.
     pub(super) fn observe_const_output(
         &mut self,
         op_idx: usize,
@@ -39,6 +43,7 @@ impl FrameConstSeedPlan {
         out: &str,
         out_local_idx: u32,
         is_dead: bool,
+        seed_at_entry: bool,
         locals: &mut WasmFrameLocals,
         local_types: &mut Vec<ValType>,
         local_count: &mut u32,
@@ -51,7 +56,7 @@ impl FrameConstSeedPlan {
                 local_count,
             );
             if let Some(bits) = const_policy.inline_seed_bits(op) {
-                if !is_dead && self.seen_inline_outputs.insert(out.to_string()) {
+                if !is_dead && seed_at_entry && self.seen_inline_outputs.insert(out.to_string()) {
                     self.inline_locals.push((out_local_idx, bits));
                 }
                 return;
@@ -92,19 +97,24 @@ impl FrameConstSeedPlan {
         }
     }
 
+    /// Values read but never defined observe a None seed. With exact storage
+    /// occupancy only values observable at function entry are seeded, since a
+    /// seed is a write at that position.
     pub(super) fn seed_undefined_locals(
         &mut self,
-        used_vars: &BTreeSet<String>,
+        read_vars: &BTreeSet<String>,
         defined_vars: &BTreeSet<String>,
         param_set: &BTreeSet<String>,
         locals: &WasmFrameLocals,
         dead_sink_idx: u32,
+        occupancy: Option<&ValueOccupancy>,
     ) {
-        for undef in used_vars.difference(defined_vars) {
+        for undef in read_vars.difference(defined_vars) {
             if let Some(&local_idx) = locals.get(undef.as_str())
                 && local_idx != dead_sink_idx
                 && !param_set.contains(undef.as_str())
                 && !self.seen_inline_outputs.contains(undef)
+                && occupancy.is_none_or(|occupancy| occupancy.is_entry_live(undef))
             {
                 self.seen_inline_outputs.insert(undef.clone());
                 self.inline_locals.push((local_idx, box_none()));

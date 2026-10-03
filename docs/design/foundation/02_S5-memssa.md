@@ -212,6 +212,7 @@ Dependencies: `AliasAnalysis` (must be computed first), `ImmediateDoms`, `DomChi
 Responsibilities:
 - Store-to-load forwarding: for each `LoadAttr` with `load_purity == ProvenPure`, consult MemorySSA for the single reaching def. If the reaching def is a `store` with an exact-site callback-free proof from the shared typed-slot plan, at a statically-known offset that matches the load's region, and the stored `ValueId` is in scope (dominates the load), replace the load with a `Copy` of the stored value. An unproved replacing `store` is not a source: releasing the old value can reenter Python and change the slot before the store returns.
 - Redundant-load elimination: for each `LoadAttr`, if MemorySSA shows the same `(object_root, offset)` was already loaded under the same reaching def version in a dominating block, replace the load with a `Copy` of the earlier load's result.
+- Ownership: a load returns an owned reference, and its replacement keeps it. The `Copy` of a heap value is an owned alias (`binding_alias`), and the `Copy` of a raw carrier stays transparent (`ownership_lattice_min::Replacements`, design 20 §1.2). No `IncRef` is placed beside it.
 - Post-replacement: call `MemorySsaResult::invalidate_op` for removed loads (they are now Uses of nothing), then invalidate `AnalysisId::AliasAnalysis` and `AnalysisId::MemorySSA` (the copy prop and DCE passes that follow will clean up the `Copy` chains).
 - Mutation class: `Mutates::OpsOnly` (no new blocks or edges).
 
@@ -561,7 +562,7 @@ def f(x: int) -> int:
 
 assert f(1 << 60) == 1 << 60  # must stay BigInt-correct after forwarding
 ```
-Expected: `n.v` forwarded to `x`, which is `MaybeBigInt`. The forwarded `Copy(x)` carries the `MaybeBigInt` repr — no trusted-unbox introduced.
+Expected: `n.v` forwarded to `x`, which is `MaybeBigInt`. The forwarded `Copy(x)`, an owned alias of a heap-capable value, stays boxed — no trusted-unbox introduced.
 
 **Cross-backend: all 4 backends must produce identical results on all of the above.**
 

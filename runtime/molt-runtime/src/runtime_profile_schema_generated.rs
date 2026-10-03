@@ -95,14 +95,9 @@ pub(crate) struct RuntimeProfileSnapshot {
     pub(crate) call_bind_ic_miss: u64,
     pub(crate) attr_site_name_hit: u64,
     pub(crate) attr_site_name_miss: u64,
-    pub(crate) split_ws_ascii: u64,
-    pub(crate) split_ws_unicode: u64,
     pub(crate) dict_str_int_prehash_hit: u64,
     pub(crate) dict_str_int_prehash_miss: u64,
     pub(crate) dict_str_int_prehash_deopt: u64,
-    pub(crate) taq_ingest_calls: u64,
-    pub(crate) taq_ingest_skip_marker: u64,
-    pub(crate) ascii_i64_parse_fail: u64,
     pub(crate) call_indirect_noncallable: u64,
     pub(crate) invoke_ffi_bridge_capability_denied: u64,
     pub(crate) guard_tag_type_mismatch: u64,
@@ -424,14 +419,6 @@ impl RuntimeProfileSnapshot {
                 serde_json::Value::from(self.attr_site_name_miss),
             );
             values.insert(
-                "split_ws_ascii".to_owned(),
-                serde_json::Value::from(self.split_ws_ascii),
-            );
-            values.insert(
-                "split_ws_unicode".to_owned(),
-                serde_json::Value::from(self.split_ws_unicode),
-            );
-            values.insert(
                 "dict_str_int_prehash_hit".to_owned(),
                 serde_json::Value::from(self.dict_str_int_prehash_hit),
             );
@@ -442,18 +429,6 @@ impl RuntimeProfileSnapshot {
             values.insert(
                 "dict_str_int_prehash_deopt".to_owned(),
                 serde_json::Value::from(self.dict_str_int_prehash_deopt),
-            );
-            values.insert(
-                "taq_ingest_calls".to_owned(),
-                serde_json::Value::from(self.taq_ingest_calls),
-            );
-            values.insert(
-                "taq_ingest_skip_marker".to_owned(),
-                serde_json::Value::from(self.taq_ingest_skip_marker),
-            );
-            values.insert(
-                "ascii_i64_parse_fail".to_owned(),
-                serde_json::Value::from(self.ascii_i64_parse_fail),
             );
             root.insert("hot_paths".to_owned(), serde_json::Value::Object(values));
         }
@@ -629,14 +604,9 @@ pub(crate) fn runtime_profile_metric_semantic(
         ("hot_paths", "call_bind_ic_miss") => Some(RuntimeProfileMetricSemantic::Counter),
         ("hot_paths", "attr_site_name_hit") => Some(RuntimeProfileMetricSemantic::Counter),
         ("hot_paths", "attr_site_name_miss") => Some(RuntimeProfileMetricSemantic::Counter),
-        ("hot_paths", "split_ws_ascii") => Some(RuntimeProfileMetricSemantic::Counter),
-        ("hot_paths", "split_ws_unicode") => Some(RuntimeProfileMetricSemantic::Counter),
         ("hot_paths", "dict_str_int_prehash_hit") => Some(RuntimeProfileMetricSemantic::Counter),
         ("hot_paths", "dict_str_int_prehash_miss") => Some(RuntimeProfileMetricSemantic::Counter),
         ("hot_paths", "dict_str_int_prehash_deopt") => Some(RuntimeProfileMetricSemantic::Counter),
-        ("hot_paths", "taq_ingest_calls") => Some(RuntimeProfileMetricSemantic::Counter),
-        ("hot_paths", "taq_ingest_skip_marker") => Some(RuntimeProfileMetricSemantic::Counter),
-        ("hot_paths", "ascii_i64_parse_fail") => Some(RuntimeProfileMetricSemantic::Counter),
         ("deopt_reasons", "call_indirect_noncallable") => {
             Some(RuntimeProfileMetricSemantic::Counter)
         }

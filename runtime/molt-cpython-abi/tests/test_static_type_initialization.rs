@@ -3,6 +3,7 @@
 //! boundary, then repeat it while legitimate live type metadata is retained.
 
 use molt_cpython_abi::abi_types::*;
+use molt_cpython_abi::bridge::molt_cpython_abi_init;
 
 #[test]
 fn concurrent_and_repeated_bootstrap_preserves_live_builtin_shells() {
@@ -11,7 +12,7 @@ fn concurrent_and_repeated_bootstrap_preserves_live_builtin_shells() {
             scope.spawn(|| {
                 for _ in 0..256 {
                     unsafe {
-                        init_static_types();
+                        molt_cpython_abi_init();
                         let tuple = &raw const PyTuple_Type;
                         assert_ne!((*tuple).tp_flags & Py_TPFLAGS_HAVE_GC, 0);
                         assert_ne!((*tuple).tp_flags & Py_TPFLAGS_READY, 0);
@@ -38,7 +39,7 @@ fn concurrent_and_repeated_bootstrap_preserves_live_builtin_shells() {
         let flags = (*tuple).tp_flags;
         let refcount = (*tuple).ob_base.ob_base.ob_refcnt;
         for _ in 0..16 {
-            init_static_types();
+            molt_cpython_abi_init();
             assert_eq!((*tuple).tp_flags, flags);
             assert_eq!((*tuple).tp_version_tag, 0x13579);
             assert_eq!((*tuple).ob_base.ob_base.ob_refcnt, refcount);

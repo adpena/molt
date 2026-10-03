@@ -169,7 +169,9 @@ fn alloc_class_balances_heap_class_refcount() {
 
     let obj_bits = molt_runtime::molt_alloc_class(0, class_bits);
     assert_ne!(obj_bits, none());
-    assert_eq!(molt_runtime::molt_type_of_borrowed(obj_bits), class_bits);
+    let actual_type = molt_runtime::molt_type_of(obj_bits);
+    assert_eq!(actual_type, class_bits);
+    molt_runtime::molt_dec_ref_obj(actual_type);
     assert_eq!(refcount(class_bits), class_before + 1);
 
     molt_runtime::molt_dec_ref_obj(obj_bits);
@@ -187,7 +189,9 @@ fn alloc_class_owns_and_balances_heap_class_refcount_canonically() {
 
     let obj_bits = molt_runtime::molt_alloc_class(0, class_bits);
     assert_ne!(obj_bits, none());
-    assert_eq!(molt_runtime::molt_type_of_borrowed(obj_bits), class_bits);
+    let actual_type = molt_runtime::molt_type_of(obj_bits);
+    assert_eq!(actual_type, class_bits);
+    molt_runtime::molt_dec_ref_obj(actual_type);
     assert_eq!(refcount(class_bits), class_before + 1);
 
     molt_runtime::molt_dec_ref_obj(obj_bits);

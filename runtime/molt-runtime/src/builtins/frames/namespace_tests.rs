@@ -48,13 +48,23 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                 };
                 let name = MoltObject::from_ptr(crate::alloc_string(py, name)).bits();
                 let empty = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
+                let key = MoltObject::from_ptr(crate::alloc_string(py, b"value")).bits();
+                let varnames = MoltObject::from_ptr(crate::alloc_tuple(
+                    py,
+                    if module {
+                        &[]
+                    } else {
+                        std::slice::from_ref(&key)
+                    },
+                ))
+                .bits();
                 let code = MoltObject::from_ptr(crate::alloc_code_obj(
                     py,
                     name,
                     name,
                     1,
                     MoltObject::none().bits(),
-                    empty,
+                    varnames,
                     empty,
                     0,
                     0,
@@ -62,22 +72,45 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                 ))
                 .bits();
                 let namespace = dict(py);
-                let key = MoltObject::from_ptr(crate::alloc_string(py, b"value")).bits();
                 let namespace_ptr = obj_from_bits(namespace).as_ptr().unwrap();
                 unsafe {
-                    dict_set_in_place(py, namespace_ptr, key, MoltObject::from_int(1).bits())
+                    dict_set_in_place(
+                        py,
+                        namespace_ptr,
+                        key,
+                        MoltObject::from_int(if module { 1 } else { 90 }).bits(),
+                    )
                 };
                 crate::molt_code_slots_init(1);
                 crate::molt_code_slot_set(0, code, namespace);
                 crate::molt_trace_enter_slot(0);
-                molt_frame_locals_set(namespace);
-                let first = molt_locals_builtin();
-                unsafe {
-                    dict_set_in_place(py, namespace_ptr, key, MoltObject::from_int(2).bits())
+                assert!(!crate::exception_pending(py));
+                let homes = if module {
+                    molt_frame_locals_set(namespace);
+                    std::ptr::null_mut()
+                } else {
+                    // An optimized activation's bindings are its compiled
+                    // homes, not a dictionary injected as module locals.
+                    let homes = molt_frame_homes(1) as usize as *mut u64;
+                    assert!(!homes.is_null());
+                    unsafe {
+                        *homes = molt_codegen_abi::FRAME_HOME_PLAIN as u64;
+                        *homes.add(1) = MoltObject::from_int(1).bits();
+                    }
+                    homes
                 };
+                let first = molt_locals_builtin();
+                if module {
+                    unsafe {
+                        dict_set_in_place(py, namespace_ptr, key, MoltObject::from_int(2).bits())
+                    };
+                } else {
+                    // Replacing an immediate int needs no reference release.
+                    unsafe { *homes.add(1) = MoltObject::from_int(2).bits() };
+                }
                 let second = molt_locals_builtin();
                 let aliases = module || minor == 12;
-                assert_eq!(first == namespace, aliases, "3.{minor}, module={module}");
+                assert_eq!(first == namespace, module, "3.{minor}, module={module}");
                 assert_eq!(first == second, aliases, "3.{minor}, module={module}");
                 unsafe {
                     assert_eq!(
@@ -88,11 +121,16 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                         crate::dict_get_in_place(py, obj_from_bits(second).as_ptr().unwrap(), key),
                         Some(MoltObject::from_int(2).bits())
                     );
+                    assert_eq!(
+                        crate::dict_get_in_place(py, namespace_ptr, key),
+                        Some(MoltObject::from_int(if module { 2 } else { 90 }).bits()),
+                        "optimized locals must not replace the globals namespace",
+                    );
                 }
                 assert!(!crate::exception_pending(py));
                 crate::molt_trace_exit();
                 crate::molt_code_slots_init(0);
-                for bits in [first, second, key, namespace, code, empty, name] {
+                for bits in [first, second, key, namespace, code, varnames, empty, name] {
                     dec_ref_bits(py, bits);
                 }
             }
@@ -247,7 +285,8 @@ fn invocation_handoff_is_keyed_nested_single_use_and_balanced_when_unconsumed() 
                 dec_ref_bits(py, bits);
             }
             assert!(take_invocation_namespace(0).is_none());
-            let [globals, builtins, code] = take_invocation_namespace(1).unwrap();
+            let [globals, builtins, code, activation] = take_invocation_namespace(1).unwrap();
+            assert_eq!(activation, 0);
             assert_eq!([globals, builtins, code], [second, second, second_code]);
             dec_ref_bits(py, globals);
             dec_ref_bits(py, builtins);
@@ -262,11 +301,12 @@ fn invocation_handoff_is_keyed_nested_single_use_and_balanced_when_unconsumed() 
         assert_eq!(refs(first), 1);
         let consumed =
             FrameInvocationGuard::for_suspended_namespace(py, first_code, first, second).unwrap();
-        let [globals, builtins, code] = take_invocation_namespace(0).unwrap();
+        let [globals, builtins, code, activation] = take_invocation_namespace(0).unwrap();
         assert!(
             take_invocation_namespace(0).is_none(),
             "a recursive symbol entry cannot consume twice"
         );
+        assert_eq!(activation, 0);
         drop(consumed);
         dec_ref_bits(py, globals);
         dec_ref_bits(py, builtins);
@@ -430,7 +470,7 @@ fn captured_builtins_values_survive_suspension_and_lookup_never_falls_back() {
             inc_ref_bits(py, globals);
             inc_ref_bits(py, captured);
             inc_ref_bits(py, code);
-            frame_stack_push_owned(py, code, globals, captured);
+            frame_stack_push_owned(py, code, globals, captured, 0);
             let result = crate::builtins::modules::molt_module_get_global(
                 MoltObject::none().bits(),
                 missing_name,
@@ -490,7 +530,7 @@ fn lazy_traceback_keeps_namespaces_and_locals_after_live_frame_retirement() {
         for bits in [code, globals, builtins] {
             inc_ref_bits(py, bits);
         }
-        frame_stack_push_owned(py, code, globals, builtins);
+        frame_stack_push_owned(py, code, globals, builtins, 0);
         frame_stack_set_locals_dict(py, locals);
         let payload = frame_stack_trace_payload_bits(py, None, false).unwrap();
         frame_stack_pop(py);
@@ -506,17 +546,19 @@ fn lazy_traceback_keeps_namespaces_and_locals_after_live_frame_retirement() {
             unsafe { crate::object_class_bits(obj_from_bits(frame).as_ptr().unwrap()) },
             builtin_classes(py).frame
         );
-        let frame_dict = unsafe { instance_dict_bits(obj_from_bits(frame).as_ptr().unwrap()) };
+        // f_locals is the frame class's descriptor over its retained typed
+        // source. Observe the public fields instead of assuming dictionary
+        // storage; all three namespace identities and their custody still hold.
         for (name, expected) in [
             (b"f_globals".as_slice(), globals),
             (b"f_locals".as_slice(), locals),
             (b"f_builtins".as_slice(), builtins),
         ] {
             let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
-            assert_eq!(
-                unsafe { dict_get_in_place(py, obj_from_bits(frame_dict).as_ptr().unwrap(), key) },
-                Some(expected)
-            );
+            let actual = crate::molt_get_attr_name(frame, key);
+            assert!(!crate::exception_pending(py));
+            assert_eq!(actual, expected);
+            dec_ref_bits(py, actual);
             dec_ref_bits(py, key);
         }
         dec_ref_bits(py, frame);
@@ -574,6 +616,8 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
             line: 1,
             col_offset: -1,
             end_col_offset: -1,
+            activation_bits: 0,
+            bindings: bindings::FrameBindings::default(),
             python_context: PythonFrameContext::default(),
         };
         let construct = || unsafe { alloc_frame_obj(py, entry, 1, MoltObject::none().bits(), -1) };

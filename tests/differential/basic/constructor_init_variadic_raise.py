@@ -17,7 +17,7 @@ runtime/molt-runtime/src/call/bind.rs:
      observe it — so the `try` saw no exception. Fix: skip IC-cache population
      when the call left a pending exception (a raised call is not cacheable).
 
-  2. `call_type_with_builder`'s `InitArgPolicy::ForwardArgs` arm (the
+  2. `call_type_with_arguments`'s `InitArgPolicy::ForwardArgs` arm (the
      full-binding constructor lane) returned the partially-constructed instance
      unconditionally after invoking `__init__`, instead of returning the `none`
      sentinel on a pending exception like every other constructor return path

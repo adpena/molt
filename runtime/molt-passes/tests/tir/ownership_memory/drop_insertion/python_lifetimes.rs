@@ -424,6 +424,131 @@ fn store_var_transfer_phi_live_in_descendant_blocks_old_root_drop() {
 }
 
 #[test]
+fn returned_phi_alias_keeps_transferred_owner_across_cleanup_blocks() {
+    for alias_kind in ["copy", "load_var", "identity_alias"] {
+        let mut func = TirFunction::new(
+            format!("returned_phi_{alias_kind}_across_cleanup"),
+            vec![TirType::Bool],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let cond = ValueId(0);
+        let replacement = func.fresh_block();
+        let join = func.fresh_block();
+        let cleanup = func.fresh_block();
+        let ret = func.fresh_block();
+        let original = func.fresh_value();
+        let stored = func.fresh_value();
+        let other = func.fresh_value();
+        let phi = func.fresh_value();
+        let returned = func.fresh_value();
+        for value in [original, stored, other, phi, returned] {
+            func.value_types.insert(value, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let block = func.blocks.get_mut(&entry).unwrap();
+            block.ops = vec![
+                original_copy_with_operands("list_new", vec![], vec![original]),
+                original_copy_with_operands("store_var", vec![original], vec![stored]),
+            ];
+            block.terminator = Terminator::CondBranch {
+                cond,
+                then_block: replacement,
+                then_args: vec![],
+                else_block: join,
+                else_args: vec![stored],
+            };
+        }
+        func.blocks.insert(
+            replacement,
+            TirBlock {
+                id: replacement,
+                args: vec![],
+                ops: vec![
+                    original_copy_with_operands("list_new", vec![], vec![other]),
+                    op(OpCode::DelBoundary, vec![stored], vec![]),
+                ],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![other],
+                },
+            },
+        );
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: phi,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![original_copy_with_operands(
+                    alias_kind,
+                    vec![phi],
+                    vec![returned],
+                )],
+                terminator: Terminator::Branch {
+                    target: cleanup,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            cleanup,
+            TirBlock {
+                id: cleanup,
+                args: vec![],
+                // Return unwinding can run after the last textual phi use.
+                ops: vec![op(OpCode::WarnStderr, vec![], vec![])],
+                terminator: Terminator::Branch {
+                    target: ret,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            ret,
+            TirBlock {
+                id: ret,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![returned],
+                },
+            },
+        );
+
+        run(&mut func, &mut AnalysisManager::new());
+        molt_passes::tir::verify::verify_function(&func).unwrap();
+        let releases: Vec<_> = func
+            .blocks
+            .iter()
+            .flat_map(|(&bid, block)| {
+                block
+                    .ops
+                    .iter()
+                    .filter(|op| op.opcode == OpCode::DecRef)
+                    .map(move |op| (bid, op.operands[0]))
+            })
+            .collect();
+        assert_eq!(
+            releases,
+            vec![(replacement, original)],
+            "{alias_kind}: only rebinding releases an owner; either selected value transfers to the caller"
+        );
+        assert!(
+            !func
+                .blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .any(|op| op.opcode == OpCode::IncRef),
+            "{alias_kind}: both incoming owners already carry the caller's credit"
+        );
+    }
+}
+
+#[test]
 fn store_var_scope_root_survives_loop_exit_to_return_boundary() {
     let mut func = TirFunction::new(
         "store_var_scope_root_survives_loop_exit".into(),
@@ -2175,5 +2300,79 @@ fn positive_named_ownership_not_finalizer_absence_selects_python_boundary() {
                 }
             }
         }
+    }
+}
+
+/// A named local moved into a block argument on one arm only. That argument
+/// holds the object on its arm under the same lexical custody, while the other
+/// arm keeps the local's own reference to the join. Neither name reaches the
+/// join owned on both paths, so each is released on its own arc into it. A
+/// join-wide "some arc transfers the local" shortcut left the other arm's
+/// reference unreleased.
+#[test]
+fn store_var_boundary_moved_on_one_arm_is_released_on_the_other() {
+    let mut func = TirFunction::new(
+        "store_var_asymmetric_join".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let moved_arm = func.fresh_block();
+    let join = func.fresh_block();
+    let local = func.fresh_value();
+    let taken = func.fresh_value();
+    let cond = func.fresh_value();
+    for value in [local, taken] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    func.value_types.insert(cond, TirType::Bool);
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        let mut producer = op(OpCode::Call, vec![], vec![local]);
+        producer
+            .attrs
+            .insert("bound_local".into(), AttrValue::Bool(true));
+        block.ops = vec![
+            producer,
+            original_copy_with_operands("store_var", vec![local], vec![]),
+            op(OpCode::ConstBool, vec![], vec![cond]),
+        ];
+        block.terminator = Terminator::CondBranch {
+            cond,
+            then_block: moved_arm,
+            then_args: vec![local],
+            else_block: join,
+            else_args: vec![],
+        };
+    }
+    func.blocks.insert(
+        moved_arm,
+        TirBlock {
+            id: moved_arm,
+            args: vec![TirValue {
+                id: taken,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![op(OpCode::Call, vec![taken], vec![])],
+            terminator: Terminator::Branch {
+                target: join,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![],
+            ops: vec![op(OpCode::WarnStderr, vec![], vec![])],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    insert(&mut func);
+    for path in [[true], [false]] {
+        trace(&func, 0, &path);
     }
 }

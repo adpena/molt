@@ -1,22 +1,242 @@
-//! Physical Unicode, tuple and list projection preparation and transactions.
+//! Physical memoryview, type, tuple and list projection preparation and transactions.
 //!
 //! Storage remains in the parent bridge; this module preserves the single
 //! projection-ledger authority and the existing shard-lock/release ordering.
 
 use super::*;
 
-// Physical tuple/list projection preparation and publication.
+// Physical sequence projection preparation and publication.
 impl ObjectBridge {
-    pub fn unicode_utf8_cache(&self, bits: AbiHandle, bytes: &[u8]) -> Option<(*const u8, usize)> {
+    /// Populate once before publication. Runtime geometry and format are immutable;
+    /// explicit release only invalidates the projection, so borrowed C pointers
+    /// remain stable across GET_BUFFER calls and unrelated view allocations.
+    pub fn refresh_memoryview_view(&self, bits: AbiHandle) -> bool {
+        {
+            let handle = self.handle_shard(bits).lock();
+            if !matches!(
+                handle.to_py.get(&bits).map(|entry| &entry.view),
+                Some(ManagedView::MemoryView { .. })
+            ) {
+                return true;
+            }
+        }
+        let mut descriptor = crate::hooks::MoltBufferView::default();
+        let mut native_base = std::ptr::null_mut();
+        let mut format_bytes = std::ptr::null();
+        let mut format_len = 0;
+        let status = unsafe {
+            (crate::hooks::hooks_or_stubs().memoryview_snapshot)(
+                bits,
+                &mut descriptor,
+                &mut native_base,
+                &mut format_bytes,
+                &mut format_len,
+            )
+        };
+        if status < 0 {
+            return false;
+        }
+        if status == 1 {
+            self.invalidate_memoryview_view(bits);
+            return true;
+        }
+        if format_bytes.is_null() || descriptor.ndim as usize > crate::hooks::MOLT_BUFFER_MAX_NDIM {
+            return false;
+        }
+        let Ok(format) =
+            std::ffi::CString::new(unsafe { std::slice::from_raw_parts(format_bytes, format_len) })
+        else {
+            return false;
+        };
+        let base = if !native_base.is_null() {
+            native_base
+        } else if descriptor.base != 0 {
+            unsafe { self.handle_to_borrowed_pyobj(descriptor.base) }
+        } else {
+            std::ptr::null_mut()
+        };
+        if descriptor.base != 0 && base.is_null() {
+            return false;
+        }
         let mut handle = self.handle_shard(bits).lock();
-        let entry = handle.to_py.get_mut(&bits)?;
-        let cache = entry.utf8.get_or_insert_with(|| {
-            let mut nul_terminated = Vec::with_capacity(bytes.len() + 1);
-            nul_terminated.extend_from_slice(bytes);
-            nul_terminated.push(0);
-            nul_terminated.into_boxed_slice()
-        });
-        Some((cache.as_ptr(), cache.len() - 1))
+        let Some(entry) = handle.to_py.get_mut(&bits) else {
+            return false;
+        };
+        let ManagedView::MemoryView {
+            object,
+            format: stored_format,
+        } = &mut entry.view
+        else {
+            return false;
+        };
+        *stored_format = format;
+        unsafe {
+            let object = object.get();
+            (*object).base = base;
+            (*object).ob_shape = descriptor.shape;
+            (*object).ob_strides = descriptor.strides;
+            let view = &raw mut (*object).view;
+            (*view).buf = descriptor.data.cast();
+            (*view).obj = base;
+            (*view).len = descriptor.len as isize;
+            (*view).itemsize = descriptor.itemsize as isize;
+            (*view).readonly = descriptor.readonly as i32;
+            (*view).ndim = descriptor.ndim as i32;
+            (*view).format = stored_format.as_ptr().cast_mut();
+            (*view).shape = (&raw mut (*object).ob_shape).cast();
+            (*view).strides = (&raw mut (*object).ob_strides).cast();
+            (*view).suboffsets = std::ptr::null_mut();
+            (*view).internal = std::ptr::null_mut();
+        }
+        true
+    }
+
+    /// Runtime ownership is already empty before any exporter release callback.
+    pub fn invalidate_memoryview_view(&self, bits: AbiHandle) {
+        let mut handle = self.handle_shard(bits).lock();
+        let Some(entry) = handle.to_py.get_mut(&bits) else {
+            return;
+        };
+        if let ManagedView::MemoryView { object, .. } = &mut entry.view {
+            unsafe {
+                (*object.get()).base = std::ptr::null_mut();
+                (&raw mut (*object.get()).view).write(std::mem::zeroed());
+            }
+        }
+    }
+
+    /// Publish an exact name/qualname projection before the runtime slot commits.
+    /// Handles are borrowed from the mutation's existing owner. Projection
+    /// creation runs outside map locks; release follows publication of every C
+    /// field. Static bound heap shells share their existing normal-C ownership.
+    pub fn update_type_identity_view(
+        &self,
+        bits: AbiHandle,
+        value: AbiHandle,
+        qualname: bool,
+    ) -> bool {
+        let _gil = crate::hooks::RuntimeGilGuard::ensure();
+        let (pointer, heap, mirrored) = {
+            let handle = self.handle_shard(bits).lock();
+            if let Some(entry) = handle.to_py.get(&bits) {
+                let ManagedView::Type { object, .. } = &entry.view else {
+                    return true;
+                };
+                (object.get(), object.heap(), true)
+            } else if let Some(raw) = handle.raw_py.get(&bits) {
+                let pointer = std::ptr::with_exposed_provenance_mut::<PyTypeObject>(raw.address);
+                (
+                    pointer,
+                    crate::abi_types::process_heap_type_storage(pointer),
+                    false,
+                )
+            } else {
+                return true;
+            }
+        };
+        unsafe {
+            let _view_owner = crate::api::refcount::OwnedPyObject::from_borrowed(pointer.cast());
+            let Some(heap) = heap else {
+                ensure_result_error(c"compact type identity cannot change");
+                return false;
+            };
+            let mut name = None;
+            let mut shell_name = OwnedTypeName(std::ptr::null_mut());
+            if !qualname {
+                let mut length = 0;
+                let bytes = (crate::hooks::hooks_or_stubs().str_data)(value, &raw mut length);
+                if bytes.is_null() {
+                    ensure_result_error(c"type name source is missing");
+                    return false;
+                }
+                let source = std::slice::from_raw_parts(bytes, length);
+                if source.contains(&0) {
+                    ensure_result_error(c"invalid managed type name");
+                    return false;
+                }
+                if mirrored {
+                    let Some(size) = length.checked_add(1) else {
+                        crate::api::errors::PyErr_NoMemory();
+                        return false;
+                    };
+                    let mut owned = Vec::new();
+                    if owned.try_reserve_exact(size).is_err() {
+                        crate::api::errors::PyErr_NoMemory();
+                        return false;
+                    }
+                    owned.extend_from_slice(source);
+                    owned.push(0);
+                    name = Some(std::ffi::CString::from_vec_with_nul_unchecked(owned));
+                } else {
+                    let Some(prepared) = OwnedTypeName::copy(bytes, length) else {
+                        return false;
+                    };
+                    shell_name = prepared;
+                }
+            }
+            let projected = self.handle_to_borrowed_pyobj(value);
+            if projected.is_null() {
+                ensure_result_error(c"type name projection is missing");
+                return false;
+            }
+            if mirrored {
+                if !self.projection_incref(projected) {
+                    return false;
+                }
+            } else {
+                crate::api::refcount::Py_INCREF(projected);
+            }
+            let mut retired_name = std::ptr::null_mut();
+            let mut retired_cstring = None;
+            let mut old = std::ptr::null_mut();
+            let committed = {
+                let (address, mut handle) = self.lock_address_then_handle(pointer.addr(), bits);
+                let same = Self::type_projection_matches(
+                    &address,
+                    &handle,
+                    bits,
+                    pointer,
+                    Some(heap),
+                    mirrored,
+                );
+                if same {
+                    if let Some(name) = name {
+                        let Some(entry) = handle.to_py.get_mut(&bits) else {
+                            unreachable!()
+                        };
+                        let ManagedView::Type { _name, .. } = &mut entry.view else {
+                            unreachable!()
+                        };
+                        (*pointer).tp_name = name.as_ptr();
+                        retired_cstring = Some(std::mem::replace(_name, name));
+                    } else if !shell_name.0.is_null() {
+                        retired_name = (&raw mut (*heap)._ht_tpname).replace(shell_name.take());
+                        (*pointer).tp_name = (*heap)._ht_tpname;
+                    }
+                    old = (if qualname {
+                        &raw mut (*heap).ht_qualname
+                    } else {
+                        &raw mut (*heap).ht_name
+                    })
+                    .replace(projected);
+                }
+                same
+            };
+            if !committed {
+                ensure_result_error(c"type identity changed before name publication");
+            }
+            crate::api::errors::with_preserved_error(|| {
+                crate::api::memory::PyMem_Free(retired_name.cast());
+                drop(retired_cstring);
+                let release = if committed { old } else { projected };
+                if mirrored {
+                    self.projection_decref(release);
+                } else {
+                    crate::api::refcount::Py_XDECREF(release);
+                }
+            });
+            committed
+        }
     }
 
     /// Populate the packed tuple projection from the sole runtime tuple
@@ -116,7 +336,7 @@ impl ObjectBridge {
                 Some(ManagedView::Tuple { allocation }) if index < allocation.len
             )
         };
-        if pointer.is_null() || !valid_slot || !self.pyobj_matches_handle(pointer, value_bits) {
+        if !valid_slot || (!pointer.is_null() && !self.pyobj_matches_handle(pointer, value_bits)) {
             unsafe { crate::api::refcount::Py_XDECREF(pointer) };
             if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
                 unsafe {
@@ -151,7 +371,7 @@ impl ObjectBridge {
         allocation.items().get(index).copied()
     }
 
-    fn list_projection_pointer(&self, item_bits: AbiHandle) -> Option<*mut PyObject> {
+    pub(super) fn list_projection_pointer(&self, item_bits: AbiHandle) -> Option<*mut PyObject> {
         if crate::api::numbers::is_numeric_handle(item_bits) {
             let (pointer, already_owned) =
                 unsafe { crate::api::numbers::materialize_numeric_borrowed_handle(item_bits) };
@@ -732,9 +952,6 @@ impl ObjectBridge {
         index: usize,
         pointer: *mut PyObject,
     ) -> bool {
-        if pointer.is_null() {
-            return false;
-        }
         let old = {
             let mut handle = self.handle_shard(bits).lock();
             let Some(entry) = handle.to_py.get_mut(&bits) else {
@@ -756,9 +973,14 @@ impl ObjectBridge {
             }
             *current = pointer;
             allocation.shadow[index] = pointer;
-            if !allocation.initialized[index] {
-                allocation.uninitialized_count = allocation.uninitialized_count.saturating_sub(1);
-                allocation.initialized[index] = true;
+            let initialized = !pointer.is_null();
+            if allocation.initialized[index] != initialized {
+                if initialized {
+                    allocation.uninitialized_count -= 1;
+                } else {
+                    allocation.uninitialized_count += 1;
+                }
+                allocation.initialized[index] = initialized;
             }
             allocation.sealed = allocation.uninitialized_count == 0;
             old
@@ -969,9 +1191,7 @@ impl ObjectBridge {
                 }
                 unsafe { (hooks.dec_ref)(cell.new_bits) };
             }
-            if !crate::api::errors::transfer_runtime_pending_to_current() {
-                unsafe { ensure_result_error(c"runtime list snapshot commit failed") };
-            }
+            unsafe { ensure_result_error(c"runtime list snapshot commit failed") };
             return false;
         }
 
@@ -1032,34 +1252,58 @@ impl ObjectBridge {
         self.commit_list_view_inner(bits, true)
     }
 
-    /// Snapshot list projection edges for cycle-GC traversal.
-    pub fn list_view_handles_for_gc(&self, bits: AbiHandle) -> Vec<AbiHandle> {
+    /// Visit independently owned physical C edges in the mixed GC graph.
+    /// Exception members and CFunction.m_module are ordinary C owners. Clean
+    /// list slots mirror runtime edges; only dirty direct C writes add an edge.
+    /// Copy pointers under the parent lock and classify after dropping it so
+    /// self/same-shard edges cannot deadlock. Fixed layouts stay on the stack.
+    pub fn visit_physical_owned_edges_for_gc(
+        &self,
+        bits: AbiHandle,
+        visit: &mut dyn FnMut(crate::NativeGcEdge),
+    ) {
+        enum Fields {
+            Fixed([*mut PyObject; EXCEPTION_VIEW_POINTER_FIELDS]),
+            List(Vec<*mut PyObject>),
+        }
+
         let fields = {
             let handle = self.handle_shard(bits).lock();
             let Some(entry) = handle.to_py.get(&bits) else {
-                return Vec::new();
+                return;
             };
-            let ManagedView::List { allocation } = &entry.view else {
-                return Vec::new();
-            };
-            allocation
-                .items
-                .iter()
-                .copied()
-                .zip(allocation.shadow.iter().copied())
-                // Clean projection references duplicate canonical runtime list
-                // edges and are excluded from GC roots. Only a dirty direct C
-                // slot is an additional internal edge that must be traversed
-                // until commit adopts it into `shadow`.
-                .filter_map(|(current, shadow)| {
-                    (current != shadow && !current.is_null()).then_some(current)
-                })
-                .collect::<Vec<_>>()
+            match &entry.view {
+                ManagedView::Exception(allocation) => {
+                    Fields::Fixed(unsafe { allocation.state().pointers() })
+                }
+                ManagedView::CFunction(object) => {
+                    let mut fields = [std::ptr::null_mut(); EXCEPTION_VIEW_POINTER_FIELDS];
+                    fields[0] = unsafe { (*object.get()).func.m_module };
+                    Fields::Fixed(fields)
+                }
+                ManagedView::List { allocation } => Fields::List(
+                    allocation
+                        .items
+                        .iter()
+                        .copied()
+                        .zip(allocation.shadow.iter().copied())
+                        .filter_map(|(current, shadow)| {
+                            (current != shadow && !current.is_null()).then_some(current)
+                        })
+                        .collect(),
+                ),
+                _ => return,
+            }
         };
-        fields
-            .into_iter()
-            .filter_map(|field| self.managed_handle_for_pyobj(field))
-            .collect()
+        let fields: &[*mut PyObject] = match &fields {
+            Fields::Fixed(fields) => fields,
+            Fields::List(fields) => fields,
+        };
+        for &field in fields {
+            if let Some(edge) = crate::NativeGcEdge::from_pyobj(self, field) {
+                visit(edge);
+            }
+        }
     }
 
     /// Publish an empty list projection before releasing its C ownership edges.

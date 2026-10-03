@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from typing import cast
+from wasm_link_fact_provider import WasmFactsProvider
+
+from collections.abc import Mapping, Sequence
+from typing import Literal, cast
 
 from molt._wasm_abi_generated import (
     WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME,
@@ -13,16 +15,17 @@ from molt._wasm_abi_generated import (
 from molt.wasm_artifact import WasmSplitRuntimeCallableLayout
 from wasm_link_format import (
     CallableTableLayout,
-    _collect_func_names,
-    _collect_function_exports,
-    _collect_imports,
     _read_varuint,
     _write_varuint,
 )
+from wasm_link_facts import callable_table_entry_rows
+from wasm_link_operations import build_sections, parse_sections
 
 
 def _callable_layout_from_wasm_facts(
     facts: Mapping[str, object],
+    *,
+    artifact_role: Literal["plan", "app"],
 ) -> CallableTableLayout | None:
     raw_layout = facts.get("callable_table_layout")
     if raw_layout is None:
@@ -44,7 +47,59 @@ def _callable_layout_from_wasm_facts(
     ):
         raise ValueError("WASM facts callable-table layout fields must be u32 integers")
     layout_values = tuple(cast(int, value) for value in values)
-    return CallableTableLayout(*layout_values)
+    layout = CallableTableLayout(*layout_values)
+    layout.validate()
+    raw_entries = facts.get("callable_table_entries")
+    if not isinstance(raw_entries, (list, tuple)):
+        raise ValueError("WASM facts callable_table_entries must be an array")
+    entry_rows = callable_table_entry_rows(facts)
+    if artifact_role == "app":
+        if facts.get("callable_table_attestation_present") is not True:
+            raise ValueError("final app callable-table layout is not attested")
+        expected_slots = list(
+            range(
+                layout.finalized_app_base,
+                layout.finalized_app_base + layout.app_entry_count,
+            )
+        )
+        observed_slots = [slot for slot, _function, _type, _role in entry_rows]
+        if observed_slots != expected_slots:
+            raise ValueError(
+                "final app callable-table layout differs from its artifact-derived "
+                f"entry facts: expected={expected_slots!r}, observed={observed_slots!r}"
+            )
+        return layout
+
+    raw_tables = facts.get("tables")
+    if not isinstance(raw_tables, (list, tuple)):
+        raise ValueError("WASM facts tables must be an array")
+    table_zero_minimum: int | None = None
+    for raw_table in raw_tables:
+        if not isinstance(raw_table, Mapping):
+            raise ValueError("WASM facts tables rows must be objects")
+        if raw_table.get("table_index") != 0:
+            continue
+        minimum = raw_table.get("minimum")
+        if (
+            table_zero_minimum is not None
+            or not isinstance(minimum, int)
+            or isinstance(minimum, bool)
+            or minimum < 0
+        ):
+            raise ValueError("WASM facts table-0 minimum is invalid")
+        table_zero_minimum = minimum
+    required_end = max(
+        layout.fixed_prefix_base + layout.fixed_prefix_len,
+        layout.finalized_app_base + layout.app_entry_count,
+    )
+    if (table_zero_minimum is None and required_end != 0) or (
+        table_zero_minimum is not None and required_end > table_zero_minimum
+    ):
+        raise ValueError(
+            "callable-table plan exceeds its artifact-derived table capacity: "
+            f"required={required_end}, table0_min={table_zero_minimum!r}"
+        )
+    return layout
 
 
 def _reconcile_split_callable_layout(
@@ -176,6 +231,7 @@ def _resolve_callable_table_entry_plan(
     entry_symbol_names: Sequence[str] | None,
     include_fixed_prefix: bool,
     override_reserved_direct: bool,
+    facts_provider: WasmFactsProvider,
 ) -> _CallableTableEntryPlan:
     total_entry_count = layout.fixed_prefix_len + layout.app_entry_count
     if entry_symbol_names is not None and len(entry_symbol_names) != total_entry_count:
@@ -183,16 +239,16 @@ def _resolve_callable_table_entry_plan(
             "callable-table entry symbol count disagrees with the published layout: "
             f"symbols={len(entry_symbol_names)}, entries={total_entry_count}"
         )
-    exports = _collect_function_exports(data)
+    exports = facts_provider(data).function_exports
     named_indices: dict[str, set[int]] = {}
     if entry_symbol_names is not None:
-        function_import_index = 0
-        for wasm_import in _collect_imports(data):
+        for wasm_import in facts_provider(data).imports:
             if wasm_import.kind != 0:
                 continue
-            named_indices.setdefault(wasm_import.name, set()).add(function_import_index)
-            function_import_index += 1
-        for function_index, function_name in _collect_func_names(data).items():
+            named_indices.setdefault(wasm_import.name, set()).add(wasm_import.index)
+        for function_index, function_name in facts_provider(
+            data
+        ).function_names.items():
             named_indices.setdefault(function_name, set()).add(function_index)
 
     def resolve_entry(logical_slot: int) -> int:
@@ -294,12 +350,12 @@ def _merge_linked_callable_table(
     the immutable pre-link app end.
     """
 
-    if not isinstance(raw_entries, list):
+    if not isinstance(raw_entries, (list, tuple)):
         raise ValueError("linked WASM facts omitted callable-table entries")
     rows_by_slot: dict[int, tuple[int, int, int]] = {}
     for entry in raw_entries:
         if (
-            not isinstance(entry, list)
+            not isinstance(entry, (list, tuple))
             or len(entry) != 4
             or any(
                 not isinstance(value, int)
@@ -312,7 +368,7 @@ def _merge_linked_callable_table(
             raise ValueError(
                 "linked WASM facts contain an invalid callable-table entry"
             )
-        slot, function_index, type_index, role = cast(list[int], entry)
+        slot, function_index, type_index, role = cast(Sequence[int], entry)
         if slot in rows_by_slot:
             raise ValueError(
                 f"linked WASM facts contain duplicate callable-table slot {slot}"
@@ -408,8 +464,7 @@ def _install_callable_table_layout(
     include_fixed_prefix: bool = True,
     override_reserved_direct: bool = True,
     entry_plan: _CallableTableEntryPlan | None = None,
-    _parse_sections: Callable[[bytes], list[tuple[int, bytes]]],
-    _build_sections: Callable[[list[tuple[int, bytes]]], bytes],
+    facts_provider: WasmFactsProvider,
 ) -> bytes:
     total_entry_count = layout.fixed_prefix_len + layout.app_entry_count
     if total_entry_count == 0:
@@ -421,10 +476,11 @@ def _install_callable_table_layout(
             entry_symbol_names=entry_symbol_names,
             include_fixed_prefix=include_fixed_prefix,
             override_reserved_direct=override_reserved_direct,
+            facts_provider=facts_provider,
         )
     fixed_indices = entry_plan.fixed_indices
     app_indices = entry_plan.app_indices
-    sections = _parse_sections(data)
+    sections = parse_sections(data)
     element_indices = [
         index
         for index, (section_id, _payload) in enumerate(sections)
@@ -454,4 +510,4 @@ def _install_callable_table_layout(
         for function_index in indices:
             appended.extend(_write_varuint(function_index))
     sections[section_index] = (section_id, bytes(appended))
-    return _build_sections(sections)
+    return build_sections(sections)

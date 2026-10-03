@@ -119,14 +119,16 @@ pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
 }
 
 pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
-    use crate::builtins::frames::{PythonArgumentZero, frame_python_context_snapshot};
+    use crate::builtins::frames::{
+        PythonArgumentZero, frame_argument_zero, frame_python_context_snapshot,
+    };
     use crate::builtins::methods::is_missing_bits;
     let frame = frame_python_context_snapshot(_py);
     let argument_item = match frame.context.argument_zero {
         PythonArgumentZero::NoArgument => {
             return raise_exception::<_>(_py, "RuntimeError", "super(): no arguments");
         }
-        PythonArgumentZero::Value(_) => None,
+        PythonArgumentZero::Value(_) | PythonArgumentZero::Home => None,
         PythonArgumentZero::Cell(bits) => Some(unsafe {
             crate::object::cells::pin_cell_value(
                 _py,
@@ -136,15 +138,33 @@ pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
             )
         }),
     };
+    // A synchronous frame's home is the only owner of its argument zero: read
+    // it now, as CPython reads `localsplus[0]`, and own it until the super
+    // object holds its own reference.
+    let home_argument = match frame.context.argument_zero {
+        PythonArgumentZero::Home => match frame_argument_zero(_py) {
+            Ok(argument) => argument,
+            Err(()) => return MoltObject::none().bits(),
+        },
+        _ => None,
+    };
+    let release_home = |py: &PyToken<'_>| {
+        if let Some(bits) = home_argument {
+            dec_ref_bits(py, bits);
+        }
+    };
     let argument_bits = match frame.context.argument_zero {
         PythonArgumentZero::Value(bits) => Some(bits),
         PythonArgumentZero::Cell(_) => argument_item.as_ref().map(|item| item.bits()),
+        PythonArgumentZero::Home => home_argument,
         PythonArgumentZero::NoArgument => unreachable!(),
     };
     let Some(argument_bits) = argument_bits.filter(|bits| !is_missing_bits(_py, *bits)) else {
+        release_home(_py);
         return raise_exception::<_>(_py, "RuntimeError", "super(): arg[0] deleted");
     };
     let Some(cell_bits) = frame.context.class_cell_bits else {
+        release_home(_py);
         return raise_exception::<_>(_py, "RuntimeError", "super(): __class__ cell not found");
     };
     let class_item = unsafe {
@@ -156,14 +176,17 @@ pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
         )
     };
     if is_missing_bits(_py, class_item.bits()) {
+        release_home(_py);
         return raise_exception::<_>(_py, "RuntimeError", "super(): empty __class__ cell");
     }
-    super_construct(
+    let result = super_construct(
         _py,
         class_item.bits(),
         argument_bits,
         SuperConstructionMode::Implicit,
-    )
+    );
+    release_home(_py);
+    result
 }
 
 #[unsafe(no_mangle)]

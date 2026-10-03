@@ -44,6 +44,7 @@ fn fixture(opcode: OpCode, args: &[LirRepr], operands: &[u32], result: LirRepr) 
         },
     };
     LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: format!("owned_{opcode:?}"),
         param_names: (0..args.len()).map(|i| format!("arg{i}")).collect(),
         param_types: block.args.iter().map(|v| v.ty.clone()).collect(),
@@ -140,9 +141,10 @@ const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none), yes = BigInt(config.yes), wide = 1n << 60n;
 let refs, children, integers, next, attempts, calls, pending, failAt, truthFail, mutationFailAt, mutations, constructorFail, unboxes;
+let memory = null, scratch = null, scratchFail = false;
 function reset(fail = 0) {
   refs = new Map(); children = new Map(); integers = new Map(); next = 0x700000000000n; attempts = calls = mutations = unboxes = 0;
-  pending = ''; failAt = fail; truthFail = constructorFail = false; mutationFailAt = 0;
+  pending = ''; failAt = fail; truthFail = constructorFail = scratchFail = false; mutationFailAt = 0; scratch = null;
 }
 function allocate() { const id = ++next; refs.set(id, 1); return id; }
 function live(value) { assert.ok(refs.has(value), 'using dead box ' + value); }
@@ -187,20 +189,32 @@ const hooks = {
   },
   set_new(capacity) { assert.equal(capacity, BigInt(config.raw_two)); return newContainer(); },
   set_add(set, value) { append(set, [value]); return none; },
-  list_builder_new(capacity) { assert.equal(capacity, BigInt(config.boxed_two)); return newContainer(); },
-  list_builder_append(builder, value) { return append(builder, [value]); },
-  list_builder_finish(builder) {
-    live(builder); calls++; const elements = children.get(builder); children.delete(builder);
-    dec(builder); const result = allocate(); children.set(result, elements); return result;
+  scratch_alloc(size) {
+    assert.equal(scratch, null, 'one private operand range at a time');
+    if (scratchFail) { pending = 'MemoryError'; return 0n; }
+    scratch = {ptr: 64n, size}; return scratch.ptr;
   },
-  tuple_builder_finish(builder) { return hooks.list_builder_finish(builder); },
+  scratch_free(ptr, size) {
+    assert.deepEqual({ptr, size}, scratch, 'free exactly the live operand range'); scratch = null;
+  },
+  list_from_values(ptr, len) { return hooks.tuple_from_values(ptr, len); },
+  tuple_from_values(ptr, len) {
+    calls++; assert.deepEqual({ptr, size: len * 8n}, scratch, 'read the live operand range');
+    const view = new DataView(memory.buffer), values = [];
+    for (let i = 0; i < Number(len); i++) values.push(view.getBigInt64(Number(ptr) + 8 * i, true));
+    values.forEach(live);
+    if (constructorFail) { pending = 'MemoryError'; return none; }
+    for (const value of values) inc(value);
+    const result = allocate(); children.set(result, values); return result;
+  },
 };
 const loaded = {};
 for (const [name, file] of Object.entries(config.modules)) {
-  const run = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(file)), {molt_runtime: hooks}).exports.run;
+  const app = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(file)), {molt_runtime: hooks}).exports;
   loaded[name] = (...args) => {
     console.error('WASM case ' + name + '(' + args.map(String).join(', ') + ')');
-    return run(...args);
+    memory = app.memory;
+    return app.run(...args);
   };
 }
 for (const failure of [0, 1, 2]) {
@@ -271,9 +285,10 @@ for (const name of ['dict', 'set', 'list', 'tuple']) {
     assert.equal(refs.size, failure ? 0 : 3, name);
     if (failure) { assert.equal(result, none, name); assert.equal(calls, 0, name); }
     else { assert.equal(refs.get(result), 1, name); dec(result); }
-    assert.equal(refs.size, 0, name);
+    assert.equal(refs.size, 0, name); assert.equal(scratch, null, name);
   }
-  for (const failedMutation of (name === 'dict' ? [1] : [1, 2])) {
+  // A fixed sequence is one constructor call over borrowed words: no mutation can fail.
+  for (const failedMutation of (name === 'dict' ? [1] : (name === 'tuple' || name === 'list') ? [] : [1, 2])) {
     reset(); mutationFailAt = failedMutation;
     assert.equal(loaded[name](wide, wide + 1n), none, name);
     assert.equal(pending, 'MutationError', name); assert.equal(refs.size, 0, name);
@@ -281,6 +296,15 @@ for (const name of ['dict', 'set', 'list', 'tuple']) {
   reset(); constructorFail = true;
   assert.equal(loaded[name](wide, wide + 1n), none, name);
   assert.equal(pending, 'MemoryError', name); assert.equal(refs.size, 0, name);
+  assert.equal(scratch, null, name);
+}
+// A failed range allocation publishes MemoryError, skips the constructor and
+// releases both operation-owned boxes.
+for (const name of ['tuple', 'list']) {
+  reset(); scratchFail = true;
+  assert.equal(loaded[name](wide, wide + 1n), none);
+  assert.equal(pending, 'MemoryError'); assert.equal(calls, 0); assert.equal(refs.size, 0);
+  assert.equal(scratch, null);
 }
 // Return boxing is owned by the caller, never an operation scratch lifetime.
 reset(); const returned = loaded.return_box(); assert.equal(refs.get(returned), 1); dec(returned);

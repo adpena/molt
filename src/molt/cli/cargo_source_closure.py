@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import functools
-import os
+import hashlib
 import tomllib
 from pathlib import Path
 from typing import Any, Sequence
@@ -29,32 +28,32 @@ def _crate_source_paths(crate_root: Path) -> tuple[Path, ...]:
     return (crate_root,)
 
 
-def _cargo_manifest_stamp(manifest: Path) -> str:
+def _read_cargo_document(path: Path) -> dict[str, Any]:
+    """Admit live TOML bytes; reuse parsing only by their content identity.
+
+    Dependency topology and feature selection share this reader with the lock
+    projection. Neither path metadata nor an old graph permits skipping a read.
+    """
+    from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
+    from molt.toolchain_identity import open_stable_regular_file
+
+    with open_stable_regular_file(path, label="Cargo source document") as opened:
+        if opened.stat.st_size > 16 * 1024 * 1024:
+            raise ValueError(f"Cargo source input exceeds size policy: {path}")
+        raw = opened.stream.read()
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    digest = hashlib.sha256(raw).hexdigest()
+    if transaction is not None:
+        cached = transaction.cargo_documents.get(digest)
+        if isinstance(cached, dict):
+            return cached
     try:
-        stat = manifest.stat()
-    except OSError:
-        return "missing"
-    return f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}"
-
-
-@functools.lru_cache(maxsize=512)
-def _read_cargo_manifest_cached(
-    manifest_str: str,
-    manifest_stamp: str,
-) -> dict[str, Any]:
-    manifest = Path(manifest_str)
-    try:
-        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _read_cargo_manifest(manifest: Path) -> dict[str, Any]:
-    return _read_cargo_manifest_cached(
-        os.fspath(manifest),
-        _cargo_manifest_stamp(manifest),
-    )
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"Invalid Cargo source input: {path}") from exc
+    if transaction is not None:
+        transaction.cargo_documents[digest] = document
+    return document
 
 
 def _manifest_dependency_tables(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -163,7 +162,7 @@ def _cargo_crate_source_closure(
             continue
         seen.add(key)
         source_paths.extend(_crate_source_paths(current_root))
-        data = _read_cargo_manifest(current_root / "Cargo.toml")
+        data = _read_cargo_document(current_root / "Cargo.toml")
         selected_optional_deps, child_features = _feature_dependency_selection(
             data, current_features
         )
@@ -180,3 +179,131 @@ def _cargo_crate_source_closure(
                 pending.append((dep_root, dep_features))
     source_paths.extend(extra_source_paths)
     return _dedupe_source_paths(source_paths)
+
+
+def _cargo_locked_dependency_digest(project_root: Path, crate_root: Path) -> str:
+    from molt.cli.compiler_identity import CompilerIdentityError
+
+    try:
+        return _project_cargo_locked_dependencies(project_root, crate_root)
+    except (OSError, ValueError) as exc:
+        raise CompilerIdentityError(f"Compiler dependency identity: {exc}") from exc
+
+
+def _project_cargo_locked_dependencies(project_root: Path, crate_root: Path) -> str:
+    """Content identity of the root package's conservative Cargo.lock closure.
+
+    Cargo remains the dependency resolver. Follow every recorded dependency,
+    including optional, development and target edges; never infer active Cargo
+    features from the lockfile. Unrelated workspace roots are not compiler inputs.
+    """
+    import re
+
+    from molt.exact_json import canonical_json_sha256
+
+    manifest = _read_cargo_document(crate_root / "Cargo.toml")
+    root_package = manifest.get("package")
+    if not isinstance(root_package, dict):
+        raise ValueError("Cargo dependency root has no package identity")
+    name, version = root_package.get("name"), root_package.get("version")
+    if not isinstance(name, str) or not isinstance(version, str):
+        raise ValueError("Cargo dependency root requires an explicit name and version")
+    root_key = (name, version, "")
+    lock = _read_cargo_document(project_root / "Cargo.lock")
+    if type(lock.get("version")) is not int or lock["version"] not in {3, 4}:
+        raise ValueError("Unsupported Cargo.lock version")
+    packages = lock.get("package")
+    if not isinstance(packages, list) or not packages:
+        raise ValueError("Cargo.lock has no package inventory")
+    by_key: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    by_name: dict[str, list[tuple[str, str, str]]] = {}
+    for package in packages:
+        # Index identities without validating unrelated workspace packages. Cargo
+        # owns whole-lock validation; unreachable stale rows do not affect us.
+        if not isinstance(package, dict):
+            continue
+        package_name = package.get("name")
+        version = package.get("version")
+        source = package.get("source", "")
+        if not all(isinstance(value, str) for value in (package_name, version, source)):
+            continue
+        key = (package_name, version, source)
+        by_key.setdefault(key, []).append(package)
+        if key not in by_name.setdefault(package_name, []):
+            by_name[package_name].append(key)
+    if root_key not in by_key:
+        raise ValueError(f"Cargo.lock is missing root package: {root_key}")
+
+    def source_matches(actual: str, reference: str) -> bool:
+        # Cargo serializes git SourceId references without the precise revision.
+        # Keep URL/query (branch/tag/rev) identity; only omit the precise fragment
+        # when the dependency reference itself omitted it.
+        if reference.startswith("git+") and "#" not in reference:
+            return actual.partition("#")[0] == reference
+        return actual == reference
+
+    def resolve(reference: object) -> tuple[str, str, str]:
+        if not isinstance(reference, str):
+            raise ValueError("Invalid Cargo.lock dependency reference")
+        match = re.fullmatch(
+            r"([A-Za-z0-9_-]+)(?: ([^ ()]+)(?: \(([^()]+)\))?)?", reference
+        )
+        if match is None:
+            raise ValueError(f"Malformed Cargo.lock dependency: {reference!r}")
+        dependency_name, dependency_version, dependency_source = match.groups()
+        candidates = [
+            key
+            for key in by_name.get(dependency_name, [])
+            if (dependency_version is None or key[1] == dependency_version)
+            and (dependency_source is None or source_matches(key[2], dependency_source))
+        ]
+        if dependency_source is None:
+            path_candidates = [key for key in candidates if not key[2]]
+            if path_candidates:
+                candidates = path_candidates
+        if len(candidates) != 1:
+            raise ValueError(
+                f"Missing or ambiguous Cargo.lock dependency: {reference!r}"
+            )
+        return candidates[0]
+
+    pending = [root_key]
+    reached: dict[tuple[str, str, str], dict[str, Any]] = {}
+    while pending:
+        key = pending.pop()
+        if key in reached:
+            continue
+        records = by_key[key]
+        if len(records) != 1:
+            raise ValueError(f"Duplicate Cargo.lock package identity: {key}")
+        package = dict(records[0])
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_-]+", key[0])
+            or not key[1]
+            or ("source" in package and not key[2])
+        ):
+            raise ValueError(f"Invalid Cargo.lock package identity: {key}")
+        checksum = package.get("checksum")
+        if checksum is not None and (
+            not isinstance(checksum, str)
+            or re.fullmatch(r"[0-9a-f]{64}", checksum) is None
+        ):
+            raise ValueError(f"Invalid Cargo.lock package checksum: {key}")
+        dependencies = package.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            raise ValueError(f"Invalid Cargo.lock dependencies: {key}")
+        package["dependencies"] = sorted(resolve(item) for item in dependencies)
+        pending.extend(package["dependencies"])
+        if "replace" in package:
+            package["replace"] = resolve(package["replace"])
+            pending.append(package["replace"])
+        reached[key] = package
+    projected = [reached[key] for key in sorted(reached)]
+    return canonical_json_sha256(
+        {
+            "schema": "molt.cargo-locked-dependency-closure.v2",
+            "root": root_key,
+            "lock_version": lock["version"],
+            "packages": projected,
+        }
+    )

@@ -115,6 +115,7 @@ def _import_paddleocr_module():
     paddleocr_path = os.path.abspath(paddleocr_path)
     spec = ilu.spec_from_file_location("_paddleocr_test", paddleocr_path)
     module = ilu.module_from_spec(spec)
+    module.__package__ = "demos.tinygrad"
     spec.loader.exec_module(module)
     # Keep tinygrad mocks installed — WeightStore.load_onnx needs them
     # at call time (lazy import of tinygrad.lazy inside load_onnx).
@@ -208,15 +209,16 @@ def test_recognizer_load_populates_charset_on_normal_load_path() -> None:
     """PaddleOCR.load_recognizer() must not leave CTC charset empty."""
     mod = _import_paddleocr_module()
 
-    fake_onnx = types.ModuleType("tinygrad.onnx_interpreter")
+    fake_onnx = types.ModuleType("demos.tinygrad.onnx_interpreter")
 
     class FakeInterpreter:
         def load_model(self, _data):
             return None
 
     fake_onnx.OnnxInterpreter = FakeInterpreter
-    saved = sys.modules.get("tinygrad.onnx_interpreter")
-    sys.modules["tinygrad.onnx_interpreter"] = fake_onnx
+    module_name = "demos.tinygrad.onnx_interpreter"
+    saved = sys.modules.get(module_name)
+    sys.modules[module_name] = fake_onnx
     original_load_onnx = mod.WeightStore.load_onnx
     mod.WeightStore.load_onnx = lambda self, _data: 1
     try:
@@ -228,9 +230,9 @@ def test_recognizer_load_populates_charset_on_normal_load_path() -> None:
     finally:
         mod.WeightStore.load_onnx = original_load_onnx
         if saved is None:
-            sys.modules.pop("tinygrad.onnx_interpreter", None)
+            sys.modules.pop(module_name, None)
         else:
-            sys.modules["tinygrad.onnx_interpreter"] = saved
+            sys.modules[module_name] = saved
 
 
 def test_weight_parser_dtype_coverage() -> None:

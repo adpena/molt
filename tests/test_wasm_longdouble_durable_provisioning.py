@@ -387,12 +387,27 @@ def test_reloc_link_failure_retains_child_evidence(
 
 
 # --- Split app.wasm link: numpy (no reloc runtime here) needs its own formatters ---
-import wasm_link  # noqa: E402  (tools/ is on sys.path via conftest)
+import wasm_link_native_inputs  # noqa: E402
+from molt.cli.source_extension_link_requirements import (  # noqa: E402
+    SourceExtensionLinkRequirements,
+    source_extension_link_file,
+)
 
 
-def test_split_app_wholearchives_longdouble_when_libc_present() -> None:
-    args = wasm_link._split_app_native_link_args(
-        [Path("numpy_multiarray.o"), Path("libc.a")]
+def _split_native_requirements(
+    tmp_path: Path, *names: str
+) -> SourceExtensionLinkRequirements:
+    inputs = []
+    for name in names:
+        path = tmp_path / name
+        path.write_bytes(b"!<arch>\n" if path.suffix == ".a" else b"\0asm\x01\0\0\0")
+        inputs.append(source_extension_link_file(path))
+    return SourceExtensionLinkRequirements("wasm32-wasip1", tuple(inputs))
+
+
+def test_split_app_wholearchives_longdouble_when_libc_present(tmp_path: Path) -> None:
+    args = wasm_link_native_inputs._split_app_native_link_args(
+        _split_native_requirements(tmp_path, "numpy_multiarray.o", "libc.a")
     )
     assert args[0] == "--whole-archive"
     assert args[1].endswith("libc-printscan-long-double.a")
@@ -401,13 +416,16 @@ def test_split_app_wholearchives_longdouble_when_libc_present() -> None:
     assert any(a.endswith("libclang_rt.builtins-wasm32.a") for a in args)
 
 
-def test_split_app_plain_passthrough_without_libc() -> None:
-    inputs = [Path("extmod.o"), Path("data_alias.o")]
-    assert wasm_link._split_app_native_link_args(inputs) == [str(p) for p in inputs]
+def test_split_app_plain_passthrough_without_libc(tmp_path: Path) -> None:
+    requirements = _split_native_requirements(tmp_path, "extmod.o", "data_alias.o")
+    assert wasm_link_native_inputs._split_app_native_link_args(requirements) == [
+        item.path for item in requirements.inputs
+    ]
 
 
 def test_split_app_fails_loud_when_longdouble_absent(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
         wasm_link_inputs,
@@ -415,7 +433,9 @@ def test_split_app_fails_loud_when_longdouble_absent(
         lambda **_kwargs: None,
     )
     with pytest.raises(ValueError, match="long-double|unreachable"):
-        wasm_link._split_app_native_link_args([Path("numpy.o"), Path("libc.a")])
+        wasm_link_native_inputs._split_app_native_link_args(
+            _split_native_requirements(tmp_path, "numpy.o", "libc.a")
+        )
 
 
 # --- Single authority: every wasm link path routes through ONE policy --------
@@ -458,7 +478,9 @@ def test_all_three_link_paths_share_the_one_authority(
     assert reloc.error is None
 
     # (2) split app.wasm arm — argv whole-archives printscan ahead of libc.a.
-    args = wasm_link._split_app_native_link_args([Path("numpy.o"), Path("libc.a")])
+    args = wasm_link_native_inputs._split_app_native_link_args(
+        _split_native_requirements(tmp_path, "numpy.o", "libc.a")
+    )
     ld_in_args = [a for a in args if Path(a).name == ld.name]
     bi_in_args = [a for a in args if Path(a).name == bi.name]
     assert ld_in_args and Path(ld_in_args[0]).parent == tmp_path.resolve()

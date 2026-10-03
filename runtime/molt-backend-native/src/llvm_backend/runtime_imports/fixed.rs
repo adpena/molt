@@ -347,17 +347,25 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     void_ret("molt_print_newline", 0, ATTR_WILLRETURN),
     void_ret("molt_print_obj", 1, ATTR_WILLRETURN),
     i64_ret("molt_callargs_new", 2, ATTR_WILLRETURN),
+    i64_ret("molt_callargs_new_expanded", 2, ATTR_WILLRETURN),
     i64_ret("molt_callargs_push_pos", 2, ATTR_WILLRETURN),
     i64_ret("molt_call_bind", 2, ATTR_NONE),
     i64_ret("molt_call_bind_ic", 3, ATTR_NONE),
     i64_ret("molt_call_indirect_ic", 3, ATTR_NONE),
+    // A source call instruction's owned lanes and its cleanup authority.
+    i64_ret("molt_call_bind_ic_owned", 3, ATTR_NONE),
+    i64_ret("molt_call_func_owned", 4, ATTR_NONE),
+    void_ret("molt_call_inputs_release", 3, ATTR_NONE),
     i64_ret("molt_call_func_fast0", 1, ATTR_NONE),
     i64_ret("molt_call_func_fast1", 2, ATTR_NONE),
     i64_ret("molt_call_func_fast2", 3, ATTR_NONE),
     i64_ret("molt_call_func_fast3", 4, ATTR_NONE),
-    i64_ret("molt_func_new", 3, ATTR_WILLRETURN),
-    i64_ret("molt_func_new_builtin_named", 4, ATTR_WILLRETURN),
-    i64_ret("molt_func_new_closure", 4, ATTR_WILLRETURN),
+    // The last word of a compiled function object's constructor is its entry
+    // custody, derived from the function's own parameter declaration.
+    i64_ret("molt_func_new", 4, ATTR_WILLRETURN),
+    // A named acquisition may call a captured mapping's __getitem__.
+    i64_ret("molt_func_new_builtin_named", 4, ATTR_NONE),
+    i64_ret("molt_func_new_closure", 5, ATTR_WILLRETURN),
     i64_ret("molt_code_new", 9, ATTR_WILLRETURN),
     i64_ret("molt_code_slot_set", 3, ATTR_WILLRETURN),
     i64_ret("molt_code_slots_init", 1, ATTR_WILLRETURN),
@@ -365,6 +373,17 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_frame_locals_set", 1, ATTR_WILLRETURN),
     i64_ret("molt_trace_set_line", 1, ATTR_WILLRETURN),
     i64_ret("molt_trace_exit", 0, ATTR_WILLRETURN),
+    // Lends the raw homes address, or 0 with an exception pending; runs no
+    // Python code.
+    i64_ret("molt_frame_homes", 1, ATTR_WILLRETURN),
+    // A borrowed read of one home's binding; boxing a raw integer into the
+    // home may raise MemoryError but runs no Python code.
+    i64_ret("molt_frame_home_load", 1, ATTR_WILLRETURN),
+    // Moves one home's binding out, owned; runs no Python code.
+    i64_ret("molt_frame_home_take", 1, ATTR_WILLRETURN),
+    // `locals()` refreshes a 3.12 frame's dict, whose displaced values'
+    // finalizers may run Python code.
+    i64_ret("molt_locals_builtin", 0, ATTR_NONE),
     i64_ret("molt_function_defaults_version", 1, ATTR_WILLRETURN),
     custom(
         "molt_call_method_ic0",
@@ -393,6 +412,13 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     custom(
         "molt_call_method_ic4",
         I64_I64_PTR_I64_I64_I64_I64_I64,
+        FixedRuntimeReturnAbi::I64,
+        ATTR_NONE,
+    ),
+    // (site, receiver, name, name length, spilled arguments, count)
+    custom(
+        "molt_call_method_ic_owned",
+        I64_I64_PTR_I64_I64_I64,
         FixedRuntimeReturnAbi::I64,
         ATTR_NONE,
     ),
@@ -426,20 +452,30 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
         FixedRuntimeReturnAbi::I64,
         ATTR_NONE,
     ),
+    // (site, class, self, name, name length, spilled arguments, count)
+    custom(
+        "molt_call_super_method_ic_owned",
+        I64_I64_I64_PTR_I64_I64_I64,
+        FixedRuntimeReturnAbi::I64,
+        ATTR_NONE,
+    ),
     i64_ret("molt_dict_new", 1, ATTR_WILLRETURN),
     i64_ret("molt_set_new", 1, ATTR_WILLRETURN),
+    // Module publication, namespace access, and replacement share callback-
+    // bearing dictionary/attribute authorities. Mapping hooks, PEP 562 getters,
+    // bootstrap callbacks, key comparison, or displaced finalizers can diverge.
     i64_ret("molt_module_import", 1, ATTR_NONE),
-    i64_ret("molt_module_new", 1, ATTR_WILLRETURN),
-    i64_ret("molt_module_cache_get", 1, ATTR_WILLRETURN),
-    i64_ret("molt_module_cache_del", 1, ATTR_WILLRETURN),
-    i64_ret("molt_module_cache_set", 2, ATTR_WILLRETURN),
-    i64_ret("molt_module_get_attr", 2, ATTR_WILLRETURN),
-    i64_ret("molt_module_import_from", 2, ATTR_WILLRETURN),
-    i64_ret("molt_module_get_global", 2, ATTR_WILLRETURN),
-    i64_ret("molt_module_get_name", 2, ATTR_WILLRETURN),
-    i64_ret("molt_module_del_global", 2, ATTR_WILLRETURN),
-    i64_ret("molt_module_del_global_if_present", 2, ATTR_WILLRETURN),
-    i64_ret("molt_module_set_attr", 3, ATTR_WILLRETURN),
+    i64_ret("molt_module_new", 1, ATTR_NONE),
+    i64_ret("molt_module_cache_get", 1, ATTR_NONE),
+    i64_ret("molt_module_cache_del", 1, ATTR_NONE),
+    i64_ret("molt_module_cache_set", 2, ATTR_NONE),
+    i64_ret("molt_module_get_attr", 2, ATTR_NONE),
+    i64_ret("molt_module_import_from", 2, ATTR_NONE),
+    i64_ret("molt_module_get_global", 2, ATTR_NONE),
+    i64_ret("molt_module_get_name", 2, ATTR_NONE),
+    i64_ret("molt_module_del_global", 2, ATTR_NONE),
+    i64_ret("molt_module_del_global_if_present", 2, ATTR_NONE),
+    i64_ret("molt_module_set_attr", 3, ATTR_NONE),
     i64_ret("molt_call_builtin", 2, ATTR_NONE),
     custom(
         "molt_string_from_bytes",
@@ -459,15 +495,6 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
         FixedRuntimeReturnAbi::I64,
         ATTR_WILLRETURN,
     ),
-    i64_ret("molt_list_builder_new", 1, ATTR_WILLRETURN),
-    custom(
-        "molt_list_builder_append",
-        &[FixedRuntimeParamAbi::I64, FixedRuntimeParamAbi::I64],
-        FixedRuntimeReturnAbi::I32,
-        ATTR_WILLRETURN,
-    ),
-    i64_ret("molt_list_builder_finish", 1, ATTR_WILLRETURN),
-    i64_ret("molt_tuple_builder_finish", 1, ATTR_WILLRETURN),
     i64_ret("molt_exception_pending", 0, ATTR_WILLRETURN_MEMORY_READ),
 ];
 

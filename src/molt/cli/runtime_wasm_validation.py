@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from molt.cli.runtime_wasm_generation import RuntimeWasmGeneration
 from pathlib import Path
-import shutil
 
 from molt._wasm_runtime_exports import (
     wasm_runtime_missing_required_exports,
@@ -17,7 +21,9 @@ from molt._wasm_abi_generated import (
     wasm_runtime_import_name,
 )
 from molt.cli.command_runtime import _run_completed_command
+from molt.tool_releases import run_pinned_tool
 from molt.wasm_artifact import (
+    WasmRuntimeFacts,
     _wasm_import_minima,
     _read_wasm_memory_min_bytes,
     has_nonempty_wasm_code_section,
@@ -32,16 +38,12 @@ from molt.wasm_artifact import (
 
 
 def _validate_wasm_structural(path: Path) -> str | None:
-    exe = shutil.which("wasm-tools")
-    if exe is None:
-        return (
-            "wasm-tools is required for deep structural validation; "
-            "artifact reuse is disabled until the validator is provisioned"
-        )
     try:
         resolved = path.resolve()
-        result = _run_completed_command(
-            [exe, "validate", str(resolved)],
+        result = run_pinned_tool(
+            "wasm-tools",
+            ["validate", str(resolved)],
+            run=_run_completed_command,
             capture_output=True,
             timeout=60,
             env=None,
@@ -147,6 +149,8 @@ def _split_runtime_wasm_missing_exports(
 def _runtime_wasm_typed_export_names(
     path: Path,
     expected_symbol_kinds: Mapping[str, str],
+    *,
+    facts: WasmRuntimeFacts | None = None,
 ) -> set[str]:
     """Return only exports whose WebAssembly shape satisfies generated authority.
 
@@ -156,17 +160,30 @@ def _runtime_wasm_typed_export_names(
     not an address receipt and therefore cannot satisfy the contract.
     """
     try:
-        exports = read_wasm_exports(path)
+        exports = read_wasm_exports(path) if facts is None else facts.exports
         globals_by_index = {
-            global_.index: global_ for global_ in read_wasm_defined_globals(path)
+            global_.index: global_
+            for global_ in (
+                read_wasm_defined_globals(path) if facts is None else facts.globals
+            )
         }
         function_names = {
             name for name, kind in expected_symbol_kinds.items() if kind == "function"
         }
-        function_signatures = _wasm_export_function_signatures(
-            path, export_names=function_names
+        function_signatures = (
+            _wasm_export_function_signatures(path, export_names=function_names)
+            if facts is None
+            else {
+                name: {"params": list(params), "result": result}
+                for name, params, result in facts.function_signatures
+                if name in function_names
+            }
         )
-        memory_min_bytes = _read_wasm_memory_min_bytes(path)
+        memory_min_bytes = (
+            _read_wasm_memory_min_bytes(path)
+            if facts is None
+            else facts.memory_min_bytes
+        )
     except (OSError, UnicodeDecodeError, ValueError, IndexError):
         return set()
     exports_by_name: dict[str, tuple[int, int] | None] = {}
@@ -243,3 +260,102 @@ def _runtime_wasm_typed_export_names(
         ):
             available.add(name)
     return available
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWasmAdmissionIssue:
+    member: Literal["generation", "shared", "reloc"]
+    reason: Literal["observation", "structure", "empty-code", "import-abi", "linking"]
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWasmAdmissionReport:
+    issues: tuple[RuntimeWasmAdmissionIssue, ...] = ()
+    shared_missing_exports: tuple[str, ...] = ()
+    reloc_missing_symbols: tuple[str, ...] = ()
+
+    @property
+    def accepted(self) -> bool:
+        return not (
+            self.issues or self.shared_missing_exports or self.reloc_missing_symbols
+        )
+
+    def details(self) -> dict[str, object]:
+        return {
+            "issues": [
+                {"member": issue.member, "reason": issue.reason, "detail": issue.detail}
+                for issue in self.issues
+            ],
+            "shared_missing_exports": list(self.shared_missing_exports),
+            "reloc_missing_symbols": list(self.reloc_missing_symbols),
+        }
+
+
+def runtime_wasm_generation_admission(
+    generation: RuntimeWasmGeneration,
+    required_exports: set[str] | frozenset[str] | None,
+) -> RuntimeWasmAdmissionReport:
+    """One decision and diagnostic authority for every runtime-pair consumer.
+
+    Required names are request policy. Successful member facts and structural
+    checks belong to this physical generation; every reuse still checks its
+    live stable-file fences. Failure reports preserve the failed observation
+    instead of inspecting a later value of the mutable selection pointer.
+    """
+    issues: list[RuntimeWasmAdmissionIssue] = []
+    shared_missing: tuple[str, ...] = ()
+    reloc_missing: tuple[str, ...] = ()
+    try:
+        generation.verify_members()
+        shared = generation.facts()
+        reloc = generation.facts(relocatable=True)
+    except (OSError, UnicodeError, ValueError, IndexError) as exc:
+        return RuntimeWasmAdmissionReport(
+            (RuntimeWasmAdmissionIssue("generation", "observation", str(exc)),)
+        )
+    for member, facts in (("shared", shared), ("reloc", reloc)):
+        if facts.code_functions == 0:
+            issues.append(
+                RuntimeWasmAdmissionIssue(
+                    member, "empty-code", "artifact has no non-empty code section"
+                )
+            )
+    if not shared.shared_import_abi:
+        issues.append(
+            RuntimeWasmAdmissionIssue(
+                "shared",
+                "import-abi",
+                "artifact is missing the shared memory/table import ABI",
+            )
+        )
+    try:
+        generation.validate_structure()
+    except (OSError, ValueError) as exc:
+        issues.append(RuntimeWasmAdmissionIssue("generation", "structure", str(exc)))
+    shared_missing = tuple(
+        sorted(
+            wasm_split_runtime_missing_required_exports(
+                _runtime_wasm_typed_export_names(
+                    generation.shared,
+                    wasm_split_runtime_required_export_symbol_kinds(required_exports),
+                    facts=shared,
+                ),
+                required_exports,
+            )
+        )
+    )
+    try:
+        available = generation.linking_names(
+            wasm_runtime_required_export_symbol_kinds(required_exports)
+        )
+        reloc_missing = tuple(
+            sorted(wasm_runtime_missing_required_exports(available, required_exports))
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        issues.append(RuntimeWasmAdmissionIssue("reloc", "linking", str(exc)))
+    try:
+        generation.verify_members()
+    except (OSError, ValueError) as exc:
+        issues.append(RuntimeWasmAdmissionIssue("generation", "observation", str(exc)))
+    return RuntimeWasmAdmissionReport(tuple(issues), shared_missing, reloc_missing)

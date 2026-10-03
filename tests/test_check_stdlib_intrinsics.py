@@ -401,7 +401,7 @@ def test_failed_audit_reports_every_gate_once_without_publishing_docs(
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["analysis_complete"] is True
     assert payload["ok"] is False
-    assert payload["schema"] == "molt.stdlib-intrinsics-audit.v1"
+    assert payload["schema"] == "molt.stdlib-intrinsics-audit.v2"
     assert {
         "failures",
         "full-coverage-missing-intrinsic-wiring",
@@ -826,7 +826,7 @@ def test_private_support_fragment_loaded_by_intrinsic_owner_is_not_python_only_i
     assert module.main() == 0
     audit_text = audit_doc.read_text(encoding="utf-8")
     assert (
-        "### Intrinsic-owned private support fragments and facades\n- `_pyio_text`"
+        "### Intrinsic-owned support fragments and forwarding facades\n- `_pyio_text`"
         in audit_text
     )
     assert "- `_pyio_text`" in audit_text

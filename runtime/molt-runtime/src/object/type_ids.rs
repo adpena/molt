@@ -16,7 +16,7 @@ pub(crate) const TYPE_TAG_SLICE: i64 = 12;
 pub(crate) const TYPE_TAG_DATACLASS: i64 = 13;
 pub(crate) const TYPE_TAG_BUFFER2D: i64 = 14;
 pub(crate) const TYPE_TAG_MEMORYVIEW: i64 = 15;
-pub(crate) const TYPE_TAG_INTARRAY: i64 = 16;
+// Tag 16 is retired with the `intarray` heap kind and is never reused.
 pub(crate) const TYPE_TAG_SET: i64 = 17;
 pub(crate) const TYPE_TAG_FROZENSET: i64 = 18;
 pub(crate) const TYPE_TAG_COMPLEX: i64 = 19;

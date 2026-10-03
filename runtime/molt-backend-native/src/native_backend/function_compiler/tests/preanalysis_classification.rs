@@ -73,6 +73,7 @@ fn preanalysis_keeps_mixed_join_store_targets_boxed() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -146,6 +147,7 @@ fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -164,6 +166,11 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
         name: "molt_main".to_string(),
         params: vec!["arg".to_string()],
         ops: vec![
+            OpIR {
+                kind: "state_switch".into(),
+                state_targets: Some(vec![]),
+                ..OpIR::default()
+            },
             OpIR {
                 kind: "const_str".to_string(),
                 out: Some("msg".to_string()),
@@ -194,7 +201,7 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
                 ..OpIR::default()
             },
             OpIR {
-                kind: "state_yield".to_string(),
+                kind: "state_set".to_string(),
                 value: Some(7),
                 ..OpIR::default()
             },
@@ -219,6 +226,7 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -226,25 +234,25 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
 
     assert!(analysis.returns_value);
     assert!(analysis.stateful);
-    assert_eq!(analysis.if_to_end_if.get(&1), Some(&4));
-    assert_eq!(analysis.if_to_else.get(&1), Some(&3));
-    assert_eq!(analysis.else_to_end_if.get(&3), Some(&4));
-    assert_eq!(analysis.state_ids, vec![7, 42]);
+    assert_eq!(analysis.if_to_end_if.get(&2), Some(&5));
+    assert_eq!(analysis.if_to_else.get(&2), Some(&4));
+    assert_eq!(analysis.else_to_end_if.get(&4), Some(&5));
     assert_eq!(analysis.label_ids, vec![42]);
     assert!(analysis.state_label_ids.contains(&42));
     assert!(!analysis.state_label_ids.contains(&7));
-    assert!(analysis.shared_resume_label_ids.contains(&42));
-    assert!(!analysis.shared_resume_label_ids.contains(&7));
-    assert!(analysis.resume_states.contains(&7));
-    assert!(analysis.resume_states.contains(&42));
+    assert_eq!(
+        analysis.resume_targets,
+        Some(BTreeMap::new()),
+        "a running state and a label cannot invent a resume case"
+    );
     assert_eq!(analysis.function_exception_label_id, Some(42));
     assert!(analysis.var_names.contains(&"msg_ptr".to_string()));
     assert!(analysis.var_names.contains(&"msg_len".to_string()));
     // After alias analysis, "msg" and "out" share the same alias root
     // (copy propagation makes "out" an alias of "msg"), so both last_use
-    // values are extended to the maximum of the group (op 9, the ret op).
-    assert_eq!(analysis.last_use.get("msg"), Some(&9));
-    assert_eq!(analysis.last_use.get("out"), Some(&9));
+    // values are extended to the maximum of the group (op 10, the ret op).
+    assert_eq!(analysis.last_use.get("msg"), Some(&10));
+    assert_eq!(analysis.last_use.get("out"), Some(&10));
 }
 
 #[test]
@@ -261,6 +269,7 @@ fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let void_ret = FunctionIR {
@@ -275,6 +284,7 @@ fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -295,24 +305,24 @@ fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
 }
 
 #[test]
-fn preanalysis_marks_every_persisted_coroutine_state_resumable() {
+fn preanalysis_uses_only_declared_resume_cases() {
     let func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "stateful_ready_continuations".to_string(),
         params: vec!["self".to_string()],
         ops: vec![
             OpIR {
+                kind: "state_switch".into(),
+                state_targets: Some(vec![(216, 216)]),
+                ..OpIR::default()
+            },
+            OpIR {
                 kind: "state_label".to_string(),
                 value: Some(216),
                 ..OpIR::default()
             },
             OpIR {
-                kind: "state_transition".to_string(),
-                args: Some(vec![
-                    "future".to_string(),
-                    "await_slot".to_string(),
-                    "pending_state".to_string(),
-                ]),
+                kind: "state_set".to_string(),
                 value: Some(217),
                 ..OpIR::default()
             },
@@ -321,18 +331,16 @@ fn preanalysis_marks_every_persisted_coroutine_state_resumable() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func);
 
+    assert_eq!(analysis.resume_targets, Some(BTreeMap::from([(216, 216)])));
     assert!(
-        analysis.resume_states.contains(&216),
-        "textual state labels remain dispatchable resume states",
-    );
-    assert!(
-        analysis.resume_states.contains(&217),
-        "state_transition ready continuations are stored in object state and must dispatch",
+        !analysis.resume_targets.as_ref().unwrap().contains_key(&217),
+        "a running state is not a resume case"
     );
 }
 
@@ -344,6 +352,11 @@ fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
         params: vec!["self".to_string()],
         ops: vec![
             OpIR {
+                kind: "state_switch".into(),
+                state_targets: Some(vec![(12, 12)]),
+                ..OpIR::default()
+            },
+            OpIR {
                 kind: "state_label".to_string(),
                 value: Some(12),
                 ..OpIR::default()
@@ -355,12 +368,7 @@ fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
                 ..OpIR::default()
             },
             OpIR {
-                kind: "state_transition".to_string(),
-                args: Some(vec![
-                    "future".to_string(),
-                    "await_slot".to_string(),
-                    "pending_state".to_string(),
-                ]),
+                kind: "state_set".to_string(),
                 value: Some(13),
                 ..OpIR::default()
             },
@@ -374,33 +382,30 @@ fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func);
 
     assert_eq!(analysis.label_ids, vec![12, 13]);
-    assert!(analysis.resume_states.contains(&12));
-    assert!(analysis.resume_states.contains(&13));
+    assert_eq!(analysis.resume_targets, Some(BTreeMap::from([(12, 12)])));
     assert!(analysis.state_label_ids.contains(&12));
-    assert!(analysis.shared_resume_label_ids.contains(&12));
-    assert!(
-        !analysis.state_label_ids.contains(&13),
-        "a plain label with the same numeric id as a ready continuation must not share its resume block",
-    );
-    assert!(
-        !analysis.shared_resume_label_ids.contains(&13),
-        "a plain label collision is not a persisted pending label and must stay separate",
-    );
+    assert!(!analysis.state_label_ids.contains(&13));
 }
 
 #[test]
-fn preanalysis_marks_pending_plain_labels_as_shared_resume_entries() {
+fn preanalysis_maps_saved_states_to_plain_labels() {
     let func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "pending_plain_label".to_string(),
         params: vec!["self".to_string()],
         ops: vec![
+            OpIR {
+                kind: "state_switch".into(),
+                state_targets: Some(vec![(99, 12)]),
+                ..OpIR::default()
+            },
             OpIR {
                 kind: "const".to_string(),
                 out: Some("pending_state".to_string()),
@@ -408,12 +413,7 @@ fn preanalysis_marks_pending_plain_labels_as_shared_resume_entries() {
                 ..OpIR::default()
             },
             OpIR {
-                kind: "state_transition".to_string(),
-                args: Some(vec![
-                    "future".to_string(),
-                    "await_slot".to_string(),
-                    "pending_state".to_string(),
-                ]),
+                kind: "state_set".to_string(),
                 value: Some(13),
                 ..OpIR::default()
             },
@@ -427,18 +427,16 @@ fn preanalysis_marks_pending_plain_labels_as_shared_resume_entries() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func);
 
     assert_eq!(analysis.label_ids, vec![12]);
-    assert!(analysis.resume_states.contains(&12));
-    assert!(analysis.resume_states.contains(&13));
-    assert!(!analysis.state_label_ids.contains(&12));
-    assert!(analysis.shared_resume_label_ids.contains(&12));
+    assert_eq!(analysis.resume_targets, Some(BTreeMap::from([(99, 12)])));
     assert!(
-        !analysis.shared_resume_label_ids.contains(&13),
-        "ready-continuation states use dedicated resume blocks unless a textual label is actually persisted",
+        !analysis.state_label_ids.contains(&12),
+        "a plain label can be the explicit resume target"
     );
 }

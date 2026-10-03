@@ -56,16 +56,6 @@ def exec(source, globals=None, locals=None, *, closure=None):
     raise _dynamic_execution_unavailable("exec")
 
 
-_MOLT_POW = _require_intrinsic("molt_pow", _NS)
-_MOLT_POW_MOD = _require_intrinsic("molt_pow_mod", _NS)
-
-
-def pow(base, exp, mod=None):
-    if mod is None:
-        return _MOLT_POW(base, exp)
-    return _MOLT_POW_MOD(base, exp, mod)
-
-
 def input(prompt: object = "", /) -> str:
     intrinsic = _require_intrinsic("molt_input_builtin", _NS)
     return intrinsic(prompt)
@@ -246,32 +236,30 @@ exit = _sitebuiltins.exit
 # Project the public list from that namespace instead of repeating its gates.
 __all__ = [name for name in __all__ if name in _NS]
 
+# Complete construction metadata before sealing the public builtin role.
+# Native callable metadata is readonly after finalization; initialization must
+# propagate its original failure instead of exposing a partially initialized API.
+if _sys.version_info >= (3, 13):
+    eval.__text_signature__ = "($module, source, /, globals=None, locals=None)"  # type: ignore[attr-defined]
+    exec.__text_signature__ = (  # type: ignore[attr-defined]
+        "($module, source, /, globals=None, locals=None, *, closure=None)"
+    )
+    breakpoint.__text_signature__ = "($module, /, *args, **kws)"  # type: ignore[attr-defined]
+else:
+    eval.__text_signature__ = "($module, source, globals=None, locals=None, /)"  # type: ignore[attr-defined]
+    exec.__text_signature__ = (  # type: ignore[attr-defined]
+        "($module, source, globals=None, locals=None, /, *, closure=None)"
+    )
+    breakpoint.__text_signature__ = None  # type: ignore[attr-defined]
+compile.__text_signature__ = (  # type: ignore[attr-defined]
+    "($module, /, source, filename, mode, flags=0,\n"
+    "        dont_inherit=False, optimize=-1, *, _feature_version=-1)"
+)
+input.__text_signature__ = "($module, prompt='', /)"  # type: ignore[attr-defined]
+
 _molt_function_set_builtin = _require_intrinsic("molt_function_set_builtin", _NS)
 _molt_function_set_builtin(compile)
 _molt_function_set_builtin(input)
 _molt_function_set_builtin(breakpoint)
 _molt_function_set_builtin(eval)
 _molt_function_set_builtin(exec)
-_molt_function_set_builtin(pow)
-try:
-    # CPython 3.12+ `inspect.signature` uses `__text_signature__` for these builtins.
-    eval.__text_signature__ = "(source, globals=None, locals=None, /)"  # type: ignore[attr-defined]
-    exec.__text_signature__ = (  # type: ignore[attr-defined]
-        "(source, globals=None, locals=None, /, *, closure=None)"
-    )
-except Exception as _exc:  # noqa: BLE001
-    raise RuntimeError(
-        "builtins.eval/exec missing __text_signature__ support for inspect.signature parity"
-    ) from _exc
-
-try:
-    # CPython 3.12+ builtin-function signatures (Python-defined builtins in this module).
-    compile.__text_signature__ = (  # type: ignore[attr-defined]
-        "(source, filename, mode, flags=0, dont_inherit=False, optimize=-1, *, _feature_version=-1)"
-    )
-    input.__text_signature__ = "(prompt='', /)"  # type: ignore[attr-defined]
-    pow.__text_signature__ = "(base, exp, mod=None)"  # type: ignore[attr-defined]
-except Exception as _exc:  # noqa: BLE001
-    raise RuntimeError(
-        "builtins.compile/input/pow missing __text_signature__ support for inspect.signature parity"
-    ) from _exc

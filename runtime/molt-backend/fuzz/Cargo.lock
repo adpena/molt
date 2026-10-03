@@ -15,6 +15,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "ar_archive_writer"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
+dependencies = [
+ "object",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -470,23 +479,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
+name = "memmap2"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "molt-artifact-publish"
+version = "0.1.0"
+dependencies = [
+ "windows-sys",
+]
+
+[[package]]
 name = "molt-backend"
 version = "0.1.0"
 dependencies = [
- "cranelift-codegen",
- "cranelift-frontend",
- "cranelift-module",
- "cranelift-native",
- "cranelift-object",
+ "ar_archive_writer",
  "libc",
+ "memmap2",
+ "molt-artifact-publish",
+ "molt-backend-native",
+ "molt-backend-wasm",
+ "molt-ir",
  "molt-tir",
- "rayon",
+ "molt-wasm-facts",
+ "object",
  "rmp-serde",
  "serde",
  "serde_json",
  "sha2",
- "wasm-encoder",
- "wasmparser",
  "windows-sys",
 ]
 
@@ -497,8 +522,67 @@ dependencies = [
  "arbitrary",
  "libfuzzer-sys",
  "molt-backend",
+ "molt-codegen-abi",
  "wasm-encoder",
  "wasmparser",
+]
+
+[[package]]
+name = "molt-backend-native"
+version = "0.1.0"
+dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-module",
+ "cranelift-native",
+ "cranelift-object",
+ "libc",
+ "molt-codegen-abi",
+ "molt-ir",
+ "molt-tir",
+ "rayon",
+ "serde",
+]
+
+[[package]]
+name = "molt-backend-wasm"
+version = "0.1.0"
+dependencies = [
+ "molt-codegen-abi",
+ "molt-ir",
+ "molt-tir",
+ "wasm-encoder",
+ "wasmparser",
+]
+
+[[package]]
+name = "molt-codegen-abi"
+version = "0.1.0"
+
+[[package]]
+name = "molt-ir"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "molt-passes"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "memmap2",
+ "molt-ir",
+ "num-integer",
+ "rayon",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -506,11 +590,30 @@ name = "molt-tir"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "molt-ir",
+ "molt-passes",
  "rayon",
  "rmp-serde",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "molt-wasm-facts"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "wasm-encoder",
+ "wasmparser",
+]
+
+[[package]]
+name = "num-integer"
+version = "0.1.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -735,9 +838,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-encoder"
-version = "0.252.0"
+version = "0.259.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8185ae345fa5687c054626ff9a50e7089797a343d9904d1dc9820eb4c4d3196f"
+checksum = "b1d0246511d901aacf25d2dc9111f0054947de5e093fe662099e709ff7530dc3"
 dependencies = [
  "leb128fmt",
  "wasmparser",
@@ -745,9 +848,9 @@ dependencies = [
 
 [[package]]
 name = "wasmparser"
-version = "0.252.0"
+version = "0.259.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3eb099dcadcde5be9eef55e3a337128efd4e44b4c93122487e4d2e4e1c6627c"
+checksum = "0f7c12eac7bb587801590f6a67ff0bc84d0748513864b71108e4b311cc3df694"
 dependencies = [
  "bitflags",
  "hashbrown 0.17.1",

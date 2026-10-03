@@ -188,7 +188,7 @@ def test_derived_child_binds_actual_executed_image(tmp_path: Path, changed_field
             ["build-output"] if changed_field == "roles" else "changed"
         )
     event_log.write_text(
-        json.dumps({"kind": "exec", "image": image}) + "\n", encoding="utf-8"
+        json.dumps({"event": {"kind": "exec", "image": image}}) + "\n", encoding="utf-8"
     )
     if changed_field is None:
         execution_custody.require_derived_child_image_bindings(receipt, event_log)

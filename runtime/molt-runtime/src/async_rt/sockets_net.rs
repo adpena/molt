@@ -28,7 +28,9 @@ use super::sockets::socket_register_peer_pair;
 use super::sockets::socket_timeout;
 #[cfg(target_arch = "wasm32")]
 use super::sockets::{decode_sockaddr, errno_from_rc, wasm_socket_meta_insert};
-use super::sockets::{host_from_bits, iter_values_from_bits, port_from_bits, service_from_bits};
+use super::sockets::{host_from_bits, iter_values_from_bits, service_from_bits};
+#[cfg(target_arch = "wasm32")]
+use super::sockets::port_from_bits;
 #[cfg(molt_has_net_io)]
 use super::sockets::{
     libc_socket, sock_addr_from_storage, sockaddr_from_bits, sockaddr_to_bits, socket_wait_ready,

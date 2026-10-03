@@ -615,35 +615,18 @@ def durable_replace(staged: Path, destination: Path) -> None:
 
 
 def durable_publish_exclusive(staged: Path, destination: Path) -> None:
-    """Durably publish a staged file without replacing an existing leaf."""
+    """Publish one stable file generation without replacing an existing leaf."""
 
     staged = Path(staged)
     destination = Path(destination)
     _flush_staged_file(staged)
     if destination.exists() or is_link_like(destination):
         raise FileExistsError(destination)
-    if os.name == "nt":
-        windows_replace_write_through(
-            staged,
-            destination,
-            replace_once=lambda source, target: move_file_ex_write_through(
-                source,
-                target,
-                replace_existing=False,
-            ),
-        )
-    elif os.name == "posix":
-        os.link(staged, destination, follow_symlinks=False)
-        _sync_publication_parents_after_commit(destination.parent, destination.parent)
-        try:
-            staged.unlink()
-            _sync_publication_parents_after_commit(staged.parent, staged.parent)
-        except OSError as exc:
-            _warn_after_commit(
-                f"exclusive file publication retained staged residue {staged}: {exc}"
-            )
-    else:
-        raise OSError(f"unsupported exclusive publication platform: {os.name}")
+    # Link-then-unlink changes the visible inode's ctime after publication and
+    # invalidates identities already captured by concurrent readers. Use the
+    # same exclusive rename authority as directory/leaf publication.
+    _namespace_publish_leaf_exclusive_once(staged, destination)
+    _sync_publication_parents_after_commit(staged.parent, destination.parent)
 
 
 def canonical_file_leaf(

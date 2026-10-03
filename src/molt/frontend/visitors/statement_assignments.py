@@ -84,26 +84,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
             return None
         value_node = self.visit(node.value)
         if isinstance(node.target, ast.Name):
-            self._apply_explicit_hint(node.target.id, value_node)
-            if (
-                self.current_func_name == "molt_main"
-                or node.target.id not in self.global_decls
-            ):
-                self._update_exact_local(node.target.id, node.value, value_node)
-            if (
-                self.current_func_name != "molt_main"
-                and node.target.id in self.global_decls
-            ):
-                self._store_local_value(node.target.id, value_node)
-                return None
-            if self.is_async():
-                self._store_local_value(node.target.id, value_node)
-            else:
-                self._store_local_value(node.target.id, value_node, publish_module=True)
-                if value_node is not None:
-                    self._propagate_container_hints(node.target.id, value_node)
-                if self.current_func_name == "molt_main":
-                    self.globals[node.target.id] = value_node
+            self._emit_assign_target(node.target, value_node, node.value)
             return None
 
         obj = self.visit(node.target.value)
@@ -123,27 +104,93 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         return None
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        dict_inc_match = self._match_dict_increment_assign(node)
-        if dict_inc_match is not None:
-            dict_expr, key_expr, delta_expr = dict_inc_match
-            dict_obj = self.visit(dict_expr)
-            key_obj = self.visit(key_expr)
-            delta_obj = self.visit(delta_expr)
-            if dict_obj is not None and key_obj is not None and delta_obj is not None:
-                # Fast-path increment lanes assume a stable dict object shape.
-                self._emit_guard_dict_shape(dict_obj)
-                self.emit(
-                    MoltOp(
-                        kind="DICT_STR_INT_INC",
-                        args=[dict_obj, key_obj, delta_obj],
-                        result=MoltValue("none"),
-                    )
-                )
-                return None
+        if self._emit_dict_increment_statement(node):
+            return None
+        self._emit_assign_statement(node)
+        return None
+
+    def _emit_assign_statement(self, node: ast.Assign) -> None:
         value_node = self.visit(node.value)
         for target in node.targets:
             self._emit_assign_target(target, value_node, node.value)
-        return None
+
+    def _emit_dict_increment_statement(self, node: ast.Assign) -> bool:
+        """``d[k] = d.get(k, 0) + delta`` as one fused update, when the statement
+        provably runs no Python code: the kernel checks that on the values the
+        statement reads (an exact dict, an exact str key, exact int values) and
+        otherwise the statement runs as written.
+
+        The fused op reads the key and ``delta`` before the statement would.
+        Every name read is proven bound, so no read of one raises, and the key
+        reads the same way each time, so reads the fallback repeats are
+        unobservable. A dataclass field key may be unset, so its read can
+        raise; the statement reads it only after looking up ``d.get``, which
+        runs no Python code only for an exact dict, so only then is it read
+        early. Class bodies read names through a namespace mapping that may
+        run Python code, so they keep the statement."""
+        if self._class_ns_stack:
+            return False
+        match = self._match_dict_increment_assign(node)
+        if match is None:
+            return False
+        dict_read, key_expr, delta_expr = match
+        reads = [dict_read]
+        if isinstance(key_expr, ast.Name):
+            reads.append(key_expr)
+        elif isinstance(key_expr, ast.Attribute) and isinstance(
+            key_expr.value, ast.Name
+        ):
+            reads.append(key_expr.value)
+        if isinstance(delta_expr, ast.Name):
+            reads.append(delta_expr)
+        elif not (
+            isinstance(delta_expr, ast.Constant)
+            and type(delta_expr.value) in {int, bool}
+        ):
+            return False
+        if not all(self._name_read_definitely_bound(read) for read in reads):
+            return False
+        dict_obj = self.visit(dict_read)
+        if dict_obj is None:
+            return False
+        if not isinstance(key_expr, ast.Attribute):
+            self._emit_fused_dict_increment(node, dict_obj, key_expr, delta_expr)
+            return True
+        exact_dict = self._emit_is_exact_builtin(dict_obj, "dict")
+        self.emit(MoltOp(kind="IF", args=[exact_dict], result=MoltValue("none")))
+        self._emit_fused_dict_increment(node, dict_obj, key_expr, delta_expr)
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        self._emit_assign_statement(node)
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        return True
+
+    def _emit_fused_dict_increment(
+        self,
+        node: ast.Assign,
+        dict_obj: MoltValue,
+        key_expr: ast.expr,
+        delta_expr: ast.expr,
+    ) -> None:
+        """The fused op on ``dict_obj`` and the statement, run where it
+        declines."""
+        key_obj = self.visit(key_expr)
+        delta_obj = self.visit(delta_expr)
+        if key_obj is None or delta_obj is None:
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported dict increment operand"
+            )
+        done = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(
+            MoltOp(
+                kind="DICT_STR_INT_INC",
+                args=[dict_obj, key_obj, delta_obj],
+                result=done,
+            )
+        )
+        declined = self._emit_not(done)
+        self.emit(MoltOp(kind="IF", args=[declined], result=MoltValue("none")))
+        self._emit_assign_statement(node)
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def visit_Delete(self, node: ast.Delete) -> None:
         def delete_target(target: ast.AST) -> None:
@@ -162,6 +209,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                 self._emit_delete_name(target.id)
                 return
             if isinstance(target, ast.Attribute):
+                self._record_imported_module_attr_mutation(target)
                 obj = self.visit(target.value)
                 if obj is None:
                     raise FrontendRejection(
@@ -290,6 +338,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
             if self._active_class_ns_scope(node.target.id) is not None:
                 self._store_local_value(node.target.id, res)
                 return None
+            self._clear_import_binding_origin(node.target.id)
             if (
                 self.current_func_name != "molt_main"
                 and node.target.id in self.global_decls
@@ -665,7 +714,6 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                 Diagnostic.OPERAND_VALUE, "Unsupported assignment value"
             )
         if isinstance(target, ast.Attribute):
-            self._record_imported_module_attr_mutation(target)
             obj = self.visit(target.value)
             obj_name = None
             if isinstance(target.value, ast.Name):
@@ -705,7 +753,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                 imported_module_provenance,
             )
             self.local_imported_names.discard(target.id)
-            if self.current_func_name == "molt_main" or target.id in self.global_decls:
+            if self.current_func_name == "molt_main":
                 self.global_imported_names.pop(target.id, None)
                 self.global_imported_attr_names.pop(target.id, None)
                 self.global_imported_modules.pop(target.id, None)
@@ -716,18 +764,6 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
             if self.current_func_name == "molt_main":
                 self.global_imported_module_provenance[target.id] = (
                     imported_module_provenance
-                )
-            elif target.id in self.global_decls:
-                previous_global = (
-                    {target.id: self.global_imported_module_provenance[target.id]}
-                    if target.id in self.global_imported_module_provenance
-                    else {}
-                )
-                self.global_imported_module_provenance[target.id] = (
-                    self._join_imported_module_provenance(
-                        previous_global,
-                        {target.id: imported_module_provenance},
-                    )[target.id]
                 )
             if (
                 self.current_func_name == "molt_main"
@@ -808,25 +844,11 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         )
 
     def _emit_delete_name(self, name: str, *, allow_missing: bool = False) -> None:
-        non_module = self._imported_module_alias_provenance(None)
-        self._clear_imported_module_binding(name)
-        if self.current_func_name == "molt_main":
-            self.global_imported_module_provenance[name] = non_module
-        elif name in self.global_decls:
-            self.global_imported_module_provenance[name] = (
-                self._join_imported_module_provenance(
-                    {
-                        name: self.global_imported_module_provenance.get(
-                            name, non_module
-                        )
-                    },
-                    {name: non_module},
-                )[name]
-            )
         class_scope = self._active_class_ns_scope(name)
         if class_scope is not None:
             self._class_ns_delete(class_scope, name)
             return
+        self._clear_import_binding_origin(name)
         self._record_deleted_app_binding(name)
         if self.current_func_name == "molt_main":
             if name in self.boxed_locals:
@@ -877,16 +899,10 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
             self._box_local(name)
         old_val = self._load_local_value(name, guard_unbound=not allow_missing)
         missing = self._emit_missing_value()
-        if (
-            self.current_func_name != "molt_main"
-            and not self.is_async()
-            and name in self.scope_assigned
-            and name not in self.boxed_locals
-            and name not in self.free_vars
-            and name not in self.nonlocal_decls
-            and old_val is not None
-        ):
-            self._emit_delete_local_value(name, missing, old_val)
+        if self._frame_home_is_plain(name):
+            # The binding's home releases it; the read above only proved it
+            # bound (UnboundLocalError otherwise). Its view is never dropped.
+            self._emit_delete_local_value(name, missing)
         else:
             self._store_local_value(name, missing)
             self._emit_drop_owned_value(old_val)

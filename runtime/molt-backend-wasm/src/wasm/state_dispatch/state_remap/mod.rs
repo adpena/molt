@@ -1,4 +1,3 @@
-mod br_table;
 mod maps;
 mod sparse;
 

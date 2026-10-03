@@ -36,6 +36,54 @@ async def main() -> None:
         print("done", type(exc).__name__)
     print("frame3_none", it.ag_frame is None)
     print("locals3", inspect.getasyncgenlocals(it))
+    await projection_cases()
+
+
+class WrappedAwait:
+    def __init__(self, coroutine):
+        self.coroutine = coroutine
+        self.iterator = None
+
+    def __await__(self):
+        self.iterator = self.coroutine.__await__()
+        return self.iterator
+
+
+async def projection_body(delegate, __await_future_user):
+    await delegate
+    yield __await_future_user
+
+
+async def nested_wait(started, release):
+    started.set_result(None)
+    await release
+    await asyncio.sleep(0)
+
+
+async def projection_cases():
+    for wrapped in (False, True):
+        loop = asyncio.get_running_loop()
+        started = loop.create_future()
+        release = loop.create_future()
+        coroutine = nested_wait(started, release)
+        delegate = WrappedAwait(coroutine) if wrapped else coroutine
+        marker = object()
+        generator = projection_body(delegate, marker)
+        task = asyncio.create_task(generator.__anext__())
+        await started
+        acquired = delegate.iterator if wrapped else coroutine
+        print("projection-suspended", wrapped, generator.ag_await is acquired,
+              generator.ag_await is not marker, generator.ag_running)
+        release.set_result(None)
+        # Waking a Future does not resume the awaiting continuation synchronously.
+        print("projection-woken", wrapped, generator.ag_await is acquired)
+        result = await task
+        print("projection-yielded", wrapped, result is marker,
+              generator.ag_await is None, not generator.ag_running,
+              inspect.getcoroutinestate(coroutine) == "CORO_CLOSED")
+        await generator.aclose()
+        print("projection-closed", wrapped, generator.ag_await is None,
+              generator.ag_frame is None)
 
 
 asyncio.run(main())

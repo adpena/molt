@@ -24,6 +24,16 @@ pub(crate) fn alloc_itertools_class(
         return MoltObject::none().bits();
     }
     let class_bits = MoltObject::from_ptr(class_ptr).bits();
+    unsafe {
+        crate::object::class_storage::class_declare_native_slots(
+            class_ptr,
+            crate::object::class_storage::ClassSlotPolicy {
+                allows_dict: false,
+                allows_weakref: shape == ObjectShapeId::ItertoolsTee,
+                variable_sized: false,
+            },
+        );
+    }
     if !unsafe { crate::object::class_set_instance_shape_id(class_ptr, shape) } {
         dec_ref_bits(_py, class_bits);
         return MoltObject::none().bits();
@@ -55,12 +65,61 @@ pub(crate) fn alloc_itertools_class(
         let layout_bits = MoltObject::from_int(layout_size).bits();
         unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
     }
+    if exception_pending(_py)
+        || !unsafe {
+            crate::builtins::attr::capture_class_slot_declaration_for_seal(_py, class_ptr)
+        }
+    {
+        dec_ref_bits(_py, class_bits);
+        return MoltObject::none().bits();
+    }
     class_bits
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_public_results_own_references_independent_of_runtime_slots() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            // Both profiles call these same exports: reduced builds include the
+            // source in-tree, while edge/full builds use the satellite bridge.
+            for (get, minimum_owners) in [
+                (crate::molt_itertools_kwd_mark as extern "C" fn() -> u64, 2),
+                (
+                    crate::molt_itertools_repeat_type as extern "C" fn() -> u64,
+                    3,
+                ),
+            ] {
+                let first = get();
+                assert!(!exception_pending(py));
+                let ptr = obj_from_bits(first).as_ptr().expect("cached heap result");
+                let owners = unsafe { (*header_from_obj_ptr(ptr)).owned_ref_count_snapshot() };
+                // Cache + caller; the repeat class also has its MRO self-edge.
+                assert!(
+                    owners >= minimum_owners,
+                    "public result consumed a cache owner"
+                );
+                for _ in 0..4 {
+                    let next = get();
+                    assert_eq!(first, next);
+                    assert_eq!(
+                        unsafe { (*header_from_obj_ptr(ptr)).owned_ref_count_snapshot() },
+                        owners + 1,
+                        "every public return must supply a fresh reference"
+                    );
+                    dec_ref_bits(py, next);
+                    assert_eq!(
+                        unsafe { (*header_from_obj_ptr(ptr)).owned_ref_count_snapshot() },
+                        owners
+                    );
+                }
+                dec_ref_bits(py, first);
+            }
+        });
+    }
 
     #[test]
     fn class_construction_publishes_generated_instance_shape() {

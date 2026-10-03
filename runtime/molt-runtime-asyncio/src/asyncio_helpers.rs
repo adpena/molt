@@ -194,29 +194,6 @@ pub unsafe extern "C" fn molt_asyncio_condition_validate_locked(locked_bits: u64
     })
 }
 
-/// Checks if an exception is a CancelledError by examining its type name.
-/// Returns True/False as bool bits.
-///
-/// # Safety
-///
-/// `exc_bits` must be a NaN-boxed Molt object value produced by the active
-/// runtime. The entrypoint must be called only while the Molt runtime is
-/// initialized.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_is_cancelled_exc(exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        let obj = obj_from_bits(exc_bits);
-        if obj.is_none() {
-            return MoltObject::from_bool(false).bits();
-        }
-        let Some(tname) = type_name(py, obj) else {
-            return MoltObject::from_bool(false).bits();
-        };
-        let is_cancelled = tname == "CancelledError";
-        MoltObject::from_bool(is_cancelled).bits()
-    })
-}
-
 // ── Stream buffer helpers ────────────────────────────────────────────────────
 
 /// StreamReader buffer management: validates the read count parameter.

@@ -8,7 +8,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 import enum as _enum
 
 _require_intrinsic("molt_stdlib_probe")
-_MOLT_SIGNAL_RAISE = _require_intrinsic("molt_signal_raise")
 
 # Signal constants from Rust intrinsics
 _MOLT_SIGNAL_SIG_DFL = _require_intrinsic("molt_signal_sig_dfl")
@@ -183,19 +182,12 @@ default_int_handler = _MOLT_SIGNAL_DEFAULT_INT_HANDLER
 
 
 def getsignal(sig: int) -> object:
-    signum = int(sig)
-    current = _MOLT_SIGNAL_GETSIGNAL(signum)
-    if signum == SIGINT and current == SIG_DFL:
-        return default_int_handler
-    return current
+    # The runtime owns SIGINT's `default_int_handler` disposition.
+    return _MOLT_SIGNAL_GETSIGNAL(int(sig))
 
 
 def signal(sig: int, handler: object) -> object:
-    signum = int(sig)
-    old_handler = _MOLT_SIGNAL_SIGNAL(signum, handler)
-    if signum == SIGINT and old_handler == SIG_DFL:
-        return default_int_handler
-    return old_handler
+    return _MOLT_SIGNAL_SIGNAL(int(sig), handler)
 
 
 def raise_signal(sig: int) -> None:

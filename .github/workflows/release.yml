@@ -195,23 +195,28 @@ jobs:
           name: release-wheel-${{ needs.plan.outputs.source_sha }}
           path: dist/wheel
 
-      - name: Build independent release-output workers
+      - name: Build independent native release generations
         shell: bash
         run: |
-          uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE -- \
-            cargo build --locked --profile release-output -p molt-worker \
-            --target-dir dist/worker-primary
-          uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE -- \
-            cargo build --locked --profile release-output -p molt-worker \
-            --target-dir dist/worker-secondary
+          for lane in primary secondary; do
+            uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE -- \
+              uv run --no-sync python -m tools.release.build_compiler \
+              --output "dist/native-$lane" \
+              --target "${{ matrix.id }}" \
+              --source-sha "${{ needs.plan.outputs.source_sha }}" \
+              --source-date-epoch "$SOURCE_DATE_EPOCH"
+          done
 
-      - name: Build independent production compilers
+      - name: Build independent runtime cell inventories
         shell: bash
         run: |
-          uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE -- \
-            uv run --no-sync python -m tools.release.build_compiler --target-dir dist/compiler-primary
-          uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE -- \
-            uv run --no-sync python -m tools.release.build_compiler --target-dir dist/compiler-secondary
+          for lane in primary secondary; do
+            uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE -- \
+              uv run --no-sync python -m tools.release.runtime_cells \
+              --output "dist/runtime-$lane" \
+              --source-sha "${{ needs.plan.outputs.source_sha }}" \
+              --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"
+          done
 
       - name: Assemble immutable reproducible candidate
         shell: bash
@@ -221,26 +226,16 @@ jobs:
         run: |
           wheel="$(uv run --no-sync python -m tools.release.release_authority select-one \
             --root dist/wheel --pattern '*.whl')"
-          worker="molt-worker"
-          compiler="molt-backend"
-          launcher="molt"
-          if [ "${{ matrix.platform }}" = "windows" ]; then
-            worker="molt-worker.exe"
-            compiler="molt-backend.exe"
-            launcher="molt.exe"
-          fi
           uv run --no-sync python -m tools.release.release_authority candidate \
             --target "${{ matrix.id }}" \
             --version "$VERSION" \
             --source-sha "$SOURCE_SHA" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --wheel "$wheel" \
-            --primary-worker "dist/worker-primary/release-output/$worker" \
-            --secondary-worker "dist/worker-secondary/release-output/$worker" \
-            --primary-compiler "dist/compiler-primary/release/$compiler" \
-            --secondary-compiler "dist/compiler-secondary/release/$compiler" \
-            --primary-launcher "dist/compiler-primary/release/$launcher" \
-            --secondary-launcher "dist/compiler-secondary/release/$launcher" \
+            --primary-native-build dist/native-primary \
+            --secondary-native-build dist/native-secondary \
+            --primary-runtime-cells dist/runtime-primary \
+            --secondary-runtime-cells dist/runtime-secondary \
             --output dist/candidate
 
       - name: Verify installed Python x target x profile smoke closure

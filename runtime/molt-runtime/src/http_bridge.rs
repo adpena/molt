@@ -54,13 +54,62 @@ pub extern "C" fn __molt_http_clear_attribute_error_if_pending() -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_exception_last() -> u64 {
-    molt_exception_last()
+pub extern "C" fn __molt_http_pending_exception_matches_builtin(
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        if !exception_pending(py) {
+            return 0;
+        }
+        let name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        };
+        // Public exception_last may substitute an outer handled exception and
+        // consume the pending error. HTTP dispatch always inspects raised state.
+        let pending = crate::builtins::exceptions::ExceptionValue::adopt(
+            py,
+            crate::builtins::exceptions::molt_exception_last_pending(),
+        );
+        i32::from(crate::builtins::exceptions::exception_matches_builtin_name(
+            py, pending.bits(), name,
+        ))
+    })
 }
 
+/// Synchronous projection of the canonical raised transaction and handler
+/// stack. The leaf owns only its stack-local closure, never exception storage.
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_exception_kind_bits(ptr: *mut u8) -> u64 {
-    unsafe { crate::builtins::exceptions::exception_kind_bits(ptr) }
+pub unsafe extern "C" fn __molt_http_with_exception_scope(
+    restore_on_success: i32,
+    callback: unsafe extern "C" fn(*mut std::ffi::c_void) -> i32,
+    context: *mut std::ffi::c_void,
+) {
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::exceptions::{
+            ExceptionStackScope, ExceptionValue, exception_context_set,
+            molt_exception_last_pending, with_saved_raised_exception,
+        };
+
+        let pending = ExceptionValue::adopt(py, molt_exception_last_pending());
+        with_saved_raised_exception(py, || {
+            let handler = if obj_from_bits(pending.bits()).is_none() {
+                None
+            } else {
+                let handler = ExceptionStackScope::push(py);
+                exception_context_set(py, pending.bits());
+                Some(handler)
+            };
+            // The leaf catches its unwind before returning across C. Negative
+            // status restores the incoming transaction before it resumes there.
+            let status = unsafe { callback(context) };
+            if status < 0 {
+                unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+            }
+            molt_cpython_abi::api::errors::with_preserved_error(|| drop(handler));
+            status < 0 || (status > 0 && restore_on_success != 0)
+        });
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -170,7 +219,7 @@ pub extern "C" fn __molt_http_maybe_ptr_from_bits(bits: u64) -> *mut u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_dec_ref_bits(bits: u64) {
     crate::with_gil_entry_nopanic!(_py, {
-        dec_ref_bits(_py, bits);
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, bits));
     })
 }
 

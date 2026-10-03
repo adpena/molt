@@ -21,7 +21,7 @@
 
 mod support;
 
-use molt_cpython_abi::abi_types::{Py_None, PyObject};
+use molt_cpython_abi::abi_types::{Py_None, PyObject, PySliceObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +30,39 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 static BIG_U64_BITS: AtomicU64 = AtomicU64::new(0); // u64::MAX - 3 (Big band)
 static HUGE_NEG_BITS: AtomicU64 = AtomicU64::new(0); // < -2^64
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+static CLASS_ANCHORS: [u64; 5] = [0; 5];
+fn class_bits(index: usize) -> u64 {
+    MoltObject::from_ptr((&raw const CLASS_ANCHORS[index]).cast_mut().cast()).bits()
+}
+unsafe extern "C" fn mock_runtime_class(
+    bits: u64,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    let value = MoltObject::from_bits(bits);
+    let index = if support::fake_strings::contains(bits) {
+        1
+    } else if value.is_bool() {
+        4
+    } else if value.is_int()
+        || bits == BIG_U64_BITS.load(Ordering::SeqCst)
+        || bits == HUGE_NEG_BITS.load(Ordering::SeqCst)
+    {
+        2
+    } else if value.is_float() {
+        3
+    } else {
+        0
+    };
+    molt_cpython_abi::hooks::BorrowedHandleResult::ok(class_bits(index))
+}
+// These normalization fixtures define no custom type slots. Real descriptor
+// and callback admission is tested with the production runtime provider.
+unsafe extern "C" fn mock_type_lookup(
+    _class: u64,
+    _name: u64,
+    _mro: u8,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    molt_cpython_abi::hooks::BorrowedHandleResult::missing()
+}
 
 fn test_guard() -> MutexGuard<'static, ()> {
     TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
@@ -38,7 +71,9 @@ fn test_guard() -> MutexGuard<'static, ()> {
 const BIG_U64_VALUE: u64 = u64::MAX - 3;
 
 unsafe extern "C" fn mock_classify_heap(bits: u64) -> u8 {
-    if support::fake_strings::contains(bits) {
+    if (0..5).any(|index| bits == class_bits(index)) {
+        molt_cpython_abi::abi_types::MoltTypeTag::Type as u8
+    } else if support::fake_strings::contains(bits) {
         molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
     } else if bits == BIG_U64_BITS.load(Ordering::SeqCst)
         || bits == HUGE_NEG_BITS.load(Ordering::SeqCst)
@@ -85,8 +120,26 @@ fn install_hooks() {
     hooks.int_as_i64_checked = mock_int_as_i64_checked;
     hooks.int_as_u64_checked = mock_int_as_u64_checked;
     hooks.int_sign = mock_int_sign;
+    hooks.runtime_class_borrowed = mock_runtime_class;
+    hooks.type_lookup_borrowed = mock_type_lookup;
     support::fake_strings::wire(&mut hooks);
     support::prepare_abi_test_thread(hooks);
+    unsafe {
+        for (index, class) in [
+            &raw mut molt_cpython_abi::abi_types::PyType_Type,
+            &raw mut molt_cpython_abi::abi_types::PyUnicode_Type,
+            &raw mut molt_cpython_abi::abi_types::PyLong_Type,
+            &raw mut molt_cpython_abi::abi_types::PyFloat_Type,
+            &raw mut molt_cpython_abi::abi_types::PyBool_Type,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            GLOBAL_BRIDGE
+                .bind_static_pyobj_to_runtime_handle(class.cast(), class_bits(index), true)
+                .expect("bind normalization fixture text classes");
+        }
+    }
 }
 
 fn proxy(bits: u64) -> *mut PyObject {
@@ -108,16 +161,46 @@ fn err_pending() -> bool {
     !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null()
 }
 
-fn new_slice(start: *mut PyObject, stop: *mut PyObject, step: *mut PyObject) -> *mut PyObject {
-    let s = unsafe { molt_cpython_abi::api::slice::PySlice_New(start, stop, step) };
-    assert!(!s.is_null());
-    s
+// These are physical inputs to the standalone normalization API, not a
+// replacement slice constructor. Real ownership/crossing tests live with the
+// runtime provider in cpython_abi_hooks::slice_semantics_tests.
+struct PhysicalSlice(Box<PySliceObject>);
+impl PhysicalSlice {
+    fn as_ptr(&self) -> *mut PyObject {
+        (&raw const *self.0).cast_mut().cast()
+    }
+}
+impl Drop for PhysicalSlice {
+    fn drop(&mut self) {
+        molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
+            for pointer in [self.0.start, self.0.stop, self.0.step] {
+                molt_cpython_abi::api::refcount::Py_DECREF(pointer);
+            }
+        });
+    }
+}
+// Each test supplies owned arguments; this fixture adopts those references.
+fn new_slice(start: *mut PyObject, stop: *mut PyObject, step: *mut PyObject) -> PhysicalSlice {
+    PhysicalSlice(Box::new(PySliceObject {
+        ob_base: PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut molt_cpython_abi::abi_types::PySlice_Type,
+        },
+        start,
+        stop,
+        step,
+    }))
 }
 
-fn unpack(slice: *mut PyObject) -> (i32, isize, isize, isize) {
+fn unpack(slice: &PhysicalSlice) -> (i32, isize, isize, isize) {
     let (mut start, mut stop, mut step) = (0isize, 0isize, 0isize);
     let rc = unsafe {
-        molt_cpython_abi::api::slice::PySlice_Unpack(slice, &mut start, &mut stop, &mut step)
+        molt_cpython_abi::api::slice::PySlice_Unpack(
+            slice.as_ptr(),
+            &mut start,
+            &mut stop,
+            &mut step,
+        )
     };
     (rc, start, stop, step)
 }
@@ -131,7 +214,7 @@ fn unpack_float_bound_raises_typeerror() {
     clear_err();
     // slice(1.5) — CPython: TypeError from _PyEval_SliceIndex.
     let s = new_slice(float_obj(1.5), none(), none());
-    let (rc, ..) = unpack(s);
+    let (rc, ..) = unpack(&s);
     assert_eq!(
         rc, -1,
         "slice(1.5) must FAIL PySlice_Unpack — the pre-fix silently stored a \
@@ -145,7 +228,7 @@ fn unpack_float_bound_raises_typeerror() {
         "exact _PyEval_SliceIndex TypeError text"
     );
     clear_err();
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
+    drop(s);
 }
 
 #[test]
@@ -156,11 +239,11 @@ fn unpack_float_step_raises_typeerror_not_reverse_direction() {
     // The ledger case: a non-index STEP flipped iteration direction via the
     // silent -1. Must fail loud instead.
     let s = new_slice(int_obj(0), int_obj(10), float_obj(2.5));
-    let (rc, ..) = unpack(s);
+    let (rc, ..) = unpack(&s);
     assert_eq!(rc, -1);
     assert!(err_pending());
     clear_err();
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
+    drop(s);
 }
 
 // ── slice(0, 10**30) clamps to PY_SSIZE_T_MAX (success, not error) ──────────
@@ -176,7 +259,7 @@ fn unpack_big_positive_stop_clamps_to_ssize_max() {
         proxy(BIG_U64_BITS.load(Ordering::SeqCst)),
         none(),
     );
-    let (rc, start, stop, step) = unpack(s);
+    let (rc, start, stop, step) = unpack(&s);
     assert_eq!(
         rc, 0,
         "an out-of-range stop CLAMPS (sliceobject.c), no error"
@@ -189,7 +272,7 @@ fn unpack_big_positive_stop_clamps_to_ssize_max() {
         "slice(0, 10**30)-class stop must clamp to PY_SSIZE_T_MAX, not truncate"
     );
     assert_eq!(step, 1);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
+    drop(s);
 }
 
 #[test]
@@ -203,7 +286,7 @@ fn unpack_huge_negative_start_clamps_to_ssize_min() {
         int_obj(3),
         none(),
     );
-    let (rc, start, stop, step) = unpack(s);
+    let (rc, start, stop, step) = unpack(&s);
     assert_eq!(rc, 0);
     assert!(!err_pending());
     assert_eq!(
@@ -213,7 +296,7 @@ fn unpack_huge_negative_start_clamps_to_ssize_min() {
     );
     assert_eq!(stop, 3);
     assert_eq!(step, 1);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
+    drop(s);
 }
 
 // ── step contracts survive ───────────────────────────────────────────────────
@@ -224,18 +307,18 @@ fn unpack_zero_step_still_valueerror_and_defaults_hold() {
     install_hooks();
     clear_err();
     let s = new_slice(none(), none(), int_obj(0));
-    let (rc, ..) = unpack(s);
+    let (rc, ..) = unpack(&s);
     assert_eq!(rc, -1, "slice step cannot be zero");
     assert!(err_pending());
     clear_err();
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
+    drop(s);
 
     // Negative-step None defaults (sliceobject.c).
     let s = new_slice(none(), none(), int_obj(-2));
-    let (rc, start, stop, step) = unpack(s);
+    let (rc, start, stop, step) = unpack(&s);
     assert_eq!(rc, 0);
     assert_eq!((start, stop, step), (isize::MAX, isize::MIN, -2));
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
+    drop(s);
 }
 
 // ── numpy's route: PySlice_GetIndicesEx inherits the loud failure ────────────
@@ -249,13 +332,18 @@ fn get_indices_ex_propagates_typeerror_for_bad_bound() {
     let (mut start, mut stop, mut step, mut len) = (0isize, 0isize, 0isize, 0isize);
     let rc = unsafe {
         molt_cpython_abi::api::slice::PySlice_GetIndicesEx(
-            s, 10, &mut start, &mut stop, &mut step, &mut len,
+            s.as_ptr(),
+            10,
+            &mut start,
+            &mut stop,
+            &mut step,
+            &mut len,
         )
     };
     assert_eq!(rc, -1, "ndarray basic-indexing path must see the failure");
     assert!(err_pending());
     clear_err();
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
+    drop(s);
 }
 
 // ── slice.rs:209 — legacy PySlice_GetIndices rejects, never clamps ───────────
@@ -271,26 +359,44 @@ fn legacy_get_indices_rejects_out_of_range_and_non_long() {
     let s = new_slice(int_obj(0), int_obj(11), none());
     let (mut start, mut stop, mut step) = (0isize, 0isize, 0isize);
     let rc = unsafe {
-        molt_cpython_abi::api::slice::PySlice_GetIndices(s, 10, &mut start, &mut stop, &mut step)
+        molt_cpython_abi::api::slice::PySlice_GetIndices(
+            s.as_ptr(),
+            10,
+            &mut start,
+            &mut stop,
+            &mut step,
+        )
     };
     assert_eq!(rc, -1, "legacy GetIndices must REJECT stop > length");
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
+    drop(s);
 
     // A float field is not a PyLong: -1 (legacy PyLong_Check gate).
     let s = new_slice(float_obj(1.0), none(), none());
     let rc = unsafe {
-        molt_cpython_abi::api::slice::PySlice_GetIndices(s, 10, &mut start, &mut stop, &mut step)
+        molt_cpython_abi::api::slice::PySlice_GetIndices(
+            s.as_ptr(),
+            10,
+            &mut start,
+            &mut stop,
+            &mut step,
+        )
     };
     assert_eq!(rc, -1, "legacy GetIndices requires exact ints per field");
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
+    drop(s);
     clear_err();
 
     // The happy path with a negative index adjusts once by length.
     let s = new_slice(int_obj(-3), int_obj(9), none());
     let rc = unsafe {
-        molt_cpython_abi::api::slice::PySlice_GetIndices(s, 10, &mut start, &mut stop, &mut step)
+        molt_cpython_abi::api::slice::PySlice_GetIndices(
+            s.as_ptr(),
+            10,
+            &mut start,
+            &mut stop,
+            &mut step,
+        )
     };
     assert_eq!(rc, 0);
     assert_eq!((start, stop, step), (7, 9, 1));
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
+    drop(s);
 }

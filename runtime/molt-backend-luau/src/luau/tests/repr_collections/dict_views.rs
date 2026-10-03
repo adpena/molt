@@ -11,6 +11,7 @@ fn test_dict_view_ops_emit_luau_helpers() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -55,9 +56,9 @@ fn test_dict_view_ops_emit_luau_helpers() {
         "dict view ops must dispatch through Luau helper calls, got:\n{output}"
     );
     assert!(
-        output.contains("local function molt_dict_keys")
-            && output.contains("local function molt_dict_values")
-            && output.contains("local function molt_dict_items"),
+        output.contains("function molt_dict_keys")
+            && output.contains("function molt_dict_values")
+            && output.contains("function molt_dict_items"),
         "dict view helper definitions must be included when called, got:\n{output}"
     );
     assert!(

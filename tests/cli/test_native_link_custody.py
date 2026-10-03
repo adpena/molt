@@ -290,3 +290,50 @@ def test_custody_revalidates_existing_extraction(tmp_path: Path) -> None:
 
     with pytest.raises(NativeLinkCustodyError, match="identity mismatch"):
         ensure_native_link_custody(runtime, custody)
+
+
+def test_custody_observation_reuses_bytes_but_always_checks_membership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, custody, _archive, _entry = _published_custody(tmp_path)
+    observation = custody_authority.observe_native_link_custody(runtime, custody)
+
+    def no_read(*args, **kwargs):
+        pytest.fail("unchanged custody generation was read again")
+
+    monkeypatch.setattr(custody_authority, "_file_identity", no_read)
+    monkeypatch.setattr(custody_authority.tarfile, "open", no_read)
+    assert (
+        ensure_native_link_custody(runtime, custody, previous=observation)
+        == observation.paths()
+    )
+    [member] = observation.paths().values()
+    (member.parent / "unadmitted.o").write_bytes(b"extra")
+    with pytest.raises(NativeLinkCustodyError, match="closure"):
+        ensure_native_link_custody(runtime, custody, previous=observation)
+
+
+@pytest.mark.parametrize("target", ["archive", "extracted"])
+def test_custody_replacement_observes_only_the_replaced_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    runtime, custody, archive, _entry = _published_custody(tmp_path)
+    observation = custody_authority.observe_native_link_custody(runtime, custody)
+    [extracted] = observation.paths().values()
+    replaced = archive if target == "archive" else extracted
+    replacement = replaced.with_name(replaced.name + ".replacement")
+    replacement.write_bytes(replaced.read_bytes())
+    replacement.replace(replaced)
+    original = custody_authority._file_identity
+    captures = []
+
+    def capture(path):
+        captures.append(path)
+        return original(path)
+
+    monkeypatch.setattr(custody_authority, "_file_identity", capture)
+    refreshed = custody_authority.observe_native_link_custody(
+        runtime, custody, previous=observation
+    )
+    assert refreshed.paths() == observation.paths()
+    assert captures == [replaced]

@@ -647,11 +647,29 @@ impl RustBackend {
                 "}\n\n",
             ));
         }
+        if ["molt_div(", "molt_floor_div(", "molt_mod(", "molt_pow("]
+            .iter()
+            .any(|name| used(name))
+        {
+            self.output
+                .push_str(include_str!("numeric_error_policy_generated.rs"));
+            self.output.push_str(r#"
+fn molt_numeric_error(context: NumericErrorContext) -> ! {
+    let target = molt_sys_version_state().lock().unwrap().clone();
+    let message = context.message(target.major, target.minor)
+        .unwrap_or_else(|| panic!("RuntimeError: unsupported numeric exception target version"));
+    panic!("{}: {}", context.error_class(), message)
+}
+fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext, float: NumericErrorContext) -> NumericErrorContext {
+    if matches!(a, MoltValue::Float(_)) || matches!(b, MoltValue::Float(_)) { float } else { integer }
+}
+"#);
+        }
         if used("molt_div(") {
             self.output.push_str(concat!(
                 "fn molt_div(a: MoltValue, b: MoltValue) -> MoltValue {\n",
                 "    let bv = molt_float(&b);\n",
-                "    if bv == 0.0 { panic!(\"ZeroDivisionError: division by zero\") }\n",
+                "    if bv == 0.0 { molt_numeric_error(molt_numeric_kind(&a, &b, NumericErrorContext::IntegerTrueDivision, NumericErrorContext::FloatTrueDivision)) }\n",
                 "    MoltValue::Float(molt_float(&a) / bv)\n",
                 "}\n\n",
             ));
@@ -660,13 +678,14 @@ impl RustBackend {
             self.output.push_str(concat!(
                 "fn molt_floor_div(a: MoltValue, b: MoltValue) -> MoltValue {\n",
                 "    match (&a, &b) {\n",
-                "        (MoltValue::Int(x), MoltValue::Int(y)) if *y != 0 => {\n",
-                "            MoltValue::Int(x.checked_div_euclid(*y).unwrap_or_else(|| panic!(\"OverflowError: Rust backend floor division exceeds i64 representation\")))\n",
+                "        (MoltValue::Int(_) | MoltValue::Bool(_), MoltValue::Int(_) | MoltValue::Bool(_)) => {\n",
+                "            let x = molt_int(&a); let y = molt_int(&b); if y == 0 { molt_numeric_error(NumericErrorContext::IntegerFloorDivision) }\n",
+                "            MoltValue::Int(i64::try_from(python_integer_divmod(i128::from(x), i128::from(y)).unwrap().0).unwrap_or_else(|_| panic!(\"OverflowError: Rust backend floor division exceeds i64 representation\")))\n",
                 "        }\n",
                 "        _ => {\n",
                 "            let bv = molt_float(&b);\n",
-                "            if bv == 0.0 { panic!(\"ZeroDivisionError: division by zero\") }\n",
-                "            MoltValue::Float((molt_float(&a) / bv).floor())\n",
+                "            if bv == 0.0 { molt_numeric_error(molt_numeric_kind(&a, &b, NumericErrorContext::IntegerFloorDivision, NumericErrorContext::FloatFloorDivision)) }\n",
+                "            MoltValue::Float(python_float_divmod(molt_float(&a), bv).unwrap().0)\n",
                 "        }\n",
                 "    }\n",
                 "}\n\n",
@@ -676,13 +695,14 @@ impl RustBackend {
             self.output.push_str(concat!(
                 "fn molt_mod(a: MoltValue, b: MoltValue) -> MoltValue {\n",
                 "    match (&a, &b) {\n",
-                "        (MoltValue::Int(x), MoltValue::Int(y)) if *y != 0 => {\n",
-                "            MoltValue::Int(x.checked_rem_euclid(*y).unwrap_or_else(|| panic!(\"OverflowError: Rust backend modulo exceeds i64 representation\")))\n",
+                "        (MoltValue::Int(_) | MoltValue::Bool(_), MoltValue::Int(_) | MoltValue::Bool(_)) => {\n",
+                "            let x = molt_int(&a); let y = molt_int(&b); if y == 0 { molt_numeric_error(NumericErrorContext::IntegerModulo) }\n",
+                "            MoltValue::Int(i64::try_from(python_integer_divmod(i128::from(x), i128::from(y)).unwrap().1).unwrap_or_else(|_| panic!(\"OverflowError: Rust backend modulo exceeds i64 representation\")))\n",
                 "        }\n",
                 "        _ => {\n",
                 "            let av = molt_float(&a); let bv = molt_float(&b);\n",
-                "            if bv == 0.0 { panic!(\"ZeroDivisionError: modulo by zero\") }\n",
-                "            MoltValue::Float(av - (av / bv).floor() * bv)\n",
+                "            if bv == 0.0 { molt_numeric_error(molt_numeric_kind(&a, &b, NumericErrorContext::IntegerModulo, NumericErrorContext::FloatModulo)) }\n",
+                "            MoltValue::Float(python_float_divmod(av, bv).unwrap().1)\n",
                 "        }\n",
                 "    }\n",
                 "}\n\n",
@@ -695,7 +715,7 @@ impl RustBackend {
                 "        (MoltValue::Int(x), MoltValue::Int(y)) if *y >= 0 => {\n",
                 "            MoltValue::Int(molt_int_pow(*x, *y))\n",
                 "        }\n",
-                "        _ => MoltValue::Float(molt_float(&a).powf(molt_float(&b))),\n",
+                "        _ => { let av = molt_float(&a); let bv = molt_float(&b); if av == 0.0 && bv < 0.0 { molt_numeric_error(NumericErrorContext::NegativePower) } MoltValue::Float(av.powf(bv)) },\n",
                 "    }\n",
                 "}\n\n",
             ));

@@ -1336,3 +1336,62 @@ fn malformed_guard_shape_cannot_broadcast_an_attribute_hint() {
         assert_eq!(facts, vec![TirType::DynBox; results]);
     }
 }
+
+#[test]
+fn container_constructor_types_survive_retained_binding_snapshots() {
+    for (kind, expected) in [
+        ("list_int_new", TirType::List(Box::new(TirType::DynBox))),
+        ("list_fill_new", TirType::List(Box::new(TirType::DynBox))),
+        ("list_from_range", TirType::List(Box::new(TirType::DynBox))),
+        ("list_copy", TirType::List(Box::new(TirType::DynBox))),
+        (
+            "dict_new",
+            TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox)),
+        ),
+        (
+            "dict_from_obj",
+            TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox)),
+        ),
+        ("set_new", TirType::Set(Box::new(TirType::DynBox))),
+        ("frozenset_new", TirType::Set(Box::new(TirType::DynBox))),
+        ("tuple_new", TirType::Tuple(vec![])),
+        ("tuple_from_list", TirType::Tuple(vec![])),
+    ] {
+        let mut constructor = AttrDict::new();
+        constructor.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        let mut capture = AttrDict::new();
+        capture.insert(
+            "_original_kind".into(),
+            AttrValue::Str("binding_alias".into()),
+        );
+        let mut func = single_block_func(
+            vec![
+                make_op(
+                    OpCode::ConstFloat,
+                    vec![],
+                    vec![ValueId(0)],
+                    float_attr(1.25),
+                ),
+                make_op(
+                    OpCode::Copy,
+                    vec![ValueId(0)],
+                    vec![ValueId(1)],
+                    constructor,
+                ),
+                make_op(OpCode::Copy, vec![ValueId(1)], vec![ValueId(2)], capture),
+            ],
+            3,
+        );
+        refine_types(&mut func);
+        let types = extract_type_map(&func);
+        assert_eq!(types.get(&ValueId(0)), Some(&TirType::F64), "{kind}");
+        assert_eq!(types.get(&ValueId(1)), Some(&expected), "{kind}");
+        assert_eq!(types.get(&ValueId(2)), Some(&expected), "{kind}");
+    }
+    assert!(
+        crate::tir::op_semantics::container_constructor_result_type("list_index_range").is_none()
+    );
+    assert!(
+        crate::tir::op_semantics::container_constructor_result_type("unknown_list_new").is_none()
+    );
+}

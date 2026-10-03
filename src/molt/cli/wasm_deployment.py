@@ -24,6 +24,7 @@ from molt.toolchain_identity import (
     stable_regular_file_version,
     verify_stable_regular_file_identity,
 )
+from molt.wasm_optimizer_identity import wasm_optimizer_attestation_path
 
 
 PRECOMPILE_ENV = {
@@ -97,6 +98,9 @@ class WasmDeploymentPlan:
         root = output_root if split else core["linked"].parent
         outputs = {**core, "manifest": root / "manifest.json"}
         obsolete = {root / "bundle.tar", root / "wrangler.toml"} if split else set()
+        obsolete.add(wasm_optimizer_attestation_path(core["linked"]))
+        if split:
+            obsolete.add(wasm_optimizer_attestation_path(core["app"]))
         if split:
             outputs.update(
                 worker_js=root / "worker.js",
@@ -125,6 +129,8 @@ class WasmDeploymentPlan:
     def artifacts(self) -> dict[str, str]:
         roles = {
             "linked": "linked_wasm",
+            "optimizer": "wasm_optimizer_attestation",
+            "app_optimizer": "wasm_app_optimizer_attestation",
             "app": "app_wasm",
             "runtime": "runtime_wasm",
             "manifest": "manifest",

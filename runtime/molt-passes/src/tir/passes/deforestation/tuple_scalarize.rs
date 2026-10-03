@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::super::PassStats;
+use super::super::ownership_lattice_min::Replacements;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
@@ -31,7 +32,11 @@ use crate::tir::values::ValueId;
 //
 // The BuildTuple + unpack_sequence pair is pure overhead: a heap allocation
 // created and immediately destroyed.  Scalarization replaces this with
-// direct SSA value copies -- zero allocation, zero refcount traffic.
+// direct SSA value copies -- zero allocation.  Each unpacked result keeps
+// the reference the unpack gave it: its copy is an owned alias of the
+// element unless the element is a raw carrier, so rebinding one name never
+// ends the other's reference (`ownership_lattice_min::Replacements`,
+// design 20 §1.2).
 //
 // Safety conditions:
 // 1. The BuildTuple result must not escape (used only by the unpack op).
@@ -58,7 +63,7 @@ struct TupleScalarizeCandidate {
 /// Scans every block for `BuildTuple` ops whose result is used exactly once
 /// by a first-class `UnpackSequence` in the same block. When the element counts
 /// match, both ops are replaced with direct `Copy` ops connecting tuple elements
-/// to unpack targets.
+/// to unpack targets; each keeps its unpacked result's own reference.
 pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
     let mut stats = PassStats {
         name: "tuple_scalarize",
@@ -212,6 +217,8 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
     // indices in one pass. Mutating in place candidate-by-candidate is not
     // index-stable when pairs interleave (Build A, Build B, Unpack A, Unpack B):
     // replacing one pair shifts both absolute indices of the other pair.
+    // A replaced result keeps the owner it had (design 20 §1.2).
+    let mut owners = Replacements::new(func);
     let mut by_block: HashMap<BlockId, Vec<TupleScalarizeCandidate>> = HashMap::new();
     for c in candidates {
         by_block.entry(c.block_id).or_default().push(c);
@@ -223,6 +230,7 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
         let mut removed_unpacks: HashSet<usize> = HashSet::new();
 
         for candidate in block_candidates {
+            owners.record(&block.ops[candidate.unpack_idx]);
             // Build replacement Copy ops for each element.
             let copy_ops: Vec<TirOp> = candidate
                 .tuple_elements
@@ -268,6 +276,7 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
         }
         debug_assert!(replacements.is_empty());
     }
+    owners.finish(func, None);
 
     stats
 }

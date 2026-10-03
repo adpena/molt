@@ -7,7 +7,6 @@ pub(in crate::wasm) enum WasmFrameAnonymousLocal {
     DispatchState,
     DispatchResumeState,
     DispatchBlockMapBase,
-    DispatchReturn,
     DispatchStateRemapBase,
     DispatchStateRemapValue,
     ConstIntShift,
@@ -93,10 +92,6 @@ mod tests {
             Some(WasmFrameAnonymousLocal::DispatchBlockMapBase)
         );
         assert_eq!(
-            locals.anonymous_kind(dispatch.return_local),
-            Some(WasmFrameAnonymousLocal::DispatchReturn)
-        );
-        assert_eq!(
             locals.anonymous_kind(dispatch.state_remap_base_local.unwrap()),
             Some(WasmFrameAnonymousLocal::DispatchStateRemapBase)
         );
@@ -104,25 +99,8 @@ mod tests {
             locals.anonymous_kind(dispatch.state_remap_value_local.unwrap()),
             Some(WasmFrameAnonymousLocal::DispatchStateRemapValue)
         );
-        assert_eq!(
-            local_types,
-            vec![
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-            ]
-        );
-        assert_eq!(local_count, 13);
+        assert_eq!(local_types, vec![ValType::I64; 12]);
+        assert_eq!(local_count, 12);
     }
 
     #[test]

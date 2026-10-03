@@ -119,6 +119,10 @@ def test_agent_coordination_init_writes_report_and_json(
             "tests/differential/stdlib/json_basic.py",
             "--owned",
             "src/molt/stdlib/json.py",
+            "--request-owner",
+            "integration",
+            "--requested",
+            "tests/differential/stdlib/json_basic.py",
             "--json",
         ]
     )
@@ -133,6 +137,12 @@ def test_agent_coordination_init_writes_report_and_json(
     assert payload["proof_role"] == "reducer"
     assert payload["planned_proof_lane"] == "tests/differential/stdlib/json_basic.py"
     assert payload["owned_paths"] == ["src/molt/stdlib/json.py"]
+    assert payload["ownership_request"] == {
+        "owner": "integration",
+        "requested_paths": ["tests/differential/stdlib/json_basic.py"],
+        "status": "pending",
+        "requested_at_utc": payload["created_at_utc"],
+    }
     assert payload["progress_log"] == "logs/agents/stdlib-lane/progress.log"
     assert payload["environment"]["recommended_python_command"]
     assert "python_executable" in payload["environment"]
@@ -141,6 +151,8 @@ def test_agent_coordination_init_writes_report_and_json(
     report_text = report.read_text(encoding="utf-8")
     assert "docs/ops/MULTI_AGENT_COORDINATION.md" in report_text
     assert "## Environment" in report_text
+    assert "Requested owner: integration" in report_text
+    assert "Requested paths (not granted ownership)" in report_text
 
 
 def test_load_records_tolerates_utf16_and_bom_records(tmp_path: Path) -> None:
@@ -334,6 +346,266 @@ def test_agent_coordination_scan_flags_broad_lane_collisions(tmp_path: Path) -> 
     ]
 
 
+@pytest.mark.parametrize(
+    "task",
+    [
+        "parent/child",
+        r"parent\child",
+        "../outside",
+        "C:task",
+        "worker.",
+        "worker ",
+        " worker",
+        "CON",
+        "nul.txt",
+        "COM¹",
+        "worker?",
+        "worker\x00",
+    ],
+)
+def test_init_rejects_nested_or_escaped_registry_locations(
+    tmp_path: Path, task: str
+) -> None:
+    with pytest.raises(ValueError, match="one directory directly under logs/agents"):
+        agent_coordination.main(["--repo-root", str(tmp_path), "init", task])
+    assert not (tmp_path / "logs").exists()
+
+
+def test_nested_snapshots_do_not_register_workers_requests_or_collisions(
+    tmp_path: Path,
+) -> None:
+    _write_record(tmp_path, "live")
+    canonical = tmp_path / "logs" / "agents" / "live" / "coordination.json"
+    record = json.loads(canonical.read_text(encoding="utf-8"))
+    record["ownership_request"] = {
+        "owner": "integration",
+        "requested_paths": ["tools/agent_coordination.py"],
+        "status": "pending",
+        "requested_at_utc": "2026-10-02T13:33:33Z",
+    }
+    canonical.write_text(json.dumps(record), encoding="utf-8")
+    preserved = {}
+    for relative, content in (
+        ("live/base/coordination.json", canonical.read_bytes()),
+        ("archive/retained/coordination.json", canonical.read_bytes()),
+        (
+            "arbitrary/nesting/coordination.json",
+            json.dumps(record | {"task": "phantom-worker"}).encode("utf-8"),
+        ),
+        ("live/evidence/broken/coordination.json", b"{malformed snapshot"),
+    ):
+        path = tmp_path / "logs" / "agents" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        preserved[path] = content
+
+    errors = []
+    context = agent_coordination._coordination_record_context(tmp_path, errors)
+    scan = agent_coordination.summary_payload(tmp_path)
+    assert not errors
+    assert context["source"] == "logs/agents/*/coordination.json"
+    assert context["record_count"] == context["active_count"] == 1
+    assert context["invalid_count"] == 0
+    assert [row["task"] for row in context["active"]] == ["live"]
+    assert [row["task"] for row in context["pending_ownership_requests"]] == ["live"]
+    assert [row["task"] for row in scan["records"]] == ["live"]
+    assert scan["pending_ownership_requests"] == context["pending_ownership_requests"]
+    assert scan["collisions"] == context["collisions"] == []
+    assert {path: path.read_bytes() for path in preserved} == preserved
+
+
+@pytest.mark.parametrize("defect", ["invalid-json", "missing-task", "different-task"])
+def test_malformed_canonical_records_fail_health_without_authorizing_scope(
+    tmp_path: Path, defect: str
+) -> None:
+    _write_record(tmp_path, "live")
+    _write_record(tmp_path, "broken")
+    path = tmp_path / "logs" / "agents" / "broken" / "coordination.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["ownership_request"] = {
+        "owner": "live",
+        "requested_paths": ["tools/agent_coordination.py"],
+        "status": "pending",
+        "requested_at_utc": "2026-10-02T13:33:33Z",
+    }
+    if defect == "missing-task":
+        del record["task"]
+    elif defect == "different-task":
+        record["task"] = "live"
+    content = "{" if defect == "invalid-json" else json.dumps(record)
+    path.write_text(content, encoding="utf-8")
+    before = path.read_bytes()
+    errors = []
+    context = agent_coordination._coordination_record_context(tmp_path, errors)
+    assert context["record_count"] == 2
+    assert context["invalid_count"] == 1
+    assert context["invalid"][0]["task"] == "broken"
+    assert context["invalid"][0]["path"] == "logs/agents/broken/coordination.json"
+    assert [row["task"] for row in context["active"]] == ["live"]
+    assert context["pending_ownership_requests"] == context["collisions"] == []
+    assert errors[0]["kind"] == "invalid_record"
+    model = agent_coordination.AgentContext(
+        generated_at_utc="2026-10-02T13:33:33Z",
+        live_facts={},
+        file_records={"coordination": context},
+        documentation={},
+        errors=tuple(errors),
+    )
+    assert model.as_dict()["ok"] is False
+    assert path.read_bytes() == before
+
+
+def test_pending_ownership_requests_surface_in_context_and_scan(
+    tmp_path: Path, capsys
+) -> None:
+    requested = ["src/molt/verified_subset.py", "tools/verified_subset.py"]
+    for task, status, request_status in (
+        ("historical-blocked", "blocked", None),
+        ("old-pending", "blocked", "pending"),
+        ("acknowledged", "running", "acknowledged"),
+        ("finished", "completed", "pending"),
+    ):
+        _write_record(tmp_path, task, role="implementer", status=status)
+        path = tmp_path / "logs" / "agents" / task / "coordination.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["updated_at_utc"] = "2026-01-01T00:00:00Z"
+        if request_status is not None:
+            record["ownership_request"] = {
+                "owner": "integration",
+                "requested_paths": requested,
+                "status": request_status,
+                "requested_at_utc": "2026-01-01T00:00:00Z",
+            }
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+    # An earlier query cannot contain a request registered afterward.
+    before = agent_coordination.summary_payload(tmp_path)
+    assert [row["task"] for row in before["pending_ownership_requests"]] == [
+        "old-pending"
+    ]
+    _write_record(tmp_path, "llvm-worker", role="implementer", status="blocked")
+    path = tmp_path / "logs" / "agents" / "llvm-worker" / "coordination.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record.update(
+        agent="llvm-delegate",
+        owned_paths=[],
+        created_at_utc="2026-10-02T13:33:33Z",
+        updated_at_utc="2026-10-02T13:33:33Z",
+        ownership_request={
+            "owner": "integration",
+            "requested_paths": requested,
+            "status": "pending",
+            "requested_at_utc": "2026-10-02T13:33:33Z",
+        },
+    )
+    path.write_text(json.dumps(record), encoding="utf-8")
+    errors = []
+    context = agent_coordination._coordination_record_context(tmp_path, errors)
+    scan = agent_coordination.summary_payload(tmp_path)
+    assert not errors
+    assert context["pending_ownership_request_count"] == 2
+    assert scan["pending_ownership_requests"] == context["pending_ownership_requests"]
+    assert [row["task"] for row in context["pending_ownership_requests"]] == [
+        "llvm-worker",
+        "old-pending",
+    ]
+    request = context["pending_ownership_requests"][0]
+    assert request["task"] == "llvm-worker"
+    assert request["agent"] == "llvm-delegate"
+    assert request["status"] == "blocked"
+    assert request["owned_paths"] == []
+    assert request["ownership_request"]["owner"] == "integration"
+    assert request["ownership_request"]["requested_paths"] == requested
+    assert request["updated_at_utc"] == "2026-10-02T13:33:33Z"
+    assert [row["task"] for row in before["pending_ownership_requests"]] == [
+        "old-pending"
+    ]
+
+    agent_coordination.print_text_agent_context(
+        {
+            "schema": agent_coordination.AGENT_CONTEXT_SCHEMA,
+            "ok": True,
+            "live_facts": {
+                "git": {
+                    "worktrees": [],
+                    "worktree_count": 0,
+                    "queried_root_is_canonical": True,
+                }
+            },
+            "file_records": {
+                "coordination": context,
+                "claims": {},
+                "proof_audit": {},
+            },
+            "errors": [],
+        }
+    )
+    context_text = capsys.readouterr().out
+    agent_coordination.print_text_summary(scan)
+    scan_text = capsys.readouterr().out
+    for output in (context_text, scan_text):
+        assert "pending ownership requests: 2" in output
+        assert (
+            "task=llvm-worker agent=llvm-delegate status=blocked owner=integration"
+            in output
+        )
+        assert "request=pending requested_at=2026-10-02T13:33:33Z" in output
+        assert (
+            "requested: src/molt/verified_subset.py, tools/verified_subset.py" in output
+        )
+        assert "owned: (none)" in output
+        assert "record: logs/agents/llvm-worker/coordination.json" in output
+    assert scan_text.index("task=llvm-worker") < scan_text.index(
+        "- historical-blocked:"
+    )
+    assert "task=historical-blocked" not in context_text
+
+    # Request resolution is explicit; it never grants paths as a side effect.
+    record["ownership_request"]["status"] = "acknowledged"
+    record["updated_at_utc"] = "2026-10-02T13:38:00Z"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    resolved = agent_coordination._coordination_record_context(tmp_path, [])
+    assert [row["task"] for row in resolved["pending_ownership_requests"]] == [
+        "old-pending"
+    ]
+    active = next(row for row in resolved["active"] if row["task"] == "llvm-worker")
+    assert active["ownership_request"]["status"] == "acknowledged"
+    assert active["owned_paths"] == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"owner": None},
+        {"requested_paths": []},
+        {"requested_paths": ["../outside.py"]},
+        {"status": "unrecognized"},
+        {"requested_at_utc": "2026-10-02T13:33:33"},
+        {"requested_at_utc": "2026-10-02T08:33:33-05:00"},
+    ],
+)
+def test_malformed_ownership_request_is_visible_as_invalid_record(
+    tmp_path: Path, change: dict
+) -> None:
+    _write_record(tmp_path, "requester", role="implementer", status="blocked")
+    path = tmp_path / "logs" / "agents" / "requester" / "coordination.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["ownership_request"] = {
+        "owner": "integration",
+        "requested_paths": ["src/molt/verified_subset.py"],
+        "status": "pending",
+        "requested_at_utc": "2026-10-02T13:33:33Z",
+    } | change
+    path.write_text(json.dumps(record), encoding="utf-8")
+    errors = []
+    context = agent_coordination._coordination_record_context(tmp_path, errors)
+    assert context["invalid_count"] == 1
+    assert context["invalid"][0]["path"] == "logs/agents/requester/coordination.json"
+    assert errors[0]["kind"] == "invalid_record"
+    assert "ownership_request" in errors[0]["message"]
+    assert context["pending_ownership_requests"] == []
+
+
 def test_agent_coordination_check_returns_nonzero_on_collision(tmp_path: Path) -> None:
     _write_record(tmp_path, "sweep-a")
     _write_record(tmp_path, "sweep-b")
@@ -341,6 +613,34 @@ def test_agent_coordination_check_returns_nonzero_on_collision(tmp_path: Path) -
     assert (
         agent_coordination.main(["--repo-root", str(tmp_path), "check", "--json"]) == 2
     )
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_invalid_record_cannot_turn_collision_check_green(
+    tmp_path: Path, capsys, json_output: bool
+) -> None:
+    _write_record(tmp_path, "sweep-a")
+    _write_record(tmp_path, "sweep-b")
+    path = tmp_path / "logs" / "agents" / "sweep-b" / "coordination.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["ownership_request"] = {"status": "pending"}
+    path.write_text(json.dumps(record), encoding="utf-8")
+    before = path.read_bytes()
+
+    args = ["--repo-root", str(tmp_path), "check"]
+    if json_output:
+        args.append("--json")
+    assert agent_coordination.main(args) == 2
+    output = capsys.readouterr().out
+    if json_output:
+        payload = json.loads(output)
+        assert payload["collisions"] == []
+        assert payload["invalid_count"] == 1
+        assert payload["invalid"][0]["path"] == "logs/agents/sweep-b/coordination.json"
+    else:
+        assert "invalid record: logs/agents/sweep-b/coordination.json:" in output
+        assert "ownership_request" in output
+    assert path.read_bytes() == before
 
 
 def test_agent_context_git_facts_cover_origin_drift_and_dirty_worktrees(

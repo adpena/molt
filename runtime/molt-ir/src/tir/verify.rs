@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 
 use super::blocks::{BlockId, Terminator};
-use super::dominators::{self, CfgEdgePolicy};
+use super::dominators::{self, ProgramPointDominance};
 use super::function::TirFunction;
 use super::op_kinds_generated::{
     TirVerifyAttrRule, opcode_accepts_operand_count, opcode_accepts_result_count,
@@ -32,28 +32,6 @@ pub struct VerifyError {
     pub op_index: Option<usize>,
     /// Human-readable description.
     pub message: String,
-}
-
-#[derive(Debug, Default)]
-struct DominatorInfo {
-    preorder: HashMap<BlockId, usize>,
-    postorder: HashMap<BlockId, usize>,
-}
-
-impl DominatorInfo {
-    fn dominates(&self, a: BlockId, b: BlockId) -> bool {
-        match (
-            self.preorder.get(&a),
-            self.preorder.get(&b),
-            self.postorder.get(&a),
-            self.postorder.get(&b),
-        ) {
-            (Some(&a_pre), Some(&b_pre), Some(&a_post), Some(&b_post)) => {
-                a_pre <= b_pre && b_post <= a_post
-            }
-            _ => false,
-        }
-    }
 }
 
 impl VerifyError {
@@ -198,6 +176,12 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
                 crate::ir_schema::validate_op_shape(kind, Some(op.operands.len()), value)
             {
                 errors.push(VerifyError::op(*bid, op_index, error.to_string()));
+                continue;
+            }
+            // Retired origins and malformed shapes own diagnostic precedence;
+            // do not diagnose the payload of a carrier already rejected above.
+            if let Err(error) = crate::literal_payload::validate_tir_literal(op) {
+                errors.push(VerifyError::op(*bid, op_index, error));
             }
         }
     }
@@ -223,11 +207,9 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 ));
             }
             // Check required attributes per opcode.
-            // NOTE: Constant ops (ConstInt, ConstFloat, ConstStr, ConstBytes)
-            // intentionally skip attribute checks because the lowering from
-            // SimpleIR may produce placeholder constants (e.g. `const` with
-            // no value) that are later consumed by type refinement. These
-            // ops are structurally valid even without their value attribute.
+            // String, bytes and bigint payloads are admitted by the shared
+            // literal authority in verify_operation_shapes. Numeric constant
+            // attribute handling remains separate from this generated table.
             match opcode_tir_verify_attr_rule_table(op.opcode) {
                 TirVerifyAttrRule::CallCallee if !op_has_call_callee(op) => {
                     // Callee can be either an attribute or the first operand
@@ -695,28 +677,19 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 // ---------------------------------------------------------------------------
 
 fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
-    // The strict dominator tree owns both reachability and dominance.
-    let dom = compute_dominator_tree(func);
-
-    // Only check reachable blocks. Unreachable blocks (dead code left by
-    // optimization passes like SCCP branch folding) may reference values
-    // whose definitions no longer dominate them. Checking them would report
-    // false SSA dominance violations.
-
-    // Build a map: ValueId → BlockId where it is defined.
-    let mut def_block: HashMap<ValueId, BlockId> = HashMap::new();
-    // Also track the op index within the block (for same-block use-before-def checks).
-    let mut def_op_index: HashMap<ValueId, Option<usize>> = HashMap::new(); // None = block arg
+    // Include every executable exceptional entry at its observation position.
+    // Retained, unreachable region labels remain structurally verified above,
+    // but do not manufacture execution paths or SSA dominance obligations.
+    let dom = ProgramPointDominance::compute_executable(func);
+    let mut definitions = HashMap::new();
 
     for (bid, block) in &func.blocks {
         for arg in &block.args {
-            def_block.insert(arg.id, *bid);
-            def_op_index.insert(arg.id, None);
+            definitions.insert(arg.id, (*bid, None));
         }
         for (op_idx, op) in block.ops.iter().enumerate() {
             for result in &op.results {
-                def_block.insert(*result, *bid);
-                def_op_index.insert(*result, Some(op_idx));
+                definitions.insert(*result, (*bid, Some(op_idx)));
             }
         }
     }
@@ -724,7 +697,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     // Check every operand use.
     let check_use =
         |bid: BlockId, op_idx: Option<usize>, used: ValueId, errors: &mut Vec<VerifyError>| {
-            match def_block.get(&used) {
+            match definitions.get(&used) {
                 None => {
                     let msg = format!("{} used but never defined", used);
                     match op_idx {
@@ -732,35 +705,26 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         None => errors.push(VerifyError::block(bid, msg)),
                     }
                 }
-                Some(&def_bid) => {
-                    if def_bid == bid {
-                        // Same block: ensure definition comes before use.
-                        if let (Some(use_idx), Some(def_idx_opt)) =
-                            (op_idx, def_op_index.get(&used))
-                            && let Some(def_idx) = def_idx_opt
-                            && *def_idx >= use_idx
+                Some(&(def_bid, def_op)) => {
+                    let position = op_idx.unwrap_or(usize::MAX);
+                    if !dom.definition_available(def_bid, def_op, bid, position) {
+                        let msg = if def_bid == bid && def_op.is_some_and(|index| index >= position)
                         {
-                            errors.push(VerifyError::op(
-                                bid,
-                                use_idx,
-                                format!(
-                                    "{} used at op#{} but defined later at op#{}",
-                                    used, use_idx, def_idx
-                                ),
-                            ));
-                        }
-                        // def_idx_opt == None means it's a block arg, always dominates.
-                    } else {
-                        // Different block: def_bid must dominate bid.
-                        if !dom.dominates(def_bid, bid) {
-                            let msg = format!(
+                            format!(
+                                "{} used at op#{} but defined later at op#{}",
+                                used,
+                                position,
+                                def_op.unwrap()
+                            )
+                        } else {
+                            format!(
                                 "{} defined in ^{} does not dominate use in ^{}",
                                 used, def_bid, bid
-                            );
-                            match op_idx {
-                                Some(i) => errors.push(VerifyError::op(bid, i, msg)),
-                                None => errors.push(VerifyError::block(bid, msg)),
-                            }
+                            )
+                        };
+                        match op_idx {
+                            Some(i) => errors.push(VerifyError::op(bid, i, msg)),
+                            None => errors.push(VerifyError::block(bid, msg)),
                         }
                     }
                 }
@@ -771,7 +735,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
         // Skip unreachable blocks — their ops may reference values whose
         // definitions no longer dominate them after optimization passes
         // changed the CFG (e.g., SCCP branch folding).
-        if !dom.preorder.contains_key(bid) {
+        if !dom.is_reachable(*bid) {
             continue;
         }
         for (op_idx, op) in block.ops.iter().enumerate() {
@@ -837,73 +801,6 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             }
             Terminator::Unreachable => {}
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Dominator helpers
-// ---------------------------------------------------------------------------
-
-/// Compute immediate dominator for each reachable block, returning a map
-/// `BlockId -> Option<BlockId>` (None = entry block / no idom).
-///
-/// Delegates to the single shared dominator implementation
-/// ([`dominators::compute_idoms_with`]) under the **strict-CFG** edge policy
-/// ([`CfgEdgePolicy::TerminatorOnly`]): the verifier intentionally restricts
-/// SSA-dominance to terminator-reachable blocks (handler blocks reached only
-/// via implicit exception edges are not SSA-dominance-checked). There is now
-/// exactly ONE dominator implementation over `TirFunction`.
-fn compute_dominators(func: &TirFunction) -> HashMap<BlockId, Option<BlockId>> {
-    if func.blocks.is_empty() {
-        return HashMap::new();
-    }
-    let pred_map = dominators::build_pred_map_with(func, CfgEdgePolicy::TerminatorOnly);
-    dominators::compute_idoms_with(func, &pred_map, CfgEdgePolicy::TerminatorOnly)
-}
-
-/// Compute dominator-tree metadata for reachable blocks.
-fn compute_dominator_tree(func: &TirFunction) -> DominatorInfo {
-    let idom = compute_dominators(func);
-    if idom.is_empty() {
-        return DominatorInfo::default();
-    }
-
-    let children = dominators::build_dom_children(&idom);
-
-    // Iterative DFS to assign preorder/postorder intervals for O(1) dominates checks.
-    let mut preorder: HashMap<BlockId, usize> = HashMap::with_capacity(idom.len());
-    let mut postorder: HashMap<BlockId, usize> = HashMap::with_capacity(idom.len());
-    let mut tick = 0usize;
-    let entry = func.entry_block;
-
-    if idom.contains_key(&entry) {
-        preorder.insert(entry, tick);
-        tick += 1;
-        let mut stack: Vec<(BlockId, usize)> = vec![(entry, 0)];
-        while let Some((node, child_idx)) = stack.last_mut() {
-            let next_child = children
-                .get(node)
-                .and_then(|child_list| child_list.get(*child_idx))
-                .copied();
-            if let Some(child) = next_child {
-                *child_idx += 1;
-                if preorder.contains_key(&child) {
-                    continue;
-                }
-                preorder.insert(child, tick);
-                tick += 1;
-                stack.push((child, 0));
-            } else {
-                postorder.insert(*node, tick);
-                tick += 1;
-                stack.pop();
-            }
-        }
-    }
-
-    DominatorInfo {
-        preorder,
-        postorder,
     }
 }
 
@@ -1663,6 +1560,179 @@ mod tests {
         );
     }
 
+    fn capture_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands,
+            results,
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
+    }
+
+    fn capture_transfer(opcode: OpCode, label: i64, operands: Vec<ValueId>) -> TirOp {
+        let mut op = capture_op(opcode, operands, vec![]);
+        op.attrs.insert("value".into(), AttrValue::Int(label));
+        op
+    }
+
+    #[test]
+    fn exceptional_captures_require_definition_before_every_observation() {
+        for early_observation in [false, true] {
+            let mut func = TirFunction::new(
+                "exceptional_capture".into(),
+                vec![],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let handler = func.fresh_block();
+            let continuation = func.fresh_block();
+            let owner = func.fresh_value();
+            let handler_owner = func.fresh_value();
+            for value in [owner, handler_owner] {
+                func.value_types.insert(value, TirType::DynBox);
+            }
+            func.label_id_map.insert(handler.0, 17);
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            // Registration precedes allocation but does not execute the handler.
+            entry
+                .ops
+                .push(capture_transfer(OpCode::TryStart, 17, vec![]));
+            if early_observation {
+                entry
+                    .ops
+                    .push(capture_transfer(OpCode::CheckException, 17, vec![]));
+            }
+            entry
+                .ops
+                .push(capture_op(OpCode::BuildList, vec![], vec![owner]));
+            entry
+                .ops
+                .push(capture_transfer(OpCode::CheckException, 17, vec![]));
+            entry.terminator = Terminator::Return { values: vec![] };
+            func.blocks.insert(
+                handler,
+                TirBlock {
+                    id: handler,
+                    args: vec![],
+                    ops: vec![
+                        capture_op(OpCode::DecRef, vec![owner], vec![]),
+                        capture_op(OpCode::BuildList, vec![], vec![handler_owner]),
+                    ],
+                    terminator: Terminator::Branch {
+                        target: continuation,
+                        args: vec![],
+                    },
+                },
+            );
+            func.blocks.insert(
+                continuation,
+                TirBlock {
+                    id: continuation,
+                    args: vec![],
+                    ops: vec![capture_op(OpCode::DecRef, vec![handler_owner], vec![])],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            let result = verify_function(&func);
+            if early_observation {
+                let errors = result.expect_err("early exceptional entry skips the captured owner");
+                assert!(
+                    errors.iter().any(|error| error.block == Some(handler)
+                        && error.op_index == Some(0)
+                        && error.message.contains("does not dominate")),
+                    "missing captured-owner rejection: {errors:?}"
+                );
+            } else {
+                result.expect("protected and handler-local definitions reach every executable use");
+            }
+        }
+    }
+
+    #[test]
+    fn shared_exceptional_tail_checks_all_arms_and_explicit_payloads() {
+        for capture_arm_local in [false, true] {
+            let mut func = TirFunction::new(
+                "shared_capture".into(),
+                vec![TirType::Bool],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let left = func.fresh_block();
+            let right = func.fresh_block();
+            let cleanup = func.fresh_block();
+            let common = func.fresh_value();
+            let left_owner = func.fresh_value();
+            let right_owner = func.fresh_value();
+            let payload = func.fresh_value();
+            for value in [common, left_owner, right_owner, payload] {
+                func.value_types.insert(value, TirType::DynBox);
+            }
+            func.label_id_map.insert(cleanup.0, 19);
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry
+                .ops
+                .push(capture_op(OpCode::BuildList, vec![], vec![common]));
+            entry.terminator = Terminator::CondBranch {
+                cond: ValueId(0),
+                then_block: left,
+                then_args: vec![],
+                else_block: right,
+                else_args: vec![],
+            };
+            for (id, owner) in [(left, left_owner), (right, right_owner)] {
+                func.blocks.insert(
+                    id,
+                    TirBlock {
+                        id,
+                        args: vec![],
+                        ops: vec![
+                            capture_op(OpCode::BuildList, vec![], vec![owner]),
+                            capture_transfer(OpCode::CheckException, 19, vec![owner]),
+                        ],
+                        terminator: Terminator::Return { values: vec![] },
+                    },
+                );
+            }
+            func.blocks.insert(
+                cleanup,
+                TirBlock {
+                    id: cleanup,
+                    args: vec![TirValue {
+                        id: payload,
+                        ty: TirType::DynBox,
+                    }],
+                    ops: vec![
+                        capture_op(
+                            OpCode::DecRef,
+                            vec![if capture_arm_local {
+                                left_owner
+                            } else {
+                                common
+                            }],
+                            vec![],
+                        ),
+                        capture_op(OpCode::DecRef, vec![payload], vec![]),
+                    ],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            let result = verify_function(&func);
+            if capture_arm_local {
+                let errors = result.expect_err("right entry does not define left's captured owner");
+                assert!(
+                    errors.iter().any(|error| error.block == Some(cleanup)
+                        && error.op_index == Some(0)
+                        && error.message.contains("does not dominate")),
+                    "missing cross-arm capture rejection: {errors:?}"
+                );
+            } else {
+                result.expect("common capture and arm-specific explicit payload are available");
+            }
+        }
+    }
+
     #[test]
     fn dominator_metadata_handles_reachable_and_unreachable_blocks() {
         let mut func = TirFunction::new(
@@ -1730,15 +1800,15 @@ mod tests {
             },
         );
 
-        let dom_tree = compute_dominator_tree(&func);
-        assert!(dom_tree.dominates(func.entry_block, bb_then));
-        assert!(dom_tree.dominates(func.entry_block, bb_else));
-        assert!(dom_tree.dominates(func.entry_block, bb_join));
-        assert!(!dom_tree.dominates(bb_then, bb_join));
-        assert!(!dom_tree.dominates(bb_else, bb_join));
-        assert!(!dom_tree.dominates(bb_dead, bb_dead));
-        assert!(!dom_tree.dominates(BlockId(99), BlockId(99)));
-        assert!(!dom_tree.dominates(func.entry_block, bb_dead));
+        let dom_tree = ProgramPointDominance::compute_executable(&func);
+        assert!(dom_tree.definition_available(func.entry_block, None, bb_then, 0));
+        assert!(dom_tree.definition_available(func.entry_block, None, bb_else, 0));
+        assert!(dom_tree.definition_available(func.entry_block, None, bb_join, 0));
+        assert!(!dom_tree.definition_available(bb_then, None, bb_join, 0));
+        assert!(!dom_tree.definition_available(bb_else, None, bb_join, 0));
+        assert!(!dom_tree.definition_available(bb_dead, None, bb_dead, 0));
+        assert!(!dom_tree.definition_available(BlockId(99), None, BlockId(99), 0));
+        assert!(!dom_tree.definition_available(func.entry_block, None, bb_dead, 0));
     }
 
     #[test]
@@ -1803,8 +1873,10 @@ mod tests {
             },
         );
 
-        let dom_tree = compute_dominator_tree(&func);
-        let idom = compute_dominators(&func);
+        let dom_tree = ProgramPointDominance::compute_executable(&func);
+        let policy = dominators::CfgEdgePolicy::TerminatorOnly;
+        let predecessors = dominators::build_pred_map_with(&func, policy);
+        let idom = dominators::compute_idoms_with(&func, &predecessors, policy);
         let mut all_blocks = vec![entry];
         all_blocks.extend(blocks.iter().copied());
         all_blocks.push(unreachable);
@@ -1812,7 +1884,7 @@ mod tests {
         for &a in &all_blocks {
             for &b in &all_blocks {
                 assert_eq!(
-                    dom_tree.dominates(a, b),
+                    dom_tree.definition_available(a, None, b, 0),
                     dominators::dominates(a, b, &idom),
                     "dominance mismatch: {} -> {}",
                     a,

@@ -171,3 +171,34 @@ def test_windows_job_sampling_tolerates_proven_member_exit_churn() -> None:
     assert result.sampling_telemetry is not None
     assert result.sampling_telemetry.source == "windows_job_members"
     assert result.sampling_telemetry.enforcement_complete
+
+
+def test_owner_cancellation_uses_guard_custody_and_proves_child_closure(tmp_path):
+    cancellation = tmp_path / "cancel"
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=768 * 1024,
+        poll_interval=0.02,
+        capture_output=True,
+        cleanup_orphans=False,
+        on_spawn=lambda _pid: cancellation.touch(),
+        cancellation_requested=cancellation.exists,
+    )
+    assert result.cancelled
+    assert result.guard_signal is None
+    assert not result.timed_out
+    assert result.descendants_closed
+    assert result.child_returncode is not None
+    assert memory_guard._incident_payload(result)["reason"] == "owner_cancellation"
+    if result.windows_job_cleanup is not None:
+        # The Job is the exact owner on Windows; no duplicate per-PID
+        # termination reports are manufactured for a successful Job cleanup.
+        assert result.windows_job_cleanup.completed
+        assert result.windows_job_cleanup.after.active_processes == 0
+    else:
+        assert any(
+            report.reason == "owner_cancellation"
+            for report in result.termination_reports
+        )
+    assert result.child_process.pid not in memory_guard.sample_processes()

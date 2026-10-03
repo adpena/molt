@@ -69,7 +69,7 @@ fn float_attr(val: f64) -> AttrDict {
 
 fn str_attr(val: &str) -> AttrDict {
     let mut m = AttrDict::new();
-    m.insert("value".into(), AttrValue::Str(val.into()));
+    m.insert("s_value".into(), AttrValue::Str(val.into()));
     m
 }
 

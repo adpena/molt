@@ -12,6 +12,11 @@ def main() -> None:
     empty = sum(i for i in [])
     print("empty-default", empty, type(empty).__name__)
 
+    # The outermost iterable is evaluated in this scope, where x is a cell.
+    x = 4
+    probe = lambda: x
+    print("iterable-scope", sum(x for x in range(x)), probe())
+
 
 if __name__ == "__main__":
     main()

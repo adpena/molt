@@ -38,7 +38,9 @@ pub struct BasicBlock {
 pub struct CFG {
     /// Basic blocks with their operation index ranges.
     pub blocks: Vec<BasicBlock>,
-    /// Entry block index (always 0).
+    /// Invocation entry block index (always 0). A re-entrant first source block
+    /// gets an empty predecessor so invocation parameters and loop arguments
+    /// cannot become competing definitions of the function signature.
     pub entry: usize,
     /// Predecessor list per block.
     pub predecessors: Vec<Vec<usize>>,
@@ -53,7 +55,9 @@ pub struct CFG {
     /// Each entry is `(from_block, handler_block)`. Calls only set pending
     /// exception state; `check_exception`, `async_work_poll`, and `try_start`
     /// own the actual transfer, so region membership must not invent blanket
-    /// block-to-handler edges.
+    /// block-to-handler edges. A transfer back to its own block is an ordinary
+    /// member of this relation: liveness, SSA placement, and edge arguments
+    /// must all observe the same re-entry.
     pub exception_edges: Vec<(usize, usize)>,
     /// State-machine resume edges: implicit control-flow from the `state_switch`
     /// dispatch block to every suspend op's resume-continuation block.  Each
@@ -498,90 +502,8 @@ fn add_edge(
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3: dominator computation (Cooper, Harvey, Kennedy)
+// Phase 3: shared indexed dominator projection
 // ---------------------------------------------------------------------------
-
-fn compute_dominators(
-    blocks: &[BasicBlock],
-    successors: &[Vec<usize>],
-    predecessors: &[Vec<usize>],
-    entry: usize,
-) -> Vec<Option<usize>> {
-    let n = blocks.len();
-    if n == 0 {
-        return vec![];
-    }
-
-    // Use a reverse-post-order numbering for efficient iteration.
-    // RPO traversal needs the *forward* (successor) edges.
-    let rpo = super::traversal::indexed_reverse_postorder(successors, entry);
-    let mut rpo_order: Vec<usize> = Vec::with_capacity(n); // block-ids in RPO
-    let mut rpo_number: Vec<usize> = vec![usize::MAX; n]; // block-id → RPO index
-    for (rpo_idx, &bid) in rpo.iter().enumerate() {
-        rpo_order.push(bid);
-        rpo_number[bid] = rpo_idx;
-    }
-
-    let mut idom: Vec<Option<usize>> = vec![None; n];
-    idom[entry] = Some(entry);
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &b in &rpo_order {
-            if b == entry {
-                continue;
-            }
-            // Pick first processed predecessor.
-            let mut new_idom: Option<usize> = None;
-            for &p in &predecessors[b] {
-                if idom[p].is_some() {
-                    new_idom = Some(match new_idom {
-                        None => p,
-                        Some(cur) => intersect_dom(&idom, &rpo_number, cur, p),
-                    });
-                }
-            }
-            if new_idom != idom[b] {
-                idom[b] = new_idom;
-                changed = true;
-            }
-        }
-    }
-
-    // Convention: entry's dominator is None (it has no idom).
-    idom[entry] = None;
-    idom
-}
-
-fn intersect_dom(
-    idom: &[Option<usize>],
-    rpo_number: &[usize],
-    mut a: usize,
-    mut b: usize,
-) -> usize {
-    while a != b {
-        while rpo_number[a] > rpo_number[b] {
-            // Guard against self-loop: if idom[a] == a (entry node), stop.
-            match idom[a] {
-                Some(d) if d != a => a = d,
-                _ => break,
-            }
-        }
-        while rpo_number[b] > rpo_number[a] {
-            // Guard against self-loop: if idom[b] == b (entry node), stop.
-            match idom[b] {
-                Some(d) if d != b => b = d,
-                _ => break,
-            }
-        }
-        // If neither side can advance further, break to prevent infinite loop.
-        if rpo_number[a] == rpo_number[b] && a != b {
-            break;
-        }
-    }
-    a
-}
 
 // ---------------------------------------------------------------------------
 // Phase 4: loop detection and depth
@@ -668,7 +590,8 @@ fn natural_loop_body(header: usize, tail: usize, predecessors: &[Vec<usize>]) ->
 /// It is also semantically too broad: calls set pending state, while an explicit
 /// observation owns the transfer after any required `finally` arbitration.
 /// Deriving edges solely from the generated transfer-kind authority keeps the
-/// pre-SSA CFG aligned with the executable transfer operations.
+/// pre-SSA CFG aligned with the executable transfer operations. A transfer to
+/// the label leading its own block is returned as a self edge.
 fn compute_exception_edges(
     ops: &[OpIR],
     blocks: &[BasicBlock],
@@ -695,9 +618,7 @@ fn compute_exception_edges(
             let Some(target_bid) = block_containing(blocks, target_op) else {
                 continue;
             };
-            if target_bid != bid {
-                edges.push((bid, target_bid));
-            }
+            edges.push((bid, target_bid));
         }
     }
 
@@ -749,6 +670,27 @@ fn compute_state_resume_edges(ops: &[OpIR], blocks: &[BasicBlock]) -> Vec<(usize
     let Some(switch_bid) = block_containing(blocks, switch_op_idx) else {
         return Vec::new();
     };
+
+    if let Some(targets) = &ops[switch_op_idx].state_targets {
+        let labels: HashMap<i64, usize> = ops
+            .iter()
+            .enumerate()
+            .filter_map(|(index, op)| {
+                matches!(op.kind.as_str(), "label" | "state_label")
+                    .then(|| op.value.zip(block_containing(blocks, index)))
+                    .flatten()
+            })
+            .collect();
+        return targets
+            .iter()
+            .map(|&(state, label)| {
+                let target = *labels.get(&label).unwrap_or_else(|| {
+                    panic!("state {state} refers to missing control label {label}")
+                });
+                (switch_bid, target, state)
+            })
+            .collect();
+    }
 
     // Map each `state_label` id → the block it leads (the re-poll re-entry target
     // for a pending state).
@@ -832,6 +774,8 @@ fn compute_state_resume_edges(ops: &[OpIR], blocks: &[BasicBlock]) -> Vec<(usize
 impl CFG {
     /// Build a CFG from a slice of `OpIR` operations.
     pub fn build(ops: &[OpIR]) -> Self {
+        crate::ir_schema::validate_state_dispatch(ops)
+            .unwrap_or_else(|error| panic!("invalid state dispatch: {error}"));
         if ops.is_empty() {
             return Self {
                 blocks: vec![],
@@ -847,22 +791,61 @@ impl CFG {
 
         let label_map = build_label_map(ops);
         let leaders = find_leaders(ops, &label_map);
-        let blocks = leaders_to_blocks(&leaders, ops.len());
-        let (successors, predecessors) = build_edges(ops, &blocks, &label_map);
+        let mut blocks = leaders_to_blocks(&leaders, ops.len());
+        let (mut successors, mut predecessors) = build_edges(ops, &blocks, &label_map);
+
+        // Every explicit exception transfer participates, including self
+        // edges. Splitting those out would give liveness and SSA different CFGs.
+        let mut exception_edges = compute_exception_edges(ops, &blocks, &label_map);
+        let mut state_resume_edges = compute_state_resume_edges(ops, &blocks);
+
+        // Invocation is a distinct predecessor of a re-entrant source entry.
+        // Represent it once in the shared CFG, before any dominance or SSA
+        // analysis. This keeps internal live-ins (including initially undefined
+        // locals) out of the callable ABI, and makes entry-loop phis ordinary
+        // join arguments for regular, exception and resume edges alike.
+        if !predecessors[0].is_empty()
+            || exception_edges.iter().any(|&(_, target)| target == 0)
+            || state_resume_edges.iter().any(|&(_, target, _)| target == 0)
+        {
+            for block in &mut blocks {
+                block.id += 1;
+            }
+            blocks.insert(
+                0,
+                BasicBlock {
+                    id: 0,
+                    start_op: 0,
+                    end_op: 0,
+                },
+            );
+            for edges in successors.iter_mut().chain(predecessors.iter_mut()) {
+                for block in edges {
+                    *block += 1;
+                }
+            }
+            successors.insert(0, vec![1]);
+            predecessors.insert(0, Vec::new());
+            predecessors[1].insert(0, 0);
+            for (from, to) in &mut exception_edges {
+                *from += 1;
+                *to += 1;
+            }
+            for (from, to, _) in &mut state_resume_edges {
+                *from += 1;
+                *to += 1;
+            }
+        }
 
         let entry = 0;
-        let dominators = compute_dominators(&blocks, &successors, &predecessors, entry);
+        let dominators = crate::tir::dominators::IndexedDominance::compute(&successors, entry)
+            .immediate_dominators()
+            .to_vec();
 
         // For loop depth we need to pass successors to the dominator-based
         // detector, but we also use the structural back-edges.
         let loop_depth =
             compute_loop_depth(&blocks, &successors, &predecessors, &dominators, entry);
-
-        // Compute implicit exception edges from try regions.
-        let exception_edges = compute_exception_edges(ops, &blocks, &label_map);
-
-        // Compute implicit state-machine resume (dispatch) edges.
-        let state_resume_edges = compute_state_resume_edges(ops, &blocks);
 
         Self {
             blocks,
@@ -876,71 +859,22 @@ impl CFG {
         }
     }
 
-    /// Compute exact operation-level dominators for lifecycle validation.
-    ///
-    /// Exception transfers leave from the operation that observes pending
-    /// state, which may be in the middle of a basic block. Block-level
-    /// dominance cannot distinguish a frame enter before that operation from
-    /// one later in the same block, so lifecycle validation uses this precise
-    /// graph while ordinary pass analysis retains the compact block CFG.
+    /// Exact executable operation dominance, projected from the canonical
+    /// before/after program-point graph. Handler registrations do not execute
+    /// their targets, and resume edges leave at dispatch rather than block tail.
     pub fn execution_op_dominators(&self, ops: &[OpIR]) -> Vec<Option<usize>> {
-        if ops.is_empty() {
-            return Vec::new();
-        }
-        let mut successors = vec![Vec::new(); ops.len()];
-        let mut predecessors = vec![Vec::new(); ops.len()];
-        for block in &self.blocks {
-            for op_index in block.start_op..block.end_op.saturating_sub(1) {
-                add_edge(&mut successors, &mut predecessors, op_index, op_index + 1);
-            }
-            let Some(tail) = block.end_op.checked_sub(1) else {
-                continue;
-            };
-            for &successor in &self.successors[block.id] {
-                add_edge(
-                    &mut successors,
-                    &mut predecessors,
-                    tail,
-                    self.blocks[successor].start_op,
-                );
-            }
-        }
+        self.execution_points(ops).operation_dominators()
+    }
 
-        let labels = build_label_map(ops);
-        for (op_index, op) in ops.iter().enumerate() {
-            if is_simple_exception_transfer_kind(op.kind.as_str())
-                && let Some(target) = op.value.and_then(|label| labels.get(&label)).copied()
-            {
-                add_edge(&mut successors, &mut predecessors, op_index, target);
-            }
-        }
-        for &(from_block, to_block, _) in &self.state_resume_edges {
-            let source = (self.blocks[from_block].start_op..self.blocks[from_block].end_op)
-                .find(|&index| ops[index].kind == "state_switch")
-                .unwrap_or(self.blocks[from_block].start_op);
-            add_edge(
-                &mut successors,
-                &mut predecessors,
-                source,
-                self.blocks[to_block].start_op,
-            );
-        }
-        for edges in &mut successors {
-            edges.sort_unstable();
-            edges.dedup();
-        }
-        for edges in &mut predecessors {
-            edges.sort_unstable();
-            edges.dedup();
-        }
-        let op_blocks = (0..ops.len())
-            .map(|index| BasicBlock {
-                id: index,
-                start_op: index,
-                end_op: index + 1,
-            })
-            .collect::<Vec<_>>();
-        compute_dominators(&op_blocks, &successors, &predecessors, 0)
+    pub fn execution_points(
+        &self,
+        ops: &[OpIR],
+    ) -> crate::tir::dominators::SimpleExecutionDominance {
+        crate::tir::dominators::SimpleExecutionDominance::compute(self, ops)
+    }
+
+    pub(super) fn label_positions(ops: &[OpIR]) -> HashMap<i64, usize> {
+        build_label_map(ops)
     }
 }
 
@@ -1044,8 +978,8 @@ mod tests {
             );
             assert_eq!(
                 cfg.execution_op_dominators(&ops)[6],
-                Some(1),
-                "{kind}: later definitions cannot dominate the early handler edge"
+                (kind != "try_start").then_some(1),
+                "{kind}: only observations execute a handler; no later definition can dominate it"
             );
         }
     }
@@ -1073,6 +1007,22 @@ mod tests {
             cfg.exception_edges.contains(&(source, handler)),
             "generated wire aliases must participate in pre-SSA exception CFG discovery"
         );
+    }
+
+    #[test]
+    fn exception_transfer_to_its_own_block_leader_is_a_self_edge() {
+        for kind in ["check_exception", "async_work_poll"] {
+            let ops = vec![
+                op_val("label", 5),
+                op("add"),
+                op_val(kind, 5),
+                op("ret_void"),
+            ];
+            let cfg = CFG::build(&ops);
+            let block = block_containing(&cfg.blocks, 2).expect("transfer block");
+            assert_eq!(cfg.blocks[block].start_op, 0, "{kind}");
+            assert_eq!(cfg.exception_edges, vec![(block, block)], "{kind}");
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -238,10 +238,7 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         self._emit_module_attr_set_on(self.module_obj, "__spec__", spec_val)
 
     def _emit_module_frame_enter(self, node: ast.Module) -> None:
-        if (
-            self.current_func_name != "molt_main"
-            and not self.current_func_name.startswith("molt_init_")
-        ) or self.module_frame_entered:
+        if not self._is_module_entry() or self.module_frame_entered:
             return
         self.module_frame_entered = True
         code_id = self.module_frame_code_id
@@ -347,10 +344,7 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
 
     def _emit_module_frame_exit(self) -> None:
         if (
-            (
-                self.current_func_name != "molt_main"
-                and not self.current_func_name.startswith("molt_init_")
-            )
+            not self._is_module_entry()
             or not self.module_frame_entered
             or self.module_frame_exited
         ):
@@ -358,16 +352,22 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         self.module_frame_exited = True
         self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
 
+    def _is_module_entry(self, name: str | None = None) -> bool:
+        # The frontend owns exactly this entry in funcs_map. Module-init symbol
+        # remapping occurs later in CLI integration; user spelling is not a role.
+        function = self.current_func_name if name is None else name
+        return function == "molt_main" and function in self.funcs_map
+
     def _function_needs_frame_trace(self, name: str | None = None) -> bool:
         func_name = self.current_func_name if name is None else name
         if func_name is None:
             return False
-        if func_name == "molt_main" or func_name.startswith("molt_init_"):
+        if self._is_module_entry(func_name):
             return False
         # Module chunks are an internal partition of the enclosing module code
         # object, not Python call frames. Their LINE ops update the active module
         # frame and must not mint an unbound synthetic code-slot identity.
-        if func_name.startswith(f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_"):
+        if func_name in self.module_chunk_symbols:
             return False
         if name is not None and func_name not in self.funcs_map:
             return False
@@ -379,11 +379,10 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
     def _new_module_chunk_symbol(self) -> str:
         self.module_chunk_counter += 1
         symbol = f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_{self.module_chunk_counter}"
-        while symbol in self.funcs_map:
+        while self._function_symbol_in_use(symbol):
             self.module_chunk_counter += 1
             symbol = f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_{self.module_chunk_counter}"
-        self.func_symbol_names[symbol] = "<module_chunk>"
-        self._register_code_symbol(symbol)
+        self._claim_function_symbol(symbol, "<module_chunk>")
         self.funcs_map[symbol] = FuncInfo(
             params=[_MOLT_MODULE_CHUNK_PARAM],
             param_types=[],
@@ -403,18 +402,12 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         # chunk N+M would fall through to incorrect resolution paths (e.g.
         # stdlib_allowlist matching a variable alias against a module name).
         self.module_chunk_globals.update(self.globals.keys())
-        self._reset_local_binding_state(
-            reset_locals_cache=False,
-            reset_del_targets=False,
-        )
+        self._reset_local_binding_state(reset_del_targets=False)
         self.globals = {}
         self._reset_import_resolution_state(reset_module_attr_mutations=False)
-        # Clear the per-function module cache so that module references are
-        # re-fetched via MODULE_CACHE_GET in each new chunk function.  Without
-        # this, a cached MoltValue from a previous chunk's WASM locals would be
-        # reused, but the corresponding WASM local does not exist in the new
-        # chunk — leaving the variable at its zero-initialized default (0x0),
-        # which is not a valid module object.
+        # Imported references and other cached values belong to one generated
+        # function's locals. The lexical module owner is passed explicitly to
+        # each chunk and must never be reacquired through public import state.
         self._reset_function_cache_state()
         self._reset_async_scope_state()
         self._reset_type_hint_scope_state(reset_bytearray_len=True)

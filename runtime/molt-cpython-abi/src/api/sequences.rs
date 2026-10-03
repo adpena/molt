@@ -5,8 +5,16 @@ use crate::abi_types::{Py_ssize_t, PyListObject, PyObject, PyTupleObject};
 use crate::abi_types::{PyList_Type, PyTuple_Type};
 use crate::bridge::{GLOBAL_BRIDGE, RuntimeValue};
 use crate::hooks::hooks_or_stubs;
+use molt_lang_obj_model::MoltObject;
+use molt_lang_obj_model::sequence_compare::{
+    RichCompareOp, SequenceCompareContext, SequenceKind, compare_sequences,
+};
 use std::os::raw::c_int;
 use std::ptr;
+
+#[cfg(test)]
+#[path = "sequences/comparison_tests.rs"]
+mod comparison_tests;
 
 // ─── PyList ───────────────────────────────────────────────────────────────
 
@@ -251,15 +259,18 @@ pub unsafe extern "C" fn PyList_GetItemRef(op: *mut PyObject, i: Py_ssize_t) -> 
     item
 }
 
-/// Macro-semantics indexed store (steals the reference to `v`). Routes to the
-/// same real indexed `PyList_SetItem` store — the ABI tier's header maps the
-/// `PyList_SET_ITEM` macro to `PyList_SetItem` anyway. The previous body
-/// APPENDED via `list_append` (mis-placing any out-of-order fill and
-/// duplicating on replace) and silently DROPPED foreign items.
+/// Unsafe construction store: steals `v`, keeps any displaced reference live,
+/// and publishes through the same runtime/physical slot transaction as the
+/// checked setter. The caller proves the list layout and index.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *mut PyObject) {
-    unsafe {
-        let _ = PyList_SetItem(op, i, v);
+    // The macro's caller proves a valid list and index. Preserve its deliberate
+    // no-DECREF replacement semantics while sharing the canonical transaction.
+    let old = unsafe { *(*op.cast::<PyListObject>()).ob_item.add(i as usize) };
+    if old.is_null() && v.is_null() { return; }
+    unsafe { crate::api::refcount::Py_XINCREF(old) };
+    if unsafe { PyList_SetItem(op, i, v) } < 0 {
+        unsafe { crate::api::errors::release_preserving_error(&[old]) };
     }
 }
 
@@ -301,13 +312,8 @@ pub unsafe extern "C" fn PyList_SetItem(
         unsafe { crate::api::errors::release_preserving_error(&[v]) };
         return -1;
     }
-    if v.is_null() {
-        // CPython would store a NULL slot; Molt lists have no NULL slot. An
-        // honest SystemError beats fabricating a stored value.
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return -1;
-    }
-    let Some(value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
+    let value = if v.is_null() { None } else {
+        let Some(value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
         unsafe {
             crate::api::errors::release_preserving_error(&[v]);
             if crate::api::errors::PyErr_Occurred().is_null() {
@@ -321,6 +327,9 @@ pub unsafe extern "C" fn PyList_SetItem(
         }
         return -1;
     };
+        Some(value)
+    };
+    let value_bits = value.as_ref().map_or(MoltObject::none().bits(), RuntimeValue::bits);
     if !unsafe { GLOBAL_BRIDGE.prepare_list_set_stolen_ref(v) } {
         drop(value);
         unsafe { crate::api::errors::release_preserving_error(&[v]) };
@@ -328,7 +337,7 @@ pub unsafe extern "C" fn PyList_SetItem(
     }
     let h = hooks_or_stubs();
     let stored = if i >= 0 {
-        unsafe { (h.list_set)(list_bits, i as usize, value.bits()) }
+        unsafe { (h.list_set)(list_bits, i as usize, value_bits) }
     } else {
         crate::hooks::OwnedHandleResult::error()
     };
@@ -494,36 +503,16 @@ pub unsafe extern "C" fn PyList_Size(op: *mut PyObject) -> Py_ssize_t {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_Check(op: *mut PyObject) -> c_int {
-    if op.is_null() {
-        return 0;
-    }
-    if resolve_native_list(op).is_some() {
-        return 1;
-    }
-    let ob_type = unsafe { (*op).ob_type };
-    if ob_type.is_null() {
-        return 0;
-    }
-    if std::ptr::eq(ob_type, &raw const crate::abi_types::PyList_Type) {
-        return 1;
-    }
-    // CPython PyList_Check = Py_TPFLAGS_LIST_SUBCLASS — list AND subclasses.
-    // Same subtype-walk class as fcb1d9596d; identity-only was the ledger row.
     unsafe {
-        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PyList_Type)
+        crate::bridge::is_semantic_instance_of(op, &raw mut crate::abi_types::PyList_Type) as c_int
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_CheckExact(op: *mut PyObject) -> c_int {
-    if resolve_native_list(op).is_some() {
-        return 1;
+    unsafe {
+        crate::bridge::is_exact_semantic_type(op, &raw mut crate::abi_types::PyList_Type) as c_int
     }
-    (!op.is_null()
-        && std::ptr::eq(
-            unsafe { (*op).ob_type },
-            &raw const crate::abi_types::PyList_Type,
-        )) as c_int
 }
 
 // ─── PyTuple ──────────────────────────────────────────────────────────────
@@ -554,7 +543,7 @@ pub(crate) unsafe fn tuple_items_ptr(tuple: *mut PyTupleObject) -> *mut *mut PyO
 }
 
 unsafe fn native_tuple_new(size: Py_ssize_t) -> *mut PyObject {
-    unsafe { crate::api::memory::molt_object_alloc(&raw mut crate::abi_types::PyTuple_Type, size) }
+    unsafe { crate::api::typeobj::PyType_GenericAlloc(&raw mut crate::abi_types::PyTuple_Type, size) }
 }
 
 /// Build the physical positional-argument tuple used by native C call slots.
@@ -591,24 +580,14 @@ pub(crate) unsafe fn native_call_args(items: &[*mut PyObject]) -> *mut PyObject 
 /// runtime-backed managed views and are retired by the bridge before `tp_dealloc`
 /// dispatch; only subclass storage allocated by its type reaches this function.
 pub unsafe extern "C" fn molt_tuple_subtype_dealloc(op: *mut PyObject) {
-    if op.is_null() {
-        return;
-    }
-    let tuple = op.cast::<PyTupleObject>();
-    let len = unsafe { (*tuple).ob_base.ob_size.max(0) as usize };
-    let items = unsafe { std::slice::from_raw_parts_mut(tuple_items_ptr(tuple), len) };
-    for pointer in items.iter_mut() {
-        let item = std::mem::replace(pointer, ptr::null_mut());
-        unsafe { crate::api::refcount::Py_XDECREF(item) };
-    }
-    let ty = unsafe { (*op).ob_type };
-    if !ty.is_null()
-        && let Some(free) = unsafe { (*ty).tp_free }
-    {
-        unsafe { free(op.cast()) };
-    } else {
-        unsafe { crate::api::memory::PyObject_GC_Del(op.cast()) };
-    }
+    crate::api::errors::with_preserved_error(|| unsafe {
+        let Some(deallocation) = crate::api::typeobj::NativeDeallocation::storage(op) else { return; };
+        let tuple = op.cast::<PyTupleObject>();
+        let len = (*tuple).ob_base.ob_size.max(0) as usize;
+        let items = std::slice::from_raw_parts_mut(tuple_items_ptr(tuple), len);
+        for pointer in items.iter_mut() { crate::api::refcount::Py_CLEAR(pointer); }
+        deallocation.finish();
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -850,12 +829,29 @@ pub unsafe extern "C" fn _PyTuple_Resize(pv: *mut *mut PyObject, newsize: Py_ssi
 /// fixed-length runtime storage both reject an OOB index. Foreign `v` gets
 /// `TYPE_ID_FOREIGN` custody (same contract as `PyList_SetItem`).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyTuple_SetItem(
+pub unsafe extern "C" fn PyTuple_SetItem(op: *mut PyObject, i: Py_ssize_t, v: *mut PyObject) -> c_int {
+    unsafe { tuple_set_item(op, i, v, true) }
+}
+
+/// Unsafe tuple initialization has no ownership check and never releases a
+/// displaced reference. Runtime storage still receives the same exact edge.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyTuple_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *mut PyObject) {
+    let old = unsafe { *tuple_items_ptr(op.cast::<PyTupleObject>()).add(i as usize) };
+    if old.is_null() && v.is_null() { return; }
+    unsafe { crate::api::refcount::Py_XINCREF(old) };
+    if unsafe { tuple_set_item(op, i, v, false) } < 0 {
+        unsafe { crate::api::errors::release_preserving_error(&[old]) };
+    }
+}
+
+unsafe fn tuple_set_item(
     op: *mut PyObject,
     i: Py_ssize_t,
     v: *mut PyObject,
+    check_unique: bool,
 ) -> c_int {
-    if op.is_null() || v.is_null() {
+    if op.is_null() {
         unsafe {
             crate::api::refcount::Py_XDECREF(v);
             crate::api::errors::PyErr_BadInternalCall();
@@ -867,7 +863,7 @@ pub unsafe extern "C" fn PyTuple_SetItem(
     // either physical or runtime-backed storage can change; otherwise a
     // shared tuple could be mutated behind readers that correctly treat it as
     // immutable (and behind future free-threaded readers).
-    if unsafe { (*op).ob_refcnt } != 1 {
+    if check_unique && unsafe { (*op).ob_refcnt } != 1 {
         unsafe {
             crate::api::refcount::Py_XDECREF(v);
             crate::api::errors::PyErr_BadInternalCall();
@@ -912,14 +908,15 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         }
     };
     let h = hooks_or_stubs();
-    if unsafe { (h.ref_count)(tuple_bits) } != 1 {
+    if check_unique && unsafe { (h.ref_count)(tuple_bits) } != 1 {
         unsafe {
             crate::api::refcount::Py_XDECREF(v);
             crate::api::errors::PyErr_BadInternalCall();
         }
         return -1;
     }
-    let Some(value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
+    let value = if v.is_null() { None } else {
+        let Some(value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
         unsafe {
             crate::api::errors::release_preserving_error(&[v]);
             if crate::api::errors::PyErr_Occurred().is_null() {
@@ -933,6 +930,9 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         }
         return -1;
     };
+        Some(value)
+    };
+    let value_bits = value.as_ref().map_or(MoltObject::none().bits(), RuntimeValue::bits);
     let is_tuple =
         unsafe { (h.classify_heap)(tuple_bits) } == crate::abi_types::MoltTypeTag::Tuple as u8;
     let in_bounds = i >= 0 && is_tuple && (i as usize) < unsafe { (h.tuple_len)(tuple_bits) };
@@ -953,12 +953,12 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         return -1;
     }
     let Some(prepared) =
-        (unsafe { bridge.prepare_tuple_value(tuple_bits, i as usize, value.bits(), v) })
+        (unsafe { bridge.prepare_tuple_value(tuple_bits, i as usize, value_bits, v) })
     else {
         drop(value);
         return -1;
     };
-    let result = unsafe { (h.tuple_set)(tuple_bits, i as usize, value.bits(), v) };
+    let result = unsafe { (h.tuple_set)(tuple_bits, i as usize, value_bits, v) };
     let old_bits = match result.decode() {
         crate::hooks::DecodedHandleResult::Ok(bits) => Some(bits),
         crate::hooks::DecodedHandleResult::Missing => Some(0),
@@ -988,42 +988,16 @@ pub unsafe extern "C" fn PyTuple_SetItem(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_Check(op: *mut PyObject) -> c_int {
-    if op.is_null() {
-        return 0;
-    }
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op)
-        && value.decode().is_ptr()
-        && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
-            == crate::abi_types::MoltTypeTag::Tuple as u8
-    {
-        return 1;
-    }
-    let ob_type = unsafe { (*op).ob_type };
-    if ob_type.is_null() {
-        return 0;
-    }
-    if std::ptr::eq(ob_type, &raw const crate::abi_types::PyTuple_Type) {
-        return 1;
-    }
-    // CPython PyTuple_Check = Py_TPFLAGS_TUPLE_SUBCLASS — tuple AND subclasses
-    // (same subtype-walk class as fcb1d9596d).
     unsafe {
-        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PyTuple_Type)
+        crate::bridge::is_semantic_instance_of(op, &raw mut crate::abi_types::PyTuple_Type) as c_int
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_CheckExact(op: *mut PyObject) -> c_int {
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
-        return (value.decode().is_ptr()
-            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::Tuple as u8) as c_int;
+    unsafe {
+        crate::bridge::is_exact_semantic_type(op, &raw mut crate::abi_types::PyTuple_Type) as c_int
     }
-    (!op.is_null()
-        && std::ptr::eq(
-            unsafe { (*op).ob_type },
-            &raw const crate::abi_types::PyTuple_Type,
-        )) as c_int
 }
 
 /// Return `Py_True`/`Py_False` as a new reference (CPython richcompare contract).
@@ -1038,81 +1012,134 @@ fn seq_richcmp_bool(b: bool) -> *mut PyObject {
     res
 }
 
-/// Element-wise (lexicographic) structural richcompare shared by the built-in
-/// homogeneous sequence types (`tuple`, `list`). Both operands are already known
-/// to be the concrete type; `len`/`get` are that type's dual-path size/item
-/// accessors, so it is correct for both ABI-layout (`PyTuple_New`/`PyList_New`)
-/// and bridge-managed runtime objects. Faithful port of CPython
-/// `Objects/tupleobject.c tuplerichcompare` / `Objects/listobject.c
-/// list_richcompare` (byte-for-byte the same algorithm).
-unsafe fn seq_structural_richcompare(
-    v: *mut PyObject,
-    w: *mut PyObject,
-    op: c_int,
-    len: unsafe extern "C" fn(*mut PyObject) -> Py_ssize_t,
-    get: unsafe extern "C" fn(*mut PyObject, Py_ssize_t) -> *mut PyObject,
-) -> *mut PyObject {
-    // CPython comparison opcodes (Include/object.h).
-    const PY_LT: c_int = 0;
-    const PY_LE: c_int = 1;
-    const PY_EQ: c_int = 2;
-    const PY_NE: c_int = 3;
-    const PY_GT: c_int = 4;
-    const PY_GE: c_int = 5;
+/// One owned C item edge. A rich callback may remove its originating list
+/// element, so borrowed pointers must never cross that callback boundary.
+struct ComparisonItem(*mut PyObject);
 
-    let vlen = unsafe { len(v) };
-    let wlen = unsafe { len(w) };
-    if vlen < 0 || wlen < 0 {
-        // The size accessor already set the exception.
-        return ptr::null_mut();
+impl Drop for ComparisonItem {
+    fn drop(&mut self) {
+        unsafe { crate::api::errors::release_preserving_error(&[self.0]) };
     }
+}
 
-    // First index where items differ under Py_EQ.
-    let mut i: Py_ssize_t = 0;
-    while i < vlen && i < wlen {
-        let vi = unsafe { get(v, i) };
-        let wi = unsafe { get(w, i) };
-        if vi.is_null() || wi.is_null() {
-            return ptr::null_mut();
-        }
-        let k = unsafe { crate::api::typeobj::PyObject_RichCompareBool(vi, wi, PY_EQ) };
-        if k < 0 {
-            return ptr::null_mut();
-        }
-        if k == 0 {
-            break;
-        }
-        i += 1;
-    }
+/// Physical access only: all lexicographic decisions live in obj-model.
+struct AbiSequenceComparison {
+    left: *mut PyObject,
+    right: *mut PyObject,
+    kind: SequenceKind,
+}
 
-    // Ran off the end of one/both: the result is decided by the lengths.
-    if i >= vlen || i >= wlen {
-        let cmp = match op {
-            PY_LT => vlen < wlen,
-            PY_LE => vlen <= wlen,
-            PY_EQ => vlen == wlen,
-            PY_NE => vlen != wlen,
-            PY_GT => vlen > wlen,
-            PY_GE => vlen >= wlen,
-            _ => return ptr::null_mut(),
+impl AbiSequenceComparison {
+    fn pin(&self, object: *mut PyObject, index: usize) -> Result<Option<ComparisonItem>, ()> {
+        let item = match self.kind {
+            SequenceKind::List => {
+                let view = unsafe { ListRead::acquire(object) }.ok_or(())?;
+                if index >= unsafe { view.len() } {
+                    return Ok(None);
+                }
+                let item = unsafe { view.item(index) };
+                if item.is_null() {
+                    return Err(());
+                }
+                unsafe { crate::api::refcount::Py_INCREF(item) };
+                return Ok(Some(ComparisonItem(item)));
+            }
+            SequenceKind::Tuple => unsafe { PyTuple_GetItem(object, index as Py_ssize_t) },
         };
-        return seq_richcmp_bool(cmp);
+        if item.is_null() {
+            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                        c"tuple comparison encountered an uninitialized item".as_ptr(),
+                    )
+                };
+            }
+            return Err(());
+        }
+        unsafe { crate::api::refcount::Py_INCREF(item) };
+        Ok(Some(ComparisonItem(item)))
+    }
+}
+
+impl SequenceCompareContext for AbiSequenceComparison {
+    type Item = ComparisonItem;
+    type Value = *mut PyObject;
+    type Error = ();
+
+    fn lengths(&self) -> Result<(usize, usize), ()> {
+        let size = match self.kind {
+            SequenceKind::List => PyList_Size,
+            SequenceKind::Tuple => PyTuple_Size,
+        };
+        let left = unsafe { size(self.left) };
+        if left < 0 {
+            return Err(());
+        }
+        let right = unsafe { size(self.right) };
+        if right < 0 {
+            return Err(());
+        }
+        Ok((left as usize, right as usize))
     }
 
-    // A differing item exists — EQ/NE short-circuit without re-comparing.
-    if op == PY_EQ {
-        return seq_richcmp_bool(false);
+    fn pin_pair(&self, index: usize) -> Result<Option<(ComparisonItem, ComparisonItem)>, ()> {
+        let Some(left) = self.pin(self.left, index)? else {
+            return Ok(None);
+        };
+        let Some(right) = self.pin(self.right, index)? else {
+            return Ok(None);
+        };
+        Ok(Some((left, right)))
     }
-    if op == PY_NE {
-        return seq_richcmp_bool(true);
+
+    fn equal(&self, left: &ComparisonItem, right: &ComparisonItem) -> Result<bool, ()> {
+        match unsafe {
+            crate::api::typeobj::PyObject_RichCompareBool(
+                left.0,
+                right.0,
+                RichCompareOp::Eq as c_int,
+            )
+        } {
+            -1 => Err(()),
+            0 => Ok(false),
+            _ => Ok(true),
+        }
     }
-    // Ordering: compare the first differing item with the requested operator.
-    let vi = unsafe { get(v, i) };
-    let wi = unsafe { get(w, i) };
-    if vi.is_null() || wi.is_null() {
+
+    fn order(
+        &self,
+        left: &ComparisonItem,
+        right: &ComparisonItem,
+        op: RichCompareOp,
+    ) -> Result<*mut PyObject, ()> {
+        let result =
+            unsafe { crate::api::typeobj::PyObject_RichCompare(left.0, right.0, op as c_int) };
+        if result.is_null() {
+            Err(())
+        } else {
+            Ok(result)
+        }
+    }
+
+    fn boolean(&self, value: bool) -> *mut PyObject {
+        seq_richcmp_bool(value)
+    }
+}
+
+unsafe fn compare_admitted_sequences(
+    left: *mut PyObject,
+    right: *mut PyObject,
+    kind: SequenceKind,
+    op: c_int,
+) -> *mut PyObject {
+    let Some(op) = RichCompareOp::from_i32(op) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
-    }
-    unsafe { crate::api::typeobj::PyObject_RichCompare(vi, wi, op) }
+    };
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    let context = AbiSequenceComparison { left, right, kind };
+    compare_sequences(&context, kind, op).unwrap_or(ptr::null_mut())
 }
 
 /// Defer to `NotImplemented` (a new reference), CPython's contract when the two
@@ -1144,11 +1171,11 @@ pub unsafe extern "C" fn molt_tuple_richcompare(
     if unsafe { PyTuple_Check(v) } == 0 || unsafe { PyTuple_Check(w) } == 0 {
         return unsafe { richcompare_not_implemented() };
     }
-    unsafe { seq_structural_richcompare(v, w, op, PyTuple_Size, PyTuple_GetItem) }
+    unsafe { compare_admitted_sequences(v, w, SequenceKind::Tuple, op) }
 }
 
 /// CPython `Objects/listobject.c` `list_richcompare` — element-wise structural
-/// comparison for lists (same algorithm as tuples). Sibling of the tuple slot:
+/// comparison for lists. Sibling of the tuple slot:
 /// without it, two *distinct* equal lists compare unequal by object identity in
 /// `do_richcompare` (the zeroed-shell defect the coordinator flagged for the
 /// container siblings). Reads through the dual-path `PyList_Size`/`PyList_GetItem`.
@@ -1162,7 +1189,7 @@ pub unsafe extern "C" fn molt_list_richcompare(
     if unsafe { PyList_Check(v) } == 0 || unsafe { PyList_Check(w) } == 0 {
         return unsafe { richcompare_not_implemented() };
     }
-    unsafe { seq_structural_richcompare(v, w, op, PyList_Size, PyList_GetItem) }
+    unsafe { compare_admitted_sequences(v, w, SequenceKind::List, op) }
 }
 
 #[allow(dead_code)]
@@ -1176,77 +1203,64 @@ unsafe fn py_tuple_pack_placeholder_removed_from_abi(n: Py_ssize_t, /* ... */) -
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_Check(op: *mut PyObject) -> c_int {
-    // CPython Include/setobject.h: PySet_Check is set + set SUBTYPES ONLY —
-    // frozenset is NOT included (the union is the PyAnySet_Check header macro,
-    // which composes `PySet_Check || PyFrozenSet_Check` and therefore stays
-    // correct with this split). The previous body unioned frozenset in.
-    if op.is_null() {
-        return 0;
+    unsafe {
+        crate::bridge::is_semantic_instance_of(op, &raw mut crate::abi_types::PySet_Type) as c_int
     }
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
-        return (value.decode().is_ptr()
-            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::Set as u8) as c_int;
-    }
-    let ob_type = unsafe { (*op).ob_type };
-    if ob_type.is_null() {
-        return 0;
-    }
-    if std::ptr::eq(ob_type, &raw const crate::abi_types::PySet_Type) {
-        return 1;
-    }
-    unsafe { crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PySet_Type) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyFrozenSet_Check(op: *mut PyObject) -> c_int {
-    if op.is_null() {
-        return 0;
-    }
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
-        return (value.decode().is_ptr()
-            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::FrozenSet as u8) as c_int;
-    }
-    let ob_type = unsafe { (*op).ob_type };
-    if ob_type.is_null() {
-        return 0;
-    }
-    if std::ptr::eq(ob_type, &raw const crate::abi_types::PyFrozenSet_Type) {
-        return 1;
-    }
-    // frozenset subtypes count too (Py_IS_TYPE || PyType_IsSubtype in CPython).
     unsafe {
-        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PyFrozenSet_Type)
+        crate::bridge::is_semantic_instance_of(op, &raw mut crate::abi_types::PyFrozenSet_Type)
+            as c_int
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_CheckExact(op: *mut PyObject) -> c_int {
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
-        return (value.decode().is_ptr()
-            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::Set as u8) as c_int;
+    unsafe {
+        crate::bridge::is_exact_semantic_type(op, &raw mut crate::abi_types::PySet_Type) as c_int
     }
-    (!op.is_null()
-        && std::ptr::eq(
-            unsafe { (*op).ob_type },
-            &raw const crate::abi_types::PySet_Type,
-        )) as c_int
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyFrozenSet_CheckExact(op: *mut PyObject) -> c_int {
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
-        return (value.decode().is_ptr()
-            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::FrozenSet as u8) as c_int;
+    unsafe {
+        crate::bridge::is_exact_semantic_type(op, &raw mut crate::abi_types::PyFrozenSet_Type)
+            as c_int
     }
-    (!op.is_null()
-        && std::ptr::eq(
-            unsafe { (*op).ob_type },
-            &raw const crate::abi_types::PyFrozenSet_Type,
-        )) as c_int
+}
+
+/// Set/frozenset share the runtime's set algebra. The C adapter only admits
+/// physical families and selects their canonical declaring class identity.
+pub unsafe extern "C" fn molt_set_richcompare(
+    left: *mut PyObject,
+    right: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    let frozen = unsafe { PyFrozenSet_Check(left) } != 0;
+    if (!frozen && unsafe { PySet_Check(left) } == 0)
+        || (unsafe { PySet_Check(right) } == 0 && unsafe { PyFrozenSet_Check(right) } == 0)
+    {
+        return unsafe { richcompare_not_implemented() };
+    }
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    let Some(left) =
+        (unsafe { set_arg_handle(left, c"set comparison requires runtime-backed set storage") })
+    else {
+        return ptr::null_mut();
+    };
+    let Some(right) =
+        (unsafe { set_arg_handle(right, c"set comparison requires runtime-backed set storage") })
+    else {
+        return ptr::null_mut();
+    };
+    let owner = if frozen {
+        &raw mut crate::abi_types::PyFrozenSet_Type
+    } else {
+        &raw mut crate::abi_types::PySet_Type
+    };
+    unsafe { crate::api::typeobj::declaring_richcompare(owner, left, right, op) }
 }
 
 /// Ensure a NULL / -1 error return always carries a pending exception.
@@ -1300,21 +1314,19 @@ pub unsafe extern "C" fn PySet_New(iterable: *mut PyObject) -> *mut PyObject {
     // NULL iterable → empty set (CPython accepts NULL). A non-NULL iterable must
     // be a bridge-managed object; resolve it to handle bits (0 signals "empty"
     // to the runtime authority).
-    let iterable_bits = if iterable.is_null() {
-        0
+    let iterable_value = if iterable.is_null() {
+        None
     } else {
-        match unsafe {
-            set_arg_handle(
-                iterable,
-                c"PySet_New: iterable is not a bridge-managed object",
-            )
-        } {
-            Some(bits) => bits,
-            None => return ptr::null_mut(),
-        }
+        let Some(value) = (unsafe { RuntimeValue::acquire(iterable) }) else {
+            unsafe { ensure_set_error(c"set iterable could not acquire runtime edge custody") };
+            return ptr::null_mut();
+        };
+        Some(value)
     };
+    let iterable_bits = iterable_value.as_ref().map_or(0, RuntimeValue::bits);
     let h = hooks_or_stubs();
-    let result = unsafe { (h.set_new)(iterable_bits) };
+    let input = if iterable.is_null() { crate::hooks::BorrowedHandleResult::missing() } else { crate::hooks::BorrowedHandleResult::ok(iterable_bits) };
+    let result = unsafe { (h.set_new)(input, false) };
     if result == 0 {
         unsafe { ensure_set_error(c"PySet_New failed: runtime set authority unavailable") };
         return ptr::null_mut();
@@ -1359,12 +1371,11 @@ pub unsafe extern "C" fn PySet_Contains(anyset: *mut PyObject, key: *mut PyObjec
         Some(bits) => bits,
         None => return -1,
     };
-    let key_bits =
-        match unsafe { set_arg_handle(key, c"PySet_Contains: key is not a bridge-managed object") }
-        {
-            Some(bits) => bits,
-            None => return -1,
-        };
+    let Some(key_value) = (unsafe { RuntimeValue::acquire(key) }) else {
+        unsafe { ensure_set_error(c"set key could not acquire runtime edge custody") };
+        return -1;
+    };
+    let key_bits = key_value.bits();
     let h = hooks_or_stubs();
     let rc = unsafe { (h.set_contains)(set_bits, key_bits) };
     if rc < 0 {
@@ -1391,11 +1402,11 @@ pub unsafe extern "C" fn PySet_Add(anyset: *mut PyObject, key: *mut PyObject) ->
             Some(bits) => bits,
             None => return -1,
         };
-    let key_bits =
-        match unsafe { set_arg_handle(key, c"PySet_Add: key is not a bridge-managed object") } {
-            Some(bits) => bits,
-            None => return -1,
-        };
+    let Some(key_value) = (unsafe { RuntimeValue::acquire(key) }) else {
+        unsafe { ensure_set_error(c"set key could not acquire runtime edge custody") };
+        return -1;
+    };
+    let key_bits = key_value.bits();
     let h = hooks_or_stubs();
     let rc = unsafe { (h.set_add)(set_bits, key_bits) };
     if rc != 0 {
@@ -1407,19 +1418,24 @@ pub unsafe extern "C" fn PySet_Add(anyset: *mut PyObject, key: *mut PyObject) ->
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyFrozenSet_New(iterable: *mut PyObject) -> *mut PyObject {
-    let iterable_bits = if iterable.is_null() {
-        0
+    let iterable_value = if iterable.is_null() {
+        None
     } else {
-        match unsafe {
-            set_arg_handle(iterable, c"PyFrozenSet_New: iterable is not bridge-managed")
-        } {
-            Some(bits) => bits,
-            None => return ptr::null_mut(),
-        }
+        let Some(value) = (unsafe { RuntimeValue::acquire(iterable) }) else {
+            unsafe { ensure_set_error(c"set iterable could not acquire runtime edge custody") };
+            return ptr::null_mut();
+        };
+        Some(value)
     };
+    let iterable_bits = iterable_value.as_ref().map_or(0, RuntimeValue::bits);
     let h = hooks_or_stubs();
-    let result = unsafe { (h.set_op)(crate::hooks::SetOp::FrozenNew as u32, iterable_bits) };
-    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) }
+    let input = if iterable.is_null() { crate::hooks::BorrowedHandleResult::missing() } else { crate::hooks::BorrowedHandleResult::ok(iterable_bits) };
+    let result = unsafe { (h.set_new)(input, true) };
+    if result == 0 {
+        unsafe { ensure_set_error(c"PyFrozenSet_New failed") };
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(result) }
 }
 
 #[unsafe(no_mangle)]
@@ -1474,12 +1490,11 @@ pub unsafe extern "C" fn PySet_Discard(anyset: *mut PyObject, key: *mut PyObject
         Some(bits) => bits,
         None => return -1,
     };
-    let key_bits = match unsafe {
-        set_arg_handle(key, c"PySet_Discard: key is not a bridge-managed object")
-    } {
-        Some(bits) => bits,
-        None => return -1,
+    let Some(key_value) = (unsafe { RuntimeValue::acquire(key) }) else {
+        unsafe { ensure_set_error(c"set key could not acquire runtime edge custody") };
+        return -1;
     };
+    let key_bits = key_value.bits();
     let h = hooks_or_stubs();
     let rc = unsafe { (h.set_discard)(set_bits, key_bits) };
     if rc < 0 {
@@ -1527,40 +1542,49 @@ pub unsafe extern "C" fn PyList_SetSlice(
     if !GLOBAL_BRIDGE.commit_list_view(list_bits) {
         return -1;
     }
-    let itemlist_bits = if itemlist.is_null() {
-        0 // deletion
-    } else {
-        let itemlist_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(itemlist);
-        match itemlist_handle {
-            Some(b) if b.decode().is_ptr() => {
-                if unsafe { (hooks_or_stubs().classify_heap)(b.bits()) }
-                    == crate::abi_types::MoltTypeTag::List as u8
-                    && !GLOBAL_BRIDGE.commit_list_view(b.bits())
-                {
-                    return -1;
-                }
-                b.bits()
-            }
-            _ => {
-                unsafe { crate::api::errors::PyErr_BadInternalCall() };
-                return -1;
-            }
-        }
-    };
-    let Some(current) =
-        (unsafe { crate::api::abstract_sequence::materialize_iterable_pointers(op, None) })
-    else {
-        return -1;
-    };
+    // Finish the replacement's user callbacks before observing destination
+    // storage. Self-assignment copies that storage without invoking __iter__.
     let replacement = if itemlist.is_null() {
         None
     } else {
-        let Some(items) = (unsafe {
-            crate::api::abstract_sequence::materialize_iterable_pointers(itemlist, None)
-        }) else {
+        let items = if itemlist == op {
+            unsafe { crate::api::abstract_sequence::MaterializedPointers::from_list_storage(op) }
+        } else {
+            unsafe {
+                crate::api::abstract_sequence::materialize_iterable_pointers(
+                    itemlist,
+                    None,
+                    crate::api::abstract_sequence::SequenceMaterialization::Fast,
+                )
+            }
+        };
+        let Some(items) = items else {
             return -1;
         };
         Some(items)
+    };
+    let replacement_len = replacement.as_ref().map_or(0, |items| items.len());
+    let mut runtime_owners = Vec::new();
+    let mut replacement_bits = Vec::new();
+    if runtime_owners.try_reserve_exact(replacement_len).is_err()
+        || replacement_bits.try_reserve_exact(replacement_len).is_err()
+    {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return -1;
+    }
+    if let Some(replacement) = &replacement {
+        for &item in replacement.as_slice() {
+            let Some(value) = (unsafe { RuntimeValue::acquire(item) }) else {
+                return -1;
+            };
+            replacement_bits.push(value.bits());
+            runtime_owners.push(value);
+        }
+    }
+    let Some(current) =
+        (unsafe { crate::api::abstract_sequence::MaterializedPointers::from_list_storage(op) })
+    else {
+        return -1;
     };
     let len = current.len() as Py_ssize_t;
     let low = ilow.clamp(0, len) as usize;
@@ -1590,16 +1614,13 @@ pub unsafe extern "C" fn PyList_SetSlice(
             list_bits,
             ilow,
             ihigh,
-            itemlist_bits,
+            replacement_bits.as_ptr(),
+            replacement_bits.len(),
             future.as_ptr(),
             future.len(),
         )
     };
-    if rc != 0 {
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return -1;
-    }
-    0
+    unsafe { crate::api::errors::check_native_status(rc, "list slice replacement") }
 }
 
 #[unsafe(no_mangle)]

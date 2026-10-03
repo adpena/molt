@@ -386,6 +386,31 @@ impl RustBackend {
         for v in &closure_slots {
             self.emit_line(&format!("let mut {v}: MoltValue = MoltValue::None;"));
         }
+        // A synchronous Python frame's binding homes: one function-level
+        // variable per code slot the body addresses.
+        let mut frame_home_slots: Vec<i64> = ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.kind.as_str(),
+                    "frame_home_store"
+                        | "frame_home_cell"
+                        | "frame_home_private_cell"
+                        | "frame_home_load"
+                        | "frame_home_take"
+                        | "frame_home_clear"
+                )
+            })
+            .filter_map(|op| op.value)
+            .filter(|slot| *slot >= 0)
+            .collect();
+        frame_home_slots.sort_unstable();
+        frame_home_slots.dedup();
+        for slot in frame_home_slots {
+            self.emit_line(&format!(
+                "let mut __molt_home_{slot}: MoltValue = MoltValue::None;"
+            ));
+        }
         for v in &named_storage_vars {
             let initial = self
                 .current_param_writebacks

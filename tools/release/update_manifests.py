@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
+from molt.compiler_distribution import COMPILER_BUNDLE_DIRECTORIES
 from molt.exact_json import read_exact
 from tools.release.release_model import validate_release_manifest
 
@@ -58,6 +60,10 @@ def _render_homebrew(artifacts: list[dict], version: str) -> None:
             "LINUX_X86_URL": linux_x86["url"],
             "LINUX_X86_SHA256": linux_x86["sha256"],
         }
+        if name == "molt":
+            mapping["BUNDLE_DIRECTORIES"] = ", ".join(
+                json.dumps(directory) for directory in COMPILER_BUNDLE_DIRECTORIES
+            )
         template = TEMPLATES / "homebrew" / f"{name}.rb"
         out = OUTPUT / "homebrew" / f"{name}.rb"
         _render(template, out, mapping)

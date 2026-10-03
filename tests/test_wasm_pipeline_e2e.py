@@ -10,7 +10,6 @@ Exercises the full compilation pipeline:
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import shutil
 import subprocess
@@ -21,26 +20,15 @@ from pathlib import Path
 import pytest
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 from tools import wasm_optimize
+from tools import wasm_link_command
 
 ROOT = Path(__file__).resolve().parents[1]
 HELLO_PY = ROOT / "examples" / "hello.py"
 WASM_LD_RUSTUP_GLOB = "toolchains/stable-*/lib/rustlib/*/bin/gcc-ld/wasm-ld"
 
 
-def _load_wasm_link():
-    path = ROOT / "tools" / "wasm_link.py"
-    spec = importlib.util.spec_from_file_location("molt_wasm_link", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-wasm_link = _load_wasm_link()
-
-
 def _find_wasm_ld() -> str | None:
-    return wasm_link._find_wasm_ld()
+    return wasm_link_command._find_wasm_ld()
 
 
 def _find_wasmtime() -> str | None:
