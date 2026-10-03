@@ -1,0 +1,6 @@
+{
+  "policy_schema": "molt.proof-process-closure.v2",
+  "capability_schema": "molt.proof-supervisor-capability.v3",
+  "receipt_schema": "molt.proof-process-closure-receipt.v4",
+  "event_log_schema": "molt.proof-process-event-log.v2"
+}

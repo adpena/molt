@@ -286,6 +286,18 @@ def windows_process_handle_started_at_ns(handle: object) -> int | None:
     )
 
 
+def windows_current_process_started_at_ns() -> int | None:
+    """Read this process's creation identity from its kernel pseudo-handle."""
+
+    if os.name != "nt":
+        return None
+    try:
+        handle = process_query_api().GetCurrentProcess()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    return windows_process_handle_started_at_ns(handle)
+
+
 def _filetime_to_unix_seconds(low: int, high: int) -> float | None:
     ns = _filetime_to_unix_ns(low, high)
     return None if ns is None else ns / 1_000_000_000

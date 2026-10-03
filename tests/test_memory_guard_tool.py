@@ -743,6 +743,7 @@ def test_active_guard_marker_records_death_capsule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     marker_dir = tmp_path / "active"
+    monkeypatch.setattr(process_model, "process_started_at_ns", lambda pid: 100)
 
     token, marker = memory_guard._write_active_guard_marker(
         os.getpid(),
@@ -753,9 +754,11 @@ def test_active_guard_marker_records_death_capsule(
 
     assert marker.parent == marker_dir
     payload = json.loads(marker.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["pid"] == os.getpid()
     assert payload["token"] == token
+    assert payload["guard_process"] == {"pid": os.getpid(), "started_at_ns": 100}
+    assert payload["child_launch_state"] == "not_started"
     assert payload["command"] == ["python", "-c", "print('ok')"]
     assert payload["cwd"] == str(tmp_path.resolve(strict=False))
     assert payload["status"] == "guard_starting"
@@ -775,11 +778,13 @@ def test_active_guard_marker_records_death_capsule(
         marker,
         token,
         status="child_running",
-        child_process={"pid": 123, "command": ["python"]},
+        child_launch_state="recorded",
+        child_process={"pid": 123, "started_at_ns": 200, "command": ["python"]},
     )
     updated = json.loads(marker.read_text(encoding="utf-8"))
     assert updated["status"] == "child_running"
     assert updated["child_process"]["pid"] == 123
+    assert updated["child_process"]["started_at_ns"] == 200
 
 
 def test_new_guard_preserves_prior_custody_records(tmp_path: Path) -> None:
@@ -814,7 +819,8 @@ def test_new_guard_preserves_prior_custody_records(tmp_path: Path) -> None:
     )
 
     assert new_marker not in prior
-    assert set(marker_dir.iterdir()) == {*prior, new_marker}
+    assert set(marker_dir.glob("*.json")) == {*prior, new_marker}
+    assert set(marker_dir.glob("*.lock")) == {new_marker.with_suffix(".lock")}
     assert {path: path.read_bytes() for path in prior} == prior
 
 
@@ -2970,6 +2976,7 @@ def test_run_guarded_observed_rss_violation_remains_fail_closed_after_timeout(
 def test_run_guarded_binds_root_identity_before_first_sampler(
     monkeypatch: pytest.MonkeyPatch,
     fake_popen_without_windows_job: None,
+    tmp_path: Path,
 ) -> None:
     root_pid = 6262
 
@@ -3007,14 +3014,20 @@ def test_run_guarded_binds_root_identity_before_first_sampler(
     )
     monkeypatch.setattr(memory_guard, "terminate_watched_processes", fake_terminate)
 
+    def first_snapshot():
+        (marker,) = (tmp_path / "active").glob("guard-*.json")
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        assert payload["child_launch_state"] == "recorded"
+        assert payload["child_process"]["started_at_ns"] == 987_654_300
+        raise RuntimeError("first snapshot failed")
+
     with pytest.raises(RuntimeError, match="first snapshot failed"):
         memory_guard.run_guarded(
             ["fake-python"],
             max_rss_kb=1_000_000,
             poll_interval=0.01,
-            sampler=lambda: (_ for _ in ()).throw(
-                RuntimeError("first snapshot failed")
-            ),
+            sampler=first_snapshot,
+            env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path)},
         )
 
     tracker = reports[0]["tracker"]
@@ -3022,6 +3035,39 @@ def test_run_guarded_binds_root_identity_before_first_sampler(
     assert tracker.custody_identities({root_pid}) == {
         root_pid: memory_guard.ProcessIdentity(987_654_300)
     }
+
+
+def test_run_guarded_does_not_spawn_without_durable_launch_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    update = memory_guard.update_active_guard_marker
+
+    def fail_pending(path, token, *, status, **fields):
+        if status == "spawn_pending":
+            return False
+        return update(path, token, status=status, **fields)
+
+    spawned = []
+
+    def unexpected_spawn(*args, **kwargs):
+        spawned.append(True)
+        raise AssertionError("child started without marker custody")
+
+    _patch_guard_popen_without_windows_job(monkeypatch, unexpected_spawn)
+    monkeypatch.setattr(memory_guard, "update_active_guard_marker", fail_pending)
+    with pytest.raises(RuntimeError, match="child launch boundary"):
+        memory_guard.run_guarded(
+            ["fake-python"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path)},
+        )
+    assert spawned == []
+    (marker,) = (tmp_path / "active").glob("guard-*.json")
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["child_launch_state"] == "not_started"
+    assert payload["child_process"] is None
 
 
 def test_run_guarded_persistent_sampler_failure_reaps_owned_child_handle(

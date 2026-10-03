@@ -27,10 +27,11 @@ coordinates and scientific witness also do not establish complete public/C-API
 coverage, browser execution, or determinism across every advertised profile.
 These remain release blockers, not implicit passes from packaging success.
 
-The checked-in release workflow currently omits runtime-cell production and
-the candidate assembler's required `--primary-runtime-cells` and
-`--secondary-runtime-cells` inputs. It cannot complete candidate assembly as
-written. The structural pipeline below remains the required contract.
+Candidate wiring must run both independent native generations and both runtime
+inventories, and pass their four roots to the assembler. The two invocations
+establish build independence; equal receipts alone cannot distinguish a copied
+secondary output from a second build. The structural pipeline below defines
+this complete contract.
 The verified-subset policy requires LLVM, native and WASM with both `dev` and
 `release` guest profiles. Declared coordinates do not establish passing coverage.
 Execution receipts bind source, reference/toolchain/CI identities and selected
@@ -58,10 +59,30 @@ permission to omit cells or raise every timeout without diagnosis.
 2. One Linux job builds the pure-Python wheel. It builds twice from independent
    `git archive` exports and admits exactly one byte-identical wheel.
 3. Every target independently builds `molt-worker`, the production compiler and
-   the native `molt` launcher twice with locked Cargo inputs. The worker uses
+   the native `molt` launcher twice through `tools/release/native_build.py`.
+   `build_compiler.py` is its public entry point. Each invocation materializes
+   the exact Git snapshot, uses a fresh Cargo home and target directory, pins
+   the native compiler/linker executables, strips ambient build overrides and
+   checks source and tool identities again after building. The worker uses
    `release-output`; the compiler and launcher use the independent `release`
-   profile, enforced by `build_compiler.py`. Byte identity is mandatory for all
-   three binaries.
+   profile. Each output publishes its three binaries and `native-build.json`
+   atomically; an existing output cannot be reused or replaced. Candidate
+   admission requires different output roots, equal location-neutral receipts
+   (source inventory, epoch, target, profiles, features and native tool bytes),
+   matching binary architectures, and byte identity for all three binaries.
+   Build Python uses the existing runtime identity admission and is checked
+   again before publication. The installed consumer binds its worker bytes and
+   shipped source inventory back to the admitted native receipt.
+   Darwin builds pin `DEVELOPER_DIR`, use actual xcrun-selected tools, retain
+   `SDKROOT`, and record SDK metadata, version and deployment target. Windows
+   builds retain the activated Visual Studio installation and SDK environment;
+   LLVM's ATL requirement is enforced only by the LLVM bootstrap. Rust channel
+   admission reads the original `rust-toolchain.toml` Git blob with replacement
+   objects disabled. `--build-root` selects a configuration-free build parent;
+   its default is `RUNNER_TEMP` or the system temporary root, and a rejection
+   names the interfering Cargo configuration. The narrowed tool search requires
+   native CMake and Ninja, plus NASM on Windows x86_64 for aws-lc-sys. Missing
+   dependencies fail before building and must be provisioned explicitly.
    `tools/release/runtime_cells.py` twice materializes the tagged commit with the
    canonical Git snapshot and produces every runtime cell the guest surface can
    select (profile x stdlib tier x source-extension loader; WASM hosted SIMD or

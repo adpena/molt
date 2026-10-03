@@ -360,10 +360,13 @@ invalid artifacts produce an explicit rebuild-policy failure without invoking
 a Cargo build. Installed distributions retain their immutable admission rules regardless
 of this developer setting.
 
-`tools/release/build_compiler.py` enforces the production host policy from the
-root manifest and pinned toolchain: developer profile/CPU flags and compiler
-wrappers cannot change the distributed compiler. Cargo configuration that
-overrides this policy is rejected, not silently combined with it. The installed
+`tools/release/native_build.py` owns snapshot builds and receipts for the
+production compiler, launcher and worker; `build_compiler.py` projects its CLI.
+The source snapshot supplies the Rust channel, and developer profile/CPU flags
+and wrappers cannot change native release policy. Private Cargo homes and
+configuration-free build roots exclude ambient Cargo configuration. Darwin
+SDK/tool selection and activated Visual Studio roots are pinned before tool
+identity admission; LLVM's ATL check belongs only to LLVM bootstrap. The installed
 consumer runs the shipped native launcher for both guest profiles and binds each
 build/run command and compiler/launcher identity into admission. The same
 executable entry point serves direct invocation and package-manager links; there

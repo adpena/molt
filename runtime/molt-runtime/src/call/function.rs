@@ -4188,12 +4188,19 @@ mod tests {
     fn spawn_child(test_name: &str, envs: &[(&str, &str)]) -> std::process::Output {
         let exe = std::env::current_exe().expect("current test executable");
         let mut cmd = std::process::Command::new(exe);
-        cmd.arg("--exact").arg(test_name).arg("--nocapture");
+        cmd.arg("--exact")
+            .arg(test_name)
+            .arg("--nocapture")
+            .arg("--test-threads=1");
         cmd.env("MOLT_ASSERT_CHILD", "1");
         for (key, value) in envs {
             cmd.env(key, value);
         }
-        cmd.output().expect("spawn assert child")
+        crate::test_support::captured_runtime_children::capture(
+            &mut cmd,
+            "pending-success-trap",
+            "stale-exception",
+        )
     }
 
     #[test]

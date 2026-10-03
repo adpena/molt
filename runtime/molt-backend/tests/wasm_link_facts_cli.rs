@@ -67,10 +67,15 @@ fn cli_emits_versioned_success_json() {
         String::from_utf8_lossy(&output.stderr)
     );
     let payload: Value = serde_json::from_slice(&output.stdout).expect("parse success JSON");
-    assert_eq!(payload["schema_version"], 4);
+    assert_eq!(payload["schema_version"], 7);
     assert_eq!(payload["ok"], true);
-    assert_eq!(payload["facts"]["schema_version"], 4);
+    assert_eq!(payload["facts"]["schema_version"], 7);
     assert_eq!(payload["facts"]["code_body_count"], 2);
+    assert_eq!(payload["facts"]["defined_memory_count"], 0);
+    assert_eq!(
+        payload["facts"]["custom_section_names"],
+        serde_json::json!([])
+    );
     assert_eq!(
         payload["facts"]["reachable_function_indices"],
         serde_json::json!([])
@@ -94,7 +99,7 @@ fn cli_emits_versioned_error_json_and_nonzero_exit() {
 
     assert_eq!(output.status.code(), Some(2));
     let payload: Value = serde_json::from_slice(&output.stdout).expect("parse error JSON");
-    assert_eq!(payload["schema_version"], 4);
+    assert_eq!(payload["schema_version"], 7);
     assert_eq!(payload["ok"], false);
     assert!(
         payload["error"]

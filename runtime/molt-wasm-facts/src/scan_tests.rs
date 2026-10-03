@@ -6,8 +6,8 @@ use wasm_encoder::{
     CompositeType as EncoderCompositeType, ConstExpr, CustomSection, DataSection, ElementMode,
     ElementSection, ElementSegment, Elements, EntityType, ExportKind, ExportSection, FieldType,
     FuncType, Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection,
-    Instruction, Module, RefType, StorageType, SubType, TableSection, TableType, TypeSection,
-    ValType,
+    Instruction, MemorySection, MemoryType, Module, RefType, StorageType, SubType, TableSection,
+    TableType, TagKind, TagType, TypeSection, ValType,
 };
 
 use super::*;
@@ -88,6 +88,463 @@ fn callable_table_attestation(slot: u32, function_index: u32, type_index: u32) -
     type_index.encode(&mut payload);
     0u32.encode(&mut payload);
     payload
+}
+
+fn linking_global_symbol_payload(symbols: &[(&str, u32)]) -> Vec<u8> {
+    let mut entries = Vec::new();
+    for (name, global_index) in symbols {
+        entries.push(2); // WASM_SYMBOL_TYPE_GLOBAL
+        0u32.encode(&mut entries); // defined global binding
+        global_index.encode(&mut entries);
+        u32::try_from(name.len())
+            .expect("fixture symbol length fits u32")
+            .encode(&mut entries);
+        entries.extend_from_slice(name.as_bytes());
+    }
+    let mut symbol_table = Vec::new();
+    u32::try_from(symbols.len())
+        .expect("fixture symbol count fits u32")
+        .encode(&mut symbol_table);
+    symbol_table.extend(entries);
+
+    let mut linking = Vec::new();
+    2u32.encode(&mut linking);
+    linking.push(8); // WASM_SYMBOL_TABLE
+    u32::try_from(symbol_table.len())
+        .expect("fixture symbol table length fits u32")
+        .encode(&mut linking);
+    linking.extend(symbol_table);
+    linking
+}
+
+fn linking_data_symbol_payload(name: &str, size: u32, flags: wasmparser::SymbolFlags) -> Vec<u8> {
+    let mut symbol_table = Vec::new();
+    1u32.encode(&mut symbol_table);
+    symbol_table.push(1); // data symbol; parsed by wasmparser's Linking reader
+    flags.bits().encode(&mut symbol_table);
+    u32::try_from(name.len())
+        .expect("fixture symbol length fits u32")
+        .encode(&mut symbol_table);
+    symbol_table.extend_from_slice(name.as_bytes());
+    if !flags.contains(wasmparser::SymbolFlags::UNDEFINED) {
+        0u32.encode(&mut symbol_table); // segment index
+        0u32.encode(&mut symbol_table); // segment offset
+        size.encode(&mut symbol_table);
+    }
+
+    let mut linking = Vec::new();
+    2u32.encode(&mut linking);
+    linking.push(8); // symbol-table subsection; parsed by wasmparser
+    u32::try_from(symbol_table.len())
+        .expect("fixture symbol table length fits u32")
+        .encode(&mut linking);
+    linking.extend(symbol_table);
+    linking
+}
+
+#[test]
+fn linking_direct_global_symbol_attests_split_runtime_got_without_debug_names() {
+    let mut module = Module::new();
+    let mut globals = GlobalSection::new();
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: false,
+            shared: false,
+        },
+        &ConstExpr::i32_const(i32::MIN),
+    );
+    module.section(&globals);
+    let linking = linking_global_symbol_payload(&[("GOT.data.internal.molt_PyType_Type", 0)]);
+    module.section(&CustomSection {
+        name: Cow::Borrowed("linking"),
+        data: Cow::Owned(linking),
+    });
+
+    let facts = scan_wasm_link_facts(&module.finish()).expect("scan GOT fact module");
+
+    assert!(facts.linking_symbol_table_present);
+    assert_eq!(
+        facts.split_runtime_got_data_globals,
+        vec![WasmGotDataGlobalFact {
+            symbol: "molt_PyType_Type".to_string(),
+            global_index: 0,
+            initial_address: Some(0x8000_0000),
+            flags: 0,
+            defined: true,
+        }]
+    );
+}
+
+fn relocated_data_symbol_module(flags: wasmparser::SymbolFlags) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], [ValType::I32]);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut globals = GlobalSection::new();
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: false,
+            shared: false,
+        },
+        &ConstExpr::i32_const(i32::MIN),
+    );
+    module.section(&globals);
+    let mut exports = ExportSection::new();
+    exports.export("get_type_address", ExportKind::Func, 0);
+    module.section(&exports);
+    let code = [
+        1,    // body count
+        8,    // body size
+        0,    // local declaration count
+        0x23, // global.get
+        0x80, 0x80, 0x80, 0x80, 0x00, // relocatable five-byte global index 0
+        0x0b, // end
+    ];
+    module.section(&wasm_encoder::RawSection {
+        id: 10,
+        data: &code,
+    });
+    module.section(&CustomSection {
+        name: Cow::Borrowed("linking"),
+        data: Cow::Owned(linking_data_symbol_payload("molt_PyType_Type", 208, flags)),
+    });
+    let mut relocation = Vec::new();
+    4u32.encode(&mut relocation); // code section ordinal
+    1u32.encode(&mut relocation); // relocation count
+    relocation.push(7); // R_WASM_GLOBAL_INDEX_LEB
+    4u32.encode(&mut relocation); // code-payload offset of global index
+    0u32.encode(&mut relocation); // linking symbol-table index
+    module.section(&CustomSection {
+        name: Cow::Borrowed("reloc.CODE"),
+        data: Cow::Owned(relocation),
+    });
+    module.finish()
+}
+
+#[test]
+fn linking_data_symbol_and_code_relocation_attest_real_wasm_ld_got_shape() {
+    let module = relocated_data_symbol_module(wasmparser::SymbolFlags::EXPLICIT_NAME);
+
+    let facts = scan_wasm_link_facts(&module).expect("scan real linker GOT shape");
+
+    assert!(facts.linking_symbol_table_present);
+    assert_eq!(
+        facts.split_runtime_got_data_globals,
+        vec![WasmGotDataGlobalFact {
+            symbol: "molt_PyType_Type".to_string(),
+            global_index: 0,
+            initial_address: Some(0x8000_0000),
+            flags: wasmparser::SymbolFlags::EXPLICIT_NAME.bits(),
+            defined: true,
+        }]
+    );
+}
+
+#[test]
+fn linking_data_symbol_got_relocation_records_binding_for_consumer_policy() {
+    for flags in [
+        wasmparser::SymbolFlags::EXPLICIT_NAME | wasmparser::SymbolFlags::BINDING_WEAK,
+        wasmparser::SymbolFlags::EXPLICIT_NAME | wasmparser::SymbolFlags::BINDING_LOCAL,
+        wasmparser::SymbolFlags::EXPLICIT_NAME | wasmparser::SymbolFlags::UNDEFINED,
+    ] {
+        let facts = scan_wasm_link_facts(&relocated_data_symbol_module(flags))
+            .expect("record GOT binding evidence");
+        let got = &facts.split_runtime_got_data_globals[0];
+        assert_eq!(got.flags, flags.bits());
+        assert_eq!(
+            got.defined,
+            !flags.contains(wasmparser::SymbolFlags::UNDEFINED)
+        );
+        assert_eq!(got.initial_address, Some(0x8000_0000));
+    }
+}
+
+#[test]
+fn linking_symbol_table_rejects_duplicate_split_runtime_got_authority() {
+    let mut module = Module::new();
+    let mut globals = GlobalSection::new();
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: false,
+            shared: false,
+        },
+        &ConstExpr::i32_const(1),
+    );
+    module.section(&globals);
+    let linking = linking_global_symbol_payload(&[
+        ("GOT.data.internal.molt_PyType_Type", 0),
+        ("GOT.data.internal.molt_PyType_Type", 0),
+    ]);
+    module.section(&CustomSection {
+        name: Cow::Borrowed("linking"),
+        data: Cow::Owned(linking),
+    });
+
+    let error = scan_wasm_link_facts(&module.finish()).unwrap_err();
+    assert!(error.contains("duplicate split-runtime GOT data symbol"));
+}
+
+#[test]
+fn linking_symbol_table_rejects_duplicate_split_runtime_got_global_index() {
+    let mut module = Module::new();
+    let mut globals = GlobalSection::new();
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: false,
+            shared: false,
+        },
+        &ConstExpr::i32_const(1),
+    );
+    module.section(&globals);
+    let linking = linking_global_symbol_payload(&[
+        ("GOT.data.internal.molt_PyType_Type", 0),
+        ("GOT.data.internal.molt_PyList_Type", 0),
+    ]);
+    module.section(&CustomSection {
+        name: Cow::Borrowed("linking"),
+        data: Cow::Owned(linking),
+    });
+
+    let error = scan_wasm_link_facts(&module.finish()).unwrap_err();
+    assert!(error.contains("duplicate split-runtime GOT data global index"));
+}
+
+#[test]
+fn linking_symbol_table_records_noncanonical_got_global_shapes() {
+    for (global_type, initializer, initial_address) in [
+        (
+            GlobalType {
+                val_type: ValType::I64,
+                mutable: false,
+                shared: false,
+            },
+            ConstExpr::i64_const(1),
+            None,
+        ),
+        (
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            ConstExpr::i32_const(1),
+            Some(1),
+        ),
+    ] {
+        let mut module = Module::new();
+        let mut globals = GlobalSection::new();
+        globals.global(global_type, &initializer);
+        module.section(&globals);
+        let linking = linking_global_symbol_payload(&[("GOT.data.internal.molt_PyType_Type", 0)]);
+        module.section(&CustomSection {
+            name: Cow::Borrowed("linking"),
+            data: Cow::Owned(linking),
+        });
+
+        let facts = scan_wasm_link_facts(&module.finish()).expect("scan GOT shape evidence");
+        assert_eq!(
+            facts.split_runtime_got_data_globals[0].initial_address,
+            initial_address
+        );
+    }
+}
+
+#[test]
+fn linking_symbol_table_records_imported_got_global_target() {
+    let mut module = Module::new();
+    let mut imports = ImportSection::new();
+    imports.import(
+        "env",
+        "placeholder",
+        EntityType::Global(GlobalType {
+            val_type: ValType::I32,
+            mutable: false,
+            shared: false,
+        }),
+    );
+    module.section(&imports);
+    let linking = linking_global_symbol_payload(&[("GOT.data.internal.molt_PyType_Type", 0)]);
+    module.section(&CustomSection {
+        name: Cow::Borrowed("linking"),
+        data: Cow::Owned(linking),
+    });
+
+    let facts = scan_wasm_link_facts(&module.finish()).expect("scan imported GOT target");
+    assert_eq!(
+        facts.split_runtime_got_data_globals[0].initial_address,
+        None
+    );
+}
+
+#[test]
+fn linking_section_without_symbol_table_is_attested_as_absent() {
+    let mut module = Module::new();
+    module.section(&CustomSection {
+        name: Cow::Borrowed("linking"),
+        data: Cow::Owned(vec![2]),
+    });
+
+    let facts = scan_wasm_link_facts(&module.finish()).expect("scan linking-only module");
+    assert!(!facts.linking_symbol_table_present);
+    assert!(facts.split_runtime_got_data_globals.is_empty());
+}
+
+#[test]
+fn canonical_extern_type_facts_cover_function_global_memory_table_and_tag_edges() {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I32], [ValType::I64]);
+    types.ty().function([ValType::I32], []);
+    module.section(&types);
+    let mut imports = ImportSection::new();
+    imports.import("molt_runtime", "call", EntityType::Function(0));
+    imports.import(
+        "env",
+        "global",
+        EntityType::Global(GlobalType {
+            val_type: ValType::I32,
+            mutable: false,
+            shared: false,
+        }),
+    );
+    imports.import(
+        "env",
+        "memory",
+        EntityType::Memory(wasm_encoder::MemoryType {
+            minimum: 2,
+            maximum: Some(4),
+            memory64: false,
+            shared: true,
+            page_size_log2: None,
+        }),
+    );
+    imports.import(
+        "env",
+        "table",
+        EntityType::Table(TableType {
+            element_type: RefType::FUNCREF,
+            table64: false,
+            minimum: 3,
+            maximum: Some(8),
+            shared: false,
+        }),
+    );
+    imports.import(
+        "env",
+        "tag",
+        EntityType::Tag(TagType {
+            kind: TagKind::Exception,
+            func_type_idx: 1,
+        }),
+    );
+    module.section(&imports);
+    let mut exports = ExportSection::new();
+    exports.export("call", ExportKind::Func, 0);
+    exports.export("global", ExportKind::Global, 0);
+    exports.export("memory", ExportKind::Memory, 0);
+    exports.export("table", ExportKind::Table, 0);
+    exports.export("tag", ExportKind::Tag, 0);
+    module.section(&exports);
+
+    let facts = scan_wasm_link_facts(&module.finish()).expect("scan extern type module");
+
+    assert_eq!(facts.canonical_import_types.len(), 5);
+    assert_eq!(facts.canonical_export_types.len(), 5);
+    let call_import = facts
+        .canonical_import_types
+        .iter()
+        .find(|fact| fact.name == "call")
+        .expect("call import fact");
+    assert_eq!(call_import.module, "molt_runtime");
+    assert_eq!((call_import.kind, call_import.index), (0, 0));
+    assert_eq!(
+        call_import.extern_type,
+        WasmCanonicalExternType::Function {
+            exact: false,
+            params: vec![vec![0x7f]],
+            results: vec![vec![0x7e]],
+        }
+    );
+    let type_by_name = |name: &str| {
+        &facts
+            .canonical_import_types
+            .iter()
+            .find(|fact| fact.name == name)
+            .unwrap_or_else(|| panic!("missing {name} import fact"))
+            .extern_type
+    };
+    assert_eq!(
+        type_by_name("global"),
+        &WasmCanonicalExternType::Global {
+            value_type: vec![0x7f],
+            mutable: false,
+            shared: false,
+        }
+    );
+    assert_eq!(
+        type_by_name("memory"),
+        &WasmCanonicalExternType::Memory {
+            memory64: false,
+            shared: true,
+            minimum: 2,
+            maximum: Some(4),
+            page_size_log2: None,
+        }
+    );
+    assert_eq!(
+        facts
+            .canonical_import_types
+            .iter()
+            .find(|fact| fact.name == "memory")
+            .map(|fact| (fact.kind, fact.index)),
+        Some((2, 0))
+    );
+    assert_eq!(
+        facts
+            .canonical_export_types
+            .iter()
+            .find(|fact| fact.name == "table")
+            .map(|fact| (fact.kind, fact.index)),
+        Some((1, 0))
+    );
+    assert_eq!(facts.defined_memory_count, 0);
+    assert_eq!(
+        type_by_name("table"),
+        &WasmCanonicalExternType::Table {
+            table64: false,
+            shared: false,
+            minimum: 3,
+            maximum: Some(8),
+            element_type: vec![0x70],
+        }
+    );
+    assert_eq!(
+        type_by_name("tag"),
+        &WasmCanonicalExternType::Tag {
+            tag_kind: "exception".to_string(),
+            params: vec![vec![0x7f]],
+            results: vec![],
+        }
+    );
+    assert!(
+        facts
+            .canonical_import_types
+            .windows(2)
+            .all(|pair| pair[0] <= pair[1])
+    );
+    assert!(
+        facts
+            .canonical_export_types
+            .windows(2)
+            .all(|pair| pair[0] <= pair[1])
+    );
 }
 
 fn module_with_callable_table(attestations: &[Vec<u8>]) -> Vec<u8> {
@@ -599,6 +1056,34 @@ fn skips_huge_custom_and_data_payloads_without_fact_allocation() {
 
     assert_eq!(facts.operator_count, 0);
     assert!(facts.function_references.is_empty());
+    assert_eq!(facts.custom_section_names, ["huge"]);
+}
+
+#[test]
+fn projects_defined_memory_count_without_python_section_reparse() {
+    let mut module = Module::new();
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: Some(2),
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    module.section(&memories);
+    let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
+    module.section(&exports);
+
+    let facts = scan_wasm_link_facts(&module.finish()).expect("scan defined memory");
+
+    assert_eq!(facts.defined_memory_count, 1);
+    let memory = facts
+        .canonical_export_types
+        .iter()
+        .find(|fact| fact.name == "memory")
+        .expect("memory export fact");
+    assert_eq!((memory.kind, memory.index), (2, 0));
 }
 
 #[test]
@@ -1106,4 +1591,38 @@ fn passive_and_declared_membership_is_not_a_root_without_table_init() {
     assert_eq!(facts.declared_function_indices, [1, 2]);
     assert!(facts.active_function_elements.is_empty());
     assert!(!facts.reachable_dynamic_dispatch);
+}
+
+#[test]
+fn linking_facts_preserve_symbol_ordinals_and_resolve_implicit_import_names() {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], []);
+    module.section(&types);
+    let mut imports = ImportSection::new();
+    imports.import("env", "imported", EntityType::Function(0));
+    module.section(&imports);
+    // First row is a section symbol; it must not renumber the function symbol.
+    let table = vec![2, 3, 0, 0, 0, 0x10, 0];
+    let mut linking = vec![2, 8];
+    (table.len() as u32).encode(&mut linking);
+    linking.extend(table);
+    module.section(&CustomSection {
+        name: Cow::Borrowed("linking"),
+        data: Cow::Owned(linking),
+    });
+    let mut names = wasm_encoder::NameSection::new();
+    let mut functions = wasm_encoder::NameMap::new();
+    functions.append(0, "debug_imported");
+    names.functions(&functions);
+    module.section(&names);
+    let facts = scan_wasm_link_facts(&module.finish()).expect("scan symbol projection");
+    assert_eq!(facts.linking_symbols.len(), 1);
+    assert_eq!(facts.linking_symbols[0].symbol_index, 1);
+    assert_eq!(facts.linking_symbols[0].name, "imported");
+    assert_eq!(facts.linking_symbols[0].kind, "function");
+    assert_eq!(
+        facts.function_names,
+        vec![(0, "debug_imported".to_string())]
+    );
 }

@@ -1339,6 +1339,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         if self._active_class_ns_scope(name) is not None:
             self._store_local_value(name, value)
             return
+        self._clear_import_binding_origin(name)
         if self.current_func_name == "molt_main":
             self.globals[name] = value
             if name not in self.boxed_locals:

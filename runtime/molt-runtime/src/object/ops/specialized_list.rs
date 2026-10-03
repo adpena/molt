@@ -183,19 +183,35 @@ unsafe fn alloc_list_bool_from_normalized_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 {
+    list_int_getitem_impl(list_bits, index_bits, true)
+}
+
+pub(super) fn list_int_getitem_impl(
+    list_bits: u64,
+    index_bits: u64,
+    normalize_negative: bool,
+) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
         let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
-            return molt_index(list_bits, index_bits);
+            return if normalize_negative {
+                    molt_index(list_bits, index_bits)
+                } else {
+                    molt_sequence_item_builtin(list_bits, index_bits)
+                };
         };
         unsafe {
             if specialized_key_requires_boxed_list(py, ptr, index_bits, TYPE_ID_LIST_INT) {
                 if exception_pending(py) {
                     return MoltObject::none().bits();
                 }
-                return molt_index(list_bits, index_bits);
+                return if normalize_negative {
+                    molt_index(list_bits, index_bits)
+                } else {
+                    molt_sequence_item_builtin(list_bits, index_bits)
+                };
             }
             if let Some(slice) = obj_from_bits(index_bits).as_ptr()
                 && object_type_id(slice) == TYPE_ID_SLICE
@@ -207,7 +223,7 @@ pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 
             };
             let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
             let len = storage.len as i64;
-            if index < 0 {
+            if normalize_negative && index < 0 {
                 index += len;
             }
             if index < 0 || index >= len {
@@ -306,19 +322,35 @@ pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_b
 /// No refcounting needed -- bools are inline NaN-boxed values.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_bool_getitem(list_bits: u64, index_bits: u64) -> u64 {
+    list_bool_getitem_impl(list_bits, index_bits, true)
+}
+
+pub(super) fn list_bool_getitem_impl(
+    list_bits: u64,
+    index_bits: u64,
+    normalize_negative: bool,
+) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
         let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
-            return molt_index(list_bits, index_bits);
+            return if normalize_negative {
+                    molt_index(list_bits, index_bits)
+                } else {
+                    molt_sequence_item_builtin(list_bits, index_bits)
+                };
         };
         unsafe {
             if specialized_key_requires_boxed_list(py, ptr, index_bits, TYPE_ID_LIST_BOOL) {
                 if exception_pending(py) {
                     return MoltObject::none().bits();
                 }
-                return molt_index(list_bits, index_bits);
+                return if normalize_negative {
+                    molt_index(list_bits, index_bits)
+                } else {
+                    molt_sequence_item_builtin(list_bits, index_bits)
+                };
             }
             if let Some(slice) = obj_from_bits(index_bits).as_ptr()
                 && object_type_id(slice) == TYPE_ID_SLICE
@@ -330,7 +362,7 @@ pub extern "C" fn molt_list_bool_getitem(list_bits: u64, index_bits: u64) -> u64
             };
             let storage = &*crate::object::layout::list_bool_storage_ptr(ptr);
             let len = storage.len as i64;
-            if index < 0 {
+            if normalize_negative && index < 0 {
                 index += len;
             }
             if index < 0 || index >= len {

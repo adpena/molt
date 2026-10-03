@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use wasm_encoder::Encode;
 use wasmparser::{
-    CompositeInnerType, ElementItems, ElementKind, Encoding, ExternalKind,
-    FuncValidatorAllocations, Operator, OperatorsReader, OperatorsReaderAllocations, Parser,
-    Payload, TableInit, TypeRef, ValidPayload, Validator,
+    BinaryReader, CompositeInnerType, ElementItems, ElementKind, Encoding, ExternalKind,
+    FuncValidatorAllocations, KnownCustom, Linking, LinkingSectionReader, Operator,
+    OperatorsReader, OperatorsReaderAllocations, Parser, Payload, RelocSectionReader,
+    RelocationType, SymbolFlags, SymbolInfo, TableInit, TypeRef, ValidPayload, Validator,
 };
 
 use crate::encoding::validate_callable_table_attestation;
@@ -52,11 +53,331 @@ mod section_range_tests {
     }
 }
 
+const SPLIT_RUNTIME_GOT_DATA_PREFIX: &str = "GOT.data.internal.";
+
+#[derive(Clone, Copy)]
+struct DefinedGlobalShape {
+    initial_address: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+enum PendingExportKind {
+    Function { exact: bool },
+    Global,
+    Memory,
+    Table,
+    Tag,
+}
+
+impl PendingExportKind {
+    const fn external_kind(self) -> u8 {
+        match self {
+            Self::Function { .. } => 0,
+            Self::Table => 1,
+            Self::Memory => 2,
+            Self::Global => 3,
+            Self::Tag => 4,
+        }
+    }
+}
+
+struct PendingExport {
+    name: String,
+    kind: PendingExportKind,
+    index: u32,
+}
+
+#[derive(Clone)]
+struct LinkingDataSymbol {
+    name: String,
+    flags: SymbolFlags,
+    defined: bool,
+}
+
+fn canonical_function_type(
+    type_index: u32,
+    exact: bool,
+    function_types: &[Option<WasmFunctionType>],
+) -> Result<WasmCanonicalExternType, String> {
+    let function_type = function_types
+        .get(type_index as usize)
+        .and_then(Option::as_ref)
+        .ok_or_else(|| format!("function references non-function type index {type_index}"))?;
+    Ok(WasmCanonicalExternType::Function {
+        exact,
+        params: function_type.params.clone(),
+        results: function_type.results.clone(),
+    })
+}
+
+fn canonical_global_type(
+    global_type: wasmparser::GlobalType,
+) -> Result<WasmCanonicalExternType, String> {
+    let mut encoded = encode_value_types(&[global_type.content_type])?;
+    Ok(WasmCanonicalExternType::Global {
+        value_type: encoded.pop().ok_or("global value type encoding is empty")?,
+        mutable: global_type.mutable,
+        shared: global_type.shared,
+    })
+}
+
+fn canonical_memory_type(memory_type: wasmparser::MemoryType) -> WasmCanonicalExternType {
+    WasmCanonicalExternType::Memory {
+        memory64: memory_type.memory64,
+        shared: memory_type.shared,
+        minimum: memory_type.initial,
+        maximum: memory_type.maximum,
+        page_size_log2: memory_type.page_size_log2,
+    }
+}
+
+fn canonical_table_type(table: &WasmTableFact) -> WasmCanonicalExternType {
+    WasmCanonicalExternType::Table {
+        table64: table.table64,
+        shared: table.shared,
+        minimum: table.minimum,
+        maximum: table.maximum,
+        element_type: table.encoded_element_type.clone(),
+    }
+}
+
+fn canonical_tag_type(
+    tag_type: wasmparser::TagType,
+    function_types: &[Option<WasmFunctionType>],
+) -> Result<WasmCanonicalExternType, String> {
+    let function_type = function_types
+        .get(tag_type.func_type_idx as usize)
+        .and_then(Option::as_ref)
+        .ok_or_else(|| {
+            format!(
+                "tag references non-function type index {}",
+                tag_type.func_type_idx
+            )
+        })?;
+    Ok(WasmCanonicalExternType::Tag {
+        tag_kind: match tag_type.kind {
+            wasmparser::TagKind::Exception => "exception".to_string(),
+        },
+        params: function_type.params.clone(),
+        results: function_type.results.clone(),
+    })
+}
+
+#[derive(Clone, Copy)]
+struct GotSymbolBinding {
+    global_index: u32,
+    flags: SymbolFlags,
+    defined: bool,
+}
+
+fn insert_got_global(
+    symbol: &str,
+    global_index: u32,
+    flags: SymbolFlags,
+    defined: bool,
+    got_symbols: &mut BTreeMap<String, GotSymbolBinding>,
+    got_indices: &mut BTreeSet<u32>,
+) -> Result<(), String> {
+    if let Some(previous) = got_symbols.get_mut(symbol) {
+        if previous.global_index != global_index {
+            return Err(format!("duplicate split-runtime GOT data symbol: {symbol}"));
+        }
+        previous.flags |= flags;
+        previous.defined &= defined;
+        return Ok(());
+    }
+    got_symbols.insert(
+        symbol.to_string(),
+        GotSymbolBinding {
+            global_index,
+            flags,
+            defined,
+        },
+    );
+    if !got_indices.insert(global_index) {
+        return Err(format!(
+            "duplicate split-runtime GOT data global index: {global_index}"
+        ));
+    }
+    Ok(())
+}
+
+fn linking_symbol_fact(
+    symbol: SymbolInfo<'_>,
+    symbol_index: u32,
+    imports: &[WasmCanonicalImportTypeFact],
+) -> Result<Option<WasmLinkingSymbolFact>, String> {
+    let (kind, external_kind, flags, index, name, data) = match symbol {
+        SymbolInfo::Func { flags, index, name } => ("function", 0, flags, Some(index), name, None),
+        SymbolInfo::Global { flags, index, name } => ("global", 3, flags, Some(index), name, None),
+        SymbolInfo::Table { flags, index, name } => ("table", 1, flags, Some(index), name, None),
+        SymbolInfo::Event { flags, index, name } => ("tag", 4, flags, Some(index), name, None),
+        SymbolInfo::Data {
+            flags,
+            name,
+            symbol,
+        } => ("data", 0, flags, None, Some(name), symbol),
+        SymbolInfo::Section { .. } => return Ok(None),
+    };
+    let name = if let Some(name) = name {
+        name.to_string()
+    } else {
+        imports
+            .iter()
+            .find(|item| item.kind == external_kind && Some(item.index) == index)
+            .ok_or_else(|| {
+                format!("linking symbol {symbol_index} has no matching import identity")
+            })?
+            .name
+            .clone()
+    };
+    Ok(Some(WasmLinkingSymbolFact {
+        symbol_index,
+        name,
+        kind,
+        flags: flags.bits(),
+        index,
+        segment_index: data.map(|value| value.index),
+        data_offset: data.map(|value| value.offset),
+        size: data.map(|value| value.size),
+    }))
+}
+
+fn parse_linking_symbols(
+    linking: LinkingSectionReader<'_>,
+    data_symbols: &mut Option<Vec<Option<LinkingDataSymbol>>>,
+    linking_symbols: &mut Vec<WasmLinkingSymbolFact>,
+    imports: &[WasmCanonicalImportTypeFact],
+    got_symbols: &mut BTreeMap<String, GotSymbolBinding>,
+    got_indices: &mut BTreeSet<u32>,
+) -> Result<bool, String> {
+    let mut symbol_table_seen = false;
+    for subsection in linking {
+        let subsection = subsection.map_err(|error| error.to_string())?;
+        let Linking::SymbolTable(symbols) = subsection else {
+            continue;
+        };
+        if symbol_table_seen || data_symbols.is_some() {
+            return Err("duplicate WebAssembly linking symbol table".to_string());
+        }
+        symbol_table_seen = true;
+        let mut indexed_data_symbols = Vec::with_capacity(symbols.count() as usize);
+        for (symbol_index, symbol) in symbols.into_iter().enumerate() {
+            let symbol = symbol.map_err(|error| error.to_string())?;
+            if let Some(fact) = linking_symbol_fact(symbol, symbol_index as u32, imports)? {
+                linking_symbols.push(fact);
+            }
+            let data_symbol = match symbol {
+                SymbolInfo::Data {
+                    flags,
+                    name,
+                    symbol,
+                } => Some(LinkingDataSymbol {
+                    name: name.to_string(),
+                    flags,
+                    defined: symbol.is_some(),
+                }),
+                SymbolInfo::Global { flags, index, name } => {
+                    if let Some(name) = name
+                        && let Some(got_symbol) = name.strip_prefix(SPLIT_RUNTIME_GOT_DATA_PREFIX)
+                    {
+                        if got_symbol.is_empty() {
+                            return Err("empty split-runtime GOT data symbol".to_string());
+                        }
+                        if got_symbols.contains_key(got_symbol) {
+                            return Err(format!(
+                                "duplicate split-runtime GOT data symbol: {got_symbol}"
+                            ));
+                        }
+                        insert_got_global(
+                            got_symbol,
+                            index,
+                            flags,
+                            !flags.contains(SymbolFlags::UNDEFINED),
+                            got_symbols,
+                            got_indices,
+                        )?;
+                    }
+                    None
+                }
+                _ => None,
+            };
+            indexed_data_symbols.push(data_symbol);
+        }
+        *data_symbols = Some(indexed_data_symbols);
+    }
+    Ok(symbol_table_seen)
+}
+
+fn parse_code_got_relocations(
+    relocation: RelocSectionReader<'_>,
+    code_section_index: u32,
+    code_payload: &[u8],
+    data_symbols: &[Option<LinkingDataSymbol>],
+    got_symbols: &mut BTreeMap<String, GotSymbolBinding>,
+    got_indices: &mut BTreeSet<u32>,
+) -> Result<(), String> {
+    if relocation.section_index() != code_section_index {
+        return Err(format!(
+            "reloc.CODE targets section {}, expected code section {code_section_index}",
+            relocation.section_index()
+        ));
+    }
+    for entry in relocation.entries() {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry.ty != RelocationType::GlobalIndexLeb {
+            continue;
+        }
+        let symbol_index = usize::try_from(entry.index)
+            .map_err(|_| "reloc.CODE symbol index exceeds host usize")?;
+        let symbol_entry = data_symbols.get(symbol_index).ok_or_else(|| {
+            format!(
+                "reloc.CODE references missing linking symbol index {}",
+                entry.index
+            )
+        })?;
+        let Some(symbol) = symbol_entry.as_ref() else {
+            continue;
+        };
+        let range = entry
+            .relocation_range()
+            .map_err(|error| error.to_string())?;
+        let encoded = code_payload.get(range.clone()).ok_or_else(|| {
+            format!(
+                "reloc.CODE global-index range {}..{} exceeds code section size {}",
+                range.start,
+                range.end,
+                code_payload.len()
+            )
+        })?;
+        let original_offset =
+            u64::try_from(range.start).map_err(|_| "reloc.CODE offset exceeds u64")?;
+        let mut reader = BinaryReader::new(encoded, original_offset);
+        let global_index = reader.read_var_u32().map_err(|error| error.to_string())?;
+        if !reader.eof() {
+            return Err(format!(
+                "reloc.CODE global-index relocation at {} does not occupy its exact extent",
+                entry.offset
+            ));
+        }
+        insert_got_global(
+            &symbol.name,
+            global_index,
+            symbol.flags,
+            symbol.defined,
+            got_symbols,
+            got_indices,
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn scan_wasm_link_facts_with_sections(
     bytes: &[u8],
     mut emit_section: Option<&mut SectionEmitter<'_>>,
 ) -> Result<WasmLinkFacts, String> {
     let mut function_import_count = 0u32;
+    let mut global_import_count = 0u32;
     let mut function_import_type_indices = Vec::new();
     let mut defined_function_type_indices = Vec::new();
     let mut function_types = Vec::new();
@@ -83,6 +404,25 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     let mut table_mutations = Vec::new();
     let mut callable_table_attestation = None;
     let mut callable_table_layout = None;
+    let mut linking_section_seen = false;
+    let mut linking_symbol_table_present = false;
+    let mut linking_data_symbols = None;
+    let mut linking_symbols = Vec::new();
+    let mut function_names = BTreeMap::new();
+    let mut code_relocations = Vec::new();
+    let mut code_section_index = None;
+    let mut code_section_range = None;
+    let mut section_count = 0u32;
+    let mut got_symbol_indices = BTreeMap::new();
+    let mut got_global_indices = BTreeSet::new();
+    let mut defined_global_shapes = BTreeMap::new();
+    let mut canonical_import_types = Vec::new();
+    let mut pending_exports = Vec::new();
+    let mut global_types = Vec::new();
+    let mut memory_types = Vec::new();
+    let mut defined_memory_count = 0u32;
+    let mut tag_types = Vec::new();
+    let mut custom_section_names = Vec::new();
     let mut validator = Validator::new();
     let mut validator_allocations = FuncValidatorAllocations::default();
     let mut operator_reader_allocations = OperatorsReaderAllocations::default();
@@ -92,6 +432,15 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     for payload in Parser::new(0).parse_all(bytes) {
         let payload = payload.map_err(|error| error.to_string())?;
         let raw_section = payload.as_section();
+        let current_section_index = if raw_section.is_some() {
+            let index = section_count;
+            section_count = section_count
+                .checked_add(1)
+                .ok_or("WebAssembly section count overflow")?;
+            Some(index)
+        } else {
+            None
+        };
         let replaced_custom_section = matches!(
             &payload,
             Payload::CustomSection(reader)
@@ -142,28 +491,70 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
             Payload::ImportSection(reader) => {
                 for import in reader.into_imports() {
                     let import = import.map_err(|error| error.to_string())?;
-                    if let TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) = import.ty {
-                        let function_index = function_import_count;
-                        function_import_count = function_import_count
-                            .checked_add(1)
-                            .ok_or("function import count overflow")?;
-                        function_import_type_indices.push(type_index);
-                        if import.module == "env"
-                            && import
-                                .name
-                                .strip_prefix("molt_call_indirect")
-                                .is_some_and(|arity| {
-                                    !arity.is_empty()
-                                        && arity.bytes().all(|byte| byte.is_ascii_digit())
-                                })
-                        {
-                            dynamic_table_dispatch = true;
-                            dynamic_dispatch_imports.insert(function_index);
+                    let (kind, index, extern_type) = match import.ty {
+                        TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) => {
+                            let exact = matches!(import.ty, TypeRef::FuncExact(_));
+                            let function_index = function_import_count;
+                            function_import_count = function_import_count
+                                .checked_add(1)
+                                .ok_or("function import count overflow")?;
+                            function_import_type_indices.push(type_index);
+                            if import.module == "env"
+                                && import.name.strip_prefix("molt_call_indirect").is_some_and(
+                                    |arity| {
+                                        !arity.is_empty()
+                                            && arity.bytes().all(|byte| byte.is_ascii_digit())
+                                    },
+                                )
+                            {
+                                dynamic_table_dispatch = true;
+                                dynamic_dispatch_imports.insert(function_index);
+                            }
+                            (
+                                0,
+                                function_index,
+                                canonical_function_type(type_index, exact, &function_types)?,
+                            )
                         }
-                    }
-                    if let TypeRef::Table(table_type) = import.ty {
-                        tables.push(table_fact(table_type, true, tables.len())?);
-                    }
+                        TypeRef::Table(table_type) => {
+                            let table_index = u32::try_from(tables.len())
+                                .map_err(|_| "table import index overflow")?;
+                            let table = table_fact(table_type, true, tables.len())?;
+                            let extern_type = canonical_table_type(&table);
+                            tables.push(table);
+                            (1, table_index, extern_type)
+                        }
+                        TypeRef::Memory(memory_type) => {
+                            let memory_index = u32::try_from(memory_types.len())
+                                .map_err(|_| "memory import index overflow")?;
+                            let extern_type = canonical_memory_type(memory_type);
+                            memory_types.push(extern_type.clone());
+                            (2, memory_index, extern_type)
+                        }
+                        TypeRef::Global(global_type) => {
+                            let global_index = global_import_count;
+                            global_import_count = global_import_count
+                                .checked_add(1)
+                                .ok_or("global import count overflow")?;
+                            let extern_type = canonical_global_type(global_type)?;
+                            global_types.push(extern_type.clone());
+                            (3, global_index, extern_type)
+                        }
+                        TypeRef::Tag(tag_type) => {
+                            let tag_index = u32::try_from(tag_types.len())
+                                .map_err(|_| "tag import index overflow")?;
+                            let extern_type = canonical_tag_type(tag_type, &function_types)?;
+                            tag_types.push(extern_type.clone());
+                            (4, tag_index, extern_type)
+                        }
+                    };
+                    canonical_import_types.push(WasmCanonicalImportTypeFact {
+                        module: import.module.to_string(),
+                        name: import.name.to_string(),
+                        kind,
+                        index,
+                        extern_type,
+                    });
                 }
             }
             Payload::FunctionSection(reader) => {
@@ -184,10 +575,49 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                     }
                 }
             }
+            Payload::MemorySection(reader) => {
+                for memory_type in reader {
+                    let memory_type = memory_type.map_err(|error| error.to_string())?;
+                    memory_types.push(canonical_memory_type(memory_type));
+                    defined_memory_count = defined_memory_count
+                        .checked_add(1)
+                        .ok_or("defined memory count overflow")?;
+                }
+            }
             Payload::GlobalSection(reader) => {
                 for global in reader {
                     let global = global.map_err(|error| error.to_string())?;
+                    let defined_index = u32::try_from(defined_global_shapes.len())
+                        .map_err(|_| "defined global count overflow")?;
+                    let global_index = global_import_count
+                        .checked_add(defined_index)
+                        .ok_or("global index overflow")?;
+                    let mut operators = global.init_expr.get_operators_reader();
+                    let first = operators.read().map_err(|error| error.to_string())?;
+                    let initial_address = match first {
+                        Operator::I32Const { value } => {
+                            if !matches!(
+                                operators.read().map_err(|error| error.to_string())?,
+                                Operator::End
+                            ) || !operators.eof()
+                            {
+                                None
+                            } else {
+                                Some(value as u32)
+                            }
+                        }
+                        _ => None,
+                    };
+                    defined_global_shapes
+                        .insert(global_index, DefinedGlobalShape { initial_address });
+                    global_types.push(canonical_global_type(global.ty)?);
                     collect_const_expr_ref_funcs(global.init_expr, &mut root_function_indices)?;
+                }
+            }
+            Payload::TagSection(reader) => {
+                for tag_type in reader {
+                    let tag_type = tag_type.map_err(|error| error.to_string())?;
+                    tag_types.push(canonical_tag_type(tag_type, &function_types)?);
                 }
             }
             Payload::ExportSection(reader) => {
@@ -205,6 +635,19 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                     if export.name.starts_with("__molt_table_ref_") {
                         forbidden_callable_alias_exports.push(export.name.to_string());
                     }
+                    let kind = match export.kind {
+                        ExternalKind::Func => PendingExportKind::Function { exact: false },
+                        ExternalKind::FuncExact => PendingExportKind::Function { exact: true },
+                        ExternalKind::Global => PendingExportKind::Global,
+                        ExternalKind::Memory => PendingExportKind::Memory,
+                        ExternalKind::Table => PendingExportKind::Table,
+                        ExternalKind::Tag => PendingExportKind::Tag,
+                    };
+                    pending_exports.push(PendingExport {
+                        name: export.name.to_string(),
+                        kind,
+                        index: export.index,
+                    });
                 }
             }
             Payload::StartSection { func, .. } => {
@@ -456,6 +899,11 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                 if pending_code_section.is_some() {
                     return Err("nested code section publication state".to_string());
                 }
+                if code_section_index.is_some() || code_section_range.is_some() {
+                    return Err("duplicate code section".to_string());
+                }
+                code_section_index = current_section_index;
+                code_section_range = Some(range.clone());
                 pending_code_section = Some((10, range, count));
                 if count == 0 {
                     let (id, range, _) = pending_code_section
@@ -467,6 +915,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                 }
             }
             Payload::CustomSection(reader) if reader.name() == CALLABLE_TABLE_SECTION_NAME => {
+                custom_section_names.push(reader.name().to_string());
                 if callable_table_attestation.is_some() {
                     return Err("duplicate molt.callable_table custom sections".to_string());
                 }
@@ -475,10 +924,66 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
             Payload::CustomSection(reader)
                 if reader.name() == CALLABLE_TABLE_LAYOUT_SECTION_NAME =>
             {
+                custom_section_names.push(reader.name().to_string());
                 if callable_table_layout.is_some() {
                     return Err("duplicate molt.callable_table.layout custom sections".to_string());
                 }
                 callable_table_layout = Some(decode_callable_table_layout(reader.data())?);
+            }
+            Payload::CustomSection(reader) if reader.name() == "name" => {
+                custom_section_names.push(reader.name().to_string());
+                let KnownCustom::Name(names) = reader.as_known() else {
+                    return Err("malformed WebAssembly name custom section".to_string());
+                };
+                for subsection in names {
+                    if let wasmparser::Name::Function(names) =
+                        subsection.map_err(|error| error.to_string())?
+                    {
+                        for name in names {
+                            let name = name.map_err(|error| error.to_string())?;
+                            if function_names
+                                .insert(name.index, name.name.to_string())
+                                .is_some()
+                            {
+                                return Err(format!(
+                                    "duplicate function name index {}",
+                                    name.index
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            Payload::CustomSection(reader) if reader.name() == "linking" => {
+                custom_section_names.push(reader.name().to_string());
+                if linking_section_seen {
+                    return Err("duplicate WebAssembly linking custom section".to_string());
+                }
+                linking_section_seen = true;
+                let KnownCustom::Linking(linking) = reader.as_known() else {
+                    return Err("malformed WebAssembly linking custom section".to_string());
+                };
+                linking_symbol_table_present = parse_linking_symbols(
+                    linking,
+                    &mut linking_data_symbols,
+                    &mut linking_symbols,
+                    &canonical_import_types,
+                    &mut got_symbol_indices,
+                    &mut got_global_indices,
+                )?;
+            }
+            Payload::CustomSection(reader) if reader.name() == "reloc.CODE" => {
+                custom_section_names.push(reader.name().to_string());
+                let KnownCustom::Reloc(relocation) = reader.as_known() else {
+                    return Err("malformed WebAssembly reloc.CODE custom section".to_string());
+                };
+                if !code_relocations.is_empty() {
+                    return Err("duplicate WebAssembly reloc.CODE custom section".to_string());
+                }
+                code_relocations.push(relocation);
+            }
+            Payload::CustomSection(reader) => {
+                custom_section_names.push(reader.name().to_string());
             }
             _ => {}
         }
@@ -496,6 +1001,22 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     }
     if !module_header_seen {
         return Err("missing top-level WebAssembly module header".to_string());
+    }
+    if let Some(relocation) = code_relocations.pop() {
+        let code_section_index = code_section_index.ok_or("reloc.CODE has no code section")?;
+        let code_section_range = code_section_range.ok_or("reloc.CODE has no code section")?;
+        let code_payload = section_bytes(bytes, code_section_range)?;
+        let data_symbols = linking_data_symbols
+            .as_deref()
+            .ok_or("reloc.CODE has no linking symbol-table authority")?;
+        parse_code_got_relocations(
+            relocation,
+            code_section_index,
+            code_payload,
+            data_symbols,
+            &mut got_symbol_indices,
+            &mut got_global_indices,
+        )?;
     }
 
     let declared_function_count = declared_function_count.unwrap_or(0);
@@ -519,6 +1040,68 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         .into_iter()
         .chain(defined_function_type_indices)
         .collect::<Vec<_>>();
+    canonical_import_types.sort();
+    let mut canonical_export_types = pending_exports
+        .into_iter()
+        .map(|export| {
+            let extern_type = match export.kind {
+                PendingExportKind::Function { exact } => {
+                    let type_index = *function_type_indices
+                        .get(export.index as usize)
+                        .ok_or_else(|| {
+                            format!(
+                                "function export {} has out-of-range index {}",
+                                export.name, export.index
+                            )
+                        })?;
+                    canonical_function_type(type_index, exact, &function_types)?
+                }
+                PendingExportKind::Global => global_types
+                    .get(export.index as usize)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "global export {} has out-of-range index {}",
+                            export.name, export.index
+                        )
+                    })?,
+                PendingExportKind::Memory => memory_types
+                    .get(export.index as usize)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "memory export {} has out-of-range index {}",
+                            export.name, export.index
+                        )
+                    })?,
+                PendingExportKind::Table => tables
+                    .get(export.index as usize)
+                    .map(canonical_table_type)
+                    .ok_or_else(|| {
+                        format!(
+                            "table export {} has out-of-range index {}",
+                            export.name, export.index
+                        )
+                    })?,
+                PendingExportKind::Tag => tag_types
+                    .get(export.index as usize)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "tag export {} has out-of-range index {}",
+                            export.name, export.index
+                        )
+                    })?,
+            };
+            Ok(WasmCanonicalExportTypeFact {
+                name: export.name,
+                kind: export.kind.external_kind(),
+                index: export.index,
+                extern_type,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    canonical_export_types.sort();
     let mut callable_table_entries = Vec::new();
     for element in active_function_elements
         .iter()
@@ -704,6 +1287,29 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         })
         .map(|row| function_references[row].direct_calls.clone())
         .unwrap_or_default();
+    // Record evidence for every relocation. Binding and shape policy belongs to
+    // the consumer selecting CPython-ABI globals; unrelated weak/local/undefined
+    // PIC symbols are valid linker inputs and must not fail the module scan.
+    for (symbol, binding) in &got_symbol_indices {
+        if binding.global_index as usize >= global_types.len() {
+            return Err(format!(
+                "split-runtime GOT data symbol {symbol} references missing global index {}",
+                binding.global_index
+            ));
+        }
+    }
+    let split_runtime_got_data_globals = got_symbol_indices
+        .into_iter()
+        .map(|(symbol, binding)| WasmGotDataGlobalFact {
+            symbol,
+            global_index: binding.global_index,
+            initial_address: defined_global_shapes
+                .get(&binding.global_index)
+                .and_then(|shape| shape.initial_address),
+            flags: binding.flags.bits(),
+            defined: binding.defined,
+        })
+        .collect();
     Ok(WasmLinkFacts {
         schema_version: WASM_LINK_FACTS_SCHEMA_VERSION,
         function_import_count,
@@ -739,6 +1345,14 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         reachable_table_reads,
         exported_table_indices,
         tables,
+        defined_memory_count,
+        custom_section_names,
+        linking_symbol_table_present,
+        linking_symbols,
+        function_names: function_names.into_iter().collect(),
+        split_runtime_got_data_globals,
+        canonical_import_types,
+        canonical_export_types,
     })
 }
 

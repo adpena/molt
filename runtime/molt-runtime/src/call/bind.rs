@@ -11,6 +11,8 @@ use crate::call::{
 };
 use crate::state::recursion::RecursionGuard;
 use crate::state::tls::FRAME_STACK;
+#[cfg(test)]
+use crate::alloc_string;
 use crate::{
     ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_CLINIC_NAMED, BIND_KIND_TYPE_NEW_INIT,
     CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT, HEADER_FLAG_FUNC_REQUIRES_BINDER,
@@ -18,7 +20,7 @@ use crate::{
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DICT, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET,
     TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
     TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_instance_for_default_object_new, alloc_object,
-    alloc_string, alloc_tuple,
+    alloc_tuple,
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes,
     call_class_init_with_args, call_function_obj_bound_vec, class_attr_lookup_raw_mro,

@@ -793,6 +793,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             if handler.name:
                 if self.current_func_name == "molt_main":
                     self.module_global_mutations.add(handler.name)
+                self._clear_import_binding_origin(handler.name)
                 self._store_local_value(handler.name, exc_val)
             exc_entry = ActiveException(
                 value=exc_val,

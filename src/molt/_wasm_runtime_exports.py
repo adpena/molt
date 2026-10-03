@@ -9,12 +9,14 @@ from ._intrinsic_symbols import intrinsic_runtime_symbol_name
 from .source_root import compiler_source_root
 from ._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME,
+    WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
     WASM_IMPORT_REGISTRY,
     WASM_RUNTIME_HOST_EXPORTS,
     WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS,
+    wasm_import_signature,
     wasm_runtime_export_name,
 )
 
@@ -98,6 +100,37 @@ def wasm_split_runtime_import_name_for_export(name: str) -> str | None:
     if _raw_is_cpython_abi_link_import(name):
         return name
     return None
+
+
+def wasm_split_runtime_import_signature(
+    name: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """Return the generated canonical function type for one split ABI edge."""
+
+    canonical_name = wasm_split_runtime_canonical_import_name(name)
+    signature = wasm_import_signature(canonical_name)
+    if signature is not None:
+        return signature
+    # Split exports project the canonical env ABI. Preserve its module-qualified
+    # identity: an identically named WASI import can have a different signature.
+    raw_signature = WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES.get(
+        ("env", canonical_name)
+    )
+    if not isinstance(raw_signature, dict):
+        return None
+    raw_params = raw_signature.get("params")
+    raw_result = raw_signature.get("result")
+    if (
+        not isinstance(raw_params, list)
+        or not all(isinstance(param, str) and param for param in raw_params)
+        or not isinstance(raw_result, str)
+        or not raw_result
+    ):
+        raise ValueError(
+            f"invalid generated split-runtime signature for {canonical_name}"
+        )
+    results = () if raw_result == "nil" else tuple(raw_result.split(", "))
+    return tuple(raw_params), results
 
 
 def wasm_split_runtime_export_rename_map(

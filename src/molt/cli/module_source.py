@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import resolve_python_private_names
+from molt.python_private_names import resolve_python_private_names
 import contextlib
 import functools
 import hashlib

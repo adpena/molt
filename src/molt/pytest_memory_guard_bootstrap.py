@@ -618,23 +618,16 @@ def _active_guard_marker_valid(
         return False
     if marker_resolved.parent != marker_root:
         return False
-    try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(payload, dict):
+    from tools.memory_guard_core.active_custody import read_marker_record
+
+    record = read_marker_record(marker)
+    payload = record.payload
+    if not record.accepts_inherited_guard or payload is None:
         return False
     if payload.get("pid") != guard_pid or payload.get("token") != token:
         return False
     guard_path = payload.get("path")
     if not isinstance(guard_path, str):
-        return False
-    if payload.get("status") in {
-        "completed",
-        "finalizer_cleanup",
-        "finalizer_completed",
-        "guard_exception",
-    }:
         return False
     try:
         return Path(guard_path).resolve(strict=False) == (

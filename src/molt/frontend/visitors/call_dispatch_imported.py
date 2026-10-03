@@ -27,6 +27,11 @@ class CallImportedAttributeDispatchMixin(GeneratorMixinBase):
                 func_id = node.func.attr
                 normalized = self._normalize_allowlist_module(module_name)
                 allowlist_key = normalized or module_name
+                native_call = self._try_emit_published_native_object_call(
+                    node, allowlist_key, func_id
+                )
+                if native_call is not None:
+                    return native_call
                 if func_id == "field" and allowlist_key == "dataclasses":
                     return self._emit_dataclasses_field_call(allowlist_key, node)
                 if self._should_attempt_runtime_module_import(

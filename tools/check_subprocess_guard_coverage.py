@@ -277,18 +277,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/bootstrap_llvm.py",
-        "_visual_studio_installation",
-        "run",
-        "bounded vswhere metadata probe for Windows LLVM/MSVC setup",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/bootstrap_llvm.py",
-        "_windows_msvc_env",
-        "run",
-        "bounded VsDevCmd environment probe for Windows LLVM/MSVC setup",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/bootstrap_llvm.py",
         "_tool_version",
         "run",
         "single bounded version probe shared by LLVM tool verification",

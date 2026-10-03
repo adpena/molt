@@ -20,7 +20,6 @@ from datetime import UTC, datetime
 import json
 import os
 import platform
-import re
 import statistics
 import sys
 import tempfile
@@ -110,7 +109,7 @@ class SampleBatch:
 
 
 class BackendDaemonProcess:
-    __slots__ = ("command", "elapsed_sec", "pid", "socket_path")
+    __slots__ = ("argv", "command", "elapsed_sec", "pid", "socket_path")
 
     def __init__(
         self,
@@ -119,11 +118,13 @@ class BackendDaemonProcess:
         elapsed_sec: int | None,
         socket_path: Path,
         command: str,
+        argv: tuple[str, ...] | None = None,
     ) -> None:
         self.pid = pid
         self.elapsed_sec = elapsed_sec
         self.socket_path = socket_path
         self.command = command
+        self.argv = argv
 
 
 class BackendDaemonKill:
@@ -209,41 +210,16 @@ def _current_session_identity_files(
 
 
 def _list_backend_daemon_processes() -> list[BackendDaemonProcess]:
-    if os.name != "posix":
-        return []
-    try:
-        result = _guarded_bench_process(
-            ["ps", "-axo", "pid=,etimes=,command="],
-            timeout=10,
+    return [
+        BackendDaemonProcess(
+            pid=sample.pid,
+            elapsed_sec=sample.elapsed_sec,
+            socket_path=socket_path,
+            command=sample.command,
+            argv=sample.argv,
         )
-    except OSError:
-        return []
-
-    processes: list[BackendDaemonProcess] = []
-    pattern = re.compile(r"^\s*(\d+)\s+(\d+|-)\s+(.*)$")
-    socket_pat = re.compile(r"--socket\s+(\S+)")
-    for line in result.stdout.splitlines():
-        match = pattern.match(line)
-        if match is None:
-            continue
-        pid = int(match.group(1))
-        elapsed_raw = match.group(2)
-        cmd = match.group(3)
-        if "molt-backend" not in cmd or "--daemon" not in cmd:
-            continue
-        socket_match = socket_pat.search(cmd)
-        if socket_match is None:
-            continue
-        socket_path = Path(socket_match.group(1)).expanduser()
-        processes.append(
-            BackendDaemonProcess(
-                pid=pid,
-                elapsed_sec=None if elapsed_raw == "-" else int(elapsed_raw),
-                socket_path=socket_path,
-                command=cmd,
-            )
-        )
-    return processes
+        for sample, socket_path in daemon_custody.backend_daemon_process_observations()
+    ]
 
 
 def _daemon_cleanup_artifact_path() -> Path:
@@ -295,7 +271,7 @@ def _cleanup_current_session_backend_daemons(
             continue
         identity = identity_record.identity
         if not daemon_custody.backend_daemon_command_matches_identity(
-            process.command,
+            process.argv if process.argv is not None else process.command,
             backend_bin=identity.backend_bin,
             socket_path=identity.socket_path,
         ):

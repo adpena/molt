@@ -8,7 +8,7 @@ visit_Lambda, and visit_Return. Async function/generator visitor methods live in
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import python_definition_name
+from molt.python_private_names import python_definition_name
 
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,

@@ -1,6 +1,6 @@
 use crate::{
-    Capability, ClosureMode, EventJournal, EventKind, FileIdentity, ImageCacheKey, ImageClass,
-    ImageHashCache, ProcessEvent, Receipt, RootExitDisposition, SupervisorState, ValidatedPolicy,
+    CAPABILITY_SCHEMA, Capability, ClosureMode, EventJournal, FileIdentity, ImageCacheKey,
+    ImageHashCache, KernelAccounting, ProcessEventKind, Receipt, ValidatedPolicy,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -11,7 +11,6 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
-use std::time::Instant;
 use windows_sys::Win32::Foundation::{
     CloseHandle, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, EXCEPTION_BREAKPOINT, GetLastError,
     HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
@@ -60,12 +59,13 @@ pub(super) fn required_environment() -> BTreeMap<String, String> {
 
 pub fn capability(mode: ClosureMode) -> Capability {
     Capability {
-        schema: crate::CAPABILITY_SCHEMA.to_owned(),
+        schema: CAPABILITY_SCHEMA.to_owned(),
         platform: "windows".to_owned(),
         mode,
         backend: "debug-process+nested-job".to_owned(),
         available: true,
         pre_entry_exec_authority: true,
+        pre_entry_process_create_authority: true,
         recursive_descendant_authority: true,
         required_environment: super::required_environment(),
         reason: None,
@@ -98,35 +98,16 @@ impl Drop for Handles {
     }
 }
 
-pub fn run(policy: &ValidatedPolicy, events: &mut EventJournal) -> Receipt {
-    let started = Instant::now();
-    let cap = capability(policy.policy.mode);
-    let mut receipt = Receipt::running(policy, &cap);
-    match unsafe { supervise(policy, &mut receipt, events) } {
-        Ok(()) => receipt
-            .transition(SupervisorState::Draining)
-            .expect("valid drain transition"),
-        Err(error) => receipt.record_error(error),
-    }
-    if receipt.accounting.root_execs == 0 {
-        receipt.record_error("root executable never reached an admitted image event");
-    }
-    receipt.elapsed_ns = started.elapsed().as_nanos();
-    let complete = receipt.errors.is_empty()
-        && receipt.violations.is_empty()
-        && receipt.accounting.active_processes == 0
-        && receipt.accounting.root_execs >= 1
-        && receipt.accounting.observed_process_creates == receipt.accounting.observed_process_exits
-        && receipt.accounting.total_processes == receipt.accounting.observed_process_creates;
-    receipt.finish(complete);
-    receipt
+pub fn run(policy: &ValidatedPolicy, events: &mut EventJournal, capability: Capability) -> Receipt {
+    super::run_backend(policy, events, capability, |policy, events| unsafe {
+        supervise(policy, events)
+    })
 }
 
 unsafe fn supervise(
     policy: &ValidatedPolicy,
-    receipt: &mut Receipt,
     events: &mut EventJournal,
-) -> Result<(), String> {
+) -> Result<Option<KernelAccounting>, String> {
     let job = unsafe { CreateJobObjectW(null(), null()) };
     if job.is_null() {
         return Err(last_error("CreateJobObjectW"));
@@ -223,9 +204,9 @@ unsafe fn supervise(
     let mut active = BTreeSet::new();
     let mut stable_ids = BTreeMap::new();
     let mut pending_initial_breakpoints = BTreeSet::new();
-    let mut terminate_after_root = BTreeSet::new();
     let mut hash_cache = ImageHashCache::default();
-    let mut sequence = 0_u64;
+    let mut process_generation = 0_u64;
+    let mut root_exited = false;
     let mut violated = false;
     loop {
         let mut event: DEBUG_EVENT = unsafe { zeroed() };
@@ -235,7 +216,6 @@ unsafe fn supervise(
             }
             return Err(last_error("WaitForDebugEvent"));
         }
-        sequence += 1;
         let pid = event.dwProcessId;
         let mut continue_status = DBG_CONTINUE;
         match event.dwDebugEventCode {
@@ -243,41 +223,23 @@ unsafe fn supervise(
                 let info = unsafe { event.u.CreateProcessInfo };
                 active.insert(pid);
                 pending_initial_breakpoints.insert(pid);
-                let stable_process_id = format!("windows:{pid}:{sequence}");
+                process_generation = process_generation
+                    .checked_add(1)
+                    .ok_or_else(|| "process generation overflow".to_owned())?;
+                let stable_process_id = format!("windows:{pid}:{process_generation}");
                 stable_ids.insert(pid, stable_process_id.clone());
-                receipt.accounting.observed_process_creates += 1;
                 let parent = parent_process_id(pid).filter(|candidate| active.contains(candidate));
                 let image = image_identity(policy, info.hFile, &mut hash_cache)?;
-                if policy.root_exit_disposition(&image.path) == RootExitDisposition::Terminate {
-                    terminate_after_root.insert(pid);
-                }
-                let mut reason = None;
-                if policy.policy.mode == ClosureMode::Leaf && pid != root_pid {
-                    reason = Some(format!("leaf closure observed descendant process {pid}"));
-                } else if image.class == ImageClass::Unknown
-                    && policy.policy.mode != ClosureMode::InventoryTree
-                {
-                    reason = Some(format!(
-                        "unadmitted executable image {} in process {pid}",
-                        image.path.display()
-                    ));
-                }
-                receipt.accounting.observed_execs += 1;
-                if pid == root_pid {
-                    receipt.accounting.root_execs += 1;
-                }
-                events.record(&ProcessEvent {
-                    sequence,
-                    kind: EventKind::ProcessCreate,
-                    process_id: pid,
-                    parent_process_id: parent,
+                let outcome = events.record(
+                    pid,
                     stable_process_id,
-                    image: Some(image),
-                    exit_code: None,
-                })?;
-                if let Some(reason) = reason {
-                    receipt.record_violation(reason);
-                    violated = true;
+                    ProcessEventKind::ProcessCreate {
+                        parent_process_id: parent,
+                        image: Some(image),
+                    },
+                )?;
+                if outcome.must_terminate_closure() {
+                    violated |= outcome.has_policy_violation();
                     unsafe {
                         TerminateJobObject(job, 126);
                     }
@@ -296,45 +258,28 @@ unsafe fn supervise(
             EXIT_PROCESS_DEBUG_EVENT => {
                 let exit_code = unsafe { event.u.ExitProcess.dwExitCode } as i64;
                 active.remove(&pid);
-                terminate_after_root.remove(&pid);
                 pending_initial_breakpoints.remove(&pid);
-                receipt.accounting.observed_process_exits += 1;
-                if pid == root_pid {
-                    receipt.root_exit_code = Some(exit_code);
-                }
-                events.record(&ProcessEvent {
-                    sequence,
-                    kind: EventKind::ProcessExit,
-                    process_id: pid,
-                    parent_process_id: None,
-                    stable_process_id: stable_ids
+                let outcome = events.record(
+                    pid,
+                    stable_ids
                         .remove(&pid)
                         .unwrap_or_else(|| format!("windows:{pid}:unclassified")),
-                    image: None,
-                    exit_code: Some(exit_code),
-                })?;
-                if pid == root_pid && !active.is_empty() {
-                    let remaining = active.len() as u64;
-                    if active
-                        .iter()
-                        .all(|child| terminate_after_root.contains(child))
-                    {
-                        receipt.accounting.root_exit_terminated_processes += remaining;
-                        unsafe {
-                            TerminateJobObject(job, 0);
-                        }
-                    } else {
-                        receipt.record_violation(format!(
-                            "root exited before {} non-auxiliary descendant process(es)",
-                            active
-                                .iter()
-                                .filter(|child| !terminate_after_root.contains(child))
-                                .count()
-                        ));
-                        violated = true;
-                        unsafe {
-                            TerminateJobObject(job, 126);
-                        }
+                    ProcessEventKind::ProcessExit { exit_code },
+                )?;
+                if pid == root_pid {
+                    root_exited = true;
+                }
+                if outcome.must_terminate_closure() {
+                    violated |= outcome.has_policy_violation();
+                    unsafe {
+                        TerminateJobObject(
+                            job,
+                            if outcome.has_policy_violation() {
+                                126
+                            } else {
+                                0
+                            },
+                        );
                     }
                 }
             }
@@ -348,15 +293,6 @@ unsafe fn supervise(
             }
             CREATE_THREAD_DEBUG_EVENT => {
                 let info = unsafe { event.u.CreateThread };
-                events.record(&ProcessEvent {
-                    sequence,
-                    kind: EventKind::ThreadCreate,
-                    process_id: pid,
-                    parent_process_id: None,
-                    stable_process_id: format!("windows-thread:{pid}:{}", event.dwThreadId),
-                    image: None,
-                    exit_code: None,
-                })?;
                 if !info.hThread.is_null() {
                     unsafe {
                         CloseHandle(info.hThread);
@@ -379,7 +315,7 @@ unsafe fn supervise(
             }
             return Err(last_error("ContinueDebugEvent"));
         }
-        if active.is_empty() && (receipt.root_exit_code.is_some() || violated) {
+        if active.is_empty() && (root_exited || violated) {
             break;
         }
     }
@@ -409,12 +345,13 @@ unsafe fn supervise(
         }
         std::thread::yield_now();
     }
-    receipt.accounting.total_processes = accounting.TotalProcesses as u64;
-    receipt.accounting.active_processes = accounting.ActiveProcesses as u64;
     let (new_processes, exits) = drain_completion_port(port);
-    receipt.accounting.completion_port_new_processes = Some(new_processes);
-    receipt.accounting.completion_port_exits = Some(exits);
-    Ok(())
+    Ok(Some(KernelAccounting::WindowsJob {
+        total_processes: accounting.TotalProcesses as u64,
+        active_processes: accounting.ActiveProcesses as u64,
+        completion_port_new_processes: new_processes,
+        completion_port_exits: exits,
+    }))
 }
 
 fn image_identity(

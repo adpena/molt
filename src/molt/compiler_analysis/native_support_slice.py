@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import python_import_binding
+from molt.python_private_names import python_import_binding
 import copy
 from collections.abc import Collection, Sequence
 

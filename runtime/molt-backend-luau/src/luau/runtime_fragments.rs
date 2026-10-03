@@ -78,6 +78,24 @@ pub(super) fn fragments() -> Vec<(&'static str, String)> {
                 "end\n\n",
             ));
     fragments.push(("sys", std::mem::take(&mut source)));
+    source.push_str(numeric_error_policy_generated::FLOAT_DIVMOD_LUA);
+    fragments.push(("float divmod", std::mem::take(&mut source)));
+    source.push_str("local molt_numeric_error_policy = {\n");
+    for context in numeric_error_policy_generated::NumericErrorContext::ALL {
+        let messages = [12, 13, 14].map(|minor| context.message(3, minor).expect("admitted target"));
+        source.push_str(&format!(
+            "\t[{:?}] = {{class={:?}, [12]={:?}, [13]={:?}, [14]={:?}}},\n",
+            context.wire_key(), context.error_class(), messages[0], messages[1], messages[2]
+        ));
+    }
+    source.push_str(concat!(
+        "}\nlocal function molt_numeric_error(context)\n",
+        "\tlocal row = molt_numeric_error_policy[context]\n",
+        "\tlocal minor = molt_sys_version_info[2]\n",
+        "\tif molt_sys_version_info[1] ~= 3 or row == nil or row[minor] == nil then error({__type=\"RuntimeError\", __msg=\"unsupported numeric exception target version\"}) end\n",
+        "\terror({__type=row.class, __msg=row[minor]})\nend\n\n",
+    ));
+    fragments.push(("numeric error policy", std::mem::take(&mut source)));
     // These lifecycle intrinsics already have no-op semantics on this target.
     for stub in [
         "molt_init_sys",

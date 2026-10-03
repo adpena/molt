@@ -3908,14 +3908,14 @@ fn is_not_implemented(res: *mut PyObject) -> bool {
 /// (NULL result = pending error, NotImplemented = "not handled") or `None` when
 /// the type carries no slot.
 unsafe fn try_slot_richcompare(
+    tp: *mut PyTypeObject,
     a: *mut PyObject,
     b: *mut PyObject,
     op: c_int,
 ) -> Option<*mut PyObject> {
-    let tp = unsafe { crate::bridge::semantic_type(a) };
-    if tp.is_null() {
-        return None;
-    }
+    // Both semantic classes are admitted once by do_richcompare before any
+    // callback. Re-observing carriers here would create a second dispatch
+    // authority and could turn a failed lookup into an absent slot.
     let f = unsafe { (*tp).tp_richcompare }?;
     Some(unsafe { f(a, b, op) })
 }
@@ -4417,7 +4417,7 @@ unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut 
     // Reflected op on w first when Py_TYPE(w) is a PROPER subtype of Py_TYPE(v).
     if !std::ptr::eq(tv, tw)
         && unsafe { PyType_IsSubtype(tw, tv) } == 1
-        && let Some(res) = unsafe { try_slot_richcompare(w, v, swapped_op(op)) }
+        && let Some(res) = unsafe { try_slot_richcompare(tw, w, v, swapped_op(op)) }
     {
         checked_reverse = true;
         if res.is_null() {
@@ -4429,7 +4429,7 @@ unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut 
         unsafe { crate::api::refcount::Py_DECREF(res) };
     }
     // v's own slot.
-    if let Some(res) = unsafe { try_slot_richcompare(v, w, op) } {
+    if let Some(res) = unsafe { try_slot_richcompare(tv, v, w, op) } {
         if res.is_null() {
             return ptr::null_mut();
         }
@@ -4439,7 +4439,7 @@ unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut 
         unsafe { crate::api::refcount::Py_DECREF(res) };
     }
     // w's slot (unless already tried as the reflected op above).
-    if !checked_reverse && let Some(res) = unsafe { try_slot_richcompare(w, v, swapped_op(op)) } {
+    if !checked_reverse && let Some(res) = unsafe { try_slot_richcompare(tw, w, v, swapped_op(op)) } {
         if res.is_null() {
             return ptr::null_mut();
         }

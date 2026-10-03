@@ -6,7 +6,7 @@ import types
 import pytest
 
 from molt.compiler_analysis.python_binding_flow import analyze_python_bindings
-from molt.compiler_analysis.python_private_names import (
+from molt.python_private_names import (
     python_definition_name,
     python_import_binding,
     python_source_unparse,

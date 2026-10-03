@@ -85,6 +85,34 @@ def test_guarded_exec_metrics_preserve_child_and_infrastructure_outcomes(
     assert payload["temporary_artifacts"] == artifacts
 
 
+def test_guarded_exec_signal_metrics_drive_executor_failure_scope(
+    tmp_path, monkeypatch
+) -> None:
+    from tools import proof_plan
+    from tools.memory_guard_core import reporting
+
+    module = _load_guarded_exec()
+    for returncode, expected in ((128, "partition"), (143, "global")):
+        result = SimpleNamespace(returncode=returncode, stderr="")
+        _install_fake_context(module, monkeypatch, result)
+        metrics = tmp_path / f"metrics-{returncode}.json"
+        assert (
+            module.main(["--metrics-json", str(metrics), "--", "fixture"]) == returncode
+        )
+        payload = json.loads(metrics.read_text(encoding="utf-8"))
+        assert (
+            proof_plan._guarded_failure_scope(
+                payload, metrics_valid=True, returncode=returncode, cancelled=False
+            )[0]
+            == expected
+        )
+    assert reporting.exit_signal_payload(0xC0000005, windows_process_model=True) == {
+        "signal": None,
+        "name": "NTSTATUS 0xC0000005",
+        "conventional_shell_status": False,
+    }
+
+
 def test_guarded_exec_uses_family_timeout_env(monkeypatch) -> None:
     module = _load_guarded_exec()
     captured = _install_fake_context(module, monkeypatch)
@@ -259,3 +287,41 @@ def test_guarded_exec_does_not_preflight_tir_all_features(monkeypatch) -> None:
         "molt-tir",
         "--all-features",
     ]
+
+
+def test_guarded_exec_metrics_preserve_deadline_and_cargo_ownership(
+    tmp_path, monkeypatch
+) -> None:
+    module = _load_guarded_exec()
+    guard = module.harness_memory_guard.memory_guard
+    quarantine = guard.CargoIncrementalQuarantine(
+        reason="timeout",
+        recorded_at="2026-10-03T00:00:00Z",
+        target_dir=str(tmp_path),
+        quarantine_dir=None,
+        command=("cargo", "test"),
+        cwd=str(tmp_path),
+        ownership_status="deferred",
+        errors=("compiler ownership unavailable",),
+    )
+    result = module.harness_memory_guard.GuardedCompletedProcess(
+        ["fixture"],
+        124,
+        "",
+        "",
+        elapsed_s=1.0,
+        timed_out=True,
+        guard_signal=15,
+        cargo_incremental_quarantine=quarantine,
+    )
+    _install_fake_context(module, monkeypatch, result)
+    output = tmp_path / "metrics.json"
+    assert module.main(["--metrics-json", str(output), "--", "fixture"]) == 124
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["timed_out"] is True
+    assert payload["guard_signal"] == 15
+    assert payload["cargo_incremental_quarantine"]["ownership_status"] == "deferred"
+    assert payload["cargo_incremental_quarantine"]["errors"] == [
+        "compiler ownership unavailable"
+    ]
+    assert payload["termination_reports"] == []

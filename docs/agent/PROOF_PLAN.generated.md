@@ -8,14 +8,14 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 277 |
+| Hashed executable authority inputs | 1 | 306 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 96 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
 
-Every selected family expands to stable command IDs. Each command binds an exact OS/architecture/Python/backend/target/profile cell, timeout, resource class, cache domain, and DAG parents. CI admission requires receipts whose canonical LF-normalized authority-closure digest, source commit, command, cell, execution partition, duration, peak RSS, cache disposition, and version-constrained toolchain identities validate.
+Every selected family expands to stable command IDs. Each command binds an exact OS/architecture/Python/backend/target/profile cell, timeout, resource class, cache domain, and DAG parents. CI admission requires receipts whose canonical LF-normalized authority-closure digest, source commit and immutable Git tree, command, cell, execution partition, duration, peak RSS, cache disposition, and version-constrained toolchain identities validate.
 
 Proof-family selection parents and GitHub admission edges are distinct authorities. A family may depend on another family only when it consumes that family's data or control result. Independent admissions depend only on the changed-path classifier, so a selected sibling failure cannot mask their execution; the Proof Plan Verdict remains the sole conjunction.
 
@@ -42,7 +42,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
 | `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | none | `python-unit` needs `classify-changes` | 10 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 17 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 12960 s | 1440 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 14 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 12960 s | 1440 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
 | `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
@@ -247,6 +247,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `portability.cargo-custody.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.cargo-custody.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.cargo-custody.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
+| `repository.python-numeric-errors.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 
 ## Local integration families
 

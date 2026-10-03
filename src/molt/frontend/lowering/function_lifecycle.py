@@ -365,7 +365,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             self.compiler_bindings[param] = MoltValue(param, type_hint="Any")
         self._reset_import_resolution_state(reset_module_attr_mutations=True)
         for param in params or ():
-            self._clear_imported_module_binding(param)
+            self._clear_import_binding_origin(param)
         self._reset_async_scope_state()
         self._reset_type_hint_scope_state(reset_bytearray_len=False)
         self._reset_function_cache_state()

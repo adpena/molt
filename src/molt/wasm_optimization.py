@@ -19,6 +19,7 @@ WASM_OPT_FEATURE_FLAGS = (
     "--enable-simd",
     "--enable-multivalue",
     "--enable-reference-types",
+    "--enable-exception-handling",
     "--disable-gc",
     "--enable-tail-call",
     "--disable-custom-descriptors",

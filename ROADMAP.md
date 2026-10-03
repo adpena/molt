@@ -98,6 +98,14 @@ verified-subset coverage (E3). Windows networking is required by the declared
 Windows-native tests. These are load-bearing product work, not tasks to defer
 until packaging. Stable v1.0 additionally requires authenticated H0.
 
+The native scientific witness needs newly admitted NumPy/SciPy extension seals
+under the current source-extension contract. Preserved schema-4 native seals
+are historical evidence; schema-7 admission additionally binds consumed Python
+providers and Meson dependency facts. Their historical digests cannot supply
+current registry entries or acceptance receipts. Reproduce the upstream
+extension builds through the canonical candidate producer and admission path;
+the upstream libraries remain the package source authority.
+
 1. Complete the install, compile, and execute workflow. Released platform wheels,
    package-manager distributions, and GitHub bundles must provide the compiler
    and required runtime artifacts. Compiling Molt is a source-development task.

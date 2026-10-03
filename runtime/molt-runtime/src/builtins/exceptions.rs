@@ -4106,23 +4106,16 @@ pub(crate) unsafe fn exception_initialize_typed_fields_from_args(
             let written = fields
                 .characters_written_bits
                 .unwrap_or_else(|| MoltObject::from_int(-1).bits());
-            let mut updates = [
+            let updates = [
                 (ExceptionTypedField::OSErrorErrno, fields.errno_bits),
                 (ExceptionTypedField::OSErrorStrError, fields.strerror_bits),
                 (ExceptionTypedField::OSErrorFilename, fields.filename_bits),
                 (ExceptionTypedField::OSErrorFilename2, fields.filename2_bits),
+                #[cfg(windows)]
+                (ExceptionTypedField::OSErrorWinError, fields.winerror_bits),
                 (ExceptionTypedField::OSErrorCharactersWritten, written),
-                (ExceptionTypedField::OSErrorErrno, fields.errno_bits),
             ];
-            #[cfg(not(windows))]
-            let len = 5usize;
-            #[cfg(windows)]
-            let len = {
-                updates[4] = (ExceptionTypedField::OSErrorWinError, fields.winerror_bits);
-                updates[5] = (ExceptionTypedField::OSErrorCharactersWritten, written);
-                6usize
-            };
-            exception_typed_fields_replace_internal(_py, exception_bits, &updates[..len])
+            exception_typed_fields_replace_internal(_py, exception_bits, &updates)
         }
         ExceptionLayoutKind::NameError => exception_typed_field_replace_internal(
             _py,

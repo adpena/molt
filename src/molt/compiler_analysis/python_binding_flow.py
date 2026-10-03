@@ -10,7 +10,7 @@ release, descriptors, iteration, context managers, or comparison callbacks.
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import (
+from molt.python_private_names import (
     python_import_binding,
     resolve_python_private_names,
 )
@@ -119,7 +119,7 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 
-_ANALYSIS_SCHEMA: Final = 33
+_ANALYSIS_SCHEMA: Final = 34
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -172,6 +172,56 @@ _CANONICAL_IMPORT_IDENTITIES: Final[dict[str, PythonIdentity]] = {
     "typing_extensions": PythonIdentity.TYPING_MODULE,
     "_intrinsics": PythonIdentity.INTRINSICS_MODULE,
 }
+_CANONICAL_FROM_IMPORT_IDENTITIES: Final[dict[tuple[str, str], PythonIdentity]] = {
+    ("importlib", "import_module"): PythonIdentity.IMPORTLIB_IMPORT_MODULE,
+    ("importlib", "util"): PythonIdentity.IMPORTLIB_UTIL_MODULE,
+    ("importlib", "machinery"): PythonIdentity.IMPORTLIB_MACHINERY_MODULE,
+    ("importlib.util", "find_spec"): PythonIdentity.IMPORTLIB_FIND_SPEC,
+    ("importlib.machinery", "ModuleSpec"): PythonIdentity.MODULE_SPEC_CLASS,
+    ("builtins", "__import__"): PythonIdentity.BUILTINS_IMPORT,
+    ("inspect", "currentframe"): PythonIdentity.INSPECT_CURRENTFRAME,
+    ("typing", "TYPE_CHECKING"): PythonIdentity.STATIC_FALSE,
+    ("typing_extensions", "TYPE_CHECKING"): PythonIdentity.STATIC_FALSE,
+    ("_intrinsics", "require_intrinsic"): PythonIdentity.INTRINSICS_REQUIRE,
+}
+
+
+def python_dynamic_import_facts_required(tree: ast.Module) -> bool:
+    """Conservatively demand flow facts when an import-call identity has an origin.
+
+    This is an absence proof over the binding authority's identity producers,
+    not callee recognition. A positive result still requires the full fixpoint
+    for aliases, rebinding, callbacks, deferred bodies and execution order.
+    Namespace/frame access and unknown calls cannot introduce a canonical
+    importer identity: they preserve source-owned identities or yield OTHER.
+    Walking the entire AST includes defaults, annotations and deferred bodies.
+    """
+    call_identities = int(
+        PythonIdentity.BUILTINS_IMPORT | PythonIdentity.IMPORTLIB_IMPORT_MODULE
+    )
+    module_identities = int(
+        PythonIdentity.BUILTINS_MODULE | PythonIdentity.IMPORTLIB_MODULE
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if _BUILTIN_IDENTITIES.get(node.id, NO_IDENTITIES) & call_identities:
+                return True
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                module = alias.name if alias.asname else alias.name.split(".", 1)[0]
+                if (
+                    int(_CANONICAL_IMPORT_IDENTITIES.get(module, PythonIdentity.OTHER))
+                    & module_identities
+                ):
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                identity = _CANONICAL_FROM_IMPORT_IDENTITIES.get(
+                    (node.module or "", alias.name), PythonIdentity.OTHER
+                )
+                if int(identity) & (call_identities | module_identities):
+                    return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -4429,18 +4479,7 @@ class _Analyzer:
     def _from_import_identity(
         self, module: str | None, name: str, state_id: int
     ) -> IdentityMask:
-        identity = {
-            ("importlib", "import_module"): PythonIdentity.IMPORTLIB_IMPORT_MODULE,
-            ("importlib", "util"): PythonIdentity.IMPORTLIB_UTIL_MODULE,
-            ("importlib", "machinery"): PythonIdentity.IMPORTLIB_MACHINERY_MODULE,
-            ("importlib.util", "find_spec"): PythonIdentity.IMPORTLIB_FIND_SPEC,
-            ("importlib.machinery", "ModuleSpec"): PythonIdentity.MODULE_SPEC_CLASS,
-            ("builtins", "__import__"): PythonIdentity.BUILTINS_IMPORT,
-            ("inspect", "currentframe"): PythonIdentity.INSPECT_CURRENTFRAME,
-            ("typing", "TYPE_CHECKING"): PythonIdentity.STATIC_FALSE,
-            ("typing_extensions", "TYPE_CHECKING"): PythonIdentity.STATIC_FALSE,
-            ("_intrinsics", "require_intrinsic"): PythonIdentity.INTRINSICS_REQUIRE,
-        }.get((module, name))
+        identity = _CANONICAL_FROM_IMPORT_IDENTITIES.get((module or "", name))
         if identity is None and module == "builtins":
             identity = BUILTIN_SHAPE_IDENTITIES.get(name)
         if identity is None:
@@ -5852,4 +5891,5 @@ __all__ = [
     "analyze_python_bindings",
     "analyze_python_source_bindings",
     "python_binding_core_computations",
+    "python_dynamic_import_facts_required",
 ]

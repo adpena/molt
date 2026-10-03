@@ -1057,8 +1057,8 @@ def _wasm_import_minima_from_imports(
 def _read_wasm_varint(data: bytes, offset: int, bits: int) -> tuple[int, int]:
     result = 0
     shift = 0
-    byte = 0
-    while True:
+    maximum_bytes = (bits + 6) // 7
+    for byte_index in range(maximum_bytes):
         if offset >= len(data):
             raise ValueError("Unexpected EOF while reading varint")
         byte = data[offset]
@@ -1067,10 +1067,16 @@ def _read_wasm_varint(data: bytes, offset: int, bits: int) -> tuple[int, int]:
         shift += 7
         if byte & 0x80 == 0:
             break
-        if shift > bits + 7:
+        if byte_index + 1 == maximum_bytes:
             raise ValueError("varint too large")
-    if shift < bits and (byte & 0x40):
+    else:  # pragma: no cover - the continuation-bit case raises in the loop
+        raise ValueError("varint too large")
+    if byte & 0x40:
         result |= -1 << shift
+    minimum = -(1 << (bits - 1))
+    maximum = (1 << (bits - 1)) - 1
+    if not minimum <= result <= maximum:
+        raise ValueError(f"signed {bits}-bit integer is out of range")
     return result, offset
 
 

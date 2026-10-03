@@ -173,15 +173,43 @@ fn test_compile_checked_lowers_zero_division_guards() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
 
-    assert!(source.contains("__msg=\"division by zero\""));
-    assert!(source.contains("__msg=\"integer modulo by zero\""));
-    assert!(source.contains("__msg=\"integer division or modulo by zero\""));
+    assert!(source.contains("if b == 0 then molt_numeric_error(\"truediv:int\") end"));
+    assert!(source.contains("if b == 0 then molt_numeric_error(\"mod:int\") end"));
+    assert!(source.contains("if b == 0 then molt_numeric_error(\"floordiv:int\") end"));
+    assert!(source.contains("[13]=\"float modulo by zero\""));
+    assert!(source.contains("[14]=\"division by zero\""));
     assert!(source.contains("local quotient: number = a / b"));
     assert!(source.contains("local remainder: number = a % b"));
     assert!(source.contains("local floor_quotient: number = a // b"));
     assert!(!source.contains("[unsupported op: div]"));
     assert!(!source.contains("[unsupported op: mod]"));
     assert!(!source.contains("[unsupported op: floordiv]"));
+
+    let mut typed_ir = ir;
+    typed_ir.functions[0].param_types = Some(vec!["float".to_string(), "float".to_string()]);
+    let float_source = LuauBackend::new().compile(&typed_ir);
+    assert!(float_source.contains("if b == 0 then molt_numeric_error(\"truediv:float\") end"));
+    assert!(float_source.contains("if b == 0 then molt_numeric_error(\"floordiv:float\") end"));
+    assert!(float_source.contains("if b == 0 then molt_numeric_error(\"mod:float\") end"));
+    typed_ir.functions[0].param_types = Some(vec!["int".to_string(), "bool".to_string()]);
+    for operation in &mut typed_ir.functions[0].ops {
+        if ["div", "mod", "floordiv"].contains(&operation.kind.as_str()) {
+            operation.kind = format!("inplace_{}", operation.kind);
+        }
+    }
+    let bool_source = LuauBackend::new().compile(&typed_ir);
+    assert!(
+        bool_source
+            .contains("if (if b then 1 else 0) == 0 then molt_numeric_error(\"truediv:int\") end")
+    );
+    assert!(
+        bool_source
+            .contains("if (if b then 1 else 0) == 0 then molt_numeric_error(\"mod:int\") end")
+    );
+    assert!(
+        bool_source
+            .contains("if (if b then 1 else 0) == 0 then molt_numeric_error(\"floordiv:int\") end")
+    );
 }
 
 #[test]

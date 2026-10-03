@@ -1,0 +1,111 @@
+# Exact CPython numeric exception policy. Consumer dispatch follows operand semantics, not value integrality.
+schema_version = 1
+supported_targets = ["3.12", "3.13", "3.14"]
+
+[[context]]
+name = "IntegerTrueDivision"
+operation = "truediv"
+operand_kind = "int"
+error_class = "ZeroDivisionError"
+python_3_12 = "division by zero"
+python_3_13 = "division by zero"
+python_3_14 = "division by zero"
+
+[[context]]
+name = "FloatTrueDivision"
+operation = "truediv"
+operand_kind = "float"
+error_class = "ZeroDivisionError"
+python_3_12 = "float division by zero"
+python_3_13 = "float division by zero"
+python_3_14 = "division by zero"
+
+[[context]]
+name = "ComplexTrueDivision"
+operation = "truediv"
+operand_kind = "complex"
+error_class = "ZeroDivisionError"
+python_3_12 = "complex division by zero"
+python_3_13 = "complex division by zero"
+python_3_14 = "division by zero"
+
+[[context]]
+name = "IntegerFloorDivision"
+operation = "floordiv"
+operand_kind = "int"
+error_class = "ZeroDivisionError"
+python_3_12 = "integer division or modulo by zero"
+python_3_13 = "integer division or modulo by zero"
+python_3_14 = "division by zero"
+
+[[context]]
+name = "FloatFloorDivision"
+operation = "floordiv"
+operand_kind = "float"
+error_class = "ZeroDivisionError"
+python_3_12 = "float floor division by zero"
+python_3_13 = "float floor division by zero"
+python_3_14 = "division by zero"
+
+[[context]]
+name = "IntegerModulo"
+operation = "mod"
+operand_kind = "int"
+error_class = "ZeroDivisionError"
+python_3_12 = "integer modulo by zero"
+python_3_13 = "integer modulo by zero"
+python_3_14 = "division by zero"
+
+[[context]]
+name = "FloatModulo"
+operation = "mod"
+operand_kind = "float"
+error_class = "ZeroDivisionError"
+python_3_12 = "float modulo"
+python_3_13 = "float modulo by zero"
+python_3_14 = "division by zero"
+
+[[context]]
+name = "IntegerDivmod"
+operation = "divmod"
+operand_kind = "int"
+error_class = "ZeroDivisionError"
+python_3_12 = "integer division or modulo by zero"
+python_3_13 = "integer division or modulo by zero"
+python_3_14 = "division by zero"
+
+[[context]]
+name = "FloatDivmod"
+operation = "divmod"
+operand_kind = "float"
+error_class = "ZeroDivisionError"
+python_3_12 = "float divmod()"
+python_3_13 = "float divmod()"
+python_3_14 = "division by zero"
+
+[[context]]
+name = "NegativePower"
+operation = "pow"
+operand_kind = "real"
+error_class = "ZeroDivisionError"
+python_3_12 = "0.0 cannot be raised to a negative power"
+python_3_13 = "0.0 cannot be raised to a negative power"
+python_3_14 = "zero to a negative power"
+
+[[context]]
+name = "ComplexNegativePower"
+operation = "pow"
+operand_kind = "complex"
+error_class = "ZeroDivisionError"
+python_3_12 = "0.0 to a negative or complex power"
+python_3_13 = "0.0 to a negative or complex power"
+python_3_14 = "zero to a negative or complex power"
+
+[[context]]
+name = "ModularPowerZero"
+operation = "pow_mod"
+operand_kind = "int"
+error_class = "ValueError"
+python_3_12 = "pow() 3rd argument cannot be 0"
+python_3_13 = "pow() 3rd argument cannot be 0"
+python_3_14 = "pow() 3rd argument cannot be 0"
