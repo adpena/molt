@@ -420,6 +420,9 @@ pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {
         "delete_var" | "store_fast" | "store_var" => SimpleIrVarFieldRole::Definition,
         "checked_add" | "checked_mul" | "iter_next_unboxed" => SimpleIrVarFieldRole::Result,
         "copy_var" | "load_var" => SimpleIrVarFieldRole::MetadataWhenArgs,
+        "box" | "box_from_raw_int" | "unbox" | "unbox_to_raw_int" => {
+            SimpleIrVarFieldRole::Forbidden
+        }
         "ret" | "ret_void" => SimpleIrVarFieldRole::Forbidden,
         _ => SimpleIrVarFieldRole::Read,
     }
@@ -555,6 +558,30 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
         operands: 4,
         value_rule: SimpleIrOpValueRule::Unconstrained,
     },
+    SimpleIrOpShape {
+        kind: "box",
+        family: "representation_conversion",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "box_from_raw_int",
+        family: "representation_conversion",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "unbox",
+        family: "representation_conversion",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "unbox_to_raw_int",
+        family: "representation_conversion",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
 ];
 
 pub fn simpleir_op_shape(kind: &str) -> Option<&'static SimpleIrOpShape> {
@@ -571,6 +598,10 @@ pub fn simpleir_op_shape(kind: &str) -> Option<&'static SimpleIrOpShape> {
         "code_slots_init" => Some(&SIMPLEIR_OP_SHAPES[9]),
         "trace_enter_slot" => Some(&SIMPLEIR_OP_SHAPES[10]),
         "bytearray_fill_range" => Some(&SIMPLEIR_OP_SHAPES[11]),
+        "box" => Some(&SIMPLEIR_OP_SHAPES[12]),
+        "box_from_raw_int" => Some(&SIMPLEIR_OP_SHAPES[13]),
+        "unbox" => Some(&SIMPLEIR_OP_SHAPES[14]),
+        "unbox_to_raw_int" => Some(&SIMPLEIR_OP_SHAPES[15]),
         _ => None,
     }
 }

@@ -524,6 +524,8 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
         "code_slots_init": 0,
         "trace_enter_slot": 0,
         "bytearray_fill_range": 4,
+        "box": 1,
+        "unbox": 1,
     }
     assert all("requires_result" not in shape for shape in shapes.values())
     homes = (
@@ -556,7 +558,18 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     assert '"list_repeat_range"' not in rendered
     assert "pub requires_result:" not in rendered
     assert "SIMPLEIR_OP_SHAPES.iter().find" not in rendered
-    for index, kind in enumerate(shapes):
+    spellings = [
+        "code_new",
+        "code_slot_set",
+        "code_slots_init",
+        "trace_enter_slot",
+        "bytearray_fill_range",
+        "box",
+        "box_from_raw_int",
+        "unbox",
+        "unbox_to_raw_int",
+    ]
+    for index, kind in enumerate(spellings):
         assert f'"{kind}" => Some(&SIMPLEIR_OP_SHAPES[{index}])' in rendered
     schema = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
     assert "RANGE_FILL_OP_SCHEMAS" not in schema
@@ -579,6 +592,82 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     duplicate["simpleir_op_shape"].append(duplicate["simpleir_op_shape"][0])
     with pytest.raises(gen.OpKindTableError, match="duplicate simpleir_op_shape"):
         gen._validate_simpleir_op_shapes(duplicate)
+
+
+@pytest.mark.parametrize("kind,opcode", [("box", "BoxVal"), ("unbox", "UnboxVal")])
+def test_representation_shapes_cannot_drift_from_opcode_arity(kind, opcode) -> None:
+    gen = _gen()
+    data = gen.load_table()
+    # Supply the declared wire shape independently so this also detects the old
+    # validator's acceptance of a conflicting wire/TIR contract.
+    data["simpleir_op_shape"] = [
+        {
+            "kind": kind,
+            "family": "representation_conversion",
+            "operands": 2,
+            "value_rule": "unconstrained",
+        }
+    ]
+    with pytest.raises(gen.OpKindTableError, match=f"{opcode}.*operand_arity"):
+        gen._validate_simpleir_op_shapes(data)
+
+
+def test_representation_shape_aliases_follow_the_canonical_kind_mapping() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    data["simpleir_op_shape"] = [
+        {
+            "kind": "box",
+            "family": "representation_conversion",
+            "operands": 1,
+            "value_rule": "unconstrained",
+        }
+    ]
+    box = next(row for row in data["kind"] if row["canonical"] == "box")
+    box["aliases"].append("box_shape_probe")
+    gen._validate_simpleir_op_shapes(data)
+    rendered = gen._render_simpleir_op_shapes(data)
+    for index, spelling in enumerate(("box", "box_from_raw_int", "box_shape_probe")):
+        assert f'kind: "{spelling}"' in rendered
+        assert f'"{spelling}" => Some(&SIMPLEIR_OP_SHAPES[{index}])' in rendered
+    assert rendered.count("operands: 1,") == 3
+
+
+@pytest.mark.parametrize(
+    "canonical,alias", [("box", "box_from_raw_int"), ("unbox", "unbox_to_raw_int")]
+)
+def test_representation_shape_var_is_forbidden_for_canonical_and_alias(
+    canonical, alias
+) -> None:
+    gen = _gen()
+    data = gen.load_table()
+    data["simpleir_var_forbidden_kinds"] = [canonical]
+    # Do not accept args-only admission followed by SSA appending a var read.
+    rendered = gen._render_simpleir_field_roles(data)
+    assert f'"{canonical}" | "{alias}" => SimpleIrVarFieldRole::Forbidden' in rendered
+
+
+@pytest.mark.parametrize(
+    "spelling", ["box", "box_from_raw_int", "unbox", "unbox_to_raw_int"]
+)
+def test_representation_var_roles_reject_conflicting_alias_roles(spelling) -> None:
+    gen = _gen()
+    data = gen.load_table()
+    assert data["simpleir_var_forbidden_kinds"] == ["box", "unbox"]
+    data["simpleir_var_result_kinds"].append(spelling)
+    with pytest.raises(gen.OpKindTableError, match="appears in both"):
+        gen._validate_simpleir_field_roles(data)
+
+
+@pytest.mark.parametrize(
+    "members", [["box_from_raw_int"], ["missing"], ["add"], ["box", "box"], [True]]
+)
+def test_representation_var_roles_require_unique_canonical_shapes(members) -> None:
+    gen = _gen()
+    data = gen.load_table()
+    data["simpleir_var_forbidden_kinds"] = members
+    with pytest.raises(gen.OpKindTableError, match="simpleir_var_forbidden_kinds"):
+        gen._validate_simpleir_field_roles(data)
 
 
 def test_simpleir_control_kind_validation_rejects_drift() -> None:
@@ -5846,7 +5935,7 @@ def test_simpleir_return_family_forbids_var_through_generated_field_roles() -> N
         for row in data["simpleir_control_kind"]
         if row.get("return_shape") is not None
     } == {"ret": "value", "ret_void": "void"}
-    assert "simpleir_var_forbidden_kinds" not in data
+    assert return_kinds.isdisjoint(data.get("simpleir_var_forbidden_kinds", []))
     rendered = gen.render_rs(data)
     assert "Forbidden" in rendered
     assert '"ret" | "ret_void" => SimpleIrVarFieldRole::Forbidden' in rendered

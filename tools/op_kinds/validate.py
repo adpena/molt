@@ -694,34 +694,7 @@ def load_table(table_path: Path = TABLE) -> dict:
             "simpleir_defined_function_reference_s_value_kinds has duplicate members"
         )
 
-    var_field_members: dict[str, str] = {}
-    for key in _SIMPLEIR_FIELD_ROLE_FACT_SETS:
-        members = data.get(key, [])
-        if not isinstance(members, list) or not all(
-            isinstance(member, str) and member for member in members
-        ):
-            raise OpKindTableError(f"{key} must be a list of non-empty strings")
-        if len(set(members)) != len(members):
-            raise OpKindTableError(f"{key} has duplicate members")
-        if key == "simpleir_out_metadata_kinds":
-            continue
-        for member in members:
-            prior = var_field_members.setdefault(member, key)
-            if prior != key:
-                raise OpKindTableError(
-                    f"SimpleIR var field kind {member!r} appears in both {prior} and {key}"
-                )
-    return_terminators = {
-        row["kind"]
-        for row in data.get("simpleir_control_kind", [])
-        if row.get("return_shape") is not None
-    }
-    conflicting_return_roles = return_terminators.intersection(var_field_members)
-    if conflicting_return_roles:
-        raise OpKindTableError(
-            "SimpleIR return terminators cannot declare another var field role: "
-            + ", ".join(sorted(conflicting_return_roles))
-        )
+    _validate_simpleir_field_roles(data)
 
     trailing_result_kinds: set[str] = set()
     for row in data.get("simpleir_trailing_arg_result", []):
@@ -2042,6 +2015,57 @@ def _validate_async_work_poll_after_kinds(
             )
 
 
+def _simpleir_var_forbidden_spellings(data: dict) -> list[str]:
+    kinds = {row["canonical"]: row for row in data.get("kind", [])}
+    shaped = {
+        row.get("kind")
+        for row in data.get("simpleir_op_shape", [])
+        if isinstance(row, dict) and isinstance(row.get("kind"), str)
+    }
+    spellings: list[str] = []
+    for member in data.get("simpleir_var_forbidden_kinds", []):
+        if member not in kinds or member not in shaped:
+            raise OpKindTableError(
+                "simpleir_var_forbidden_kinds requires a canonical shaped kind: "
+                f"{member!r}"
+            )
+        spellings.extend((member, *kinds[member].get("aliases", [])))
+    return spellings
+
+
+def _validate_simpleir_field_roles(data: dict) -> None:
+    var_field_members: dict[str, str] = {}
+    for key in _SIMPLEIR_FIELD_ROLE_FACT_SETS:
+        members = data.get(key, [])
+        if not isinstance(members, list) or not all(
+            isinstance(member, str) and member for member in members
+        ):
+            raise OpKindTableError(f"{key} must be a list of non-empty strings")
+        if len(set(members)) != len(members):
+            raise OpKindTableError(f"{key} has duplicate members")
+        if key == "simpleir_out_metadata_kinds":
+            continue
+        if key == "simpleir_var_forbidden_kinds":
+            members = _simpleir_var_forbidden_spellings(data)
+        for member in members:
+            prior = var_field_members.setdefault(member, key)
+            if prior != key:
+                raise OpKindTableError(
+                    f"SimpleIR var field kind {member!r} appears in both {prior} and {key}"
+                )
+    return_terminators = {
+        row["kind"]
+        for row in data.get("simpleir_control_kind", [])
+        if row.get("return_shape") is not None
+    }
+    conflicting_return_roles = return_terminators.intersection(var_field_members)
+    if conflicting_return_roles:
+        raise OpKindTableError(
+            "SimpleIR return terminators cannot declare another var field role: "
+            + ", ".join(sorted(conflicting_return_roles))
+        )
+
+
 def _validate_simpleir_op_shapes(data: dict) -> None:
     rows = data.get("simpleir_op_shape", [])
     if not isinstance(rows, list):
@@ -2052,6 +2076,8 @@ def _validate_simpleir_op_shapes(data: dict) -> None:
     aliases = {
         alias for row in data.get("kind", []) for alias in row.get("aliases", [])
     }
+    kinds = {row["canonical"]: row for row in data.get("kind", [])}
+    opcodes = {row["name"]: row for row in data.get("opcode", [])}
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict) or set(row) != {
@@ -2078,6 +2104,15 @@ def _validate_simpleir_op_shapes(data: dict) -> None:
         if type(row["operands"]) is not int or row["operands"] < 0:
             raise OpKindTableError(
                 f"simpleir_op_shape {kind}: operands must be a nonnegative integer"
+            )
+        # Fixed TIR arity owns the count for directly mapped operations. Copy
+        # fallbacks and variable-arity opcodes can have separate wire shapes.
+        opcode = kinds.get(kind, {}).get("mapper_opcode")
+        arity = opcodes.get(opcode, {}).get("operand_arity")
+        if type(arity) is int and row["operands"] != arity:
+            raise OpKindTableError(
+                f"simpleir_op_shape {kind}: operands must match "
+                f"OpCode::{opcode} operand_arity {arity}"
             )
         if (
             not isinstance(row["value_rule"], str)
