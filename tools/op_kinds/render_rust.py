@@ -19,7 +19,11 @@ from .schema import (
     _SIMPLEIR_OP_VALUE_RULES,
     _SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS,
 )
-from .validate import _opcode_role_members, _simpleir_registered_runtime_kinds
+from .validate import (
+    _opcode_role_members,
+    _simpleir_registered_runtime_kinds,
+    _simpleir_var_forbidden_spellings,
+)
 from .render_rust_analysis import (
     _render_predicate_semantics,
     _render_counted_loop_comparison_roles,
@@ -950,6 +954,17 @@ def _render_simpleir_kind_bool_fn(fn_name: str, members: list[str], doc: str) ->
 
 
 def _render_simpleir_op_shapes(data: dict) -> str:
+    kinds = {row["canonical"]: row for row in data.get("kind", [])}
+    # Project canonical shape facts to every registered spelling. Keeping each
+    # spelling in its row preserves the malformed input's diagnostic identity.
+    shapes = [
+        {**row, "kind": spelling}
+        for row in data.get("simpleir_op_shape", [])
+        for spelling in (
+            row["kind"],
+            *kinds.get(row["kind"], {}).get("aliases", []),
+        )
+    ]
     out = [
         "/// Integer-metadata admission for generated SimpleIR operation shapes.\n",
         "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
@@ -970,7 +985,7 @@ def _render_simpleir_op_shapes(data: dict) -> str:
             "pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[\n",
         ]
     )
-    for row in data.get("simpleir_op_shape", []):
+    for row in shapes:
         out.extend(
             [
                 "    SimpleIrOpShape {\n",
@@ -988,7 +1003,7 @@ def _render_simpleir_op_shapes(data: dict) -> str:
             "    match kind {\n",
         ]
     )
-    for index, row in enumerate(data.get("simpleir_op_shape", [])):
+    for index, row in enumerate(shapes):
         out.append(
             f"        {_rs_string(row['kind'])} => Some(&SIMPLEIR_OP_SHAPES[{index}]),\n"
         )
@@ -1188,6 +1203,10 @@ def _render_simpleir_field_roles(data: dict) -> str:
     for key, role in var_roles:
         patterns = " | ".join(f'"{member}"' for member in data.get(key, []))
         lines.append(f"        {patterns} => SimpleIrVarFieldRole::{role},\n")
+    forbidden = _simpleir_var_forbidden_spellings(data)
+    if forbidden:
+        patterns = " | ".join(f'"{member}"' for member in forbidden)
+        lines.append(f"        {patterns} => SimpleIrVarFieldRole::Forbidden,\n")
     return_terminators = [
         row["kind"]
         for row in data.get("simpleir_control_kind", [])
