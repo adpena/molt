@@ -444,6 +444,9 @@ class _StatePool:
         self.binding_lookups = 0
         self.join_calls = 0
         self.join_node_visits = 0
+        self.join_node_contributor_inputs = 0
+        self.join_node_contributor_outputs = 0
+        self.join_node_duplicate_contributors = 0
         self.join_shared_subtrees_skipped = 0
         self.join_chunk_merges = 0
         self.binding_chunk_copies = 0
@@ -757,28 +760,41 @@ class _StatePool:
         # when every parent is hypothetically clean inside the domain, else -1.
         # Monotone state epochs make shared-subtree reuse equivalent to this join.
 
+        def distinct_contributors[T: _BindingChunk | _BindingBranch](
+            nodes: tuple[T, ...], epochs: tuple[int, ...]
+        ) -> tuple[tuple[T, ...], tuple[int, ...]]:
+            """Prune identical raw storage/epoch pairs in first-parent order.
+
+            This is storage work only: the interned state retains every parent
+            and its writes, invalidations, and namespace epoch. Equal payloads
+            or shared nodes at different epochs are not interchangeable here.
+            """
+            unique_nodes: list[T] = []
+            unique_epochs: list[int] = []
+            seen: set[tuple[int, int]] = set()
+            for node, epoch in zip(nodes, epochs, strict=True):
+                key = (id(node), epoch)
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique_nodes.append(node)
+                unique_epochs.append(epoch)
+            if len(unique_nodes) == len(nodes):
+                return nodes, epochs
+            return tuple(unique_nodes), tuple(unique_epochs)
+
         def merge_chunks(
-            chunks: tuple[_BindingChunk, ...], chunk_index: int
+            chunks: tuple[_BindingChunk, ...],
+            chunk_epochs: tuple[int, ...],
+            chunk_index: int,
         ) -> _BindingChunk:
             self.join_chunk_merges += 1
             first = chunks[0]
             if all(chunk is first for chunk in chunks[1:]):
                 self.join_shared_subtrees_skipped += 1
                 return first
-            chunk_epochs = parent_epochs
             if len(chunks) > 3:
-                unique_chunks: list[_BindingChunk] = []
-                unique_epochs: list[int] = []
-                seen: set[tuple[int, int]] = set()
-                for chunk, parent_epoch in zip(chunks, parent_epochs, strict=True):
-                    key = (id(chunk), parent_epoch)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    unique_chunks.append(chunk)
-                    unique_epochs.append(parent_epoch)
-                chunks = tuple(unique_chunks)
-                chunk_epochs = tuple(unique_epochs)
+                chunks, chunk_epochs = distinct_contributors(chunks, chunk_epochs)
             if len(chunks) == 1 and chunk_epochs[0] == taint_epoch:
                 return chunks[0]
             candidate_mask = 0
@@ -1020,14 +1036,22 @@ class _StatePool:
 
         def merge_nodes(
             nodes: tuple[_BindingBranch, ...],
+            epochs: tuple[int, ...],
             level: int,
             chunk_prefix: int,
         ) -> _BindingBranch:
             self.join_node_visits += 1
+            submitted = len(nodes)
+            self.join_node_contributor_inputs += submitted
             first = nodes[0]
             if all(node is first for node in nodes[1:]):
+                self.join_node_contributor_outputs += submitted
                 self.join_shared_subtrees_skipped += 1
                 return first
+            if len(nodes) > 3:
+                nodes, epochs = distinct_contributors(nodes, epochs)
+            self.join_node_contributor_outputs += len(nodes)
+            self.join_node_duplicate_contributors += submitted - len(nodes)
             child_count = max((len(node.children) for node in nodes), default=0)
             children: list[_BindingChunk | _BindingBranch] = []
             filler: _BindingChunk | _BindingBranch = (
@@ -1041,18 +1065,19 @@ class _StatePool:
                 child_prefix = chunk_prefix | (offset << (level * _BINDING_TREE_SHIFT))
                 if level == 0:
                     child = merge_chunks(
-                        cast(tuple[_BindingChunk, ...], branch), child_prefix
+                        cast(tuple[_BindingChunk, ...], branch), epochs, child_prefix
                     )
                 else:
                     child = merge_nodes(
                         cast(tuple[_BindingBranch, ...], branch),
+                        epochs,
                         level - 1,
                         child_prefix,
                     )
                 children.append(child)
             return _binding_branch(tuple(children), level, first)
 
-        root = merge_nodes(tuple(roots), depth - 1, 0)
+        root = merge_nodes(tuple(roots), parent_epochs, depth - 1, 0)
         return _BindingEnvironment(root, depth)
 
     def intern(self, state: _BindingState) -> int:
@@ -5492,6 +5517,11 @@ class _Analyzer:
                 binding_lookups=self.states.binding_lookups,
                 join_calls=self.states.join_calls,
                 join_node_visits=self.states.join_node_visits,
+                join_node_contributor_inputs=self.states.join_node_contributor_inputs,
+                join_node_contributor_outputs=self.states.join_node_contributor_outputs,
+                join_node_duplicate_contributors=(
+                    self.states.join_node_duplicate_contributors
+                ),
                 join_shared_subtrees_skipped=(self.states.join_shared_subtrees_skipped),
                 join_chunk_merges=self.states.join_chunk_merges,
                 join_parent_inputs=self.states.join_parent_inputs,
