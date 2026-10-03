@@ -3182,6 +3182,176 @@ def test_run_guarded_weak_sampler_reaps_only_owned_child_handle(
     )
 
 
+@pytest.mark.parametrize(
+    ("case", "expected_closed"),
+    [
+        ("observed_descendant", True),
+        ("escaped_descendant", True),
+        ("unproven_root_exit", False),
+        ("reused_root_pid", False),
+        ("missing_descendant_birth", False),
+        ("protected_group", False),
+        ("unknown_group_member", False),
+        ("signal_sample_failure", False),
+        ("surviving_descendant", False),
+        ("unobserved_descendant", False),
+    ],
+)
+def test_reaped_root_cleanup_composes_with_scratch_closure(
+    monkeypatch: pytest.MonkeyPatch, case: str, expected_closed: bool
+) -> None:
+    # Only OS observations/signals are simulated. Admission, signal-time birth
+    # validation, termination reporting and the scratch consumer remain real.
+    def absent_pid(_pid: int) -> int:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(
+        process_custody,
+        "os",
+        types.SimpleNamespace(
+            name="posix",
+            getpid=lambda: 999,
+            getpgrp=lambda: 999,
+            getpgid=absent_pid,
+            getsid=absent_pid,
+        ),
+    )
+    custody_signal = types.SimpleNamespace(**vars(signal))
+    custody_signal.SIGKILL = 9
+    monkeypatch.setattr(process_custody, "signal", custody_signal)
+    root = process_custody.ProcessSample(
+        101, 999, 10, "python root.py", pgid=101, started_at_ns=11
+    )
+    descendant = process_custody.ProcessSample(
+        202, 101, 20, "python child.py", pgid=101, started_at_ns=22
+    )
+    tracker = process_custody.ProcessTreeTracker(101)
+    initial = {101: root}
+    if case != "unobserved_descendant":
+        initial[202] = descendant
+    tracker.update(initial)
+    live = {202: dataclasses.replace(descendant, ppid=1)}
+    if case == "escaped_descendant":
+        live[202] = dataclasses.replace(live[202], pgid=202)
+    elif case == "reused_root_pid":
+        live[101] = dataclasses.replace(root, ppid=1, started_at_ns=99)
+    elif case == "missing_descendant_birth":
+        live[202] = dataclasses.replace(live[202], started_at_ns=None)
+    elif case in {"protected_group", "unknown_group_member"}:
+        live[303] = process_custody.ProcessSample(
+            303,
+            1,
+            30,
+            "codex app-server" if case == "protected_group" else "unowned peer",
+            pgid=101,
+            started_at_ns=33,
+        )
+    sampling_calls = 0
+    signals: list[tuple[str, int, int]] = []
+
+    def sample() -> dict[int, process_custody.ProcessSample]:
+        nonlocal sampling_calls
+        sampling_calls += 1
+        if case == "signal_sample_failure" and sampling_calls > 1:
+            raise OSError("synthetic observation unavailable")
+        return dict(live)
+
+    def send(kind: str, target: int, signum: int):
+        signals.append((kind, target, signum))
+        if case != "surviving_descendant":
+            for pid, row in list(live.items()):
+                if (row.pgid if kind == "process_group" else pid) == target:
+                    del live[pid]
+        return process_custody._termination_action(
+            target_kind=kind, target_id=target, signum=signum, result="sent"
+        )
+
+    monkeypatch.setattr(
+        process_custody,
+        "_send_process_group_signal_action",
+        lambda pgid, signum: send("process_group", pgid, signum),
+    )
+    monkeypatch.setattr(
+        process_custody,
+        "_send_pid_signal_action",
+        lambda pid, signum: send("process", pid, signum),
+    )
+
+    def group_closed(pgid: int, *, grace: float) -> bool:
+        return not any(row.pgid == pgid for row in live.values())
+
+    monkeypatch.setattr(
+        process_custody, "_process_group_exited_or_unobservable", group_closed
+    )
+    monkeypatch.setattr(
+        process_custody,
+        "_pid_exited_or_unobservable",
+        lambda pid, *, grace: pid not in live,
+    )
+    monkeypatch.setattr(
+        memory_guard, "_process_group_exited_or_unobservable", group_closed
+    )
+    cleanup = process_custody.cleanup_tracked_orphans(
+        101,
+        tracker=tracker,
+        sampler=sample,
+        grace=0.0,
+        root_reaped=case != "unproven_root_exit",
+    )
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=_guarded_child(),
+        tracker=tracker,
+        sampler=sample,
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=_complete_sampling_telemetry(),
+        termination_reports=cleanup.termination_reports,
+        probe_grace=0.0,
+    )
+    assert closed is expected_closed, evidence
+    assert all(
+        target not in {101, 303} for kind, target, _ in signals if kind == "process"
+    )
+    if expected_closed:
+        assert not live
+        assert evidence["termination_action_gaps"] == []
+        assert evidence["root_process_group_closed"] is True
+        assert evidence["remaining_tracked_pids"] == []
+        assert cleanup.process_groups == (202 if case == "escaped_descendant" else 101,)
+        assert signals == [
+            ("process", 202, signal.SIGTERM)
+            if case == "escaped_descendant"
+            else ("process_group", 101, signal.SIGTERM)
+        ]
+    elif case == "unobserved_descendant":
+        assert signals == []
+        assert cleanup.termination_reports == ()
+        assert evidence["root_process_group_closed"] is False
+        assert evidence["remaining_tracked_pids"] == []
+        assert evidence["root_process_group_members"] == [202]
+    elif case in {
+        "missing_descendant_birth",
+        "protected_group",
+        "signal_sample_failure",
+    }:
+        assert signals == []
+    elif case in {"reused_root_pid", "unknown_group_member"}:
+        assert all(kind != "process_group" for kind, _target, _sig in signals)
+        assert (101 if case == "reused_root_pid" else 303) in live
+    elif case == "surviving_descendant":
+        assert 202 in live
+        assert any(
+            action.result == "still_live"
+            for report in cleanup.termination_reports
+            for action in report.actions
+        )
+
+
 def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> None:
     tracker = process_custody.ProcessTreeTracker(100)
     assert tracker.known_pids is not None
@@ -3821,6 +3991,7 @@ def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
     assert result.orphaned_process_groups == (777,)
     assert result.termination_reports == (report,)
     assert len(calls) == 1
+    assert calls[0]["root_reaped"] is True
 
 
 def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
