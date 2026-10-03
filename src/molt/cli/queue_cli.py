@@ -6,7 +6,7 @@ from pathlib import Path
 from subprocess import SubprocessError
 import sys
 
-from molt.cli.project_roots import _find_molt_root
+from molt.source_root import compiler_source_root
 from molt.dx import DxConfigError, development_artifact_env
 from molt import process_guard
 
@@ -26,7 +26,7 @@ def _positive_queue_size(value: object) -> str:
 
 
 def _queue_repo_root() -> Path:
-    return _find_molt_root(Path.cwd())
+    return compiler_source_root()
 
 
 def _queue_args_define_queue_size(queue_args: list[str]) -> bool:

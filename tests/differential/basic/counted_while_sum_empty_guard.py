@@ -4,6 +4,8 @@ When the loop index start constant is >= the bound the loop runs zero times and
 the accumulator is unchanged; the arithmetic-series closed-form fold previously
 assumed >=1 iteration and emitted a silently-wrong sum (start=10,bound=5 -> -35
 instead of 0). The fast path is function-scope only, so cases live inside defs.
+A loop that runs zero times never reads its accumulator either, so an unbound
+accumulator must not raise before the loop.
 Version-stable across CPython 3.12/3.13/3.14.
 """
 
@@ -35,6 +37,22 @@ def sum_acc_nonzero(start, bound):
     return s, i
 
 
+def sum_unbound_accumulator(start):
+    i = start
+    while i < 5:
+        s += i
+        i = i + 1
+    return i
+
+
+def count_unbound_accumulator(start):
+    i = start
+    while i < 5:
+        c += 1
+        i = i + 1
+    return i
+
+
 print(sum_binop(10, 5))        # (0, 10)
 print(sum_augassign(10, 5))    # (0, 10)
 print(sum_acc_nonzero(10, 5))  # (100, 10)
@@ -48,3 +66,5 @@ print(sum_binop(3, 10))        # (42, 10)
 print(sum_acc_nonzero(3, 10))  # (142, 10)
 print(sum_binop(7, 3))         # (0, 7)
 print(sum_binop(0, 0))         # (0, 0)
+print(sum_unbound_accumulator(10))    # 10: s is never read
+print(count_unbound_accumulator(10))  # 10: c is never read

@@ -66,6 +66,7 @@ fn emitted_format_float_block() -> String {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,

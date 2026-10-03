@@ -5,6 +5,8 @@
 //! subclasses keep ordinary Python method lookup and construction semantics.
 
 use super::*;
+use crate::builtins::native_arguments::{NamedBinding, NativeArguments, NativeKeywords};
+use crate::PtrDropGuard;
 use crate::builtins::attr::clear_attribute_error_if_pending;
 use crate::object::layout::{
     WrapperKind, class_qualname_bits, classmethod_func_bits, classmethod_replace_func_bits,
@@ -91,78 +93,31 @@ fn wrapper_receiver(
     raise_exception::<Option<*mut u8>>(py, "TypeError", &message)
 }
 
-fn wrapper_allocate(py: &PyToken<'_>, kind: WrapperKind, class: u64) -> u64 {
-    let Some(ptr) = obj_from_bits(class)
-        .as_ptr()
-        .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_TYPE })
-    else {
-        return raise_exception::<_>(
-            py,
-            "TypeError",
-            &format!(
-                "{}.__new__(X): X is not a type object ({})",
-                kind.name(),
-                type_name(py, obj_from_bits(class)),
-            ),
-        );
+fn wrapper_allocate(py: &PyToken<'_>, kind: WrapperKind, class: Option<u64>) -> u64 {
+    let Some((_, ptr)) = crate::builtins::type_ops::native_constructor_receiver(
+        py,
+        kind.class(py),
+        class,
+        kind.name(),
+    ) else {
+        return MoltObject::none().bits();
     };
-    if !issubclass_bits(class, kind.class(py)) {
-        return raise_exception::<_>(
-            py,
-            "TypeError",
-            &format!(
-                "{}.__new__({}): {} is not a subtype of {}",
-                kind.name(),
-                class_name_for_error(class),
-                class_name_for_error(class),
-                kind.name(),
-            ),
-        );
-    }
     unsafe { alloc_instance_for_class(py, ptr) }
 }
 
 fn property_arguments(
     py: &PyToken<'_>,
     args: &[u64],
-    keywords: &[(String, u64)],
-) -> Option<[u64; 4]> {
-    if args.len() + keywords.len() > 4 {
-        return raise_exception::<_>(
-            py,
-            "TypeError",
-            &format!(
-                "property() takes at most 4 arguments ({} given)",
-                args.len() + keywords.len(),
-            ),
-        );
-    }
-    const NAMES: [&str; 4] = ["fget", "fset", "fdel", "doc"];
-    let mut values = [MoltObject::none().bits(); 4];
-    values[..args.len()].copy_from_slice(args);
-    for (name, value) in keywords {
-        let Some(index) = NAMES.iter().position(|known| *known == name) else {
-            let message = if crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
-                format!("property() got an unexpected keyword argument '{name}'")
-            } else {
-                format!("'{name}' is an invalid keyword argument for property()")
-            };
-            return raise_exception::<_>(py, "TypeError", &message);
-        };
-        if index < args.len() {
-            return raise_exception::<_>(
-                py,
-                "TypeError",
-                &format!(
-                    "argument for property() given by name ('{}') and position ({})",
-                    name,
-                    index + 1,
-                ),
-            );
-        }
-        values[index] = *value;
-    }
-    Some(values)
+    keywords: NativeKeywords<'_>,
+) -> Option<NamedBinding<[Option<u64>; 4]>> {
+    crate::builtins::native_arguments::bind_named(
+        py,
+        "property",
+        args,
+        keywords,
+        ["fget", "fset", "fdel", "doc"],
+        0,
+    )
 }
 
 fn property_initialize(py: &PyToken<'_>, self_bits: u64, values: [u64; 4]) -> u64 {
@@ -233,7 +188,7 @@ fn wrapper_initialize(
     kind: WrapperKind,
     self_bits: u64,
     args: &[u64],
-    keywords: &[(String, u64)],
+    keywords: NativeKeywords<'_>,
 ) -> u64 {
     let Some(ptr) = wrapper_receiver(py, kind, self_bits, "__init__") else {
         return MoltObject::none().bits();
@@ -242,7 +197,8 @@ fn wrapper_initialize(
         let Some(values) = property_arguments(py, args, keywords) else {
             return MoltObject::none().bits();
         };
-        return property_initialize(py, self_bits, values);
+        return property_initialize(py, self_bits,
+            (*values).map(|value| value.unwrap_or_else(|| MoltObject::none().bits())));
     }
     if !keywords.is_empty() {
         return raise_exception::<_>(
@@ -293,16 +249,16 @@ pub(crate) fn wrapper_construct(
     py: &PyToken<'_>,
     kind: WrapperKind,
     args: &[u64],
-    keywords: &[(String, u64)],
+    keywords: NativeKeywords<'_>,
 ) -> u64 {
-    let instance = wrapper_allocate(py, kind, kind.class(py));
+    let instance = wrapper_allocate(py, kind, Some(kind.class(py)));
     if exception_pending(py) || obj_from_bits(instance).as_ptr().is_none() {
         return instance;
     }
     let result = wrapper_initialize(py, kind, instance, args, keywords);
     dec_ref_bits(py, result);
     if exception_pending(py) {
-        dec_ref_bits(py, instance);
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, instance));
         MoltObject::none().bits()
     } else {
         instance
@@ -317,18 +273,29 @@ pub(crate) fn try_construct_exact_wrapper(
     values: &[u64],
 ) -> Option<u64> {
     let kind = WrapperKind::exact_class(py, class)?;
-    let mut keywords = Vec::with_capacity(names.len());
+    let mut pairs = Vec::new();
+    if pairs.try_reserve_exact(names.len().saturating_mul(2)).is_err() {
+        return Some(raise_exception(py, "MemoryError", "wrapper keyword allocation failed"));
+    }
     for (&name, &value) in names.iter().zip(values) {
-        let Some(name) = string_obj_to_owned(obj_from_bits(name)) else {
+        if unsafe { crate::object::ops_format::with_string_bytes(obj_from_bits(name), |_| ()) }.is_none() {
             return Some(raise_exception::<_>(
                 py,
                 "TypeError",
                 "keywords must be strings",
             ));
-        };
-        keywords.push((name, value));
+        }
+        pairs.extend([name, value]);
     }
-    Some(wrapper_construct(py, kind, args, &keywords))
+    // Exact-type acceleration still enters the dictionary protocol of tp_init.
+    let dictionary = alloc_dict_with_pairs(py, &pairs);
+    let _dictionary = PtrDropGuard::preserving(dictionary);
+    if dictionary.is_null() || exception_pending(py) {
+        return Some(MoltObject::none().bits());
+    }
+    Some(wrapper_construct(py, kind, args, NativeKeywords::mapping(
+        MoltObject::from_ptr(dictionary).bits(), names,
+    )))
 }
 
 /// Special-method fast paths are admitted by the resolved method, not merely
@@ -431,7 +398,7 @@ pub(crate) unsafe fn wrapper_get(
                         .unwrap_or_else(|| MoltObject::none().bits());
                     }
                 }
-                crate::molt_bound_method_new(target, owner)
+                crate::builtins::functions::bound_method_new(py, target, owner, false)
             }
         }
     }
@@ -611,12 +578,14 @@ fn wrapper_method(
         WrapperOperation::Delete => "__delete__",
         WrapperOperation::SetName => "__set_name__",
     };
-    let Some(args) = call_vararg_args(py, method, args_bits) else {
+    let Some(call) = NativeArguments::read(py, method, args_bits, kwargs_bits) else {
         return MoltObject::none().bits();
     };
-    let Some((_, keywords)) = call_vararg_kwargs(py, method, kwargs_bits) else {
-        return MoltObject::none().bits();
-    };
+    let args = &call.positional;
+    let keywords = call.keyword_view();
+    if matches!(operation, WrapperOperation::New) {
+        return wrapper_allocate(py, kind, args.first().copied());
+    }
     let Some((&receiver, args)) = args.split_first() else {
         return raise_exception::<_>(
             py,
@@ -627,14 +596,11 @@ fn wrapper_method(
             ),
         );
     };
-    if matches!(operation, WrapperOperation::New) {
-        return wrapper_allocate(py, kind, receiver);
-    }
     let Some(ptr) = wrapper_receiver(py, kind, receiver, method) else {
         return MoltObject::none().bits();
     };
     if matches!(operation, WrapperOperation::Init) {
-        return wrapper_initialize(py, kind, receiver, args, &keywords);
+        return wrapper_initialize(py, kind, receiver, args, keywords);
     }
     if matches!(operation, WrapperOperation::Call) {
         let _receiver = WrapperInputs::new(py, [receiver]);
@@ -726,19 +692,19 @@ fn wrapper_method(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_staticmethod_new(target: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        wrapper_construct(py, WrapperKind::Staticmethod, &[target], &[])
+        wrapper_construct(py, WrapperKind::Staticmethod, &[target], NativeKeywords::empty())
     })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_classmethod_new(target: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        wrapper_construct(py, WrapperKind::Classmethod, &[target], &[])
+        wrapper_construct(py, WrapperKind::Classmethod, &[target], NativeKeywords::empty())
     })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_property_new(get: u64, set: u64, delete: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        wrapper_construct(py, WrapperKind::Property, &[get, set, delete], &[])
+        wrapper_construct(py, WrapperKind::Property, &[get, set, delete], NativeKeywords::empty())
     })
 }
 #[unsafe(no_mangle)]

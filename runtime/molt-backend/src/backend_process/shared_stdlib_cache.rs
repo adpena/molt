@@ -11,9 +11,11 @@ pub(crate) use partition::{
     shared_stdlib_split_function_names, validate_shared_stdlib_partition,
 };
 pub(crate) use prepare::{NativeStdlibCachePrepare, prepare_native_application_artifact};
+#[cfg(any(unix, test))]
+pub(crate) use publish::shared_stdlib_cache_matches;
 pub(crate) use publish::{
     admit_or_invalidate_shared_stdlib_cache, publish_shared_stdlib_cache_archive,
-    shared_stdlib_cache_matches, stdlib_cache_temp_publish_path,
+    stdlib_cache_temp_publish_path,
 };
 #[cfg(test)]
 pub(crate) use publish::{

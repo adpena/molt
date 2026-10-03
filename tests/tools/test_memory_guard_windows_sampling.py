@@ -705,6 +705,8 @@ def test_windows_sampler_limits_full_command_line_reads_to_launcher_processes() 
     assert module._windows_process_needs_full_command_line("python.exe") is True
     assert module._windows_process_needs_full_command_line("UV.EXE") is True
     assert module._windows_process_needs_full_command_line("node.exe") is True
+    assert module._windows_process_needs_full_command_line("molt-backend.native_backend.exe") is True
+    assert module._windows_process_needs_full_command_line("molt-backend.wasm_backend.exe") is True
     assert module._windows_process_needs_full_command_line("explorer.exe") is False
     assert module._windows_process_needs_full_command_line("svchost.exe") is False
 

@@ -10,4 +10,7 @@ pub use basic_ops::*;
 pub use getter_objects::*;
 pub(crate) use getter_objects::{operator_detach_owned_edges, operator_visit_owned_edges};
 pub use sequence_ops::*;
-pub(crate) use state::{OperatorRuntimeState, operator_clear_runtime_state};
+pub(crate) use state::{
+    OperatorRuntimeState, operator_clear_runtime_callbacks, operator_clear_runtime_state,
+    operator_runtime_class_roots,
+};

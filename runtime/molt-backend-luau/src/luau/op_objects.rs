@@ -374,19 +374,20 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(attr_str) = op.s_value.as_deref().filter(|s| !s.is_empty()) {
-                    // Static attribute name — use dot access.
-                    let attr = sanitize_ident(attr_str);
+                    let attr = escape_luau_string(attr_str);
                     if let Some(module) = args.first() {
                         let module = sanitize_ident(module);
-                        self.emit_line(&format!("local {out} = {module}.{attr}"));
+                        self.emit_line(&format!(
+                            "local {out} = molt_module_get_name({module}, \"{attr}\")"
+                        ));
+                    } else {
+                        self.emit_unsupported_op(op);
                     }
                 } else if args.len() >= 2 {
-                    // module_get_attr: args[0] = module table, args[1] = attr name var.
-                    // Look up attribute directly on the module.
                     let module = sanitize_ident(&args[0]);
                     let attr_var = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "local {out} = if {attr_var} == \"__dict__\" and type({module}) == \"table\" then {module} elseif molt_dict_is_ordered({module}) then molt_dict_get({module}, {attr_var}, nil) elseif type({module}) == \"table\" then {module}[{attr_var}] else error({{__type=\"TypeError\", __msg=\"module attribute access expects module\"}})"
+                        "local {out} = molt_module_get_name({module}, {attr_var})"
                     ));
                 } else {
                     self.emit_unsupported_op(op);

@@ -169,7 +169,12 @@ fn set_exact_hook_error(exc_type: *mut PyObject) {
     }
 }
 
-unsafe extern "C" fn sys_get_object_borrowed(data: *const u8, len: usize) -> BorrowedHandleResult {
+unsafe extern "C" fn sys_get_object_borrowed(
+    data: *const u8,
+    len: usize,
+    _policy: molt_cpython_abi::hooks::SysLookupPolicy,
+) -> BorrowedHandleResult {
+    assert_eq!(_policy, molt_cpython_abi::hooks::SysLookupPolicy::Propagate);
     let name = unsafe { std::slice::from_raw_parts(data, len) };
     if name != b"modules" {
         return BorrowedHandleResult::missing();

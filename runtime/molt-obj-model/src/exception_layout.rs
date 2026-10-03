@@ -221,9 +221,21 @@ impl ExceptionLayoutKind {
 
 /// Globally unambiguous typed-field identity. Runtime storage uses the order
 /// returned by [`ExceptionLayoutKind::field_policies`], not these discriminants.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ExceptionTypedField {
+macro_rules! exception_typed_fields {
+    ($($name:ident = $tag:literal,)*) => {
+        #[repr(u8)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        pub enum ExceptionTypedField { $($name = $tag,)* }
+
+        impl ExceptionTypedField {
+            pub const fn from_u8(tag: u8) -> Option<Self> {
+                match tag { $($tag => Some(Self::$name),)* _ => None }
+            }
+        }
+    };
+}
+
+exception_typed_fields! {
     GroupMessage = 0,
     GroupExceptions = 1,
     SyntaxMessage = 2,
@@ -259,7 +271,8 @@ pub enum ExceptionTypedField {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExceptionFieldStorage {
-    /// Aliases the common runtime exception message word; no typed-tail word.
+    /// Stores the original message object in the common runtime word; no
+    /// typed-tail word and no formatted-text cache. Absence differs from None.
     RuntimeMessage = 0,
     Object = 1,
     PySsize = 2,
@@ -282,6 +295,114 @@ pub struct ExceptionFieldPolicy {
     /// Accepted by the declaring builtin's constructor as a keyword.
     pub constructor_keyword: bool,
     pub missing_read: ExceptionMissingRead,
+}
+
+/// Python-visible field identity shared by runtime and native C declarations.
+/// Reserved physical notes metadata deliberately has no attribute declaration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExceptionAttributeField {
+    Dictionary,
+    Args,
+    Traceback,
+    Context,
+    Cause,
+    SuppressContext,
+    Typed(ExceptionTypedField),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExceptionDescriptorKind {
+    Member,
+    GetSet,
+}
+
+impl ExceptionAttributeField {
+    pub const fn operation(self) -> u32 {
+        match self {
+            Self::Dictionary => 1,
+            Self::Args => 2,
+            Self::Traceback => 3,
+            Self::Context => 4,
+            Self::Cause => 5,
+            Self::SuppressContext => 6,
+            Self::Typed(field) => 256 + field as u32,
+        }
+    }
+
+    pub fn from_operation(operation: u32) -> Option<Self> {
+        Some(match operation {
+            1 => Self::Dictionary,
+            2 => Self::Args,
+            3 => Self::Traceback,
+            4 => Self::Context,
+            5 => Self::Cause,
+            6 => Self::SuppressContext,
+            operation => Self::Typed(ExceptionTypedField::from_u8(
+                u8::try_from(operation.checked_sub(256)?).ok()?,
+            )?),
+        })
+    }
+
+    pub const fn descriptor_kind(self) -> ExceptionDescriptorKind {
+        match self {
+            Self::SuppressContext => ExceptionDescriptorKind::Member,
+            Self::Typed(ExceptionTypedField::OSErrorCharactersWritten) => {
+                ExceptionDescriptorKind::GetSet
+            }
+            Self::Typed(_) => ExceptionDescriptorKind::Member,
+            _ => ExceptionDescriptorKind::GetSet,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExceptionAttributeDeclaration {
+    pub field: ExceptionAttributeField,
+    pub python_name: &'static str,
+}
+
+const BASE_ATTRIBUTE_DECLARATIONS: &[ExceptionAttributeDeclaration] = &[
+    ExceptionAttributeDeclaration {
+        field: ExceptionAttributeField::Dictionary,
+        python_name: "__dict__",
+    },
+    ExceptionAttributeDeclaration {
+        field: ExceptionAttributeField::Args,
+        python_name: "args",
+    },
+    ExceptionAttributeDeclaration {
+        field: ExceptionAttributeField::Traceback,
+        python_name: "__traceback__",
+    },
+    ExceptionAttributeDeclaration {
+        field: ExceptionAttributeField::Context,
+        python_name: "__context__",
+    },
+    ExceptionAttributeDeclaration {
+        field: ExceptionAttributeField::Cause,
+        python_name: "__cause__",
+    },
+    ExceptionAttributeDeclaration {
+        field: ExceptionAttributeField::SuppressContext,
+        python_name: "__suppress_context__",
+    },
+];
+
+impl ExceptionLayoutRoot {
+    /// Only the declaring root publishes these entries. Descendants inherit
+    /// through their real MRO; Python names do not select physical accessors.
+    pub fn attribute_declarations(self) -> impl Iterator<Item = ExceptionAttributeDeclaration> {
+        BASE_ATTRIBUTE_DECLARATIONS
+            .iter()
+            .copied()
+            .filter(move |_| self == Self::Base)
+            .chain(self.kind().field_policies().iter().map(|policy| {
+                ExceptionAttributeDeclaration {
+                    field: ExceptionAttributeField::Typed(policy.field),
+                    python_name: policy.python_name,
+                }
+            }))
+    }
 }
 
 const fn object_policy(
@@ -496,6 +617,21 @@ pub enum ExceptionBaseSpec {
     Two(&'static str, &'static str),
 }
 
+/// Declaring builtin string-slot identity, independent of physical layout.
+/// KeyError shares BaseException's layout but owns a different __str__ slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExceptionStrSlot {
+    Base,
+    Group,
+    KeyError,
+    Syntax,
+    Import,
+    OSError,
+    UnicodeDecode,
+    UnicodeEncode,
+    UnicodeTranslate,
+}
+
 /// Canonical rows own inheritance and physical layout. Compatibility aliases
 /// own only their public name and canonical identity, so alias rows cannot
 /// silently fork the canonical class's hierarchy or storage.
@@ -519,6 +655,10 @@ pub struct BuiltinExceptionSpec {
     definition: BuiltinExceptionDefinition,
     minimum_python_minor: u32,
     windows_only: bool,
+    declared_str_slot: Option<ExceptionStrSlot>,
+    declares_repr: bool,
+    heap_type: bool,
+    module: &'static str,
 }
 
 const fn exception_spec(
@@ -534,6 +674,10 @@ const fn exception_spec(
         },
         minimum_python_minor: 12,
         windows_only: false,
+        declared_str_slot: None,
+        declares_repr: false,
+        heap_type: false,
+        module: "builtins",
     }
 }
 
@@ -543,22 +687,28 @@ const fn exception_alias(name: &'static str, canonical_name: &'static str) -> Bu
         definition: BuiltinExceptionDefinition::Alias { canonical_name },
         minimum_python_minor: 12,
         windows_only: false,
+        declared_str_slot: None,
+        declares_repr: false,
+        heap_type: false,
+        module: "builtins",
     }
 }
 
 const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
-    exception_spec("BaseException", ExceptionBaseSpec::Root, None),
+    exception_spec("BaseException", ExceptionBaseSpec::Root, None).with_base_render_slots(),
     exception_spec(
         "BaseExceptionGroup",
         ExceptionBaseSpec::One("BaseException"),
         Some(ExceptionLayoutRoot::BaseExceptionGroup),
-    ),
+    )
+    .with_str_slot(ExceptionStrSlot::Group),
     exception_spec("Exception", ExceptionBaseSpec::One("BaseException"), None),
     exception_spec(
         "ExceptionGroup",
         ExceptionBaseSpec::Two("BaseExceptionGroup", "Exception"),
         None,
-    ),
+    )
+    .with_heap_class("builtins"),
     exception_spec(
         "GeneratorExit",
         ExceptionBaseSpec::One("BaseException"),
@@ -578,7 +728,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         "CancelledError",
         ExceptionBaseSpec::One("BaseException"),
         None,
-    ),
+    )
+    .with_heap_class("asyncio.exceptions"),
     exception_spec("ArithmeticError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("AssertionError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec(
@@ -592,7 +743,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         "ImportError",
         ExceptionBaseSpec::One("Exception"),
         Some(ExceptionLayoutRoot::ImportError),
-    ),
+    )
+    .with_str_slot(ExceptionStrSlot::Import),
     exception_spec("LookupError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("MemoryError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec(
@@ -604,7 +756,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         "OSError",
         ExceptionBaseSpec::One("Exception"),
         Some(ExceptionLayoutRoot::OSError),
-    ),
+    )
+    .with_str_slot(ExceptionStrSlot::OSError),
     exception_spec("ReferenceError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("RuntimeError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec(
@@ -621,7 +774,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         "SyntaxError",
         ExceptionBaseSpec::One("Exception"),
         Some(ExceptionLayoutRoot::SyntaxError),
-    ),
+    )
+    .with_str_slot(ExceptionStrSlot::Syntax),
     exception_spec("SystemError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("TypeError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("ValueError", ExceptionBaseSpec::One("Exception"), None),
@@ -647,7 +801,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         None,
     ),
     exception_spec("IndexError", ExceptionBaseSpec::One("LookupError"), None),
-    exception_spec("KeyError", ExceptionBaseSpec::One("LookupError"), None),
+    exception_spec("KeyError", ExceptionBaseSpec::One("LookupError"), None)
+        .with_str_slot(ExceptionStrSlot::KeyError),
     exception_spec(
         "UnboundLocalError",
         ExceptionBaseSpec::One("NameError"),
@@ -696,7 +851,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         "UnsupportedOperation",
         ExceptionBaseSpec::Two("OSError", "ValueError"),
         None,
-    ),
+    )
+    .with_heap_class("_io"),
     exception_spec(
         "NotImplementedError",
         ExceptionBaseSpec::One("RuntimeError"),
@@ -724,17 +880,20 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         "UnicodeDecodeError",
         ExceptionBaseSpec::One("UnicodeError"),
         Some(ExceptionLayoutRoot::UnicodeDecodeError),
-    ),
+    )
+    .with_str_slot(ExceptionStrSlot::UnicodeDecode),
     exception_spec(
         "UnicodeEncodeError",
         ExceptionBaseSpec::One("UnicodeError"),
         Some(ExceptionLayoutRoot::UnicodeEncodeError),
-    ),
+    )
+    .with_str_slot(ExceptionStrSlot::UnicodeEncode),
     exception_spec(
         "UnicodeTranslateError",
         ExceptionBaseSpec::One("UnicodeError"),
         Some(ExceptionLayoutRoot::UnicodeTranslateError),
-    ),
+    )
+    .with_str_slot(ExceptionStrSlot::UnicodeTranslate),
     exception_spec(
         "DeprecationWarning",
         ExceptionBaseSpec::One("Warning"),
@@ -771,6 +930,64 @@ pub const fn builtin_exception_specs() -> &'static [BuiltinExceptionSpec] {
 }
 
 impl BuiltinExceptionSpec {
+    const fn with_heap_class(mut self, module: &'static str) -> Self {
+        self.heap_type = true;
+        self.module = module;
+        self
+    }
+
+    /// Origin and publication belong to the canonical row, never its name.
+    pub fn is_heap_type(&'static self) -> bool {
+        self.canonical().heap_type
+    }
+
+    pub fn module(&'static self) -> &'static str {
+        self.canonical().module
+    }
+
+    const fn with_str_slot(mut self, slot: ExceptionStrSlot) -> Self {
+        self.declared_str_slot = Some(slot);
+        self
+    }
+
+    const fn with_base_render_slots(mut self) -> Self {
+        self.declared_str_slot = Some(ExceptionStrSlot::Base);
+        self.declares_repr = true;
+        self
+    }
+
+    /// Only declarations belong in a builtin's own dictionary. Other rows
+    /// inherit through their ordinary bases, including explicit slot calls.
+    pub fn declared_str_slot(&'static self) -> Option<ExceptionStrSlot> {
+        self.canonical().declared_str_slot
+    }
+
+    pub fn declares_repr(&'static self) -> bool {
+        self.canonical().declares_repr
+    }
+
+    /// Effective immutable builtin slots, including inherited declarations.
+    /// Cold exception reporting needs these before runtime dictionaries exist;
+    /// dictionary publication still uses only the declarations above.
+    pub fn effective_render_slots(&'static self) -> (ExceptionStrSlot, bool) {
+        let mut current = self.canonical();
+        let mut string = None;
+        let mut repr = false;
+        loop {
+            string = string.or(current.declared_str_slot);
+            repr |= current.declares_repr;
+            match current.bases() {
+                ExceptionBaseSpec::Root => {
+                    return (string.expect("exception root must declare str"), repr);
+                }
+                ExceptionBaseSpec::One(parent) | ExceptionBaseSpec::Two(parent, _) => {
+                    current = builtin_exception_spec(parent)
+                        .expect("exception base must have a schema row");
+                }
+            }
+        }
+    }
+
     const fn since_python_minor(mut self, minimum_python_minor: u32) -> Self {
         self.minimum_python_minor = minimum_python_minor;
         self

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 from functools import partial as _partial
+import collections.abc as _collections_abc
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -33,6 +34,7 @@ __all__ = [
     "getmembers",
     "getgeneratorlocals",
     "getasyncgenlocals",
+    "getcoroutinelocals",
     "getasyncgenstate",
     "getcoroutinestate",
     "getgeneratorstate",
@@ -81,7 +83,7 @@ _molt_iscoroutine = _require_intrinsic("molt_inspect_iscoroutine")
 _molt_iscoroutinefunction = _require_intrinsic("molt_inspect_iscoroutinefunction")
 _molt_isasyncgenfunction = _require_intrinsic("molt_inspect_isasyncgenfunction")
 _molt_isgeneratorfunction = _require_intrinsic("molt_inspect_isgeneratorfunction")
-_molt_isawaitable = _require_intrinsic("molt_inspect_isawaitable")
+_molt_isnativeawaitable = _require_intrinsic("molt_inspect_isnativeawaitable")
 _molt_getgeneratorstate = _require_intrinsic("molt_inspect_getgeneratorstate")
 _molt_getasyncgenstate = _require_intrinsic("molt_inspect_getasyncgenstate")
 _molt_getcoroutinestate = _require_intrinsic("molt_inspect_getcoroutinestate")
@@ -158,7 +160,7 @@ def isgeneratorfunction(obj):
 
 
 def isawaitable(obj):
-    return _molt_isawaitable(obj)
+    return _molt_isnativeawaitable(obj) or isinstance(obj, _collections_abc.Awaitable)
 
 
 def getgeneratorstate(gen):
@@ -179,6 +181,13 @@ def getgeneratorlocals(gen):
 
 def getasyncgenlocals(agen):
     return _molt_getasyncgenlocals(agen)
+
+
+def getcoroutinelocals(coroutine):
+    frame = getattr(coroutine, "cr_frame", None)
+    if frame is not None:
+        return frame.f_locals
+    return {}
 
 
 # --- Intrinsics used by retained wrappers ---
@@ -314,12 +323,12 @@ def _signature_from_intrinsic(obj: Any) -> Signature | None:
     return Signature(params)
 
 
-def _signature_bind_bound_method(sig: Signature, method_obj: Any) -> Signature:
-    if getattr(method_obj, "__self__", None) is None:
-        return sig
+def _signature_bind_bound_method(sig: Signature) -> Signature:
     ordered = list(sig.parameters.values())
-    if not ordered:
-        return sig
+    if not ordered or ordered[0].kind in (
+        Parameter.KEYWORD_ONLY, Parameter.VAR_KEYWORD
+    ):
+        raise ValueError("invalid method signature")
     first = ordered[0]
     if first.kind not in (Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD):
         return sig
@@ -327,6 +336,11 @@ def _signature_bind_bound_method(sig: Signature, method_obj: Any) -> Signature:
 
 
 def signature(obj: Any) -> Signature:
+    # Managed methods forward their function's metadata. Resolve that function
+    # before reading the forwarded attributes, then bind exactly once. Native
+    # callable roles use their own receiver-aware Clinic signature in runtime.
+    if _molt_is_bound_method(obj):
+        return _signature_bind_bound_method(signature(obj.__func__))
     sig = getattr(obj, "__signature__", None)
     if sig is not None and not isinstance(sig, Signature):
         raise TypeError(f"unexpected object {sig!r} in __signature__ attribute")
@@ -335,26 +349,13 @@ def signature(obj: Any) -> Signature:
     intrinsic_sig = _signature_from_intrinsic(obj)
     if intrinsic_sig is not None:
         return intrinsic_sig
-    method_fn = getattr(obj, "__func__", None)
-    if method_fn is not None:
-        fn_sig = getattr(method_fn, "__signature__", None)
-        if isinstance(fn_sig, Signature):
-            return _signature_bind_bound_method(fn_sig, obj)
-        if fn_sig is not None and not isinstance(fn_sig, str):
-            return _signature_bind_bound_method(fn_sig, obj)
-        intrinsic_fn_sig = _signature_from_intrinsic(method_fn)
-        if intrinsic_fn_sig is not None:
-            return _signature_bind_bound_method(intrinsic_fn_sig, obj)
     if not callable(obj):
         raise TypeError(f"{obj!r} is not a callable object")
     # CPython: for callable instances, delegate to their `__call__` method.
     if not isinstance(obj, type):
         call_attr = getattr(obj, "__call__", None)
         if call_attr is not None and call_attr is not obj:
-            try:
-                return signature(call_attr)
-            except Exception:  # noqa: BLE001
-                pass
+            return signature(call_attr)
     if isinstance(obj, type):
         if obj is type:
             raise ValueError(f"no signature found for builtin {obj!r}")

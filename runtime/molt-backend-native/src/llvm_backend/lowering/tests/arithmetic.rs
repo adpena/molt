@@ -217,6 +217,54 @@ fn lower_conditional_branch() {
 }
 
 #[test]
+fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    backend.module.add_function(
+        "helper_raw",
+        ctx.i64_type().fn_type(&[ctx.i64_type().into(); 2], false),
+        Some(inkwell::module::Linkage::External),
+    );
+    let mut abi = test_native_linkage_abi(vec![TirType::I64; 2], Some(TirType::DynBox));
+    abi.parameter_custody = vec![crate::ir::ParameterCustody::Transferred; 2];
+    backend
+        .function_linkage_abis
+        .insert("helper_raw".into(), abi);
+    let dummy = TirFunction::new(
+        "dummy".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let dummy_fn = backend.module.add_function(
+        "dummy",
+        ctx.i64_type().fn_type(&[], false),
+        Some(inkwell::module::Linkage::External),
+    );
+    // The ordinary lowering builder has no insertion point. The trampoline
+    // must allocate and store its argument transport in its own function.
+    let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
+    let trampoline = lowering.ensure_plain_trampoline("helper_raw", 2, false);
+    backend
+        .module
+        .verify()
+        .expect("trampoline owns its cleanup transport");
+    let ir = trampoline.print_to_string().to_string();
+    let target = ir.find("call i64 @helper_raw").expect("raw target entry");
+    let cleanup = ir
+        .find("call void @molt_call_inputs_release")
+        .expect("canonical input retirement");
+    assert!(target < cleanup, "{ir}");
+    assert_eq!(
+        ir.matches("call void @molt_call_inputs_release").count(),
+        1,
+        "{ir}"
+    );
+    assert!(ir.contains("alloca i64, i64 2"), "{ir}");
+    assert!(!ir.contains("@molt_dec_ref_obj"), "{ir}");
+}
+
+#[test]
 fn plain_trampoline_boxes_bool_return_into_i64_abi() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);

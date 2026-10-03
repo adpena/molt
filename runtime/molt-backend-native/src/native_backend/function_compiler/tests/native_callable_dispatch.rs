@@ -25,14 +25,18 @@ use crate::native_backend::simple_backend::tests::{
     compile_selected_functions_direct, emit_direct_object,
 };
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use native_object_execution::{link_and_run_native_object, real_rustc};
 
 mod cargo_test_artifacts {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+mod native_object_execution {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/native_object_execution.rs"
     ));
 }
 
@@ -92,6 +96,7 @@ fn native_callable_program(
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -100,109 +105,6 @@ fn native_callable_program(
 
 fn object_contains(bytes: &[u8], needle: &[u8]) -> bool {
     bytes.windows(needle.len()).any(|w| w == needle)
-}
-
-fn real_rustc() -> Option<PathBuf> {
-    let rustc = std::env::var_os("RUSTC")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("rustc"));
-    let available = Command::new(&rustc)
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success());
-    if available {
-        return Some(rustc);
-    }
-    if std::env::var_os("CI").is_some()
-        || std::env::var_os("MOLT_REQUIRE_REAL_NATIVE_LINK_TESTS").is_some()
-        || std::env::var_os("MOLT_REQUIRE_REAL_NATIVE_CALLABLE_EXECUTION_TESTS").is_some()
-    {
-        panic!("real native final-link proof is required but rustc is unavailable");
-    }
-    eprintln!(
-        "SKIP real native final-link proof: rustc is unavailable; set \
-         MOLT_REQUIRE_REAL_NATIVE_LINK_TESTS=1 to make this a hard failure"
-    );
-    None
-}
-
-fn run_checked(command: &mut Command, purpose: &str) {
-    let output = command
-        .output()
-        .unwrap_or_else(|error| panic!("{purpose}: failed to start: {error}"));
-    assert!(
-        output.status.success(),
-        "{purpose}: status={}\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn native_provider_archive_path(temp: &Path) -> PathBuf {
-    if cfg!(windows) {
-        temp.join("native_callable_provider.lib")
-    } else {
-        temp.join("libnative_callable_provider.a")
-    }
-}
-
-fn link_and_run_native_object(
-    rustc: &Path,
-    artifact_name: &str,
-    object_bytes: Vec<u8>,
-    provider_source_text: &str,
-    harness_source_text: &str,
-    purpose: &str,
-) {
-    let artifacts =
-        cargo_test_artifacts::CargoTestArtifacts::new(artifact_name).unwrap_or_else(|error| {
-            panic!("create {purpose} outputs within Cargo image custody: {error:?}")
-        });
-    let temp = artifacts.path();
-    let app_object = temp.join("native_callable_app.o");
-    let provider_source = temp.join("provider.rs");
-    let provider_archive = native_provider_archive_path(temp);
-    let harness_source = temp.join("harness.rs");
-    let executable = temp.join(if cfg!(windows) {
-        "native_callable_execution.exe"
-    } else {
-        "native_callable_execution"
-    });
-    fs::write(&app_object, object_bytes).expect("write Cranelift app object");
-    fs::write(&provider_source, provider_source_text).expect("write native provider source");
-    run_checked(
-        artifacts
-            .command(rustc)
-            .expect("resolve fixture compiler")
-            .arg("--edition=2021")
-            .arg("--crate-name=native_callable_provider")
-            .arg("--crate-type=rlib")
-            .arg("-Cpanic=abort")
-            .arg(artifacts.argument("", &provider_source).unwrap())
-            .arg("-o")
-            .arg(artifacts.argument("", &provider_archive).unwrap()),
-        &format!("compile {purpose} provider static archive"),
-    );
-    fs::write(&harness_source, harness_source_text).expect("write native execution harness");
-    run_checked(
-        artifacts
-            .command(rustc)
-            .expect("resolve fixture compiler")
-            .arg("--edition=2021")
-            .arg(artifacts.argument("", &harness_source).unwrap())
-            .arg("-C")
-            .arg(artifacts.argument("link-arg=", &app_object).unwrap())
-            .arg("-C")
-            .arg(artifacts.argument("link-arg=", &provider_archive).unwrap())
-            .arg("-o")
-            .arg(artifacts.argument("", &executable).unwrap()),
-        &format!("final-link Cranelift object with {purpose} provider archive"),
-    );
-    run_checked(
-        &mut Command::new(&executable),
-        &format!("execute final-linked {purpose} binary"),
-    );
 }
 
 #[test]
@@ -367,6 +269,7 @@ fn cleanup_oracle_function(
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
 }
@@ -704,6 +607,165 @@ fn main() {
         &provider_source,
         &harness_source,
         "native object-input parser",
+    );
+}
+
+fn scalarized_tuple_head_function(name: &str) -> FunctionIR {
+    cleanup_oracle_function(
+        name,
+        &["head", "tail"],
+        Some(&["dyn", "dyn"]),
+        vec![
+            OpIR {
+                kind: "tuple_new".into(),
+                args: Some(vec!["head".into(), "tail".into()]),
+                out: Some("pair".into()),
+                stack_eligible: Some(true),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".into(),
+                out: Some("zero".into()),
+                value: Some(0),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".into(),
+                args: Some(vec!["pair".into(), "zero".into()]),
+                out: Some("item".into()),
+                ..OpIR::default()
+            },
+            ret("item"),
+        ],
+    )
+}
+
+#[test]
+fn scalarized_tuple_index_never_retains_a_word_after_failed_construction() {
+    const TARGET: &str = "scalarized_tuple_head";
+    let backend =
+        compile_selected_functions_direct(vec![scalarized_tuple_head_function(TARGET)], &[TARGET]);
+    let object_bytes = emit_direct_object(backend);
+    let imports = native_object_symbols(&object_bytes).undefined;
+    assert!(
+        imports.contains("molt_tuple_from_values"),
+        "the tuple is still constructed through the canonical word-range ABI"
+    );
+    for fallback in [
+        "molt_tuple_getitem",
+        "molt_dict_getitem",
+        "molt_list_getitem_int_fast",
+        "molt_index",
+    ] {
+        assert!(
+            !imports.contains(fallback),
+            "a constant index into a scalarized tuple must not call `{fallback}`"
+        );
+    }
+
+    let Some(rustc) = real_rustc() else {
+        return;
+    };
+    let provider_source = r#"#![no_std]
+use core::sync::atomic::{AtomicU64, Ordering};
+
+#[export_name = "@GENERATED_OBJECT_ABI_SYMBOL@"]
+pub static GENERATED_OBJECT_ABI: u8 = 0;
+static mut EXCEPTION_PENDING: u8 = 0;
+static FAIL: AtomicU64 = AtomicU64::new(0);
+static CONSTRUCTED: AtomicU64 = AtomicU64::new(0);
+static WORD_RETAINS: AtomicU64 = AtomicU64::new(0);
+
+#[no_mangle]
+pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {
+    if FAIL.load(Ordering::SeqCst) != 0 {
+        unsafe { EXCEPTION_PENDING = 1; }
+        return @BOXED_NONE@;
+    }
+    let words = unsafe { core::slice::from_raw_parts(address as *const u64, len as usize) };
+    if *words == [101u64, 102] {
+        CONSTRUCTED.fetch_add(1, Ordering::SeqCst);
+    }
+    0x200
+}
+#[no_mangle]
+pub extern "C" fn molt_inc_ref_obj(value: u64) {
+    if value == 101 || value == 102 {
+        WORD_RETAINS.fetch_add(1, Ordering::SeqCst);
+    }
+}
+#[no_mangle]
+pub extern "C" fn molt_dec_ref_obj(_: u64) {}
+#[no_mangle]
+pub extern "C" fn molt_dec_ref(_: u64) {}
+#[no_mangle]
+pub extern "C" fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING as u64 } }
+#[no_mangle]
+pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {
+    core::ptr::addr_of!(EXCEPTION_PENDING) as u64
+}
+#[no_mangle]
+pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {
+    molt_exception_pending_fast()
+}
+#[no_mangle]
+pub extern "C" fn molt_int_from_i64(value: i64) -> u64 { value as u64 }
+#[no_mangle]
+pub extern "C" fn scalarized_fail(fail: u64) { FAIL.store(fail, Ordering::SeqCst); }
+#[no_mangle]
+pub extern "C" fn scalarized_constructed() -> u64 { CONSTRUCTED.load(Ordering::SeqCst) }
+#[no_mangle]
+pub extern "C" fn scalarized_word_retains() -> u64 { WORD_RETAINS.load(Ordering::SeqCst) }
+"#
+    .replace(
+        "@GENERATED_OBJECT_ABI_SYMBOL@",
+        molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
+    )
+    .replace(
+        "@BOXED_NONE@",
+        &(molt_codegen_abi::box_none_bits() as u64).to_string(),
+    );
+    let harness_source = r#"
+const BOXED_NONE: u64 = @BOXED_NONE@;
+
+extern "C" {
+    fn scalarized_tuple_head(head: u64, tail: u64) -> u64;
+    fn scalarized_fail(fail: u64);
+    fn scalarized_constructed() -> u64;
+    fn scalarized_word_retains() -> u64;
+    fn molt_exception_pending_fast() -> u64;
+}
+
+fn main() {
+    unsafe {
+        assert_eq!(scalarized_tuple_head(101, 102), 101, "constant index reads the first word");
+        assert_eq!(scalarized_constructed(), 1, "the constructor received both borrowed words");
+        let success_retains = scalarized_word_retains();
+        assert!(success_retains >= 1, "the bound element must own one retain");
+        assert_eq!(molt_exception_pending_fast(), 0);
+
+        scalarized_fail(1);
+        assert_eq!(scalarized_tuple_head(101, 102), BOXED_NONE, "a failed tuple has no element");
+        assert_eq!(
+            scalarized_word_retains() - success_retains,
+            success_retains - 1,
+            "a failed construction must not retain a borrowed word"
+        );
+        assert_eq!(molt_exception_pending_fast(), 1, "the construction failure stays pending");
+    }
+}
+"#
+    .replace(
+        "@BOXED_NONE@",
+        &(molt_codegen_abi::box_none_bits() as u64).to_string(),
+    );
+    link_and_run_native_object(
+        &rustc,
+        "native-scalarized-tuple-index",
+        object_bytes,
+        &provider_source,
+        &harness_source,
+        "native scalarized tuple index",
     );
 }
 
@@ -1057,6 +1119,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         "cleanup_load_join_metadata_absent",
         "cleanup_load_join_metadata_empty",
         "cleanup_phi_join_metadata",
+        "cleanup_dict_store_metadata",
+        "cleanup_list_int_store_discard",
+        "cleanup_del_index_metadata",
     ];
     let Some(rustc) = real_rustc() else {
         return;
@@ -1711,6 +1776,46 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ret("result"),
         ],
     ));
+    for (name, kind, source_type, symbol, args) in [
+        (TARGET_NAMES[74], "store_index", "dict", None, 3),
+        (
+            TARGET_NAMES[75],
+            "call",
+            "dyn",
+            Some("molt_list_int_setitem"),
+            3,
+        ),
+        (TARGET_NAMES[76], "del_index", "dyn", None, 2),
+    ] {
+        functions.push(cleanup_oracle_function(
+            name,
+            &["source"],
+            Some(&[source_type]),
+            vec![
+                OpIR {
+                    kind: kind.into(),
+                    args: Some(
+                        std::iter::once("source".into())
+                            .chain(std::iter::repeat_n("none".into(), args - 1))
+                            .collect(),
+                    ),
+                    // Statement out metadata is not a semantic result. Direct
+                    // runtime calls use the reserved no-result spelling.
+                    out: Some(
+                        if symbol.is_some() {
+                            "none"
+                        } else {
+                            "not_a_result"
+                        }
+                        .into(),
+                    ),
+                    s_value: symbol.map(str::to_string),
+                    ..OpIR::default()
+                },
+                cleanup_ret_void(),
+            ],
+        ));
+    }
     for (offset, kind, width) in [
         (57, "dict_new", 2),
         (60, "set_new", 1),
@@ -1752,6 +1857,13 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         (67, "set_new", 1),
         (68, "frozenset_new", 1),
     ] {
+        // Sources repeat across entries; `wider` first appears in a later
+        // entry, so it is boxed only after the inserts that precede it.
+        let sources: &[&str] = if width == 2 {
+            &["wide", "wide", "wide", "wider", "wider", "wide"]
+        } else {
+            &["wide", "wide", "wider"]
+        };
         let function = cleanup_oracle_function(
             TARGET_NAMES[index],
             &[],
@@ -1771,8 +1883,15 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                     ..OpIR::default()
                 },
                 OpIR {
+                    kind: "checked_add".into(),
+                    args: Some(vec!["wide".into(), "limb".into()]),
+                    var: Some("wider".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
                     kind: kind.into(),
-                    args: Some(vec!["wide".into(); width * 3]),
+                    args: Some(sources.iter().map(|name| name.to_string()).collect()),
                     out: Some("result".into()),
                     ..OpIR::default()
                 },
@@ -1783,10 +1902,12 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             &function,
             &crate::tir::TargetInfo::native_release_fast(),
         );
-        assert!(
-            plan.is_full_deopt_int_name("wide"),
-            "{kind}: physical temporary box witness"
-        );
+        for value in ["wide", "wider"] {
+            assert!(
+                plan.is_full_deopt_int_name(value),
+                "{kind}/{value}: physical temporary box witness"
+            );
+        }
         functions.push(function);
     }
     for (index, kind, empty_args) in [
@@ -2004,10 +2125,15 @@ fn hash_failure(code: u64) -> u64 {
     unsafe { EXCEPTION_PENDING = 1; }
     BOXED_NONE
 }
-fn hash_insert(value: u64) -> u64 {
+fn hash_insert(value: u64, operands: &[u64]) -> u64 {
     assert_eq!(unsafe { EXCEPTION_PENDING }, 0, "insert after failed predecessor");
     let index = owner_index(value).expect("insert requires allocated hash container");
     assert_ne!(unsafe { REFS[index] }, 0, "insert into released container");
+    for &operand in operands {
+        if let Some(index) = owner_index(operand) {
+            assert_ne!(unsafe { REFS[index] }, 0, "insert borrowed a released operand");
+        }
+    }
     let insertion = HASH_INSERTS.fetch_add(1, Ordering::SeqCst) + 1;
     if HASH_FAIL_INSERT.load(Ordering::SeqCst) == insertion { hash_failure(100 + insertion) }
     else { value }
@@ -2030,9 +2156,15 @@ pub extern "C" fn cleanup_hash_box_fail(index: u64) { HASH_FAIL_BOX.store(index,
 #[no_mangle]
 pub extern "C" fn cleanup_hash_boxes() -> u64 { HASH_BOXES.load(Ordering::SeqCst) }
 #[no_mangle]
-pub extern "C" fn molt_dict_set(value: u64, _: u64, _: u64) -> u64 { hash_insert(value) }
+pub extern "C" fn molt_dict_set(value: u64, key: u64, item: u64) -> u64 { hash_insert(value, &[key, item]) }
 #[no_mangle]
 pub extern "C" fn molt_store_index(value: u64, _: u64, _: u64) -> u64 { value }
+#[no_mangle]
+pub extern "C" fn molt_dict_setitem(value: u64, _: u64, _: u64) -> u64 { value }
+#[no_mangle]
+pub extern "C" fn molt_list_int_setitem(value: u64, _: u64, _: u64) -> u64 { value }
+#[no_mangle]
+pub extern "C" fn molt_del_index(value: u64, _: u64) -> u64 { value }
 #[no_mangle]
 pub extern "C" fn molt_dict_update_missing(value: u64, _: u64, _: u64) -> u64 { value }
 #[no_mangle]
@@ -2042,9 +2174,9 @@ pub extern "C" fn molt_set_new(_: u64) -> u64 { hash_new() }
 #[no_mangle]
 pub extern "C" fn molt_frozenset_new(_: u64) -> u64 { hash_new() }
 #[no_mangle]
-pub extern "C" fn molt_set_add(value: u64, _: u64) -> u64 { hash_insert(value); BOXED_NONE }
+pub extern "C" fn molt_set_add(value: u64, key: u64) -> u64 { hash_insert(value, &[key]); BOXED_NONE }
 #[no_mangle]
-pub extern "C" fn molt_frozenset_add(value: u64, _: u64) -> u64 { hash_insert(value); BOXED_NONE }
+pub extern "C" fn molt_frozenset_add(value: u64, key: u64) -> u64 { hash_insert(value, &[key]); BOXED_NONE }
 #[no_mangle]
 pub extern "C" fn molt_recursion_enter_fast() -> u64 { 1 }
 #[no_mangle]
@@ -2228,6 +2360,9 @@ fn integer_value(bits: u64) -> i64 {
     fn cleanup_dict_update_missing_absent(source: u64);
     fn cleanup_dict_update_missing_none(source: u64);
     fn cleanup_store_index_metadata(source: u64);
+    fn cleanup_dict_store_metadata(source: u64);
+    fn cleanup_list_int_store_discard(source: u64);
+    fn cleanup_del_index_metadata(source: u64);
     fn cleanup_dict_set_temporary() -> u64;
     fn cleanup_hash_dict_bound() -> u64;
     fn cleanup_hash_dict_absent();
@@ -2554,6 +2689,9 @@ fn main() {
         cleanup_dict_update_missing_absent(source);
         cleanup_dict_update_missing_none(source);
         cleanup_store_index_metadata(source);
+        cleanup_dict_store_metadata(source);
+        cleanup_list_int_store_discard(source);
+        cleanup_del_index_metadata(source);
         assert_counts("handwritten borrowed discard and out metadata", 1, 2, 2, 1);
         molt_dec_ref_obj(source);
         assert_counts("handwritten borrowed caller cleanup", 1, 2, 3, 0);
@@ -2563,19 +2701,31 @@ fn main() {
         molt_dec_ref_obj(result);
         assert_counts("borrowed alias caller cleanup", 1, 1, 2, 0);
         reset();
-        for (label, run, width) in [
-            ("dict raw", cleanup_hash_dict_raw as unsafe extern "C" fn() -> u64, 2),
-            ("set raw", cleanup_hash_set_raw as unsafe extern "C" fn() -> u64, 1),
-            ("frozenset raw", cleanup_hash_frozenset_raw as unsafe extern "C" fn() -> u64, 1),
+        // Steps: `b` mints the box for a source's first use and `i` inserts
+        // one entry. Later uses share that box, so `wider` is boxed only after
+        // the inserts that precede its first entry.
+        for (label, run, steps) in [
+            ("dict raw", cleanup_hash_dict_raw as unsafe extern "C" fn() -> u64, "bibii"),
+            ("set raw", cleanup_hash_set_raw as unsafe extern "C" fn() -> u64, "biibi"),
+            ("frozenset raw", cleanup_hash_frozenset_raw as unsafe extern "C" fn() -> u64, "biibi"),
         ] {
-            for (allocate, insert, boxing) in [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 2, 0), (0, 0, 1), (0, 0, 2)] {
+            for (allocate, insert, boxing) in [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 2, 0), (0, 3, 0), (0, 0, 1), (0, 0, 2)] {
                 cleanup_hash_mode(allocate, insert);
                 cleanup_hash_box_fail(boxing);
                 let result = run();
-                let calls = if allocate != 0 { 0 } else if boxing != 0 { (boxing - 1) / width } else if insert != 0 { insert } else { 3 };
-                let boxes = if allocate != 0 { 0 } else if boxing != 0 { boxing } else { calls * width };
-                let allocations = if allocate != 0 { 0 } else { 1 + boxes - u64::from(boxing != 0) };
-                let error = if allocate != 0 { 71 } else if boxing != 0 { 200 + boxing } else if insert != 0 { 100 + insert } else { 0 };
+                let (mut calls, mut boxes, mut error) = (0, 0, if allocate != 0 { 71 } else { 0 });
+                if allocate == 0 {
+                    for step in steps.bytes() {
+                        if step == b'b' {
+                            boxes += 1;
+                            if boxes == boxing { error = 200 + boxing; break; }
+                        } else {
+                            calls += 1;
+                            if calls == insert { error = 100 + insert; break; }
+                        }
+                    }
+                }
+                let allocations = if allocate != 0 { 0 } else { 1 + boxes - u64::from(error > 200) };
                 if error == 0 {
                     assert_eq!(result, cleanup_oracle_owner(0), "{label}: aggregate identity");
                     assert_counts(label, allocations, 0, allocations - 1, 1);
@@ -2830,4 +2980,382 @@ fn native_direct_symbol_rejects_empty_symbol() {
         &["module_name"],
     );
     let _ = SimpleBackend::new().compile(ir);
+}
+
+#[test]
+fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
+    let Some(rustc) = real_rustc() else {
+        return;
+    };
+    let names = [
+        "fixed_tuple",
+        "fixed_list",
+        "fixed_dataclass",
+        "fixed_discard",
+        "fixed_class",
+        "fixed_class_discard",
+        "fixed_slice",
+        "fixed_slice_discard",
+        "fixed_dataclass_tuple",
+        "fixed_dataclass_tuple_discard",
+        "fixed_class_new",
+        "fixed_class_new_discard",
+        "fixed_subscript_slice",
+        "fixed_subscript_slice_discard",
+        "fixed_index",
+        "fixed_index_discard",
+        "fixed_store_index",
+        "fixed_del_index",
+        "fixed_dict_set",
+        "fixed_dict_update_missing",
+        "fixed_dict_get",
+        "fixed_dict_get_discard",
+        "fixed_set_add",
+        "fixed_vec_sum",
+        "fixed_vec_sum_discard",
+        "fixed_vec_prod",
+        "fixed_vec_prod_discard",
+        "fixed_vec_min",
+        "fixed_vec_min_discard",
+        "fixed_vec_max",
+        "fixed_vec_max_discard",
+        "fixed_operator_index",
+        "fixed_operator_index_discard",
+    ];
+    let mut functions = Vec::new();
+    for (name, kind, bound) in [
+        (names[0], "tuple_new", true),
+        (names[1], "list_new", true),
+        (names[2], "dataclass_new_values", true),
+        (names[3], "tuple_new", false),
+        (names[4], "class_def", true),
+        (names[5], "class_def", false),
+        (names[6], "slice_new", true),
+        (names[7], "slice_new", false),
+        (names[8], "dataclass_new", true),
+        (names[9], "dataclass_new", false),
+        (names[10], "class_new", true),
+        (names[11], "class_new", false),
+        (names[12], "slice", true),
+        (names[13], "slice", false),
+        (names[14], "index", true),
+        (names[15], "index", false),
+        (names[16], "store_index", false),
+        (names[17], "del_index", false),
+        (names[18], "dict_set", false),
+        (names[19], "dict_update_missing", false),
+        (names[20], "dict_get", true),
+        (names[21], "dict_get", false),
+        (names[22], "set_add", false),
+        (names[23], "vec_sum", true),
+        (names[24], "vec_sum", false),
+        (names[25], "vec_prod", true),
+        (names[26], "vec_prod", false),
+        (names[27], "vec_min", true),
+        (names[28], "vec_min", false),
+        (names[29], "vec_max", true),
+        (names[30], "vec_max", false),
+        (names[31], "operator_index", true),
+        (names[32], "operator_index", false),
+    ] {
+        let mut args: Vec<String> = if kind == "dataclass_new_values" {
+            vec!["none".into(); 3]
+        } else if matches!(kind, "class_def" | "dataclass_new") {
+            vec!["none".into()]
+        } else {
+            Vec::new()
+        };
+        match kind {
+            "class_new" | "operator_index" => args.push("wide".into()),
+            "index" | "set_add" => args.extend(["wide".into(), "wider".into()]),
+            "del_index" => args.extend(["wide".into(), "wide".into()]),
+            _ => args.extend(["wide".into(), "wide".into(), "wider".into()]),
+        }
+        let function = cleanup_oracle_function(
+            name,
+            &[],
+            None,
+            vec![
+                OpIR {
+                    kind: "const_int".into(),
+                    value: Some(1_i64 << 31),
+                    out: Some("limb".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "checked_mul".into(),
+                    args: Some(vec!["limb".into(), "limb".into()]),
+                    var: Some("wide".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "checked_add".into(),
+                    args: Some(vec!["wide".into(), "limb".into()]),
+                    var: Some("wider".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: kind.into(),
+                    args: Some(args),
+                    s_value: (kind == "class_def").then(|| "1,1,16,7,3".into()),
+                    out: bound.then(|| "result".into()),
+                    stack_eligible: Some(true),
+                    ..OpIR::default()
+                },
+                if bound {
+                    ret("result")
+                } else {
+                    cleanup_ret_void()
+                },
+            ],
+        );
+        let plan = crate::representation_plan::ScalarRepresentationPlan::for_function_ir_for_target(
+            &function,
+            &crate::tir::TargetInfo::native_release_fast(),
+        );
+        for value in ["wide", "wider"] {
+            assert!(
+                plan.is_full_deopt_int_name(value),
+                "{name}/{value}: require a physical heap box"
+            );
+        }
+        functions.push(function);
+    }
+    let object_bytes = emit_direct_object(compile_selected_functions_direct(functions, &names));
+    let provider = r#"#![no_std]
+use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
+#[export_name = "@ABI@"] pub static ABI: u8 = 0;
+const NONE: u64 = @NONE@;
+static mut PENDING: u8 = 0;
+static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+static FAIL: AtomicU64 = AtomicU64::new(0);
+static CTOR_FAIL: AtomicU64 = AtomicU64::new(0);
+static CALLS: AtomicU64 = AtomicU64::new(0);
+static RESULT: AtomicU64 = AtomicU64::new(0);
+static FIRST: AtomicU64 = AtomicU64::new(0);
+static SECOND: AtomicU64 = AtomicU64::new(0);
+static RESULT_FIRST: AtomicU64 = AtomicU64::new(0);
+static RESULT_SECOND: AtomicU64 = AtomicU64::new(0);
+#[no_mangle] pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {
+    let attempt = ATTEMPTS.fetch_add(1, SeqCst) + 1;
+    assert_eq!(value, if attempt == 1 {1_i64 << 62} else {(1_i64 << 62) + (1_i64 << 31)});
+    if FAIL.load(SeqCst) == attempt { unsafe {PENDING = 1;} return NONE; }
+    assert!(attempt <= 2, "one materialization per distinct value");
+    if attempt == 1 {FIRST.store(1, SeqCst)} else {SECOND.store(1, SeqCst)}
+    0x100 + attempt
+}
+#[no_mangle] pub extern "C" fn molt_inc_ref_obj(value: u64) {
+    let refs = match value {0x101 => &FIRST, 0x102 => &SECOND, 0x200 => &RESULT, _ => return};
+    assert!(refs.fetch_add(1, SeqCst) > 0, "retain after free");
+}
+#[no_mangle] pub extern "C" fn molt_dec_ref_obj(value: u64) {
+    let refs = match value {0x101 => &FIRST, 0x102 => &SECOND, 0x200 => &RESULT, _ => return};
+    let old = refs.fetch_sub(1, SeqCst); assert!(old > 0, "duplicate release");
+    if value == 0x200 && old == 1 {
+        for _ in 0..RESULT_FIRST.load(SeqCst) {molt_dec_ref_obj(0x101)}
+        for _ in 0..RESULT_SECOND.load(SeqCst) {molt_dec_ref_obj(0x102)}
+    }
+}
+#[no_mangle] pub extern "C" fn molt_dec_ref(value: u64) {molt_dec_ref_obj(value)}
+unsafe fn construct(address: u64, len: u64) -> u64 {
+    assert_eq!(len, 3);
+    construct_words(unsafe {core::slice::from_raw_parts(address as *const u64, len as usize)})
+}
+fn construct_words(values: &[u64]) -> u64 {
+    CALLS.fetch_add(1, SeqCst); assert_eq!(molt_exception_pending_fast(), 0);
+    assert_eq!(values, &[0x101, 0x101, 0x102], "preserve repeated operand identity and order");
+    assert_eq!(FIRST.load(SeqCst), 1); assert_eq!(SECOND.load(SeqCst), 1);
+    if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING = 1;} return NONE;}
+    for &value in values {molt_inc_ref_obj(value)}
+    RESULT_FIRST.store(2,SeqCst); RESULT_SECOND.store(1,SeqCst);
+    RESULT.store(1, SeqCst); 0x200
+}
+#[no_mangle] pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {unsafe {construct(address,len)}}
+#[no_mangle] pub unsafe extern "C" fn molt_list_from_values(address: u64, len: u64) -> u64 {unsafe {construct(address,len)}}
+#[no_mangle] pub unsafe extern "C" fn molt_dataclass_new_from_values(name:u64, fields:u64, address:u64, len:u64, flags:u64)->u64 {
+    assert_eq!([name,fields,flags],[NONE;3]); unsafe {construct(address,len)}
+}
+#[no_mangle] pub extern "C" fn molt_slice_new(start:u64, stop:u64, step:u64)->u64 {construct_words(&[start,stop,step])}
+#[no_mangle] pub extern "C" fn molt_slice(target:u64, start:u64, end:u64)->u64 {construct_words(&[target,start,end])}
+// Real family dispatch reaches these borrowed-input/owned-result providers.
+#[no_mangle] pub extern "C" fn molt_vec_sum(it:u64,acc:u64,target:u64)->u64 {construct_words(&[it,acc,target])}
+#[no_mangle] pub extern "C" fn molt_vec_prod(it:u64,acc:u64,target:u64)->u64 {construct_words(&[it,acc,target])}
+#[no_mangle] pub extern "C" fn molt_vec_min(it:u64,acc:u64,target:u64)->u64 {construct_words(&[it,acc,target])}
+#[no_mangle] pub extern "C" fn molt_vec_max(it:u64,acc:u64,target:u64)->u64 {construct_words(&[it,acc,target])}
+fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
+    CALLS.fetch_add(1,SeqCst); assert_eq!(molt_exception_pending_fast(),0);
+    assert_eq!(values,expected,"borrow each distinct operand once, in order");
+    for &value in values {
+        let refs = match value {0x101 => &FIRST, 0x102 => &SECOND, _ => continue};
+        assert!(refs.load(SeqCst) > 0, "borrowed a released temporary box");
+    }
+    if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING=1;} return false;}
+    true
+}
+#[no_mangle] pub extern "C" fn molt_operator_index(value:u64)->u64 {
+    if !subscript_words(&[value],&[0x101]) {return NONE;}
+    RESULT_FIRST.store(0,SeqCst); RESULT_SECOND.store(0,SeqCst);
+    RESULT.store(1,SeqCst); 0x200
+}
+#[no_mangle] pub extern "C" fn molt_index(obj:u64,key:u64)->u64 {
+    if !subscript_words(&[obj,key],&[0x101,0x102]) {return NONE;}
+    molt_inc_ref_obj(key); key
+}
+#[no_mangle] pub extern "C" fn molt_list_getitem_int_fast(obj:u64,key:u64)->u64 {molt_index(obj,key)}
+#[no_mangle] pub extern "C" fn molt_store_index(obj:u64,key:u64,value:u64)->u64 {
+    if subscript_words(&[obj,key,value],&[0x101,0x101,0x102]) {obj} else {NONE}
+}
+#[no_mangle] pub extern "C" fn molt_del_index(obj:u64,key:u64)->u64 {
+    if subscript_words(&[obj,key],&[0x101,0x101]) {obj} else {NONE}
+}
+#[no_mangle] pub extern "C" fn molt_dict_update_missing(obj:u64,key:u64,value:u64)->u64 {
+    molt_store_index(obj,key,value)
+}
+#[no_mangle] pub extern "C" fn molt_dict_get(obj:u64,key:u64,default:u64)->u64 {
+    if !subscript_words(&[obj,key,default],&[0x101,0x101,0x102]) {return NONE;}
+    molt_inc_ref_obj(default); default
+}
+#[no_mangle] pub extern "C" fn molt_set_add(obj:u64,key:u64)->u64 {
+    subscript_words(&[obj,key],&[0x101,0x102]); NONE
+}
+#[no_mangle] pub extern "C" fn molt_dataclass_new(name:u64,fields:u64,values:u64,flags:u64)->u64 {
+    assert_eq!(name,NONE); construct_words(&[fields,values,flags])
+}
+#[no_mangle] pub extern "C" fn molt_class_new(name:u64)->u64 {
+    CALLS.fetch_add(1,SeqCst); assert_eq!(molt_exception_pending_fast(),0);
+    assert_eq!(name,0x101); assert_eq!(FIRST.load(SeqCst),1);
+    if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING=1;} return NONE;}
+    molt_inc_ref_obj(name); RESULT_FIRST.store(1,SeqCst); RESULT_SECOND.store(0,SeqCst);
+    RESULT.store(1,SeqCst); 0x200
+}
+#[no_mangle] pub unsafe extern "C" fn molt_guarded_class_def(name:u64,bases:u64,nbases:u64,attrs:u64,nattrs:u64,size:u64,version:u64,flags:u64)->u64 {
+    assert_eq!(name,NONE); assert_eq!([nbases,nattrs,size,version,flags],[1,1,16,7,3]);
+    let words=unsafe { [*(bases as *const u64), *(attrs as *const u64), *((attrs as *const u64).add(1))] };
+    unsafe {construct(words.as_ptr() as u64,3)}
+}
+#[no_mangle] pub extern "C" fn molt_exception_pending_fast()->u64 {unsafe {PENDING as u64}}
+#[no_mangle] pub extern "C" fn molt_exception_pending_flag_ptr()->u64 {core::ptr::addr_of!(PENDING) as u64}
+#[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_pending()->u64 {molt_exception_pending_fast()}
+#[no_mangle] pub extern "C" fn fixed_reset(failure:u64, ctor_failure:u64) {
+    assert_eq!(fixed_live(),0); ATTEMPTS.store(0,SeqCst); CALLS.store(0,SeqCst);
+    FAIL.store(failure,SeqCst); CTOR_FAIL.store(ctor_failure,SeqCst); unsafe {PENDING=0;}
+}
+#[no_mangle] pub extern "C" fn fixed_live()->u64 {FIRST.load(SeqCst)+SECOND.load(SeqCst)+RESULT.load(SeqCst)}
+#[no_mangle] pub extern "C" fn fixed_attempts()->u64 {ATTEMPTS.load(SeqCst)}
+#[no_mangle] pub extern "C" fn fixed_calls()->u64 {CALLS.load(SeqCst)}
+"#.replace("@ABI@", molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL)
+      .replace("@NONE@", &(molt_codegen_abi::box_none_bits() as u64).to_string());
+    let harness = r#"
+const NONE:u64=@NONE@;
+extern "C" {
+ fn fixed_tuple()->u64; fn fixed_list()->u64; fn fixed_dataclass()->u64; fn fixed_discard();
+ fn fixed_class()->u64; fn fixed_class_discard();
+ fn fixed_slice()->u64; fn fixed_slice_discard();
+ fn fixed_dataclass_tuple()->u64; fn fixed_dataclass_tuple_discard();
+ fn fixed_class_new()->u64; fn fixed_class_new_discard();
+ fn fixed_subscript_slice()->u64; fn fixed_subscript_slice_discard();
+ fn fixed_index()->u64; fn fixed_index_discard(); fn fixed_store_index(); fn fixed_del_index();
+ fn fixed_dict_set(); fn fixed_dict_update_missing(); fn fixed_dict_get()->u64;
+ fn fixed_dict_get_discard(); fn fixed_set_add();
+ fn fixed_vec_sum()->u64; fn fixed_vec_sum_discard();
+ fn fixed_vec_prod()->u64; fn fixed_vec_prod_discard();
+ fn fixed_vec_min()->u64; fn fixed_vec_min_discard();
+ fn fixed_vec_max()->u64; fn fixed_vec_max_discard();
+ fn fixed_operator_index()->u64; fn fixed_operator_index_discard();
+ fn fixed_reset(failure:u64,ctor_failure:u64); fn fixed_live()->u64;
+ fn fixed_attempts()->u64; fn fixed_calls()->u64; fn molt_exception_pending_fast()->u64;
+ fn molt_dec_ref_obj(value:u64);
+}
+fn main() {unsafe {
+ for run in [fixed_tuple as unsafe extern "C" fn()->u64, fixed_list, fixed_dataclass, fixed_class, fixed_slice, fixed_dataclass_tuple, fixed_subscript_slice, fixed_vec_sum, fixed_vec_prod, fixed_vec_min, fixed_vec_max] {
+  for (failure,ctor_failure) in [(0,0),(1,0),(2,0),(0,1)] {
+   fixed_reset(failure,ctor_failure); let result=run();
+   let success=failure==0 && ctor_failure==0;
+   assert_eq!(result,if success {0x200} else {NONE});
+   assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
+   assert_eq!(fixed_calls(),u64::from(failure==0));
+   assert_eq!(fixed_live(),if success {4} else {0});
+   assert_eq!(molt_exception_pending_fast(),u64::from(!success));
+   if success {molt_dec_ref_obj(result)} assert_eq!(fixed_live(),0);
+  }
+ }
+ for run in [fixed_discard as unsafe extern "C" fn(), fixed_class_discard, fixed_slice_discard, fixed_dataclass_tuple_discard, fixed_subscript_slice_discard, fixed_vec_sum_discard, fixed_vec_prod_discard, fixed_vec_min_discard, fixed_vec_max_discard] {
+  for (failure,consumer_failure) in [(0,0),(1,0),(2,0),(0,1)] {
+   fixed_reset(failure,consumer_failure); run(); assert_eq!(fixed_live(),0);
+   assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
+   assert_eq!(fixed_calls(),u64::from(failure==0));
+   assert_eq!(molt_exception_pending_fast(),u64::from(failure!=0 || consumer_failure!=0));
+  }
+ }
+ for (failure,ctor_failure) in [(0,0),(1,0),(0,1)] {
+  fixed_reset(failure,ctor_failure); let result=fixed_class_new();
+  let success=failure==0 && ctor_failure==0;
+  assert_eq!(result,if success {0x200} else {NONE});
+  assert_eq!(fixed_attempts(),1); assert_eq!(fixed_calls(),u64::from(failure==0));
+  assert_eq!(fixed_live(),if success {2} else {0});
+  assert_eq!(molt_exception_pending_fast(),u64::from(!success));
+  if success {molt_dec_ref_obj(result)} assert_eq!(fixed_live(),0);
+  fixed_reset(failure,ctor_failure); fixed_class_new_discard();
+  assert_eq!(fixed_live(),0); assert_eq!(fixed_attempts(),1);
+  assert_eq!(fixed_calls(),u64::from(failure==0));
+ }
+ // operator.index returns a fresh owned result after borrowing one boxed input.
+ for (failure,consumer_failure) in [(0,0),(1,0),(0,1)] {
+  let success=failure==0 && consumer_failure==0;
+  fixed_reset(failure,consumer_failure); let result=fixed_operator_index();
+  assert_eq!(result,if success {0x200} else {NONE});
+  assert_eq!(fixed_attempts(),1); assert_eq!(fixed_calls(),u64::from(failure==0));
+  assert_eq!(fixed_live(),u64::from(success));
+  assert_eq!(molt_exception_pending_fast(),u64::from(!success));
+  if success {molt_dec_ref_obj(result)} assert_eq!(fixed_live(),0);
+  fixed_reset(failure,consumer_failure); fixed_operator_index_discard();
+  assert_eq!(fixed_live(),0); assert_eq!(fixed_attempts(),1);
+  assert_eq!(fixed_calls(),u64::from(failure==0));
+  assert_eq!(molt_exception_pending_fast(),u64::from(!success));
+ }
+ // An owned result may alias a borrowed operand: the key keeps its box through
+ // the result's own credit after the transaction releases its temporaries.
+ for (run,discard) in [(fixed_index as unsafe extern "C" fn()->u64,fixed_index_discard as unsafe extern "C" fn()),(fixed_dict_get,fixed_dict_get_discard)] {
+ for (failure,consumer_failure) in [(0,0),(1,0),(2,0),(0,1)] {
+  let success=failure==0 && consumer_failure==0;
+  fixed_reset(failure,consumer_failure); let result=run();
+  assert_eq!(result,if success {0x102} else {NONE});
+  assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
+  assert_eq!(fixed_calls(),u64::from(failure==0));
+  assert_eq!(fixed_live(),u64::from(success));
+  assert_eq!(molt_exception_pending_fast(),u64::from(!success));
+  if success {molt_dec_ref_obj(result)} assert_eq!(fixed_live(),0);
+  fixed_reset(failure,consumer_failure); discard();
+  assert_eq!(fixed_live(),0); assert_eq!(fixed_calls(),u64::from(failure==0));
+  assert_eq!(molt_exception_pending_fast(),u64::from(!success));
+ }
+ }
+ // Statements discard the borrowed container return, which aliases the first
+ // operand's box; only the transaction releases that box.
+ for (run,boxes) in [(fixed_store_index as unsafe extern "C" fn(),2),(fixed_del_index,1),(fixed_dict_set,2),(fixed_dict_update_missing,2),(fixed_set_add,2)] {
+  for (failure,consumer_failure) in [(0,0),(1,0),(2,0),(0,1)] {
+   fixed_reset(failure,consumer_failure); run();
+   let failed_box=failure!=0 && failure<=boxes;
+   assert_eq!(fixed_attempts(),if failed_box {failure} else {boxes});
+   assert_eq!(fixed_calls(),u64::from(!failed_box));
+   assert_eq!(fixed_live(),0);
+   assert_eq!(molt_exception_pending_fast(),u64::from(failed_box || consumer_failure!=0));
+  }
+ }
+}}
+"#
+    .replace(
+        "@NONE@",
+        &(molt_codegen_abi::box_none_bits() as u64).to_string(),
+    );
+    link_and_run_native_object(
+        &rustc,
+        "native-fixed-aggregate-owners",
+        object_bytes,
+        &provider,
+        &harness,
+        "native fixed aggregate materialization and ownership",
+    );
 }

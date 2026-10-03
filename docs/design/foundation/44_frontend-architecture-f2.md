@@ -29,12 +29,51 @@ this closes the allocator finding, not the remaining F2 decomposition.
 
 ## 0. Scope, non-goals, and what F1 already proved
 
+### Code metadata and lexical storage
+
+`compiler_analysis/python_lexical_scope.py` owns `PythonCodeNameLayout` and
+`PythonCellStoragePlan`. Callable producers use one evaluation-ordered projection
+for `co_varnames` and `co_names`: earlier reads, assignment RHSs, definition
+headers, exception continuations, and PEP 709 scopes participate in the same
+walk. Assignment order, spelling order, and optimized branch reachability are
+not substitutes for this layout. Functions, methods, lambdas, generators and
+coroutines publish the same metadata contract.
+
+Logical code cells and physical storage are distinct projections. `cellvars`
+includes source closure cells and cells of inlined comprehensions. `captured`
+identifies cells owned by the enclosing activation; `private` identifies boxed
+locals needed for dominating storage but absent from `co_cellvars`. Reducer
+fusion cannot change these lexical facts based on a builtin's spelling.
+Default and decorator expressions use their actual enclosing lexical region.
+
+An inlined-comprehension cell can occur in both `co_varnames` and `co_cellvars`,
+including a non-parameter local. The two entries describe one code slot, not
+two owners. A comprehension-only cell must not introduce an enclosing local
+that would shadow a later global read. Frame publication must use the actual
+binding/storage facts rather than infer physical custody from a name alone.
+`CodeSlotDeclaration` computes the frontend slot tuple once per declaration;
+the runtime's `object/code_layout.rs` projects those same public tables for
+frame consumers. All local/cell overlaps preserve the original local index,
+then cell-only and free slots follow. Runtime membership uses string contents
+in a keyed lookup; code names need not share an interned allocation.
+The metadata projection does not itself establish live-frame mutation,
+traceback retention, suspension, or teardown correctness; those are separate
+consumers of the frame ownership contract.
+
 ### Current source-ordered name authority (2026-09-05)
 
 `compiler_analysis/python_binding_flow.py` owns source-point name identity,
 binding status, invalidation, and truth-callback ordering. Its immutable
 `PythonBindingIndex` is retained for a module's frontend lowering; import flow
 is a projection of that same index, not a separately recomputed classifier.
+For Python 3.13 and later, optimized activation locals participate in the same
+callback-exposure domain as captured cells and namespace bindings. A callback
+can replace them through a PEP 667 frame proxy, so subsequent reads lose stale
+value, type and callable-identity facts. Earlier pending expression reads retain
+their captured value. Callback-free operations preserve precision; a store
+establishes a new fact only if releasing its displaced owner cannot reenter and
+replace it. This analysis contract does not itself establish runtime frame-proxy
+support.
 The schema/digest/semantic-policy single-flight cache owns reuse. Target Python,
 platform, package/spec identity, and execution kind remain part of the policy.
 
@@ -145,6 +184,16 @@ intrinsic evidence remains valid despite unresolved imports. The strict
 static-import projection still
 rejects those obligations with the owning module, path and source line. Compiler
 enforcement and the audit command use this same evidence authority.
+The compiler's existing per-module import cache also retains
+`StdlibModuleIntrinsicFacts`: the direct intrinsic status and unresolved/proven
+import evidence from one captured source generation. Admission checks fresh
+source bytes, module/package identity, target Python, host parser identity and
+the frontend semantic-tooling fingerprint. Parsing and binding analysis are
+reused only for matching inputs. A malformed record is recomputed from source;
+source read, parse and analysis failures remain errors. No final classification,
+resolved graph, or facade child-module promotion is persisted: those
+decisions use the current graph on every build. Cache publication binds facts
+to the bytes analyzed, never to a later pathname hash.
 Classification returns statuses and the analyzed import evidence together;
 compiler failures and audit text/JSON report unresolved sites without a second
 analysis. Missing, unreadable or target-incompatible source fails with its
@@ -204,6 +253,32 @@ matching WASM ownership. Runtime symbol requirements are projections of the
 same generated semantic-role rows as opcode requirements, not a separate
 symbol-policy list. `super_runtime_frame_context.py` covers the dispatch family;
 frontend/static receipts alone do not establish emitted native/WASM parity.
+
+A synchronous Python activation's binding homes own its bindings, one per
+`CodeSlotDeclaration` slot (CPython's `localsplus`); `_emit_function_metadata`
+returns the declaration it published and `start_function` lays the homes out
+from it. `frame_home_store`, `frame_home_cell` and `frame_home_private_cell`
+adopt their operand and yield a non-owning view of the binding; the prologue
+stores every parameter and free-variable cell (`_emit_frame_home_prologue`),
+`MAKE_CELL` stores the new cell and ends the parameter's reference with a
+`DEL_BOUNDARY`, `del` is `frame_home_clear`, and a PEP 709 comprehension moves
+each enclosing binding out (`frame_home_take`) and stores it back on its normal
+and exceptional exits. From 3.13 a read that the binding analysis cannot prove
+free of an intervening callback (a read without a fact included) is a
+`frame_home_load`, so a proxy write is observed; other reads use the view.
+Returns capture a view before the exit; no compiled code releases a home's
+binding at any exit: `trace_exit`'s runtime unlinks the frame, then retires or
+releases its homes in the target's clear order. Argument zero is frame context
+kind 3: `super()` reads code slot 0's home when it runs. Stateful activations
+keep their bindings in the task payload, which is also what a proxy writes, and
+their terminal transition clears it. `locals()`, `vars()` and `dir()` of a
+function are `frame_locals`, which the runtime answers from the executing
+frame. `_function_binds_homes` is the one predicate for a frame's homes, its
+FunctionIR `parameter_custody` and a direct call's custody.
+`test_frontend_midend_passes.py`, `test_python_execution_frame.py`,
+`bindings_tests.rs` and the `frame_binding_lifetime.py` and
+`locals_mutation_semantics.py` differential capsules cover the storage and its
+exits.
 
 Deferred annotations and lazy type evaluators use that same executing-frame
 and lexical-closure authority. Their namespace lookup scope is not a class-body
@@ -353,13 +428,21 @@ introduce no collision callback. Nested walrus values preserve their result shap
 without losing the mandatory store. Scoped walrus collection visits immediate
 defaults and headers but excludes deferred bodies.
 
-Runtime call builders own one keyword dictionary. Binding acquires an ephemeral,
-pinned `PreparedCallArgs` projection after all argument effects; no borrowed
-keyword arrays survive expansion. `BoundCallSlots` owns values through every
-binding callback and failure exit. Keyword matching and canonical `**kwargs`
-insertion precede positional arity/default resolution; each missing keyword-only
-parameter rereads the live defaults dictionary. No extra-keyword rebuild lane
-exists. Inline-cache admission and foreign calls read the canonical dictionary.
+Runtime call builders own one keyword dictionary. The consuming call takes the
+builder's edges once, moving them when it holds the only builder reference and
+retaining its own otherwise. It decides custody once, from the original callee.
+A plain Python function gets a frame that takes the arguments over; under CALL,
+so does a bound method of one. Every other callee borrows them, and the call
+releases them afterwards. Keyword admission unpacks the dictionary once after
+all argument effects, so no borrowed keyword arrays survive expansion.
+`BoundCallSlots` owns values through every binding callback and failure exit.
+Release orders follow CPython for the call form and the target Python version.
+Keyword matching and canonical `**kwargs` insertion precede positional
+arity/default resolution; each missing keyword-only parameter rereads the live
+defaults dictionary. No extra-keyword rebuild lane exists. Inline-cache
+admission and foreign calls read the canonical dictionary. §4.7 of
+`docs/spec/areas/compat/contracts/call_argument_binding_contract.md` specifies
+the owners, custody, release orders and unresolved release requirements.
 Iterator descriptor lookup and invocation share one
 exception boundary; sequence acquisition probes slot presence without binding,
 and exhaustion retires the target before releasing callback-capable references.
@@ -390,6 +473,23 @@ Async argument custody uses shared scratch
 load-then-clear operations so successful consumption does not retain values in
 compiler frame slots. `locals()` snapshot selection follows target Python
 (PEP 667 at 3.13), not the compiler's host interpreter.
+
+The argument builder is created at its first push. Operands still pending then
+(a named keyword group, a deferred sole star) therefore unwind after it, as
+CPython unwinds its value stack. Async scratch custody parks a builder only once
+it exists.
+
+The schedule authority also decides each source call's form (`call_form`): CALL
+or CALL_FUNCTION_EX. It applies CPython's stack-use threshold and its
+module-import rule for method calls, reading the imports from sema's
+`import_names`. Lowering records the form on `callargs_new`, because runtime
+values cannot recover it and the two forms own their arguments differently
+while the callee binds them.
+
+Argument evaluation now sits between a method lookup and its builder.
+`fuse_method_dispatch` moves the lookup to the call only across operations that
+the generated purity, effect and variable-role facts prove inert; otherwise it
+keeps the original lookup.
 
 Required condition evaluation remains in the live-statement projection even
 when a successor is impossible. An underscore is not a Python visibility

@@ -3,572 +3,155 @@
 
 use crate::*;
 use molt_obj_model::MoltObject;
-use std::collections::HashSet;
 
-fn dir_runtime_python_at_least(_py: &PyToken<'_>, major: i64, minor: i64) -> bool {
-    let state = runtime_state(_py);
-    let guard = state.sys_version_info.lock().unwrap();
-    let (runtime_major, runtime_minor) = guard
-        .as_ref()
-        .map(|info| (info.major, info.minor))
-        .unwrap_or((3, 12));
-    runtime_major > major || (runtime_major == major && runtime_minor >= minor)
+/// Materialize physical native iterator/sequence slots through their existing
+/// linked owner. Managed results retain the runtime list constructor fast path.
+unsafe fn dir_materialize(py: &PyToken<'_>, result: u64) -> Option<u64> {
+    if let Some(pointer) = obj_from_bits(result).as_ptr()
+        && unsafe { object_type_id(pointer) == TYPE_ID_FOREIGN }
+    {
+        use molt_cpython_abi::api::{abstract_sequence, refcount::OwnedPyObject};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let native = unsafe { crate::object::foreign::foreign_ptr_from_obj(pointer) };
+        let list = unsafe {
+            abstract_sequence::PySequence_List(std::ptr::with_exposed_provenance_mut(native))
+        };
+        if list.is_null() {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "directory native iterable");
+            return None;
+        }
+        let list = unsafe { OwnedPyObject::from_owned(list) };
+        let result = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(list.as_ptr()) };
+        if result.is_none() {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "directory list projection");
+        }
+        result
+    } else {
+        unsafe { list_from_iter_bits(py, result) }
+    }
 }
 
-fn dir_add_builtin_method_surface(
-    _py: &PyToken<'_>,
-    target_class_bits: u64,
-    add_name: &mut dyn FnMut(&[u8]) -> bool,
-) -> bool {
-    let builtins = builtin_classes(_py);
-    if target_class_bits == builtins.str {
-        for name in [
-            &b"capitalize"[..],
-            &b"casefold"[..],
-            &b"center"[..],
-            &b"count"[..],
-            &b"encode"[..],
-            &b"endswith"[..],
-            &b"expandtabs"[..],
-            &b"find"[..],
-            &b"format"[..],
-            &b"format_map"[..],
-            &b"index"[..],
-            &b"isalnum"[..],
-            &b"isalpha"[..],
-            &b"isascii"[..],
-            &b"isdecimal"[..],
-            &b"isdigit"[..],
-            &b"isidentifier"[..],
-            &b"islower"[..],
-            &b"isnumeric"[..],
-            &b"isprintable"[..],
-            &b"isspace"[..],
-            &b"istitle"[..],
-            &b"isupper"[..],
-            &b"join"[..],
-            &b"ljust"[..],
-            &b"lower"[..],
-            &b"lstrip"[..],
-            &b"maketrans"[..],
-            &b"partition"[..],
-            &b"removeprefix"[..],
-            &b"removesuffix"[..],
-            &b"replace"[..],
-            &b"rfind"[..],
-            &b"rindex"[..],
-            &b"rjust"[..],
-            &b"rpartition"[..],
-            &b"rsplit"[..],
-            &b"rstrip"[..],
-            &b"split"[..],
-            &b"splitlines"[..],
-            &b"startswith"[..],
-            &b"strip"[..],
-            &b"swapcase"[..],
-            &b"title"[..],
-            &b"translate"[..],
-            &b"upper"[..],
-            &b"zfill"[..],
-        ] {
-            if !add_name(name) {
-                return false;
-            }
+/// Namespace discovery uses the existing optional-attribute, mapping and
+/// sequence owners. This is the one default dir protocol for both representations;
+/// no raw class-layout walker can bypass __dict__/__class__/__bases__ callbacks.
+unsafe fn dir_default_collect(py: &PyToken<'_>, obj_bits: u64, type_directory: bool) -> u64 {
+    use molt_cpython_abi::abi_types::PyObject;
+    use molt_cpython_abi::api::{abstract_sequence, mapping, object, refcount::OwnedPyObject};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+
+    unsafe fn optional(
+        object_ptr: *mut PyObject,
+        name: &std::ffi::CStr,
+    ) -> Result<Option<OwnedPyObject>, ()> {
+        let mut value = std::ptr::null_mut();
+        let status = unsafe {
+            object::PyObject_GetOptionalAttrString(object_ptr, name.as_ptr(), &raw mut value)
+        };
+        match status {
+            -1 => Err(()),
+            0 => Ok(None),
+            _ => Ok(Some(unsafe { OwnedPyObject::from_owned(value) })),
         }
-        return true;
     }
-    if target_class_bits == builtins.bytes {
-        for name in [
-            &b"capitalize"[..],
-            &b"center"[..],
-            &b"count"[..],
-            &b"decode"[..],
-            &b"endswith"[..],
-            &b"expandtabs"[..],
-            &b"find"[..],
-            &b"fromhex"[..],
-            &b"hex"[..],
-            &b"index"[..],
-            &b"isalnum"[..],
-            &b"isalpha"[..],
-            &b"isascii"[..],
-            &b"isdigit"[..],
-            &b"islower"[..],
-            &b"isspace"[..],
-            &b"istitle"[..],
-            &b"isupper"[..],
-            &b"join"[..],
-            &b"ljust"[..],
-            &b"lower"[..],
-            &b"lstrip"[..],
-            &b"maketrans"[..],
-            &b"partition"[..],
-            &b"removeprefix"[..],
-            &b"removesuffix"[..],
-            &b"replace"[..],
-            &b"rfind"[..],
-            &b"rindex"[..],
-            &b"rjust"[..],
-            &b"rpartition"[..],
-            &b"rsplit"[..],
-            &b"rstrip"[..],
-            &b"split"[..],
-            &b"splitlines"[..],
-            &b"startswith"[..],
-            &b"strip"[..],
-            &b"swapcase"[..],
-            &b"title"[..],
-            &b"translate"[..],
-            &b"upper"[..],
-            &b"zfill"[..],
-        ] {
-            if !add_name(name) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if target_class_bits == builtins.bytearray {
-        for name in [
-            &b"append"[..],
-            &b"capitalize"[..],
-            &b"center"[..],
-            &b"clear"[..],
-            &b"copy"[..],
-            &b"count"[..],
-            &b"decode"[..],
-            &b"endswith"[..],
-            &b"expandtabs"[..],
-            &b"extend"[..],
-            &b"find"[..],
-            &b"fromhex"[..],
-            &b"hex"[..],
-            &b"index"[..],
-            &b"insert"[..],
-            &b"isalnum"[..],
-            &b"isalpha"[..],
-            &b"isascii"[..],
-            &b"isdigit"[..],
-            &b"islower"[..],
-            &b"isspace"[..],
-            &b"istitle"[..],
-            &b"isupper"[..],
-            &b"join"[..],
-            &b"ljust"[..],
-            &b"lower"[..],
-            &b"lstrip"[..],
-            &b"maketrans"[..],
-            &b"partition"[..],
-            &b"pop"[..],
-            &b"remove"[..],
-            &b"removeprefix"[..],
-            &b"removesuffix"[..],
-            &b"replace"[..],
-            &b"reverse"[..],
-            &b"rfind"[..],
-            &b"rindex"[..],
-            &b"rjust"[..],
-            &b"rpartition"[..],
-            &b"rsplit"[..],
-            &b"rstrip"[..],
-            &b"split"[..],
-            &b"splitlines"[..],
-            &b"startswith"[..],
-            &b"strip"[..],
-            &b"swapcase"[..],
-            &b"title"[..],
-            &b"translate"[..],
-            &b"upper"[..],
-            &b"zfill"[..],
-        ] {
-            if !add_name(name) {
-                return false;
-            }
-        }
-        if dir_runtime_python_at_least(_py, 3, 14) && !add_name(&b"resize"[..]) {
-            return false;
-        }
-        return true;
-    }
-    if target_class_bits == builtins.int || target_class_bits == builtins.bool {
-        for name in [
-            &b"as_integer_ratio"[..],
-            &b"bit_count"[..],
-            &b"bit_length"[..],
-            &b"conjugate"[..],
-            &b"from_bytes"[..],
-            &b"is_integer"[..],
-            &b"to_bytes"[..],
-        ] {
-            if !add_name(name) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if target_class_bits == builtins.float {
-        for name in [
-            &b"as_integer_ratio"[..],
-            &b"conjugate"[..],
-            &b"fromhex"[..],
-            &b"hex"[..],
-            &b"is_integer"[..],
-        ] {
-            if !add_name(name) {
-                return false;
-            }
-        }
-        if dir_runtime_python_at_least(_py, 3, 14) && !add_name(&b"from_number"[..]) {
-            return false;
-        }
-        return true;
-    }
-    if target_class_bits == builtins.complex {
-        if !add_name(&b"conjugate"[..]) {
-            return false;
-        }
-        if dir_runtime_python_at_least(_py, 3, 14) && !add_name(&b"from_number"[..]) {
-            return false;
-        }
-        return true;
-    }
-    if target_class_bits == builtins.list {
-        for name in [
-            &b"append"[..],
-            &b"clear"[..],
-            &b"copy"[..],
-            &b"count"[..],
-            &b"extend"[..],
-            &b"index"[..],
-            &b"insert"[..],
-            &b"pop"[..],
-            &b"remove"[..],
-            &b"reverse"[..],
-            &b"sort"[..],
-        ] {
-            if !add_name(name) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if target_class_bits == builtins.tuple {
-        return add_name(&b"count"[..]) && add_name(&b"index"[..]);
-    }
-    if target_class_bits == builtins.range {
-        return add_name(&b"count"[..]) && add_name(&b"index"[..]);
-    }
-    if target_class_bits == builtins.dict {
-        for name in [
-            &b"clear"[..],
-            &b"copy"[..],
-            &b"fromkeys"[..],
-            &b"get"[..],
-            &b"items"[..],
-            &b"keys"[..],
-            &b"pop"[..],
-            &b"popitem"[..],
-            &b"setdefault"[..],
-            &b"update"[..],
-            &b"values"[..],
-        ] {
-            if !add_name(name) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if target_class_bits == builtins.set {
-        for name in [
-            &b"add"[..],
-            &b"clear"[..],
-            &b"copy"[..],
-            &b"difference"[..],
-            &b"difference_update"[..],
-            &b"discard"[..],
-            &b"intersection"[..],
-            &b"intersection_update"[..],
-            &b"isdisjoint"[..],
-            &b"issubset"[..],
-            &b"issuperset"[..],
-            &b"pop"[..],
-            &b"remove"[..],
-            &b"symmetric_difference"[..],
-            &b"symmetric_difference_update"[..],
-            &b"union"[..],
-            &b"update"[..],
-        ] {
-            if !add_name(name) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if target_class_bits == builtins.frozenset {
-        for name in [
-            &b"copy"[..],
-            &b"difference"[..],
-            &b"intersection"[..],
-            &b"isdisjoint"[..],
-            &b"issubset"[..],
-            &b"issuperset"[..],
-            &b"symmetric_difference"[..],
-            &b"union"[..],
-        ] {
-            if !add_name(name) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if target_class_bits == builtins.memoryview {
-        for name in [
-            &b"_from_flags"[..],
-            &b"cast"[..],
-            &b"hex"[..],
-            &b"release"[..],
-            &b"tobytes"[..],
-            &b"tolist"[..],
-            &b"toreadonly"[..],
-        ] {
-            if !add_name(name) {
-                return false;
-            }
-        }
-        if dir_runtime_python_at_least(_py, 3, 14)
-            && (!add_name(&b"count"[..]) || !add_name(&b"index"[..]))
+
+    unsafe fn merge_class(
+        py: &PyToken<'_>,
+        dictionary: *mut PyObject,
+        class: *mut PyObject,
+    ) -> Result<(), ()> {
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(py) else {
+            return Err(());
+        };
+        if let Some(namespace) = unsafe { optional(class, c"__dict__") }?
+            && unsafe { mapping::PyDict_Update(dictionary, namespace.as_ptr()) } < 0
         {
-            return false;
+            return Err(());
         }
-        return true;
+        if let Some(bases) = unsafe { optional(class, c"__bases__") }? {
+            let count = unsafe { abstract_sequence::PySequence_Size(bases.as_ptr()) };
+            if count < 0 {
+                return Err(());
+            }
+            for index in 0..count {
+                let base = unsafe { abstract_sequence::PySequence_GetItem(bases.as_ptr(), index) };
+                if base.is_null() {
+                    return Err(());
+                }
+                let base = unsafe { OwnedPyObject::from_owned(base) };
+                unsafe { merge_class(py, dictionary, base.as_ptr()) }?;
+            }
+        }
+        Ok(())
     }
-    if target_class_bits == builtins.property {
-        return add_name(&b"getter"[..]) && add_name(&b"setter"[..]) && add_name(&b"deleter"[..]);
-    }
-    if target_class_bits == builtins.base_exception_group
-        || issubclass_bits(target_class_bits, builtins.base_exception_group)
-    {
-        return add_name(&b"add_note"[..])
-            && add_name(&b"with_traceback"[..])
-            && add_name(&b"derive"[..])
-            && add_name(&b"split"[..])
-            && add_name(&b"subgroup"[..]);
-    }
-    if target_class_bits == builtins.base_exception
-        || issubclass_bits(target_class_bits, builtins.base_exception)
-    {
-        return add_name(&b"add_note"[..]) && add_name(&b"with_traceback"[..]);
-    }
-    if target_class_bits == builtins.slice {
-        return add_name(&b"indices"[..]);
-    }
-    if target_class_bits == builtins.type_obj {
-        return add_name(&b"mro"[..]);
-    }
-    true
-}
 
-unsafe fn dir_default_collect(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
-    unsafe {
-        crate::gil_assert();
-
-        let mut names: Vec<u64> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut extra_owned: Vec<u64> = Vec::new();
-
-        if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
-            let type_id = object_type_id(obj_ptr);
-            if type_id == TYPE_ID_TYPE {
-                dir_collect_from_class_bits(obj_bits, &mut seen, &mut names);
+    let result = (|| -> Result<OwnedPyObject, ()> {
+        unsafe {
+            let source = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(obj_bits);
+            if source.is_null() {
+                return Err(());
+            }
+            let source = OwnedPyObject::from_owned(source);
+            let dictionary = if type_directory {
+                mapping::PyDict_New()
+            } else if let Some(namespace) = optional(source.as_ptr(), c"__dict__")? {
+                if mapping::PyDict_Check(namespace.as_ptr()) != 0 {
+                    mapping::PyDict_Copy(namespace.as_ptr())
+                } else {
+                    mapping::PyDict_New()
+                }
             } else {
-                dir_collect_from_instance(_py, obj_ptr, &mut seen, &mut names);
-                dir_collect_from_class_bits(type_of_bits(_py, obj_bits), &mut seen, &mut names);
-            }
-        } else {
-            dir_collect_from_class_bits(type_of_bits(_py, obj_bits), &mut seen, &mut names);
-        }
-
-        // Our runtime keeps many builtin methods in fast method caches rather than in
-        // `type.__dict__`. CPython's dir() includes those names, so ensure they're visible.
-        let mut add_name = |name: &[u8]| -> bool {
-            let Ok(name_str) = std::str::from_utf8(name) else {
-                return true;
+                mapping::PyDict_New()
             };
-            if !seen.insert(name_str.to_string()) {
-                return true;
+            if dictionary.is_null() {
+                return Err(());
             }
-            let Some(bits) = attr_name_bits_from_bytes(_py, name) else {
-                return false;
-            };
-            extra_owned.push(bits);
-            names.push(bits);
-            true
-        };
-
-        // Object surface (ordering-critical names appear early in CPython's sorted dir()).
-        for name in [
-            &b"__class__"[..],
-            &b"__delattr__"[..],
-            &b"__dir__"[..],
-            &b"__doc__"[..],
-            &b"__eq__"[..],
-            &b"__format__"[..],
-            &b"__ge__"[..],
-            &b"__getattribute__"[..],
-            &b"__getstate__"[..],
-            &b"__gt__"[..],
-            &b"__hash__"[..],
-            &b"__init__"[..],
-            &b"__init_subclass__"[..],
-            &b"__le__"[..],
-            &b"__lt__"[..],
-            &b"__ne__"[..],
-            &b"__new__"[..],
-            &b"__repr__"[..],
-            &b"__setattr__"[..],
-            &b"__str__"[..],
-        ] {
-            if !add_name(name) {
-                for owned in extra_owned {
-                    dec_ref_bits(_py, owned);
-                }
-                return MoltObject::none().bits();
+            let dictionary = OwnedPyObject::from_owned(dictionary);
+            if type_directory {
+                merge_class(py, dictionary.as_ptr(), source.as_ptr())?;
+            } else if let Some(class) = optional(source.as_ptr(), c"__class__")? {
+                merge_class(py, dictionary.as_ptr(), class.as_ptr())?;
             }
+            let result = mapping::PyDict_Keys(dictionary.as_ptr());
+            if result.is_null() {
+                return Err(());
+            }
+            let result = OwnedPyObject::from_owned(result);
+            Ok(result)
         }
-
-        if maybe_ptr_from_bits(obj_bits).is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_TYPE) {
-            for name in [
-                &b"__bases__"[..],
-                &b"__dict__"[..],
-                &b"__module__"[..],
-                &b"__mro__"[..],
-                &b"__name__"[..],
-                &b"__qualname__"[..],
-            ] {
-                if !add_name(name) {
-                    for owned in extra_owned {
-                        dec_ref_bits(_py, owned);
-                    }
-                    return MoltObject::none().bits();
-                }
+    })();
+    match result {
+        Ok(result) => match unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(result.as_ptr()) } {
+            Some(bits) => bits,
+            None => {
+                crate::cpython_abi_hooks::propagate_native_failure(
+                    py,
+                    "directory result projection",
+                );
+                MoltObject::none().bits()
             }
+        },
+        Err(()) => {
+            crate::cpython_abi_hooks::propagate_native_failure(
+                py,
+                "directory namespace observation",
+            );
+            MoltObject::none().bits()
         }
-
-        let builtins = builtin_classes(_py);
-        let target_class_bits = if maybe_ptr_from_bits(obj_bits)
-            .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_TYPE)
-        {
-            obj_bits
-        } else {
-            type_of_bits(_py, obj_bits)
-        };
-
-        if target_class_bits == builtins.int || target_class_bits == builtins.bool {
-            for name in [
-                &b"__abs__"[..],
-                &b"__add__"[..],
-                &b"__and__"[..],
-                &b"__bool__"[..],
-                &b"__ceil__"[..],
-                &b"__divmod__"[..],
-            ] {
-                if !add_name(name) {
-                    for owned in extra_owned {
-                        dec_ref_bits(_py, owned);
-                    }
-                    return MoltObject::none().bits();
-                }
-            }
-        } else if target_class_bits == builtins.str {
-            for name in [&b"__add__"[..], &b"__contains__"[..], &b"__getitem__"[..]] {
-                if !add_name(name) {
-                    for owned in extra_owned {
-                        dec_ref_bits(_py, owned);
-                    }
-                    return MoltObject::none().bits();
-                }
-            }
-        } else if target_class_bits == builtins.list {
-            for name in [
-                &b"__add__"[..],
-                &b"__class_getitem__"[..],
-                &b"__contains__"[..],
-                &b"__delitem__"[..],
-            ] {
-                if !add_name(name) {
-                    for owned in extra_owned {
-                        dec_ref_bits(_py, owned);
-                    }
-                    return MoltObject::none().bits();
-                }
-            }
-        } else if target_class_bits == builtins.dict {
-            for name in [
-                &b"__class_getitem__"[..],
-                &b"__contains__"[..],
-                &b"__delitem__"[..],
-                &b"__getitem__"[..],
-            ] {
-                if !add_name(name) {
-                    for owned in extra_owned {
-                        dec_ref_bits(_py, owned);
-                    }
-                    return MoltObject::none().bits();
-                }
-            }
-        } else if target_class_bits == builtins.none_type && !add_name(&b"__bool__"[..]) {
-            for owned in extra_owned {
-                dec_ref_bits(_py, owned);
-            }
-            return MoltObject::none().bits();
-        }
-        if !dir_add_builtin_method_surface(_py, target_class_bits, &mut add_name) {
-            for owned in extra_owned {
-                dec_ref_bits(_py, owned);
-            }
-            return MoltObject::none().bits();
-        }
-
-        // Hide names that CPython deliberately excludes from dir() output (even though the
-        // attributes exist).
-        let hide_module = is_builtin_class_bits(_py, target_class_bits);
-        names.retain(|&bits| {
-            let Some(name) = string_obj_to_owned(obj_from_bits(bits)) else {
-                return true;
-            };
-            if name == "__mro__" || name == "__bases__" || name == "__text_signature__" {
-                return false;
-            }
-            if name.starts_with("__molt_") {
-                return false;
-            }
-            if hide_module && name == "__module__" {
-                return false;
-            }
-            true
-        });
-
-        let list_ptr = alloc_list(_py, &names);
-        for owned in extra_owned {
-            dec_ref_bits(_py, owned);
-        }
-        if list_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let list_bits = MoltObject::from_ptr(list_ptr).bits();
-        let none_bits = MoltObject::none().bits();
-        let reverse_bits = MoltObject::from_int(0).bits();
-        let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        list_bits
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_dir_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { unsafe { dir_default_collect(_py, self_bits) } })
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe { dir_default_collect(_py, self_bits, false) }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_type_dir_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe { dir_default_collect(_py, self_bits, true) }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -583,100 +166,78 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 let locals_bits = crate::molt_locals_builtin();
                 if exception_pending(_py) {
                     if !obj_from_bits(locals_bits).is_none() {
-                        dec_ref_bits(_py, locals_bits);
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(_py, locals_bits)
+                        });
                     }
                     return MoltObject::none().bits();
                 }
                 let list_bits = list_from_iter_bits(_py, locals_bits)
                     .unwrap_or_else(|| MoltObject::none().bits());
                 if !obj_from_bits(locals_bits).is_none() {
-                    dec_ref_bits(_py, locals_bits);
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(_py, locals_bits)
+                    });
                 }
                 if obj_from_bits(list_bits).is_none() || exception_pending(_py) {
+                    if !obj_from_bits(list_bits).is_none() {
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(_py, list_bits)
+                        });
+                    }
                     return MoltObject::none().bits();
                 }
                 let none_bits = MoltObject::none().bits();
                 let reverse_bits = MoltObject::from_int(0).bits();
                 let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
                 if exception_pending(_py) {
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(_py, list_bits)
+                    });
                     return MoltObject::none().bits();
                 }
                 return list_bits;
             }
         }
 
-        if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+        if maybe_ptr_from_bits(obj_bits).is_some() {
             unsafe {
-                // CPython's dir() respects user-defined `__dir__`, but it must not
-                // dispatch to our internal fast-path method-cache implementation.
-                static DIR_NAME: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let dir_name_bits = intern_static_name(_py, &DIR_NAME, b"__dir__");
-                let mut override_bits: u64 = 0;
-
-                // PEP 562: a module's own `__dir__` in its namespace overrides
-                // dir(module). Module objects do not use the object instance dict slot,
-                // so select the module dict explicitly.
-                let dict_bits = if object_type_id(obj_ptr) == TYPE_ID_MODULE {
-                    module_dict_bits(obj_ptr)
-                } else {
-                    instance_dict_bits(obj_ptr)
-                };
-                if dict_bits != 0
-                    && !obj_from_bits(dict_bits).is_none()
-                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    && let Some(val_bits) = dict_get_in_place(_py, dict_ptr, dir_name_bits)
-                {
-                    inc_ref_bits(_py, val_bits);
-                    override_bits = val_bits;
+                // dir() follows type-special lookup, including the native
+                // foreign descriptor owner. Instance attributes are not hooks.
+                let override_bits =
+                    crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__dir__");
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
                 }
 
-                if override_bits == 0 {
-                    let class_bits = type_of_bits(_py, obj_bits);
-                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                        && let Some(attr_bits) =
-                            class_attr_lookup_raw_mro(_py, class_ptr, dir_name_bits)
-                    {
-                        let bound_opt = descriptor_bind(
-                            _py,
-                            attr_bits,
-                            Some(MoltObject::from_ptr(class_ptr).bits()),
-                            Some(obj_bits),
-                        );
-
-                        if exception_pending(_py) {
-                            if let Some(bound_bits) = bound_opt
-                                && !obj_from_bits(bound_bits).is_none()
-                            {
-                                dec_ref_bits(_py, bound_bits);
-                            }
-                            return MoltObject::none().bits();
-                        }
-
-                        if let Some(bound_bits) = bound_opt {
-                            override_bits = bound_bits;
-                        }
-                    }
-                }
-
-                if override_bits != 0 && !obj_from_bits(override_bits).is_none() {
+                if let Some(override_bits) = override_bits {
                     let res_bits = call_callable0(_py, override_bits);
-                    dec_ref_bits(_py, override_bits);
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(_py, override_bits)
+                    });
                     if exception_pending(_py) {
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(_py, res_bits)
+                        });
                         return MoltObject::none().bits();
                     }
                     // CPython materializes and sorts a user `__dir__` result.
-                    let Some(list_bits) = list_from_iter_bits(_py, res_bits) else {
-                        dec_ref_bits(_py, res_bits);
+                    let Some(list_bits) = dir_materialize(_py, res_bits) else {
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(_py, res_bits)
+                        });
                         return MoltObject::none().bits();
                     };
-                    dec_ref_bits(_py, res_bits);
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(_py, res_bits)
+                    });
                     let none_bits = MoltObject::none().bits();
                     let reverse_bits = MoltObject::from_int(0).bits();
                     let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
                     if exception_pending(_py) {
-                        dec_ref_bits(_py, list_bits);
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(_py, list_bits)
+                        });
                         return MoltObject::none().bits();
                     }
                     return list_bits;
@@ -684,6 +245,20 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
             }
         }
 
-        unsafe { dir_default_collect(_py, obj_bits) }
+        let result = unsafe { dir_default_collect(_py, obj_bits, false) };
+        if exception_pending(_py) {
+            return result;
+        }
+        let _ = molt_list_sort(
+            result,
+            MoltObject::none().bits(),
+            MoltObject::from_bool(false).bits(),
+        );
+        if exception_pending(_py) {
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, result));
+            MoltObject::none().bits()
+        } else {
+            result
+        }
     })
 }

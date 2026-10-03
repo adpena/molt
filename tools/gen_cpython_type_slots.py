@@ -13,7 +13,7 @@ from generator_io import generated_file_matches, write_generated_text
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "runtime/molt-cpython-abi/src/type_slots.rs"
 STABLE_ABI = ROOT / "config/cpython_stable_abi_3_12.toml"
-OUTPUT = ROOT / "runtime/molt-cpython-abi/include/_molt_typeslots.generated.h"
+OUTPUT = ROOT / "include/molt/shared/_molt_typeslots.generated.h"
 CONST_RE = re.compile(
     r"^pub const (?P<name>Py_(?:am|bf|mp|nb|sq|tp)_[A-Za-z0-9_]+): "
     r"c_int = (?P<value>[0-9]+);$",

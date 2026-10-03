@@ -49,6 +49,59 @@ def _custody(
     )
 
 
+@pytest.mark.parametrize(
+    "call,candidate,claim",
+    [
+        ("__import__('admitted.target', **options)", "admitted.target", "matching"),
+        ("load_builtin('admitted.target', **options)", "admitted.target", "matching"),
+        ("importlib.import_module('admitted.target', **options)", "admitted.target", "matching"),
+        ("importlib.util.find_spec('admitted.target', **options)", "admitted.target", "matching"),
+        ("load_builtin(*arguments, **options)", None, "matching"),
+        ("load_builtin(*arguments, name='admitted.target')", "admitted.target", "matching"),
+        ("importlib.import_module('.target', **options)", None, "matching"),
+        ("load_builtin('admitted.target', **options)", "admitted.target", "name"),
+        ("load_builtin('admitted.target', **options)", "admitted.target", "path"),
+        ("load_builtin('admitted.target', **options)", "admitted.target", "ast"),
+        ("load_builtin('admitted.target', **options)", "admitted.target", "missing"),
+    ],
+)
+def test_expanded_import_calls_require_exact_runtime_source_custody(
+    tmp_path: Path, call: str, candidate: str | None, claim: str
+) -> None:
+    source = (
+        "import importlib\nimport importlib.util\n"
+        "from builtins import __import__ as load_builtin\n"
+        f"def deferred(arguments, options):\n    return {call}\n"
+    )
+    owner, custody = _custody(tmp_path, source)
+    tree = ast.parse(source)
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == (
+        (candidate,) if candidate is not None else ()
+    )
+    assert "admitted.target" not in projection.imports
+    if claim == "ast":
+        tree = ast.parse(source + "changed = True\n")
+
+    def collect() -> list[str]:
+        return _collect_imports(
+            tree,
+            "other.entry" if claim == "name" else "pkg.entry",
+            runtime_import_custody=None if claim == "missing" else custody,
+            source_path=tmp_path / "other.py" if claim == "path" else owner,
+        )
+
+    if claim == "matching":
+        assert set(custody.modules) <= set(collect())
+    elif claim == "ast":
+        with pytest.raises(ValueError, match="source AST changed"):
+            collect()
+    else:
+        with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+            collect()
+
+
 @pytest.mark.parametrize("statement", ["from . import child", "from . import *"])
 def test_dynamic_package_uses_complete_catalog_not_lexical_package(
     tmp_path: Path, statement: str

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from molt.cli.runtime_wasm_generation import (
     publish_runtime_wasm_generation,
 )
 from tests.runtime_build_identity_helper import runtime_build_identity
+from molt.toolchain_identity import stable_regular_file_identity
 
 
 def _load_wasm_link():
@@ -52,7 +54,11 @@ def test_linker_requires_caller_trusted_atomic_pair_identity(tmp_path: Path) -> 
         generation_manifest=generation.manifest,
         expected_identity=expected,
     )
-    assert selected == generation
+    assert selected.receipt_identity == stable_regular_file_identity(
+        generation.manifest, label="link generation receipt"
+    )
+    assert generation.receipt_identity is None
+    assert replace(selected, receipt_identity=None) == generation
     assert selected.reloc.name.endswith(".runtime-wasm-member")
     assert selected.shared.name.endswith(".runtime-wasm-member")
 

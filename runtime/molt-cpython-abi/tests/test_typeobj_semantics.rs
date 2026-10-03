@@ -452,3 +452,34 @@ fn richcomparebool_identity_shortcut() {
         1
     );
 }
+
+#[test]
+fn heap_names_use_distinct_live_unicode_fields() {
+    use molt_cpython_abi::abi_types::{Py_TPFLAGS_HEAPTYPE, PyHeapTypeObject};
+    use molt_cpython_abi::api::{refcount, strings, typeobj};
+    install();
+    let mut heap: Box<PyHeapTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    heap.ht_type.tp_flags = Py_TPFLAGS_HEAPTYPE;
+    heap.ht_type.tp_name = c"cached.Unrelated".as_ptr();
+    unsafe {
+        heap.ht_name = strings::PyUnicode_FromString(c"prefix.Name".as_ptr());
+        heap.ht_qualname = strings::PyUnicode_FromString(c"Outer.Qualified".as_ptr());
+        let tp = &raw mut heap.ht_type;
+        let name = typeobj::PyType_GetName(tp);
+        let qualified = typeobj::PyType_GetQualName(tp);
+        assert_eq!(name, heap.ht_name);
+        assert_eq!(qualified, heap.ht_qualname);
+        assert_eq!(read_str(name), b"prefix.Name");
+        assert_eq!(read_str(qualified), b"Outer.Qualified");
+        refcount::Py_DECREF(name);
+        refcount::Py_DECREF(qualified);
+        refcount::Py_DECREF(heap.ht_name);
+        let raw_name = [0xed, 0xa0, 0x80];
+        heap.ht_name = strings::PyUnicode_FromStringAndSize(raw_name.as_ptr().cast(), 3);
+        let renamed = typeobj::PyType_GetName(tp);
+        assert_eq!(read_str(renamed), raw_name);
+        refcount::Py_DECREF(renamed);
+        refcount::Py_DECREF(heap.ht_name);
+        refcount::Py_DECREF(heap.ht_qualname);
+    }
+}

@@ -1166,7 +1166,7 @@ fn guarded_class_def_arms_and_runs_instance_finalizer() {
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
         assert!(
-            unsafe { crate::object::object_class_has_finalizer(_py, inst_ptr) },
+            unsafe { crate::object::object_has_finalizer(_py, inst_ptr) },
             "instance finalization must derive from the current class authority"
         );
 
@@ -1207,7 +1207,7 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
         assert!(
-            !unsafe { crate::object::object_class_has_finalizer(_py, inst_ptr) },
+            !unsafe { crate::object::object_has_finalizer(_py, inst_ptr) },
             "plain instance must not derive finalizer sensitivity"
         );
 

@@ -11,12 +11,7 @@ pub(super) fn emit_return_control_op(
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value => emit_ret(context, func, op),
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Void => {
             context.const_cache.emit_none(func);
-            context.frame.emit_const_anchor_releases(
-                func,
-                context.import_ids,
-                context.reloc_enabled,
-            );
-            func.instruction(&Instruction::Return);
+            context.frame.emit_return(func, context.return_depth);
         }
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::NotReturn
             if op.kind == "unreachable" =>
@@ -40,8 +35,5 @@ fn emit_ret(context: &ControlOpContext<'_>, func: &mut Function, op: &OpIR) {
             format_args!("ret target args {:?} are not present", op.args),
         );
     }
-    context
-        .frame
-        .emit_const_anchor_releases(func, context.import_ids, context.reloc_enabled);
-    func.instruction(&Instruction::Return);
+    context.frame.emit_return(func, context.return_depth);
 }

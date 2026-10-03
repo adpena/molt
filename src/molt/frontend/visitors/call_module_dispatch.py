@@ -8,7 +8,6 @@ from typing import (
 )
 
 from molt.frontend._types import (
-    INTRINSIC_HANDLE_CLASS_CONSTRUCTORS,
     MoltOp,
     MoltValue,
     _intrinsic_arity_exact,
@@ -159,6 +158,27 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind=call_kind, args=args, result=res))
         return res
 
+    def _named_callee_value(
+        self, target_info: MoltValue, func_id: str, node: ast.Call
+    ) -> MoltValue:
+        """The callee operand of a call through the name ``func_id``.
+
+        ``target_info`` is a compile-time fact about that name. It is never the
+        operand of a function-scope read: a local is read where the call reads
+        it, by the Name read that owns its source fact, frame storage and
+        capture across argument evaluation, and a module function is read from
+        the module. Module-scope code and coroutine slots already hold the
+        name's current value.
+        """
+        if self.current_func_name == "molt_main" or func_id in self.async_locals:
+            return target_info
+        if func_id not in self.locals:
+            return self._emit_module_attr_get(func_id)
+        callee = self.visit(node.func)
+        if callee is None:
+            raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
+        return callee
+
     def _emit_stateful_function_value_call(
         self,
         target_info: MoltValue | None,
@@ -173,13 +193,7 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         if stateful_hint is None:
             return None
 
-        callee = target_info
-        if (
-            self.current_func_name != "molt_main"
-            and func_id not in self.locals
-            and func_id not in self.async_locals
-        ):
-            callee = self._emit_module_attr_get(func_id)
+        callee = self._named_callee_value(target_info, func_id, node)
         return self._emit_stateful_callable_call(
             callee,
             node,
@@ -269,65 +283,6 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
                 args=[callee] + args,
                 result=res,
                 metadata={"target": target_name},
-            )
-        )
-        return res
-
-    def _try_emit_intrinsic_handle_class_constructor(
-        self,
-        target_module: str,
-        attr_name: str,
-        node: ast.Call,
-    ) -> MoltValue | None:
-        spec = INTRINSIC_HANDLE_CLASS_CONSTRUCTORS.get((target_module, attr_name))
-        if spec is None:
-            return None
-        if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
-            return None
-        if len(node.args) > 1:
-            return None
-
-        runtime_args: list[MoltValue]
-        if node.args:
-            arg_hint = self._builtin_exact_type_from_expr(node.args[0])
-            if arg_hint not in spec.iterable_types:
-                return None
-            intrinsic_name = spec.iterable_intrinsic
-        else:
-            intrinsic_name = spec.empty_intrinsic
-
-        class_ref = self.visit(node.func)
-        if class_ref is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE,
-                "Unsupported intrinsic-backed class target",
-            )
-        runtime_args = []
-        if node.args:
-            iterable = self.visit(node.args[0])
-            if iterable is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE,
-                    "Unsupported intrinsic-backed class constructor argument",
-                )
-            runtime_args.append(iterable)
-
-        intrinsic_func = self._emit_intrinsic_function(intrinsic_name)
-        handle = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(
-                kind="CALL_FUNC",
-                args=[intrinsic_func] + runtime_args,
-                result=handle,
-            )
-        )
-        res = MoltValue(self.next_var(), type_hint=spec.type_hint)
-        self.emit(MoltOp(kind="OBJECT_NEW_BOUND", args=[class_ref], result=res))
-        self.emit(
-            MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[res, spec.handle_attr, handle],
-                result=MoltValue("none"),
             )
         )
         return res

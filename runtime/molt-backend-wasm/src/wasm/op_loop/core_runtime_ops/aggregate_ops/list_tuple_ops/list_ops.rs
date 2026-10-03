@@ -1,7 +1,8 @@
-use super::super::super::super::builder_ops::{BuilderFinish, emit_sequence_builder_from_args};
+use super::super::super::super::builder_ops::{WordRangeConstructor, emit_word_range_constructor};
 use super::super::super::super::result_sink::finish_owned_local_result;
 use super::super::AggregateRuntimeContext;
 use crate::OpIR;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use wasm_encoder::Function;
 
 pub(super) fn emit_list_op(func: &mut Function, op: &OpIR, ctx: &AggregateRuntimeContext<'_>) {
@@ -12,14 +13,18 @@ pub(super) fn emit_list_op(func: &mut Function, op: &OpIR, ctx: &AggregateRuntim
     let empty_args_ln: Vec<String> = Vec::new();
     let args = op.args.as_ref().unwrap_or(&empty_args_ln);
     let out = locals.op_result_or_sink_slot(op);
-    emit_sequence_builder_from_args(
+    emit_word_range_constructor(
         func,
         args,
         out,
+        WordRangeConstructor {
+            import: WasmRuntimeImport::ListFromValues,
+            leading: &[],
+            trailing: &[],
+        },
         import_ids,
         locals,
         reloc_enabled,
-        BuilderFinish::List,
     );
     finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
 }

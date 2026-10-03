@@ -15,7 +15,7 @@ from molt.verified_subset import current_host_coordinate
 
 
 @pytest.fixture
-def installation(tmp_path: Path) -> Path:
+def installation(tmp_path: Path, monkeypatch) -> Path:
     source = tmp_path / "source"
     source.mkdir()
     files = []
@@ -26,6 +26,7 @@ def installation(tmp_path: Path) -> Path:
         "runtime/molt-backend/Cargo.toml",
         "runtime/molt-runtime/Cargo.toml",
         "src/molt/cli/__init__.py",
+        "src/molt/compiler_distribution.py",
         "uv.lock",
     ):
         path = source / name
@@ -70,9 +71,21 @@ def installation(tmp_path: Path) -> Path:
             "platform": system,
             "arch": arch,
         },
+        "runtime": {
+            "schema": distribution.RUNTIME_INVENTORY_SCHEMA,
+            "platform": system,
+            "arch": arch,
+            "source": {"object_format": "sha1", "commit": "a" * 40, "tree": "b" * 40},
+            "cells": [],
+        },
     }
     (source / distribution.MANIFEST_NAME).write_text(
         json.dumps(payload), encoding="utf-8"
+    )
+    # Model a bundle executing its own sealed package. Separate wheel tests
+    # exercise admission of a package outside the bundle's source directory.
+    monkeypatch.setattr(
+        distribution, "__file__", str(source / "src/molt/compiler_distribution.py")
     )
     return source
 
@@ -183,7 +196,6 @@ def test_guest_project_discovery_starts_at_entry_without_launcher_override(
     unrelated_cwd.mkdir()
     monkeypatch.chdir(unrelated_cwd)
     monkeypatch.delenv("MOLT_PROJECT_ROOT", raising=False)
-    project_roots._find_project_root_cached.cache_clear()
     assert project_roots._find_project_root(entry) == project
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(unrelated_cwd))
     assert project_roots._find_project_root(entry) == unrelated_cwd
@@ -528,3 +540,81 @@ def test_installation_diagnostics_distinguish_copies_from_aliases(
         assert check["level"] == "warning"
         assert "Molt changes nothing" in check["advice"][-1]
     assert before == (active.read_bytes(), alternate.read_bytes(), dict(os.environ))
+
+
+
+@pytest.mark.parametrize("command", ["run", "deploy"])
+def test_installed_public_wrapper_cold_then_cache_hit_owns_admission(installation, tmp_path, monkeypatch, command):
+    import subprocess
+    from molt.cli import build_inputs, cache_fingerprints, compiler_identity, wrapper_build
+
+    project = tmp_path / "guest"
+    project.mkdir()
+    entry = project / "app.py"
+    entry.write_text("VALUE = 1\n")
+    (project / "pyproject.toml").write_text('[project]\nname="guest"\nversion="0.1.0"\n')
+    output = project / "compiled-program"
+    monkeypatch.setattr(cache_fingerprints, "_compiler_root", lambda: installation)
+    monkeypatch.setattr(wrapper_build, "_wrapper_build_default_binary_path", lambda resolved: output)
+    scans = []
+    verify_sources = distribution.InstalledCompiler.verify_sources
+    def sources(compiler):
+        scans.append(compiler.source_root)
+        return verify_sources(compiler)
+    monkeypatch.setattr(distribution.InstalledCompiler, "verify_sources", sources)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("installed wrapper must not discover developer inputs")
+    monkeypatch.setattr(compiler_identity, "backend_build_admission", forbidden)
+    monkeypatch.setattr(cache_fingerprints, "_backend_source_paths", forbidden)
+    monkeypatch.setattr(cache_fingerprints, "_frontend_tooling_source_paths", forbidden)
+    children = []
+    def compile_child(cmd, **kwargs):
+        children.append(cmd)
+        output.write_bytes(b"compiled output")
+        payload = {"command": "build", "status": "ok", "data": {
+            "output": str(output), "consumer_output": str(output),
+            "artifacts": {"native": str(output)},
+        }}
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+    monkeypatch.setattr(wrapper_build, "_run_completed_command", compile_child)
+    def run_wrapper():
+        resolved, error = build_inputs._resolve_wrapper_build_entry(
+            file_path=str(entry), module=None, project_root=project,
+            json_output=True, command=command, build_args=[], env={}, source_cwd=project,
+        )
+        assert error is None and resolved is not None
+        return wrapper_build._run_wrapper_build(
+            file_path=str(entry), module=None, build_args=[], env={},
+            project_root=project, json_output=True, command=command, verbose=False,
+            resolved_build_entry=resolved,
+        )
+    # No manually opened fingerprint transaction or root pre-admission: this is
+    # the shared public run/deploy consumer, including its real manifest lookup.
+    cold, _, error = run_wrapper()
+    assert error is None and cold is not None and len(children) == 1
+    assert scans == [installation, installation]  # pre-child and fresh post-child
+    scans.clear()
+    warm, duration, error = run_wrapper()
+    assert error is None and warm is not None and duration == 0
+    assert len(children) == 1 and scans == [installation]
+    assert warm.consumer_output == output
+    # A new public operation must still reject mutated release executable bytes.
+    installed = distribution.installed_compiler(installation)
+    assert installed is not None
+    metadata = installed.binary.stat()
+    installed.binary.write_bytes(b"changed!")
+    os.utime(installed.binary, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    rejected, _, error = run_wrapper()
+    assert rejected is None and error is not None and len(children) == 1
+
+
+def test_installed_source_admission_expires_at_operation_boundary(installation, monkeypatch):
+    from molt.cli import cache_fingerprints, compiler_identity
+
+    monkeypatch.setattr(cache_fingerprints, "_compiler_root", lambda: installation)
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        assert cache_fingerprints._cache_tooling_fingerprint()
+    (installation / "Cargo.toml").write_bytes(b"edited")
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        with pytest.raises(compiler_identity.CompilerIdentityError):
+            cache_fingerprints._cache_tooling_fingerprint()

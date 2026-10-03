@@ -1,13 +1,11 @@
 use molt_obj_model::MoltObject;
 
-use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint, int_bits_from_i64};
+use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint};
 use crate::{
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, bigint_bits, bigint_to_inline,
-    call_callable0, complex_bits, complex_from_obj_strict, complex_ptr_from_bits, dec_ref_bits,
-    int_bits_from_i128, molt_abs_builtin, molt_add, molt_bit_and, molt_bit_or, molt_bit_xor,
-    molt_div, molt_eq, molt_floordiv, molt_ge, molt_gt, molt_invert, molt_is_truthy, molt_le,
-    molt_lshift, molt_lt, molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow, molt_rshift,
-    molt_sub, obj_from_bits, raise_exception, to_bigint, to_i64, type_name,
+    molt_abs_builtin, molt_add, molt_bit_and, molt_bit_or, molt_bit_xor, molt_div,
+    molt_eq, molt_floordiv, molt_ge, molt_gt, molt_invert, molt_is_truthy, molt_le,
+    molt_lshift, molt_lt, molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow,
+    molt_rshift, molt_sub, obj_from_bits, type_name,
 };
 
 #[unsafe(no_mangle)]
@@ -96,97 +94,12 @@ pub extern "C" fn molt_operator_xor(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_neg(val: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(val);
-        if let Some(i) = to_i64(obj) {
-            return int_bits_from_i128(_py, -(i as i128));
-        }
-        if let Some(big) = to_bigint(obj) {
-            let res = -big;
-            if let Some(i) = bigint_to_inline(&res) {
-                return MoltObject::from_int(i).bits();
-            }
-            return bigint_bits(_py, res);
-        }
-        if let Some(f) = crate::object::ops::as_float_extended(obj) {
-            return crate::object::ops::float_result_bits(_py, -f);
-        }
-        if complex_ptr_from_bits(val).is_some() {
-            match complex_from_obj_strict(_py, obj) {
-                Ok(Some(c)) => return complex_bits(_py, -c.re, -c.im),
-                Err(_) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "int too large to convert to float",
-                    );
-                }
-                _ => {}
-            }
-        }
-        if let Some(ptr) = obj.as_ptr() {
-            let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__neg__") else {
-                return MoltObject::none().bits();
-            };
-            let call_bits = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) };
-            dec_ref_bits(_py, name_bits);
-            if let Some(call_bits) = call_bits {
-                let res_bits = unsafe { call_callable0(_py, call_bits) };
-                dec_ref_bits(_py, call_bits);
-                return res_bits;
-            }
-        }
-        let msg = format!("bad operand type for unary -: '{}'", type_name(_py, obj));
-        raise_exception::<_>(_py, "TypeError", &msg)
-    })
+    crate::molt_neg(val)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_pos(val: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(val);
-        if let Some(i) = to_i64(obj) {
-            // Full-range boxing — `from_int` would silently truncate a fit-i64
-            // BigInt (e.g. operator.pos(2**60)) or exact-integer float >= 2**46.
-            return int_bits_from_i64(_py, i);
-        }
-        if let Some(big) = to_bigint(obj) {
-            if let Some(i) = bigint_to_inline(&big) {
-                return MoltObject::from_int(i).bits();
-            }
-            return bigint_bits(_py, big);
-        }
-        if let Some(f) = crate::object::ops::as_float_extended(obj) {
-            return crate::object::ops::float_result_bits(_py, f);
-        }
-        if complex_ptr_from_bits(val).is_some() {
-            match complex_from_obj_strict(_py, obj) {
-                Ok(Some(c)) => return complex_bits(_py, c.re, c.im),
-                Err(_) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "int too large to convert to float",
-                    );
-                }
-                _ => {}
-            }
-        }
-        if let Some(ptr) = obj.as_ptr() {
-            let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__pos__") else {
-                return MoltObject::none().bits();
-            };
-            let call_bits = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) };
-            dec_ref_bits(_py, name_bits);
-            if let Some(call_bits) = call_bits {
-                let res_bits = unsafe { call_callable0(_py, call_bits) };
-                dec_ref_bits(_py, call_bits);
-                return res_bits;
-            }
-        }
-        let msg = format!("bad operand type for unary +: '{}'", type_name(_py, obj));
-        raise_exception::<_>(_py, "TypeError", &msg)
-    })
+    crate::molt_pos(val)
 }
 
 #[unsafe(no_mangle)]

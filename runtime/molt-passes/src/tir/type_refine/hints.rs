@@ -35,12 +35,3 @@ pub(super) fn parse_return_type_str(name: &str) -> Option<TirType> {
         ty => Some(ty),
     }
 }
-
-pub(super) fn structural_builtin_return_type(name: &str) -> Option<TirType> {
-    match name {
-        "len" | "id" | "ord" => Some(TirType::I64),
-        "hasattr" | "isinstance" | "issubclass" => Some(TirType::Bool),
-        "chr" => Some(TirType::Str),
-        _ => None,
-    }
-}

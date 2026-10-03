@@ -7,10 +7,10 @@
 ## Summary
 
 - `compile-error`: `0`
-- `implemented-exact`: `191`
+- `implemented-exact`: `198`
 - `implemented-target-limited`: `13`
-- `not-admitted`: `199`
-- `total`: `403`
+- `not-admitted`: `196`
+- `total`: `407`
 
 ## Matrix
 
@@ -26,7 +26,6 @@
 | `and` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `ascii_from_obj` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `async_work_poll` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `asyncgen_locals_register` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `band` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `binding_alias` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `binop` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -129,7 +128,6 @@
 | `dict_copy` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_from_obj` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_get` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `dict_inc` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_items` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `dict_keys` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `dict_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -191,6 +189,13 @@
 | `for_iter` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `for_range` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `format_string` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `frame_home_cell` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_home_clear` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_home_load` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_home_private_cell` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_home_store` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_home_take` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_locals` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `frame_locals_set` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `frozenset_add` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `frozenset_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -198,7 +203,6 @@
 | `func_new_closure` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `function_closure_bits` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `ge` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `gen_locals_register` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `get_attr` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `get_attr_generic_obj` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `get_attr_generic_ptr` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -238,7 +242,6 @@
 | `int` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `int_from_obj` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `int_from_str_of_obj` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `intarray_from_seq` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `invert` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `invoke_ffi` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `is` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -315,6 +318,7 @@
 | `not` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `object_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `object_set_class` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `operator_index` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `or` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `ord` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `ord_at` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -353,6 +357,7 @@
 | `state_switch` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `state_transition` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `state_yield` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `stateful_locals_register` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `staticmethod_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `store` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `store_index` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -401,7 +406,6 @@
 | `sum` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `super_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `sys_executable` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `taq_ingest_line` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `trace_enter_slot` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `trace_exit` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `trunc` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -415,10 +419,10 @@
 | `unbox` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `unbox_to_raw_int` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `unpack_sequence` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `vec_max_*` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `vec_min_*` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `vec_prod_*` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `vec_sum_*` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `vec_max` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `vec_min` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `vec_prod` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `vec_sum` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 
 ## Status Definitions
 

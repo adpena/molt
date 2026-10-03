@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-import shutil
 import sys
 import tempfile
 
 from molt.wasm_artifact import flatten_wasm_plain_function_rec_groups
+from molt.tool_releases import ToolReleaseError, run_pinned_tool
 
 from wasm_link_context import WasmValidationContext
 
@@ -98,13 +98,6 @@ def _validate_wasm_structural(
             file=sys.stderr,
         )
         return False
-    exe = shutil.which("wasm-tools")
-    if exe is None:
-        print(
-            f"{description} structural validation unavailable: wasm-tools not found",
-            file=sys.stderr,
-        )
-        return False
     try:
         # The validator may inspect a temporary debug-free view; publication
         # still owns the only mutation of the artifact's debug sections.
@@ -130,8 +123,10 @@ def _validate_wasm_structural(
         )
         return False
     try:
-        result = context["_run_external_tool"](
-            [exe, "validate", tmp_path],
+        result = run_pinned_tool(
+            "wasm-tools",
+            ["validate", tmp_path],
+            run=context["_run_external_tool"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -143,6 +138,9 @@ def _validate_wasm_structural(
                 file=sys.stderr,
             )
             return False
+    except ToolReleaseError as exc:
+        print(f"{description} structural validation unavailable: {exc}", file=sys.stderr)
+        return False
     except Exception as exc:
         print(f"{description} structural validation failed: {exc}", file=sys.stderr)
         return False

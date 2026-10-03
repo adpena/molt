@@ -23,7 +23,12 @@ def test_runtime_build_identity_is_verified_before_every_production_link() -> No
     assert ensure < failure < prepare
 
     link = inspect.getsource(link_pipeline._prepare_native_link)
-    assert "runtime_build_identity=runtime_build_identity" in link
+    verify = link.index("runtime_codegen_binding.verify()")
+    identity = link.index(
+        "runtime_build_identity=runtime_codegen_binding.build_identity"
+    )
+    run = link.index("_run_native_link_command(")
+    assert verify < identity < run
 
 
 def test_darwin_validation_reports_invalid_selected_linker_output() -> None:
@@ -123,6 +128,7 @@ def test_bolt_finalizes_candidate_before_atomic_publication(
         "target_triple": None,
         "strip": True,
         "receipt": None,
+        "link_selection": None,
     }
     assert binary.read_bytes() == b"finalized"
 

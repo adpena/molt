@@ -8,35 +8,77 @@ use molt_obj_model::MoltObject;
 
 use super::ops::{ensure_hashable, set_rebuild};
 use super::ops_arith::{
-    set_from_iter_bits, set_like_copy_bits, set_like_difference, set_like_intersection,
-    set_like_ptr_from_bits, set_like_result_type_id, set_like_symdiff, set_like_union,
+    set_like_copy_bits, set_like_difference, set_like_intersection, set_like_ptr_from_bits,
+    set_like_result_type_id,
 };
 
-/// Specialized `in` for set/frozenset containers (hash lookup, no type dispatch).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_set_contains(container_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let container = obj_from_bits(container_bits);
-        if let Some(ptr) = container.as_ptr() {
-            unsafe {
-                if !ensure_hashable(_py, item_bits, HashContext::SetElement) {
-                    return MoltObject::none().bits();
-                }
-                let order = set_order(ptr);
-                let hashes = set_hashes(ptr);
-                let table = set_table(ptr);
-                let found = set_find_entry(_py, order, hashes, table, item_bits);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_bool(found.is_some()).bits();
-            }
-        }
-        // Fallback for non-pointer (shouldn't happen with correct type hints)
-        molt_contains(container_bits, item_bits)
-    })
+/// Python membership admits mutable-set needles after a TypeError; the public
+/// PySet_Contains API deliberately requires an already-hashable key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SetContainsPolicy {
+    Python,
+    ExactKey,
 }
 
+pub(crate) fn set_contains(
+    py: &PyToken<'_>,
+    container_bits: u64,
+    item_bits: u64,
+    policy: SetContainsPolicy,
+) -> u64 {
+    use crate::builtins::exceptions::ExceptionValue;
+    let Some(ptr) = obj_from_bits(container_bits)
+        .as_ptr()
+        .filter(|&ptr| unsafe { is_set_like_type(object_type_id(ptr)) })
+    else {
+        return raise_exception(
+            py,
+            "TypeError",
+            "set containment requires a set or frozenset",
+        );
+    };
+    let found = if ensure_hashable(py, item_bits, HashContext::SetElement) {
+        unsafe { set_find_entry(py, ptr, item_bits) }
+    } else {
+        None
+    };
+    if !exception_pending(py) {
+        return MoltObject::from_bool(found.is_some()).bits();
+    }
+    let mutable = obj_from_bits(item_bits)
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_SET });
+    if policy == SetContainsPolicy::ExactKey || mutable.is_none() {
+        return MoltObject::none().bits();
+    }
+    let error = ExceptionValue::adopt(py, molt_exception_last());
+    if !crate::builtins::exceptions::exception_matches_builtin_name(py, error.bits(), "TypeError") {
+        return MoltObject::none().bits();
+    }
+    // This is the prescribed set protocol, not a retry of a failed lookup.
+    clear_exception(py);
+    drop(error);
+    let frozen = ExceptionValue::adopt(py, unsafe {
+        set_like_copy_bits(py, mutable.unwrap(), TYPE_ID_FROZENSET)
+    });
+    if exception_pending(py) || obj_from_bits(frozen.bits()).is_none() {
+        return MoltObject::none().bits();
+    }
+    let found = unsafe { set_find_entry(py, ptr, frozen.bits()) };
+    if exception_pending(py) {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_bool(found.is_some()).bits()
+    }
+}
+
+/// Specialized Python `in` shares the builtin descriptor's key policy.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_set_contains(container_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        set_contains(py, container_bits, item_bits, SetContainsPolicy::Python)
+    })
+}
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_add(set_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -59,15 +101,8 @@ pub extern "C" fn molt_set_add(set_bits: u64, key_bits: u64) -> u64 {
     })
 }
 
-/// `set.add` for the temporary set built when realizing the *other* operand of a
-/// probe-only set operation (`intersection`/`intersection_update`/`issubset`).
-///
-/// CPython implements those by hashing each element of the iterable to probe the
-/// receiver — it never inserts into a fresh set — so an unhashable element is
-/// reported with the bare `unhashable type: 'X'` form on every version (no
-/// `set element` context, even on 3.14). molt realizes the operand into a real
-/// temporary set, so this entry point exists purely to preserve that bare
-/// context. Identical to [`molt_set_add`] except for [`HashContext::Bare`].
+/// Compiler construction entry for a probe-context temporary set. Runtime
+/// intersection/subset methods use streaming probes directly.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_add_probe(set_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -193,7 +228,7 @@ pub extern "C" fn molt_set_clear(set_bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET {
-                    set_replace_entries(_py, ptr, &[]);
+                    set_clear_in_place(_py, ptr);
                 }
             }
         }
@@ -212,8 +247,12 @@ pub extern "C" fn molt_set_copy_method(set_bits: u64) -> u64 {
             match object_type_id(ptr) {
                 TYPE_ID_SET => set_like_copy_bits(_py, ptr, TYPE_ID_SET),
                 TYPE_ID_FROZENSET => {
-                    inc_ref_bits(_py, set_bits);
-                    set_bits
+                    if exact_storage(_py, ptr, TYPE_ID_FROZENSET, builtin_classes(_py).frozenset) {
+                        inc_ref_bits(_py, set_bits);
+                        set_bits
+                    } else {
+                        set_like_copy_bits(_py, ptr, TYPE_ID_FROZENSET)
+                    }
                 }
                 _ => MoltObject::none().bits(),
             }
@@ -223,167 +262,31 @@ pub extern "C" fn molt_set_copy_method(set_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let other = obj_from_bits(other_bits);
-        let Some(set_ptr) = obj.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(set_ptr) != TYPE_ID_SET {
-                return MoltObject::none().bits();
-            }
-            if let Some(other_ptr) = other.as_ptr() {
-                let other_type = object_type_id(other_ptr);
-                if other_type == TYPE_ID_SET || other_type == TYPE_ID_FROZENSET {
-                    if other_ptr == set_ptr {
-                        return MoltObject::none().bits();
-                    }
-                    let entries = set_order(other_ptr);
-                    for entry in entries.iter().copied() {
-                        set_add_in_place(_py, set_ptr, entry, HashContext::SetElement);
-                    }
-                    return MoltObject::none().bits();
-                }
-                if is_set_view_type(other_type) {
-                    let Some(bits) = dict_view_as_set_bits(_py, other_ptr, other_type) else {
-                        return MoltObject::none().bits();
-                    };
-                    let Some(view_set_ptr) = obj_from_bits(bits).as_ptr() else {
-                        dec_ref_bits(_py, bits);
-                        return MoltObject::none().bits();
-                    };
-                    let entries = set_order(view_set_ptr);
-                    for entry in entries.iter().copied() {
-                        set_add_in_place(_py, set_ptr, entry, HashContext::SetElement);
-                    }
-                    dec_ref_bits(_py, bits);
-                    return MoltObject::none().bits();
+    crate::with_gil_entry_nopanic!(py, {
+        if let Some(set) = obj_from_bits(set_bits).as_ptr() {
+            unsafe {
+                if object_type_id(set) == TYPE_ID_SET {
+                    let _ = set_update_iterable(py, set, other_bits, HashContext::SetElement);
                 }
             }
-            let iter_bits = molt_iter(other_bits);
-            if obj_from_bits(iter_bits).is_none() {
-                return raise_not_iterable(_py, other_bits);
-            }
-            loop {
-                let pair_bits = molt_iter_next(iter_bits);
-                let pair_obj = obj_from_bits(pair_bits);
-                let Some(pair_ptr) = pair_obj.as_ptr() else {
-                    return MoltObject::none().bits();
-                };
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    return MoltObject::none().bits();
-                }
-                let Some((val_bits, done_bits)) =
-                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
-                        items.first().copied().zip(items.get(1).copied())
-                    })
-                    .flatten()
-                else {
-                    return MoltObject::none().bits();
-                };
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    break;
-                }
-                set_add_in_place(_py, set_ptr, val_bits, HashContext::SetElement);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-            }
-            MoltObject::none().bits()
         }
+        MoltObject::none().bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let other = obj_from_bits(other_bits);
-        if let (Some(set_ptr), Some(other_ptr)) = (obj.as_ptr(), other.as_ptr()) {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Some(set) = obj_from_bits(set_bits).as_ptr() {
             unsafe {
-                if object_type_id(set_ptr) == TYPE_ID_SET {
-                    let other_type = object_type_id(other_ptr);
-                    if other_type == TYPE_ID_SET || other_type == TYPE_ID_FROZENSET {
-                        if other_ptr == set_ptr {
-                            return MoltObject::none().bits();
-                        }
-                        let other_order = set_order(other_ptr);
-                        let other_hashes = set_hashes(other_ptr);
-                        let other_table = set_table(other_ptr);
-                        let set_entries = set_order(set_ptr).clone();
-                        let mut new_entries = Vec::with_capacity(set_entries.len());
-                        for entry in set_entries {
-                            let found =
-                                set_find_entry(_py, other_order, other_hashes, other_table, entry);
-                            if exception_pending(_py) {
-                                return MoltObject::none().bits();
-                            }
-                            if found.is_some() {
-                                new_entries.push(entry);
-                            }
-                        }
-                        set_replace_entries(_py, set_ptr, &new_entries);
-                        return MoltObject::none().bits();
+                if object_type_id(set) == TYPE_ID_SET {
+                    let result = set_intersection_bits(py, set, other_bits, TYPE_ID_SET);
+                    if !exception_pending(py)
+                        && let Some(staged) = obj_from_bits(result).as_ptr()
+                    {
+                        super::ops::set_publish_staged(py, set, staged);
                     }
-                    if is_set_view_type(other_type) {
-                        let Some(bits) = dict_view_as_set_bits(_py, other_ptr, other_type) else {
-                            return MoltObject::none().bits();
-                        };
-                        let Some(view_set_ptr) = obj_from_bits(bits).as_ptr() else {
-                            dec_ref_bits(_py, bits);
-                            return MoltObject::none().bits();
-                        };
-                        let other_order = set_order(view_set_ptr);
-                        let other_hashes = set_hashes(view_set_ptr);
-                        let other_table = set_table(view_set_ptr);
-                        let set_entries = set_order(set_ptr).clone();
-                        let mut new_entries = Vec::with_capacity(set_entries.len());
-                        for entry in set_entries {
-                            let found =
-                                set_find_entry(_py, other_order, other_hashes, other_table, entry);
-                            if exception_pending(_py) {
-                                dec_ref_bits(_py, bits);
-                                return MoltObject::none().bits();
-                            }
-                            if found.is_some() {
-                                new_entries.push(entry);
-                            }
-                        }
-                        set_replace_entries(_py, set_ptr, &new_entries);
-                        dec_ref_bits(_py, bits);
-                        return MoltObject::none().bits();
-                    }
-                    // intersection_update probes self against the realized other;
-                    // CPython reports unhashable elements bare on every version.
-                    let other_set_bits = set_from_iter_bits(_py, other_bits, HashContext::Bare);
-                    let Some(other_set_bits) = other_set_bits else {
-                        return MoltObject::none().bits();
-                    };
-                    let other_set = obj_from_bits(other_set_bits);
-                    let Some(other_ptr) = other_set.as_ptr() else {
-                        dec_ref_bits(_py, other_set_bits);
-                        return MoltObject::none().bits();
-                    };
-                    let other_order = set_order(other_ptr);
-                    let other_hashes = set_hashes(other_ptr);
-                    let other_table = set_table(other_ptr);
-                    let set_entries = set_order(set_ptr).clone();
-                    let mut new_entries = Vec::with_capacity(set_entries.len());
-                    for entry in set_entries {
-                        let found =
-                            set_find_entry(_py, other_order, other_hashes, other_table, entry);
-                        if exception_pending(_py) {
-                            dec_ref_bits(_py, other_set_bits);
-                            return MoltObject::none().bits();
-                        }
-                        if found.is_some() {
-                            new_entries.push(entry);
-                        }
-                    }
-                    set_replace_entries(_py, set_ptr, &new_entries);
-                    dec_ref_bits(_py, other_set_bits);
-                    return MoltObject::none().bits();
+                    dec_ref_bits(py, result);
                 }
             }
         }
@@ -393,95 +296,11 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let other = obj_from_bits(other_bits);
-        if let (Some(set_ptr), Some(other_ptr)) = (obj.as_ptr(), other.as_ptr()) {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Some(set) = obj_from_bits(set_bits).as_ptr() {
             unsafe {
-                if object_type_id(set_ptr) == TYPE_ID_SET {
-                    let other_type = object_type_id(other_ptr);
-                    if other_type == TYPE_ID_SET || other_type == TYPE_ID_FROZENSET {
-                        if other_ptr == set_ptr {
-                            set_replace_entries(_py, set_ptr, &[]);
-                            return MoltObject::none().bits();
-                        }
-                        let other_order = set_order(other_ptr);
-                        let other_hashes = set_hashes(other_ptr);
-                        let other_table = set_table(other_ptr);
-                        let set_entries = set_order(set_ptr).clone();
-                        let mut new_entries = Vec::with_capacity(set_entries.len());
-                        for entry in set_entries {
-                            let found =
-                                set_find_entry(_py, other_order, other_hashes, other_table, entry);
-                            if exception_pending(_py) {
-                                return MoltObject::none().bits();
-                            }
-                            if found.is_none() {
-                                new_entries.push(entry);
-                            }
-                        }
-                        set_replace_entries(_py, set_ptr, &new_entries);
-                        return MoltObject::none().bits();
-                    }
-                    if is_set_view_type(other_type) {
-                        let Some(bits) = dict_view_as_set_bits(_py, other_ptr, other_type) else {
-                            return MoltObject::none().bits();
-                        };
-                        let Some(view_set_ptr) = obj_from_bits(bits).as_ptr() else {
-                            dec_ref_bits(_py, bits);
-                            return MoltObject::none().bits();
-                        };
-                        let other_order = set_order(view_set_ptr);
-                        let other_hashes = set_hashes(view_set_ptr);
-                        let other_table = set_table(view_set_ptr);
-                        let set_entries = set_order(set_ptr).clone();
-                        let mut new_entries = Vec::with_capacity(set_entries.len());
-                        for entry in set_entries {
-                            let found =
-                                set_find_entry(_py, other_order, other_hashes, other_table, entry);
-                            if exception_pending(_py) {
-                                dec_ref_bits(_py, bits);
-                                return MoltObject::none().bits();
-                            }
-                            if found.is_none() {
-                                new_entries.push(entry);
-                            }
-                        }
-                        set_replace_entries(_py, set_ptr, &new_entries);
-                        dec_ref_bits(_py, bits);
-                        return MoltObject::none().bits();
-                    }
-                    let iter_bits = molt_iter(other_bits);
-                    if obj_from_bits(iter_bits).is_none() {
-                        return raise_not_iterable(_py, other_bits);
-                    }
-                    loop {
-                        let pair_bits = molt_iter_next(iter_bits);
-                        let pair_obj = obj_from_bits(pair_bits);
-                        let Some(pair_ptr) = pair_obj.as_ptr() else {
-                            return MoltObject::none().bits();
-                        };
-                        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                            return MoltObject::none().bits();
-                        }
-                        let Some((val_bits, done_bits)) =
-                            crate::object::seq_access::with_immutable_tuple_slice(
-                                pair_ptr,
-                                |items| items.first().copied().zip(items.get(1).copied()),
-                            )
-                            .flatten()
-                        else {
-                            return MoltObject::none().bits();
-                        };
-                        if is_truthy(_py, obj_from_bits(done_bits)) {
-                            break;
-                        }
-                        set_del_in_place(_py, set_ptr, val_bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                    }
-                    return MoltObject::none().bits();
+                if object_type_id(set) == TYPE_ID_SET {
+                    let _ = set_difference_update_iterable(py, set, other_bits);
                 }
             }
         }
@@ -491,151 +310,11 @@ pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let other = obj_from_bits(other_bits);
-        if let (Some(set_ptr), Some(other_ptr)) = (obj.as_ptr(), other.as_ptr()) {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Some(set) = obj_from_bits(set_bits).as_ptr() {
             unsafe {
-                if object_type_id(set_ptr) == TYPE_ID_SET {
-                    let other_type = object_type_id(other_ptr);
-                    if other_type == TYPE_ID_SET || other_type == TYPE_ID_FROZENSET {
-                        if other_ptr == set_ptr {
-                            set_replace_entries(_py, set_ptr, &[]);
-                            return MoltObject::none().bits();
-                        }
-                        let other_order = set_order(other_ptr);
-                        let other_hashes = set_hashes(other_ptr);
-                        let other_table = set_table(other_ptr);
-                        let set_entries = set_order(set_ptr).clone();
-                        let set_hashes_vec = set_hashes(set_ptr).clone();
-                        let set_table_ptr = set_table(set_ptr);
-                        let mut new_entries =
-                            Vec::with_capacity(set_entries.len() + other_order.len());
-                        for entry in &set_entries {
-                            let found =
-                                set_find_entry(_py, other_order, other_hashes, other_table, *entry);
-                            if exception_pending(_py) {
-                                return MoltObject::none().bits();
-                            }
-                            if found.is_none() {
-                                new_entries.push(*entry);
-                            }
-                        }
-                        for entry in other_order.iter().copied() {
-                            let found = set_find_entry(
-                                _py,
-                                set_entries.as_slice(),
-                                set_hashes_vec.as_slice(),
-                                set_table_ptr,
-                                entry,
-                            );
-                            if exception_pending(_py) {
-                                return MoltObject::none().bits();
-                            }
-                            if found.is_none() {
-                                new_entries.push(entry);
-                            }
-                        }
-                        set_replace_entries(_py, set_ptr, &new_entries);
-                        return MoltObject::none().bits();
-                    }
-                    if is_set_view_type(other_type) {
-                        let Some(bits) = dict_view_as_set_bits(_py, other_ptr, other_type) else {
-                            return MoltObject::none().bits();
-                        };
-                        let Some(view_set_ptr) = obj_from_bits(bits).as_ptr() else {
-                            dec_ref_bits(_py, bits);
-                            return MoltObject::none().bits();
-                        };
-                        let other_order = set_order(view_set_ptr);
-                        let other_hashes = set_hashes(view_set_ptr);
-                        let other_table = set_table(view_set_ptr);
-                        let set_entries = set_order(set_ptr).clone();
-                        let set_hashes_vec = set_hashes(set_ptr).clone();
-                        let set_table_ptr = set_table(set_ptr);
-                        let mut new_entries =
-                            Vec::with_capacity(set_entries.len() + other_order.len());
-                        for entry in &set_entries {
-                            let found =
-                                set_find_entry(_py, other_order, other_hashes, other_table, *entry);
-                            if exception_pending(_py) {
-                                dec_ref_bits(_py, bits);
-                                return MoltObject::none().bits();
-                            }
-                            if found.is_none() {
-                                new_entries.push(*entry);
-                            }
-                        }
-                        for entry in other_order.iter().copied() {
-                            let found = set_find_entry(
-                                _py,
-                                set_entries.as_slice(),
-                                set_hashes_vec.as_slice(),
-                                set_table_ptr,
-                                entry,
-                            );
-                            if exception_pending(_py) {
-                                dec_ref_bits(_py, bits);
-                                return MoltObject::none().bits();
-                            }
-                            if found.is_none() {
-                                new_entries.push(entry);
-                            }
-                        }
-                        set_replace_entries(_py, set_ptr, &new_entries);
-                        dec_ref_bits(_py, bits);
-                        return MoltObject::none().bits();
-                    }
-                    // symmetric_difference_update inserts the realized other into
-                    // the result; CPython reports unhashable elements with the
-                    // set-element context on 3.14.
-                    let other_set_bits =
-                        set_from_iter_bits(_py, other_bits, HashContext::SetElement);
-                    let Some(other_set_bits) = other_set_bits else {
-                        return MoltObject::none().bits();
-                    };
-                    let other_set = obj_from_bits(other_set_bits);
-                    let Some(other_ptr) = other_set.as_ptr() else {
-                        dec_ref_bits(_py, other_set_bits);
-                        return MoltObject::none().bits();
-                    };
-                    let other_order = set_order(other_ptr);
-                    let other_hashes = set_hashes(other_ptr);
-                    let other_table = set_table(other_ptr);
-                    let set_entries = set_order(set_ptr).clone();
-                    let set_hashes_vec = set_hashes(set_ptr).clone();
-                    let set_table_ptr = set_table(set_ptr);
-                    let mut new_entries = Vec::with_capacity(set_entries.len() + other_order.len());
-                    for entry in &set_entries {
-                        let found =
-                            set_find_entry(_py, other_order, other_hashes, other_table, *entry);
-                        if exception_pending(_py) {
-                            dec_ref_bits(_py, other_set_bits);
-                            return MoltObject::none().bits();
-                        }
-                        if found.is_none() {
-                            new_entries.push(*entry);
-                        }
-                    }
-                    for entry in other_order.iter().copied() {
-                        let found = set_find_entry(
-                            _py,
-                            set_entries.as_slice(),
-                            set_hashes_vec.as_slice(),
-                            set_table_ptr,
-                            entry,
-                        );
-                        if exception_pending(_py) {
-                            dec_ref_bits(_py, other_set_bits);
-                            return MoltObject::none().bits();
-                        }
-                        if found.is_none() {
-                            new_entries.push(entry);
-                        }
-                    }
-                    set_replace_entries(_py, set_ptr, &new_entries);
-                    dec_ref_bits(_py, other_set_bits);
-                    return MoltObject::none().bits();
+                if object_type_id(set) == TYPE_ID_SET {
+                    let _ = set_symdiff_update_iterable(py, set, other_bits);
                 }
             }
         }
@@ -722,8 +401,11 @@ pub extern "C" fn molt_frozenset_copy_method(set_bits: u64) -> u64 {
         };
         unsafe {
             if object_type_id(ptr) == TYPE_ID_FROZENSET {
-                inc_ref_bits(_py, set_bits);
-                return set_bits;
+                if exact_storage(_py, ptr, TYPE_ID_FROZENSET, builtin_classes(_py).frozenset) {
+                    inc_ref_bits(_py, set_bits);
+                    return set_bits;
+                }
+                return set_like_copy_bits(_py, ptr, TYPE_ID_FROZENSET);
             }
         }
         MoltObject::none().bits()
@@ -732,32 +414,17 @@ pub extern "C" fn molt_frozenset_copy_method(set_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intersection_update_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_SET {
-                return MoltObject::none().bits();
-            }
-            let Some(others_ptr) = obj_from_bits(others_bits).as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            if object_type_id(others_ptr) != TYPE_ID_TUPLE {
-                return MoltObject::none().bits();
-            }
-            let Some(others) = crate::object::seq_access::snapshot(
-                _py,
-                others_ptr,
-                "set operand snapshot allocation failed",
-            ) else {
-                return MoltObject::none().bits();
-            };
-            for &other_bits in others.iter() {
-                let _ = molt_set_intersection_update(set_bits, other_bits);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
+    crate::with_gil_entry_nopanic!(py, {
+        if let Some(set) = obj_from_bits(set_bits).as_ptr() {
+            unsafe {
+                if object_type_id(set) == TYPE_ID_SET {
+                    let result = molt_set_intersection_multi(set_bits, others_bits);
+                    if !exception_pending(py)
+                        && let Some(staged) = obj_from_bits(result).as_ptr()
+                    {
+                        super::ops::set_publish_staged(py, set, staged);
+                    }
+                    dec_ref_bits(py, result);
                 }
             }
         }
@@ -810,59 +477,44 @@ pub extern "C" fn molt_set_symmetric_difference_update(set_bits: u64, other_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_union_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let Some(ptr) = obj.as_ptr() else {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(set) = obj_from_bits(set_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            if !is_set_like_type(type_id) {
+            if !is_set_like_type(object_type_id(set)) {
                 return MoltObject::none().bits();
             }
-            let result_type_id = set_like_result_type_id(type_id);
-            let mut result_bits = set_like_copy_bits(_py, ptr, result_type_id);
-            if obj_from_bits(result_bits).is_none() {
+            let kind = set_like_result_type_id(object_type_id(set));
+            let Some(args) = obj_from_bits(others_bits).as_ptr() else {
                 return MoltObject::none().bits();
-            }
-            let Some(others_ptr) = obj_from_bits(others_bits).as_ptr() else {
-                return result_bits;
             };
-            if object_type_id(others_ptr) != TYPE_ID_TUPLE {
-                return result_bits;
+            if object_type_id(args) != TYPE_ID_TUPLE {
+                return MoltObject::none().bits();
             }
             let Some(others) = crate::object::seq_access::snapshot(
-                _py,
-                others_ptr,
+                py,
+                args,
                 "set operand snapshot allocation failed",
             ) else {
-                dec_ref_bits(_py, result_bits);
                 return MoltObject::none().bits();
             };
+            let result_bits = set_like_copy_bits(py, set, kind);
+            if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+                dec_ref_bits(py, result_bits);
+                return MoltObject::none().bits();
+            }
             for &other_bits in others.iter() {
-                let Some((other_ptr, drop_bits)) =
-                    set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
-                else {
-                    dec_ref_bits(_py, result_bits);
-                    return MoltObject::none().bits();
-                };
-                let result_ptr = obj_from_bits(result_bits)
-                    .as_ptr()
-                    .unwrap_or(std::ptr::null_mut());
-                if result_ptr.is_null() {
-                    if let Some(bits) = drop_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    dec_ref_bits(_py, result_bits);
+                if other_bits == set_bits {
+                    continue;
+                }
+                let result = obj_from_bits(result_bits).as_ptr().unwrap();
+                if set_update_iterable(py, result, other_bits, HashContext::SetElement).is_err() {
+                    dec_ref_bits(py, result_bits);
                     return MoltObject::none().bits();
                 }
-                let new_bits = set_like_union(_py, result_ptr, other_ptr, result_type_id);
-                if let Some(bits) = drop_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                dec_ref_bits(_py, result_bits);
-                result_bits = new_bits;
-                if obj_from_bits(result_bits).is_none() {
+                if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+                    dec_ref_bits(py, result_bits);
                     return MoltObject::none().bits();
                 }
             }
@@ -873,61 +525,45 @@ pub extern "C" fn molt_set_union_multi(set_bits: u64, others_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intersection_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let Some(ptr) = obj.as_ptr() else {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(set) = obj_from_bits(set_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            if !is_set_like_type(type_id) {
+            if !is_set_like_type(object_type_id(set)) {
                 return MoltObject::none().bits();
             }
-            let result_type_id = set_like_result_type_id(type_id);
-            let mut result_bits = set_like_copy_bits(_py, ptr, result_type_id);
-            if obj_from_bits(result_bits).is_none() {
+            let kind = set_like_result_type_id(object_type_id(set));
+            let Some(args) = obj_from_bits(others_bits).as_ptr() else {
                 return MoltObject::none().bits();
-            }
-            let Some(others_ptr) = obj_from_bits(others_bits).as_ptr() else {
-                return result_bits;
             };
-            if object_type_id(others_ptr) != TYPE_ID_TUPLE {
-                return result_bits;
+            if object_type_id(args) != TYPE_ID_TUPLE {
+                return MoltObject::none().bits();
             }
             let Some(others) = crate::object::seq_access::snapshot(
-                _py,
-                others_ptr,
+                py,
+                args,
                 "set operand snapshot allocation failed",
             ) else {
-                dec_ref_bits(_py, result_bits);
                 return MoltObject::none().bits();
             };
+            let mut result_bits = if others.is_empty() {
+                set_like_copy_bits(py, set, kind)
+            } else {
+                inc_ref_bits(py, set_bits);
+                set_bits
+            };
+            if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+                dec_ref_bits(py, result_bits);
+                return MoltObject::none().bits();
+            }
             for &other_bits in others.iter() {
-                // intersection probes the realized other; unhashable elements
-                // are reported bare on every version.
-                let Some((other_ptr, drop_bits)) =
-                    set_like_ptr_from_bits(_py, other_bits, HashContext::Bare)
-                else {
-                    dec_ref_bits(_py, result_bits);
-                    return MoltObject::none().bits();
-                };
-                let result_ptr = obj_from_bits(result_bits)
-                    .as_ptr()
-                    .unwrap_or(std::ptr::null_mut());
-                if result_ptr.is_null() {
-                    if let Some(bits) = drop_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    dec_ref_bits(_py, result_bits);
-                    return MoltObject::none().bits();
-                }
-                let new_bits = set_like_intersection(_py, result_ptr, other_ptr, result_type_id);
-                if let Some(bits) = drop_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                dec_ref_bits(_py, result_bits);
-                result_bits = new_bits;
-                if obj_from_bits(result_bits).is_none() {
+                let result = obj_from_bits(result_bits).as_ptr().unwrap();
+                let next = set_intersection_bits(py, result, other_bits, kind);
+                dec_ref_bits(py, result_bits);
+                result_bits = next;
+                if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+                    dec_ref_bits(py, result_bits);
                     return MoltObject::none().bits();
                 }
             }
@@ -938,59 +574,50 @@ pub extern "C" fn molt_set_intersection_multi(set_bits: u64, others_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_difference_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let Some(ptr) = obj.as_ptr() else {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(set) = obj_from_bits(set_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            if !is_set_like_type(type_id) {
+            if !is_set_like_type(object_type_id(set)) {
                 return MoltObject::none().bits();
             }
-            let result_type_id = set_like_result_type_id(type_id);
-            let mut result_bits = set_like_copy_bits(_py, ptr, result_type_id);
-            if obj_from_bits(result_bits).is_none() {
+            let kind = set_like_result_type_id(object_type_id(set));
+            let Some(args) = obj_from_bits(others_bits).as_ptr() else {
                 return MoltObject::none().bits();
-            }
-            let Some(others_ptr) = obj_from_bits(others_bits).as_ptr() else {
-                return result_bits;
             };
-            if object_type_id(others_ptr) != TYPE_ID_TUPLE {
-                return result_bits;
+            if object_type_id(args) != TYPE_ID_TUPLE {
+                return MoltObject::none().bits();
             }
             let Some(others) = crate::object::seq_access::snapshot(
-                _py,
-                others_ptr,
+                py,
+                args,
                 "set operand snapshot allocation failed",
             ) else {
-                dec_ref_bits(_py, result_bits);
                 return MoltObject::none().bits();
             };
-            for &other_bits in others.iter() {
-                let Some((other_ptr, drop_bits)) =
-                    set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
-                else {
-                    dec_ref_bits(_py, result_bits);
-                    return MoltObject::none().bits();
-                };
-                let result_ptr = obj_from_bits(result_bits)
-                    .as_ptr()
-                    .unwrap_or(std::ptr::null_mut());
-                if result_ptr.is_null() {
-                    if let Some(bits) = drop_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    dec_ref_bits(_py, result_bits);
+            let mut result_bits = if others.is_empty() {
+                set_like_copy_bits(py, set, kind)
+            } else {
+                inc_ref_bits(py, set_bits);
+                set_bits
+            };
+            if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+                dec_ref_bits(py, result_bits);
+                return MoltObject::none().bits();
+            }
+            for (index, &other_bits) in others.iter().enumerate() {
+                let result = obj_from_bits(result_bits).as_ptr().unwrap();
+                if index == 0 {
+                    let next = set_difference_bits(py, result, other_bits, kind);
+                    dec_ref_bits(py, result_bits);
+                    result_bits = next;
+                } else if set_difference_update_iterable(py, result, other_bits).is_err() {
+                    dec_ref_bits(py, result_bits);
                     return MoltObject::none().bits();
                 }
-                let new_bits = set_like_difference(_py, result_ptr, other_ptr, result_type_id);
-                if let Some(bits) = drop_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                dec_ref_bits(_py, result_bits);
-                result_bits = new_bits;
-                if obj_from_bits(result_bits).is_none() {
+                if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+                    dec_ref_bits(py, result_bits);
                     return MoltObject::none().bits();
                 }
             }
@@ -1001,161 +628,563 @@ pub extern "C" fn molt_set_difference_multi(set_bits: u64, others_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_symmetric_difference(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let Some(ptr) = obj.as_ptr() else {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(set) = obj_from_bits(set_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            if !is_set_like_type(type_id) {
+            if !is_set_like_type(object_type_id(set)) {
                 return MoltObject::none().bits();
             }
-            let result_type_id = set_like_result_type_id(type_id);
-            let Some((other_ptr, drop_bits)) =
-                set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
-            else {
+            // CPython constructs from other, then toggles the receiver's keys.
+            let bits = new_set_result(set_like_result_type_id(object_type_id(set)));
+            let Some(result) = obj_from_bits(bits).as_ptr() else {
                 return MoltObject::none().bits();
             };
-            let result_bits = set_like_symdiff(_py, ptr, other_ptr, result_type_id);
-            if let Some(bits) = drop_bits {
-                dec_ref_bits(_py, bits);
+            if set_update_iterable(py, result, other_bits, HashContext::SetElement).is_err()
+                || set_symdiff_update_iterable(py, result, set_bits).is_err()
+                || exception_pending(py)
+            {
+                dec_ref_bits(py, bits);
+                MoltObject::none().bits()
+            } else {
+                bits
             }
-            result_bits
         }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_isdisjoint(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let Some(ptr) = obj.as_ptr() else {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(set) = obj_from_bits(set_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
         unsafe {
-            if !is_set_like_type(object_type_id(ptr)) {
+            if !is_set_like_type(object_type_id(set)) {
                 return MoltObject::none().bits();
             }
-            let Some((other_ptr, drop_bits)) =
-                set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
-            else {
-                return MoltObject::none().bits();
-            };
-            let self_order = set_order(ptr);
-            let self_hashes = set_hashes(ptr);
-            let other_order = set_order(other_ptr);
-            let other_hashes = set_hashes(other_ptr);
-            let (probe_order, probe_hashes, probe_table, output) =
-                if self_order.len() <= other_order.len() {
-                    (other_order, other_hashes, set_table(other_ptr), self_order)
+            if set_bits == other_bits {
+                return MoltObject::from_bool(crate::builtins::containers::set_len(set) == 0)
+                    .bits();
+            }
+            if let Some(other) = obj_from_bits(other_bits).as_ptr()
+                && (exact_storage(py, other, TYPE_ID_SET, builtin_classes(py).set)
+                    || exact_storage(py, other, TYPE_ID_FROZENSET, builtin_classes(py).frozenset))
+            {
+                let (source, probe) = if crate::builtins::containers::set_len(set)
+                    < crate::builtins::containers::set_len(other)
+                {
+                    (set, other)
                 } else {
-                    (self_order, self_hashes, set_table(ptr), other_order)
+                    (other, set)
                 };
-            let mut disjoint = true;
-            for &entry in output.iter() {
-                let found = set_find_entry(_py, probe_order, probe_hashes, probe_table, entry);
-                if exception_pending(_py) {
-                    if let Some(bits) = drop_bits {
-                        dec_ref_bits(_py, bits);
+                let mut index = 0;
+                while let Some(entry) = super::ops::set_pin_entry(py, source, index) {
+                    let found = super::ops::set_find_entry_in_place_with_hash(
+                        py,
+                        probe,
+                        entry.bits(),
+                        entry.hash(),
+                    );
+                    drop(entry);
+                    if exception_pending(py) {
+                        return MoltObject::none().bits();
                     }
-                    return MoltObject::none().bits();
+                    if found.is_some() {
+                        return MoltObject::from_bool(false).bits();
+                    }
+                    index += 1;
                 }
-                if found.is_some() {
-                    disjoint = false;
-                    break;
-                }
+                MoltObject::from_bool(true).bits()
+            } else {
+                set_probe_iterable(py, set, other_bits, true)
             }
-            if let Some(bits) = drop_bits {
-                dec_ref_bits(_py, bits);
-            }
-            MoltObject::from_bool(disjoint).bits()
         }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_issubset(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let Some(ptr) = obj.as_ptr() else {
+    crate::with_gil_entry_nopanic!(py, {
+        let value = obj_from_bits(set_bits);
+        let Some(set) = value.as_ptr() else {
             return MoltObject::none().bits();
         };
         unsafe {
-            if !is_set_like_type(object_type_id(ptr)) {
+            if !is_set_like_type(object_type_id(set)) {
                 return MoltObject::none().bits();
             }
-            // issubset probes the realized other; unhashable elements are
-            // reported bare on every version.
-            let Some((other_ptr, drop_bits)) =
-                set_like_ptr_from_bits(_py, other_bits, HashContext::Bare)
-            else {
+            if let Some(other) = obj_from_bits(other_bits).as_ptr()
+                && is_set_like_type(object_type_id(other))
+            {
+                return super::ops_compare::builtin_families::family_for_value(py, value)
+                    .unwrap()
+                    .invoke(
+                        py,
+                        set_bits,
+                        other_bits,
+                        molt_obj_model::sequence_compare::RichCompareOp::Le,
+                    );
+            }
+            let bits = set_intersection_bits(py, set, other_bits, TYPE_ID_SET);
+            if exception_pending(py) {
+                dec_ref_bits(py, bits);
+                return MoltObject::none().bits();
+            }
+            let Some(result) = obj_from_bits(bits).as_ptr() else {
                 return MoltObject::none().bits();
             };
-            let self_order = set_order(ptr);
-            let other_order = set_order(other_ptr);
-            let other_hashes = set_hashes(other_ptr);
-            let other_table = set_table(other_ptr);
-            let mut subset = true;
-            for &entry in self_order.iter() {
-                let found = set_find_entry(_py, other_order, other_hashes, other_table, entry);
-                if exception_pending(_py) {
-                    if let Some(bits) = drop_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                if found.is_none() {
-                    subset = false;
-                    break;
-                }
+            let equal = crate::builtins::containers::set_len(result)
+                == crate::builtins::containers::set_len(set);
+            dec_ref_bits(py, bits);
+            if exception_pending(py) {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_bool(equal).bits()
             }
-            if let Some(bits) = drop_bits {
-                dec_ref_bits(_py, bits);
-            }
-            MoltObject::from_bool(subset).bits()
         }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_issuperset(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        let Some(ptr) = obj.as_ptr() else {
+    crate::with_gil_entry_nopanic!(py, {
+        let value = obj_from_bits(set_bits);
+        let Some(set) = value.as_ptr() else {
             return MoltObject::none().bits();
         };
         unsafe {
-            if !is_set_like_type(object_type_id(ptr)) {
+            if !is_set_like_type(object_type_id(set)) {
                 return MoltObject::none().bits();
             }
-            let Some((other_ptr, drop_bits)) =
-                set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
-            else {
-                return MoltObject::none().bits();
-            };
-            let self_order = set_order(ptr);
-            let self_hashes = set_hashes(ptr);
-            let self_table = set_table(ptr);
-            let other_order = set_order(other_ptr);
-            let mut superset = true;
-            for &entry in other_order.iter() {
-                let found = set_find_entry(_py, self_order, self_hashes, self_table, entry);
-                if exception_pending(_py) {
-                    if let Some(bits) = drop_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                if found.is_none() {
-                    superset = false;
-                    break;
-                }
+            if let Some(other) = obj_from_bits(other_bits).as_ptr()
+                && is_set_like_type(object_type_id(other))
+            {
+                return super::ops_compare::builtin_families::family_for_value(py, value)
+                    .unwrap()
+                    .invoke(
+                        py,
+                        set_bits,
+                        other_bits,
+                        molt_obj_model::sequence_compare::RichCompareOp::Ge,
+                    );
             }
-            if let Some(bits) = drop_bits {
-                dec_ref_bits(_py, bits);
-            }
-            MoltObject::from_bool(superset).bits()
+            set_probe_iterable(py, set, other_bits, false)
         }
     })
+}
+
+// Shared storage pins and cached-hash primitives keep callbacks safe; each
+// operation below keeps its own traversal and mutation boundary.
+struct SetOwned<'a, 'py> {
+    py: &'a PyToken<'py>,
+    bits: u64,
+}
+impl<'a, 'py> SetOwned<'a, 'py> {
+    fn adopt(py: &'a PyToken<'py>, bits: u64) -> Self {
+        Self { py, bits }
+    }
+    fn borrow(py: &'a PyToken<'py>, bits: u64) -> Self {
+        inc_ref_bits(py, bits);
+        Self { py, bits }
+    }
+}
+impl Drop for SetOwned<'_, '_> {
+    fn drop(&mut self) {
+        dec_ref_bits(self.py, self.bits);
+    }
+}
+
+unsafe fn exact_storage(_py: &PyToken<'_>, ptr: *mut u8, kind: u32, owner: u64) -> bool {
+    unsafe {
+        object_type_id(ptr) == kind && {
+            let class = object_class_bits(ptr);
+            class == 0 || class == owner
+        }
+    }
+}
+
+unsafe fn new_set_result(kind: u32) -> u64 {
+    if kind == TYPE_ID_FROZENSET {
+        molt_frozenset_new(0)
+    } else {
+        molt_set_new(0)
+    }
+}
+
+unsafe fn pin_dict_key<'a, 'py>(
+    py: &'a PyToken<'py>,
+    dict: *mut u8,
+    index: usize,
+) -> Option<(SetOwned<'a, 'py>, u64)> {
+    unsafe {
+        let key = *dict_order(dict).get(index.checked_mul(2)?)?;
+        let hash = *dict_hashes(dict).get(index)?;
+        Some((SetOwned::borrow(py, key), hash))
+    }
+}
+
+pub(crate) unsafe fn set_update_iterable(
+    py: &PyToken<'_>,
+    set: *mut u8,
+    other_bits: u64,
+    ctx: HashContext,
+) -> Result<(), ()> {
+    let _source = SetOwned::borrow(py, other_bits);
+    unsafe {
+        if let Some(other) = obj_from_bits(other_bits).as_ptr() {
+            if is_set_like_type(object_type_id(other)) {
+                if set == other {
+                    return Ok(());
+                }
+                if crate::builtins::containers::set_len(set) == 0 {
+                    super::ops::set_copy_into_empty(py, other, set);
+                    return if exception_pending(py) {
+                        Err(())
+                    } else {
+                        Ok(())
+                    };
+                }
+                let mut index = 0;
+                while let Some(entry) = super::ops::set_pin_entry(py, other, index) {
+                    super::ops::set_add_with_hash_in_place(py, set, entry.bits(), entry.hash());
+                    drop(entry);
+                    if exception_pending(py) {
+                        return Err(());
+                    }
+                    index += 1;
+                }
+                return Ok(());
+            }
+            if exact_storage(py, other, TYPE_ID_DICT, builtin_classes(py).dict) {
+                let mut index = 0;
+                while let Some((key, hash)) = pin_dict_key(py, other, index) {
+                    super::ops::set_add_with_hash_in_place(py, set, key.bits, hash);
+                    drop(key);
+                    if exception_pending(py) {
+                        return Err(());
+                    }
+                    index += 1;
+                }
+                return Ok(());
+            }
+        }
+        let mut iter = crate::object::iterable::OwnedIterator::new(py, other_bits).ok_or(())?;
+        while let Some(item) = iter.next()? {
+            let item = SetOwned::adopt(py, item);
+            set_add_in_place(py, set, item.bits, ctx);
+            if exception_pending(py) {
+                drop(iter);
+                drop(item);
+                return Err(());
+            }
+            drop(item);
+            if exception_pending(py) {
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Intersection has a result that must retire between iterator and current
+/// key on failure. A Rust loop-local item would reverse that observable order.
+struct IntersectionCustody<'a, 'py> {
+    iter: Option<crate::object::iterable::OwnedIterator<'a, 'py>>,
+    result: Option<SetOwned<'a, 'py>>,
+    key: Option<SetOwned<'a, 'py>>,
+}
+
+impl Drop for IntersectionCustody<'_, '_> {
+    fn drop(&mut self) {
+        drop(self.iter.take());
+        drop(self.result.take());
+        drop(self.key.take());
+    }
+}
+
+unsafe fn set_intersection_bits(py: &PyToken<'_>, set: *mut u8, other_bits: u64, kind: u32) -> u64 {
+    unsafe {
+        if let Some(other) = obj_from_bits(other_bits).as_ptr()
+            && is_set_like_type(object_type_id(other))
+        {
+            return set_like_intersection(py, set, other, kind);
+        }
+        let bits = new_set_result(kind);
+        let Some(result) = obj_from_bits(bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        let mut custody = IntersectionCustody {
+            iter: None,
+            result: Some(SetOwned::adopt(py, bits)),
+            key: None,
+        };
+        custody.iter = crate::object::iterable::OwnedIterator::new(py, other_bits);
+        if custody.iter.is_none() {
+            return MoltObject::none().bits();
+        }
+        loop {
+            custody.key = match custody.iter.as_mut().unwrap().next() {
+                Ok(Some(item)) => Some(SetOwned::adopt(py, item)),
+                Ok(None) => break,
+                Err(()) => return MoltObject::none().bits(),
+            };
+            let key = custody.key.as_ref().unwrap().bits;
+            if !ensure_hashable(py, key, HashContext::Bare) {
+                return MoltObject::none().bits();
+            }
+            let hash = hash_bits(py, key);
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            let found = super::ops::set_find_entry_in_place_with_hash(py, set, key, hash);
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            let mut complete = false;
+            if found.is_some() {
+                super::ops::set_add_with_hash_in_place(py, result, key, hash);
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                complete = crate::builtins::containers::set_len(result)
+                    >= crate::builtins::containers::set_len(set);
+            }
+            drop(custody.key.take());
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            if complete {
+                break;
+            }
+        }
+        drop(custody.iter.take());
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        // Transfer the staged result only after iterator retirement succeeds.
+        let result = custody.result.take().unwrap();
+        let bits = result.bits;
+        std::mem::forget(result);
+        bits
+    }
+}
+
+pub(in crate::object) unsafe fn set_difference_update_iterable(
+    py: &PyToken<'_>,
+    set: *mut u8,
+    other_bits: u64,
+) -> Result<(), ()> {
+    let _source = SetOwned::borrow(py, other_bits);
+    unsafe {
+        if obj_from_bits(other_bits).as_ptr() == Some(set) {
+            set_clear_in_place(py, set);
+            return if exception_pending(py) {
+                Err(())
+            } else {
+                Ok(())
+            };
+        }
+        if let Some(other) = obj_from_bits(other_bits).as_ptr()
+            && is_set_like_type(object_type_id(other))
+        {
+            // The size-dependent intersection is observable through callbacks.
+            let temporary = if (crate::builtins::containers::set_len(other) >> 3)
+                > crate::builtins::containers::set_len(set)
+            {
+                let bits = set_like_intersection(py, set, other, TYPE_ID_SET);
+                if exception_pending(py) {
+                    dec_ref_bits(py, bits);
+                    return Err(());
+                }
+                Some(SetOwned::adopt(py, bits))
+            } else {
+                None
+            };
+            let source = temporary
+                .as_ref()
+                .map(|value| obj_from_bits(value.bits).as_ptr().unwrap())
+                .unwrap_or(other);
+            let mut index = 0;
+            while let Some(entry) = super::ops::set_pin_entry(py, source, index) {
+                super::ops::set_del_with_hash_in_place(py, set, entry.bits(), entry.hash());
+                if exception_pending(py) {
+                    drop(temporary);
+                    drop(entry);
+                    return Err(());
+                }
+                drop(entry);
+                if exception_pending(py) {
+                    return Err(());
+                }
+                index += 1;
+            }
+        } else {
+            let mut iter = crate::object::iterable::OwnedIterator::new(py, other_bits).ok_or(())?;
+            while let Some(item) = iter.next()? {
+                let item = SetOwned::adopt(py, item);
+                set_del_in_place(py, set, item.bits);
+                if exception_pending(py) {
+                    drop(iter);
+                    drop(item);
+                    return Err(());
+                }
+                drop(item);
+                if exception_pending(py) {
+                    return Err(());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+unsafe fn set_difference_bits(py: &PyToken<'_>, set: *mut u8, other_bits: u64, kind: u32) -> u64 {
+    unsafe {
+        if let Some(other) = obj_from_bits(other_bits).as_ptr() {
+            if is_set_like_type(object_type_id(other)) {
+                return set_like_difference(py, set, other, kind);
+            }
+            if exact_storage(py, other, TYPE_ID_DICT, builtin_classes(py).dict)
+                && (crate::builtins::containers::set_len(set) >> 2) <= dict_len(other)
+            {
+                let bits = new_set_result(kind);
+                let Some(result) = obj_from_bits(bits).as_ptr() else {
+                    return MoltObject::none().bits();
+                };
+                let mut index = 0;
+                while let Some(entry) = super::ops::set_pin_entry(py, set, index) {
+                    let found = super::ops::dict_find_entry_with_hash(
+                        py,
+                        other,
+                        entry.bits(),
+                        entry.hash(),
+                    );
+                    if !exception_pending(py) && found.is_none() {
+                        super::ops::set_add_with_hash_in_place(
+                            py,
+                            result,
+                            entry.bits(),
+                            entry.hash(),
+                        );
+                    }
+                    if exception_pending(py) {
+                        dec_ref_bits(py, bits);
+                        drop(entry);
+                        return MoltObject::none().bits();
+                    }
+                    drop(entry);
+                    if exception_pending(py) {
+                        dec_ref_bits(py, bits);
+                        return MoltObject::none().bits();
+                    }
+                    index += 1;
+                }
+                return bits;
+            }
+        }
+        let bits = set_like_copy_bits(py, set, kind);
+        let Some(result) = obj_from_bits(bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        if set_difference_update_iterable(py, result, other_bits).is_err() || exception_pending(py)
+        {
+            dec_ref_bits(py, bits);
+            MoltObject::none().bits()
+        } else {
+            bits
+        }
+    }
+}
+
+unsafe fn set_toggle_entry(py: &PyToken<'_>, set: *mut u8, key: u64, hash: u64) -> Result<(), ()> {
+    unsafe {
+        let removed = super::ops::set_del_with_hash_in_place(py, set, key, hash);
+        if exception_pending(py) {
+            return Err(());
+        }
+        if !removed {
+            super::ops::set_add_with_hash_in_place(py, set, key, hash);
+        }
+        if exception_pending(py) {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub(in crate::object) unsafe fn set_symdiff_update_iterable(
+    py: &PyToken<'_>,
+    set: *mut u8,
+    other_bits: u64,
+) -> Result<(), ()> {
+    let _source = SetOwned::borrow(py, other_bits);
+    unsafe {
+        if obj_from_bits(other_bits).as_ptr() == Some(set) {
+            set_clear_in_place(py, set);
+            return if exception_pending(py) {
+                Err(())
+            } else {
+                Ok(())
+            };
+        }
+        if let Some(other) = obj_from_bits(other_bits).as_ptr()
+            && exact_storage(py, other, TYPE_ID_DICT, builtin_classes(py).dict)
+        {
+            let mut index = 0;
+            while let Some((key, hash)) = pin_dict_key(py, other, index) {
+                set_toggle_entry(py, set, key.bits, hash)?;
+                drop(key);
+                if exception_pending(py) {
+                    return Err(());
+                }
+                index += 1;
+            }
+            return Ok(());
+        }
+        let (other, temporary) =
+            set_like_ptr_from_bits(py, other_bits, HashContext::SetElement).ok_or(())?;
+        let temporary = temporary.map(|bits| SetOwned::adopt(py, bits));
+        let mut index = 0;
+        while let Some(entry) = super::ops::set_pin_entry(py, other, index) {
+            if set_toggle_entry(py, set, entry.bits(), entry.hash()).is_err() {
+                drop(temporary);
+                drop(entry);
+                return Err(());
+            }
+            drop(entry);
+            if exception_pending(py) {
+                return Err(());
+            }
+            index += 1;
+        }
+        Ok(())
+    }
+}
+
+unsafe fn set_probe_iterable(py: &PyToken<'_>, set: *mut u8, other: u64, disjoint: bool) -> u64 {
+    let done = (|| -> Result<bool, ()> {
+        let mut iter = crate::object::iterable::OwnedIterator::new(py, other).ok_or(())?;
+        while let Some(item) = iter.next()? {
+            let item = SetOwned::adopt(py, item);
+            let found = unsafe { set_find_entry(py, set, item.bits) };
+            drop(item);
+            if exception_pending(py) {
+                return Err(());
+            }
+            if found.is_some() == disjoint {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })();
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    match done {
+        Ok(value) => MoltObject::from_bool(value).bits(),
+        Err(()) => MoltObject::none().bits(),
+    }
 }

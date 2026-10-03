@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import json
 import os
-import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -18,6 +17,7 @@ from molt.cli import progress as _progress
 from molt.cli import typecheck as _typecheck
 from molt.cli.build_diagnostics import (
     _build_build_diagnostics_payload,
+    _emit_build_diagnostics_for_result,
     _record_frontend_timing_item,
 )
 from molt.cli.build_output_layout import (
@@ -352,48 +352,23 @@ def _prepare_frontend_lowering_config(
     is_wasm: bool,
     frontend_parallel_details: dict[str, Any],
     frontend_phase_timeout: float | None,
-    source_recompiled_external_packages: Collection[str],
 ) -> tuple[_PreparedFrontendLoweringConfig | None, _CliFailure | None]:
     type_facts: TypeFacts | None = None
-    if (
-        type_facts_path is None
-        and type_hint_policy == "check"
-        and source_recompiled_external_packages
-    ):
-        type_hint_policy = "ignore"
-        warning = (
-            "source-recompiled external native packages use package/native "
-            "artifact custody instead of ty-derived type facts; continuing "
-            "with guarded hints."
-        )
-        warnings.append(warning)
-        if not json_output:
-            print(warning, file=sys.stderr)
-    if type_facts_path is None and type_hint_policy in {"trust", "check"}:
-        type_facts_start = time.perf_counter()
-        type_facts, ty_ok = _typecheck._collect_type_facts_for_build(
-            list(module_graph.values()), type_hint_policy, source_path
-        )
+    # Source annotations are lowered by the frontend in their lexical context.
+    # Ordinary builds must not synthesize whole-scope hints from assignments or
+    # change semantics according to ambient checker availability/configuration.
+    if type_facts_path is None and type_hint_policy == "trust":
+        type_check_start = time.perf_counter()
+        ty_ok, ty_output = _typecheck._run_ty_check(source_path)
         frontend_parallel_details.setdefault("pipeline_stage_ms", {})[
-            "collect_type_facts"
-        ] = round(max(0.0, (time.perf_counter() - type_facts_start) * 1000.0), 6)
-        if type_facts is None and type_hint_policy == "trust":
+            "validate_type_hints"
+        ] = round(max(0.0, (time.perf_counter() - type_check_start) * 1000.0), 6)
+        if not ty_ok:
             return None, _fail(
-                "Type facts unavailable; refusing trusted build.",
+                f"ty check failed; refusing trusted build. {ty_output}",
                 json_output,
                 command="build",
             )
-        if type_hint_policy == "trust" and not ty_ok:
-            return None, _fail(
-                "ty check failed; refusing trusted build.",
-                json_output,
-                command="build",
-            )
-        if type_hint_policy == "check" and not ty_ok:
-            warning = "ty check failed; continuing with guarded hints only."
-            warnings.append(warning)
-            if not json_output:
-                print(warning, file=sys.stderr)
     if type_facts_path is not None:
         facts_path = Path(type_facts_path)
         if not facts_path.exists():
@@ -816,11 +791,22 @@ def _prepare_frontend_stage_state(
     output_layout = prepared_build_outputs.output_layout
     target_triple = output_layout.target_triple
     # Object-only cross compilation does not build or link the Rust runtime.
+    # Installed Molt links shipped runtime cells: cell selection owns target
+    # support and no Rust target library is consulted.
     if target_triple and output_layout.emit_mode == "bin":
+        from molt.cli.installed_runtime import installed_runtime_active
         from molt.cli.wasm_toolchain import rust_target_readiness_error
 
-        readiness_error = rust_target_readiness_error(
-            target_triple, root=prepared_build_roots.molt_root
+        try:
+            installed = installed_runtime_active(prepared_build_roots.molt_root)
+        except ValueError as exc:
+            return None, _fail(str(exc), json_output, command="build")
+        readiness_error = (
+            None
+            if installed
+            else rust_target_readiness_error(
+                target_triple, root=prepared_build_roots.molt_root
+            )
         )
         if readiness_error is not None:
             return None, _fail(readiness_error, json_output, command="build")
@@ -864,6 +850,18 @@ def _prepare_frontend_stage_state(
         artifacts_root=artifacts_root,
         image_scope=resolved_build_entry.image_scope,
     )
+
+    def return_after_build_diagnostics(result: int) -> int:
+        return _emit_build_diagnostics_for_result(
+            result,
+            diagnostics_enabled=diagnostics_enabled,
+            build_diagnostics_payload=(
+                prepared_build_callbacks.build_diagnostics_payload
+            ),
+            json_output=json_output,
+            verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
+        )
+
     _progress.phase("module_analysis")
     if diagnostics_enabled:
         phase_starts["module_analysis"] = time.perf_counter()
@@ -885,7 +883,9 @@ def _prepare_frontend_stage_state(
         )
     )
     if prepared_frontend_analysis_error is not None:
-        return None, prepared_frontend_analysis_error
+        return None, return_after_build_diagnostics(
+            prepared_frontend_analysis_error
+        )
     assert prepared_frontend_analysis is not None
     _progress.phase("ir_lowering")
     if diagnostics_enabled:
@@ -929,13 +929,12 @@ def _prepare_frontend_stage_state(
             is_wasm=prepared_build_outputs.output_layout.is_wasm,
             frontend_parallel_details=frontend_parallel_details,
             frontend_phase_timeout=frontend_phase_timeout,
-            source_recompiled_external_packages=(
-                import_admission_policy.native_artifact_source_packages
-            ),
         )
     )
     if prepared_frontend_lowering_config_error is not None:
-        return None, prepared_frontend_lowering_config_error
+        return None, return_after_build_diagnostics(
+            prepared_frontend_lowering_config_error
+        )
     assert prepared_frontend_lowering_config is not None
     return (
         (
@@ -1093,10 +1092,16 @@ def _prepare_frontend_pipeline(
     try:
         import_plan = import_plan.with_compile_modules(compile_module_order)
     except ValueError as exc:
-        return None, _fail(
-            f"internal error: binary image closure plan is invalid: {exc}",
-            json_output,
-            command="build",
+        return None, _emit_build_diagnostics_for_result(
+            _fail(
+                f"internal error: binary image closure plan is invalid: {exc}",
+                json_output,
+                command="build",
+            ),
+            diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+            build_diagnostics_payload=build_diagnostics_payload,
+            json_output=json_output,
+            verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
         )
     set_binary_image_closure_payload(import_plan.closure_payload())
     if prepared_build_preamble.diagnostics_enabled:

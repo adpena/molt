@@ -14,6 +14,15 @@ performance-first C-extension compatibility without embedding CPython.
 - No CPython ABI compatibility; extensions must be recompiled.
 - Capability gating and determinism rules apply to all extensions.
 
+Generic C subscription (`PyObject_GetItem`, `PyObject_SetItem`,
+`PyObject_DelItem`) uses the runtime's live Python class protocol for every
+managed value. Physical storage tags do not select semantics; subclass overrides,
+arbitrary keys, zero-valued payloads, and the original callback exception survive
+the boundary. Foreign extension objects retain their declared C-slot protocol.
+Physical container APIs such as `PyDict_SetItem` remain distinct because their
+contract intentionally bypasses subclass subscription overrides. Mutation returns
+are statements with borrowed receivers, not owned result values.
+
 ---
 
 ## 2. Non-Goals
@@ -71,9 +80,19 @@ not observable through this accessor.
 
 `molt_c_heap_*` is the public-header C-object provenance lane. It lets
 source-compatible headers expose real C heap pointers for extension-local
-objects, while generic `Py_INCREF`/`Py_DECREF`/type checks avoid treating those
-pointers as Molt handles. Type canonicalization is keyed by explicit kind so
-header-inline type objects keep one identity across C translation units.
+objects. The source-header `Py_INCREF`/`Py_DECREF`, `Py_REFCNT` and `Py_TYPE`
+operations retain the private reference-count and type-pointer representation;
+they never interpret the pointer as a Molt handle. Kind canonicalization keeps
+that private type-pointer identity across C translation units. Registration
+does not create a CPython object prefix, MRO, slot table or Python class
+projection. Canonical object inquiry and class-info protocols therefore reject
+registered private storage with `TypeError` before any CPython layout access;
+predicates return false and error-returning APIs retain their normal failure
+sentinels. This admission is owned by the bridge's existing Foreign resolution,
+shared by both C headers and runtime-value ingress. The runtime membership hook
+uses this same registry and does not hold its lock while constructing errors.
+Buffer leases and the source-header representation operations remain admitted;
+canonical extension objects use `PyType_FromSpec` and the linked object APIs.
 
 The `molt_c_heap_*_buffer*` lease functions extend that lane to the buffer
 protocol: a source-recompiled extension (e.g. the numpy `PyArrayObject`
@@ -107,13 +126,22 @@ exports alive.
 - `molt_string_from`, `molt_string_as_ptr`
 - `molt_bytearray_from`, `molt_bytearray_as_ptr`
 
-`MoltBufferView` is the single descriptor exchanged by the public C header,
-the compiled CPython-ABI shim, and the runtime. Non-contiguous exports must
-request stride metadata; `PyBUF_SIMPLE`/format-only requests fail closed unless
-the descriptor is C-contiguous. Unsupported or over-capacity PEP 3118 format
-metadata fails closed instead of being truncated or guessed, and base-less
-negative-stride memoryviews do not publish a buffer descriptor because their
-lower bound cannot be revalidated on import. `readonly` is a canonical u32
+Both C facades share the canonical CPython-prefix `Py_buffer` and linked entry
+points. C-API major 5 rejects artifacts compiled for the former private tail;
+rebuild is mandatory and sealing cannot relabel their layout. Runtime MemoryView
+is the sole semantic owner, with a stable descriptor in its existing BridgeEntry.
+The descriptor has no cache eviction or independent exporter ownership. Native
+leases are shared across derived views and traced by mixed GC; release publishes
+the view empty before callbacks. Python methods, indexing and shared buffer
+acquisition work for Python-created and C-created views alike.
+
+`PyBuffer_FillInfo` remains allocation-free and publishes self-referential
+shape/stride pointers. Native memoryviews preserve complete format strings;
+byte conversion consumes geometry without interpreting format text. Indirect
+suboffset buffers fail closed. Noncontiguous exports require stride metadata.
+Bytes and bytearray share buffer-before-iteration selection after the applicable
+special-method and index/count policies. Acquisition and release preserve the
+original conversion error. `readonly` is a canonical u32
 boolean: `0` means writable, `1` means read-only, and every other value fails
 descriptor admission.
 

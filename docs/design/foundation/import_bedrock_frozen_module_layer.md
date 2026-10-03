@@ -225,6 +225,17 @@ registry.rows[i] = {
 Projections, all emitted by the same generator run and stamped with the same
 `registry_digest`:
 
+Every admitted `RuntimeBuiltin` row owns an executable initializer, even when
+user code has no explicit import of it. The canonical module-kind authority
+supplies this root to native, LLVM and WASM retention; declaration and JSON
+admission reject a runtime builtin without its initializer/body flag. Other
+source rows still require the admitted import closure or generated entry roots.
+Core, spawn, package-parent and explicit static-import discovery preserve the
+dependency imports from their existing scan receipts. Canonical core/provider
+inventory seeds also retain callable initializer lanes; they are kept separate
+from source-discovered imports and do not introduce eager module execution.
+Foreign builtin-provider execution remains gated by the app symbol resolver.
+
 | Projection | Consumer | Replaces |
 |---|---|---|
 | `module_registry_generated.rs` (const tables + PHF) | molt-runtime | `HashMap<String,u64>` keying, `known_absent_module` scans |
@@ -464,7 +475,7 @@ differential gate row (G8).
 | 5.8 | Single-phase C extensions (`m_size == -1`): import.c keeps a per-process `extensions` cache; "a copy of the module's dictionary is stored" (`m_copy`, via `_PyImport_FixupExtensionObject`) immediately after init succeeds; re-import after `del sys.modules[x]` creates a fresh module whose dict is updated from that snapshot — **PyInit is not re-run**; post-init dict mutations do NOT survive re-import; multi-phase (PEP 489) modules are "not singletons" and are re-created normally | `ext_dict_copy[id]` snapshot at init success; `Tombstone(kind=Extension)` → fresh module + `dict.update(snapshot)`; multi-phase support = future registry `phase` flag with Source-like reinit | c-api/module.html (single/multi-phase, PyState_FindModule borrowed ref); import.c `extensions` comment, `import_find_extension`, `_PyImport_FixupExtensionObject` [A8] |
 | 5.9 | Name validation at API boundary: C path (`builtins.__import__` → `PyImport_ImportModuleLevelObject`) raises `TypeError("module name must be a string")`; Python path (`_bootstrap._sanity_check`) raises `TypeError(f'module name must be str, not {type(name)}')`, plus level/package/empty-name errors | validation stays in the transaction prologue with the per-API exact message (already transaction-owned per import_system_contract.md §3.3); interior is typed `ModuleId` — the interior can no longer emit this error at all | import.c `PyImport_ImportModuleLevelObject`; `_bootstrap._sanity_check` [A9] |
 | 5.10 | Concurrent import: per-module recursive locks (`_ModuleLock`, `_blocking_on` wait-graph, `_DeadlockError`); waiting for an in-progress module goes through `_lock_unlock_module`, which **catches `_DeadlockError` and accepts the partially initialized module** ("Concurrent circular import, we'll accept a partially initialized module object") | per-slot owner/parking + owner-graph walk; on detected cross-thread cycle, return the partial module — CPython-exact, not an error | `_bootstrap._ModuleLock`, `_get_module_lock`, `_lock_unlock_module`; import.c `import_ensure_initialized` [A10] |
-| 5.11 | `PySys_GetObject`: "Return the object *name* from the `sys` module or `NULL` if it does not exist, **without setting an exception**"; borrowed reference | hook reads `Table.slots[SYS_ID]` directly (compile-time constant id); no import machinery re-entry possible; NULL-not-exception preserved | c-api/sys.html `PySys_GetObject` [A11] |
+| 5.11 | `PySys_GetObject`: "Return the object *name* from the `sys` module or `NULL` if it does not exist, **without setting an exception**"; borrowed reference | hook reads the interpreter-owned sys namespace; public import replacement/deletion cannot revoke its lifetime; NULL-not-exception and exact incoming error preservation are maintained | c-api/sys.html `PySys_GetObject` [A11] |
 
 ---
 
@@ -491,9 +502,13 @@ differential gate row (G8).
 - **Module state / `PyState_FindModule`:** the existing
   `module_capi_register/get_state` hooks key by module identity; they now key
   by `ModuleId`, making state lookup an array index as well.
-- **`PySys_GetObject`:** `sys` has a fixed id; the hook reads
-  `Table.slots[SYS_ID]` (state-checked) — the deadlock class (incident 8) is
-  gone because there is nothing to re-enter.
+- **`PySys_GetObject`:** canonical initialization establishes one interpreter
+  sys namespace owner independently of mutable public/private import projections.
+  Warm C lookups read only its dictionary without importing or invoking module
+  `__getattr__`; only cold bootstrap enters the existing initializer. Native
+  bootstrap facts and Python-shaped metadata/API definitions are published by
+  completion of that initializer. Reads and retained-namespace republication do
+  not reconstruct deleted exports. ModuleRetirement releases the role with sys.
 
 ---
 
@@ -630,7 +645,7 @@ name literals at call sites, and trace scaffolding all net-delete.
 | 5 | `manifest wasm_table_base 4135 above binary table base 2475` | The manifest is extracted from the linked binary's layout section — one computation, two projections. Digest-checked at build (G6) and load. |
 | 6 | `missing poll import for io_wait` panic | Import declarations are derived by iterating the same generated slot spec; a slot without an import cannot be expressed. Crate gate G5 instantiates every table spec per build. |
 | 7 | Generated-file staleness (`molt_PyArg_ParseTuple` missing) | Every projection embeds the authority digest; consumers const-assert it. Stale = compile error, enforced by existing generator `--check` gates extended to the registry (G7). |
-| 8 | `PySys_GetObject` re-entering import machinery | The hook reads `slots[SYS_ID]` directly; there is no import path to re-enter and no lock to deadlock on. |
+| 8 | `PySys_GetObject` re-entering import machinery | The warm hook reads the interpreter-owned sys namespace directly, independently of public import state; cold bootstrap uses the existing initializer. |
 | 9 | C-extension dynamic imports invisible to the graph → tree-shaken → ImportError | Scan results are registry `deps` edges (same artifact as everything else); the runtime miss is a fail-closed diagnostic naming extension + channel. Gate G9 compiles a fixture extension with a `PyImport_ImportModule` literal and asserts admission. |
 | 10 | `module_get_attr` vs `module_get_global` wrong exception class | One lookup kernel + `MissPolicy` enum + one frontend decision table + differential exception-class gate (G8). The behavior difference is data, not duplicated code. |
 | 11 | Runtime string-comparison chains in isolate dispatch | `molt_isolate_ensure(id)`; the chain generator is deleted. Strings never cross the isolate boundary. |

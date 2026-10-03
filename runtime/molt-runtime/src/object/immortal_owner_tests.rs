@@ -60,6 +60,60 @@ fn canonical_special_singletons_publish_real_immortal_custody() {
 }
 
 #[test]
+fn canonical_abi_views_preserve_runtime_immortality_on_both_crossings() {
+    use molt_cpython_abi::api::refcount::{Py_DECREF, Py_INCREF};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+
+    // Each mode owns a fresh runtime. The new interned identifier below proves
+    // first publication even if bootstrap already exposed a fixed singleton.
+    for owned in [false, true] {
+        RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil(|py| unsafe {
+                let fresh = MoltObject::from_ptr(crate::alloc_string(
+                    &py,
+                    b"canonical_abi_first_publication_fixture",
+                ))
+                .bits();
+                assert!(
+                    !(*header_from_obj_ptr(MoltObject::from_bits(fresh).as_ptr().unwrap()))
+                        .has_flag(HEADER_FLAG_HAS_ABI_VIEW)
+                );
+                let values = [
+                    MoltObject::from_ptr(crate::alloc_tuple(&py, &[])).bits(),
+                    MoltObject::from_ptr(crate::alloc_string(&py, b"")).bits(),
+                    MoltObject::from_ptr(crate::alloc_bytes(&py, b"")).bits(),
+                    MoltObject::from_ptr(crate::alloc_string(&py, b"x")).bits(),
+                    crate::missing_bits(&py),
+                    fresh,
+                ];
+                for bits in values {
+                    assert_canonical(bits);
+                    let view = if owned {
+                        GLOBAL_BRIDGE.owned_handle_to_pyobj(bits)
+                    } else {
+                        GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits)
+                    };
+                    assert!(!view.is_null());
+                    let refs = (*view).ob_refcnt;
+                    assert!(molt_cpython_abi::abi_types::is_immortal_refcnt(refs));
+                    Py_INCREF(view);
+                    Py_DECREF(view);
+                    crate::dec_ref_bits(&py, bits);
+                    assert_eq!((*view).ob_refcnt, refs);
+                    assert_canonical(bits);
+                    assert_eq!(GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits), view);
+                }
+                assert_eq!(
+                    crate::object::gc::collect_cycles(&py).status,
+                    crate::object::gc::GcCollectStatus::Completed
+                );
+            })
+        });
+        // The lifecycle transaction also exercises shutdown rebasing of the views.
+    }
+}
+
+#[test]
 fn ordinary_dict_and_atomic_cache_edges_preserve_canonical_root_owners() {
     let _transaction = RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {

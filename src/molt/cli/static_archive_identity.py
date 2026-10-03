@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from typing import BinaryIO, Callable, Mapping
 
-from molt.toolchain_identity import open_stable_regular_file
+from molt.toolchain_identity import StableRegularFileIdentity, open_stable_regular_file
 from molt.exact_json import string_keyed_mapping
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 
@@ -344,11 +344,16 @@ def static_archive_member_identities(
 
 
 def artifact_content_identity(
-    path: Path, *, logical_path: Path | None = None
+    path: Path,
+    *,
+    logical_path: Path | None = None,
+    observed: StableRegularFileIdentity | None = None,
 ) -> dict[str, object]:
     """Read current artifact bytes once; metadata never authorizes cached content."""
     try:
-        with open_stable_regular_file(path, label="runtime artifact") as opened:
+        with open_stable_regular_file(
+            path, label="runtime artifact", observed=observed
+        ) as opened:
             stream = opened.stream
             prefix = stream.read(len(_ARCHIVE_MAGIC))
             if (logical_path or path).suffix.lower() in {".a", ".lib"} and prefix in {

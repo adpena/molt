@@ -9,7 +9,7 @@ mod sequence_ops;
 
 pub(super) use attr_ops::emit_lir_attr;
 pub(super) use builder_ops::{
-    LirSequenceBuilderFinish, emit_lir_build_dict, emit_lir_build_set, emit_lir_sequence_builder,
+    emit_lir_build_dict, emit_lir_build_list, emit_lir_build_set, emit_lir_build_tuple,
 };
 pub(super) use call_abi::{
     emit_lir_boxed_operands_runtime_call, emit_lir_fixed_runtime_call, emit_lir_runtime_result,

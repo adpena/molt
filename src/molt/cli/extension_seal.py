@@ -5,11 +5,11 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, cast
 
+from molt.source_root import compiler_source_root
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli.extension_manifest import (
     ExtensionSupportFile,
-    _default_molt_c_api_version,
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
     _module_parts as _extension_module_parts,
@@ -17,7 +17,6 @@ from molt.cli.extension_manifest import (
 )
 from molt.cli.extension_support import module_attr_support_files
 from molt.python_module_names import encode_python_module_names
-from molt.cli.project_roots import _find_molt_root
 from molt.cli.external_native import (
     _manifest_has_sealed_extension_custody,
     _validate_module_attr_callable_export_custody,
@@ -297,50 +296,6 @@ def _sealed_manifest_projection(
     return projected
 
 
-def _restamp_current_runtime_abi(
-    sealed_manifest: dict[str, Any],
-    *,
-    molt_root: Path,
-) -> list[str]:
-    """Stamp the sealed manifest with the current runtime's C-API version.
-
-    Seal is the custody boundary that admits a recompiled native artifact into
-    the current runtime. The runtime header ``MOLT_C_API_VERSION`` is the single
-    authority for the ABI the artifact will link against, so the sealed manifest
-    must carry that version rather than propagating a stale build-time label.
-
-    The Molt extension ABI is a monotonically forward-compatible stable core
-    (opaque ``MoltHandle`` object model plus additively-versioned ``molt_*``
-    runtime symbols), so an artifact recorded at an older major ABI is
-    admissible under a newer runtime. An artifact recorded at a *newer* major
-    ABI than the current runtime is a genuine mismatch and fails closed.
-    """
-    current = _default_molt_c_api_version(molt_root)
-    try:
-        current_major = int(current.split(".", 1)[0])
-    except (ValueError, IndexError):
-        return [f"cannot determine current runtime C-API major from {current!r}"]
-    manifest_abi = sealed_manifest.get("molt_c_api_version")
-    if isinstance(manifest_abi, str) and manifest_abi.strip():
-        try:
-            manifest_major = int(manifest_abi.strip().split(".", 1)[0])
-        except ValueError:
-            return [
-                "cannot determine manifest C-API major from "
-                f"{manifest_abi!r} before sealing to current runtime ABI"
-            ]
-        if manifest_major > current_major:
-            return [
-                "extension manifest requires C-API major "
-                f"{manifest_major}, newer than the current runtime "
-                f"{current_major}; rebuild the extension against this runtime "
-                "before sealing"
-            ]
-    sealed_manifest["molt_c_api_version"] = current
-    sealed_manifest["abi_tag"] = f"molt_abi{current_major}"
-    return []
-
-
 def extension_seal(
     path: str,
     out_dir: str,
@@ -558,16 +513,6 @@ def extension_seal(
     except ValueError as exc:
         return _fail(
             f"extension seal cannot materialize manifest authority: {exc}",
-            json_output,
-            command="extension-seal",
-        )
-    abi_restamp_errors = _restamp_current_runtime_abi(
-        sealed_manifest,
-        molt_root=_find_molt_root(manifest_path.parent, Path.cwd()),
-    )
-    if abi_restamp_errors:
-        return _fail(
-            "; ".join(abi_restamp_errors),
             json_output,
             command="extension-seal",
         )

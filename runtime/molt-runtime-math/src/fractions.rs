@@ -624,10 +624,9 @@ pub extern "C" fn molt_fraction_hash(a_bits: u64) -> u64 {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
         };
-        // The modular numeric hash spans the full ±(2**61-1) range, so box it
-        // through the BigInt path (mirroring `molt_fraction_numerator`) rather
-        // than the 47-bit inline-int fast path, which would silently truncate
-        // large hashes (e.g. hash(Fraction(10**30))).
+        // The shared target numeric hash may exceed the inline-int window.
+        // The integer constructor preserves the full value and chooses its
+        // representation; neither the satellite nor its ABI transport narrows it.
         int_bits_from_bigint(_py, BigInt::from(a.hash_val()))
     })
 }

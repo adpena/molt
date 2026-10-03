@@ -47,9 +47,9 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_inspect_isgeneratorfunction",
             crate::molt_inspect_isgeneratorfunction as *const (),
         )),
-        "molt_inspect_isawaitable" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_inspect_isawaitable",
-            crate::molt_inspect_isawaitable as *const (),
+        "molt_inspect_isnativeawaitable" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_inspect_isnativeawaitable",
+            crate::molt_inspect_isnativeawaitable as *const (),
         )),
         "molt_inspect_getgeneratorstate" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_inspect_getgeneratorstate",

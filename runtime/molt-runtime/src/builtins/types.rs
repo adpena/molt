@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use molt_obj_model::MoltObject;
@@ -6,26 +7,25 @@ use molt_obj_model::MoltObject;
 use crate::object::seq_access::{locked_len, pin_item};
 use crate::state::{RuntimeState, cache::clear_atomic_slots};
 use crate::{
-    ClassEdgeOwnership, ClassInfoProtocol, PyToken, RuntimeClassInfo, TYPE_ID_BYTES,
-    TYPE_ID_COMPLEX, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_ELLIPSIS, TYPE_ID_GENERIC_ALIAS,
-    TYPE_ID_LIST, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_RANGE, TYPE_ID_STRING, TYPE_ID_TUPLE,
-    TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs, alloc_generic_alias,
-    alloc_instance_for_class, alloc_list, alloc_property_obj, alloc_string, alloc_super_obj,
-    alloc_tuple, apply_class_slots_layout, attr_name_bits_from_bytes, builtin_classes,
-    builtin_type_bits, call_callable0, call_callable1, call_callable2, class_bases_bits,
-    class_bases_vec, class_bump_layout_version, class_dict_bits, class_layout_version_bits,
-    class_mro_vec, class_name_for_error, class_set_layout_version_bits, class_set_qualname_bits,
-    clear_exception, collect_runtime_classinfo, dec_ref_bits, dict_del_in_place, dict_get_in_place,
-    dict_order, dict_set_in_place, dict_update_apply, dict_update_set_in_place, exception_pending,
-    generic_alias_origin_bits, inc_ref_bits, init_atomic_bits, instance_dict_bits,
-    intern_static_name, is_truthy, isinstance_runtime, issubclass_bits, issubclass_runtime,
-    missing_bits, molt_call_bind, molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos,
-    molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq, molt_getattr_builtin,
-    molt_hash_builtin, molt_index, molt_iter, molt_iter_next, molt_len, molt_object_setattr,
-    molt_repr_from_obj, molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_eq,
-    obj_from_bits, object_class_bits, object_type_id, property_del_bits, property_get_bits,
-    property_set_bits, raise_exception, raise_not_iterable, runtime_classinfo_protocol_match,
-    runtime_state, string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
+    ClassEdgeOwnership, PyToken, TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DATACLASS, TYPE_ID_DICT,
+    TYPE_ID_ELLIPSIS, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_RANGE,
+    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs,
+    alloc_generic_alias, alloc_instance_for_class, alloc_list, alloc_property_obj, alloc_string,
+    alloc_super_obj, alloc_tuple, attr_name_bits_from_bytes, builtin_classes, builtin_type_bits,
+    call_callable0, call_callable1, call_callable2, class_bases_bits, class_bases_vec,
+    class_bump_layout_version, class_dict_bits, class_layout_version_bits, class_mro_vec,
+    class_name_for_error, class_set_layout_version_bits, class_set_qualname_bits, clear_exception,
+    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place,
+    dict_update_apply, dict_update_set_in_place, exception_pending, generic_alias_origin_bits,
+    inc_ref_bits, init_atomic_bits, instance_dict_bits, intern_static_name, is_truthy,
+    isinstance_runtime, issubclass_bits, issubclass_runtime, missing_bits, molt_call_bind,
+    molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos, molt_contains,
+    molt_dict_from_obj, molt_dict_get, molt_eq, molt_getattr_builtin, molt_hash_builtin,
+    molt_index, molt_iter, molt_iter_next, molt_len, molt_object_setattr, molt_repr_from_obj,
+    molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_from_bits,
+    object_class_bits, object_type_id, property_del_bits, property_get_bits, property_set_bits,
+    raise_exception, raise_not_iterable, runtime_state, string_obj_to_owned, to_i64,
+    tuple_from_iter_bits, type_name, type_of_bits,
 };
 
 pub(crate) mod class_construction;
@@ -37,7 +37,10 @@ pub(crate) mod descriptor_objects;
 pub(crate) mod dynamic_class_attr;
 pub(crate) mod keyword_metadata;
 pub(crate) mod module_spec;
+pub(crate) mod native_constructors;
 pub(crate) mod native_descriptors;
+#[cfg(test)]
+mod runtime_class_policy_tests;
 pub(crate) mod wrappers;
 
 pub use class_construction::*;
@@ -46,8 +49,8 @@ pub use class_model::*;
 pub use compiled_loader::*;
 pub use concrete_types::*;
 pub(crate) use concrete_types::{
-    capsule_class, cell_class, mappingproxy_class, mappingproxy_class_bits, method_class,
-    simplenamespace_class,
+    capsule_class, cell_class, frame_class_ready, frame_locals_proxy_class, mappingproxy_class,
+    mappingproxy_class_bits, mappingproxy_from_mapping, method_class, simplenamespace_class,
 };
 pub use dataclasses::*;
 pub use descriptor_objects::*;
@@ -101,64 +104,19 @@ define_types_runtime_state! {
     method_class,
     member_descriptor_class,
     getset_descriptor_class,
-    native_descriptor_new_fn,
-    native_descriptor_get_fn,
-    native_descriptor_set_fn,
-    native_descriptor_delete_fn,
-    native_descriptor_repr_fn,
-    native_descriptor_reduce_fn,
-    mappingproxy_new_fn,
-    mappingproxy_init_fn,
-    mappingproxy_getitem_fn,
-    mappingproxy_iter_fn,
-    mappingproxy_len_fn,
-    mappingproxy_contains_fn,
-    mappingproxy_get_fn,
-    mappingproxy_keys_fn,
-    mappingproxy_items_fn,
-    mappingproxy_values_fn,
-    mappingproxy_repr_fn,
-    mappingproxy_setitem_fn,
-    mappingproxy_delitem_fn,
-    simplenamespace_init_fn,
-    simplenamespace_repr_fn,
-    simplenamespace_eq_fn,
-    dynamic_class_attribute_init_fn,
-    dynamic_class_attribute_get_fn,
-    dynamic_class_attribute_set_fn,
-    dynamic_class_attribute_delete_fn,
-    dynamic_class_attribute_getter_fn,
-    dynamic_class_attribute_setter_fn,
-    dynamic_class_attribute_deleter_fn,
-    capsule_new_fn,
-    cell_new_fn,
-    cell_eq_fn,
-    cell_ne_fn,
-    cell_lt_fn,
-    cell_le_fn,
-    cell_gt_fn,
-    cell_ge_fn,
+    frame_f_locals_descriptor,
+    frame_f_locals_get_fn,
+    frame_locals_proxy_class,
     cell_contents_get_fn,
     cell_contents_set_fn,
     cell_contents_delete_fn,
-    method_new_fn,
-    method_init_fn,
-    types_coroutine_fn,
-    types_get_original_bases_fn,
-    types_prepare_class_fn,
-    types_resolve_bases_fn,
-    types_new_class_fn,
     module_spec_class,
     module_spec_init_fn,
-    module_spec_repr_fn,
     module_spec_parent_fn,
     compiled_loader_base_class,
     compiled_loader_builtin_class,
     compiled_loader_frozen_class,
     compiled_loader_singleton,
-    compiled_loader_create_module_fn,
-    compiled_loader_exec_module_fn,
-    compiled_loader_load_module_fn,
 }
 
 fn types_state(_py: &PyToken<'_>) -> &'static TypesRuntimeState {
@@ -172,67 +130,50 @@ pub(crate) fn types_clear_runtime_state(_py: &PyToken<'_>, state: &RuntimeState)
 }
 
 pub(crate) fn types_runtime_class_roots(py: &PyToken<'_>, state: &RuntimeState) -> Vec<u64> {
-    state
-        .types
-        .slots()
-        .into_iter()
-        .map(|slot| slot.load(AtomicOrdering::Acquire))
-        .filter(|bits| crate::object::class_storage::is_canonical_runtime_class(py, *bits))
-        .collect()
+    crate::state::cache::cached_runtime_class_roots(py, &state.types.slots())
 }
 
 /// Clear callback-bearing cache owners, retaining canonical class identities
 /// until the shared runtime-class retirement transaction reaches its tail.
 pub(crate) fn types_clear_runtime_callbacks(py: &PyToken<'_>, state: &RuntimeState) -> bool {
-    let mut detached = Vec::new();
-    for slot in state.types.slots() {
-        let bits = slot.load(AtomicOrdering::Acquire);
-        if bits != 0 && !crate::object::class_storage::is_canonical_runtime_class(py, bits) {
-            detached.push(slot.swap(0, AtomicOrdering::AcqRel));
-        }
-    }
-    let changed = !detached.is_empty();
-    for bits in detached {
-        dec_ref_bits(py, bits);
-    }
-    changed
+    crate::state::cache::clear_cached_runtime_callbacks(py, &state.types.slots())
 }
 
 pub(crate) use crate::builtins::methods::builtin_func_bits;
 
-fn bootstrap_runtime_func_bits(
-    _py: &PyToken<'_>,
-    slot: &AtomicU64,
+/// Allocate one owned helper for the fresh bootstrap payload. Public helpers
+/// are retained by the receiving module namespace; the coroutine implementation
+/// is retained privately by types.py. Neither family has a second cache owner.
+fn alloc_bootstrap_runtime_function(
+    py: &PyToken<'_>,
     fn_ptr: u64,
     arity: u64,
     signature: Option<(&[&[u8]], bool, bool)>,
 ) -> u64 {
-    if exception_pending(_py) {
+    if exception_pending(py) {
         return 0;
     }
-    init_atomic_bits(_py, slot, || {
-        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
-        if ptr.is_null() {
-            if !exception_pending(_py) {
-                let _ = raise_exception::<u64>(
-                    _py,
-                    "MemoryError",
-                    "types bootstrap callable allocation failed",
-                );
-            }
-            return 0;
+    let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, fn_ptr, arity);
+    if ptr.is_null() {
+        if !exception_pending(py) {
+            let _ = raise_exception::<u64>(
+                py,
+                "MemoryError",
+                "types bootstrap callable allocation failed",
+            );
         }
-        let bits = MoltObject::from_ptr(ptr).bits();
-        if let Some((arg_names, has_vararg, has_varkw)) = signature
-            && !crate::builtins::methods::configure_builtin_signature(
-                _py, bits, arg_names, has_vararg, has_varkw,
-            )
-        {
-            dec_ref_bits(_py, bits);
-            return 0;
-        }
-        bits
-    })
+        return 0;
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    if let Some((arg_names, has_vararg, has_varkw)) = signature
+        && !crate::builtins::methods::configure_builtin_signature(
+            py, bits, arg_names, has_vararg, has_varkw,
+        )
+    {
+        dec_ref_bits(py, bits);
+        return 0;
+    }
+    bits
 }
 
 fn runtime_class_init_failed(_py: &PyToken<'_>, class_bits: u64, name: &str) -> u64 {
@@ -249,18 +190,21 @@ fn runtime_class_init_failed(_py: &PyToken<'_>, class_bits: u64, name: &str) -> 
     0
 }
 
+pub(crate) use crate::object::class_storage::ClassSemanticPolicy;
+
 /// Build a runtime-owned class completely before publishing its cache slot.
 ///
-/// All runtime-created classes in the `types`, `functools`, and `operator`
-/// families use this authority so base, layout, namespace, callable, and
-/// definition-finalization failures cannot cache a partially initialized
-/// class.
+/// The `types`, `functools`, and `operator` factory callers use this authority
+/// so base, layout, namespace, callable, definition-finalization, and mutation
+/// policy failures cannot cache a partially initialized class.
 fn init_cached_runtime_class_configured(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     name: &str,
+    semantics: ClassSemanticPolicy,
     layout_size: i64,
     instance_shape: Option<crate::object::ObjectShapeId>,
+    native_slots: Option<crate::object::class_storage::ClassSlotPolicy>,
     configure: impl FnOnce(u64, *mut u8) -> bool,
 ) -> u64 {
     if exception_pending(_py) {
@@ -284,6 +228,9 @@ fn init_cached_runtime_class_configured(
             return 0;
         }
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        if let Some(policy) = native_slots {
+            unsafe { crate::object::class_storage::class_declare_native_slots(class_ptr, policy) };
+        }
         if let Some(shape) = instance_shape
             && !unsafe { crate::object::class_set_instance_shape_id(class_ptr, shape) }
         {
@@ -331,9 +278,13 @@ fn init_cached_runtime_class_configured(
         {
             return runtime_class_init_failed(_py, class_bits, name);
         }
-        if unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err() {
+        if unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err()
+            || !unsafe { semantics.apply(_py, class_ptr) }
+        {
             return runtime_class_init_failed(_py, class_bits, name);
         }
+        // No observer can obtain the cached identity before its namespace,
+        // physical layout, and explicit mutation policy have committed.
         class_bits
     })
 }
@@ -361,7 +312,7 @@ impl<'a> RuntimeMethodSignature<'a> {
 
 pub(crate) struct RuntimeClassMethodSpec<'a> {
     name: &'static str,
-    slot: &'a AtomicU64,
+    kind: NativeCallableKind,
     fn_ptr: u64,
     arity: u64,
     signature: Option<RuntimeMethodSignature<'a>>,
@@ -370,13 +321,13 @@ pub(crate) struct RuntimeClassMethodSpec<'a> {
 impl<'a> RuntimeClassMethodSpec<'a> {
     pub(crate) const fn fixed(
         name: &'static str,
-        slot: &'a AtomicU64,
+        kind: NativeCallableKind,
         fn_ptr: u64,
         arity: u64,
     ) -> Self {
         Self {
             name,
-            slot,
+            kind,
             fn_ptr,
             arity,
             signature: None,
@@ -385,14 +336,14 @@ impl<'a> RuntimeClassMethodSpec<'a> {
 
     pub(crate) const fn with_signature(
         name: &'static str,
-        slot: &'a AtomicU64,
+        kind: NativeCallableKind,
         fn_ptr: u64,
         arity: u64,
         signature: RuntimeMethodSignature<'a>,
     ) -> Self {
         Self {
             name,
-            slot,
+            kind,
             fn_ptr,
             arity,
             signature: Some(signature),
@@ -404,30 +355,40 @@ pub(crate) fn init_cached_runtime_class(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     name: &str,
+    semantics: ClassSemanticPolicy,
     layout_size: i64,
     instance_shape: Option<crate::object::ObjectShapeId>,
+    native_slots: Option<crate::object::class_storage::ClassSlotPolicy>,
     methods: &[RuntimeClassMethodSpec<'_>],
 ) -> u64 {
     init_cached_runtime_class_configured(
         _py,
         slot,
         name,
+        semantics,
         layout_size,
         instance_shape,
-        |_class_bits, dict_ptr| configure_runtime_class_methods(_py, dict_ptr, methods),
+        native_slots,
+        |class_bits, dict_ptr| configure_runtime_class_methods(_py, class_bits, dict_ptr, methods),
     )
 }
 
 pub(crate) fn configure_runtime_class_methods(
     _py: &PyToken<'_>,
+    class_bits: u64,
     dict_ptr: *mut u8,
     methods: &[RuntimeClassMethodSpec<'_>],
 ) -> bool {
     for method in methods {
+        let spec = if method.kind == NativeCallableKind::Constructor {
+            NativeCallableSpec::constructor(class_bits)
+        } else {
+            NativeCallableSpec::declared(method.kind, class_bits, method.name)
+        };
         let bits = if let Some(signature) = method.signature {
             crate::builtins::methods::builtin_func_bits_with_signature(
                 _py,
-                method.slot,
+                spec,
                 method.fn_ptr,
                 method.arity,
                 signature.arg_names,
@@ -435,12 +396,7 @@ pub(crate) fn configure_runtime_class_methods(
                 signature.has_varkw,
             )
         } else {
-            crate::builtins::methods::builtin_func_bits(
-                _py,
-                method.slot,
-                method.fn_ptr,
-                method.arity,
-            )
+            crate::builtins::methods::builtin_func_bits(_py, spec, method.fn_ptr, method.arity)
         };
         if !set_class_method(_py, dict_ptr, method.name, bits) {
             return false;
@@ -635,13 +591,13 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
     // Bootstrap-critical descriptor exports must come from stable runtime
     // type objects, not reflective attribute probing that can recurse back
     // into the still-initializing attribute/type machinery.
-    let wrapper_descriptor_bits = builtins.builtin_function_or_method;
+    let wrapper_descriptor_bits = builtins.wrapper_descriptor;
     trace_stage("wrapper_descriptor");
-    let method_wrapper_bits = builtins.builtin_function_or_method;
+    let method_wrapper_bits = builtins.method_wrapper;
     trace_stage("method_wrapper");
-    let method_descriptor_bits = builtins.builtin_function_or_method;
+    let method_descriptor_bits = builtins.method_descriptor;
     trace_stage("method_descriptor");
-    let classmethod_descriptor_bits = builtins.builtin_function_or_method;
+    let classmethod_descriptor_bits = builtins.classmethod_descriptor;
     trace_stage("classmethod_descriptor");
     let getset_descriptor_bits = getset_descriptor_class(_py);
     trace_stage("getset_descriptor");
@@ -653,66 +609,6 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
     if member_descriptor_bits == 0 {
         return release_failed_payload();
     }
-
-    let coroutine_bits = bootstrap_runtime_func_bits(
-        _py,
-        &types_state(_py).types_coroutine_fn,
-        crate::molt_types_coroutine as *const () as usize as u64,
-        1,
-        None,
-    );
-    if coroutine_bits == 0 {
-        return release_failed_payload();
-    }
-    trace_stage("coroutine_bits");
-
-    let get_original_bases_bits = bootstrap_runtime_func_bits(
-        _py,
-        &types_state(_py).types_get_original_bases_fn,
-        crate::molt_types_get_original_bases as *const () as usize as u64,
-        1,
-        None,
-    );
-    if get_original_bases_bits == 0 {
-        return release_failed_payload();
-    }
-    trace_stage("get_original_bases");
-
-    let prepare_bits = bootstrap_runtime_func_bits(
-        _py,
-        &types_state(_py).types_prepare_class_fn,
-        crate::molt_types_prepare_class as *const () as usize as u64,
-        2,
-        Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
-    );
-    if prepare_bits == 0 {
-        return release_failed_payload();
-    }
-    trace_stage("prepare_bits");
-
-    let resolve_bits = bootstrap_runtime_func_bits(
-        _py,
-        &types_state(_py).types_resolve_bases_fn,
-        crate::molt_types_resolve_bases as *const () as usize as u64,
-        2,
-        Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
-    );
-    if resolve_bits == 0 {
-        return release_failed_payload();
-    }
-    trace_stage("resolve_bits");
-
-    let new_bits = bootstrap_runtime_func_bits(
-        _py,
-        &types_state(_py).types_new_class_fn,
-        crate::molt_types_new_class as *const () as usize as u64,
-        2,
-        Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
-    );
-    if new_bits == 0 {
-        return release_failed_payload();
-    }
-    trace_stage("new_bits");
 
     let names = [
         ("AsyncGeneratorType", builtins.async_generator),
@@ -743,11 +639,6 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
         ("UnionType", builtins.union_type),
         ("WrapperDescriptorType", wrapper_descriptor_bits),
         ("DynamicClassAttribute", dynamic_class_attr_bits),
-        ("coroutine", coroutine_bits),
-        ("get_original_bases", get_original_bases_bits),
-        ("new_class", new_bits),
-        ("prepare_class", prepare_bits),
-        ("resolve_bases", resolve_bits),
     ];
     for (name, value_bits) in names.iter() {
         let key_ptr = alloc_string(_py, name.as_bytes());
@@ -759,6 +650,59 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
             dict_set_in_place(_py, dict_ptr, key_bits, *value_bits);
         }
         dec_ref_bits(_py, key_bits);
+        if exception_pending(_py) {
+            return release_failed_payload();
+        }
+    }
+    // Each bootstrap result owns its helper functions. types.py moves public
+    // helpers into its module namespace and keeps coroutine under its private
+    // implementation binding; releasing this payload releases its own edges.
+    for (name, fn_ptr, arity, signature) in [
+        (
+            "coroutine",
+            crate::molt_types_coroutine as *const () as usize as u64,
+            1,
+            None,
+        ),
+        (
+            "get_original_bases",
+            crate::molt_types_get_original_bases as *const () as usize as u64,
+            1,
+            None,
+        ),
+        (
+            "prepare_class",
+            crate::molt_types_prepare_class as *const () as usize as u64,
+            2,
+            Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
+        ),
+        (
+            "resolve_bases",
+            crate::molt_types_resolve_bases as *const () as usize as u64,
+            2,
+            Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
+        ),
+        (
+            "new_class",
+            crate::molt_types_new_class as *const () as usize as u64,
+            2,
+            Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
+        ),
+    ] {
+        let value = alloc_bootstrap_runtime_function(_py, fn_ptr, arity, signature);
+        if value == 0 {
+            return release_failed_payload();
+        }
+        let _value_owner =
+            crate::PtrDropGuard::new(obj_from_bits(value).as_ptr().expect("bootstrap function"));
+        let key = alloc_string(_py, name.as_bytes());
+        if key.is_null() {
+            return release_failed_payload();
+        }
+        let _key_owner = crate::PtrDropGuard::new(key);
+        unsafe {
+            dict_set_in_place(_py, dict_ptr, MoltObject::from_ptr(key).bits(), value);
+        }
         if exception_pending(_py) {
             return release_failed_payload();
         }
@@ -885,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn types_bootstrap_returns_fresh_dicts_with_cached_helpers() {
+    fn types_bootstrap_payloads_own_their_helpers_without_runtime_cache_edges() {
         init_runtime();
 
         let first_bits = molt_types_bootstrap();
@@ -907,19 +851,46 @@ mod tests {
                 assert_eq!(object_type_id(first_ptr), TYPE_ID_DICT);
                 assert_eq!(object_type_id(second_ptr), TYPE_ID_DICT);
 
-                let key_ptr = alloc_string(_py, b"new_class");
-                assert!(!key_ptr.is_null());
-                let key_bits = MoltObject::from_ptr(key_ptr).bits();
-                let first_new_class =
-                    dict_get_in_place(_py, first_ptr, key_bits).expect("first new_class");
-                let second_new_class =
-                    dict_get_in_place(_py, second_ptr, key_bits).expect("second new_class");
-                assert_eq!(
-                    first_new_class, second_new_class,
-                    "fresh bootstrap dicts should share cached runtime helper objects"
-                );
+                for name in [
+                    "coroutine",
+                    "get_original_bases",
+                    "prepare_class",
+                    "resolve_bases",
+                    "new_class",
+                ] {
+                    let key_ptr = alloc_string(_py, name.as_bytes());
+                    assert!(!key_ptr.is_null());
+                    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+                    let first_helper =
+                        dict_get_in_place(_py, first_ptr, key_bits).expect("first helper");
+                    let second_helper =
+                        dict_get_in_place(_py, second_ptr, key_bits).expect("second helper");
+                    assert_ne!(
+                        first_helper, second_helper,
+                        "independent bootstrap payloads own independent helpers"
+                    );
+                    assert_eq!(
+                        ref_count(first_helper),
+                        1,
+                        "only this payload retains its helper"
+                    );
+                    assert_eq!(
+                        ref_count(second_helper),
+                        1,
+                        "no second runtime cache retains a helper"
+                    );
+                    inc_ref_bits(_py, first_helper);
+                    dict_del_in_place(_py, first_ptr, key_bits);
+                    assert_eq!(
+                        ref_count(first_helper),
+                        1,
+                        "payload deletion releases its helper edge"
+                    );
+                    assert!(!exception_pending(_py));
+                    dec_ref_bits(_py, first_helper);
+                    dec_ref_bits(_py, key_bits);
+                }
 
-                dec_ref_bits(_py, key_bits);
                 dec_ref_bits(_py, first_bits);
                 dec_ref_bits(_py, second_bits);
             }
@@ -954,7 +925,9 @@ mod tests {
                 _py,
                 &slot,
                 "FailureAtomicClass",
+                ClassSemanticPolicy::heap(true, true),
                 0,
+                None,
                 None,
                 |_class, _dict| false,
             );
@@ -966,14 +939,13 @@ mod tests {
     }
 
     #[test]
-    fn vararg_marker_reuses_function_dict_and_preserves_empty_arg_names() {
+    fn vararg_marker_reuses_typed_signature_and_preserves_lazy_dictionary() {
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
-                let func_bits = bootstrap_runtime_func_bits(
+                let func_bits = alloc_bootstrap_runtime_function(
                     _py,
-                    &types_state(_py).types_prepare_class_fn,
                     crate::molt_types_prepare_class as *const () as usize as u64,
                     2,
                     Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
@@ -981,10 +953,12 @@ mod tests {
                 assert_ne!(func_bits, 0);
                 let func_ptr = maybe_ptr_from_bits(func_bits).expect("prepare_class function");
 
-                let first_dict_bits = function_dict_bits(func_ptr);
-                assert_ne!(
-                    first_dict_bits, 0,
-                    "vararg marker must install a function dict"
+                let field = crate::object::function_metadata::FunctionMetadataField::ArgumentNames;
+                let arg_names_bits = field.load(func_ptr).expect("empty arg-name metadata");
+                assert_eq!(
+                    function_dict_bits(func_ptr),
+                    0,
+                    "metadata cannot materialize __dict__"
                 );
 
                 assert!(crate::builtins::methods::configure_builtin_signature(
@@ -994,21 +968,8 @@ mod tests {
                     true,
                     true,
                 ));
-                let second_dict_bits = function_dict_bits(func_ptr);
-                assert_eq!(
-                    first_dict_bits, second_dict_bits,
-                    "repeated vararg marking must not replace cached function metadata"
-                );
-
-                let dict_ptr = maybe_ptr_from_bits(second_dict_bits).expect("function dict");
-                assert_eq!(object_type_id(dict_ptr), TYPE_ID_DICT);
-                let arg_names_key = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.molt_arg_names,
-                    b"__molt_arg_names__",
-                );
-                let arg_names_bits = dict_get_in_place(_py, dict_ptr, arg_names_key)
-                    .expect("empty arg-name metadata");
+                assert_eq!(function_dict_bits(func_ptr), 0);
+                assert_eq!(field.load(func_ptr), Some(arg_names_bits));
                 let arg_names_ptr = maybe_ptr_from_bits(arg_names_bits).expect("arg names tuple");
                 assert_eq!(object_type_id(arg_names_ptr), TYPE_ID_TUPLE);
                 assert_eq!(
@@ -1016,6 +977,7 @@ mod tests {
                     0,
                     "non-self vararg helpers still need an explicit empty arg-name tuple"
                 );
+                dec_ref_bits(_py, func_bits);
             }
         });
     }

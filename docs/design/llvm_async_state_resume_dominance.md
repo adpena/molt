@@ -8,6 +8,13 @@ diagnosis and design record, not as a baton. The retired #51 generator `.throw()
 recovery is covered by `tests/differential/basic/generator_throw_resumption.py`
 on native and LLVM.
 
+Terminal ownership now additionally normalizes suspension into explicit
+activation exits before emission. `StateSet`, a canonical poll `Call`,
+`IsPending`, `TaskWait`, and ordinary `Return`/branches replace backend-local
+yield/transition emitters. Closure storage owns persistence, and the explicit
+saved-state to control-label transport preserves resume identity independently
+of label numbering. The diagnosis below describes the retired representation.
+
 ## Symptom
 
 On `--target llvm`, every async/coroutine test and the auto-generated

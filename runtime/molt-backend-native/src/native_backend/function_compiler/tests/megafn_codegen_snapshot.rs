@@ -51,6 +51,7 @@ fn func(name: &str, ops: Vec<OpIR>) -> FunctionIR {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
 }
@@ -85,6 +86,7 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     params: vec!["value".into()],
                     // Keep the call boundary under test through the module inliner.
                     codegen_partition: true,
+                    parameter_custody: Vec::new(),
                     ..func("callee_leaf", vec![ret("value")])
                 },
             ],
@@ -137,6 +139,7 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                 FunctionIR {
                     params: vec!["value".into()],
                     codegen_partition: true,
+                    parameter_custody: Vec::new(),
                     ..func("internal_target", vec![ret("value")])
                 },
             ],

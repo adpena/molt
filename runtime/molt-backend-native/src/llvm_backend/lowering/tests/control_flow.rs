@@ -3,7 +3,11 @@ use super::*;
 #[test]
 fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
     let ctx = Context::create();
-    let backend = make_backend(&ctx);
+    let mut backend = make_backend(&ctx);
+    // The stack-exit restore is an exact boxed-ABI kind on the admitted route.
+    backend
+        .runtime_callable_symbols
+        .insert("molt_exception_stack_exit".into());
     let mut func = TirFunction::new(
         "path_local_try".into(),
         vec![TirType::Bool],

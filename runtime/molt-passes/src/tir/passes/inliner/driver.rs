@@ -19,8 +19,9 @@
 //!   produces a disjoint-SSA copy of a callee body inside the caller, with every
 //!   `ValueId` / `BlockId` / terminator target / block argument remapped through
 //!   the caller's `fresh_value` / `fresh_block` counters. The callee's parameter
-//!   values bind *directly* to the call's argument values (no copy ops), so the
-//!   cloned entry block carries no arguments. All loop metadata
+//!   values bind *directly* to the values the splice supplies (each argument,
+//!   or its owned binding alias), so the cloned entry block carries no
+//!   arguments. All loop metadata
 //!   (`label_id_map` + `loop_roles` + `loop_pairs` + `loop_break_kinds` +
 //!   `loop_cond_blocks`) transfers with remapped keys.
 //! * **(b) simple splice + module wiring** - [`splice_call_site`] splits the
@@ -58,15 +59,18 @@
 //!    [`run_pipeline`](crate::tir::passes::run_pipeline) re-run (which itself
 //!    verifies). A splice that produced invalid SSA *panics*; it never silently
 //!    corrupts.
-//! 2. **REFCOUNT** - the calling convention is **+0 borrowed** parameters /
-//!    **+1 owned** return. The splice adds and removes *zero* `IncRef`/`DecRef`
-//!    ops, so the callee body's reference-count balance is preserved verbatim.
-//!    The one caller-side hazard: a caller that does `IncRef(arg)` immediately
-//!    before the `Call` (handing the callee an owned, not borrowed, argument)
-//!    would, post-inline, leak that extra reference because the callee body
-//!    consumes a *borrowed* parameter. [`splice_call_site`] therefore refuses any
-//!    site with an `IncRef` of one of the call's argument values in the <=2 ops
-//!    immediately preceding the `Call` (the [`call_site_has_arg_incref`] guard).
+//! 2. **REFCOUNT** - the call's reference contract: each parameter's declared
+//!    custody (`Borrowed` or `Transferred`, design 20 §1.6), the callee's frame
+//!    clear at every exit, and one owned result. The splice places no
+//!    `IncRef`/`DecRef` of its own. Its activation (`activation.rs`) binds each
+//!    parameter the activation owns through an owned `binding_alias`, ends each
+//!    exit with the frame clear DropInsertion plans for the callee's `Return`
+//!    (as `DelBoundary`s), and captures a returned frame binding first; the
+//!    caller's DropInsertion places all of them. A caller that does
+//!    `IncRef(arg)` immediately before the `Call` hands the callee a reference
+//!    that no custody names, so [`splice_call_site`] refuses any site with an
+//!    `IncRef` of one of the call's argument values in the <=2 ops immediately
+//!    preceding the `Call` (the [`call_site_has_arg_incref`] guard).
 //! 3. **LOOP METADATA** - LICM / BCE / the structured-loop back-conversion read
 //!    `loop_roles` *and* `loop_pairs` *and* `loop_break_kinds` *and*
 //!    `loop_cond_blocks`. Transferring only `loop_roles` (the obvious one) would
@@ -81,6 +85,7 @@ use crate::tir::function::TirModule;
 use crate::tir::passes::ip_summary::ModuleSummaries;
 use crate::tir::target_info::TargetInfo;
 
+use super::activation::Activations;
 use super::call_sites::collect_call_sites;
 use super::eligibility::is_inlineable;
 use super::eligibility::{
@@ -207,6 +212,10 @@ pub fn run_inliner(
         return stats;
     }
 
+    // Prepared activations serve every caller: a callee is final before any
+    // caller splices it.
+    let mut activations = Activations::default();
+
     // Walk bottom-up over the SCC condensation: callees before callers.
     for scc in call_graph.bottom_up_order() {
         for caller_name in scc {
@@ -228,6 +237,7 @@ pub fn run_inliner(
             // (its `Call` survives, conservative-correct) and does NOT block the
             // remaining inlinable sites in the same caller.
             let mut changed_this_fn = false;
+            activations.enter_caller();
             let sites = {
                 let caller = &module.functions[caller_idx];
                 collect_call_sites(caller, &defined)
@@ -250,7 +260,7 @@ pub fn run_inliner(
                     (&mut right[0], &left[callee_idx])
                 };
                 let callee_has_exception_handling = callee.has_exception_handling;
-                let did_inline = splice_call_site(caller, callee, &site);
+                let did_inline = splice_call_site(caller, callee, &site, &mut activations);
                 if did_inline {
                     stats.sites_inlined += 1;
                     changed_this_fn = true;

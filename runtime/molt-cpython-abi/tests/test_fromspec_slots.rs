@@ -22,17 +22,12 @@
 #![allow(non_snake_case)]
 
 mod support;
-use support::fake_foreign;
 
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
-use molt_lang_obj_model::MoltObject;
-use std::collections::HashMap;
+use molt_cpython_abi::hooks::RuntimeHooks;
 use std::ffi::{CStr, c_void};
 use std::os::raw::{c_int, c_uint, c_ulong};
 use std::ptr;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 fn pytype_spec_flags(flags: c_ulong) -> c_uint {
     #[allow(clippy::useless_conversion)]
@@ -41,95 +36,11 @@ fn pytype_spec_flags(flags: c_ulong) -> c_uint {
         .expect("CPython PyType_Spec.flags accepts only its unsigned-int flag domain")
 }
 
-// ── Minimal fake runtime backend (mirrors the cfunction bridge test) ─────────
-
-static NEXT_HANDLE: AtomicU64 = AtomicU64::new(0x6100_0000);
-static DICTS: Mutex<Option<HashMap<u64, HashMap<u64, u64>>>> = Mutex::new(None);
-
-fn fresh_handle() -> u64 {
-    let address = NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed) as usize;
-    MoltObject::from_ptr(ptr::with_exposed_provenance_mut(address)).bits()
-}
-
-fn dicts() -> std::sync::MutexGuard<'static, Option<HashMap<u64, HashMap<u64, u64>>>> {
-    let mut g = DICTS.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    g
-}
-
-unsafe extern "C" fn fake_register_c_function(
-    _meth: u64,
-    _flags: c_int,
-    _self_bits: u64,
-    _self_is_null: bool,
-    _defining_class_bits: u64,
-    _data: *const u8,
-    _len: usize,
-) -> u64 {
-    fresh_handle()
-}
-
-unsafe extern "C" fn fake_alloc_dict() -> u64 {
-    let h = fresh_handle();
-    dicts().as_mut().unwrap().insert(h, HashMap::new());
-    h
-}
-
-unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> i32 {
-    if let Some(map) = dicts().as_mut().unwrap().get_mut(&dict_bits) {
-        map.insert(key_bits, val_bits);
-    }
-    0
-}
-
-unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult {
-    match dicts()
-        .as_ref()
-        .unwrap()
-        .get(&dict_bits)
-        .and_then(|m| m.get(&key_bits).copied())
-    {
-        Some(bits) => BorrowedHandleResult::ok(bits),
-        None => BorrowedHandleResult::missing(),
-    }
-}
-
-unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
-    static STR_HANDLES: Mutex<Option<HashMap<Vec<u8>, u64>>> = Mutex::new(None);
-    let bytes = if data.is_null() {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
-    };
-    let mut g = STR_HANDLES.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    *g.as_mut()
-        .unwrap()
-        .entry(bytes)
-        .or_insert_with(fresh_handle)
-}
-
-unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
-    0xFF
-}
-
-unsafe extern "C" fn fake_noop_ref(_bits: u64) {}
+// Shared dictionary/string/foreign ownership capability model.
 
 fn install_hooks() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.register_c_function = fake_register_c_function;
-    hooks.alloc_dict = fake_alloc_dict;
-    hooks.dict_set = fake_dict_set;
-    hooks.dict_get = fake_dict_get;
-    hooks.alloc_str = fake_alloc_str;
-    hooks.classify_heap = fake_classify_heap;
-    hooks.inc_ref = fake_noop_ref;
-    hooks.dec_ref = fake_noop_ref;
-    hooks.foreign_new = fake_foreign::foreign_new;
+    support::fake_runtime::wire(&mut hooks);
     support::prepare_abi_test_thread(hooks);
 }
 

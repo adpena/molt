@@ -261,48 +261,55 @@ than interleaved key/value.
 
 ### 3.1 Batch Float Summation (`sum_f64_simd_*`)
 
-**Current implementation** (`object/ops.rs:6950-7005`, `builtins/math.rs:679-758`):
-Full SIMD coverage for `sum()` on float lists. SSE2 (2 lanes), AVX2 (4 lanes), NEON
-(2 lanes), WASM simd128 (2 lanes).
+**Current implementation** (`molt-runtime-math/src/math.rs`, `sum_f64_simd`): SSE2
+(2 lanes), AVX (4 lanes), NEON (2 lanes) and WASM simd128 (2 lanes) partial sums,
+used only by the `statistics` kernels (`mean`, `fmean`, `variance`, `stdev`,
+`covariance`, `correlation`, `linear_regression`). Lane partial sums reassociate the
+additions, so these kernels deviate from CPython, which computes `mean` and the
+variances exactly with rationals and `fmean` with `math.fsum`. They are a separate
+authority from builtin `sum()` and fused loops.
+
+Builtin `sum()` and explicit-loop reductions never use SIMD summation: `sum()` is
+CPython's sequential `builtin_sum_impl` state machine (its float phase compensates
+in item order), and a fused loop reproduces the loop's own operation order
+(`docs/spec/areas/compiler/0190_LOWERING_RULES.md`, "Fused loops"). Any vectorized
+summation must return the bit-identical result of that order.
 
 **Proposed optimization**:
-- **AVX-512**: 8 f64 lanes per iteration (`_mm512_add_pd`). Straightforward extension.
-- **Fused multiply-add for `sum(x*y for ...)`**: When the compiler can prove a
-  generator is a simple product reduction, emit `_mm256_fmadd_pd` (FMA3) instead of
-  separate multiply + add. This is a compiler optimization (TIR -> LIR lowering),
-  not a runtime change.
-- **Kahan summation variant**: The current SIMD sum has floating-point ordering
-  differences vs CPython. For determinism, consider a SIMD-friendly compensated
-  summation (add error-compensation lane alongside accumulator lane).
+- **Exact statistics**: replace the lane sums with CPython's exact algorithms
+  (rational `_sum`/`_ss` for `mean`/`variance`, correctly rounded `fsum` for
+  `fmean`); vectorize only steps whose result is independent of order.
+- **AVX-512**: 8 f64 lanes per iteration (`_mm512_add_pd`) for order-independent
+  steps.
 
-**Expected speedup**: AVX-512: 1.5-2x over AVX2 for large float lists.
-**Complexity**: Low (AVX-512 extension). High (FMA compiler integration).
-**Risk**: Low for runtime. Medium for compiler integration (determinism concerns).
+**Complexity**: Medium (exact statistics algorithms).
+**Risk**: Low for runtime; results must match CPython bit for bit.
 
-### 3.2 Vectorized Integer Arithmetic on `intarray`
+### 3.2 Vectorized Integer Arithmetic on Flat `list[int]` Storage
 
-**Current implementation** (`object/mod.rs:702-708`): `intarray` stores `i64` values
-contiguously (`*const i64` from `ptr.add(sizeof::<usize>())`). Currently no SIMD
-operations on int arrays.
+**Current implementation**: a list holding only ints may use flat `i64` storage
+(`TYPE_ID_LIST_INT`, `list_int_vec_ref`). There are no SIMD operations on it. (The
+earlier `intarray` heap kind is retired; its ABI id 220 and type tag 16 are never
+reused.)
 
 **Proposed optimization**:
-- Element-wise add/sub/mul/comparison on `intarray` using `_mm256_add_epi64` (4
+- Element-wise add/sub/mul/comparison on flat storage using `_mm256_add_epi64` (4
   elements/iter) or NEON `vaddq_s64` (2 elements/iter).
 - Vectorized `min`/`max` scan: `_mm256_max_epi64` (AVX-512 only, no AVX2 equivalent
   for i64 max -- use `_mm256_cmpgt_epi64` + blend on AVX2).
 - Batch comparison chains: `a < b < c` lowered to simultaneous SIMD comparison of
   adjacent elements.
 
-**Expected speedup**: 2-4x for bulk int array operations.
-
 **Cranelift CLIF status**: Cranelift supports `iadd.i64x2`, `isub.i64x2`, `imul.i64x2`
-on x86 and AArch64. The compiler could emit SIMD CLIF ops for typed int array loops
+on x86 and AArch64. The compiler could emit SIMD CLIF ops for typed int list loops
 detected during TIR specialization. Requires loop vectorization analysis in the
 compiler (not yet implemented).
 
 **Complexity**: Medium (runtime intrinsics). Very high (compiler auto-vectorization).
 **Risk**: Medium. Must handle overflow semantics correctly (Python ints are
-arbitrary-precision; overflow to BigInt must be detected per-element).
+arbitrary-precision; overflow to BigInt must be detected per-element), and a fused
+loop must meet the "Fused loops" contract (exact final state or decline before any
+effect).
 
 ### 3.3 NaN-Boxed Comparison Chains
 
@@ -743,7 +750,8 @@ Ordered by expected impact / effort ratio:
 | P1 | SIMD `in` operator for int/float lists | 4-8x | Medium | 2.1 |
 | P1 | Non-ASCII string hash (simdutf transcode) | 2-4x (non-ASCII) | Medium | 1.1 |
 | P2 | Swiss Table metadata for dict/set | 2-4x (dict lookup) | High | 6.2 |
-| P2 | AVX-512 extensions (mismatch, sum) | 1.5-2x | Low | 2.1, 3.1 |
+| P2 | AVX-512 extension (mismatch) | 1.5-2x | Low | 2.1 |
+| P2 | Exact `statistics` kernels (CPython parity) | Correctness | Medium | 3.1 |
 | P2 | Batch NaN-box type classification | 2-4x (batch ops) | Medium | 5.1 |
 | P3 | Inline small dicts | 1.5-2x (small dict) | High | 8.3 |
 | P3 | Prefetch hints for nested iteration | 1.1-1.3x | Low | 8.4 |

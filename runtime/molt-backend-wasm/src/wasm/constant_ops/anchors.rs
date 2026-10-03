@@ -114,6 +114,10 @@ pub(in crate::wasm) fn emit_release_const_anchors(
 ) {
     for anchor_local in anchor_locals.rev() {
         func.instruction(&wasm_encoder::Instruction::LocalGet(anchor_local));
+        // Transfer the owner before release can reenter or unwind. The outer
+        // unwind cleanup must never release the same anchor a second time.
+        crate::wasm_values::emit_boxed_none(func);
+        func.instruction(&wasm_encoder::Instruction::LocalSet(anchor_local));
         emit_call(
             func,
             reloc_enabled,

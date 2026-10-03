@@ -131,7 +131,8 @@ class C:
     class_attr_names = {
         class_arg_values[arg] for arg in class_def["args"] if arg in class_arg_values
     }
-    assert "__annotate__" in class_attr_names
+    assert "__annotate_func__" in class_attr_names
+    assert "__annotate__" not in class_attr_names
     assert "__annotations__" not in class_attr_names
     assert not any(
         str(op.get("s_value", "")).startswith("__molt_annotations_exec_C_")
@@ -145,7 +146,7 @@ class C:
     )
     captures = definitions[constructor["args"][0]]["args"]
     assert any(
-        class_arg_values.get(value) == "__annotate__"
+        class_arg_values.get(value) == "__annotate_func__"
         and class_def["args"][index + 1] == constructor["out"]
         for index, value in enumerate(class_def["args"][:-1])
     )
@@ -226,3 +227,13 @@ class Box[T]:
     )
     verification = verify_frontend_tir(ir)
     assert verification.ok, verification.errors
+
+
+@pytest.mark.parametrize("explicit", ["__annotate__", "__annotations__"])
+def test_python_314_generated_class_evaluator_preserves_explicit_metadata(explicit) -> None:
+    ir = _compile_for_python_314(f"class C:\n    {explicit} = 42\n    item: int\n")
+    main = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+    definition = next(op for op in main if op.get("kind") == "class_def")
+    strings = {op["out"]: op["s_value"] for op in main if op.get("kind") == "const_str"}
+    names = {strings[arg] for arg in definition["args"] if arg in strings}
+    assert {explicit, "__annotate_func__"} <= names

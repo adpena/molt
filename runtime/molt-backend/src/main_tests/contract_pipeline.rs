@@ -48,6 +48,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let caller = FunctionIR {
@@ -78,6 +79,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let mut ir = SimpleIR {
@@ -130,6 +132,7 @@ fn rust_source_for_ir_rejects_unknown_ops_at_generated_semantic_authority() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -161,6 +164,7 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -176,6 +180,7 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],

@@ -29,7 +29,9 @@ def _isolated_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     diagnostics._reset_runtime_wasm_cache_diagnostics()
 
 
-def test_pair_cache_is_session_independent_and_hydrates_both(tmp_path: Path) -> None:
+def test_pair_cache_is_session_independent_and_hydrates_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     shared = tmp_path / "built" / "molt_runtime.wasm"
     reloc = tmp_path / "built" / "molt_runtime_reloc.wasm"
     shared.parent.mkdir()
@@ -47,6 +49,21 @@ def test_pair_cache_is_session_independent_and_hydrates_both(tmp_path: Path) -> 
         is None
     )
 
+    from molt.cli import runtime_wasm_generation as generation_module
+
+    reads = []
+    read = cache.read_runtime_wasm_generation
+
+    def capture(*args, **kwargs):
+        reads.append(args[0])
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(cache, "read_runtime_wasm_generation", capture)
+    monkeypatch.setattr(
+        generation_module,
+        "read_runtime_wasm_generation",
+        lambda *args, **kwargs: pytest.fail("hydration re-read its admitted source"),
+    )
     dest_shared = tmp_path / "other-session" / "molt_runtime.wasm"
     dest_reloc = tmp_path / "other-session" / "molt_runtime_reloc.wasm"
     hydrated = cache.hydrate_runtime_wasm_pair_from_shared_cache(
@@ -54,10 +71,9 @@ def test_pair_cache_is_session_independent_and_hydrates_both(tmp_path: Path) -> 
         dest_reloc=dest_reloc,
         shared_identity=shared_identity,
         reloc_identity=reloc_identity,
-        is_valid_shared=lambda path: path.read_bytes() == b"shared",
-        is_valid_reloc=lambda path: path.read_bytes() == b"reloc",
     )
     assert hydrated is not None
+    assert len(reads) == 1
     assert hydrated.shared.read_bytes() == b"shared"
     assert hydrated.reloc.read_bytes() == b"reloc"
     assert not dest_shared.exists()
@@ -94,16 +110,12 @@ def test_pair_cache_rejects_cross_identity_and_single_artifact_tamper(
         dest_reloc=dest / reloc.name,
         shared_identity=shared_identity,
         reloc_identity=reloc_identity,
-        is_valid_shared=lambda _path: True,
-        is_valid_reloc=lambda _path: True,
     )
     assert not cache.hydrate_runtime_wasm_pair_from_shared_cache(
         dest_shared=dest / shared.name,
         dest_reloc=dest / reloc.name,
         shared_identity=shared_identity,
         reloc_identity=_identity("reloc", "other"),
-        is_valid_shared=lambda _path: True,
-        is_valid_reloc=lambda _path: True,
     )
     assert not cached_shared.exists()
     assert not dest.exists()
@@ -129,6 +141,26 @@ def test_pair_cache_diagnostics_attest_generation_activity(tmp_path: Path) -> No
     assert snapshot is not None
     assert snapshot["publish_attempts"] == 1
     assert snapshot["publish_successes"] == 1
+
+
+def test_pair_cache_rejects_excessive_receipt_nesting(tmp_path: Path) -> None:
+    shared_identity, reloc_identity = _identity("shared"), _identity("reloc")
+    _, _, manifest = cache._cached_pair_paths(shared_identity)
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+    dest = tmp_path / "dest"
+    assert cache.hydrate_runtime_wasm_pair_from_shared_cache(
+        dest_shared=dest / "molt_runtime.wasm",
+        dest_reloc=dest / "molt_runtime_reloc.wasm",
+        shared_identity=shared_identity,
+        reloc_identity=reloc_identity,
+    ) is None
+    snapshot = diagnostics._runtime_wasm_cache_diagnostics_snapshot()
+    assert snapshot is not None
+    assert snapshot["hydrate_attempts"] == 1
+    assert snapshot["hydrate_failures"] == 1
+    assert snapshot["hydrate_hits"] == 0
+    assert not dest.exists()
 
 
 def test_memory_bounded_cargo_jobs_fits_small_box(

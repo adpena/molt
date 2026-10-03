@@ -3,55 +3,54 @@ use super::*;
 /// Deterministic typed transport for values live into a semantic TIR block.
 ///
 /// Stack/frame-backed names already have explicit memory custody and are not
-/// duplicated here. Every remaining name receives one Cranelift block param,
-/// and every semantic predecessor must emit the matching argument vector.
+/// duplicated here. Proven immutable values bind their actual emitted SSA
+/// value directly. Only names needing incoming transport receive parameters;
+/// every semantic predecessor emits the matching argument vector.
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Debug)]
 pub(in crate::native_backend::function_compiler) struct BlockTransportPlan {
-    names: Vec<String>,
     vars: Vec<Variable>,
     types: Vec<cranelift_codegen::ir::Type>,
+    direct: Vec<(u32, Variable)>,
 }
 
 #[cfg(feature = "native-backend")]
 impl BlockTransportPlan {
     #[cfg(test)]
     pub(in crate::native_backend::function_compiler) fn for_test(
-        names: Vec<String>,
         vars: Vec<Variable>,
         types: Vec<cranelift_codegen::ir::Type>,
     ) -> Self {
-        Self { names, vars, types }
+        Self {
+            vars,
+            types,
+            direct: Vec::new(),
+        }
     }
 
-    pub(in crate::native_backend::function_compiler) fn from_live_names(
-        live_names: &BTreeSet<String>,
-        vars: &BTreeMap<String, Variable>,
-        representation_plan: &ScalarRepresentationPlan,
-        slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
+    pub(in crate::native_backend::function_compiler) fn from_live_ids(
+        live_ids: impl Iterator<Item = u32>,
+        ssa_values: &NativeSsaValues,
+        point: crate::tir::dominators::SimpleProgramPoint,
     ) -> Self {
-        let mut names = Vec::new();
         let mut plan_vars = Vec::new();
         let mut types = Vec::new();
-        for name in live_names {
-            if name == "none" || slot_backed_join_slots.contains_key(name) {
-                continue;
-            }
-            let Some(&var) = vars.get(name) else {
+        let mut direct = Vec::new();
+        for id in live_ids {
+            let Some(binding) = ssa_values.bindings[id as usize] else {
                 continue;
             };
-            names.push(name.clone());
-            plan_vars.push(var);
-            types.push(if representation_plan.is_float_unboxed(name) {
-                types::F64
+            if ssa_values.can_bind_directly(id, point) {
+                direct.push((id, binding.var));
             } else {
-                types::I64
-            });
+                plan_vars.push(binding.var);
+                types.push(binding.ty);
+            }
         }
         Self {
-            names,
             vars: plan_vars,
             types,
+            direct,
         }
     }
 
@@ -76,16 +75,185 @@ impl BlockTransportPlan {
         &self,
         builder: &mut FunctionBuilder<'_>,
         block: Block,
+        ssa_values: &NativeSsaValues,
     ) {
         let params = builder.block_params(block).to_vec();
         assert_eq!(
             params.len(),
-            self.names.len(),
+            self.vars.len(),
             "semantic transport block parameter arity drift"
         );
         for (&var, param) in self.vars.iter().zip(params) {
             builder.def_var(var, param);
         }
+        for &(id, var) in &self.direct {
+            let value = ssa_values.emitted[id as usize].unwrap_or_else(|| {
+                panic!("proven canonical SSA definition #{id} was not captured before block materialization")
+            });
+            builder.def_var(var, value);
+        }
+    }
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(Clone, Copy)]
+struct NativeTransportBinding {
+    var: Variable,
+    ty: cranelift_codegen::ir::Type,
+}
+
+/// Retained emitted values indexed by the canonical liveness name table.
+/// Variable/representation/storage projections are resolved once after setup;
+/// they never establish identity or create another name registry.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) struct NativeSsaValues {
+    definitions: Vec<Option<crate::tir::simple_def_use::SimpleDefinitionSite>>,
+    dominance: Option<crate::tir::dominators::SimpleExecutionDominance>,
+    emitted: Vec<Option<Value>>,
+    bindings: Vec<Option<NativeTransportBinding>>,
+}
+
+#[cfg(feature = "native-backend")]
+impl NativeSsaValues {
+    fn with_facts(
+        parameters: &[String],
+        ops: &[OpIR],
+        names: &crate::tir::cfg_liveness::SimpleNameTable,
+        dominance: Option<crate::tir::dominators::SimpleExecutionDominance>,
+    ) -> Self {
+        let facts = crate::tir::simple_def_use::SimpleDefinitionFacts::compute(parameters, ops);
+        Self {
+            definitions: (0..names.len())
+                .map(|id| facts.unique_definition(names.name(id as u32)))
+                .collect(),
+            dominance,
+            emitted: vec![None; names.len()],
+            bindings: vec![None; names.len()],
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::native_backend::function_compiler) fn for_test(
+        parameters: &[String],
+        ops: &[OpIR],
+        names: &crate::tir::cfg_liveness::SimpleNameTable,
+    ) -> Self {
+        Self::with_facts(
+            parameters,
+            ops,
+            names,
+            Some(crate::tir::cfg::CFG::build(ops).execution_points(ops)),
+        )
+    }
+
+    pub(in crate::native_backend::function_compiler) fn for_function(
+        func: &FunctionIR,
+        cfg: &crate::tir::cfg::CFG,
+        stateful: bool,
+        names: &crate::tir::cfg_liveness::SimpleNameTable,
+    ) -> Self {
+        // Backend-managed loop carriers and resume-frame values do not expose
+        // every definition as an immutable value in this invocation.
+        let explicit_definitions = !stateful
+            && !func.ops.iter().any(|op| {
+                crate::tir::op_kinds_generated::simpleir_kind_is_pre_ssa_rewritten(&op.kind)
+            });
+        Self::with_facts(
+            &func.params,
+            &func.ops,
+            names,
+            explicit_definitions.then(|| cfg.execution_points(&func.ops)),
+        )
+    }
+
+    pub(in crate::native_backend::function_compiler) fn project_variables(
+        &mut self,
+        names: &crate::tir::cfg_liveness::SimpleNameTable,
+        vars: &BTreeMap<String, Variable>,
+        representation_plan: &ScalarRepresentationPlan,
+        slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
+    ) {
+        for (id, binding) in self.bindings.iter_mut().enumerate() {
+            let name = names.name(id as u32);
+            if name == "none" || slots.contains_key(name) {
+                continue;
+            }
+            if let Some(&var) = vars.get(name) {
+                *binding = Some(NativeTransportBinding {
+                    var,
+                    ty: if representation_plan.is_float_unboxed(name) {
+                        types::F64
+                    } else {
+                        types::I64
+                    },
+                });
+            }
+        }
+    }
+
+    pub(in crate::native_backend::function_compiler) fn can_bind_directly(
+        &self,
+        id: u32,
+        point: crate::tir::dominators::SimpleProgramPoint,
+    ) -> bool {
+        let Some(definition) = self.definitions[id as usize] else {
+            return false;
+        };
+        // Textual emission is independent of execution dominance. A later
+        // initializer dominating a backward body still needs explicit transport.
+        if let crate::tir::simple_def_use::SimpleDefinitionSite::Operation(index) = definition
+            && index >= point.operation()
+        {
+            return false;
+        }
+        self.dominance
+            .as_ref()
+            .is_some_and(|d| d.definition_available(definition, point))
+    }
+
+    pub(in crate::native_backend::function_compiler) fn capture_parameters(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        parameters: &[String],
+        names: &crate::tir::cfg_liveness::SimpleNameTable,
+    ) {
+        if self.dominance.is_none() {
+            return;
+        }
+        for name in parameters {
+            let Some(id) = names.id(name) else {
+                continue;
+            };
+            if self.definitions[id as usize]
+                == Some(crate::tir::simple_def_use::SimpleDefinitionSite::Invocation)
+                && let Some(binding) = self.bindings[id as usize]
+            {
+                self.emitted[id as usize] = Some(builder.use_var(binding.var));
+            }
+        }
+    }
+
+    pub(in crate::native_backend::function_compiler) fn capture_operation(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        index: usize,
+        op: &OpIR,
+        names: &crate::tir::cfg_liveness::SimpleNameTable,
+    ) {
+        if self.dominance.is_none() {
+            return;
+        }
+        crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
+            let id = names.id(name).expect("canonical definition name");
+            if self.definitions[id as usize]
+                == Some(crate::tir::simple_def_use::SimpleDefinitionSite::Operation(
+                    index,
+                ))
+                && let Some(binding) = self.bindings[id as usize]
+            {
+                self.emitted[id as usize] = Some(builder.use_var(binding.var));
+            }
+        });
     }
 }
 
@@ -110,26 +278,32 @@ impl OpLiveThroughSnapshot {
 
     pub(in crate::native_backend::function_compiler) fn capture(
         builder: &mut FunctionBuilder<'_>,
-        live_after: &BTreeSet<String>,
+        live_after: &[u32],
         defining_op: &OpIR,
-        vars: &BTreeMap<String, Variable>,
-        slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
+        names: &crate::tir::cfg_liveness::SimpleNameTable,
+        ssa_values: &NativeSsaValues,
+        point: crate::tir::dominators::SimpleProgramPoint,
     ) -> Self {
+        let mut defined = Vec::new();
+        crate::tir::simple_def_use::visit_simple_ir_defined_names(defining_op, |name| {
+            defined.push(names.id(name).expect("canonical definition name"));
+        });
         let mut snapshot_vars = Vec::new();
         let mut values = Vec::new();
-        for name in live_after {
-            let mut defined_here = false;
-            crate::tir::simple_def_use::visit_simple_ir_defined_names(defining_op, |defined| {
-                defined_here |= defined == name.as_str();
-            });
-            if name == "none" || defined_here || slot_backed_join_slots.contains_key(name) {
+        for &id in live_after {
+            if defined.contains(&id) {
                 continue;
             }
-            let Some(&var) = vars.get(name) else {
+            let Some(binding) = ssa_values.bindings[id as usize] else {
                 continue;
             };
-            snapshot_vars.push(var);
-            values.push(builder.use_var(var));
+            snapshot_vars.push(binding.var);
+            values.push(if ssa_values.can_bind_directly(id, point) {
+                ssa_values.emitted[id as usize]
+                    .expect("live-through SSA definition was not captured")
+            } else {
+                builder.use_var(binding.var)
+            });
         }
         Self {
             origin_block: builder.current_block(),
@@ -273,6 +447,7 @@ pub(in crate::native_backend::function_compiler) fn materialize_label_block(
     block: Block,
     is_block_filled: &mut bool,
     transport: Option<&BlockTransportPlan>,
+    ssa_values: &NativeSsaValues,
 ) {
     ensure_block_in_layout(builder, block);
     // If we're already inside `block` and it's still open, the label has
@@ -293,7 +468,7 @@ pub(in crate::native_backend::function_compiler) fn materialize_label_block(
         crate::switch_to_block_tracking(builder, block, is_block_filled);
     }
     if let Some(plan) = transport {
-        plan.bind_block_params(builder, block);
+        plan.bind_block_params(builder, block, ssa_values);
     }
 }
 

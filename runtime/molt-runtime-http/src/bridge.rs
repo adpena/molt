@@ -22,8 +22,12 @@ unsafe extern "C" {
     fn __molt_http_exception_pending() -> i32;
     fn __molt_http_clear_exception();
     fn __molt_http_clear_attribute_error_if_pending() -> i32;
-    fn __molt_http_molt_exception_last() -> u64;
-    fn __molt_http_exception_kind_bits(ptr: *mut u8) -> u64;
+    fn __molt_http_pending_exception_matches_builtin(name_ptr: *const u8, name_len: usize) -> i32;
+    fn __molt_http_with_exception_scope(
+        restore_on_success: i32,
+        callback: unsafe extern "C" fn(*mut std::ffi::c_void) -> i32,
+        context: *mut std::ffi::c_void,
+    );
     fn __molt_http_molt_exception_init(self_bits: u64, args_bits: u64) -> u64;
     fn __molt_http_molt_raise(exc_bits: u64) -> u64;
 }
@@ -47,16 +51,68 @@ pub fn clear_attribute_error_if_pending(_py: &CoreGilToken) -> bool {
     unsafe { __molt_http_clear_attribute_error_if_pending() != 0 }
 }
 
-pub fn molt_exception_last() -> u64 {
-    unsafe { __molt_http_molt_exception_last() }
+/// Resolve the builtin target and match actual exception inheritance without
+/// consulting names/hooks or substituting an older active handled exception.
+pub fn pending_exception_matches_builtin(_py: &CoreGilToken, name: &str) -> bool {
+    unsafe { __molt_http_pending_exception_matches_builtin(name.as_ptr(), name.len()) != 0 }
 }
 
-/// # Safety
-///
-/// `ptr` must refer to a live Molt exception object for the duration of this
-/// call.
-pub unsafe fn exception_kind_bits(ptr: *mut u8) -> u64 {
-    unsafe { __molt_http_exception_kind_bits(ptr) }
+fn with_exception_scope<T, F: FnOnce() -> Result<T, u64>>(
+    restore_on_success: bool,
+    run: F,
+) -> Result<T, u64> {
+    struct Callback<F, T> {
+        run: Option<F>,
+        result: Option<std::thread::Result<Result<T, u64>>>,
+    }
+
+    unsafe extern "C" fn invoke<T, F: FnOnce() -> Result<T, u64>>(
+        context: *mut std::ffi::c_void,
+    ) -> i32 {
+        let callback = unsafe { &mut *context.cast::<Callback<F, T>>() };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            callback.run.take().expect("HTTP exception callback must run once")()
+        }));
+        let status = match &result {
+            Ok(Ok(_)) => 1,
+            Ok(Err(_)) => 0,
+            Err(_) => -1,
+        };
+        callback.result = Some(result);
+        status
+    }
+
+    let mut callback = Callback::<F, T> { run: Some(run), result: None };
+    unsafe {
+        __molt_http_with_exception_scope(
+            i32::from(restore_on_success),
+            invoke::<T, F>,
+            (&raw mut callback).cast(),
+        );
+    }
+    match callback.result.expect("HTTP exception callback must run synchronously") {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Run a finally/probe callback with the incoming raised error temporarily
+/// handled. Success restores its exact owner; a callback failure replaces it.
+/// The outer handled exception is restored on every exit, including unwinding.
+pub fn with_saved_exception<T>(
+    _py: &CoreGilToken,
+    run: impl FnOnce() -> Result<T, u64>,
+) -> Result<T, u64> {
+    with_exception_scope(true, run)
+}
+
+/// Handle the pending error for the complete callback suite. Success consumes
+/// it; failure propagates the new error with the handled error as its context.
+pub fn with_handled_exception<T>(
+    _py: &CoreGilToken,
+    run: impl FnOnce() -> Result<T, u64>,
+) -> Result<T, u64> {
+    with_exception_scope(false, run)
 }
 
 pub fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
@@ -399,6 +455,9 @@ pub fn attr_optional(_py: &CoreGilToken, obj_bits: u64, name: &[u8]) -> Result<O
     let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
+        if value_bits != missing {
+            dec_ref_bits(_py, value_bits);
+        }
         if clear_attribute_error_if_pending(_py) {
             return Ok(None);
         }

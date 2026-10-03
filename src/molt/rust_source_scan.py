@@ -92,7 +92,11 @@ class RustSourceProjection(NamedTuple):
 
 
 def _project_rust_source(
-    text: str, *, include_mask: bool, include_comments: bool
+    text: str,
+    *,
+    include_mask: bool,
+    include_comments: bool,
+    preserve_literals: bool = False,
 ) -> RustSourceProjection:
     output: list[str] = []
     comments: list[tuple[int, str]] = []
@@ -101,10 +105,11 @@ def _project_rust_source(
     for span in _non_code_spans(text):
         if include_mask:
             output.append(text[cursor : span.start])
+            original = text[span.start : span.end]
             output.append(
-                _NON_NEWLINE.sub(
-                    lambda run: " " * len(run[0]), text[span.start : span.end]
-                )
+                original
+                if preserve_literals and span.kind == "literal"
+                else _NON_NEWLINE.sub(lambda run: " " * len(run[0]), original)
             )
         if include_comments:
             line += text.count("\n", cursor, span.start)
@@ -122,10 +127,18 @@ def project_rust_source(text: str) -> RustSourceProjection:
     return _project_rust_source(text, include_mask=True, include_comments=True)
 
 
-def mask_rust_comments_and_strings(text: str) -> str:
-    """Blank comments and literals; preserve all offsets and CR/LF characters."""
+def mask_rust_comments_and_strings(
+    text: str, *, preserve_literals: bool = False
+) -> str:
+    """Blank comments and, by default, literals; preserve offsets and CR/LF.
+
+    Pattern scanners may retain literals while using the same lexical boundaries.
+    """
     return _project_rust_source(
-        text, include_mask=True, include_comments=False
+        text,
+        include_mask=True,
+        include_comments=False,
+        preserve_literals=preserve_literals,
     ).masked_code
 
 

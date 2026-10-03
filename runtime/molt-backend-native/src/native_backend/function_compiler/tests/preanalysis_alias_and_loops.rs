@@ -252,6 +252,7 @@ fn preanalysis_separates_retained_storage_bindings_from_ssa_aliases() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -293,6 +294,7 @@ fn preanalysis_uses_args_based_copy_var_value_source() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -340,6 +342,7 @@ fn preanalysis_marks_unused_outputs_live_through_their_definition_site() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -397,6 +400,7 @@ fn preanalysis_only_marks_store_slots_as_loop_body_reassignments() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -461,6 +465,7 @@ fn preanalysis_does_not_reinitialize_loop_slots_with_preloop_store() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 

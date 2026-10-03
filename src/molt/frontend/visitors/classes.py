@@ -10,6 +10,7 @@ SimpleTIRGenerator MRO at runtime.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_private_names import python_definition_name
 from typing import (
     Any,
     Callable,
@@ -38,37 +39,6 @@ from molt.frontend.sema import (
 from molt.frontend.visitors.class_method_compilation import (
     ClassMethodCompilationMixin,
 )
-
-
-def _iter_slots_field_names(value: ast.expr | None) -> list[str]:
-    """Field names declared by a ``__slots__`` assignment that consume an instance
-    field slot.
-
-    Accepts the literal forms ``__slots__`` is normally given — a single string,
-    or a tuple/list/set of string literals. ``__dict__`` and ``__weakref__`` are
-    excluded because the runtime's ``apply_class_slots_layout`` does not assign
-    them a field offset (they toggle instance-dict / weakref support instead), so
-    the frontend's slot-size accounting must skip them in lock-step to keep
-    ``class_info["size"]`` equal to the runtime's ``class_layout_size``.
-    Non-literal ``__slots__`` (a computed expression) yields no names; such a
-    class falls back to the runtime layout authority unchanged.
-    """
-    if value is None:
-        return []
-    if isinstance(value, ast.Constant) and isinstance(value.value, str):
-        elements: list[ast.expr] = [value]
-    elif isinstance(value, (ast.Tuple, ast.List, ast.Set)):
-        elements = list(value.elts)
-    else:
-        return []
-    names: list[str] = []
-    for element in elements:
-        if isinstance(element, ast.Constant) and isinstance(element.value, str):
-            name = element.value
-            if name in ("__dict__", "__weakref__"):
-                continue
-            names.append(name)
-    return names
 
 
 class ClassDefVisitorMixin(ClassMethodCompilationMixin):
@@ -940,6 +910,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         if merged is None:
             merged = list(base_names)
         mro_names = [node.name] + merged
+        # Native base classes own their payload prefix. Inferred Python fields
+        # cannot certify offsets into that storage; runtime class sealing and
+        # slot assignment own the layout, including transitive subclasses.
+        if any(name != "object" and name not in self.classes for name in mro_names[1:]):
+            dynamic = True
 
         if dataclass_opts is not None:
             for name in base_names:
@@ -1009,7 +984,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             min_layout = self._builtin_min_layout(mro_names)
             size = max(len(field_order) * 8, min_layout)
             repr_generated = dataclass_opts["repr"] and "__repr__" not in methods
-            eq_generated = dataclass_opts["eq"] and "__eq__" not in methods
             self.classes[node.name] = {
                 "fields": field_indices,
                 "field_order": field_order,
@@ -1018,12 +992,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 "module": self.module_name,
                 "bases": base_names,
                 "mro": mro_names,
-                "dynamic": False,
+                "dynamic": dynamic,
                 "static": is_static,
                 "size": size,
                 "dataclass": True,
                 "frozen": dataclass_opts["frozen"],
-                "eq": eq_generated,
                 "repr": repr_generated,
                 "slots": dataclass_opts["slots"],
                 "dataclass_params": dataclass_opts,
@@ -1082,16 +1055,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     for target in item.targets:
                         if isinstance(target, ast.Name):
                             class_attrs[target.id] = item.value
-                            # `__slots__` declares fixed instance field slots that
-                            # the runtime's `apply_class_slots_layout` assigns real
-                            # offsets to. Register each declared slot name as a
-                            # field here so `class_info["size"]` reserves storage
-                            # for it (slot_count * 8 + reserved_tail). The value is
-                            # a stack-layout hint only; heap allocation always loads
-                            # the immutable size published by the runtime class.
-                            if target.id == "__slots__":
-                                for slot_name in _iter_slots_field_names(item.value):
-                                    add_field(slot_name)
+
+            if "__slots__" in class_attrs:
+                # Runtime declarations may be computed, repeated, or shadow an
+                # ancestor slot. The runtime owns physical slot placement and
+                # admission; a name-keyed inferred-field table cannot encode it.
+                dynamic = True
 
             methods_in_body = [
                 item for item in method_nodes if isinstance(item, ast.FunctionDef)
@@ -1217,8 +1186,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             classcell_val = self._emit_cell_new(empty)
 
         name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[node.name], result=name_val))
-        qualname = self._qualname_for_def(node.name)
+        self.emit(
+            MoltOp(
+                kind="CONST_STR", args=[python_definition_name(node)], result=name_val
+            )
+        )
+        qualname = self._definition_qualname(node)
         qualname_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[qualname], result=qualname_val))
         module_name = (
@@ -1433,7 +1406,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # projection until a deferred evaluator requires a captured mapping.
         class_import_state = self._capture_class_import_state()
         self._class_ns_stack.append(class_ns_scope)
-        self._push_qualname(node.name, False)
+        self._push_qualname(python_definition_name(node), False, qualname=qualname)
         python_frame_scope = self._enter_python_frame_context_scope(class_body=True)
         try:
             if dynamic_namespace is not None:
@@ -1544,7 +1517,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 not self.future_annotations
                 and not self.eager_annotations
                 and self.class_annotation_items
-                and "__annotations__" not in class_attr_values
             ):
                 annotate_value = self._emit_annotate_function_obj(
                     items=self.class_annotation_items,
@@ -1554,7 +1526,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     module_override=module_name,
                     class_scope=class_ns_scope,
                 )
-                self._class_ns_store(class_ns_scope, "__annotate__", annotate_value)
+                self._class_ns_store(class_ns_scope, "__annotate_func__", annotate_value)
             # __static_attributes__ (CPython 3.13+) — always emitted after class
             # body, even when empty.  Appears after methods in namespace event order.
             if dynamic_namespace is not None:
@@ -1674,7 +1646,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             lineno_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[node.lineno], result=lineno_val))
             for attr_str, attr_val in [
-                ("__name__", name_val),
                 ("__qualname__", qualname_val),
                 ("__module__", module_val),
                 ("__firstlineno__", lineno_val),
@@ -1737,14 +1708,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 akey = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[attr_name], result=akey))
                 class_def_attrs.append((akey, val))
-            if class_info.get("dataclass"):
-                marker_val = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=marker_val))
-                dkey = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(kind="CONST_STR", args=["__molt_dataclass__"], result=dkey)
-                )
-                class_def_attrs.append((dkey, marker_val))
             class_def_args: list[Any] = [name_val] + list(base_vals)
             for k, v in class_def_attrs:
                 class_def_args.append(k)
