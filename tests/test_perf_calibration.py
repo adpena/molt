@@ -134,18 +134,64 @@ def test_run_and_measure_closes_child_when_spawn_observer_fails():
     )
 
 
-def test_run_and_measure_reaps_nested_child_after_root_exit(tmp_path):
+def test_run_and_measure_reaps_nested_child_after_root_exit(tmp_path, monkeypatch):
     pid_path = tmp_path / "nested.pid"
+    release_path = tmp_path / "root-may-exit"
+    guard = pc.harness_memory_guard.memory_guard
+    spawned_pids: list[int] = []
+    observed_nested_pids: set[int] = set()
+    original_update = guard.ProcessTreeTracker.update
+
+    def observe_custody(tracker, samples):
+        watched = original_update(tracker, samples)
+        if (
+            not spawned_pids
+            or tracker.root_pid != spawned_pids[0]
+            or observed_nested_pids
+        ):
+            return watched
+        try:
+            nested_pid = int(pid_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            # The root may not have published the complete PID yet.
+            return watched
+        expected_pids = {spawned_pids[0], nested_pid}
+        identities = tracker.custody_identities(expected_pids)
+        if (
+            expected_pids <= watched
+            and set(identities) == expected_pids
+            and all(
+                guard._process_model.process_identity_has_creation_marker(identity)
+                for identity in identities.values()
+            )
+        ):
+            observed_nested_pids.add(nested_pid)
+            release_path.touch()
+        return watched
+
+    # Observe the real admission result on every platform, including native
+    # Windows Job membership. This hook grants no custody and changes no sample.
+    # POSIX cleanup intentionally cannot claim an unseen reparented PGID peer.
+    monkeypatch.setattr(guard.ProcessTreeTracker, "update", observe_custody)
     child_source = (
-        "import pathlib, subprocess, sys; "
-        f"p=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
-        f"pathlib.Path({str(pid_path)!r}).write_text(str(p.pid), encoding='utf-8')"
+        "import pathlib, subprocess, sys, time\n"
+        "p=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"pathlib.Path({str(pid_path)!r}).write_text(str(p.pid), encoding='utf-8')\n"
+        f"release=pathlib.Path({str(release_path)!r})\n"
+        "deadline=time.monotonic()+5.0\n"
+        "while not release.exists():\n"
+        "    if time.monotonic() >= deadline:\n"
+        "        raise RuntimeError('guard did not observe nested child custody')\n"
+        "    time.sleep(0.005)\n"
     )
 
-    measurement = pc.run_and_measure([sys.executable, "-c", child_source])
+    measurement = pc.run_and_measure(
+        [sys.executable, "-c", child_source], on_spawn=spawned_pids.append
+    )
 
     assert measurement.returncode == 0
     nested_pid = int(pid_path.read_text(encoding="utf-8"))
+    assert observed_nested_pids == {nested_pid}
     deadline = time.monotonic() + 5.0
     while nested_pid in pc.harness_memory_guard.memory_guard.sample_processes():
         if time.monotonic() >= deadline:
