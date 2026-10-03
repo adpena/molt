@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from molt.dx import session_scoped_target_dir
+from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli import backend_ir as _backend_ir
 from molt.cli import backend_ir_analysis_cache as _backend_ir_analysis_cache
@@ -91,6 +92,17 @@ def _run_build_pipeline(
     bolt_training_cmd: str | None = None,
     fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
+    def return_after_build_diagnostics(result: int) -> int:
+        return _emit_build_diagnostics_for_result(
+            result,
+            diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+            build_diagnostics_payload=(
+                prepared_frontend_pipeline_bundle.build_diagnostics_payload
+            ),
+            json_output=json_output,
+            verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
+        )
+
     prepared_frontend_run_ticket = (
         prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket
     )
@@ -107,7 +119,7 @@ def _run_build_pipeline(
             6,
         )
     if frontend_layer_error is not None:
-        return frontend_layer_error
+        return return_after_build_diagnostics(frontend_layer_error)
 
     _progress.phase("backend_pipeline")
 
@@ -122,12 +134,16 @@ def _run_build_pipeline(
         target=target,
     )
     if native_artifact_custody_error is not None:
-        return _fail(native_artifact_custody_error, json_output, command="build")
+        return return_after_build_diagnostics(
+            _fail(native_artifact_custody_error, json_output, command="build")
+        )
     if fact_graph_request is not None and output_layout.is_mlir_emit:
-        return _fail(
-            "factgraph does not support the MLIR backend",
-            json_output,
-            command="factgraph",
+        return return_after_build_diagnostics(
+            _fail(
+                "factgraph does not support the MLIR backend",
+                json_output,
+                command="factgraph",
+            )
         )
     if output_layout.is_mlir_emit:
         module_graph = prepared_frontend_pipeline_bundle.module_graph
@@ -165,7 +181,7 @@ def _run_build_pipeline(
             )
         )
         if prepared_backend_ir_error is not None:
-            return prepared_backend_ir_error
+            return return_after_build_diagnostics(prepared_backend_ir_error)
         assert prepared_backend_ir is not None
         if prepared_build_preamble.diagnostics_enabled:
             backend_ir_analysis = _backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(

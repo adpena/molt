@@ -26,3 +26,15 @@ def test_type_slot_authority_is_complete_and_generated_header_is_current() -> No
     assert slots[0] == ("Py_bf_getbuffer", 1)
     assert slots[-1] == ("Py_am_send", 81)
     assert generator.OUTPUT.read_text(encoding="utf-8") == generator.render(slots)
+    assert generator.OUTPUT == ROOT / "include/molt/shared/_molt_typeslots.generated.h"
+    shared_spec = (ROOT / "include/molt/shared/_type_spec_abi.h").read_text(encoding="utf-8")
+    assert '#include "_molt_typeslots.generated.h"' in shared_spec
+    for header, include in (
+        (ROOT / "include/molt/Python.h", '#include "shared/_type_spec_abi.h"'),
+        (ROOT / "runtime/molt-cpython-abi/include/Python.h", '#include <_type_spec_abi.h>'),
+    ):
+        text = header.read_text(encoding="utf-8")
+        assert include in text
+        assert "typedef struct PyType_Spec" not in text
+        assert "#define Py_tp_" not in text
+    assert not (ROOT / "runtime/molt-cpython-abi/include/_molt_typeslots.generated.h").exists()

@@ -159,6 +159,18 @@ def wasm_cpython_abi_requested_data_export_names(
     )
 
 
+def wasm_cpython_abi_distribution_export_names() -> tuple[str, ...]:
+    """The complete CPython C-API link-import surface of a distributed runtime.
+
+    Distribution uses the same selector as a program's own requested names,
+    applied to every canonical link import of the generated WASM ABI manifest.
+    Installed programs are still admitted against their own required exports.
+    """
+    return wasm_cpython_abi_requested_export_names(
+        WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
+    )
+
+
 @lru_cache(maxsize=1)
 def wasm_cpython_abi_data_symbol_names() -> tuple[str, ...]:
     """Full, app-independent set of CPython-ABI data symbols the runtime owns.

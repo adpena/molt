@@ -3,7 +3,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, OnceLock};
 
 pub(super) fn debug_oom() -> bool {
@@ -137,21 +137,9 @@ impl Drop for ThreadExceptionState {
     }
 }
 
-const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 27;
+const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 15;
 
 pub(crate) struct ExceptionsRuntimeState {
-    pub(super) errno_attr_name: AtomicU64,
-    pub(super) strerror_attr_name: AtomicU64,
-    pub(super) filename_attr_name: AtomicU64,
-    pub(super) characters_written_attr_name: AtomicU64,
-    pub(super) exc_group_message_name: AtomicU64,
-    pub(super) exc_group_exceptions_name: AtomicU64,
-    pub(super) unicode_encoding_attr_name: AtomicU64,
-    pub(super) unicode_object_attr_name: AtomicU64,
-    pub(super) unicode_start_attr_name: AtomicU64,
-    pub(super) unicode_end_attr_name: AtomicU64,
-    pub(super) unicode_reason_attr_name: AtomicU64,
-    pub(super) exception_with_traceback: AtomicU64,
     pub(super) base_exception_class_cache: AtomicU64,
     pub(super) exception_class_cache: AtomicU64,
     pub(super) key_error_class_cache: AtomicU64,
@@ -172,18 +160,6 @@ pub(crate) struct ExceptionsRuntimeState {
 impl ExceptionsRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
-            errno_attr_name: AtomicU64::new(0),
-            strerror_attr_name: AtomicU64::new(0),
-            filename_attr_name: AtomicU64::new(0),
-            characters_written_attr_name: AtomicU64::new(0),
-            exc_group_message_name: AtomicU64::new(0),
-            exc_group_exceptions_name: AtomicU64::new(0),
-            unicode_encoding_attr_name: AtomicU64::new(0),
-            unicode_object_attr_name: AtomicU64::new(0),
-            unicode_start_attr_name: AtomicU64::new(0),
-            unicode_end_attr_name: AtomicU64::new(0),
-            unicode_reason_attr_name: AtomicU64::new(0),
-            exception_with_traceback: AtomicU64::new(0),
             base_exception_class_cache: AtomicU64::new(0),
             exception_class_cache: AtomicU64::new(0),
             key_error_class_cache: AtomicU64::new(0),
@@ -204,18 +180,6 @@ impl ExceptionsRuntimeState {
 
     pub(super) fn object_slots(&self) -> [&AtomicU64; EXCEPTIONS_OBJECT_SLOT_COUNT] {
         [
-            &self.errno_attr_name,
-            &self.strerror_attr_name,
-            &self.filename_attr_name,
-            &self.characters_written_attr_name,
-            &self.exc_group_message_name,
-            &self.exc_group_exceptions_name,
-            &self.unicode_encoding_attr_name,
-            &self.unicode_object_attr_name,
-            &self.unicode_start_attr_name,
-            &self.unicode_end_attr_name,
-            &self.unicode_reason_attr_name,
-            &self.exception_with_traceback,
             &self.base_exception_class_cache,
             &self.exception_class_cache,
             &self.key_error_class_cache,
@@ -235,7 +199,6 @@ impl ExceptionsRuntimeState {
     }
 }
 
-pub(super) static STOPASYNC_BT_PRINTED: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn exceptions_state(_py: &PyToken<'_>) -> &'static ExceptionsRuntimeState {
     &runtime_state(_py).exceptions

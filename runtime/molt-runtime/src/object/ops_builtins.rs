@@ -22,7 +22,7 @@ pub use builtin_collections::{
 };
 
 mod dir;
-pub use dir::{molt_dir_builtin, molt_object_dir_method};
+pub use dir::{molt_dir_builtin, molt_object_dir_method, molt_type_dir_method};
 
 #[path = "ops_builtins_constructors.rs"]
 mod ops_builtins_constructors;
@@ -30,10 +30,10 @@ pub use ops_builtins_constructors::{
     molt_aiter_builtin, molt_bool_builtin, molt_bytearray_builtin, molt_bytes_builtin,
     molt_classmethod_builtin, molt_complex_builtin, molt_dict_builtin, molt_float_builtin,
     molt_frozenset_builtin, molt_hasattr_builtin, molt_int_builtin, molt_isinstance_builtin,
-    molt_issubclass_builtin, molt_iter_builtin, molt_list_builtin, molt_memoryview_builtin,
-    molt_object_builtin, molt_property_builtin, molt_range_builtin, molt_set_builtin,
-    molt_slice_builtin, molt_staticmethod_builtin, molt_str_builtin, molt_super_builtin,
-    molt_tuple_builtin, molt_type_builtin,
+    molt_issubclass_builtin, molt_iter_builtin, molt_list_builtin, molt_object_builtin,
+    molt_property_builtin, molt_range_builtin, molt_set_builtin, molt_slice_builtin,
+    molt_staticmethod_builtin, molt_str_builtin, molt_super_builtin, molt_tuple_builtin,
+    molt_type_builtin,
 };
 
 // Cached debug/trace flags. Reading env vars on every call op (via libc
@@ -139,6 +139,12 @@ pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64, globals_bits:
                 "code object cannot move between compiled slots",
             );
         }
+        // Every synchronous activation of this body takes the frame plan its
+        // code object implies on this target; derive it once, here.
+        let plan = match crate::builtins::frames::FramePlan::for_code(_py, code_bits) {
+            Ok(plan) => plan,
+            Err(message) => return raise_exception::<_>(_py, "SystemError", message),
+        };
         unsafe {
             crate::object::layout::code_set_frame_slot_id(
                 obj_from_bits(code_bits).as_ptr().unwrap(),
@@ -152,6 +158,7 @@ pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64, globals_bits:
                 globals_bits,
             },
         );
+        slots[idx].set_frame_plan(plan);
         MoltObject::none().bits()
     })
 }
@@ -190,36 +197,40 @@ pub extern "C" fn molt_frame_invocation_exit(token: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let (binding, builtins_bits) = if let Some([globals, builtins, code]) =
-            take_invocation_namespace(code_id)
-        {
-            // The invocation already owns every edge. Do not acquire and then
-            // discard unrelated lexical owners from the mutable default slot.
-            (
-                CodeNamespace {
-                    code_bits: code,
-                    globals_bits: globals,
-                },
-                builtins,
-            )
-        } else {
-            let Some(binding) = code_slot_acquire(_py, code_id) else {
-                TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
-                return raise_exception::<u64>(
+        let (binding, builtins_bits, activation_bits) =
+            if let Some([globals, builtins, code, activation]) = take_invocation_namespace(code_id)
+            {
+                // The invocation already owns every edge. Do not acquire and then
+                // discard unrelated lexical owners from the mutable default slot.
+                (
+                    CodeNamespace {
+                        code_bits: code,
+                        globals_bits: globals,
+                    },
+                    builtins,
+                    activation,
+                )
+            } else {
+                let Some(binding) = code_slot_acquire(_py, code_id) else {
+                    TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
+                    return raise_exception::<u64>(
+                        _py,
+                        "SystemError",
+                        "compiled frame slot is unbound",
+                    );
+                };
+                let builtins = crate::builtins::frames::frame_effective_builtins_bits(
                     _py,
-                    "SystemError",
-                    "compiled frame slot is unbound",
+                    binding.globals_bits,
                 );
+                inc_ref_bits(_py, builtins);
+                (binding, builtins, 0)
             };
-            let builtins =
-                crate::builtins::frames::frame_effective_builtins_bits(_py, binding.globals_bits);
-            inc_ref_bits(_py, builtins);
-            (binding, builtins)
-        };
         let code_bits = binding.code_bits;
         if exception_pending(_py) {
             binding.release(_py);
             dec_ref_bits(_py, builtins_bits);
+            dec_ref_bits(_py, activation_bits);
             TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
             return MoltObject::none().bits();
         }
@@ -242,8 +253,34 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
                 code_id, code_bits, name, file
             );
         }
-        frame_stack_push_owned(_py, code_bits, binding.globals_bits, builtins_bits);
+        frame_stack_push_owned(
+            _py,
+            code_bits,
+            binding.globals_bits,
+            builtins_bits,
+            activation_bits,
+        );
         TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(true));
+        // A synchronous activation of an optimized body keeps its bindings in
+        // homes its code slot's plan sizes; a stateful activation's bindings
+        // live in its task payload. The pushed entry is popped by this
+        // invocation's exit even when the homes cannot be taken, and compiled
+        // code borrows them only after this entry's exception check passed.
+        if activation_bits == 0 {
+            let plan = runtime_state(_py)
+                .code_slots
+                .get()
+                .and_then(|slots| slots.get(usize::try_from(code_id).ok()?))
+                .map(CompiledCodeSlot::frame_plan)
+                .unwrap_or_default();
+            if !crate::builtins::frames::frame_stack_enter_homes(plan) {
+                return raise_exception::<u64>(
+                    _py,
+                    "MemoryError",
+                    "cannot allocate frame binding homes",
+                );
+            }
+        }
         // The frame stack now owns the code edge; an owned-result sink must
         // never receive that borrowed edge as the result of this mutator.
         MoltObject::none().bits()
@@ -254,21 +291,14 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
 pub extern "C" fn molt_trace_exit() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if trace_exit_pending_enabled()
-            && exception_pending(_py)
+            && let Some((kind, _)) = crate::builtins::exceptions::pending_exception_diagnostic(_py)
             && let Some((file, line, func, _, _)) =
                 crate::builtins::frames::frame_stack_top_info(_py)
         {
-            let exc_bits = molt_exception_last();
-            let kind_bits = molt_exception_kind(exc_bits);
-            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                .unwrap_or_else(|| "<exc>".to_string());
             eprintln!(
                 "molt trace_exit pending kind={} frame={} file={} line={}",
                 kind, func, file, line
             );
-            if !obj_from_bits(exc_bits).is_none() {
-                dec_ref_bits(_py, exc_bits);
-            }
         }
         let should_pop =
             TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().pop().unwrap_or(false));
@@ -306,6 +336,7 @@ pub extern "C" fn molt_guarded_call(fn_ptr: u64, args_ptr: *const u64, nargs: u6
         });
     };
     crate::with_gil_entry_nopanic!(_py, {
+        let _baseline = crate::call::ExceptionBaselineGuard::new();
         let Some(_recursion) = RecursionGuard::enter(_py) else {
             return MoltObject::none().bits();
         };
@@ -346,6 +377,7 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
         });
     };
     crate::with_gil_entry_nopanic!(_py, {
+        let _baseline = crate::call::ExceptionBaselineGuard::new();
         let Some(_recursion) = RecursionGuard::enter(_py) else {
             return MoltObject::none().bits();
         };
@@ -875,24 +907,9 @@ unsafe fn molt_guarded_call_dispatch(
     }
 }
 
-/// Outlined dynamic function call dispatch for the `call_func` op.
-///
-/// Handles the full Python call protocol:
-/// - Handle resolution (promises/futures)
-/// - Bound method unwrapping (extracts self + func)
-/// - Function object detection and direct fn_ptr dispatch
-/// - Closure detection (delegates to callargs for closures)
-/// - Arity matching with default arg handling
-/// - Recursion guard and tracing
-/// - Fallback to `molt_call_bind` for non-function callables
-///
-/// Arguments:
-///   func_bits: the callable (could be function, bound method, or any callable)
-///   args_ptr: pointer to array of argument bits (spilled to stack by caller)
-///   nargs: number of arguments
-///   code_id: unique code ID for this call site (tracing); 0 means no tracing
-///
-/// Returns: the call result bits
+/// Invoke a borrowed Python callable through the canonical argument binder.
+/// The argument buffer contains visible Python arguments, never packed ABI slots.
+/// `code_id` identifies this call site in optional dispatch tracing.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn molt_call_func_dispatch(
@@ -902,353 +919,120 @@ pub extern "C" fn molt_call_func_dispatch(
     code_id: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(args_ptr) = crate::provenance::abi::const_ptr::<u64>(args_ptr_bits) else {
-            return raise_exception::<u64>(
-                _py,
-                "MemoryError",
-                "call argument address exceeds the active address space",
-            );
-        };
-        let Some(raw_args) = (unsafe { crate::provenance::abi::slice(args_ptr, nargs) }) else {
+        // A callback can reuse the WASM argument scratch area. Stabilize its
+        // values before admission, using the same buffer as the owned entry.
+        let Some(args) = (unsafe { crate::call::bind::EntryArguments::copy(args_ptr_bits, nargs) })
+        else {
             return raise_exception::<u64>(
                 _py,
                 "RuntimeError",
                 "call argument range is invalid for the active target",
             );
         };
-        let n = raw_args.len();
-
-        // Read arguments into an inline stack buffer to avoid heap allocation
-        // on every function call.  Falls back to Vec only for >16 args (very rare).
-        let mut inline_buf = [0u64; 16];
-        let heap_args: Vec<u64>;
-        let args_slice: &[u64] = if n <= 16 {
-            inline_buf[..n].copy_from_slice(raw_args);
-            &inline_buf[..n]
-        } else {
-            heap_args = raw_args.to_vec();
-            &heap_args
-        };
-
-        // --- Step 1: Bound method unwrap ---
-        // Use a [u64; 17] inline buffer for bound methods (self + up to 16 args).
-        let mut bound_buf = [0u64; 17];
-        let heap_bound: Vec<u64>;
-        let (effective_func, effective_args): (u64, &[u64]) = unsafe {
-            if let Some(ptr) = maybe_ptr_from_bits(func_bits) {
-                if object_type_id(ptr) == TYPE_ID_BOUND_METHOD {
-                    let inner = bound_method_func_bits(ptr);
-                    let self_bits = bound_method_self_bits(ptr);
-                    let combined_len = n + 1;
-                    if combined_len <= 17 {
-                        bound_buf[0] = self_bits;
-                        bound_buf[1..(n + 1)].copy_from_slice(&args_slice[..n]);
-                        (inner, &bound_buf[..combined_len])
-                    } else {
-                        let mut v = Vec::with_capacity(combined_len);
-                        v.push(self_bits);
-                        v.extend_from_slice(args_slice);
-                        heap_bound = v;
-                        (inner, &heap_bound)
-                    }
-                } else {
-                    (func_bits, args_slice)
-                }
-            } else {
-                (func_bits, args_slice)
-            }
-        };
-
-        // --- Step 2: Check if it's a plain function object ---
-        let func_ptr = match maybe_ptr_from_bits(effective_func) {
-            Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_FUNCTION } => ptr,
-            _ => return molt_call_func_via_callargs(effective_func, effective_args),
-        };
-
-        // --- Step 3: Check for runtime trampolines before ordinary closures. ---
-        // Trampoline-backed functions use the closure slot as callable payload
-        // (for example a C-extension registry id). Ordinary closures still take
-        // the full callargs path for env capture setup below.
-        let has_closure = unsafe { function_has_execution_closure(func_ptr) };
-        let trampoline_ptr = unsafe { function_trampoline_ptr(func_ptr) };
-        let has_trampoline = trampoline_ptr != 0;
-        let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
-        let Some(func_arity) = (unsafe { function_arity_usize(func_ptr) }) else {
-            return raise_exception::<u64>(
-                _py,
-                "OverflowError",
-                "function arity exceeds the active address space",
-            );
-        };
-        let eff_nargs = effective_args.len();
-        if unsafe { crate::call::bind::function_needs_full_binder(_py, func_ptr) } {
-            unsafe {
-                crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
-            }
-            return molt_call_func_via_callargs(effective_func, effective_args);
-        }
-        if has_trampoline {
-            let variadic_trampoline =
-                unsafe { crate::call::function::function_has_variadic_trampoline(func_ptr) };
-            let force_trampoline = func_arity != eff_nargs
-                || has_closure
-                || variadic_trampoline
-                || crate::call::function::fixed_arity_call_requires_trampoline(
-                    fn_ptr_val,
-                    trampoline_ptr,
-                    false,
-                );
-            if force_trampoline {
-                return unsafe {
-                    crate::call::function::call_function_obj_trampoline(
-                        _py,
-                        effective_func,
-                        effective_args,
-                    )
-                };
-            }
-        }
-        if has_closure {
-            return molt_call_func_via_callargs(effective_func, effective_args);
-        }
-
-        // --- Step 4: Direct call fast path ---
-        let trace_dispatch = trace_call_dispatch_enabled();
-        if trace_dispatch {
-            let name = unsafe {
-                function_name_bits(_py, func_ptr)
-                    .checked_sub(0)
-                    .and_then(|bits| string_obj_to_owned(obj_from_bits(bits)))
-                    .unwrap_or_else(|| "<unnamed>".to_string())
-            };
+        let raw_args = args.as_slice();
+        if trace_call_dispatch_enabled() {
             eprintln!(
-                "[molt dispatch] call_func_dispatch name={name} fn_ptr={fn_ptr_val} has_trampoline={has_trampoline} has_closure={has_closure} arity={func_arity} nargs={eff_nargs}"
+                "[molt dispatch] call_func_dispatch callable_type={} nargs={} code_id={code_id}",
+                crate::type_name(_py, obj_from_bits(func_bits)),
+                raw_args.len(),
             );
             if trace_call_dispatch_args_enabled() {
-                for (idx, &arg_bits) in effective_args.iter().enumerate() {
-                    let arg_obj = obj_from_bits(arg_bits);
+                for (idx, &bits) in raw_args.iter().enumerate() {
                     eprintln!(
-                        "  [molt dispatch arg] idx={idx} type={} bits=0x{:x}",
-                        crate::type_name(_py, arg_obj),
-                        arg_bits
+                        "  [molt dispatch arg] idx={idx} type={} bits=0x{bits:x}",
+                        crate::type_name(_py, obj_from_bits(bits)),
                     );
                 }
             }
         }
-
-        if func_arity == eff_nargs {
-            // Exact arity match — fast path.
-            return molt_call_func_direct(_py, fn_ptr_val, effective_args, code_id, func_bits);
-        }
-
-        // --- Step 5: Handle missing args with __defaults__ tuple ---
-        // Consult the __defaults__ tuple stored on the function object.
-        // The tuple holds right-aligned defaults for the last N parameters.
-        if eff_nargs < func_arity {
-            let missing = func_arity - eff_nargs;
-            let mut padded_buf = [0u64; 18];
-            unsafe {
-                let defaults_bits = function_attr_bits(
-                    _py,
-                    func_ptr,
-                    intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.defaults_name,
-                        b"__defaults__",
-                    ),
-                );
-                if let Some(dbits) = defaults_bits
-                    && !obj_from_bits(dbits).is_none()
-                    && let Some(def_ptr) = obj_from_bits(dbits).as_ptr()
-                    && object_type_id(def_ptr) == TYPE_ID_TUPLE
-                {
-                    let Some(defaults) = crate::object::seq_access::snapshot(
-                        _py,
-                        def_ptr,
-                        "function defaults snapshot allocation failed",
-                    ) else {
-                        return MoltObject::none().bits();
-                    };
-                    let n_defaults = defaults.len();
-                    if missing <= n_defaults {
-                        let total = eff_nargs + missing;
-                        if total <= 18 {
-                            // Reuse the stack-allocated padded_buf.
-                            padded_buf[..eff_nargs].copy_from_slice(effective_args);
-                            let start = n_defaults - missing;
-                            padded_buf[eff_nargs..(eff_nargs + missing)]
-                                .copy_from_slice(&defaults[start..(start + missing)]);
-                            return molt_call_func_direct(
-                                _py,
-                                fn_ptr_val,
-                                &padded_buf[..total],
-                                code_id,
-                                func_bits,
-                            );
-                        } else {
-                            // >18 padded args: fall back to Vec (extremely rare).
-                            let mut padded = Vec::with_capacity(total);
-                            padded.extend_from_slice(effective_args);
-                            let start = n_defaults - missing;
-                            for value in defaults.iter().take(n_defaults).skip(start) {
-                                padded.push(*value);
-                            }
-                            return molt_call_func_direct(
-                                _py, fn_ptr_val, &padded, code_id, func_bits,
-                            );
-                        }
-                    }
-                }
-            }
-
-            // --- Step 5b: __kwdefaults__ fallback for keyword-only params ---
-            // For `def f(x, *, key=None)` called as `f(1)`:
-            //   arity=2, eff_nargs=1, __defaults__=(), __kwdefaults__={"key": None}
-            //   __molt_kwonly_names__=("key",)
-            // The kwonly params occupy the LAST slots in the compiled arity.
-            // We fill positional defaults from __defaults__ and kwonly defaults
-            // from __kwdefaults__ by name lookup.
-            unsafe {
-                // Get __molt_kwonly_names__ tuple
-                let kwonly_bits = function_attr_bits(
-                    _py,
-                    func_ptr,
-                    intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.molt_kwonly_names,
-                        b"__molt_kwonly_names__",
-                    ),
-                );
-                if let Some(kw_bits) = kwonly_bits
-                    && !obj_from_bits(kw_bits).is_none()
-                    && let Some(kw_ptr) = obj_from_bits(kw_bits).as_ptr()
-                    && object_type_id(kw_ptr) == TYPE_ID_TUPLE
-                {
-                    let Some(kwonly_names) = crate::object::seq_access::snapshot(
-                        _py,
-                        kw_ptr,
-                        "keyword-only names snapshot allocation failed",
-                    ) else {
-                        return MoltObject::none().bits();
-                    };
-                    let n_kwonly = kwonly_names.len();
-                    if n_kwonly > 0 {
-                        // Get __kwdefaults__ dict
-                        let kwdef_bits = function_attr_bits(
-                            _py,
-                            func_ptr,
-                            intern_static_name(
-                                _py,
-                                &runtime_state(_py).interned.kwdefaults_name,
-                                b"__kwdefaults__",
-                            ),
-                        );
-                        if let Some(kd_bits) = kwdef_bits
-                            && !obj_from_bits(kd_bits).is_none()
-                            && let Some(kd_ptr) = obj_from_bits(kd_bits).as_ptr()
-                            && object_type_id(kd_ptr) == TYPE_ID_DICT
-                        {
-                            // n_positional = arity - n_kwonly
-                            let n_positional = func_arity - n_kwonly;
-                            let pos_missing = n_positional.saturating_sub(eff_nargs);
-
-                            // Get __defaults__ for positional defaults
-                            let pos_defaults = function_attr_bits(
-                                _py,
-                                func_ptr,
-                                intern_static_name(
-                                    _py,
-                                    &runtime_state(_py).interned.defaults_name,
-                                    b"__defaults__",
-                                ),
-                            );
-                            let mut pos_def_vec: &[u64] = &[];
-                            let pos_def_owned;
-                            if let Some(pd_bits) = pos_defaults
-                                && !obj_from_bits(pd_bits).is_none()
-                                && let Some(pd_ptr) = obj_from_bits(pd_bits).as_ptr()
-                                && object_type_id(pd_ptr) == TYPE_ID_TUPLE
-                            {
-                                let Some(snapshot) = crate::object::seq_access::snapshot(
-                                    _py,
-                                    pd_ptr,
-                                    "positional defaults snapshot allocation failed",
-                                ) else {
-                                    return MoltObject::none().bits();
-                                };
-                                pos_def_owned = snapshot;
-                                pos_def_vec = &pos_def_owned;
-                            }
-
-                            // Check positional defaults cover pos_missing
-                            if pos_missing <= pos_def_vec.len() {
-                                // Try to fill all kwonly from __kwdefaults__
-                                let mut kw_vals: Vec<u64> = Vec::with_capacity(n_kwonly);
-                                let mut all_found = true;
-                                for key in kwonly_names.iter().take(n_kwonly) {
-                                    if let Some(val) = dict_get_in_place(_py, kd_ptr, *key) {
-                                        kw_vals.push(val);
-                                    } else {
-                                        all_found = false;
-                                        break;
-                                    }
-                                }
-                                if all_found {
-                                    let total = func_arity;
-                                    if total <= 18 {
-                                        // Copy provided positional args
-                                        padded_buf[..eff_nargs].copy_from_slice(effective_args);
-                                        // Fill missing positional defaults
-                                        if pos_missing > 0 {
-                                            let start = pos_def_vec.len() - pos_missing;
-                                            padded_buf[eff_nargs..(eff_nargs + pos_missing)]
-                                                .copy_from_slice(
-                                                    &pos_def_vec[start..(start + pos_missing)],
-                                                );
-                                        }
-                                        // Fill kwonly defaults
-                                        padded_buf[n_positional..(n_positional + n_kwonly)]
-                                            .copy_from_slice(&kw_vals[..n_kwonly]);
-                                        return molt_call_func_direct(
-                                            _py,
-                                            fn_ptr_val,
-                                            &padded_buf[..total],
-                                            code_id,
-                                            func_bits,
-                                        );
-                                    } else {
-                                        let mut padded = Vec::with_capacity(total);
-                                        padded.extend_from_slice(effective_args);
-                                        if pos_missing > 0 {
-                                            let start = pos_def_vec.len() - pos_missing;
-                                            padded.extend(pos_def_vec.iter().skip(start).copied());
-                                        }
-                                        padded.extend_from_slice(&kw_vals);
-                                        return molt_call_func_direct(
-                                            _py, fn_ptr_val, &padded, code_id, func_bits,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        unsafe {
+            if obj_from_bits(func_bits)
+                .as_ptr()
+                .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_FUNCTION)
+            {
+                crate::call::function::call_function_obj_vec(_py, func_bits, raw_args)
+            } else {
+                crate::call::bind::call_bind_borrowed(_py, func_bits, None, raw_args, &[], &[])
             }
         }
-
-        // Arity mismatch we can't handle inline — fallback.
-        molt_call_func_via_callargs(effective_func, effective_args)
     })
 }
 
-/// Direct function call through fn_ptr with recursion guard and optional tracing.
-fn molt_call_func_direct(
+/// An ordinary source call instruction (CPython's CALL) that adopted its
+/// callable and its positional arguments (`argument_custody`): `call_func`,
+/// `call_method` and the fallback leg of `call_guarded`. `func_bits` and every
+/// reference in `args_ptr[..nargs]` belong to this call: a temporary bound
+/// method ends before its function runs, an adopting frame takes the
+/// arguments over, and a borrowing callee borrows them until the call releases
+/// them as CPython's `DECREF_INPUTS` does, its callable last. The caller never
+/// releases any of them. The signature mirrors `molt_call_func_dispatch`, so
+/// both lanes share one machine type; `code_id` is the same optional site
+/// identity, which the owned lane does not consult.
+///
+/// Arguments:
+///   func_bits: the adopted callable
+///   args_ptr: pointer to the adopted argument bits (spilled by the caller)
+///   nargs: number of arguments
+///   code_id: call-site identity, 0 when absent
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn molt_call_func_owned(
+    func_bits: u64,
+    args_ptr_bits: u64, // u64 to match the WASM all-i64 ABI
+    nargs: u64,
+    code_id: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let _ = code_id;
+        let Some(args) = (unsafe { crate::call::bind::EntryArguments::copy(args_ptr_bits, nargs) })
+        else {
+            // The arguments are unreachable; the callable still ends here.
+            dec_ref_bits(_py, func_bits);
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "call argument range is invalid for the active target",
+            );
+        };
+        unsafe { crate::call::bind::call_owned_arguments(_py, func_bits, args.as_slice()) }
+    })
+}
+
+/// A compiled call instruction's adopted inputs that no callee took over:
+/// once a borrowing callee returns, or on a failure before invocation
+/// (recursion or frame admission). They end as CALL's `DECREF_INPUTS` ends
+/// them: `args_ptr[..nargs]` in the target version's order, then
+/// `callable_bits` unless it is zero. Every backend releases through this one
+/// order authority instead of spelling its own.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn molt_call_inputs_release(callable_bits: u64, args_ptr_bits: u64, nargs: u64) {
+    crate::with_gil_entry_nopanic!(_py, {
+        match unsafe { crate::call::bind::EntryArguments::copy(args_ptr_bits, nargs) } {
+            Some(args) => crate::call::bind::release_stack_arguments(_py, None, args.as_slice()),
+            None => {
+                let _ = raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    "call argument range is invalid for the active target",
+                );
+            }
+        }
+        if callable_bits != 0 {
+            dec_ref_bits(_py, callable_bits);
+        }
+    })
+}
+
+/// Execute already-bound fixed ABI slots with one recursion/frame boundary.
+pub(crate) fn molt_call_func_direct(
     _py: &crate::concurrency::PyToken<'_>,
     fn_ptr: u64,
     args: &[u64],
     _code_id: u64,
     callable_bits: u64,
 ) -> u64 {
+    let _baseline = crate::call::ExceptionBaselineGuard::new();
     let Some(call_target) = (unsafe { direct_call_target_for_callable(callable_bits, fn_ptr) })
     else {
         return missing_direct_call_target(_py, fn_ptr);
@@ -1401,7 +1185,7 @@ unsafe fn probe_simple_func(
     expected_arity: usize,
 ) -> Option<(u64, *const ())> {
     unsafe {
-        let ptr = direct_call_function(_py, func_bits, expected_arity, false)?;
+        let ptr = direct_call_function(_py, func_bits, expected_arity, false, false)?;
         if function_trampoline_ptr(ptr) != 0 {
             return None;
         }
@@ -1411,19 +1195,26 @@ unsafe fn probe_simple_func(
     }
 }
 
-/// Admit a raw compiled call only after its Python shape and execution kind
-/// agree with the call site. Backends must not reproduce this classifier.
+/// Admit a raw compiled call only after its Python shape, execution kind and
+/// argument custody agree with the call site: a borrowing call site may only
+/// reach a borrowing entry, and an adopting one only an adopting entry. Any
+/// other entry is reached through the runtime's invocation authority.
+/// Backends must not reproduce this classifier.
 unsafe fn direct_call_function(
     py: &PyToken<'_>,
     func_bits: u64,
     supplied: usize,
     expects_closure: bool,
+    expects_adoption: bool,
 ) -> Option<*mut u8> {
     unsafe {
         let ptr = obj_from_bits(func_bits).as_ptr()?;
         if object_type_id(ptr) != TYPE_ID_FUNCTION
             || function_arity_usize(ptr)? != supplied
             || function_has_execution_closure(ptr) != expects_closure
+            || (crate::object::layout::function_entry_custody(ptr)
+                == crate::object::layout::EntryCustody::Adopting)
+                != expects_adoption
             || crate::call::bind::function_raw_positional_call_needs_binding(py, ptr, supplied)
         {
             return None;
@@ -1438,18 +1229,32 @@ unsafe fn direct_call_function(
     }
 }
 
+/// Whether compiled code may call `func_bits`'s direct entry itself. `shape`
+/// describes the call site: bit 0 is set when the entry takes an execution
+/// closure first, and bit 1 when the call instruction adopted its arguments.
+/// No other bit occurs; a malformed shape is never eligible.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_function_direct_call_eligible(
     func_bits: u64,
     supplied: u64,
-    expects_closure: u64,
+    shape: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Ok(supplied) = usize::try_from(supplied) else {
             return 0;
         };
+        if shape & !0b11 != 0 {
+            return 0;
+        }
         u64::from(unsafe {
-            direct_call_function(_py, func_bits, supplied, expects_closure != 0).is_some()
+            direct_call_function(
+                _py,
+                func_bits,
+                supplied,
+                shape & 0b01 != 0,
+                shape & 0b10 != 0,
+            )
+            .is_some()
         })
     })
 }
@@ -1554,12 +1359,40 @@ mod direct_call_tests {
             }
         });
     }
+
+    #[test]
+    fn direct_entry_admission_requires_matching_custody() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let function = alloc_function_obj(py, 17, 1);
+                assert!(!function.is_null());
+                let bits = MoltObject::from_ptr(function).bits();
+                // A borrowing entry admits only a borrowing call site.
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b00), 1);
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b10), 0);
+                assert_eq!(
+                    crate::object::layout::function_publish_entry_custody(
+                        function,
+                        crate::object::layout::EntryCustody::Adopting,
+                    ),
+                    Ok(())
+                );
+                // An adopting entry admits only an adopting call site.
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b00), 0);
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b10), 1);
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b100), 0);
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
 }
 
 /// Fast 0-argument function call. No args — minimal dispatch.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let _baseline = crate::call::ExceptionBaselineGuard::new();
         unsafe {
             if let Some((_fn_ptr, call_target)) = probe_simple_func(_py, func_bits, 0) {
                 let Some(_recursion) = RecursionGuard::enter(_py) else {
@@ -1630,18 +1463,6 @@ pub extern "C" fn molt_call_func_fast3(func_bits: u64, a0: u64, a1: u64, a2: u64
     })
 }
 
-/// Fallback: build a CallArgs and dispatch through `molt_call_bind`.
-fn molt_call_func_via_callargs(callable_bits: u64, args: &[u64]) -> u64 {
-    let nargs = args.len() as u64;
-    let pos_cap = MoltObject::from_int(nargs as i64).bits();
-    let kw_cap = MoltObject::from_int(0).bits();
-    let callargs_bits = molt_callargs_new(pos_cap, kw_cap);
-    for &arg in args {
-        unsafe { molt_callargs_push_pos(callargs_bits, arg) };
-    }
-    molt_call_bind(callable_bits, callargs_bits)
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1654,12 +1475,10 @@ pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
         if trace_line_enabled() {
             eprintln!("MOLT_TRACE_LINE {}", line);
         }
-        if trace_line_pending_enabled() && exception_pending(_py) {
-            let exc_bits = molt_exception_last();
-            let kind_bits = molt_exception_kind(exc_bits);
-            let kind =
-                string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "<exc>".into());
-            let detail = format_obj_str(_py, obj_from_bits(exc_bits));
+        if trace_line_pending_enabled()
+            && let Some((kind, detail)) =
+                crate::builtins::exceptions::pending_exception_diagnostic(_py)
+        {
             eprintln!("MOLT_TRACE_LINE_PENDING {} {} {}", line, kind, detail);
         }
         frame_stack_set_line(line);
@@ -1703,35 +1522,12 @@ pub extern "C" fn molt_format_builtin(val_bits: u64, spec_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
-        let spec_text = string_obj_to_owned(spec_obj).unwrap_or_default();
-        if let Some(obj_ptr) = obj.as_ptr() {
-            unsafe {
-                let type_id = object_type_id(obj_ptr);
-                if crate::object::heap_kind_has_class_shape(type_id) || type_id == TYPE_ID_DATACLASS
-                {
-                    let class_bits = object_class_bits(obj_ptr);
-                    if class_bits != 0
-                        && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                        && object_type_id(class_ptr) == TYPE_ID_TYPE
-                    {
-                        let format_bits = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.format_name,
-                            b"__format__",
-                        );
-                        if let Some(call_bits) =
-                            class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), format_bits)
-                        {
-                            return call_callable1(_py, call_bits, spec_bits);
-                        }
-                    }
-                }
-            }
+        if let Some(rendered) = super::ops_format::format_override(_py, obj, spec_bits) {
+            return rendered;
         }
-        let supports_format = obj.as_int().is_some()
-            || obj.as_bool().is_some()
-            || obj.as_float().is_some()
-            || bigint_ptr_from_bits(obj.bits()).is_some()
+        let supports_format = crate::builtins::numbers::index_integral_payload_bits(val_bits)
+            .is_some()
+            || crate::object::ops::as_float_extended(obj).is_some()
             || obj
                 .as_ptr()
                 .map(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
@@ -1743,7 +1539,7 @@ pub extern "C" fn molt_format_builtin(val_bits: u64, spec_bits: u64) -> u64 {
         if supports_format {
             return molt_string_format(val_bits, spec_bits);
         }
-        if spec_text.is_empty() {
+        if unsafe { string_len(spec_ptr) } == 0 {
             return molt_str_from_obj(val_bits);
         }
         let type_label = type_name(_py, obj);
@@ -1866,10 +1662,15 @@ pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
 pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val_bits);
-        if let Some(i) = to_i64(obj) {
+        if crate::object::ops::is_float_extended(obj)
+            && let Some(result) = super::ops_arith::unary_subtype_result(_py, obj, b"__abs__")
+        {
+            return result;
+        }
+        if let Some(i) = index_i64_integral_bits(obj.bits()) {
             return int_bits_from_i128(_py, (i as i128).abs());
         }
-        if let Some(big) = to_bigint(obj) {
+        if let Some(big) = crate::builtins::numbers::index_bigint_integral_bits(obj.bits()) {
             let abs_val = big.abs();
             if let Some(i) = bigint_to_inline(&abs_val) {
                 return MoltObject::from_int(i).bits();
@@ -1879,22 +1680,21 @@ pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
         if let Some(f) = to_f64(obj) {
             return float_result_bits(_py, f.abs());
         }
-        if let Some(ptr) = complex_ptr_from_bits(val_bits) {
+        if let Some(ptr) = complex_ptr_from_bits(val_bits)
+            && unsafe { crate::object::iterable::builtin_receiver(_py, ptr) }
+        {
             let value = unsafe { *complex_ref(ptr) };
             return float_result_bits(_py, value.re.hypot(value.im));
         }
-        if let Some(ptr) = maybe_ptr_from_bits(val_bits)
-            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__abs__")
+        if let Some(method) =
+            unsafe { crate::builtins::attr::lookup_special_method(_py, val_bits, b"__abs__") }
         {
-            unsafe {
-                let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
-                dec_ref_bits(_py, name_bits);
-                if let Some(call_bits) = call_bits {
-                    let res_bits = call_callable0(_py, call_bits);
-                    dec_ref_bits(_py, call_bits);
-                    return res_bits;
-                }
-            }
+            let result = unsafe { call_callable0(_py, method) };
+            dec_ref_bits(_py, method);
+            return result;
+        }
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
         let type_name = class_name_for_error(type_of_bits(_py, val_bits));
         let msg = format!("bad operand type for abs(): '{type_name}'");
@@ -1907,12 +1707,22 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a_bits);
         let rhs = obj_from_bits(b_bits);
-        // If either operand is a float, skip ALL integer paths so that
-        // divmod(7, 2.0) returns (3.0, 1.0) instead of (3, 1).
-        // Note: to_i64 / to_bigint coerce exact-integer floats (e.g. 2.0 -> 2),
-        // so we must guard the bigint path too, not just the i64 fast path.
-        let either_float = lhs.is_float() || rhs.is_float();
-        if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        if let Some(result) = super::ops_arith::float_subtype_binary_result(
+            _py,
+            lhs,
+            rhs,
+            b"__divmod__",
+            b"__rdivmod__",
+            "divmod()",
+        ) {
+            return result;
+        }
+
+        // Integer-only projections select the integer arithmetic family.
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             if ri == 0 {
                 // CPython 3.14 unified the integer/float divmod-by-zero text to
                 // "division by zero"; 3.12/3.13 use "integer division or modulo
@@ -1939,7 +1749,10 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
             }
             return MoltObject::from_ptr(tuple_ptr).bits();
         }
-        if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if let (Some(l_big), Some(r_big)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+        ) {
             if r_big.is_zero() {
                 let zero_msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
                     "division by zero"
@@ -1966,29 +1779,33 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
             }
             return MoltObject::from_ptr(tuple_ptr).bits();
         }
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            if rf == 0.0 {
-                // CPython 3.12/3.13 use "float divmod()" for the float path;
-                // 3.14 unified it to "division by zero".
-                let zero_msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
-                    "division by zero"
-                } else {
-                    "float divmod()"
-                };
-                return raise_exception::<_>(_py, "ZeroDivisionError", zero_msg);
+        match float_pair_from_obj(_py, lhs, rhs) {
+            Ok(Some((lf, rf))) => {
+                if rf == 0.0 {
+                    // CPython 3.12/3.13 use "float divmod()" for the float path;
+                    // 3.14 unified it to "division by zero".
+                    let zero_msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+                        "division by zero"
+                    } else {
+                        "float divmod()"
+                    };
+                    return raise_exception::<_>(_py, "ZeroDivisionError", zero_msg);
+                }
+                let quot = (lf / rf).floor();
+                let mut rem = lf % rf;
+                if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
+                    rem += rf;
+                }
+                let q_bits = float_result_bits(_py, quot);
+                let r_bits = float_result_bits(_py, rem);
+                let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);
+                if tuple_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(tuple_ptr).bits();
             }
-            let quot = (lf / rf).floor();
-            let mut rem = lf % rf;
-            if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
-                rem += rf;
-            }
-            let q_bits = float_result_bits(_py, quot);
-            let r_bits = float_result_bits(_py, rem);
-            let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);
-            if tuple_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_ptr(tuple_ptr).bits();
+            Err(()) => return MoltObject::none().bits(),
+            Ok(None) => {}
         }
         let left = class_name_for_error(type_of_bits(_py, a_bits));
         let right = class_name_for_error(type_of_bits(_py, b_bits));
@@ -2178,10 +1995,13 @@ fn object_getstate_slot_state(py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u
 pub extern "C" fn molt_object_format_method(self_bits: u64, spec_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let spec_obj = obj_from_bits(spec_bits);
-        let Some(spec) = string_obj_to_owned(spec_obj) else {
+        let Some(spec_ptr) = spec_obj
+            .as_ptr()
+            .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_STRING)
+        else {
             return raise_exception::<_>(_py, "TypeError", "format_spec must be str");
         };
-        if spec.is_empty() {
+        if unsafe { string_len(spec_ptr) } == 0 {
             return molt_str_from_obj(self_bits);
         }
         let type_label = type_name(_py, obj_from_bits(self_bits));
@@ -2269,12 +2089,7 @@ pub extern "C" fn molt_int_divmod_method(self_bits: u64, other_bits: u64) -> u64
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_str_add_method(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let builtins = builtin_classes(_py);
-        let other_ty = type_of_bits(_py, other_bits);
-        if other_ty != builtins.str {
-            return not_implemented_bits(_py);
-        }
-        molt_add(self_bits, other_bits)
+        crate::object::ops_arith::native_slots::sequence_add(_py, self_bits, other_bits)
     })
 }
 
@@ -2290,6 +2105,11 @@ pub extern "C" fn molt_object_init_subclass(_cls_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
+    object_getattribute(obj_bits, name_bits, false)
+}
+
+/// Explicit object lookup with the C generic API's dictionary-error policy.
+pub(crate) fn object_getattribute(obj_bits: u64, name_bits: u64, suppress: bool) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
@@ -2306,7 +2126,7 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
             {
                 return val;
             }
-            if crate::builtins::attributes::is_numeric_scalar_attr_receiver(obj_bits) {
+            if crate::builtins::attributes::is_numeric_scalar_attr_receiver(_py, obj_bits) {
                 return attr_error_with_obj(
                     _py,
                     type_name(_py, obj_from_bits(obj_bits)),
@@ -2318,11 +2138,15 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                 let type_id = object_type_id(obj_ptr);
                 let found = match type_id {
                     type_id if crate::object::heap_kind_has_class_shape(type_id) => {
-                        object_attr_lookup_raw(_py, obj_ptr, name_bits)
+                        crate::builtins::attr::object_attr_lookup_with_policy(
+                            _py, obj_ptr, name_bits, suppress,
+                        )
                     }
-                    TYPE_ID_DATACLASS => dataclass_attr_lookup_raw(_py, obj_ptr, name_bits),
-                    _ => crate::builtins::attributes::attr_lookup_ptr_default(
-                        _py, obj_ptr, name_bits,
+                    TYPE_ID_DATACLASS => crate::builtins::attr::dataclass_attr_lookup_inner(
+                        _py, obj_ptr, name_bits, None, suppress,
+                    ),
+                    _ => crate::builtins::attributes::attr_lookup_ptr_default_with_suppression(
+                        _py, obj_ptr, name_bits, suppress,
                     ),
                 };
                 if let Some(val) = found {
@@ -2491,11 +2315,11 @@ pub extern "C" fn molt_object_setattr(obj_bits: u64, name_bits: u64, val_bits: u
                 // incorrect: it blocked ALL attribute modification on classes,
                 // breaking metaclass __init__, @classmethod setattr, and
                 // dynamic Protocol registration.
-                let class_bits = object_class_bits(obj_ptr);
-                let builtins = builtin_classes(_py);
-                let is_dict_subclass =
-                    type_id == TYPE_ID_DICT && class_bits != 0 && class_bits != builtins.dict;
-                let res = if crate::object::heap_kind_has_class_shape(type_id) || is_dict_subclass {
+                let res = if crate::object::heap_kind_has_class_shape(type_id)
+                    || crate::object::native_instance::has_fields(obj_ptr)
+                    || (type_id != TYPE_ID_DATACLASS
+                        && !crate::object::instance_dict_bits_ptr(obj_ptr).is_null())
+                {
                     object_setattr_raw(_py, obj_ptr, attr_bits, &attr_name, val_bits)
                 } else if type_id == TYPE_ID_DATACLASS {
                     dataclass_setattr_raw_unchecked(_py, obj_ptr, attr_bits, &attr_name, val_bits)
@@ -2542,11 +2366,11 @@ pub extern "C" fn molt_object_delattr(obj_bits: u64, name_bits: u64) -> u64 {
                         "can't apply this __delattr__ to type object",
                     );
                 }
-                let class_bits = object_class_bits(obj_ptr);
-                let builtins = builtin_classes(_py);
-                let is_dict_subclass =
-                    type_id == TYPE_ID_DICT && class_bits != 0 && class_bits != builtins.dict;
-                let res = if crate::object::heap_kind_has_class_shape(type_id) || is_dict_subclass {
+                let res = if crate::object::heap_kind_has_class_shape(type_id)
+                    || crate::object::native_instance::has_fields(obj_ptr)
+                    || (type_id != TYPE_ID_DATACLASS
+                        && !crate::object::instance_dict_bits_ptr(obj_ptr).is_null())
+                {
                     object_delattr_raw(_py, obj_ptr, attr_bits, &attr_name)
                 } else if type_id == TYPE_ID_DATACLASS {
                     dataclass_delattr_raw_unchecked(_py, obj_ptr, attr_bits, &attr_name)
@@ -2685,15 +2509,9 @@ pub extern "C" fn molt_print_builtin(
         }
 
         let file = if obj_from_bits(file_bits).is_none() {
-            let sys_name = intern_static_name(_py, &runtime_state(_py).interned.sys_name, b"sys");
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            let sys = molt_module_cache_get(sys_name);
-            let _sys_guard = guard_owned(sys);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
+            let sys = crate::builtins::modules::interpreter_sys_module(_py)
+                .unwrap_or_else(|| MoltObject::none().bits());
+
             if obj_from_bits(sys).is_none() {
                 // Early bootstrap uses the same cached native/WASM stream as
                 // sys initialization. Encoding, buffering and I/O errors have
@@ -2850,11 +2668,11 @@ mod print_stream_tests {
                 let module = match molt_module_cache_get(name) {
                     bits if obj_from_bits(bits).is_none() => {
                         let module = molt_module_new(name);
-                        dec_ref_bits(_py, molt_module_cache_set(name, module));
                         module
                     }
                     module => module,
                 };
+                crate::builtins::module_table::publish_interpreter_sys_for_test(_py, module);
                 dec_ref_bits(_py, molt_module_set_attr(module, stdout, none));
                 assert!(!exception_pending(_py));
                 let args_ptr = alloc_tuple(_py, &[MoltObject::from_int(1).bits()]);
@@ -2881,14 +2699,10 @@ mod print_stream_tests {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let sys_name_bits = intern_static_name(_py, &runtime_state(_py).interned.sys_name, b"sys");
-        if obj_from_bits(sys_name_bits).is_none() {
-            return raise_exception::<_>(_py, "RuntimeError", "sys module name missing");
-        }
-        let sys_bits = molt_module_cache_get(sys_name_bits);
-        if obj_from_bits(sys_bits).is_none() {
+        let Some(sys_bits) = crate::builtins::modules::interpreter_sys_module(_py) else {
             return raise_exception::<_>(_py, "RuntimeError", "sys module unavailable");
-        }
+        };
+        inc_ref_bits(_py, sys_bits);
 
         let stdout_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.stdout_name, b"stdout");
@@ -3224,7 +3038,7 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                     }
                     return MoltObject::from_ptr(out_ptr).bits();
                 }
-                if type_id == TYPE_ID_LIST {
+                if type_id == TYPE_ID_LIST && crate::object::iterable::builtin_receiver(_py, ptr) {
                     let len = list_len(ptr) as isize;
                     let start = match decode_slice_bound(_py, start_obj, len, 0) {
                         Ok(v) => v,
@@ -3293,39 +3107,6 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
         let res_bits = molt_index(obj_bits, slice_bits);
         dec_ref_bits(_py, slice_bits);
         res_bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_intarray_from_seq(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(bits);
-        if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                let type_id = object_type_id(ptr);
-                if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-                    return MoltObject::none().bits();
-                }
-                let out = crate::object::seq_access::with_borrowed(ptr, |elems| {
-                    let mut out = Vec::with_capacity(elems.len());
-                    for &elem in elems {
-                        let val = MoltObject::from_bits(elem);
-                        let i = val.as_int()?;
-                        out.push(i);
-                    }
-                    Some(out)
-                });
-                let Some(out) = out else {
-                    return MoltObject::none().bits();
-                };
-                let out_ptr = alloc_intarray(_py, &out);
-                if out_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(out_ptr).bits();
-            }
-        }
-        MoltObject::none().bits()
     })
 }
 

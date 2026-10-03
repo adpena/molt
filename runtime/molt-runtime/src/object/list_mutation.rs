@@ -102,24 +102,16 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
         true
     }
 
-    pub(crate) fn remove_indices(&mut self, removal_order: &[usize]) -> bool {
-        let mut remaining = self.next().len();
-        for &index in removal_order {
-            if index >= remaining {
-                return false;
-            }
-            remaining -= 1;
+    pub(crate) fn remove_indices(&mut self, indices: &[usize]) -> bool {
+        if !valid_removal_indices(self.next().len(), indices) {
+            return false;
         }
-        if self.detached.try_reserve(removal_order.len()).is_err() {
+        if self.detached.try_reserve(indices.len()).is_err() {
             let _ = raise_exception::<u64>(self.py, "MemoryError", "list allocation failed");
             return false;
         }
-        let mut removed_edges = 0usize;
-        for &index in removal_order {
-            let removed = self.next_mut().remove(index);
-            removed_edges += usize::from(crate::object::refcount_opt::is_heap_ref(removed));
-            self.detached.push(removed);
-        }
+        let removed_edges =
+            detach_ascending_indices(unsafe { &mut *self.next }, indices, &mut self.detached);
         unsafe {
             crate::object::backing::tracked_vec_adjust_heap_edge_count(self.next, removed_edges, 0)
         };
@@ -206,7 +198,7 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
                 added_edges,
             )
         };
-        self.detached.extend(removed);
+        self.detached.extend(removed.into_iter().rev());
         true
     }
 
@@ -415,7 +407,7 @@ impl<'a, 'py> ListSortTxn<'a, 'py> {
         let callback_values =
             unsafe { crate::object::backing::tracked_vec_box_from_raw(self.detached) };
         self.detached = std::ptr::null_mut();
-        for &item in callback_values.iter() {
+        for &item in callback_values.iter().rev() {
             dec_ref_bits(self.py, item);
         }
         drop(callback_values);
@@ -812,7 +804,7 @@ pub(crate) unsafe fn clear(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     }
     drop(mutation_guard);
     drop(retired);
-    for &item in displaced.iter() {
+    for &item in displaced.iter().rev() {
         dec_ref_bits(py, item);
     }
     drop(displaced);
@@ -973,7 +965,7 @@ pub(crate) unsafe fn replace_range_with_projection(
         }
         note_in_place_mutation(ptr);
     }
-    for item in removed {
+    for item in removed.into_iter().rev() {
         dec_ref_bits(py, item);
     }
     true
@@ -1079,30 +1071,65 @@ pub(crate) unsafe fn replace_indices(
     true
 }
 
-/// Remove indices supplied in an order that stays valid as the vector shrinks
-/// (descending original index for positive slices; natural order for negative
-/// slices). Publication precedes every removed-edge release.
-pub(crate) unsafe fn remove_indices(
-    py: &PyToken<'_>,
-    ptr: *mut u8,
-    removal_order: &[usize],
-) -> bool {
+// The index contract is shared by ABI-projected and ordinary list storage.
+fn valid_removal_indices(len: usize, indices: &[usize]) -> bool {
+    indices.last().is_none_or(|&index| index < len)
+        && indices.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+/// Move removed owners into pre-reserved storage; no callbacks or allocations
+/// occur while the published vector is being compacted. Each surviving slot is
+/// moved at most once, and the untouched prefix is neither read nor written.
+/// Work is O(removed slots + suffix length), independent of the prefix length.
+fn detach_ascending_indices(
+    values: &mut Vec<u64>,
+    indices: &[usize],
+    detached: &mut Vec<u64>,
+) -> usize {
+    debug_assert!(valid_removal_indices(values.len(), indices));
+    debug_assert!(detached.capacity() - detached.len() >= indices.len());
+    let Some(&first) = indices.first() else {
+        return 0;
+    };
+    let original_len = values.len();
+    let mut read = first;
+    let mut write = first;
+    let mut removed_edges = 0usize;
+    for &index in indices {
+        // Only surviving ranges after the first removed slot move. Destination
+        // ranges end before `index`, so the next detached owner is still intact.
+        if read != index {
+            values.copy_within(read..index, write);
+            write += index - read;
+        }
+        let item = values[index];
+        removed_edges += usize::from(crate::object::refcount_opt::is_heap_ref(item));
+        detached.push(item);
+        read = index + 1;
+    }
+    values.copy_within(read..original_len, write);
+    // Slots are ownership bits, not Rust owners. Truncation retires the duplicate
+    // physical words; the caller releases detached owners after publication.
+    values.truncate(original_len - indices.len());
+    removed_edges
+}
+
+/// Remove strictly increasing original indices in one linear compaction.
+/// Extended-slice deletion releases in ascending storage order regardless of
+/// slice direction. Publication precedes every removed-edge release.
+pub(crate) unsafe fn remove_indices(py: &PyToken<'_>, ptr: *mut u8, indices: &[usize]) -> bool {
     crate::gil_assert();
     if ptr.is_null() || unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
         return false;
     }
-    let mut remaining = unsafe { list_len(ptr) };
-    for &index in removal_order {
-        if index >= remaining {
-            return false;
-        }
-        remaining -= 1;
+    if !valid_removal_indices(unsafe { list_len(ptr) }, indices) {
+        return false;
     }
-    if removal_order.is_empty() {
+    if indices.is_empty() {
         return true;
     }
-    if removal_order.len() == 1 {
-        let Some(removed) = (unsafe { pop(py, ptr, removal_order[0]) }) else {
+    if indices.len() == 1 {
+        let Some(removed) = (unsafe { pop(py, ptr, indices[0]) }) else {
             return false;
         };
         dec_ref_bits(py, removed);
@@ -1114,25 +1141,19 @@ pub(crate) unsafe fn remove_indices(
         let Some(mut txn) = (unsafe { ListMutationTxn::begin(py, ptr) }) else {
             return false;
         };
-        return txn.remove_indices(removal_order) && unsafe { txn.commit() };
+        return txn.remove_indices(indices) && unsafe { txn.commit() };
     }
 
     let mut removed = Vec::new();
-    if removed.try_reserve_exact(removal_order.len()).is_err() {
+    if removed.try_reserve_exact(indices.len()).is_err() {
         let _ = raise_exception::<u64>(py, "MemoryError", "list allocation failed");
         return false;
     }
     let vec_ptr = unsafe { seq_vec_ptr(ptr) };
     let values = unsafe { &mut *vec_ptr };
-    for &index in removal_order {
-        removed.push(values.remove(index));
-    }
+    let removed_edges = detach_ascending_indices(values, indices, &mut removed);
     let contains_refs = unsafe {
-        crate::object::backing::tracked_vec_adjust_heap_edge_count(
-            vec_ptr,
-            crate::object::refcount_opt::slice_heap_ref_count(&removed),
-            0,
-        )
+        crate::object::backing::tracked_vec_adjust_heap_edge_count(vec_ptr, removed_edges, 0)
     } != 0;
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
@@ -1261,5 +1282,220 @@ impl Drop for ListMutationTxn<'_, '_> {
         for item in self.detached.drain(..) {
             dec_ref_bits(self.py, item);
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use std::cell::RefCell;
+
+    thread_local! {
+        static ITEMS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+        static TARGET: RefCell<(u64, bool)> = const { RefCell::new((0, false)) };
+        static EVENTS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    extern "C" fn record_release(bits: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let index = ITEMS
+                .with(|items| items.borrow().iter().position(|&item| item == bits))
+                .expect("finalized item belongs to this test");
+            let (list, projected) = TARGET.with(|target| *target.borrow());
+            let len = if list == 0 {
+                0
+            } else {
+                let ptr = obj_from_bits(list).as_ptr().unwrap();
+                let len = unsafe { list_len(ptr) };
+                if projected {
+                    let view = unsafe {
+                        molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(list)
+                    };
+                    assert!(!view.is_null());
+                    assert_eq!(
+                        unsafe { molt_cpython_abi::api::sequences::PyList_Size(view) },
+                        len as isize
+                    );
+                }
+                assert!(unsafe { append(py, ptr, MoltObject::from_int(index as i64).bits()) });
+                len
+            };
+            EVENTS.with(|events| events.borrow_mut().push((index, len)));
+            MoltObject::none().bits()
+        })
+    }
+
+    fn finalizer_items(py: &PyToken<'_>) -> (u64, Vec<u64>) {
+        let name = crate::attr_name_bits_from_bytes(py, b"SequenceReleaseItem").unwrap();
+        let class = crate::molt_class_new(name);
+        let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+        let del_name = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let function = alloc_runtime_function_obj(
+            py,
+            runtime_fn_addr("sequence_record_release", record_release as *const ()),
+            1,
+        );
+        assert!(!function.is_null());
+        let function = MoltObject::from_ptr(function).bits();
+        crate::molt_set_attr_name(class, del_name, function);
+        unsafe { crate::object::class_finish_definition(py, class_ptr) }
+            .expect("sealed test class");
+        let items: Vec<_> = (0..5)
+            .map(|_| unsafe { alloc_instance_for_class(py, class_ptr) })
+            .collect();
+        assert!(
+            items
+                .iter()
+                .all(|&bits| obj_from_bits(bits).as_ptr().is_some())
+        );
+        ITEMS.with(|record| *record.borrow_mut() = items.clone());
+        EVENTS.with(|events| events.borrow_mut().clear());
+        for bits in [name, del_name, function] {
+            dec_ref_bits(py, bits);
+        }
+        (class, items)
+    }
+
+    #[test]
+    fn sequence_mutations_publish_before_ordered_finalizer_reentry() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            // Oracle: CPython 3.12, 3.13 and 3.14. The different orders expose
+            // incorrect blanket reversal, premature release, and ABI drift.
+            for projected in [false, true] {
+                for (case, expected) in [
+                    (0, vec![(4, 0), (3, 1), (2, 2), (1, 3), (0, 4)]),
+                    (1, vec![(3, 2), (2, 3), (1, 4)]),
+                    (2, vec![(0, 2), (2, 3), (4, 4)]),
+                    (3, vec![(4, 5), (2, 6), (0, 7)]),
+                ] {
+                    let (class, items) = finalizer_items(py);
+                    let ptr = alloc_list(py, &items);
+                    assert!(!ptr.is_null());
+                    let bits = MoltObject::from_ptr(ptr).bits();
+                    for item in items {
+                        dec_ref_bits(py, item);
+                    }
+                    if projected {
+                        let view = unsafe {
+                            molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits)
+                        };
+                        assert!(!view.is_null());
+                        assert!(unsafe {
+                            (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW)
+                        });
+                    }
+                    TARGET.with(|target| *target.borrow_mut() = (bits, projected));
+                    let changed = unsafe {
+                        match case {
+                            0 => clear(py, ptr),
+                            1 => replace_range(py, ptr, 1, 4, &[]),
+                            2 => remove_indices(py, ptr, &[0, 2, 4]),
+                            3 => replace_indices(
+                                py,
+                                ptr,
+                                &[4, 2, 0],
+                                &[MoltObject::none().bits(); 3],
+                            ),
+                            _ => unreachable!(),
+                        }
+                    };
+                    assert!(changed);
+                    assert!(!exception_pending(py));
+                    EVENTS.with(|events| {
+                        assert_eq!(
+                            *events.borrow(),
+                            expected,
+                            "case {case}, projected {projected}"
+                        )
+                    });
+                    TARGET.with(|target| *target.borrow_mut() = (0, false));
+                    dec_ref_bits(py, bits);
+                    dec_ref_bits(py, class);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn sequence_terminal_owners_release_last_to_first() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for tuple in [false, true] {
+                let (class, items) = finalizer_items(py);
+                let ptr = if tuple {
+                    alloc_tuple(py, &items)
+                } else {
+                    alloc_list(py, &items)
+                };
+                assert!(!ptr.is_null());
+                for item in items {
+                    dec_ref_bits(py, item);
+                }
+                TARGET.with(|target| *target.borrow_mut() = (0, false));
+                dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+                EVENTS.with(|events| {
+                    assert_eq!(
+                        *events.borrow(),
+                        vec![(4, 0), (3, 0), (2, 0), (1, 0), (0, 0)]
+                    )
+                });
+                dec_ref_bits(py, class);
+                assert!(!exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
+    fn indexed_compaction_preserves_the_ordered_partition_of_original_slots() {
+        // All subsets include empty/full removals, adjacent runs, isolated
+        // removals, untouched prefixes and tails. Membership is the oracle,
+        // independently of the in-place compaction and its movement order.
+        for len in 0..=8 {
+            let original: Vec<_> = (0..len)
+                .map(|index| MoltObject::from_int(index as i64).bits())
+                .collect();
+            for mask in 0..(1usize << len) {
+                let indices: Vec<_> = (0..len).filter(|index| mask & (1 << index) != 0).collect();
+                let expected_kept: Vec<_> = original
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| mask & (1 << index) == 0)
+                    .map(|(_, &value)| value)
+                    .collect();
+                let mut expected_detached = vec![MoltObject::none().bits()];
+                expected_detached.extend(indices.iter().map(|&index| original[index]));
+                let mut values = original.clone();
+                let mut detached = Vec::with_capacity(1 + indices.len());
+                detached.push(MoltObject::none().bits());
+                assert_eq!(
+                    detach_ascending_indices(&mut values, &indices, &mut detached),
+                    0
+                );
+                assert_eq!(values, expected_kept, "len {len}, mask {mask}");
+                assert_eq!(detached, expected_detached, "len {len}, mask {mask}");
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_removal_rejects_ambiguous_indices_without_mutating_storage() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let expected: Vec<_> = (0..5).map(|n| MoltObject::from_int(n).bits()).collect();
+            let ptr = alloc_list(py, &expected);
+            assert!(!ptr.is_null());
+            for indices in [&[2, 1][..], &[1, 1], &[0, 5]] {
+                assert!(!unsafe { remove_indices(py, ptr, indices) });
+                assert_eq!(
+                    unsafe {
+                        crate::object::seq_access::with_borrowed(ptr, |items| items.to_vec())
+                    },
+                    expected
+                );
+            }
+            dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+        });
     }
 }

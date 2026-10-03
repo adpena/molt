@@ -227,6 +227,14 @@ that sequence. Strong and weak undefined references and weak definitions remain
 distinct. Object sidecars and central toolchain caches use one fact codec, and
 archive-wide sets are projections of member facts, not separately stored claims.
 Shared-stdlib validation tokens bind that same parsing-protocol generation.
+Source-object closure carries weak-definition facts from this reader and the
+WASM linking-symbol authority. Overlapping non-init definitions are admitted only
+when every provider is an eager root and at most one provider is strong. The eager
+set is fixed before retained-symbol and dependency traversal; all its objects and
+dependencies remain retained regardless of which definition the linker selects.
+Init roots still require one function owner, and duplicate strong definitions,
+lazy competing providers, and COMDAT selection without binding evidence fail
+closed. This does not select a linker winner or add a persisted manifest authority.
 Those aggregate sets do **not** establish lazy member extraction, linker order,
 or external-provider resolution. The lazy source/external dependency gate remains
 closed until the selected provider and final-link topology are represented.
@@ -343,12 +351,21 @@ compact receipts carry digests, counts and policy-required external-source facts
 Failed capture drains watches without claiming that a payload ran.
 
 `PythonFileCaptureContext` shares handle/change-time-bound hashes across runtime
-and environment inventories. Hashing has bounded workers and pending work; parser
-bytes are read on demand rather than retaining every source/bytecode/native image.
-Each public capture closes its file-mutation fence. A freshly prepared stable
-identity is not redundantly reopened before its immediate bind, but bind still
-rejects same-size, restored-mtime mutation and the mandatory final fence verifies
-all bound paths with bounded workers. Runtime-build capture explicitly requests
+and environment inventories and proof-queue source/output custody. One batch
+transaction binds each opening no-follow snapshot row inside the canonical stable
+file read: fresh handle/path metadata must match that row before hashing, and
+closing handle/path/change-time checks must pass afterward. Each physical object
+is hashed once; every hardlink path is independently verified. There is no separate
+preparation phase or first-bind exemption. Rebinding keeps the handle-level check.
+Hashing and verification use bounded workers and pending batches, not one future
+per file; parser bytes are read on demand rather than retained for the whole tree.
+Each public capture closes its full file, membership and loaded-image fence.
+The public `with_custody` capture produces its envelope at that same finalization
+boundary, with envelope dependencies loaded before the native-image census.
+Reusing a context or explicitly requesting a later envelope performs fresh
+verification; a previously verified context is never trusted across operations.
+The final fence reopens every bound path and rejects same-size, restored-mtime
+rewrites and replacements. Runtime-build capture explicitly requests
 four workers. Directory capture retains membership, object, access-mode and
 timestamp checks;
 directory storage allocation size is not semantic identity. Windows can change
@@ -356,7 +373,9 @@ that reported size during read-only enumeration. File lengths remain exact,
 and failed snapshots report the specific differing metadata fields and values.
 Each root retains its compact membership fingerprint through outer publication,
 with its original exclusions/pruning, so later additions and topology changes
-cannot escape by leaving the previously captured regular files untouched.
+cannot escape by leaving the previously captured regular files untouched. The
+closing membership snapshot is taken once, by that final fence, not also after
+each root inventory.
 An internal directory symlink such as virtualenv `lib64 -> lib` is represented as
 a same-root directory alias and is not traversed, leaving the ordinary target
 tree as the single content authority. External directory aliases, malformed

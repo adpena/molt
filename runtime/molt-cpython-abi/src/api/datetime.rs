@@ -715,7 +715,7 @@ const DATETIME_CAPSULE_NAME: &std::ffi::CStr = c"datetime.datetime_CAPI";
 /// Assemble the `PyDateTime_CAPI` struct from molt's real datetime symbols and
 /// publish it as the `datetime.datetime_CAPI` capsule, exactly like CPython's
 /// `_datetimemodule.c`. Called once from the `Once`-guarded
-/// `molt_cpython_abi_init`, AFTER `init_static_types` has patched the datetime
+/// `molt_cpython_abi_init`, after its process-storage phase has patched the datetime
 /// type objects and the UTC singleton's `ob_type`.
 ///
 /// The `PyDateTime_CAPI` is leaked (process-lifetime singleton): numpy stores

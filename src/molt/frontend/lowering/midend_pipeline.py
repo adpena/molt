@@ -132,6 +132,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             block.id: [] for block in round_cfg.blocks
         }
 
+        processed_blocks: set[int] = set()
         changed = True
         iterations = 0
         if max_cse_iterations_override is not None and max_cse_iterations_override > 0:
@@ -183,19 +184,28 @@ class MidendPipelineMixin(GeneratorMixinBase):
                             if _target_block is None or _target_block in block_doms:
                                 filtered_avail[_vk] = _vv
                         in_state["available_values"] = filtered_avail
-                        self._invalidate_canonicalization_state_signature(in_state)
 
                 for name, value in sccp_in_consts.get(block_id, {}).items():
                     in_state["const_int_values"][name] = value
                     in_state["value_type_tags"][name] = BUILTIN_TYPE_TAGS["int"]
 
-                if self._canonicalization_state_signature(
+                # The predecessor clone may carry a cached signature. Both the
+                # must-fact projection and SCCP overlay changed its contents.
+                self._invalidate_canonicalization_state_signature(in_state)
+                input_changed = self._canonicalization_state_signature(
                     in_state
-                ) != self._canonicalization_state_signature(block_inputs[block_id]):
+                ) != self._canonicalization_state_signature(block_inputs[block_id])
+                if block_id in processed_blocks and not input_changed:
+                    # Transfer is deterministic for this fixed block, induction
+                    # analysis and input state. Reuse only inside this round;
+                    # source/CFG/effect changes start a new solver invocation.
+                    continue
+                if input_changed:
                     block_inputs[block_id] = self._clone_canonicalization_state(
                         in_state
                     )
                     changed = True
+                processed_blocks.add(block_id)
 
                 canonical_ops, out_state = self._canonicalize_block_with_state(
                     working_ops[block.start : block.end],
@@ -624,24 +634,6 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 upcoming_pass="guard_hoist",
             )
 
-            pass_start = time.perf_counter()
-            guard_prune_input = step_ops
-            step_ops, fused_dict_guard_prunes = (
-                self._eliminate_redundant_fused_dict_increment_guards(step_ops)
-            )
-            if fused_dict_guard_prunes:
-                self.midend_stats["fused_dict_guard_prunes"] = (
-                    self.midend_stats.get("fused_dict_guard_prunes", 0)
-                    + fused_dict_guard_prunes
-                )
-                func_stats["fused_dict_guard_prunes"] += fused_dict_guard_prunes
-            self._record_midend_pass_sample(
-                "fused_dict_guard_prune",
-                elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
-                accepted=step_ops != guard_prune_input,
-                degraded=degraded,
-            )
-
             if enable_guard_hoist:
                 pass_start = time.perf_counter()
                 step_ops, guard_attempts, guard_accepts, guard_rejects = (
@@ -949,29 +941,6 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     "midend idempotence check failed after convergence for "
                     f"{self._active_midend_function_name}"
                 )
-
-        final_guard_prune_input = rewritten_ops
-        rewritten_ops, final_fused_dict_guard_prunes = (
-            self._eliminate_redundant_fused_dict_increment_guards(rewritten_ops)
-        )
-        if final_fused_dict_guard_prunes:
-            self.midend_stats["fused_dict_guard_prunes"] = (
-                self.midend_stats.get("fused_dict_guard_prunes", 0)
-                + final_fused_dict_guard_prunes
-            )
-            func_stats["fused_dict_guard_prunes"] += final_fused_dict_guard_prunes
-            final_predefined = self._infer_predefined_value_names(
-                final_guard_prune_input
-            )
-            final_failures = self._verify_definite_assignment_in_ops(
-                rewritten_ops, predefined_value_names=final_predefined
-            )
-            if final_failures:
-                rewritten_ops = final_guard_prune_input
-                self.midend_stats["fused_dict_guard_prunes"] -= (
-                    final_fused_dict_guard_prunes
-                )
-                func_stats["fused_dict_guard_prunes"] -= final_fused_dict_guard_prunes
 
         self.midend_stats["sccp_branch_prunes"] += total_branch_prunes
         self.midend_stats["loop_edge_thread_prunes"] += (

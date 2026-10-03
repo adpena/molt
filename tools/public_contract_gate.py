@@ -107,6 +107,7 @@ def live_public_schemas() -> list[str]:
             release_model.MANIFEST_SCHEMA,
             release_authority.CONSUMER_SCHEMA,
             compiler_distribution.MANIFEST_SCHEMA,
+            compiler_distribution.RUNTIME_INVENTORY_SCHEMA,
             gen_release_matrix.SCHEMA,
             f"{release_exit_gate.KIND}/{release_exit_gate.SCHEMA_VERSION}",
             f"{pact_witness_receipt.KIND}/{pact_witness_receipt.SCHEMA_VERSION}",

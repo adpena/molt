@@ -148,3 +148,59 @@ def make_closed_builtin_probe():
 def make_closed_generator_probe():
     value = ()
     return (not value for _ in (None,))
+
+
+async def coroutine_namespace():
+    return globals(), marker
+
+
+def molt_module_chunk_1(value):
+    return globals(), locals()["value"]
+
+
+generated_lambda = lambda value: ("generated-lambda", value)
+generated_expression = (value + 1 for value in (1, 2))
+
+
+def lambda_1(value):
+    return "source-lambda", value
+
+
+def genexpr_1(value):
+    return "source-genexpr", value
+
+
+async def symbol_early(value):
+    return "coroutine", value
+
+
+def symbol_early_poll(value):
+    return "source-early-poll", value
+
+
+def symbol_late_poll(value):
+    return "source-late-poll", value
+
+
+def symbol_late(value):
+    yield "generator", value
+
+
+class MethodOwner:
+    def probe(self, value):
+        return "method", value
+
+
+def MethodOwner_probe(value):
+    return "module", value
+
+
+def redefined(value):
+    return "first", value
+
+
+saved_redefined = redefined
+
+
+def redefined(value):
+    return "second", value

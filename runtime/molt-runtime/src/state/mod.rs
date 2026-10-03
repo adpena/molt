@@ -1,7 +1,6 @@
 pub(crate) mod cache;
 pub(crate) mod lifecycle;
 pub(crate) mod metrics;
-#[allow(dead_code)]
 pub(crate) mod recursion;
 pub(crate) mod runtime_state;
 pub(crate) mod tls;
@@ -23,7 +22,8 @@ pub(crate) use metrics::{
     molt_profile_struct_field_store,
 };
 pub(crate) use recursion::{
-    recursion_guard_enter, recursion_guard_exit, recursion_limit_get, recursion_limit_set,
+    DEFAULT_RECURSION_LIMIT, recursion_guard_enter, recursion_guard_exit, recursion_limit_get,
+    recursion_limit_set,
 };
 pub(crate) use runtime_state::runtime_extension_state_get_or_init;
 pub(crate) use runtime_state::{
@@ -31,8 +31,8 @@ pub(crate) use runtime_state::{
     set_thread_runtime_state,
 };
 pub(crate) use tls::{
-    CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH,
-    RECURSION_LIMIT, REPR_DEPTH, REPR_SET, REPR_STACK, TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS,
+    CONTEXT_STACK, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, REPR_DEPTH, REPR_SET, REPR_STACK,
+    TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS,
 };
 pub(crate) use traceback::{
     traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,

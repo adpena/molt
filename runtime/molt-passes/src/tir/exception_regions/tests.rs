@@ -1408,6 +1408,32 @@ fn exception_region_repoll_state_resume_uses_pending_state_depth() {
 }
 
 #[test]
+fn explicit_activation_save_preserves_suspended_handler_custody() {
+    let (mut func, exc) = state_resume_inside_try_function();
+    for block in func.blocks.values_mut() {
+        if let Some(save) = block
+            .ops
+            .iter_mut()
+            .find(|op| op.opcode == OpCode::StateYield)
+        {
+            save.opcode = OpCode::StateSet;
+            save.operands.clear();
+            block.terminator = Terminator::Return { values: vec![] };
+        }
+    }
+    let facts = compute_exception_region_facts(&func);
+    assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+    assert_eq!(
+        facts.match_refs[&exc].releases,
+        vec![ExceptionOpPosition {
+            block: BlockId(5),
+            op_index: 0
+        }]
+    );
+    assert!(verify_exception_regions(&func).is_ok());
+}
+
+#[test]
 fn exception_region_state_resume_stacks_are_bounded_by_lexical_try_token() {
     let mut func = TirFunction::new(
         "state_resume_stack_cycle".into(),

@@ -47,7 +47,6 @@ PROOF_QUEUE_DB_ENV = "MOLT_PROOF_QUEUE_DB"
 PYTEST_COMMAND_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
 PYTEST_GUARD_PLUGIN_NAMES = frozenset(
     {
-        "molt_memory_guard",
         "molt.pytest_memory_guard_bootstrap",
         "molt.pytest_memory_guard_config_plugin",
     }

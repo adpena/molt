@@ -36,6 +36,7 @@ from molt.python_native_dependency_custody import (
     _canonical_deferred_dependency_key,
     _native_dependency_closure,
 )
+from molt.python_environment_location import python_startup_configuration_paths
 from molt.python_native_locations import _native_contract_valid
 
 PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v5"
@@ -305,6 +306,9 @@ def _runtime_import_candidates(
             continue
         lexical = Path(os.path.abspath(raw))
         if lexical.is_dir():
+            # CPython and installation tools admit root selectors such as uv
+            # junctions. Capture the resolved owner; the retained selection
+            # fence re-resolves this lexical root at every boundary.
             resolved = lexical.resolve(strict=True)
             if not _is_runtime_import_path(resolved, base_prefix):
                 # Distribution import roots belong to the environment capture.
@@ -342,6 +346,71 @@ def _runtime_import_candidates(
     return directories, archives
 
 
+def current_python_runtime_selection() -> dict[str, object]:
+    """Observe startup selection without inventorying or hashing runtime trees.
+
+    This is ephemeral admission evidence, not a portable runtime receipt. Both
+    full captures and cheap fresh processes use these same CPython selectors
+    and the native loader's actual census. Retained file custody supplies the
+    content proof after a fresh selection has been compared.
+    """
+    from molt.python_native_locations import _loaded_native_module_snapshot
+
+    platform_payload = _platform_identity()
+    selected = Path(sys.executable)
+    base = Path(getattr(sys, "_base_executable", None) or sys.executable)
+    base_prefix = Path(sys.base_prefix).resolve(strict=True)
+    library = _runtime_library()
+    directories, archives = _runtime_import_candidates(base_prefix)
+
+    def location(path: Path) -> dict[str, object]:
+        lexical = Path(os.path.abspath(path))
+        return {
+            "lexical": str(lexical),
+            "resolved": str(lexical.resolve(strict=False)),
+            "present": lexical.exists(),
+        }
+
+    # Resolve every lexical selector, including absent archives and ignored
+    # environment roots. A new process may interpret them differently while
+    # the retained interpreter's sys.path and mapped images stay unchanged.
+    startup = python_startup_configuration_paths(selected, base, library)
+    native = _loaded_native_module_snapshot(str(platform_payload["operating_system"]))
+    return {
+        "schema": "molt-python-startup-selection-v1",
+        "platform": platform_payload,
+        "selected_executable": location(selected),
+        "base_executable": location(base),
+        "prefix": location(Path(sys.prefix)),
+        "base_prefix": location(Path(sys.base_prefix)),
+        "runtime_library": None if library is None else location(library),
+        "base_paths": {
+            role: location(path) for role, path in _base_runtime_paths().items()
+        },
+        "import_paths": [location(Path(path)) for path in sys.path if path],
+        "import_directories": [
+            [role, str(path), position] for role, path, position in directories
+        ],
+        "import_archives": [
+            [role, None if path is None else str(path), position]
+            for role, path, position in archives
+        ],
+        "startup_configuration": [location(path) for path in startup],
+        "native": {
+            "executable": str(native.executable),
+            "paths": sorted(str(path) for path in native.paths),
+            "aliases": {
+                name: str(path) for name, path in sorted(native.aliases.items())
+            },
+            "contracts": sorted(native.contracts),
+            "macho_identities": [
+                [str(path), list(identity)]
+                for path, identity in sorted(native.macho_identities.items())
+            ],
+        },
+    }
+
+
 def _capture_runtime_with_context(
     *, capture_context: PythonFileCaptureContext | None = None
 ) -> tuple[
@@ -350,6 +419,7 @@ def _capture_runtime_with_context(
     _FileNodePool,
     dict[str, Path],
 ]:
+    selection = current_python_runtime_selection()
     platform_payload = _platform_identity()
     base_prefix = Path(sys.base_prefix).resolve(strict=True)
     base_executable = Path(
@@ -391,6 +461,37 @@ def _capture_runtime_with_context(
         if str(row["role"]).startswith("import-directory-")
     }
     pool = _FileNodePool(capture_context=capture_context)
+
+    startup_paths = python_startup_configuration_paths(
+        Path(sys.executable), base_executable, runtime_library
+    )
+
+    def startup_membership() -> tuple[Path, ...]:
+        present = []
+        for path in startup_paths:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            present.append(path)
+        return tuple(present)
+
+    startup_files = startup_membership()
+    pool.capture_context.bind_many(
+        [(path, path.lstat()) for path in startup_files],
+        label="Python startup configuration",
+    )
+
+    def verify_runtime_selection() -> None:
+        if (
+            startup_membership() != startup_files
+            or current_python_runtime_selection() != selection
+        ):
+            raise PythonEnvironmentIdentityError(
+                "CPython runtime/import selection changed after capture"
+            )
+
+    pool.capture_context.register_verification_fence(verify_runtime_selection)
     explicit_paths = {"base-executable": base_executable}
     if runtime_library is not None:
         explicit_paths["runtime-library"] = runtime_library
@@ -497,13 +598,21 @@ def _capture_runtime_with_context(
 
 
 def capture_current_python_runtime(
-    *, capture_context: PythonFileCaptureContext | None = None
+    *,
+    capture_context: PythonFileCaptureContext | None = None,
+    with_custody: bool = False,
 ) -> dict[str, object]:
     """Capture CPython's files, import roots, and loaded native ABI closure."""
+
+    if with_custody:
+        # Load envelope dependencies before the immutable native-image census.
+        from molt.python_capture import python_capture_payload
 
     payload, _roots, _pool, _explicit = _capture_runtime_with_context(
         capture_context=capture_context
     )
+    if with_custody:
+        return python_capture_payload(payload, _pool.capture_context)
     _pool.capture_context.verify()
     return payload
 

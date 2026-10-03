@@ -899,7 +899,10 @@ def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
     monkeypatch.setattr(
         runner,
         "_COMMANDS",
-        SimpleNamespace(start_guarded=lambda *_args, **_kwargs: FakeProcess()),
+        SimpleNamespace(
+            start_guarded=lambda *_args, **_kwargs: FakeProcess(),
+            wait_owned=lambda process, **_kwargs: process.wait(),
+        ),
     )
     evidence_path = tmp_path / "phase.log"
 
@@ -959,6 +962,10 @@ def test_streamed_workspace_failure_still_waits_closes_and_publishes_partial_evi
         stdout = BrokenStream()
 
         @staticmethod
+        def request_cancel() -> None:
+            lifecycle.append("cancel")
+
+        @staticmethod
         def wait() -> int:
             lifecycle.append("wait")
             return 2
@@ -966,12 +973,15 @@ def test_streamed_workspace_failure_still_waits_closes_and_publishes_partial_evi
     monkeypatch.setattr(
         runner,
         "_COMMANDS",
-        SimpleNamespace(start_guarded=lambda *_args, **_kwargs: FakeProcess()),
+        SimpleNamespace(
+            start_guarded=lambda *_args, **_kwargs: FakeProcess(),
+            wait_owned=lambda process, **_kwargs: process.wait(),
+        ),
     )
     evidence_path = tmp_path / "partial.log"
     result = runner.run_streamed(("cargo", "test"), evidence_path=evidence_path)
 
-    assert lifecycle == ["wait", "close"]
+    assert lifecycle == ["cancel", "wait", "close"]
     assert evidence_path.read_text(encoding="utf-8") == "first complete line\n"
     assert result.returncode == 2
     assert result.evidence["controller_errors"] == [

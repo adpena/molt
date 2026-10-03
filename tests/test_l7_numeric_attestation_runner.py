@@ -521,3 +521,33 @@ def test_baseline_requires_identical_execution_control() -> None:
     )
     assert comparison["status"] == "invalid"
     assert any("execution control differs" in error for error in comparison["errors"])
+
+
+def test_guard_custody_is_not_a_build_input_but_rust_flags_are():
+    first = {
+        "MOLT_MEMORY_GUARD_PID": "101",
+        "MOLT_MEMORY_GUARD_TOKEN": "a" * 32,
+        "MOLT_MEMORY_GUARD_MARKER": "/guard/first.json",
+        "MOLT_GUARD_SCRATCH_ROOT": "/scratch/first",
+        "RUSTFLAGS": "-C target-cpu=x86-64",
+        "MOLT_RUNTIME_PYTHON_VERSION": "3.12",
+    }
+    second = dict(first)
+    second.update(
+        {
+            "MOLT_MEMORY_GUARD_PID": "202",
+            "MOLT_MEMORY_GUARD_TOKEN": "b" * 32,
+            "MOLT_MEMORY_GUARD_MARKER": "/guard/second.json",
+            "MOLT_GUARD_SCRATCH_ROOT": "/scratch/second",
+        }
+    )
+    expected = {
+        "RUSTFLAGS": runner._sha256_bytes(first["RUSTFLAGS"].encode()),
+        "MOLT_RUNTIME_PYTHON_VERSION": runner._sha256_bytes(b"3.12"),
+    }
+    assert runner._captured_environment(first) == expected
+    assert runner._captured_environment(second) == expected
+    second["RUSTFLAGS"] = "-C target-cpu=native"
+    assert runner._captured_environment(second) != expected
+    second = dict(first, MOLT_RUNTIME_PYTHON_VERSION="3.14")
+    assert runner._captured_environment(second) != expected

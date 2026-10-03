@@ -1,14 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
-use crate::tir::dominators::{self, CfgEdgePolicy};
+use crate::tir::dominators::{
+    self, CfgEdgePolicy, compute_dominance_frontiers, dom_tree_preorder,
+    iterated_dominance_frontier,
+};
 use crate::tir::function::TirFunction;
 
 use super::super::alias_analysis::{AliasAnalysisResult, MemRegion};
 use super::access::{LIVE_ON_ENTRY, MemAccess, MemVersion, MemorySsaResult};
-use super::cfg::{
-    compute_dominance_frontiers, dom_tree_preorder, iterated_dominance_frontier, reverse_postorder,
-};
+use super::cfg::reverse_postorder;
 use super::classify::{MemRole, classify};
 
 // ===========================================================================

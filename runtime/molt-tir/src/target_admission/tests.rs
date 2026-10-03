@@ -501,10 +501,22 @@ fn generic_const_non_integer_payload_stays_outside_integer_admission() {
 
 #[test]
 fn execution_frames_are_distinct_from_python_introspection() {
-    for kind in ["frame_locals_set", "line", "trace_enter_slot", "trace_exit"] {
+    for kind in [
+        "frame_context_set",
+        "frame_locals_set",
+        "line",
+        "trace_enter_slot",
+        "trace_exit",
+    ] {
         let ir = function_ir(vec![OpIR {
             kind: kind.to_string(),
-            args: (kind == "frame_locals_set").then(|| vec!["locals".to_string()]),
+            args: match kind {
+                "frame_context_set" => {
+                    Some(vec!["arg0".into(), "kind".into(), "class_cell".into()])
+                }
+                "frame_locals_set" => Some(vec!["locals".into()]),
+                _ => None,
+            },
             value: matches!(kind, "line" | "trace_enter_slot").then_some(7),
             ..OpIR::default()
         }]);
@@ -533,7 +545,7 @@ fn execution_frames_are_distinct_from_python_introspection() {
 
 #[test]
 fn super_context_intrinsics_require_execution_frames_not_locals_introspection() {
-    for symbol in ["molt_frame_context_set", "molt_super_from_frame"] {
+    for symbol in ["molt_super_from_frame"] {
         let carriers = [
             "call",
             "call_internal",

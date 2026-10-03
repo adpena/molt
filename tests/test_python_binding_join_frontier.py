@@ -287,7 +287,7 @@ def test_observation_fold_rebuilds_for_late_earlier_id_and_keeps_representative(
 def test_late_domain_admission_is_independent_of_sharing_and_nested_transfers() -> None:
     pool = flow._StatePool()
     first = pool.set_binding(0, 0, INERT, 7, owner_token=41)
-    tainted = pool.taint_module_bindings(first)
+    tainted = pool.taint_exposed_bindings(first)
     detached = pool.set_binding(tainted, 1, INERT, 9)
     shared_join = pool.join(first, tainted)
     detached_join = pool.join(first, detached)
@@ -316,7 +316,7 @@ def test_late_domain_admission_is_independent_of_sharing_and_nested_transfers() 
 def test_default_write_refreshes_stale_custody_without_duplicate_batch_writes() -> None:
     pool = flow._StatePool()
     first = pool.set_binding(0, 0, INERT, 7, owner_token=41)
-    tainted = pool.taint_module_bindings(first)
+    tainted = pool.taint_exposed_bindings(first)
     update = (0, INERT, 7, UNKNOWN_EXPRESSION_RESULT, 41)
     rebound = pool.set_bindings(tainted, (update, update))
     assert rebound != tainted
@@ -335,7 +335,7 @@ def test_binding_namespace_epochs_are_nonnegative_and_monotone() -> None:
     pool = flow._StatePool()
     with pytest.raises(ValueError, match="epochs cannot regress"):
         pool.intern(flow._BindingState(taint_epoch=-1))
-    tainted = pool.taint_module_bindings(0)
+    tainted = pool.taint_exposed_bindings(0)
     with pytest.raises(ValueError, match="epochs cannot regress"):
         pool.intern(flow._BindingState(parents=(tainted,), taint_epoch=0))
     with pytest.raises(ValueError, match="epochs cannot regress"):
@@ -357,7 +357,7 @@ def test_fold_matches_flat_with_absence_taint_owner_writes_and_domain_growth() -
             if step == grow_at:
                 pool.set_taint_domain((1 << 0) | (1 << 32) | (1 << 129))
             if step % 3 == 0:
-                base = pool.taint_module_bindings(base)
+                base = pool.taint_exposed_bindings(base)
             result = StaticExpressionResult.scalar(step % 2)
             base = pool.set_bindings(
                 base,
@@ -392,7 +392,7 @@ def test_semantic_history_ignores_sharing_and_includes_absent_domain_slots() -> 
     pool = flow._StatePool()
     pool.set_taint_domain((1 << 0) | (1 << 129))
     base = pool.set_binding(0, 0, INERT, 1)
-    tainted = pool.taint_module_bindings(base)
+    tainted = pool.taint_exposed_bindings(base)
     other = pool.invalidate_members(tainted, 1)
     joined = pool.join(tainted, other)
     assert pool.changed_slots_between(base, joined) == ()
@@ -423,7 +423,7 @@ def test_two_way_join_reuses_exact_payloads_without_skipping_custody() -> None:
     assert pool.join_payload_algebra_calls
     # A changed epoch prevents copying stale raw custody, including outside the
     # current domain: those epochs become observable after later domain growth.
-    later = pool.taint_module_bindings(right)
+    later = pool.taint_exposed_bindings(right)
     epoch_join = pool.join(left, later)
     assert pool._binding_resolution(epoch_join, 0).clean
     pool.set_taint_domain(1)
@@ -475,7 +475,7 @@ def test_history_summary_refreshes_domain_dependent_events_and_initial_projectio
 ):
     pool = flow._StatePool()
     stored = pool.set_binding(0, 0, INERT, 1)
-    older = pool.taint_module_bindings(stored)
+    older = pool.taint_exposed_bindings(stored)
     other = pool.invalidate_members(older, 1)
     joined = pool.join(older, other)
     history = [stored, joined]
@@ -509,8 +509,8 @@ def test_projection_frontier_matches_full_slot_oracle_across_storage_and_epochs(
             for slot in stored
         ),
     )
-    exposed = pool.taint_module_bindings(base)
-    twice = pool.taint_module_bindings(exposed)
+    exposed = pool.taint_exposed_bindings(base)
+    twice = pool.taint_exposed_bindings(exposed)
     updated = pool.set_binding(exposed, 1, INERT, 19, owner_token=8)
     wide = pool.set_binding(updated, 65537, INERT, 21, owner_token=9)
     states = (0, base, exposed, twice, updated, wide, pool.join(base, wide))
@@ -538,7 +538,7 @@ def test_taint_domain_rejects_negative_masks_without_changing_projection() -> No
     pool = flow._StatePool()
     pool.set_taint_domain(1)
     base = pool.set_binding(0, 0, INERT, 7)
-    exposed = pool.taint_module_bindings(base)
+    exposed = pool.taint_exposed_bindings(base)
     generation = pool.taint_domain_generation
     for invalid in (-1, -2, -(1 << 4096)):
         with pytest.raises(ValueError, match="taint domain cannot be negative"):
@@ -560,7 +560,7 @@ def test_sparse_epoch_frontier_prunes_shared_subtrees_and_unaffected_slots() -> 
             for slot in (*range(256), far)
         ),
     )
-    exposed = pool.taint_module_bindings(base)
+    exposed = pool.taint_exposed_bindings(base)
     pool.set_taint_domain((1 << 33) | (1 << far) | (1 << (far + 1)))
     before = pool.structural_diff_node_visits
     chunks = list(
@@ -587,8 +587,8 @@ def test_absent_domain_projection_is_resolved_once_not_per_slot(
 ) -> None:
     pool = flow._StatePool()
     pool.set_taint_domain((1 << 1024) - 1)
-    exposed = pool.taint_module_bindings(0)
-    twice = pool.taint_module_bindings(exposed)
+    exposed = pool.taint_exposed_bindings(0)
+    twice = pool.taint_exposed_bindings(exposed)
     resolve = pool._resolve_chunk_binding
     resolutions = 0
 

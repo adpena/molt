@@ -1785,16 +1785,19 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
             "    match runtime_name {\n",
         ]
     )
-    for entry in data["import"]:
-        if "callable_arity" not in entry:
-            continue
-        lines.append(
-            f'        "{entry["runtime_name"]}" => Some({_rust_runtime_import(import_variants, entry["name"])}),\n'
-        )
+    callable_imports = {
+        entry["runtime_name"]: entry["name"]
+        for entry in data["import"]
+        if "callable_arity" in entry
+    }
     for entry in reserved_callables:
+        runtime_name, import_name = entry["runtime_name"], entry["import_name"]
+        if callable_imports.setdefault(runtime_name, import_name) != import_name:
+            raise ValueError(f"conflicting callable import for {runtime_name}")
+    for runtime_name, import_name in callable_imports.items():
         lines.append(
-            f'        "{entry["runtime_name"]}" => Some('
-            f"{_rust_runtime_import(import_variants, entry['import_name'])}),\n"
+            f'        "{runtime_name}" => Some('
+            f"{_rust_runtime_import(import_variants, import_name)}),\n"
         )
     lines.extend(
         [
@@ -1840,6 +1843,7 @@ def render_python_builtin_callables_rs(data: dict) -> str:
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub struct PythonBuiltinCallableSpec {\n",
             "    pub python_name: &'static str,\n",
+            "    pub python_module: &'static str,\n",
             "    pub runtime_name: &'static str,\n",
             "    pub arity: usize,\n",
             "}\n\n",
@@ -1853,6 +1857,7 @@ def render_python_builtin_callables_rs(data: dict) -> str:
             [
                 "    PythonBuiltinCallableSpec {\n",
                 f'        python_name: "{entry["python_name"]}",\n',
+                f"        python_module: {_rust_str_lit(entry['python_module'])},\n",
                 f'        runtime_name: "{entry["runtime_name"]}",\n',
                 f"        arity: {entry['arity']},\n",
                 "    },\n",
@@ -1933,6 +1938,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
         sys.path.insert(0, str(src_root))
     from molt.frontend._types import (  # noqa: PLC0415
         BUILTIN_FUNC_SPECS,
+        MOLT_BIND_KIND_CLINIC_NAMED,
         _builtin_func_abi_arity,
     )
 
@@ -1943,6 +1949,13 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
     }
     entries: list[dict] = []
     for python_name, spec in BUILTIN_FUNC_SPECS.items():
+        if spec.bind_kind == MOLT_BIND_KIND_CLINIC_NAMED and (
+            spec.params or spec.vararg or spec.kwonly_params or spec.kw_defaults
+            or len(spec.defaults) > len(spec.pos_or_kw_params)
+        ):
+            raise ValueError(
+                f"builtin {python_name!r} has invalid fixed named Clinic metadata"
+            )
         if (
             python_name.startswith("_") and python_name != "__import__"
         ) or python_name.startswith("molt_"):
@@ -1968,6 +1981,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
                 "index": len(entries),
                 "python_name": python_name,
                 "python_module": spec.module,
+                "text_signature": spec.text_signature,
                 "runtime_name": spec.runtime,
                 "arity": arity,
                 "posonly_params": list(spec.params),
@@ -2114,9 +2128,9 @@ def render_runtime_callables_rs(data: dict) -> str:
             "}\n\n",
             "#[derive(Clone, Copy)]\n",
             "pub(crate) struct PythonBuiltinFunctionInfo {\n",
-            "    pub(crate) index: usize,\n",
             "    pub(crate) python_name: &'static str,\n",
             "    pub(crate) python_module: &'static str,\n",
+            "    pub(crate) text_signature: Option<&'static str>,\n",
             "    pub(crate) runtime_name: &'static str,\n",
             "    pub(crate) arity: u64,\n",
             "    pub(crate) posonly_params: &'static [&'static str],\n",
@@ -2128,7 +2142,6 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    pub(crate) kw_defaults: &'static [(&'static str, GeneratedBuiltinDefaultValue)],\n",
             "    pub(crate) bind_kind: Option<i64>,\n",
             "}\n\n",
-            "pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = PYTHON_BUILTIN_FUNCTIONS.len();\n\n",
             "#[rustfmt::skip]\n",
             "pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[\n",
         ]
@@ -2257,9 +2270,9 @@ def render_runtime_callables_rs(data: dict) -> str:
         lines.extend(
             [
                 "        PythonBuiltinFunctionInfo {\n",
-                f"            index: {entry['index']},\n",
                 f'            python_name: "{entry["python_name"]}",\n',
                 f"            python_module: {_rust_str_lit(entry['python_module'])},\n",
+                f"            text_signature: {_rust_optional_str(entry['text_signature'])},\n",
                 f'            runtime_name: "{entry["runtime_name"]}",\n',
                 f"            arity: {entry['arity']},\n",
                 f"            posonly_params: {_rust_str_slice(entry['posonly_params'])},\n",

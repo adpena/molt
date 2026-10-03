@@ -25,6 +25,99 @@ pub(in crate::native_backend::function_compiler) enum ListStorageField {
     Data,
     Len,
     IsBool,
+    IsInt,
+}
+
+/// One observed physical list layout shared by block-local reads and loop
+/// preheaders. Exact Python class provenance does not select element storage.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) struct GenericListStorage {
+    pub data: Value,
+    pub len: Value,
+    pub is_bool: Value,
+    pub is_int: Value,
+}
+
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn observe_generic_list_storage(
+    builder: &mut FunctionBuilder<'_>,
+    fast_paths: &mut ListIndexFastPathState,
+    name: &str,
+    object: Value,
+) -> GenericListStorage {
+    let fields = [
+        ListStorageField::Data,
+        ListStorageField::Len,
+        ListStorageField::IsBool,
+        ListStorageField::IsInt,
+    ];
+    if let [Some(data), Some(len), Some(is_bool), Some(is_int)] =
+        fields.map(|field| fast_paths.get(field, name, builder))
+    {
+        return GenericListStorage {
+            data: builder.use_var(data),
+            len: builder.use_var(len),
+            is_bool: builder.use_var(is_bool),
+            is_int: builder.use_var(is_int),
+        };
+    }
+    let masked = builder.ins().band_imm(object, POINTER_MASK as i64);
+    let shifted = builder.ins().ishl_imm(masked, 16);
+    let pointer = builder.ins().sshr_imm(shifted, 16);
+    let storage = builder
+        .ins()
+        .load(types::I64, MemFlagsData::trusted(), pointer, 0);
+    let kind = builder.ins().load(
+        types::I32,
+        MemFlagsData::trusted(),
+        pointer,
+        HEADER_TYPE_ID_OFFSET,
+    );
+    let bool_kind = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+    let int_kind = builder
+        .ins()
+        .iconst(types::I32, molt_codegen_abi::TYPE_ID_LIST_INT as i64);
+    let is_bool = builder.ins().icmp(IntCC::Equal, kind, bool_kind);
+    let is_int = builder.ins().icmp(IntCC::Equal, kind, int_kind);
+    let is_flat = builder.ins().bor(is_bool, is_int);
+    let flat_data = builder.ins().load(
+        types::I64,
+        MemFlagsData::trusted(),
+        storage,
+        LIST_INT_STORAGE_DATA_OFFSET,
+    );
+    let flat_len = builder.ins().load(
+        types::I64,
+        MemFlagsData::trusted(),
+        storage,
+        LIST_INT_STORAGE_LEN_OFFSET,
+    );
+    let vec_layout = vec_u64_layout();
+    let boxed_data = builder.ins().load(
+        types::I64,
+        MemFlagsData::trusted(),
+        storage,
+        vec_layout.data_offset,
+    );
+    let boxed_len = builder.ins().load(
+        types::I64,
+        MemFlagsData::trusted(),
+        storage,
+        vec_layout.len_offset,
+    );
+    let data = builder.ins().select(is_flat, flat_data, boxed_data);
+    let len = builder.ins().select(is_flat, flat_len, boxed_len);
+    for (field, value) in fields.into_iter().zip([data, len, is_bool, is_int]) {
+        let variable = builder.declare_var(builder.func.dfg.value_type(value));
+        builder.def_var(variable, value);
+        fast_paths.insert(field, name.to_string(), variable, builder);
+    }
+    GenericListStorage {
+        data,
+        len,
+        is_bool,
+        is_int,
+    }
 }
 
 #[cfg(feature = "native-backend")]
@@ -191,7 +284,7 @@ fn typed_list_index_layout(
     }
     if plan.op_has_container_storage(index, op, ContainerStorageKind::FlatListInt) {
         Some(ListIndexLayout::FlatInt)
-    } else if plan.op_has_container_kind(op, ContainerKind::List) {
+    } else if plan.op_has_exact_builtin_list(op) {
         Some(ListIndexLayout::Generic)
     } else {
         None
@@ -503,67 +596,28 @@ pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoist
             ) else {
                 continue;
             };
+            if matches!(layout, ListIndexLayout::Generic) {
+                observe_generic_list_storage(builder, fast_paths, &name, *obj);
+                continue;
+            }
             let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
             let shifted = builder.ins().ishl_imm(masked, 16);
             let obj_ptr = builder.ins().sshr_imm(shifted, 16);
             let storage_ptr = builder
                 .ins()
                 .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
-            let (data, len) = match layout {
-                ListIndexLayout::FlatInt => (
-                    builder.ins().load(
-                        types::I64,
-                        MemFlagsData::trusted(),
-                        storage_ptr,
-                        LIST_INT_STORAGE_DATA_OFFSET,
-                    ),
-                    builder.ins().load(
-                        types::I64,
-                        MemFlagsData::trusted(),
-                        storage_ptr,
-                        LIST_INT_STORAGE_LEN_OFFSET,
-                    ),
-                ),
-                ListIndexLayout::Generic => {
-                    let tid = builder.ins().load(
-                        types::I32,
-                        MemFlagsData::trusted(),
-                        obj_ptr,
-                        HEADER_TYPE_ID_OFFSET,
-                    );
-                    let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
-                    let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
-                    let layout_var = builder.declare_var(types::I8);
-                    builder.def_var(layout_var, is_bool);
-                    fast_paths.insert(ListStorageField::IsBool, name.clone(), layout_var, builder);
-                    let vec_layout = vec_u64_layout();
-                    // ListBoolStorage is repr(C); Vec<u64> uses probed offsets.
-                    let bool_data =
-                        builder
-                            .ins()
-                            .load(types::I64, MemFlagsData::trusted(), storage_ptr, 0);
-                    let bool_len =
-                        builder
-                            .ins()
-                            .load(types::I64, MemFlagsData::trusted(), storage_ptr, 8);
-                    let vec_data = builder.ins().load(
-                        types::I64,
-                        MemFlagsData::trusted(),
-                        storage_ptr,
-                        vec_layout.data_offset,
-                    );
-                    let vec_len = builder.ins().load(
-                        types::I64,
-                        MemFlagsData::trusted(),
-                        storage_ptr,
-                        vec_layout.len_offset,
-                    );
-                    (
-                        builder.ins().select(is_bool, bool_data, vec_data),
-                        builder.ins().select(is_bool, bool_len, vec_len),
-                    )
-                }
-            };
+            let data = builder.ins().load(
+                types::I64,
+                MemFlagsData::trusted(),
+                storage_ptr,
+                LIST_INT_STORAGE_DATA_OFFSET,
+            );
+            let len = builder.ins().load(
+                types::I64,
+                MemFlagsData::trusted(),
+                storage_ptr,
+                LIST_INT_STORAGE_LEN_OFFSET,
+            );
             let data_var = builder.declare_var(types::I64);
             builder.def_var(data_var, data);
             fast_paths.insert(data_field, name.clone(), data_var, builder);
@@ -580,7 +634,7 @@ pub(in crate::native_backend::function_compiler) fn generic_list_int_lane_eligib
     op: &OpIR,
     integer_key_lane: bool,
 ) -> bool {
-    integer_key_lane && representation_plan.op_has_container_kind(op, ContainerKind::List)
+    integer_key_lane && representation_plan.op_has_exact_builtin_list(op)
 }
 
 #[cfg(feature = "native-backend")]
@@ -622,10 +676,11 @@ pub(in crate::native_backend::function_compiler) fn store_index_fallback_import_
 ///   loop_continue / loop_end
 /// ```
 ///
-/// When detected, the native backend emits a 4x-unrolled main loop
+/// When admitted, the native backend emits a 4x-unrolled main loop
 /// (4 scalar loads + 4 scalar adds per iteration, index advances by 4)
 /// followed by a scalar epilogue for the remaining 0-3 elements.
-/// This reduces loop overhead (branch, compare, increment) by 4x.
+/// This reduces loop overhead (branch, compare, increment) by 4x. Admission
+/// needs an inline-int value-range proof ([`scan_loop_int_sum_reduction`]).
 #[cfg(feature = "native-backend")]
 #[derive(Debug, Clone)]
 pub(in crate::native_backend::function_compiler) struct SumReductionCandidate {
@@ -645,6 +700,35 @@ pub(in crate::native_backend::function_compiler) struct SumReductionCandidate {
     pub(in crate::native_backend::function_compiler) loop_end_idx: usize,
 }
 
+/// A sum-reduction loop the native backend may unroll with unchecked `i64`
+/// adds: [`match_loop_int_sum_shape`]'s loop whose accumulator, sum and store
+/// the representation plan proves inline ints by value range. Python ints do
+/// not overflow; a full-range checked carrier (`RawI64FullDeopt`) leaves its
+/// checked adds to promote at 2^63, which unchecked adds would instead wrap,
+/// the same rule `lower_to_lir` applies to a raw `I64Add`.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn scan_loop_int_sum_reduction(
+    ops: &[OpIR],
+    loop_index_start_idx: usize,
+    index_var_name: &str,
+    representation_plan: &ScalarRepresentationPlan,
+) -> Option<SumReductionCandidate> {
+    let candidate = match_loop_int_sum_shape(
+        ops,
+        loop_index_start_idx,
+        index_var_name,
+        representation_plan,
+    )?;
+    let proven = [
+        &candidate.acc_operand_name,
+        &candidate.add_out_name,
+        &candidate.acc_store_slot,
+    ]
+    .into_iter()
+    .all(|name| representation_plan.is_inline_safe_int_name(name));
+    proven.then_some(candidate)
+}
+
 /// Scan the loop body from `loop_index_start_idx` to the matching `loop_end`
 /// and detect a simple integer sum-reduction pattern over a `list_int`.
 ///
@@ -656,8 +740,11 @@ pub(in crate::native_backend::function_compiler) struct SumReductionCandidate {
 ///      into a single `store_var`.
 ///   3. No other side-effecting ops exist in the body (calls, other stores, etc.).
 ///   4. The loop is not nested (no inner `loop_start`/`loop_index_start`).
+///
+/// The shape alone does not admit the unrolled rewrite; see
+/// [`scan_loop_int_sum_reduction`].
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn scan_loop_int_sum_reduction(
+pub(in crate::native_backend::function_compiler) fn match_loop_int_sum_shape(
     ops: &[OpIR],
     loop_index_start_idx: usize,
     index_var_name: &str,

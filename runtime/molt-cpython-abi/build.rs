@@ -118,8 +118,8 @@ fn main() {
                          wasm32-wasip1 CPython ABI provider shims can compile."
                     )
                 });
-                build.flag(sysroot.sysroot_flag());
-                if let Some(include_dir) = sysroot.include_dir() {
+                build.flag("--sysroot").flag(&sysroot.root);
+                if let Some(include_dir) = sysroot.include_dir.as_deref() {
                     build.include(include_dir);
                 }
             }
@@ -136,8 +136,8 @@ fn main() {
                          WASI_SDK_PATH, WASI_SDK_PREFIX, or MOLT_TARGET_ROOT"
                     )
                 });
-                build.flag(provider.sysroot_flag());
-                if let Some(include_dir) = provider.include_dir() {
+                build.flag("--sysroot").flag(&provider.root);
+                if let Some(include_dir) = provider.include_dir.as_deref() {
                     build.include(include_dir);
                 }
                 freestanding_libc_dir = Some(provider.lib_dir("wasm32-wasip1"));

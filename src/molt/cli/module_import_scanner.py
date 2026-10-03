@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_private_names import (
+    python_import_binding,
+    python_source_field,
+)
 import ntpath
 import os
 import posixpath
@@ -97,7 +101,7 @@ _DYNAMIC_RELATIVE_ANCHOR_ERRORS = frozenset(
 
 @dataclass(slots=True)
 class _DynamicRelativeImportDiscovery:
-    """Graph candidates for imports whose runtime package anchor is dynamic."""
+    """Graph candidates for imports whose runtime argument/anchor is dynamic."""
 
     candidates: list[str] = field(default_factory=list)
     seen: set[str] = field(default_factory=set)
@@ -148,6 +152,15 @@ class _DynamicRelativeImportDiscovery:
         return _ImportDiscoveryProjection(
             tuple(imports), tuple(self.candidates), self.required
         )
+
+    def record_call_binding(self, name: str | None) -> None:
+        self.required = True
+        # This is only a discovery candidate: expanded level/package/fromlist
+        # operands can select another catalog row or fail before import. Never
+        # substitute a lexical package for an unresolved relative call.
+        if name and not name.startswith(".") and name not in self.seen:
+            self.seen.add(name)
+            self.candidates.append(name)
 
 
 def _sealed_import_modules(
@@ -239,11 +252,12 @@ _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
 @dataclass(frozen=True, slots=True)
 class _StaticImportCallPayload:
     target: str
-    name: ast.expr
+    name: ast.expr | None
     package: ast.expr | None = None
     globals: ast.expr | None = None
     fromlist: ast.expr | None = None
     level: ast.expr | None = None
+    requires_runtime_binding: bool = False
 
 
 _STATIC_SOURCE_LOADER_TARGETS = frozenset(
@@ -316,8 +330,10 @@ def _collect_static_source_execution_requests(
                 continue
             if isinstance(stmt, ast.Import):
                 for alias in stmt.names:
-                    bound = alias.asname or alias.name.split(".", 1)[0]
-                    aliases[bound] = alias.name if alias.asname else bound
+                    bound = python_import_binding(alias)
+                    aliases[bound] = (
+                        alias.name if alias.asname else alias.name.partition(".")[0]
+                    )
             elif isinstance(stmt, ast.ImportFrom) and stmt.level == 0 and stmt.module:
                 for alias in stmt.names:
                     aliases[alias.asname or alias.name] = f"{stmt.module}.{alias.name}"
@@ -985,18 +1001,21 @@ def _collect_imports(
             else "dunder_import"
         )
         arguments = bind_static_import_call_arguments(call, operation_kind)
+        if arguments is None:
+            return None
 
         def resolve_local(expr: ast.expr | None) -> ast.expr | None:
             if expr is None or local_expr_bindings is None:
                 return expr
             return _resolve_local_expr_binding(expr, dict(local_expr_bindings))
 
-        name_expr = cast(ast.expr, resolve_local(arguments.name))
+        name_expr = resolve_local(arguments.name)
         if target in {"importlib.import_module", "importlib.util.find_spec"}:
             return _StaticImportCallPayload(
                 target=target,
                 name=name_expr,
                 package=resolve_local(arguments.package),
+                requires_runtime_binding=arguments.requires_runtime_binding,
             )
         return _StaticImportCallPayload(
             target=target,
@@ -1004,6 +1023,7 @@ def _collect_imports(
             globals=resolve_local(arguments.globals),
             fromlist=resolve_local(arguments.fromlist),
             level=resolve_local(arguments.level),
+            requires_runtime_binding=arguments.requires_runtime_binding,
         )
 
     def _resolve_static_import_call(
@@ -1012,7 +1032,23 @@ def _collect_imports(
         bindings: dict[str, object] | None = None,
     ) -> tuple[str, ...]:
         bindings = bindings or {}
-        name = _resolve_string_constant(payload.name, bindings, set())
+        name = (
+            _resolve_string_constant(payload.name, bindings, set())
+            if payload.name is not None
+            else None
+        )
+        if payload.requires_runtime_binding:
+            if _dynamic_relative_import_discovery is not None:
+                _dynamic_relative_import_discovery.record_call_binding(name)
+            if runtime_import_custody is not None and runtime_import_custody.admits_scan(
+                module_name, source_path, ast_digest_admission.digest
+            ):
+                return runtime_import_custody.modules
+            if _dynamic_relative_import_discovery is not None:
+                return ()
+            raise UnresolvedStaticImportError(
+                "dynamic import argument expansion requires runtime import custody"
+            )
         if name is None:
             return ()
 
@@ -1239,14 +1275,14 @@ def _collect_imports(
             imports.extend(
                 static_import_candidates(
                     node.module or "",
-                    tuple(alias.name for alias in node.names),
+                    tuple(python_source_field(alias, "name") for alias in node.names),
                 )
             )
             return
         request = StaticImportRequest.statement(
             node.module or "",
             level=node.level,
-            fromlist=tuple(alias.name for alias in node.names),
+            fromlist=tuple(python_source_field(alias, "name") for alias in node.names),
         )
         imports.extend(
             _sealed_import_modules(
@@ -1536,8 +1572,10 @@ def _runtime_import_alias_bindings(
             continue
         if isinstance(node, ast.Import):
             for alias in node.names:
-                local_name = alias.asname or alias.name.split(".", 1)[0]
-                qualified_name = alias.name if alias.asname else local_name
+                local_name = python_import_binding(alias)
+                qualified_name = (
+                    alias.name if alias.asname else alias.name.partition(".")[0]
+                )
                 _register_binding(local_name, qualified_name)
             continue
         if not isinstance(node, ast.ImportFrom):

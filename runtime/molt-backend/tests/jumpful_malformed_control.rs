@@ -42,6 +42,7 @@ fn jumpful_else_without_end_if_does_not_panic() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,

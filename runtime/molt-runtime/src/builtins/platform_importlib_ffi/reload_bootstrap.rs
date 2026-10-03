@@ -53,14 +53,21 @@ pub extern "C" fn molt_importlib_reload(
                 return Err(MoltObject::none().bits());
             }
             if !in_sys_modules {
-                let display = format_obj_str(_py, obj_from_bits(module_name_bits));
+                let display = crate::object::ops_format::format_obj_str_bytes(
+                    _py,
+                    obj_from_bits(module_name_bits),
+                );
                 if !obj_from_bits(module_name_bits).is_none() {
                     dec_ref_bits(_py, module_name_bits);
                 }
-                return Err(raise_exception::<_>(
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
+                let message = [b"module ".as_slice(), &display, b" not in sys.modules"].concat();
+                return Err(crate::builtins::exceptions::raise_exception_bytes::<_>(
                     _py,
                     "ImportError",
-                    &format!("module {display} not in sys.modules"),
+                    &message,
                 ));
             }
 
@@ -993,11 +1000,7 @@ pub extern "C" fn molt_importlib_ensure_default_meta_path(machinery_bits: u64) -
             return MoltObject::none().bits();
         }
 
-        let sys_bits = {
-            let module_cache = crate::builtins::exceptions::internals::module_cache(_py);
-            let guard = module_cache.lock().unwrap();
-            guard.get("sys").copied()
-        };
+        let sys_bits = crate::builtins::modules::interpreter_sys_module(_py);
         let Some(sys_bits) = sys_bits else {
             return mark_bootstrapped();
         };

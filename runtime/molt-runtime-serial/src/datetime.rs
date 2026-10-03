@@ -10,6 +10,7 @@
 use std::fmt::Write as _;
 
 use crate::bridge::*;
+use molt_obj_model::hash_policy::{hash_i128, hash_int};
 use molt_runtime_core::prelude::*;
 
 #[cfg(windows)]
@@ -2085,70 +2086,13 @@ pub extern "C" fn molt_datetime_local_utcoffset() -> u64 {
 }
 
 // ===========================================================================
-// 6. Hashing — deterministic, matches CPython datetime hash behaviour
+// 6. Hashing
 //
-// CPython uses Python's built-in hash() on the tuple of components for
-// most datetime types, but for compatibility we implement a simple
-// FNV-1a–inspired mix that is stable and deterministic.
-//
-// CPython datetime hash algorithm (simplified):
-//   date.__hash__  = hash(ymd ordinal)
-//   time.__hash__  = hash((h, mi, s, us, utcoff_minutes))
-//   datetime.__hash__ = combined
-//   timedelta.__hash__ = hash(total_seconds * 1e6)
-//
-// We reproduce CPython's exact integer hash behaviour using the same
-// formulae to ensure differential test correctness.
+// Datetime's existing ordinal and normalized-microsecond projections use the
+// shared target integer hash policy. They do not define another modulus,
+// integer-sign convention, or tuple mixing algorithm. This representation
+// choice is distinct from CPython's salted hashes for naive date/time values.
 // ===========================================================================
-
-/// CPython hash for a single Python int n.
-///
-/// CPython uses the integer value modulo `sys.hash_info.modulus`
-/// (which is `2^61 - 1` on 64-bit) with the special case -1 → -2.
-const HASH_MOD: i64 = 2_305_843_009_213_693_951; // 2^61 - 1
-
-fn py_hash_int(n: i64) -> i64 {
-    let h = n.rem_euclid(HASH_MOD);
-    if h == -1 { -2 } else { h }
-}
-
-fn py_hash_i128(n: i128) -> i64 {
-    let m = HASH_MOD as i128;
-    let h = n.rem_euclid(m) as i64;
-    if h == -1 { -2 } else { h }
-}
-
-/// Combine hashes the way CPython combines a tuple of ints:
-/// uses `hash_tuple` from CPython which mixes with xxHash-like operations.
-///
-/// CPython tuple hash (simplified for small tuples):
-///   acc = 0x27D4EB2F165667C5 ^ (len * multiplier)
-///   for each item:
-///       acc = acc * multiplier ^ lane_hash(item)
-#[allow(dead_code)]
-fn cpython_tuple_hash(values: &[i64]) -> i64 {
-    // Port of CPython's tuplehash from Objects/tupleobject.c
-    // xxHash constants
-    const XXPRIME_1: u64 = 11400714785074694791;
-    const XXPRIME_2: u64 = 14029467366897019727;
-    const XXPRIME_5: u64 = 2870177450012600261;
-
-    let n = values.len() as u64;
-    let mut acc: u64 = XXPRIME_5.wrapping_add(n.wrapping_mul(XXPRIME_1));
-
-    for &v in values {
-        // CPython lane hash for int: same as py_hash_int converted to u64
-        let vh = py_hash_int(v);
-        let lane = vh as u64;
-        acc = acc.wrapping_add(lane.wrapping_mul(XXPRIME_2));
-        acc = acc.rotate_left(31);
-        acc = acc.wrapping_mul(XXPRIME_1);
-    }
-
-    acc = acc.wrapping_add(n ^ XXPRIME_5 ^ 3_527_539);
-    let result = acc as i64;
-    if result == -1 { -2 } else { result }
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_hash_date(y_bits: u64, m_bits: u64, d_bits: u64) -> u64 {
@@ -2165,11 +2109,11 @@ pub extern "C" fn molt_datetime_hash_date(y_bits: u64, m_bits: u64, d_bits: u64)
             Ok(v) => v,
             Err(e) => return e,
         };
-        // CPython: date.__hash__ = hash(ordinal)
+        // Hash the existing date ordinal projection.
         let ord = ymd_to_ordinal(y as i32, m as i32, d as i32);
         // The ordinal is bounded (1..=3_652_059 for year 1..=9999), so its hash
         // always lands in the inline window — `from_int` is exact here.
-        MoltObject::from_int(py_hash_int(ord)).bits()
+        MoltObject::from_int(hash_int(ord)).bits()
     })
 }
 
@@ -2199,7 +2143,7 @@ pub extern "C" fn molt_datetime_hash_time(
             Err(e) => return e,
         };
         let utcoff_obj = obj_from_bits(utcoff_bits);
-        // CPython time.__hash__: hash a combined seconds+us value adjusted for tzinfo.
+        // Hash the existing combined seconds+us projection adjusted for tzinfo.
         // Total microseconds from midnight, then adjust for UTC offset.
         let total_us: i64 = (h * 3600 + mi * 60 + sec) * 1_000_000 + us;
         let utcoff_us: i64 = if utcoff_obj.is_none() {
@@ -2209,8 +2153,8 @@ pub extern "C" fn molt_datetime_hash_time(
         };
         let adjusted = total_us - utcoff_us;
         // Hash as if it's the integer value of total microseconds
-        let h_val = py_hash_i128(adjusted as i128);
-        // A tz-adjusted (negative) time reduces mod (2**61 - 1) to a value far
+        let h_val = hash_i128(adjusted as i128);
+        // A target-width numeric hash can produce a value far
         // outside the inline window; box the full Python hash, never `from_int`.
         int_bits_from_i64(_py, h_val)
     })
@@ -2272,10 +2216,9 @@ pub extern "C" fn molt_datetime_hash_datetime(
             to_i64(utcoff_obj).unwrap_or(0) as i128 * 1_000_000
         };
         let adjusted = total_us - utcoff_us;
-        let h_val = py_hash_i128(adjusted);
-        // `py_hash_i128` returns the Python hash reduced mod (2**61 - 1), which
-        // routinely exceeds the 47-bit inline window; box the full value rather
-        // than truncating it through `from_int`.
+        let h_val = hash_i128(adjusted);
+        // The target numeric hash can exceed the inline window. Preserve its
+        // full signed value through the existing owned integer constructor.
         int_bits_from_i64(_py, h_val)
     })
 }
@@ -2299,13 +2242,12 @@ pub extern "C" fn molt_datetime_hash_timedelta(
             Ok(v) => v,
             Err(e) => return e,
         };
-        // CPython: timedelta.__hash__ = hash(total_seconds * 1e6) — but
-        // more precisely it hashes the tuple (days, secs, us) after normalization.
+        // Hash the existing normalized total-microsecond projection.
         let total_us: i128 =
             days as i128 * 86_400 * 1_000_000 + secs as i128 * 1_000_000 + us as i128;
-        // Large timedeltas reduce mod (2**61 - 1) well past the inline window;
-        // box the full Python hash, never `from_int`.
-        int_bits_from_i64(_py, py_hash_i128(total_us))
+        // Publish the full target numeric hash, including negative values and
+        // values outside the inline window.
+        int_bits_from_i64(_py, hash_i128(total_us))
     })
 }
 

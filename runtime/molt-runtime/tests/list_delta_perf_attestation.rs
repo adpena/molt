@@ -1,11 +1,12 @@
 //! Release-only performance and allocation attestation for exact containers.
 //!
-//! List cases exercise delta publication through a real `PyListObject` projection.
+//! List cases exercise delta publication through a real `PyListObject` projection
+//! and indexed removal through both ordinary and ABI-projected storage.
 //! Tuple cases cover the canonical empty singleton, packed slot reads, identity
 //! fast paths, and exact construction. Allocation observation is deliberately
-//! separate from timing: every steady-state operation is a hard zero-allocation,
-//! zero-byte, zero-peak-live gate, while list and tuple construction report their
-//! unavoidable allocation traffic as positive controls.
+//! separate from timing: delta publication and tuple steady-state operations
+//! have hard zero-allocation gates. Construction and indexed removal report
+//! allocation traffic as positive controls.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(clippy::undocumented_unsafe_blocks)]
@@ -383,6 +384,70 @@ fn indexed_replace_case(
     )
 }
 
+fn indexed_removal_case(name: &str, len: usize, dense: bool, projected: bool) -> Value {
+    // Keep the ordinary-list case free of an ABI projection: bridge conversion
+    // would select the transactional implementation we measure separately.
+    let item = MoltObject::from_int(101).bits();
+    let values = vec![item; len];
+    let list = unsafe { molt_runtime::molt_list_from_values(values.as_ptr() as u64, len as u64) };
+    assert!(MoltObject::from_bits(list).as_ptr().is_some());
+    let view = if projected {
+        let pointer = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(list) };
+        assert!(!pointer.is_null());
+        Some(pointer)
+    } else {
+        None
+    };
+    let start = if dense { 0 } else { len - 4 };
+    let count = if dense { len / 2 } else { 2 };
+    let slice = molt_runtime::molt_slice_new(
+        MoltObject::from_int(start as i64).bits(),
+        MoltObject::from_int(len as i64).bits(),
+        MoltObject::from_int(2).bits(),
+    );
+    assert!(MoltObject::from_bits(slice).as_ptr().is_some());
+    let runtime_hooks = hooks().expect("runtime hooks");
+    let result = measure(
+        name,
+        "indexed_list_removal",
+        json!({
+            "len": len,
+            "removed": count,
+            "first_removed_index": start,
+            "step": 2,
+            "operation": "molt_del_index + restore with molt_list_append",
+            "physical_projection": if projected { "present_and_verified" } else { "absent" },
+        }),
+        128,
+        false,
+        || {
+            let deleted = molt_runtime::molt_del_index(list, slice);
+            let mut valid = deleted == list
+                && unsafe { (runtime_hooks.list_len)(list) } == len - count
+                && runtime_item(list, 0) == Some(item)
+                && runtime_item(list, len - count - 1) == Some(item);
+            if let Some(pointer) = view {
+                valid &= physical_len(pointer) == len - count;
+            }
+            for _ in 0..count {
+                molt_runtime::molt_list_append(list, item);
+            }
+            valid &= unsafe { (runtime_hooks.list_len)(list) } == len
+                && runtime_item(list, len - 1) == Some(item);
+            if let Some(pointer) = view {
+                valid &= physical_len(pointer) == len;
+            }
+            u64::from(black_box(valid))
+        },
+    );
+    unsafe {
+        (runtime_hooks.dec_ref)(slice);
+        (runtime_hooks.dec_ref)(list);
+    }
+    assert_no_pending_exception();
+    result
+}
+
 fn reverse_case(
     first_pointer: *mut PyObject,
     first_bits: u64,
@@ -655,6 +720,11 @@ fn sequence_container_performance_attestation() {
         tuple_read_case(tuple_pointer, tuple_bits),
         tuple_identity_fast_paths_case(tuple_pointer),
         tuple_construction_case(tuple_pointer, tuple_bits),
+        indexed_removal_case("list.removal.tail_128", 128, false, false),
+        indexed_removal_case("list.removal.tail_1048576", 1_048_576, false, false),
+        indexed_removal_case("list.removal.dense_8192", 8192, true, false),
+        indexed_removal_case("list.removal.projected_tail_65536", 65_536, false, true),
+        indexed_removal_case("list.removal.projected_dense_8192", 8192, true, true),
     ];
     unsafe {
         Py_DECREF(tuple_pointer);
@@ -708,8 +778,9 @@ fn sequence_container_performance_attestation() {
             "tuple_reads": "checked, raw, and PySequence_Fast_ITEMS reads share one packed physical slot",
             "tuple_identity": "full slicing and repeat-one return new references to the exact tuple",
             "tuple_construction": "exact PyTuple_New sizing, fixed-slot identity publication, and destruction",
+            "indexed_removal": "sparse tail scaling and dense removal in ordinary and ABI-projected lists; includes restoration cost",
             "semantic_witness": "every operation verifies runtime and physical views and leaves no pending exception",
-            "allocation_gate": "every steady-state list/tuple sample requires exactly zero allocations, allocated bytes, and peak live bytes; both construction families are positive controls",
+            "allocation_gate": "delta publication and tuple steady-state samples require zero allocations, bytes, and peak live bytes; construction and indexed-removal families are positive controls",
             "process_tree_memory": "peak RSS and Windows Job peak commit are added by tools/bench/run_list_delta_attestation.py",
         },
         "cases": cases,

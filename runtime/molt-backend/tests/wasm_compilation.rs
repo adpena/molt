@@ -33,6 +33,7 @@ fn compile_single_function(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -59,6 +60,7 @@ fn compile_single_function_with_param_types(
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -234,6 +236,7 @@ fn empty_module_compiles_to_valid_wasm() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -255,6 +258,7 @@ fn module_registry_emits_valid_dense_module_id_dispatch() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let registry = ModuleRegistryIR {
@@ -327,6 +331,7 @@ fn empty_module_is_structurally_valid_wasm() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -347,6 +352,7 @@ fn empty_module_exports_molt_main() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -372,6 +378,7 @@ fn empty_module_exports_memory() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -675,6 +682,7 @@ fn tail_call_candidate_ir() -> SimpleIR {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -686,6 +694,7 @@ fn tail_call_candidate_ir() -> SimpleIR {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -773,6 +782,7 @@ fn call_guarded_escaped_function_dispatches_on_object() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -784,6 +794,7 @@ fn call_guarded_escaped_function_dispatches_on_object() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -969,6 +980,7 @@ fn multiple_functions_compile() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -984,6 +996,7 @@ fn multiple_functions_compile() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -1061,49 +1074,56 @@ fn dict_new_calls_dict_new_import() {
     );
 }
 
+/// Fixed-arity lists borrow one private scratch word range through the
+/// canonical constructor; the incremental builder is a host API only.
+fn assert_list_uses_word_range_constructor(kind: &str, wasm: &[u8]) {
+    let calls = import_call_counts(wasm);
+    for builder in [
+        "list_builder_new",
+        "list_builder_append",
+        "list_builder_finish",
+    ] {
+        assert_eq!(
+            count_import(&calls, builder),
+            0,
+            "{kind} must not construct through {builder}"
+        );
+    }
+    let sequence = import_call_sequence(wasm);
+    let constructor = sequence
+        .iter()
+        .position(|name| name == "list_from_values")
+        .unwrap_or_else(|| panic!("{kind} should call list_from_values; calls={sequence:?}"));
+    assert!(
+        sequence[..constructor]
+            .iter()
+            .any(|name| name == "scratch_alloc")
+            && sequence[constructor + 1..]
+                .iter()
+                .any(|name| name == "scratch_free"),
+        "{kind}: the constructor reads a range allocated before it and freed after it; \
+         calls={sequence:?}"
+    );
+}
+
 #[test]
-fn list_new_compiles_using_builder_imports() {
-    // The "list_new" IR op uses list_builder_new + list_builder_append + list_builder_finish.
+fn list_new_compiles_using_word_range_constructor() {
     let mut list = op("list_new");
     list.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     list.out = Some("v0".to_string());
 
     let wasm = compile_single_function(vec![list, op("ret_void")], &["p0", "p1"]);
-    let calls = import_call_counts(&wasm);
-    assert!(
-        count_import(&calls, "list_builder_new") > 0,
-        "list_new should call list_builder_new"
-    );
-    assert!(
-        count_import(&calls, "list_builder_append") > 0,
-        "list_new should call list_builder_append"
-    );
-    assert!(
-        count_import(&calls, "list_builder_finish") > 0,
-        "list_new should call list_builder_finish"
-    );
+    assert_list_uses_word_range_constructor("list_new", &wasm);
 }
 
 #[test]
-fn build_list_compiles_using_builder_imports() {
+fn build_list_compiles_using_word_range_constructor() {
     let mut list = op("build_list");
     list.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     list.out = Some("v0".to_string());
 
     let wasm = compile_single_function(vec![list, ret_value("v0")], &["p0", "p1"]);
-    let calls = import_call_counts(&wasm);
-    assert!(
-        count_import(&calls, "list_builder_new") > 0,
-        "build_list should call list_builder_new"
-    );
-    assert!(
-        count_import(&calls, "list_builder_append") > 0,
-        "build_list should call list_builder_append"
-    );
-    assert!(
-        count_import(&calls, "list_builder_finish") > 0,
-        "build_list should call list_builder_finish"
-    );
+    assert_list_uses_word_range_constructor("build_list", &wasm);
 }
 
 #[test]
@@ -1158,6 +1178,7 @@ fn alloc_task_generator_keeps_task_new_import() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -1169,6 +1190,7 @@ fn alloc_task_generator_keeps_task_new_import() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -1201,6 +1223,7 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -1212,6 +1235,7 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -1238,6 +1262,7 @@ fn call_async_rejects_non_poll_table_target() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1521,6 +1546,7 @@ fn wasm_does_not_split_non_linear_control_functions() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             }],
             profile: None,
@@ -1555,6 +1581,7 @@ fn wasm_preserves_frontend_module_chunk_boundaries() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             }],
             profile: None,

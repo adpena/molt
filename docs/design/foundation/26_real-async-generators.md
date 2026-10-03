@@ -135,11 +135,11 @@ Pattern: `for x in gen(): body` where `gen()` does not escape and the generator 
 
 This is the D1 generator fusion blueprint. The precise splice algorithm is fully specified in `/Users/adpena/Projects/molt/docs/design/foundation/07_D1-coroelide.md` and does not need to be re-derived here. The key structural points:
 
-- The `_poll` function's closure slots become loop-carried phis (block arguments of a `fused_dispatch_block`).
+- The `_poll` function's user frame slots become SSA values of its own control flow: each read copies its reaching definition, and each join its stores reach takes a block argument (`generator_fusion/slots.rs`).
 - `STATE_YIELD(pair, next_state)` becomes: bind the element value directly to the for-target, run the consumer body, branch back to `fused_dispatch_block` with updated slot values.
 - `STATE_SWITCH(self)` becomes a `Switch` on the `state_phi` block argument.
 - `AllocTask`, `GetIter`, `IterNext`/`IterNextUnboxed`/`ForIter` ops are deleted.
-- One explicit `IncRef(elem_val)` is inserted at each yield splice point to preserve the `+1` ownership the `IterNext` calling convention delivers.
+- The element is the owned result of `Index(pair, 0)`, as the `IterNext` pair's element was. Fusion places no reference operation; the terminal drop plane releases the element once.
 - After splice, `run_pipeline(caller, tti)` re-runs: SCCP folds the state switch for single-yield generators, LICM hoists loop-invariant loads from the now-inlined body, escape analysis proves the pair is now dead (never allocated), BCE applies on the fused index math.
 
 Required proofs: `AllocTask` has a single `GetIter` use; `GetIter` result has a single `IterNext` use; poll function is available in the same `TirModule`; poll function passes `is_poll_fusable` (no `YieldFrom`, no `StateBlockStart`/`StateBlockEnd`, not in the recursive SCC, `closure_size` statically known); no `.send()`/`.throw()`/`.close()` uses on the generator object.
@@ -196,9 +196,9 @@ A coroutine that completes without yielding to the event loop (i.e., its first `
 
 **Tier A (deforestation).** No generator frame exists. RC for loop-body temporaries is handled by the per-function drop insertion pass over the fused loop. No generator-specific RC work needed.
 
-**Tier B (fusion).** After splice, the fused function is no longer a `has_state_machine()` function (no re-entrant `StateYield`/`StateSwitch` body). The drop insertion pass runs on it normally. `AllocTask` is independently a construction/inlining barrier, not evidence that its containing function has a re-entrant CFG. The loop-carried phis for frame slots follow the standard phi-ownership model from design 20 §5: each phi at `fused_dispatch_block` takes +1 ownership of its incoming value, drops it on the loop's exit path, and transfers it on the back-edge. This is the standard loop-accumulator ownership pattern that `drop_insertion.rs` already handles for non-state-machine loops.
+**Tier B (fusion).** After splice, the fused function is no longer a `has_state_machine()` function (no re-entrant `StateYield`/`StateSwitch` body). The drop insertion pass runs on it normally. `AllocTask` is independently a construction/inlining barrier, not evidence that its containing function has a re-entrant CFG. The join arguments of promoted frame slots follow the standard phi-ownership model from design 20 §5: each takes +1 ownership of its incoming value, drops it on the loop's exit path, and transfers it on the back-edge. This is the standard loop-accumulator ownership pattern that `drop_insertion.rs` already handles for non-state-machine loops.
 
-The one exception: the init values of the frame-slot phis (the values that P's entry block computes before the first `StateYield`). These values were previously spilled to the frame via `ClosureStore` and owned by the frame until yielded back via `ClosureLoad`. After fusion, they become block arguments — the standard phi ownership model applies and drop insertion handles them correctly.
+The frame's own references are kept by the replacement authority (design 20 §1.2). Each promoted read replaces a `ClosureLoad`, whose result was owned, and keeps that reference: an owned alias of its reaching definition unless that value is a raw carrier or the read is unread. Each promoted store keeps the reference the frame took to the stored value, and a parameter slot starts as the frame's reference to its argument, an owned alias bound in the fused preheader, so a rebinding of the caller's name inside the loop cannot free what the generator still reads.
 
 **Tier C/D (stack frame / heap frame).** The `has_state_machine()` bail in `drop_insertion.rs:450` must be replaced with StateSwitch-aware liveness. The algorithm:
 

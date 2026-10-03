@@ -104,7 +104,12 @@ pub(super) fn alloc_file_handle_with_state(
     } else {
         ObjectAuxPreselection::ClassInline
     };
-    let ptr = alloc_object_with_aux(_py, total, TYPE_ID_FILE_HANDLE, aux);
+    let ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
+        _py,
+        total,
+        TYPE_ID_FILE_HANDLE,
+        aux,
+    );
     if ptr.is_null() {
         return ptr;
     }
@@ -120,6 +125,7 @@ pub(super) fn alloc_file_handle_with_state(
         }
     }
     let handle = Box::new(MoltFileHandle {
+        dict_bits: 0,
         state,
         readable,
         writable,
@@ -163,6 +169,11 @@ pub(super) fn alloc_file_handle_with_state(
     let handle_ptr = Box::into_raw(handle);
     unsafe {
         *(ptr as *mut *mut MoltFileHandle) = handle_ptr;
+        if !super::attributes::io_initialize_dictionary_members(_py, ptr) {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        }
+        crate::object::gc::gc_publish_initialized(_py, ptr);
     }
     ptr
 }

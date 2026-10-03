@@ -12,6 +12,7 @@ pub(super) fn emit_function_object_call_op(
 ) -> CallOpEmission {
     match op.kind.as_str() {
         "func_new" => {
+            let custody = entry_custody_word(call_ctx, op, false);
             emit_function_constructor(
                 call_ctx,
                 func,
@@ -20,6 +21,7 @@ pub(super) fn emit_function_object_call_op(
                 WasmRuntimeImport::FuncNew,
                 None,
                 None,
+                Some(custody),
             );
             CallOpEmission::Handled
         }
@@ -30,6 +32,7 @@ pub(super) fn emit_function_object_call_op(
                 .and_then(|args| args.first())
                 .expect("func_new_closure expects closure arg");
             let closure_bits = call_ctx.locals[closure_name];
+            let custody = entry_custody_word(call_ctx, op, true);
             emit_function_constructor(
                 call_ctx,
                 func,
@@ -38,6 +41,7 @@ pub(super) fn emit_function_object_call_op(
                 WasmRuntimeImport::FuncNewClosure,
                 None,
                 Some(closure_bits),
+                Some(custody),
             );
             CallOpEmission::Handled
         }
@@ -110,10 +114,29 @@ fn emit_builtin_func(
             .and_then(|args| args.first())
             .map(|name| call_ctx.locals[name]),
         None,
+        None,
     );
     CallOpEmission::Handled
 }
 
+/// The entry custody of the function object a `func_new` creates. A task
+/// constructor's arguments enter through its task trampoline, which retains
+/// each into the new task, so it borrows; any other object's comes from its
+/// compiled function's own parameter declaration.
+fn entry_custody_word(call_ctx: &CallOpContext<'_, '_, '_>, op: &OpIR, has_closure: bool) -> u64 {
+    if op.task_kind.is_some() {
+        return 0;
+    }
+    call_ctx.call_site_abi.entry_custody_word(
+        op.s_value.as_deref().expect("func_new names its function"),
+        has_closure,
+        op.value.unwrap_or(0),
+    )
+}
+
+/// `entry_custody`: the runtime entry-custody word a compiled function
+/// object's constructor takes last; builtin constructors take none.
+#[allow(clippy::too_many_arguments)]
 fn emit_function_constructor(
     call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
@@ -122,6 +145,7 @@ fn emit_function_constructor(
     import: WasmRuntimeImport,
     leading_local: Option<u32>,
     trailing_local: Option<u32>,
+    entry_custody: Option<u64>,
 ) {
     let func_name = op.s_value.as_ref().unwrap();
     let arity = op.value.unwrap_or(0);
@@ -148,6 +172,9 @@ fn emit_function_constructor(
     func.instruction(&Instruction::I64Const(arity));
     if let Some(local) = trailing_local {
         func.instruction(&Instruction::LocalGet(local));
+    }
+    if let Some(word) = entry_custody {
+        func.instruction(&Instruction::I64Const(word as i64));
     }
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
     store_runtime_result(

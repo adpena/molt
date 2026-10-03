@@ -79,6 +79,7 @@ fn block(id: u32, args: Vec<LirValue>, mut ops: Vec<LirOp>, terminator: LirTermi
 fn cfg(name: &str, result: TirType, blocks: Vec<LirBlock>) -> LirFunction {
     let entry = &blocks[0];
     LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: name.into(),
         param_names: entry.args.iter().map(|v| format!("v{}", v.id.0)).collect(),
         param_types: entry.args.iter().map(|v| v.ty.clone()).collect(),

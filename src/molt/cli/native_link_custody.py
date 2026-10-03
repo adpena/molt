@@ -64,6 +64,32 @@ class NativeLinkCustodyEntry:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class NativeLinkCustodyObservation:
+    """Canonical tar semantics and exact extracted membership for one operation."""
+
+    archive: StableRegularFileIdentity | None
+    entries: tuple[NativeLinkCustodyEntry, ...]
+    files: tuple[tuple[str, StableRegularFileIdentity], ...]
+
+    def paths(self) -> dict[str, Path]:
+        return {key: identity.path for key, identity in self.files}
+
+
+def _current_custody_identity(
+    path: Path, previous: StableRegularFileIdentity | None
+) -> StableRegularFileIdentity:
+    # Custody permits identical-byte replacement. A new generation still needs
+    # a fresh physical observation; it never inherits the old file's fence.
+    if previous is not None and previous.path == path.absolute():
+        try:
+            verify_stable_regular_file_identity(previous, label="native link custody")
+            return previous
+        except (OSError, ValueError):
+            pass
+    return _file_identity(path)
+
+
 def _safe_filename(value: str) -> str:
     try:
         return portable_path_component(value)
@@ -288,7 +314,7 @@ def _write_archive(
             for entry in entries:
                 source = sources[entry.identifier]
                 with open_stable_regular_file(
-                    source.path, label="native custody archive source"
+                    source.path, label="native custody archive source", observed=source
                 ) as opened:
                     verify_stable_regular_file_identity(
                         source, label="native custody archive source"
@@ -306,20 +332,36 @@ def _validate_archive_file(
     *,
     archive_record: Mapping[str, object],
     entries: Sequence[NativeLinkCustodyEntry],
-) -> None:
-    identity = _file_identity(path)
+    previous: NativeLinkCustodyObservation | None = None,
+    observed: StableRegularFileIdentity | None = None,
+) -> StableRegularFileIdentity:
+    prior = previous.archive if previous is not None else None
+    if observed is not None:
+        if observed.path != path.absolute():
+            raise NativeLinkCustodyError("custody observation names another archive")
+        verify_stable_regular_file_identity(observed, label="native custody archive")
+    identity = (
+        observed if observed is not None else _current_custody_identity(path, prior)
+    )
     expected_size = archive_record["size_bytes"]
     expected_digest = archive_record["sha256"]
     if identity.size != expected_size or identity.sha256 != expected_digest:
         raise NativeLinkCustodyError(
             f"native-link custody archive identity mismatch: {path}"
         )
+    if (
+        previous is not None
+        and prior is not None
+        and tuple(entries) == previous.entries
+        and (identity.sha256, identity.size) == (prior.sha256, prior.size)
+    ):
+        return identity
     expected = {entry.archive_path: entry for entry in entries}
     expected_order = tuple(entry.archive_path for entry in entries)
     try:
         with (
             open_stable_regular_file(
-                identity.path, label="native custody archive"
+                identity.path, label="native custody archive", observed=identity
             ) as opened,
             tarfile.open(
                 fileobj=opened.stream, mode="r:", tarinfo=RegularUstarTarInfo
@@ -329,14 +371,14 @@ def _validate_archive_file(
                 identity, label="native custody archive"
             )
             observed_order: list[str] = []
-            observed: set[str] = set()
+            observed_paths: set[str] = set()
             for member in archive:
                 member_path = _safe_archive_member(member.name).as_posix()
-                if member_path in observed:
+                if member_path in observed_paths:
                     raise NativeLinkCustodyError(
                         f"duplicate native-link custody archive member: {member_path}"
                     )
-                observed.add(member_path)
+                observed_paths.add(member_path)
                 observed_order.append(member_path)
                 entry = expected.get(member_path)
                 if entry is None or not _archive_member_is_canonical(member, entry):
@@ -364,6 +406,7 @@ def _validate_archive_file(
             verify_stable_regular_file_identity(
                 identity, label="native custody archive"
             )
+        return identity
     except (OSError, tarfile.TarError, ValueError) as exc:
         raise NativeLinkCustodyError(
             f"cannot validate native-link custody archive {path}: {exc}"
@@ -375,7 +418,7 @@ def validate_native_link_custody_archive(
     custody: Mapping[str, object],
     *,
     context: str | None = None,
-) -> None:
+) -> StableRegularFileIdentity | None:
     """Validate exact custody bytes at an explicit staging or final path."""
     validation_context = context or (
         os.fspath(archive_path) if archive_path is not None else "native-link custody"
@@ -396,7 +439,7 @@ def validate_native_link_custody_archive(
             f"native-link custody archive path is missing: {validation_context}"
         )
     archive = cast(Mapping[str, object], custody["archive"])
-    _validate_archive_file(archive_path, archive_record=archive, entries=entries)
+    return _validate_archive_file(archive_path, archive_record=archive, entries=entries)
 
 
 def publish_native_link_custody(
@@ -479,6 +522,9 @@ def publish_native_link_custody(
 def _validate_extracted_root(
     root: Path,
     entries: Sequence[NativeLinkCustodyEntry],
+    *,
+    identities: dict[str, StableRegularFileIdentity] | None = None,
+    previous: NativeLinkCustodyObservation | None = None,
 ) -> dict[str, Path]:
     if not root.is_dir() or root.is_symlink() or root.is_junction():
         raise NativeLinkCustodyError(
@@ -509,42 +555,59 @@ def _validate_extracted_root(
     result: dict[str, Path] = {}
     for entry in entries:
         path = root.joinpath(*PurePosixPath(entry.archive_path).parts)
-        identity = _file_identity(path)
+        prior = (
+            dict(previous.files).get(entry.identifier) if previous is not None else None
+        )
+        identity = _current_custody_identity(path, prior)
         if identity.size != entry.size_bytes or identity.sha256 != entry.sha256:
             raise NativeLinkCustodyError(
                 f"native-link custody extracted file identity mismatch: {path}"
             )
         result[entry.identifier] = identity.path
+        if identities is not None:
+            identities[entry.identifier] = identity
     return result
 
 
-def ensure_native_link_custody(
+def observe_native_link_custody(
     runtime_lib: Path,
     custody: Mapping[str, object],
-) -> dict[str, Path]:
+    *,
+    previous: NativeLinkCustodyObservation | None = None,
+) -> NativeLinkCustodyObservation:
     _value, entries = validate_native_link_custody(custody, context=str(runtime_lib))
     if not entries:
-        return {}
+        return NativeLinkCustodyObservation(None, (), ())
     archive = cast(Mapping[str, object], custody["archive"])
     archive_path = native_link_custody_archive_path(runtime_lib, custody)
     assert archive_path is not None
-    validate_native_link_custody_archive(
-        archive_path,
-        custody,
-        context=os.fspath(runtime_lib),
+    archive_identity = _validate_archive_file(
+        archive_path, archive_record=archive, entries=entries, previous=previous
     )
     digest = archive["sha256"]
     assert isinstance(digest, str)
     extraction_root = runtime_lib.parent / f"{_EXTRACTION_PREFIX}{digest}"
+
+    def observe_root() -> NativeLinkCustodyObservation:
+        files: dict[str, StableRegularFileIdentity] = {}
+        _validate_extracted_root(
+            extraction_root, entries, identities=files, previous=previous
+        )
+        verify_stable_regular_file_identity(
+            archive_identity, label="native custody archive"
+        )
+        return NativeLinkCustodyObservation(
+            archive_identity, tuple(entries), tuple(files.items())
+        )
+
     if extraction_root.exists():
-        return _validate_extracted_root(extraction_root, entries)
+        return observe_root()
 
     stage = (
         runtime_lib.parent / f".{_EXTRACTION_PREFIX}{digest}.{uuid.uuid4().hex}.stage"
     )
     stage.mkdir(parents=False, exist_ok=False)
     try:
-        archive_identity = _file_identity(archive_path)
         if (
             archive_identity.sha256 != archive["sha256"]
             or archive_identity.size != archive["size_bytes"]
@@ -555,7 +618,9 @@ def ensure_native_link_custody(
         stage_root = stage.resolve(strict=True)
         with (
             open_stable_regular_file(
-                archive_path, label="native custody extraction"
+                archive_path,
+                label="native custody extraction",
+                observed=archive_identity,
             ) as opened,
             tarfile.open(
                 fileobj=opened.stream, mode="r:", tarinfo=RegularUstarTarInfo
@@ -628,7 +693,7 @@ def ensure_native_link_custody(
             if not extraction_root.exists():
                 raise
             _validate_extracted_root(extraction_root, entries)
-        return _validate_extracted_root(extraction_root, entries)
+        return observe_root()
     except (OSError, tarfile.TarError, ValueError) as exc:
         raise NativeLinkCustodyError(
             f"cannot extract native-link custody archive {archive_path}: {exc}"
@@ -639,36 +704,42 @@ def ensure_native_link_custody(
                 _remove_file_or_tree(stage)
 
 
+def ensure_native_link_custody(
+    runtime_lib: Path,
+    custody: Mapping[str, object],
+    *,
+    previous: NativeLinkCustodyObservation | None = None,
+) -> dict[str, Path]:
+    return observe_native_link_custody(runtime_lib, custody, previous=previous).paths()
+
+
 def copy_native_link_custody_archive(
     source_runtime_lib: Path,
     destination_runtime_lib: Path,
     custody: Mapping[str, object],
-) -> Path | None:
+    *,
+    source_identity: StableRegularFileIdentity | None = None,
+) -> NativeLinkCustodyObservation:
     _value, entries = validate_native_link_custody(
         custody,
         context=str(source_runtime_lib),
     )
     if not entries:
-        return None
+        return NativeLinkCustodyObservation(None, (), ())
     source = native_link_custody_archive_path(source_runtime_lib, custody)
     destination = native_link_custody_archive_path(destination_runtime_lib, custody)
     assert source is not None and destination is not None
-    validate_native_link_custody_archive(
+    source_identity = _validate_archive_file(
         source,
-        custody,
-        context=os.fspath(source_runtime_lib),
+        archive_record=cast(Mapping[str, object], custody["archive"]),
+        entries=entries,
+        observed=source_identity,
     )
-    if destination.exists():
-        validate_native_link_custody_archive(
-            destination,
-            custody,
-            context=os.fspath(destination_runtime_lib),
-        )
-    else:
-        _atomic_copy_file(source, destination)
-        validate_native_link_custody_archive(
-            destination,
-            custody,
-            context=os.fspath(destination_runtime_lib),
-        )
-    return destination
+    if not destination.exists():
+        _atomic_copy_file(source, destination, observed=source_identity)
+    destination_identity = _validate_archive_file(
+        destination,
+        archive_record=cast(Mapping[str, object], custody["archive"]),
+        entries=entries,
+    )
+    return NativeLinkCustodyObservation(destination_identity, tuple(entries), ())

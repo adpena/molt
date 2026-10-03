@@ -604,3 +604,51 @@ def test_explicit_source_projection_fences_ancestor_replacement(
             arch="x86_64",
             backend="native",
         )
+
+
+@pytest.mark.parametrize("body", ["", '"""Package fixture."""\n'])
+def test_inert_fixture_is_source_bound_but_not_a_program(tmp_path, body):
+    path = tmp_path / "fixture.py"
+    path.write_text("# MOLT_META: source_role=fixture\n" + body)
+    metadata = test_policy.parse_metadata(path)
+    assert metadata.source_role == "fixture"
+    assert metadata.python_exclusion_reason((3, 12)) == "inert fixture source"
+    inventory = test_policy.load_test_inventory(
+        ((tmp_path, False),), repo_root=tmp_path
+    )
+    assert inventory.files == (path,)
+    assert test_policy.program_files(inventory) == ()
+    projection = test_policy.project_prepared_coordinate(
+        inventory.sources,
+        python="3.12",
+        platform="windows",
+        arch="x86_64",
+        backend="native",
+    )
+    assert len(projection.tests) == 1
+    assert projection.tests[0].exclusion_reason == "inert fixture source"
+    assert len(projection.applicable) == 0
+
+
+@pytest.mark.parametrize(
+    "body", ["print('failed')", "VALUE = 1", "import os", "def probe(): pass"]
+)
+def test_fixture_role_cannot_hide_executable_programs(tmp_path, body):
+    path = tmp_path / "fixture.py"
+    path.write_text("# MOLT_META: source_role=fixture\n" + body + "\n")
+    with pytest.raises(ValueError, match="executable programs cannot be excluded"):
+        test_policy.parse_metadata(path)
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "source_role=unknown",
+        "source_role=fixture expect_fail=molt expect_fail_reason=broken",
+    ],
+)
+def test_invalid_fixture_role_or_policy_override_fails_closed(tmp_path, declaration):
+    path = tmp_path / "fixture.py"
+    path.write_text("# MOLT_META: " + declaration + "\n")
+    with pytest.raises(ValueError):
+        test_policy.parse_metadata(path)

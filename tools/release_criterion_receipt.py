@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import json
 import math
@@ -24,16 +25,22 @@ bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
-from molt.exact_json import ExactJsonError, loads_exact, write_exact  # noqa: E402
+from molt.exact_json import (  # noqa: E402
+    ExactJsonError,
+    canonical_json_sha256,
+    loads_exact,
+    write_exact,
+)
 from molt.portable_paths import (  # noqa: E402
     portable_path_identity,
     portable_relative_path,
 )
 from molt.toolchain_identity import stable_file_sha256  # noqa: E402
 from tools.git_identity import is_git_object_id  # noqa: E402
+from tools.receipt_toolchain import audit_engine_problems, observe_python_audit_engine  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
 
@@ -86,6 +93,7 @@ STRUCTURAL_AUDIT_METRICS = frozenset(
         "python_stub_surfaces_total",
         "repr_name_scalar_authority_violations",
         "rust_backend_lowering_gaps_total",
+        "rust_backend_rejection_applicability_total",
         "rust_stub_surfaces_total",
         "undecomposed_god_files",
     }
@@ -156,6 +164,7 @@ class InputRecord(TypedDict):
 class ProducerRecord(TypedDict):
     argv: list[str]
     tool: InputRecord
+    audit_engine: dict[str, Any] | None
 
 
 class Receipt(TypedDict):
@@ -179,6 +188,8 @@ class ReceiptDestination:
     repo_root: Path
     output_path: Path
     source_sha: str
+    audit_engine: dict[str, Any] | None = None
+    audit_engine_sha256: str | None = None
 
 
 def _portable_relative_path(path: Path, repo_root: Path) -> str:
@@ -288,15 +299,26 @@ def prepare_receipt_destination(
     repo_root: Path,
     receipt_path: Path | None,
     source_sha: str | None,
+    observe_audit_engine: bool = False,
 ) -> ReceiptDestination | None:
     if receipt_path is None and source_sha is None:
         return None
     if receipt_path is None or source_sha is None:
         raise ValueError("--receipt and --source-sha must be provided together")
-    return assert_clean_source(
+    destination = assert_clean_source(
         repo_root=repo_root,
         source_sha=source_sha,
         output_path=receipt_path,
+    )
+    if not observe_audit_engine:
+        return destination
+    engine = observe_python_audit_engine()
+    return ReceiptDestination(
+        destination.repo_root,
+        destination.output_path,
+        destination.source_sha,
+        engine,
+        canonical_json_sha256(engine),
     )
 
 
@@ -319,6 +341,7 @@ def build_receipt(
     input_paths: Sequence[Path],
     repo_root: Path,
     generated_at: str | None = None,
+    audit_engine: Mapping[str, Any] | None = None,
     verified_subset_validation: VerifiedSubsetValidation | None = None,
 ) -> Receipt:
     tool = input_record(tool_path, repo_root=repo_root)
@@ -329,7 +352,19 @@ def build_receipt(
         "source_sha": source_sha,
         "generated_at": generated_at or _utc_now(),
         "status": status,
-        "producer": {"argv": canonical_argv, "tool": tool},
+        "producer": {
+            "argv": canonical_argv,
+            "tool": tool,
+            "audit_engine": (
+                None
+                if kind == KIND_VERIFIED_SUBSET
+                else (
+                    copy.deepcopy(dict(audit_engine))
+                    if audit_engine is not None
+                    else observe_python_audit_engine()
+                )
+            ),
+        },
         "facts": dict(facts),
         "inputs": sorted_input_records(input_paths, repo_root=repo_root),
     }
@@ -370,6 +405,27 @@ def write_receipt(
             "release criterion receipt changed before publication: "
             + "; ".join(problems)
         )
+    if receipt["kind"] != KIND_VERIFIED_SUBSET:
+        observed_engine = observe_python_audit_engine()
+        if receipt["producer"]["audit_engine"] != observed_engine:
+            raise ValueError(
+                "structural audit interpreter identity changed before publication"
+            )
+        if (
+            destination.audit_engine_sha256 is not None
+            and destination.audit_engine_sha256
+            != canonical_json_sha256(observed_engine)
+        ):
+            raise ValueError(
+                "structural audit interpreter preflight identity seal changed during observation"
+            )
+        if (
+            destination.audit_engine is not None
+            and destination.audit_engine != observed_engine
+        ):
+            raise ValueError(
+                "structural audit interpreter identity changed during observation"
+            )
     if verified_subset_validation is not None:
         verified_subset_validation.verify_unchanged()
     write_exact(destination.output_path, receipt, exclusive=True)
@@ -582,6 +638,7 @@ def _validate_verified_subset_facts(
             "reference_python",
             "abi",
             "backend",
+            "build_profile",
             "concurrency",
             "platform",
             "arch",
@@ -735,10 +792,22 @@ def _validate_verified_subset_facts(
             )
 
     execution = facts.get("execution")
-    execution_keys = frozenset({"backend", "ci", "host", "python", "rust"})
+    execution_keys = frozenset({"backend", "ci", "host", "python", "rust", "profiles"})
     if not _is_exact_object(execution, execution_keys):
         problems.append("facts.execution schema is invalid")
     else:
+        profiles = execution.get("profiles")
+        if (
+            not isinstance(profiles, dict)
+            or not isinstance(profiles.get("build"), str)
+            or profiles.get("build") not in {"dev", "release"}
+            or profiles != verified.execution_profiles(profiles["build"])
+            or (
+                expected_coordinate is not None
+                and profiles["build"] != expected_coordinate.build_profile
+            )
+        ):
+            problems.append("facts.execution.profiles schema is invalid")
         ci = execution.get("ci")
         ci_keys = frozenset(
             {
@@ -855,7 +924,7 @@ def _validate_verified_subset_facts(
         backend_keys = (
             frozenset({"backend", "runner"})
             if expected_coordinate is not None
-            and expected_coordinate.backend == "native"
+            and expected_coordinate.backend in {"llvm", "native"}
             else frozenset(
                 {"backend", "binary_name", "binary_sha256", "runner", "version"}
             )
@@ -1096,7 +1165,9 @@ def validate_receipt(
 
     producer = payload.get("producer")
     if not _is_exact_object(producer, _PRODUCER_KEYS):
-        problems.append("receipt producer must contain exactly argv and tool")
+        problems.append(
+            "receipt producer must contain exactly argv, tool, and audit_engine"
+        )
     else:
         argv = producer.get("argv")
         if not _string_list(argv) or not argv:
@@ -1136,6 +1207,15 @@ def validate_receipt(
                     problems.append(
                         "verified-subset producer argv must be one exact run invocation"
                     )
+
+    if isinstance(producer, Mapping):
+        if kind == KIND_VERIFIED_SUBSET:
+            if producer.get("audit_engine") is not None:
+                problems.append(
+                    "verified-subset producer audit_engine must be null; execution tools belong to facts.execution"
+                )
+        else:
+            problems.extend(audit_engine_problems(producer.get("audit_engine")))
 
     inputs = payload.get("inputs")
     input_paths: list[str] = []

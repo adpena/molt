@@ -251,6 +251,51 @@ pub fn visit_simple_ir_defined_names<'a>(op: &'a OpIR, mut visit: impl FnMut(&'a
     }
 }
 
+/// Canonical definition identities; an invocation parameter is a distinct
+/// definition even when a backedge re-enters the first source operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimpleDefinitionSite {
+    Invocation,
+    Operation(usize),
+}
+
+#[derive(Debug, Clone)]
+pub struct SimpleDefinitionFacts {
+    definitions: std::collections::BTreeMap<String, Option<SimpleDefinitionSite>>,
+}
+
+impl SimpleDefinitionFacts {
+    pub fn compute(parameters: &[String], ops: &[OpIR]) -> Self {
+        let mut definitions = std::collections::BTreeMap::new();
+        for name in parameters.iter().filter(|name| name.as_str() != "none") {
+            definitions
+                .entry(name.clone())
+                .and_modify(|site| *site = None)
+                .or_insert(Some(SimpleDefinitionSite::Invocation));
+        }
+        for (index, op) in ops.iter().enumerate() {
+            visit_simple_ir_defined_names(op, |name| {
+                let site = SimpleDefinitionSite::Operation(index);
+                definitions
+                    .entry(name.to_owned())
+                    .and_modify(|prior| {
+                        // One operation can project the same result/destination
+                        // twice. A different operation or parameter is a redefinition.
+                        if *prior != Some(site) {
+                            *prior = None;
+                        }
+                    })
+                    .or_insert(Some(site));
+            });
+        }
+        Self { definitions }
+    }
+
+    pub fn unique_definition(&self, name: &str) -> Option<SimpleDefinitionSite> {
+        self.definitions.get(name).copied().flatten()
+    }
+}
+
 #[cfg(test)]
 fn simple_ir_defined_names(op: &OpIR) -> Vec<String> {
     let mut defined = Vec::new();
@@ -606,5 +651,44 @@ mod tests {
         let mut non_terminator = op("call");
         non_terminator.args = Some(vec!["not_a_return".into()]);
         assert!(!simple_ir_return_has_value(&non_terminator));
+    }
+}
+
+#[cfg(test)]
+mod definition_fact_tests {
+    use super::*;
+    #[test]
+    fn parameter_and_mutable_destinations_are_not_immutable_snapshots() {
+        let ops = vec![
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("slot".into()),
+                out: Some("first_snapshot".into()),
+                args: Some(vec!["parameter".into()]),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "delete_var".into(),
+                var: Some("slot".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "copy_var".into(),
+                out: Some("parameter".into()),
+                args: Some(vec!["first_snapshot".into()]),
+                ..Default::default()
+            },
+        ];
+        let facts = SimpleDefinitionFacts::compute(&["parameter".into(), "unchanged".into()], &ops);
+        assert_eq!(facts.unique_definition("slot"), None);
+        assert_eq!(facts.unique_definition("parameter"), None);
+        assert_eq!(
+            facts.unique_definition("first_snapshot"),
+            Some(SimpleDefinitionSite::Operation(0))
+        );
+        assert_eq!(
+            facts.unique_definition("unchanged"),
+            Some(SimpleDefinitionSite::Invocation)
+        );
     }
 }

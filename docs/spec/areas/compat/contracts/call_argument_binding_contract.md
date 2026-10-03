@@ -2,7 +2,7 @@
 
 **Spec ID:** 0016
 **Status:** Draft
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-28
 **Audience:** compiler engineers, runtime engineers
 **Goal:** Add Python-compatible call argument binding (positional, keyword, varargs, varkw) while preserving Molt Tier 0 performance via specialization and allocation-free fast paths.
 
@@ -57,6 +57,52 @@ This spec defines:
 
 ## 3. Terminology
 
+### Fixed named native builtins
+
+The published `pow`, `round`, `open`, and `__import__` callables declare the
+fixed named Clinic binding protocol in `BUILTIN_FUNC_SPECS`. The generated
+publication table initializes their sealed bind kind and typed parameter/default
+metadata. That same kind governs binder execution, raw-call admission and inline
+cache admission. Public names, textual introspection signatures and call-site
+spellings do not select executable semantics. Captured aliases keep their callable
+when the builtin namespace is replaced.
+
+The `native_arguments` admission core serves this family and native constructor
+parsers. It checks total argument count, binds required slots, checks occupied
+positional duplicates, and then diagnoses unexpected keys. Vectorcall parameter
+matching uses identity followed by Unicode contents. Constructor dictionary
+matching retains dictionary lookup behavior. A FASTCALL method such as
+`memoryview.tobytes` keeps vector matching even when Molt transports its inputs
+through a tuple and dictionary. Unexpected-key membership uses the
+original Python key and rich equality in declaration order; `%S` diagnostic
+rendering may invoke its `__str__`. Admitted values and original keyword objects
+remain owned across callbacks, and retirement preserves pending exceptions.
+Successful diagnostic string assembly retires the temporary string before
+publishing `TypeError`; callback or allocation failures remain pending during
+cleanup.
+Native tuple/dictionary transport uses the object layer's retained immutable
+tuple view and resource-accounted dictionary snapshot. Pinning the tuple retains
+its positional edges and excludes checked mutation without copying its storage.
+The shared tuple, item, and snapshot owners preserve pending errors on retirement;
+explicit item-reference transfer bypasses retirement. One flat dictionary
+snapshot retains matching keys and values from the same observation. Canonical parameter
+emptiness and vector keyword matching read immutable string bytes without
+allocating host strings. Host text conversion is deferred to actual diagnostics.
+For Python 3.13+ suggestions, source and candidate names require strict UTF-8;
+a lone surrogate disables suggestions while the original keyword still renders
+losslessly through `%S`, including any `__str__` callback or exception.
+Generic Python function binding retains its separate parameter-matching rules.
+
+Runtime power owns the `mod is None` dispatch into binary power; there is no
+Python `pow` shim. `open` consumes its published default tuple; it has no second
+name/default table or cached default-mode owner. WASM/native publication changes
+must regenerate the owning ABI projections from their declaration inputs.
+
+The differential `float_protocol.py` cases cover fixed-family admission,
+namespace/captured-alias identity, omission versus explicit None, precedence,
+keyword subclasses, callback exceptions and diagnostic rendering. A staged
+source change alone does not establish native or WASM conformance.
+
 - **Parameter kinds** (Python terminology):
   - **pos-only**: positional-only (before `/`)
   - **pos-or-kw**: positional-or-keyword
@@ -74,6 +120,153 @@ This spec defines:
 ---
 
 ## 4. Semantic Requirements
+
+Runtime callable construction owns intrinsic defaults from
+`runtime/molt-runtime/src/intrinsics/manifest.pyi`, including the bootstrap
+`require_intrinsic`, `load_intrinsic`, and `runtime_active` helpers. Compiled
+native/LLVM/WASM handles and bootstrap exports consume that same signature.
+Frontend lowering does not rebuild default tuples or assign public
+`__defaults__`/`__kwdefaults__` attributes to native builtin functions. The
+internal binder reads retained metadata; user-visible builtin attributes keep
+CPython's restrictions. Python-defined function defaults remain mutable through
+the existing function metadata/version authority.
+
+Published native constructors share their ordinary `__new__` descriptor with
+class-call binding. `memoryview(object)` and `memoryview(object=...)` use the
+same required-argument admission and buffer owner as explicit
+`memoryview.__new__(memoryview, ...)`. Constructor argument snapshots retain
+their keys and values across conversion callbacks. Named argument admission
+counts positional and keyword inputs together and checks the required prefix
+before diagnosing unknown keywords; it does not add a class-call-only parser.
+Compiled memoryview calls use this same class-call path, including invalid
+arities and explicit keywords. Argument expressions run before a catchable
+binding error. Diagnostics follow the target Python version's Argument Clinic
+rules, including keyword-only counts and duplicate positional/name admission.
+
+Python builtin type and function references load the captured live namespace;
+spelling cannot manufacture a replacement object. Imported builtin aliases,
+`pow`, and `round` retain the actual callable and use ordinary runtime binding,
+including invalid signatures and side effects in keyword expressions.
+
+Native constructor, property, module, and memoryview method contracts share one
+positional/keyword binder. It checks the total argument count, missing required
+slots, and every occupied positional slot before diagnosing an unknown keyword.
+Python 3.13+ unexpected-keyword suggestions and global-name suggestions share the
+bounded UTF-8 byte edit-cost authority; target 3.12 keeps its keyword diagnostic.
+Native constructor receiver admission uses real managed type/MRO facts for the
+missing receiver, non-type receiver and wrong subtype cases. Sealed payload and
+constructor-specific allocation safety remain required after that admission.
+
+The published `memoryview.tobytes(order='C')` descriptor accepts C, F, A, or None
+and owns keyword evaluation and diagnostics. Its ordered materialization shares
+validated storage, signed offsets, and traversal with other buffer consumers.
+Nullable-string conversion precedes released-view validation; released-view
+validation precedes order-value validation. Internal `molt_memoryview_new` and
+`molt_memoryview_tobytes` remain runtime/ABI primitives; their obsolete frontend
+opcode families and the spelling-only memoryview builtin export are removed.
+
+
+
+### Native callable publication, binding, and namespaces
+
+Native executable storage and Python callable identity are separate. The
+`NativeCallableKind` declaration assigns an actual `builtin_function_or_method`,
+`builtin_method` (C `METH_METHOD`), `method_descriptor`, `wrapper_descriptor`,
+`classmethod_descriptor`, or `method-wrapper` class before publication. Managed
+functions and managed bound methods retain their Python function protocol.
+
+The declaring class dictionary owns each public native method. A single native
+method declaration drives direct lookup and lazy namespace materialization; no
+parallel public-method atomic cache or address-based binding classifier exists.
+Private executable callbacks may retain private atomic caches. Constructor
+declarations publish ordinary native functions whose public self is the owner.
+
+Native public metadata reads admit the members of the declared role. Private
+argument names, defaults, keyword defaults, code and binder metadata remain
+available to internal binders without becoming a public instance dictionary.
+Ordinary native functions do not bind when placed on a managed class. Instance
+and class method descriptors validate their receiver both during `__get__` and
+before direct-call argument normalization. Method and super inline caches use
+the same receiver policy. Normalized variadic ABI tuples are not receivers.
+
+Every materialized native bound callable owns an independent writable module
+edge in `BoundMethodPayload`. Allocation, access, tracing, cycle clearing and
+terminal release use that payload declaration. The function and receiver remain
+stable during cycle clearing. C extension callables retain their physical
+`m_module` and method-documentation authority in the C bridge. Explicit managed
+`MethodType`/`classmethod` wrappers remain managed methods and expose `__func__`.
+
+Bootstrap wrappers finish their name, documentation, signature and defining
+namespace metadata before builtin finalization. Their original construction
+errors propagate without replacement. Finalization identifies the defining
+module by the function's stored globals dictionary, not mutable `__module__`.
+
+Native declarations own literal Clinic text signatures, including `$module`,
+`$self`, `$type`, `/`, `*` and default markers. A C method's Clinic header is read
+from its canonical method definition and omitted from public documentation.
+The actual bound receiver determines removal of the implicit parameter.
+Managed methods unwrap to their underlying managed function before forwarded
+metadata is inspected and remove its first positional parameter exactly once;
+`*args` remains. Empty, keyword-only, or `**kwargs`-only bound signatures raise
+`ValueError`. Objects that merely expose `__func__` and `__self__` acquire no
+managed method identity. Native callables without a usable public text
+signature raise `ValueError` rather than exposing private binder metadata.
+
+The generated builtin declaration's `python_module` identifies its provider.
+Each provider allocates admitted native functions during its normal module-table
+initialization and owns their exact public `__self__`. Builtins first publishes
+its base namespace and cache projections, then ensures admitted foreign
+providers and aliases their existing objects; excluded providers are not
+initialized. `_io.open`, `io.open`, and `builtins.open` initially identify the
+same `_io`-owned function. Replacing or deleting a builtin alias changes public
+lookup and never refills from a private slot or raw function pointer. Provider
+initialization and failure cleanup follow the existing
+[import lifecycle contract](import_system_contract.md).
+
+Luau uses the generated public builtin declarations and its existing executable
+adapters to publish supported initial bindings once into the builtins module
+namespace. Named acquisition and global fallback return the selected active
+frame's captured binding, including a replacement that is not callable or is
+`None`. Neither acquisition allocates a replacement wrapper or rewrites callable
+metadata. A custom namespace's type-owned `__getitem__` is bound by the ordinary
+call authority; only `KeyError` means absence, and other exceptions propagate.
+The bootstrap decision consumes canonical IR runtime requirements, including
+module-cache and attribute-only programs. Runtime provider source owns helper
+exports and transitive dependencies; helper bindings are hoisted once and share
+the chunk-local budget with guest function declarations. Explicit runtime
+constructors must have a closed provider dependency set before source emission.
+
+The Luau preview has no executable default provider for `hash`, `id`, `iter`,
+`next`, `divmod`, `hex`, `oct`, `bin`, `ascii`, `format`, `dir`, or `vars`.
+Their former adapter spellings referenced undefined globals and did not establish
+support. They are not installed as broken default callables. Emitted artifacts
+identify unavailable default adapters; public acquisition still returns any
+binding supplied by a captured or replaced namespace, without consulting the
+default adapter's availability. This namespace contract does not claim complete
+Python builtin coverage or correctness for those absent implementations.
+
+Raw runtime references retain their explicit executable ABI. The standalone
+Rust target already rejects callable acquisition, module namespaces, and frame
+context before emission through its generated runtime capability contract; its
+private emitter must not manufacture a public binding when bypassed by a test.
+LLVM namespace and named-acquisition declarations make no termination or
+read-only-memory promise because mapping/attribute hooks and replacement cleanup
+may execute arbitrary Python code.
+
+Ordinary class lookup materializes only the requested declaration. Explicit
+enumeration and admitted C type-dictionary exposure materialize one complete
+declaring namespace once. After publication, deletion and replacement remain
+authoritative. Raw MRO lookup returns the original descriptor without binding;
+mixed C/runtime MRO traversal queries each local namespace in its actual order.
+C `tp_dict` projects the exact runtime class dictionary. A managed Type view
+owns one non-traversed projection edge; static shells own their existing C root.
+Repeated readiness does not add owners, and retirement releases that edge.
+Bound-callable and class release obey the existing runtime object lifecycle
+contract in [the runtime specification](../../runtime/0003-runtime.md).
+
+These are the required invariants of the staged native-callable consolidation.
+Integrated native/WASM and target-version consumer evidence remains pending;
+this contract makes no startup or lookup speedup claim.
 
 ### 4.1 Evaluation order
 
@@ -133,6 +326,164 @@ semantic fallback. Its eligibility predicate must be one-way conservative: when
 class analysis cannot prove default `object.__new__`, lower through the same
 runtime class-call/binder machinery as dynamic calls.
 
+### 4.7 Argument ownership and release order
+
+Every argument reference of a call has exactly one owner at each point, and
+exactly one release. When an owner ends, it releases its references in the
+order CPython uses for that owner. The order is never chosen from a phase flag,
+a pending-error state, or a guess about where a value came from. Where CPython
+changed an order, the compiled program's target version (`sys.version_info`,
+read through the runtime's target-version authority) selects it.
+
+**Call form.** CPython's compiler fixes the instruction of each call site. CALL
+keeps the operands on the value stack. CALL_FUNCTION_EX passes a positional
+tuple and a keyword mapping. A call is CALL_FUNCTION_EX when it has a `*` or
+`**` argument, or when `positional + 2 * keywords > 30`. An attribute callee
+whose base is not a module-scope import is CALL whenever
+`positional + keywords + (keywords != 0) < 30`. Runtime values cannot recover
+the form, so the compiler records it:
+
+- `call_form` in `molt.compiler_analysis.python_call_arguments`, the
+  call-argument schedule authority, decides it.
+- `callargs_new` carries it (`s_value` `"expanded"`, absent for CALL).
+- `molt_ir::CallArgumentForm` admits this wire fact once and supplies its typed
+  interpretation to native, LLVM and WASM lowering and method fusion. Unknown
+  forms are errors. Method and super-method fusion preserve expanded builders
+  until their fused ABI can carry the same container custody.
+- The runtime builder (`molt_callargs_new_expanded` or `molt_callargs_new`)
+  hands it to the consuming call.
+
+Compiler-synthesized calls record no form and bind as CALL.
+
+**Custody.** The consuming call decides custody once, from its original callee,
+before any redispatch. A plain Python function gets an inlined frame that takes
+the arguments over (frame custody); under CALL, so does a bound method of one.
+Every other callee borrows the arguments, and the call releases them after the
+callee returns (instruction custody). This covers builtins, C-API and extension
+callables, foreign objects, classes, `__call__` instances and every redispatch
+target. It holds even when that callee binds a Python frame of its own.
+
+| Owner | Holds | Ends |
+|---|---|---|
+| Pending operands (caller SSA values) | Values evaluated but not yet pushed: a named-keyword group before its flush, a deferred sole `*x`, the operand of a failing push or expansion | Exception landings release them newest first |
+| CallArgs builder | CPython's value-stack segment for the call and its call form: positional entries (or the `*` list), with the keyword mapping above them. The frontend creates it at its first push | Only when preparation fails, including a `call_builtin` whose callable does not resolve: the keyword mapping (insertion order), then positional entries last to first |
+| `CallArguments` (runtime) | The call's arguments: CALL's stack operands, or CALL_FUNCTION_EX's tuple and mapping. The consuming entry (`call_bind`, `call_indirect`, `call_builtin`, `invoke_ffi` and the call-bind inline cache) moves the builder's edges when the call holds the builder's only reference; otherwise the builder keeps its edges and the call retains its own | By custody and form; see below |
+| `BoundCallSlots` (bound frame) | A Python function's parameters, `*args` tuple and `**kwargs` dictionary, in ABI slot order | On failed binding, or when the callee returns; see below |
+
+Release orders:
+
+| Path | CPython authority | 3.12 and 3.13 | 3.14 |
+|---|---|---|---|
+| CALL binding an inlined frame | `initialize_locals` | Values move into their slots. Surplus positional values end as soon as they are found surplus. On failure, the unbound keyword values end first to last, then the partial frame | Same |
+| CALL_FUNCTION_EX binding an inlined frame | `_PyEvalFramePushAndInit_Ex` | The frame takes new references. Once binding ends, the tuple ends (last to first) and then the mapping (insertion order): before the callee runs, or after the partial frame on failure | Same |
+| Frame exit, including a failed binding's partial frame and the last reference of a traceback or frame object that took the frame's bindings over | `_PyFrame_ClearLocals`; `frame_dealloc`/`frame_tp_clear` for a frame object | Code slots first to last: parameters (positional, keyword-only, `*args`, `**kwargs`), the other locals in `co_varnames` order, then cells that are not parameters in `co_cellvars` order, then free variables. The ABI slot order is unchanged | Code slots last to first |
+| CALL under instruction custody | `DECREF_INPUTS` after the call | Positional values first to last, then keyword values first to last | Keyword values last to first, then positional values last to first |
+| CALL_FUNCTION_EX under instruction custody | Its cleanup after the call | Tuple (last to first), then mapping (insertion order) | Mapping (insertion order), then tuple (last to first) |
+
+A Python frame that a borrowing callee binds (a `__call__` method, a class's
+`__init__`) takes new references, and its exit precedes the call's release.
+
+**Frame storage and exits.** A synchronous Python frame's binding homes own
+its bindings, one per code slot in the code object's `localsplus` order. Its
+entry adopts every Python argument, and its prologue moves each into its home.
+A store hands the value's reference to the home, which publishes the new
+binding and then releases the one it displaced (`STORE_FAST`); `del` releases
+it; a PEP 709 comprehension moves the enclosing binding out of its home and
+stores it back on both of its exits. Compiled code reads a binding through the
+store's view while no write can intervene; from 3.13 a read after a possible
+callback reads the home again, since a `FrameLocalsProxy` may have rebound it.
+A raw integer's first boxed view is published into its binding home. The home
+owns that box; rebinding and removal release its reference, and frame
+retirement transfers it. Store
+views, later loads, locals/frame observations and argument-zero reads share
+that identity. An observer retaining the value owns a separate reference;
+rebinding the home does not change a retained observation. Publication precedes
+the displaced binding's release so its finalizer sees the new binding. Failed
+boxing leaves the raw home intact and preserves the pending exception.
+No compiled code releases a binding at an exit. The frame's exit unlinks it,
+so every finalizer it runs sees the caller, and then either moves the bindings
+into a frame object or traceback that shares them (which releases them with
+its last owner, or at `frame.clear()`) or releases them in the frame-exit order
+above.
+
+**Call custody.** A compiled function's FunctionIR `parameter_custody` is the
+one declaration of whether its direct entry adopts its arguments; each backend
+derives the function object's entry custody from it where `func_new` or
+`func_new_closure` names the function, and a direct call's operand custody from
+the callee's. A source call (CALL) owns every value it evaluated, its temporary
+callable included: it moves the arguments into an adopting entry, or releases
+them in the instruction-custody order above after a borrowing callee returns,
+and a temporary bound method's receiver ends before the method's function runs.
+CALL_FUNCTION_EX keeps its callable through the invocation. Calls the runtime
+originates borrow their arguments, and the trampoline retains them for an
+adopting entry. A failure before invocation releases each adopted input once.
+
+Native and LLVM call operand materialization share one operation-local custody
+per backend across direct compiled calls, dynamic calls, fused method/super
+calls and argument builders. Object identity follows one Python value through
+SSA aliases and across calls; a binding home is its persistent owner, and each
+adopted position receives its own reference to that object. Operation-local
+materialization credits account for call transport; they do not establish
+persistent identity or permit independent boxes for aliases of one value.
+A value also borrowed by the call keeps
+its temporary owner until the call returns. Failed materialization skips the
+consumer and releases previously adopted object references in the runtime's
+target-version argument order, with the callable released last; it also releases
+all initialized temporary boxes. Call-transport boxing remains private to this
+custody authority. Preboxed inputs retain the per-position credits supplied by
+DropInsertion; materialization does not retain them again. Native failure and
+success continuations carry the existing cleanup-root owner tokens through
+internal control-flow splits, including repeated execution of one call site.
+WASM call sites transport already boxed local words and use their existing
+call-input custody. Frame-home transfers and task payloads retain their distinct
+storage contracts: homes consume a source reference, while task payloads retain
+borrowed inputs.
+
+Runtime fixed-arity and vector call entries receive Python arguments and share
+receiver validation and signature binding. The binder then hands explicitly
+bound ABI slots to private fixed-arity execution helpers. Those helpers neither
+rebind nor validate a packed `(args_tuple, kwargs_dict)` as a Python receiver.
+Matching a callable's machine arity is never proof that binding has occurred.
+This separation covers native descriptors, C-API adapters, compiled trampolines,
+and the inline-cache path on both native and WASM targets.
+Runtime invocation paths also share one guard for the caller's scalar exception
+stack baseline, including direct, guarded, and fixed-arity execution. It outlives
+frame teardown and preserves pending exceptions and handler objects unchanged.
+Trace diagnostics read borrowed pending-exception metadata without invoking
+Python formatting or changing exception custody. Stored messages may be shown;
+lazy messages remain unmaterialized while tracing is enabled.
+
+Class construction lends its arguments to `__new__` and `__init__`, as
+`type.__call__` does. Each phase retains its own vector. The construction
+arguments end with the call, under instruction custody.
+
+Keyword entries leave the builder's dictionary without reference traffic only
+when the call holds its only reference and no C view or frozen-layout authority
+can reach it. Otherwise the call retains the entries and the dictionary stays
+intact. Either way, keyword equality and hash callbacks during binding cannot
+change the entries a call has admitted.
+
+Extension callees receive the dictionary itself while it is whole, otherwise a
+fresh one; they may keep either, and a kept dictionary ends with its owners. If
+building a fresh dictionary fails (a MemoryError, or a keyword name's hash or
+equality callback), that exception propagates unchanged.
+
+Unresolved release requirements. The runtime does not yet meet these; none is
+an exemption:
+
+1. **Inline class bodies.** A class body is lowered inside its enclosing code,
+   so its own frame has no homes: a comprehension there keeps its bindings in
+   compiled storage, where a frame proxy cannot reach them.
+4. **Class statements.** CPython passes a class statement's bases and keywords
+   to `__build_class__` as call arguments. Molt's class lowering holds them in
+   its own tuple and dictionary, so they end with those containers, not in the
+   call orders above.
+5. **Adaptive specialization.** After warmup, CPython 3.13 and later specialize
+   class calls (`CALL_ALLOC_AND_ENTER_INIT`), and `__init__`'s frame then takes
+   the construction arguments over. The orders above are those of the
+   unspecialized instructions. Whether the contract follows the specialized
+   order is open.
+
 ---
 
 ## 5. Tiered Implementation Strategy
@@ -144,6 +495,21 @@ argument handling. Raw vector calls, trampoline admission, method inline-cache
 plans, and the binder use that same selection. Trampoline availability is not
 evidence that Python arguments already match the runtime ABI. Already-bound
 execution uses the explicit bound-call lane and must not recursively rebind.
+
+Materialized argument packs passed to a borrowing builtin ABI have scoped
+ownership in `BuiltinArgumentStorage`. Formatting tuples and keyword mappings,
+print argument tuples, set-operation operand tuples, and type-construction
+keyword mappings are released before the original call argument vector, on
+both binding failure and call completion. A raw argument vector never owns
+these temporary references. Consuming exception ABIs retain their explicit
+transfer contract. Print binding passes the ABI's `None` separator defaults;
+the print implementation resolves them at the prescribed execution boundary.
+
+The shared exception-observation authority identifies each fallible operation's
+successful continuation. Compiler-inserted operand and dead-result cleanup runs
+after that observation; the exceptional edge performs its own unwind. Async-work
+placement uses the same observation, including a uniquely reached successor
+block, so cleanup cannot run a finalizer before the pending failure transfers.
 
 Builtin `object.__init_subclass__` is a classmethod descriptor. Direct class,
 inherited class, instance, and class-mode `super` lookups all bind the lookup

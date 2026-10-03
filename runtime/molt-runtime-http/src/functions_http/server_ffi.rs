@@ -214,16 +214,16 @@ pub extern "C" fn molt_socketserver_serve_forever(
                     "socketserver server is missing handle_request",
                 );
             }
-            let _ = unsafe { call_callable0(_py, handle_request_bits) };
+            let result_bits = call_callable0(_py, handle_request_bits);
             dec_ref_bits(_py, handle_request_bits);
+            dec_ref_bits(_py, result_bits);
             if !exception_pending(_py) {
                 if let Err(bits) = socketserver_call_service_actions(_py, server_bits) {
                     return bits;
                 }
                 continue;
             }
-            let kind = urllib_request_pending_exception_kind_name(_py).unwrap_or_default();
-            if kind == "TimeoutError" {
+            if pending_exception_matches_builtin(_py, "TimeoutError") {
                 clear_exception(_py);
                 if poll_interval > 0.0 {
                     std::thread::sleep(Duration::from_secs_f64(poll_interval.min(0.05)));
@@ -233,44 +233,26 @@ pub extern "C" fn molt_socketserver_serve_forever(
                 }
                 continue;
             }
-            if kind == "OSError" {
-                let shutdown_now =
-                    match urllib_attr_truthy(_py, server_bits, b"_molt_shutdown_request") {
-                        Ok(value) => value,
-                        Err(bits) => return bits,
-                    };
-                let closed_now = match urllib_attr_truthy(_py, server_bits, b"_closed") {
-                    Ok(value) => value,
+            if pending_exception_matches_builtin(_py, "OSError") {
+                let stopped = match with_saved_exception(_py, || {
+                    let shutdown = urllib_attr_truthy(_py, server_bits, b"_molt_shutdown_request")?;
+                    let closed = urllib_attr_truthy(_py, server_bits, b"_closed")?;
+                    Ok(shutdown || closed)
+                }) {
+                    Ok(stopped) => stopped,
                     Err(bits) => return bits,
                 };
-                if shutdown_now || closed_now {
+                if stopped {
                     clear_exception(_py);
                     break;
                 }
             }
-            let handled_kind = !kind.is_empty()
-                && kind != "SystemExit"
-                && kind != "KeyboardInterrupt"
-                && kind != "GeneratorExit"
-                && kind != "BaseExceptionGroup";
-            if handled_kind {
-                clear_exception(_py);
-                let Some(name_bits) = attr_name_bits_from_bytes(_py, b"handle_error") else {
-                    return MoltObject::none().bits();
-                };
-                let missing = missing_bits(_py);
-                let handle_error_bits = molt_getattr_builtin(server_bits, name_bits, missing);
-                dec_ref_bits(_py, name_bits);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                if handle_error_bits != missing {
+            if pending_exception_matches_builtin(_py, "Exception") {
+                if let Err(bits) = with_handled_exception(_py, || {
                     let none_bits = MoltObject::none().bits();
-                    let _ = unsafe { call_callable2(_py, handle_error_bits, none_bits, none_bits) };
-                    dec_ref_bits(_py, handle_error_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
+                    socketserver_call_handle_error(_py, server_bits, none_bits, none_bits)
+                }) {
+                    return bits;
                 }
                 if let Err(bits) = socketserver_call_service_actions(_py, server_bits) {
                     return bits;
@@ -286,261 +268,175 @@ pub extern "C" fn molt_socketserver_serve_forever(
     })
 }
 
+fn socketserver_call_handle_error(
+    py: &CoreGilToken,
+    server_bits: u64,
+    request_bits: u64,
+    client_address_bits: u64,
+) -> Result<(), u64> {
+    if let Some(method) = attr_optional(py, server_bits, b"handle_error")? {
+        let result = call_callable2(py, method, request_bits, client_address_bits);
+        dec_ref_bits(py, method);
+        dec_ref_bits(py, result);
+        if exception_pending(py) {
+            return Err(MoltObject::none().bits());
+        }
+    }
+    Ok(())
+}
+
+// Keep cleanup and response publication inside one canonical raised transaction.
+// Every early success restores the exact deferred error; lookup/call/conversion
+// failures replace it while seeing it as the active exception for chaining.
+fn socketserver_complete_request(
+    py: &CoreGilToken,
+    server_bits: u64,
+    request_bits: u64,
+    request_id: i64,
+) -> Result<(), u64> {
+    with_saved_exception(py, || {
+        if let Some(method) = attr_optional(py, server_bits, b"close_request")? {
+            if molt_is_callable(method) {
+                let result = call_callable1(py, method, request_bits);
+                dec_ref_bits(py, result);
+            }
+            dec_ref_bits(py, method);
+            if exception_pending(py) {
+                return Err(MoltObject::none().bits());
+            }
+        }
+        if request_id < 0 {
+            return Ok(());
+        }
+        let Some(method) = attr_optional(py, request_bits, b"response_bytes")? else {
+            return Ok(());
+        };
+        if !molt_is_callable(method) {
+            dec_ref_bits(py, method);
+            return Ok(());
+        }
+        let response_bits = call_callable0(py, method);
+        dec_ref_bits(py, method);
+        if exception_pending(py) {
+            dec_ref_bits(py, response_bits);
+            return Err(MoltObject::none().bits());
+        }
+        let response = socketserver_extract_bytes(py, response_bits, "response payload");
+        dec_ref_bits(py, response_bits);
+        let response = response?;
+        let mut runtime = socketserver_runtime()
+            .lock()
+            .expect("socketserver runtime poisoned");
+        let request_id = request_id as u64;
+        let Some(owner) = runtime.request_server.get(&request_id).copied() else {
+            return Ok(());
+        };
+        if owner != server_bits {
+            drop(runtime);
+            return Err(raise_exception::<u64>(py, "RuntimeError", "request id owner mismatch"));
+        }
+        let Some(pending) = runtime.pending_requests.get_mut(&request_id) else {
+            runtime.request_server.remove(&request_id);
+            return Ok(());
+        };
+        pending.response = Some(response);
+        Ok(())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(get_request_name_bits) = attr_name_bits_from_bytes(_py, b"get_request") else {
-            return MoltObject::none().bits();
+    molt_runtime_core::with_core_gil!(py, {
+        let get_request = match attr_optional(py, server_bits, b"get_request") {
+            Ok(Some(method)) => method,
+            Ok(None) => return raise_exception::<_>(
+                py, "RuntimeError", "socketserver server is missing get_request",
+            ),
+            Err(bits) => return bits,
         };
-        let missing = missing_bits(_py);
-        let get_request_bits = molt_getattr_builtin(server_bits, get_request_name_bits, missing);
-        dec_ref_bits(_py, get_request_name_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if get_request_bits == missing || !molt_is_callable(get_request_bits) {
-            if get_request_bits != missing {
-                dec_ref_bits(_py, get_request_bits);
-            }
+        if !molt_is_callable(get_request) {
+            dec_ref_bits(py, get_request);
             return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "socketserver server is missing get_request",
+                py, "RuntimeError", "socketserver server is missing get_request",
             );
         }
-        let request_tuple_bits = unsafe { call_callable0(_py, get_request_bits) };
-        dec_ref_bits(_py, get_request_bits);
-        if exception_pending(_py) {
+        let request_tuple_bits = call_callable0(py, get_request);
+        dec_ref_bits(py, get_request);
+        if exception_pending(py) {
+            dec_ref_bits(py, request_tuple_bits);
             return MoltObject::none().bits();
         }
-        let (request_bits, client_address_bits, request_id) =
-            match socketserver_extract_handle_request_tuple(_py, request_tuple_bits) {
-                Ok(parts) => parts,
-                Err(bits) => {
-                    dec_ref_bits(_py, request_tuple_bits);
-                    return bits;
+
+        // The tuple roots request/address through every callback and every
+        // early return. Release it only after the exception scopes have settled.
+        let result = (|| -> Result<(), u64> {
+            let (request_bits, client_address_bits, request_id) =
+                socketserver_extract_handle_request_tuple(py, request_tuple_bits)?;
+            let mut should_process = true;
+            if let Some(method) = attr_optional(py, server_bits, b"verify_request")? {
+                if !molt_is_callable(method) {
+                    dec_ref_bits(py, method);
+                    return Err(raise_exception::<u64>(
+                        py, "RuntimeError", "socketserver server verify_request must be callable",
+                    ));
                 }
-            };
-
-        let mut deferred_exception_bits: Option<u64> = None;
-        let mut should_process = true;
-
-        if let Some(verify_request_bits) = match attr_optional(_py, server_bits, b"verify_request")
-        {
-            Ok(bits) => bits,
-            Err(bits) => {
-                dec_ref_bits(_py, request_tuple_bits);
-                return bits;
-            }
-        } {
-            if !molt_is_callable(verify_request_bits) {
-                dec_ref_bits(_py, verify_request_bits);
-                dec_ref_bits(_py, request_tuple_bits);
-                return raise_exception::<_>(
-                    _py,
-                    "RuntimeError",
-                    "socketserver server verify_request must be callable",
-                );
-            }
-            let verify_bits = unsafe {
-                call_callable2(_py, verify_request_bits, request_bits, client_address_bits)
-            };
-            dec_ref_bits(_py, verify_request_bits);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            }
-            should_process = is_truthy(_py, obj_from_bits(verify_bits));
-            dec_ref_bits(_py, verify_bits);
-        }
-
-        if should_process {
-            let Some(process_request_name_bits) =
-                attr_name_bits_from_bytes(_py, b"process_request")
-            else {
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            };
-            let process_request_bits =
-                molt_getattr_builtin(server_bits, process_request_name_bits, missing);
-            dec_ref_bits(_py, process_request_name_bits);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            }
-            if process_request_bits == missing || !molt_is_callable(process_request_bits) {
-                if process_request_bits != missing {
-                    dec_ref_bits(_py, process_request_bits);
+                let verify_bits = call_callable2(py, method, request_bits, client_address_bits);
+                dec_ref_bits(py, method);
+                if exception_pending(py) {
+                    dec_ref_bits(py, verify_bits);
+                    return Err(MoltObject::none().bits());
                 }
-                dec_ref_bits(_py, request_tuple_bits);
-                return raise_exception::<_>(
-                    _py,
-                    "RuntimeError",
-                    "socketserver server is missing process_request",
-                );
+                should_process = is_truthy(py, obj_from_bits(verify_bits));
+                dec_ref_bits(py, verify_bits);
+                if exception_pending(py) {
+                    return Err(MoltObject::none().bits());
+                }
             }
-            let _ = unsafe {
-                call_callable2(_py, process_request_bits, request_bits, client_address_bits)
-            };
-            dec_ref_bits(_py, process_request_bits);
-            if exception_pending(_py) {
-                let kind = urllib_request_pending_exception_kind_name(_py).unwrap_or_default();
-                let handled_kind = !kind.is_empty()
-                    && kind != "SystemExit"
-                    && kind != "KeyboardInterrupt"
-                    && kind != "GeneratorExit"
-                    && kind != "BaseExceptionGroup";
-                if handled_kind {
-                    clear_exception(_py);
-                    let Some(handle_error_name_bits) =
-                        attr_name_bits_from_bytes(_py, b"handle_error")
-                    else {
-                        dec_ref_bits(_py, request_tuple_bits);
-                        return MoltObject::none().bits();
-                    };
-                    let handle_error_bits =
-                        molt_getattr_builtin(server_bits, handle_error_name_bits, missing);
-                    dec_ref_bits(_py, handle_error_name_bits);
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, request_tuple_bits);
-                        return MoltObject::none().bits();
-                    }
-                    if handle_error_bits != missing {
-                        let _ = unsafe {
-                            call_callable2(
-                                _py,
-                                handle_error_bits,
-                                request_bits,
-                                client_address_bits,
-                            )
-                        };
-                        dec_ref_bits(_py, handle_error_bits);
-                        if exception_pending(_py) {
-                            let exc_bits = molt_exception_last();
-                            clear_exception(_py);
-                            deferred_exception_bits = Some(exc_bits);
-                        }
-                    }
+            if !should_process {
+                return socketserver_complete_request(py, server_bits, request_bits, request_id);
+            }
+
+            // CPython's try suite includes process_request attribute lookup.
+            let process_result = (|| -> Result<(), u64> {
+                let Some(method) = attr_optional(py, server_bits, b"process_request")? else {
+                    return Err(raise_exception::<u64>(
+                        py, "RuntimeError", "socketserver server is missing process_request",
+                    ));
+                };
+                if !molt_is_callable(method) {
+                    dec_ref_bits(py, method);
+                    return Err(raise_exception::<u64>(
+                        py, "RuntimeError", "socketserver server is missing process_request",
+                    ));
+                }
+                let result = call_callable2(py, method, request_bits, client_address_bits);
+                dec_ref_bits(py, method);
+                dec_ref_bits(py, result);
+                if exception_pending(py) {
+                    Err(MoltObject::none().bits())
                 } else {
-                    let exc_bits = molt_exception_last();
-                    clear_exception(_py);
-                    deferred_exception_bits = Some(exc_bits);
+                    Ok(())
                 }
+            })();
+            if process_result.is_err() && pending_exception_matches_builtin(py, "Exception") {
+                return with_handled_exception(py, || {
+                    let handled = socketserver_call_handle_error(
+                        py, server_bits, request_bits, client_address_bits,
+                    );
+                    // A failed handle_error remains pending through cleanup.
+                    // Its replacement wins only if cleanup itself fails.
+                    socketserver_complete_request(py, server_bits, request_bits, request_id)?;
+                    handled
+                });
             }
+            socketserver_complete_request(py, server_bits, request_bits, request_id)?;
+            process_result
+        })();
+        dec_ref_bits(py, request_tuple_bits);
+        match result {
+            Ok(()) => MoltObject::none().bits(),
+            Err(bits) => bits,
         }
-
-        let Some(close_request_name_bits) = attr_name_bits_from_bytes(_py, b"close_request") else {
-            if let Some(exc_bits) = deferred_exception_bits.take() {
-                dec_ref_bits(_py, exc_bits);
-            }
-            dec_ref_bits(_py, request_tuple_bits);
-            return MoltObject::none().bits();
-        };
-        let close_request_bits =
-            molt_getattr_builtin(server_bits, close_request_name_bits, missing);
-        dec_ref_bits(_py, close_request_name_bits);
-        if exception_pending(_py) {
-            if let Some(exc_bits) = deferred_exception_bits.take() {
-                dec_ref_bits(_py, exc_bits);
-            }
-            dec_ref_bits(_py, request_tuple_bits);
-            return MoltObject::none().bits();
-        }
-        if close_request_bits != missing && molt_is_callable(close_request_bits) {
-            let _ = unsafe { call_callable1(_py, close_request_bits, request_bits) };
-            dec_ref_bits(_py, close_request_bits);
-            if exception_pending(_py) {
-                if let Some(exc_bits) = deferred_exception_bits.take() {
-                    dec_ref_bits(_py, exc_bits);
-                }
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            }
-        } else if close_request_bits != missing {
-            dec_ref_bits(_py, close_request_bits);
-        }
-
-        if request_id >= 0 {
-            let Some(response_bytes_name_bits) = attr_name_bits_from_bytes(_py, b"response_bytes")
-            else {
-                if let Some(exc_bits) = deferred_exception_bits.take() {
-                    let out = crate::bridge::molt_raise(exc_bits);
-                    dec_ref_bits(_py, request_tuple_bits);
-                    return out;
-                }
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            };
-            let response_bytes_bits =
-                molt_getattr_builtin(request_bits, response_bytes_name_bits, missing);
-            dec_ref_bits(_py, response_bytes_name_bits);
-            if exception_pending(_py) {
-                if let Some(exc_bits) = deferred_exception_bits.take() {
-                    dec_ref_bits(_py, exc_bits);
-                }
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            }
-            if response_bytes_bits != missing && molt_is_callable(response_bytes_bits) {
-                let response_bits = unsafe { call_callable0(_py, response_bytes_bits) };
-                dec_ref_bits(_py, response_bytes_bits);
-                if exception_pending(_py) {
-                    if let Some(exc_bits) = deferred_exception_bits.take() {
-                        dec_ref_bits(_py, exc_bits);
-                    }
-                    dec_ref_bits(_py, request_tuple_bits);
-                    return MoltObject::none().bits();
-                }
-                let response =
-                    match socketserver_extract_bytes(_py, response_bits, "response payload") {
-                        Ok(value) => value,
-                        Err(bits) => {
-                            dec_ref_bits(_py, response_bits);
-                            if let Some(exc_bits) = deferred_exception_bits.take() {
-                                dec_ref_bits(_py, exc_bits);
-                            }
-                            dec_ref_bits(_py, request_tuple_bits);
-                            return bits;
-                        }
-                    };
-                dec_ref_bits(_py, response_bits);
-                let mut runtime = socketserver_runtime()
-                    .lock()
-                    .expect("socketserver runtime poisoned");
-                let request_id_u64 = request_id as u64;
-                let Some(owner) = runtime.request_server.get(&request_id_u64).copied() else {
-                    dec_ref_bits(_py, request_tuple_bits);
-                    if let Some(exc_bits) = deferred_exception_bits.take() {
-                        return crate::bridge::molt_raise(exc_bits);
-                    }
-                    return MoltObject::none().bits();
-                };
-                if owner != server_bits {
-                    if let Some(exc_bits) = deferred_exception_bits.take() {
-                        dec_ref_bits(_py, exc_bits);
-                    }
-                    dec_ref_bits(_py, request_tuple_bits);
-                    return raise_exception::<_>(_py, "RuntimeError", "request id owner mismatch");
-                }
-                let Some(pending) = runtime.pending_requests.get_mut(&request_id_u64) else {
-                    runtime.request_server.remove(&request_id_u64);
-                    dec_ref_bits(_py, request_tuple_bits);
-                    if let Some(exc_bits) = deferred_exception_bits.take() {
-                        return crate::bridge::molt_raise(exc_bits);
-                    }
-                    return MoltObject::none().bits();
-                };
-                pending.response = Some(response);
-            } else if response_bytes_bits != missing {
-                dec_ref_bits(_py, response_bytes_bits);
-            }
-        }
-
-        dec_ref_bits(_py, request_tuple_bits);
-        if let Some(exc_bits) = deferred_exception_bits.take() {
-            return crate::bridge::molt_raise(exc_bits);
-        }
-        MoltObject::none().bits()
     })
 }
 

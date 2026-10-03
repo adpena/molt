@@ -1,13 +1,14 @@
 use super::fc::arith_division::emit_raw_int_div_intmin_debug_guard;
 use super::fc::list_index_fast_path::{
     collect_pre_loop_defined_names, generic_list_int_lane_eligible, index_fallback_import_name,
-    scan_loop_hoistable_lists, scan_loop_int_sum_reduction, store_index_fallback_import_name,
+    match_loop_int_sum_shape, scan_loop_hoistable_lists, scan_loop_int_sum_reduction,
+    store_index_fallback_import_name,
 };
 use super::fc::loops::metadata_only_structured_loop_ops;
 use super::fc::memory::typed_slot_store_helper_name;
 use super::{
     BlockTransportPlan, FieldStoreMode, FunctionPreanalysis, NativeCleanupRoots, NativeRcAuthority,
-    ScalarRepresentationPlan, box_raw_bool_value, box_raw_i64_value_overflow_safe,
+    NativeSsaValues, ScalarRepresentationPlan, box_raw_bool_value, box_raw_i64_value_overflow_safe,
     collect_slot_backed_join_names, def_var_from_boxed_transport, def_var_from_numeric_result,
     import_func_ref, is_cold_module_chunk_function, jump_block, materialize_label_block,
     preanalyze_function_ir, protect_cleanup_names, switch_to_block_materialized,
@@ -73,6 +74,7 @@ fn representation_plan_for_ops(ops: &[OpIR]) -> ScalarRepresentationPlan {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     })
 }
@@ -91,6 +93,7 @@ fn representation_plan_for_typed_ops(
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     })
 }
@@ -128,10 +131,19 @@ fn scalar_transport_plan_for_float_home() -> ScalarRepresentationPlan {
     }])
 }
 
-fn list_int_new(out: &str) -> OpIR {
+fn list_int_new(out: &str, count: &str, fill: &str) -> OpIR {
     OpIR {
         kind: "list_int_new".to_string(),
         out: Some(out.to_string()),
+        args: Some(vec![count.to_string(), fill.to_string()]),
+        ..OpIR::default()
+    }
+}
+fn storage_const(out: &str, value: i64) -> OpIR {
+    OpIR {
+        kind: "const".into(),
+        out: Some(out.into()),
+        value: Some(value),
         ..OpIR::default()
     }
 }
@@ -145,6 +157,7 @@ fn op_kind(kind: &str) -> OpIR {
 
 mod attrs;
 mod block_control;
+mod call_operand_custody;
 mod cleanup_roots;
 mod compile;
 mod list_index_fast_path;

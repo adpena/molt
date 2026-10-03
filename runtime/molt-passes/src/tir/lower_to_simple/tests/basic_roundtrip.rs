@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn owned_literal_payload_survives_repeated_ssa_sccp_roundtrips() {
+    let byte_cases = [
+        ("const_str", vec![]),
+        ("const_str", vec![0, b'a', 0]),
+        ("const_str", vec![0xed, 0xa0, 0x80]),
+        ("const_str", vec![0xed, 0xbf, 0xbf, b'f']),
+        ("const_bytes", vec![]),
+        ("const_bytes", vec![0, 0xff, 0x80]),
+    ];
+    let mut cases: Vec<OpIR> = byte_cases.into_iter().map(|(kind, bytes)| OpIR {
+        kind: kind.into(),
+        bytes: Some(bytes),
+        out: Some("v0".into()),
+        ..OpIR::default()
+    }).collect();
+    cases.extend([
+        ("const_str", ""),
+        ("const_str", "a\0é"),
+        ("const_bigint", "-9223372036854775809"),
+    ].into_iter().map(|(kind, text)| OpIR {
+        kind: kind.into(),
+        s_value: Some(text.into()),
+        out: Some("v0".into()),
+        ..OpIR::default()
+    }));
+    for literal in cases {
+        let mut function = FunctionIR {
+            name: "owned_literal_roundtrip".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            ops: vec![literal.clone(), OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["v0".into()]),
+                ..OpIR::default()
+            }],
+            ..FunctionIR::default()
+        };
+        for _ in 0..2 {
+            let mut tir = lower_to_tir(&function);
+            crate::tir::passes::sccp::run(&mut tir);
+            function.ops = lower_to_simple_ir(&tir);
+            let actual = function.ops.iter().find(|op| op.kind == literal.kind).unwrap();
+            assert_eq!(actual.s_value, literal.s_value);
+            assert_eq!(actual.bytes, literal.bytes);
+        }
+    }
+}
+
+#[test]
 fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
     let mut func = TirFunction::new(
         "full_width_projection".into(),
@@ -164,6 +212,53 @@ fn callable_provenance_and_execution_context_survive_tir_roundtrip() {
         .find(|op| op.kind == "call_internal")
         .expect("direct local call must round-trip");
     assert!(call.passes_execution_context);
+}
+
+/// A source call's typed operand custody survives the lift and the lowering
+/// position by position: a `super()` method call borrows its class and adopts
+/// its `self` and argument, and an unmarked call borrows every operand.
+#[test]
+fn source_call_argument_custody_survives_tir_roundtrip() {
+    use molt_ir::ParameterCustody::{Borrowed, Transferred};
+    let call = |out: &str, custody: Option<Vec<molt_ir::ParameterCustody>>| OpIR {
+        kind: "call_super_method_ic".into(),
+        args: Some(vec!["class".into(), "receiver".into(), "argument".into()]),
+        s_value: Some("method".into()),
+        argument_custody: custody,
+        out: Some(out.into()),
+        ..OpIR::default()
+    };
+    let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        name: "caller".into(),
+        params: vec!["class".into(), "receiver".into(), "argument".into()],
+        ops: vec![
+            call("adopting", Some(vec![Borrowed, Transferred, Transferred])),
+            call("borrowing", None),
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let expected = [Some(vec![Borrowed, Transferred, Transferred]), None];
+
+    let tir = lower_to_tir(&func);
+    let lifted = tir.blocks[&tir.entry_block]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::CallSuperMethodIc)
+        .map(TirOp::argument_custody)
+        .collect::<Vec<_>>();
+    assert_eq!(lifted, expected);
+
+    let lowered = lower_to_simple_ir(&tir)
+        .into_iter()
+        .filter(|op| op.kind == "call_super_method_ic")
+        .map(|op| op.argument_custody)
+        .collect::<Vec<_>>();
+    assert_eq!(lowered, expected);
 }
 
 #[test]
@@ -463,6 +558,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
     assert!(
@@ -868,6 +964,7 @@ fn tir_round_trip_preserves_ret_args() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -939,6 +1036,7 @@ fn checked_add_two_result_round_trip_survives_relift() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -1025,6 +1123,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 

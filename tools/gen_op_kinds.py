@@ -12,7 +12,7 @@ ONE table into every consumer so the tables can never drift:
   - ``runtime/molt-ir/src/tir/op_kinds_generated.rs`` — the data tables the
     backend's ``kind_to_opcode`` mapper, the reverse canonical
     ``OpCode``→backend-op-name table, the ``CopyLowering`` classifier
-    (``copy_kind_mints_fresh_owned_ref`` / ``classify_copy_kind`` /
+    (``copy_kind_mints_owned_value`` / ``classify_copy_kind`` /
     ``copy_kind_is_explicit_no_heap_move``), the generated ``ALL_OPCODES``
     enum-domain iterator, and the per-OpCode effect oracle
     (``opcode_may_throw`` / ``opcode_is_side_effecting`` /

@@ -1,10 +1,328 @@
-//! One authority for the owned reference fields in a class payload.
+//! Class-owned declarations and reference storage.
 //!
 //! Reference replacement publishes the new owner before releasing the old one.
 //! Multi-field operations transfer displaced references to the caller so that
 //! every field can be published before the first callback-capable release.
 
 use crate::{MoltObject, PyToken, dec_ref_bits, inc_ref_bits};
+
+/// Private, monotonic semantic declarations owned by the actual class.
+/// These are not Python attributes or global class-registration edges.
+#[derive(Clone, Copy)]
+#[repr(u64)]
+pub(crate) enum ClassDeclaration {
+    /// Instances require extension artifact admission, including when their
+    /// spec uses a nonstandard extension suffix. This grants no capability.
+    ExtensionLoader = 1,
+    /// This class introduces payload storage not distinguished by native kind,
+    /// object shape, or exception layout root. Inheritance derives its owner.
+    IntrinsicLayout = 1 << 1,
+    /// A tagged scalar value word at the canonical scalar subclass position.
+    IntValue = 1 << 2,
+    FloatValue = 1 << 3,
+    /// Native class construction supplies its exact baseline capabilities.
+    /// Unlike an ordinary heap class, absence of __slots__ adds no policy.
+    NativeSlotLayout = 1 << 4,
+    VariableSizedInstance = 1 << 5,
+    InstanceDictionary = 1 << 6,
+    InstanceWeakrefs = 1 << 7,
+    /// This native namespace has exposed its full declaration family once.
+    /// Subsequent C dictionary edits own missing/replaced values; lookup may
+    /// no longer recreate a member from the declaration table.
+    NativeNamespacePublished = 1 << 8,
+    /// The native class declares CPython's sq_item protocol. A published
+    /// __getitem__ name alone can instead describe a mapping-only slot.
+    NativeSequenceItem = 1 << 9,
+    /// Semantic CPython static origin, independent of physical Molt allocation.
+    /// This exact-class declaration is never inherited by a heap subclass.
+    StaticType = 1 << 10,
+    /// This exact class is constructed from the canonical exception schema.
+    /// Renaming it never changes identity; subclasses do not inherit this fact.
+    BuiltinException = 1 << 11,
+    /// Constructor policy is exact-class state sealed once before projection.
+    SemanticPolicySealed = 1 << 12,
+}
+
+/// Type semantics are constructor facts, independent of native instance layout,
+/// cache membership, and namespace spelling. Ordinary class allocation defaults
+/// to a mutable heap basetype; native factories seal explicit facts before
+/// publication. Static origin is deliberately NOT inherited through the MRO.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ClassOrigin {
+    Heap,
+    Static,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ClassSemanticPolicy {
+    origin: ClassOrigin,
+    immutable: bool,
+    basetype: bool,
+}
+
+impl ClassSemanticPolicy {
+    #[cfg(test)]
+    pub(crate) const fn origin(self) -> ClassOrigin {
+        self.origin
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn immutable(self) -> bool {
+        self.immutable
+    }
+
+    pub(crate) const fn heap(immutable: bool, basetype: bool) -> Self {
+        Self {
+            origin: ClassOrigin::Heap,
+            immutable,
+            basetype,
+        }
+    }
+
+    pub(crate) const fn static_type(basetype: bool) -> Self {
+        Self {
+            origin: ClassOrigin::Static,
+            immutable: true,
+            basetype,
+        }
+    }
+
+    pub(crate) fn for_builtin_exception(
+        spec: &'static molt_obj_model::BuiltinExceptionSpec,
+    ) -> Self {
+        if spec.is_heap_type() {
+            Self::heap(false, true)
+        } else {
+            Self::static_type(true)
+        }
+    }
+
+    /// Apply only to the unpublished constructor's class, never a subclass or
+    /// a type selected from mutable metadata. No additional storage is needed.
+    pub(crate) unsafe fn apply(self, py: &PyToken<'_>, class: *mut u8) -> bool {
+        unsafe {
+            if class.is_null() || crate::object_type_id(class) != crate::TYPE_ID_TYPE {
+                return false;
+            }
+            let bits = MoltObject::from_ptr(class).bits();
+            assert!(
+                !class_declares(class, ClassDeclaration::SemanticPolicySealed),
+                "class semantics may only be sealed once"
+            );
+            assert!(
+                !molt_cpython_abi::bridge::GLOBAL_BRIDGE.type_has_projection(bits),
+                "class semantics must be sealed before C projection"
+            );
+            if self.origin == ClassOrigin::Static {
+                for &base in crate::builtins::type_ops::class_mro_view(py, class).iter() {
+                    if base != bits {
+                        assert!(
+                            crate::obj_from_bits(base).as_ptr().is_some_and(|base| {
+                                class_declares(base, ClassDeclaration::StaticType)
+                            }),
+                            "static type cannot inherit a heap type"
+                        );
+                    }
+                }
+                class_declare(class, ClassDeclaration::StaticType);
+            }
+            if (!self.immutable || super::class_set_immutable(py, class))
+                && (self.basetype || super::class_set_not_base(py, class))
+            {
+                class_declare(class, ClassDeclaration::SemanticPolicySealed);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    pub(crate) unsafe fn of(py: &PyToken<'_>, class: *mut u8) -> Self {
+        unsafe {
+            assert_eq!(crate::object_type_id(class), crate::TYPE_ID_TYPE);
+            Self {
+                origin: if class_declares(class, ClassDeclaration::StaticType) {
+                    ClassOrigin::Static
+                } else {
+                    ClassOrigin::Heap
+                },
+                immutable: super::class_is_immutable(py, class),
+                basetype: !super::class_is_not_base(py, class),
+            }
+        }
+    }
+
+    /// Only semantic flags: physical readiness, protocol, and GC flags remain
+    /// owned by the C view. This never derives origin from immutability.
+    pub(crate) fn cpython_flags(self) -> std::os::raw::c_ulong {
+        use molt_cpython_abi::abi_types::{
+            Py_TPFLAGS_BASETYPE, Py_TPFLAGS_HEAPTYPE, Py_TPFLAGS_IMMUTABLETYPE,
+        };
+        (if self.origin == ClassOrigin::Heap {
+            Py_TPFLAGS_HEAPTYPE
+        } else {
+            0
+        }) | (if self.immutable {
+            Py_TPFLAGS_IMMUTABLETYPE
+        } else {
+            0
+        }) | (if self.basetype {
+            Py_TPFLAGS_BASETYPE
+        } else {
+            0
+        })
+    }
+}
+
+pub(crate) unsafe fn class_is_heap_type(class: *mut u8) -> bool {
+    unsafe {
+        crate::object_type_id(class) == crate::TYPE_ID_TYPE
+            && !class_declares(class, ClassDeclaration::StaticType)
+    }
+}
+
+/// The sealed result of class slot admission, independent of mutable names.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ClassSlotPolicy {
+    pub(crate) allows_dict: bool,
+    pub(crate) allows_weakref: bool,
+    pub(crate) variable_sized: bool,
+}
+
+impl ClassSlotPolicy {
+    /// Generated heap policy supplies the baseline of an exact native kind.
+    /// Class-specific native capabilities are explicit constructor facts; hot
+    /// registration reads only the resulting sealed class admission record.
+    pub(crate) fn native(type_id: u32) -> Self {
+        Self {
+            allows_weakref: matches!(
+                super::heap_weakref_policy(type_id),
+                Some(super::HeapWeakrefPolicy::Allow)
+            ),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn encode(self) -> u64 {
+        MoltObject::from_int(
+            i64::from(self.allows_dict)
+                | (i64::from(self.allows_weakref) << 1)
+                | (i64::from(self.variable_sized) << 2),
+        )
+        .bits()
+    }
+
+    pub(crate) fn decode(bits: u64) -> Self {
+        let flags = crate::obj_from_bits(bits)
+            .as_int()
+            .expect("sealed slot policy");
+        assert!((0..=7).contains(&flags), "invalid sealed slot policy");
+        Self {
+            allows_dict: flags & 1 != 0,
+            allows_weakref: flags & 2 != 0,
+            variable_sized: flags & 4 != 0,
+        }
+    }
+}
+
+/// Record baseline facts at the native factory, before admission is captured.
+pub(crate) unsafe fn class_declare_native_slots(class: *mut u8, policy: ClassSlotPolicy) {
+    unsafe {
+        assert_eq!(
+            super::layout::class_slot_declaration_bits(class),
+            0,
+            "native slot facts must precede admission"
+        );
+        class_declare(class, ClassDeclaration::NativeSlotLayout);
+        if policy.allows_dict {
+            class_declare(class, ClassDeclaration::InstanceDictionary);
+        }
+        if policy.allows_weakref {
+            class_declare(class, ClassDeclaration::InstanceWeakrefs);
+        }
+        if policy.variable_sized {
+            class_declare(class, ClassDeclaration::VariableSizedInstance);
+        }
+    }
+}
+
+/// These are introductions on the actual native constructor's class handle.
+/// Inherited facts live only in the sealed admission record.
+pub(crate) unsafe fn class_native_slot_policy(class: *mut u8) -> Option<ClassSlotPolicy> {
+    unsafe {
+        class_declares(class, ClassDeclaration::NativeSlotLayout).then(|| ClassSlotPolicy {
+            allows_dict: class_declares(class, ClassDeclaration::InstanceDictionary),
+            allows_weakref: class_declares(class, ClassDeclaration::InstanceWeakrefs),
+            variable_sized: class_declares(class, ClassDeclaration::VariableSizedInstance),
+        })
+    }
+}
+
+#[inline]
+unsafe fn class_declarations_word<'a>(ptr: *mut u8) -> &'a super::MoltAuxWord {
+    unsafe {
+        &*ptr
+            .cast::<super::MoltAuxWord>()
+            .add(super::layout::CLASS_DECLARATIONS_WORD)
+    }
+}
+
+/// Initialize only while the class payload is unpublished.
+pub(crate) unsafe fn initialize_class_declarations(ptr: *mut u8) {
+    unsafe {
+        ptr.cast::<super::MoltAuxWord>()
+            .add(super::layout::CLASS_DECLARATIONS_WORD)
+            .write(super::MoltAuxWord::new(0));
+    }
+}
+
+pub(crate) unsafe fn class_declare(ptr: *mut u8, declaration: ClassDeclaration) {
+    unsafe {
+        assert_eq!(crate::object_type_id(ptr), crate::TYPE_ID_TYPE);
+        class_declarations_word(ptr).fetch_or(declaration as u64, super::AtomicOrdering::Release);
+    }
+}
+
+pub(crate) unsafe fn class_declares(ptr: *mut u8, declaration: ClassDeclaration) -> bool {
+    unsafe {
+        crate::object_type_id(ptr) == crate::TYPE_ID_TYPE
+            && class_declarations_word(ptr).load(super::AtomicOrdering::Acquire)
+                & declaration as u64
+                != 0
+    }
+}
+
+/// Follow the real class edge and current MRO, without Python attribute or
+/// descriptor callbacks. Inherited declarations are never copied to children:
+/// changing __bases__ changes their projection without a descendant registry.
+pub(crate) fn object_class_declares(
+    py: &PyToken<'_>,
+    bits: u64,
+    declaration: ClassDeclaration,
+) -> bool {
+    let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
+        return false;
+    };
+    unsafe {
+        let Some(class) = crate::obj_from_bits(crate::object_class_bits(ptr)).as_ptr() else {
+            return false;
+        };
+        if crate::object_type_id(class) != crate::TYPE_ID_TYPE {
+            return false;
+        }
+        if class_declares(class, declaration) {
+            return true;
+        }
+        crate::class_mro_view(py, class)
+            .iter()
+            .copied()
+            .any(|base| {
+                crate::obj_from_bits(base)
+                    .as_ptr()
+                    .is_some_and(|base| class_declares(base, declaration))
+            })
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(usize)]
@@ -13,25 +331,44 @@ pub(crate) enum ClassReferenceSlot {
     Dictionary = 1,
     Bases = 2,
     Mro = 3,
-    Annotations = 5,
-    Annotate = 6,
     Qualname = 7,
-    SlotDeclaration = 10,
-    FieldOffsets = 11,
+    SlotDeclaration = 5,
+    FieldLayout = 6,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ClassReferenceRelease {
+    Cycle,
+    Terminal,
 }
 
 impl ClassReferenceSlot {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Name,
         Self::Bases,
         Self::Mro,
-        Self::Annotations,
-        Self::Annotate,
         Self::Qualname,
         Self::Dictionary,
         Self::SlotDeclaration,
-        Self::FieldOffsets,
+        Self::FieldLayout,
     ];
+
+    /// A class may be cleared before an instance in the same cyclic isolate.
+    /// Keep physical storage and non-cyclic identity alive until the last
+    /// instance releases its class edge. MRO owns the class itself; mutable
+    /// namespaces and annotation callbacks can close arbitrary cycles.
+    const fn released_by(self, phase: ClassReferenceRelease) -> bool {
+        match self {
+            Self::Mro | Self::Dictionary => true,
+            Self::Name
+            | Self::Qualname
+            | Self::Bases
+            | Self::SlotDeclaration
+            | Self::FieldLayout => {
+                matches!(phase, ClassReferenceRelease::Terminal)
+            }
+        }
+    }
 
     /// `ptr` must address a live class payload and its caller must have read
     /// custody. No Rust borrow is held across reference release or callbacks.
@@ -73,10 +410,29 @@ impl ClassReferenceSlot {
     }
 }
 
-/// Detach all class payload references before returning any for release. GC
-/// and terminal destruction use exactly the same slot family as visitation.
-pub(crate) unsafe fn detach_class_references(ptr: *mut u8) -> [u64; 9] {
-    ClassReferenceSlot::ALL.map(|slot| unsafe { slot.take(ptr) })
+/// Publish the phase's complete empty state before returning any owned edge.
+/// Traversal, GC clear and terminal destruction share the same slot authority;
+/// cycle collection must not retire metadata needed to destroy live instances.
+pub(crate) unsafe fn detach_class_references(
+    ptr: *mut u8,
+    phase: ClassReferenceRelease,
+) -> [u64; 7] {
+    let detached = ClassReferenceSlot::ALL.map(|slot| {
+        if slot.released_by(phase) {
+            unsafe { slot.take(ptr) }
+        } else {
+            MoltObject::none().bits()
+        }
+    });
+    // Retired methods must not remain callable through class/attribute caches.
+    // No callbacks can run until the caller releases the detached references.
+    if detached
+        .iter()
+        .any(|&bits| bits != 0 && !crate::obj_from_bits(bits).is_none())
+    {
+        unsafe { super::layout::class_bump_layout_version(ptr) };
+    }
+    detached
 }
 
 /// Clear callback-bearing class contents while preserving its name, metaclass,
@@ -86,8 +442,6 @@ pub(crate) unsafe fn detach_class_references(ptr: *mut u8) -> [u64; 9] {
 /// detachment, not assume a single pass is terminal.
 pub(crate) unsafe fn clear_class_runtime_contents(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
-        let annotations = ClassReferenceSlot::Annotations.exchange_owned(ptr, 0);
-        let annotate = ClassReferenceSlot::Annotate.exchange_owned(ptr, 0);
         let dictionary = crate::obj_from_bits(ClassReferenceSlot::Dictionary.load(ptr))
             .as_ptr()
             .map(|dict| {
@@ -98,22 +452,12 @@ pub(crate) unsafe fn clear_class_runtime_contents(py: &PyToken<'_>, ptr: *mut u8
         super::class_refresh_declared_finalizer_flag(py, ptr);
         super::layout::class_bump_layout_version(ptr);
         drop(dictionary);
-        dec_ref_bits(py, annotations);
-        dec_ref_bits(py, annotate);
     }
 }
 
 pub(crate) unsafe fn class_runtime_contents_empty(ptr: *mut u8) -> bool {
     unsafe {
-        [
-            ClassReferenceSlot::Annotations,
-            ClassReferenceSlot::Annotate,
-        ]
-        .into_iter()
-        .all(|slot| {
-            let bits = slot.load(ptr);
-            bits == 0 || crate::obj_from_bits(bits).is_none()
-        }) && crate::obj_from_bits(ClassReferenceSlot::Dictionary.load(ptr))
+        crate::obj_from_bits(ClassReferenceSlot::Dictionary.load(ptr))
             .as_ptr()
             .is_none_or(|dict| crate::dict_order(dict).is_empty())
     }
@@ -127,7 +471,9 @@ pub(crate) fn is_canonical_runtime_class(py: &PyToken<'_>, bits: u64) -> bool {
         .is_some_and(|ptr| unsafe {
             crate::object_type_id(ptr) == crate::TYPE_ID_TYPE
                 && crate::object_class_bits(ptr) == crate::builtin_classes(py).type_obj
-                && (crate::is_builtin_class_bits(py, bits) || super::class_is_immutable(py, ptr))
+                && (crate::is_builtin_class_bits(py, bits)
+                    || class_declares(ptr, ClassDeclaration::BuiltinException)
+                    || super::class_is_immutable(py, ptr))
         })
 }
 
@@ -164,13 +510,22 @@ impl RuntimeClassRetirement {
             }
             assert!(
                 is_canonical_runtime_class(py, bits),
-                "noncanonical class entered runtime retirement"
+                "noncanonical class entered runtime retirement: bits={bits:#x}, \
+                 builtin={}, object_header(type_id, metaclass, immutable)={:?}",
+                crate::is_builtin_class_bits(py, bits),
+                crate::obj_from_bits(bits).as_ptr().map(|ptr| unsafe {
+                    (
+                        crate::object_type_id(ptr),
+                        crate::object_class_bits(ptr),
+                        super::class_is_immutable(py, ptr),
+                    )
+                })
             );
             let ptr = crate::obj_from_bits(bits)
                 .as_ptr()
                 .expect("canonical class pointer");
             assert!(
-                !unsafe { super::object_class_has_finalizer(py, ptr) },
+                !unsafe { super::object_has_finalizer(py, ptr) },
                 "canonical runtime class acquired a metaclass finalizer"
             );
             // Allocate before claiming the new owner. Existing pins are RAII
@@ -205,6 +560,19 @@ impl RuntimeClassRetirement {
             }
         }
         changed
+    }
+
+    /// Retire C aliases only after both thread-state owner domains have drained.
+    /// Native owners and saved C errors cannot be indexed through ManagedView;
+    /// their ordinary release must finish before any C identity is invalidated.
+    pub(crate) fn retire_projections(&self) -> bool {
+        if crate::object::gc::gc_has_live_native_nodes()
+            || molt_cpython_abi::api::object::runtime_retained_thread_state_count() != 0
+        {
+            return false;
+        }
+        let roots: Vec<_> = self.classes.iter().map(|class| class.bits).collect();
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.retire_runtime_type_views(&roots)
     }
 
     pub(crate) fn contents_empty(&self) -> bool {
@@ -254,45 +622,69 @@ impl RuntimeClassRetirement {
                             });
                         }
                         ClassReferenceSlot::SlotDeclaration => {
-                            let tuple = self.assert_exact_metadata(py, bits, crate::TYPE_ID_TUPLE);
-                            super::seq_access::with_borrowed(tuple, |names| {
-                                for &name in names {
-                                    self.assert_exact_metadata(py, name, crate::TYPE_ID_STRING);
-                                }
-                            });
-                        }
-                        ClassReferenceSlot::FieldOffsets => {
-                            let dict = self.assert_exact_metadata(py, bits, crate::TYPE_ID_DICT);
-                            let entries = crate::dict_order(dict);
-                            assert_eq!(entries.len() % 2, 0);
-                            for pair in entries.chunks_exact(2) {
-                                self.assert_exact_metadata(py, pair[0], crate::TYPE_ID_STRING);
-                                assert!(
-                                    crate::obj_from_bits(pair[1]).as_int().is_some(),
-                                    "retiring field offset is not an exact immediate integer"
-                                );
+                            self.assert_exact_metadata(py, bits, crate::TYPE_ID_TUPLE);
+                            let (names, _) = super::layout::slot_record_parts(bits);
+                            if !crate::obj_from_bits(names).is_none() {
+                                let names =
+                                    self.assert_exact_metadata(py, names, crate::TYPE_ID_TUPLE);
+                                super::seq_access::with_immutable_tuple_slice(names, |names| {
+                                    for &name in names {
+                                        self.assert_exact_metadata(py, name, crate::TYPE_ID_STRING);
+                                    }
+                                })
+                                .expect("retiring slot names must be an exact tuple");
                             }
                         }
-                        ClassReferenceSlot::Annotations | ClassReferenceSlot::Annotate => {
-                            unreachable!("callback-bearing class metadata survived retirement");
+                        ClassReferenceSlot::FieldLayout => {
+                            self.assert_exact_metadata(py, bits, crate::TYPE_ID_TUPLE);
+                            let (map, rows) = super::class_layout::projection_parts(bits);
+                            if !crate::obj_from_bits(map).is_none() {
+                                let dict = self.assert_exact_metadata(py, map, crate::TYPE_ID_DICT);
+                                let entries = crate::dict_order(dict);
+                                assert_eq!(entries.len() % 2, 0);
+                                for pair in entries.chunks_exact(2) {
+                                    self.assert_exact_metadata(py, pair[0], crate::TYPE_ID_STRING);
+                                    assert!(crate::obj_from_bits(pair[1]).as_int().is_some());
+                                }
+                            }
+                            let rows = self.assert_exact_metadata(py, rows, crate::TYPE_ID_TUPLE);
+                            super::seq_access::with_immutable_tuple_slice(rows, |rows| {
+                                assert_eq!(rows.len() % 3, 0);
+                                for row in rows.chunks_exact(3) {
+                                    let field = super::class_layout::decode_row(row);
+                                    if field.kind.is_intrinsic() {
+                                        assert!(crate::obj_from_bits(field.name).is_none());
+                                    } else {
+                                        self.assert_exact_metadata(
+                                            py,
+                                            field.name,
+                                            crate::TYPE_ID_STRING,
+                                        );
+                                    }
+                                }
+                            })
+                            .expect("retiring physical rows must be a tuple");
                         }
                     }
                 }
             }
         }
+        // Managed views and all incoming projection aliases were retired in
+        // the callback-capable fixed point, before reaching this sealed tail.
+        assert!(
+            !crate::object::gc::gc_has_live_native_nodes(),
+            "native owners survived the last callback drain before class retirement"
+        );
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+            0,
+            "C thread-state owners survived the last callback drain before class retirement"
+        );
         for class in &self.classes {
-            if let Some(view) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .retire_runtime_type_view_deferred(class.bits)
-            {
-                // C type pointers have interpreter lifetime, not process
-                // lifetime. Detach their bridge identity even if C retained a
-                // direct reference; that pointer is invalid after finalization.
-                // Dropping the exact Type view clears HAS_ABI_VIEW without
-                // releasing callback-bearing projection items. Then release
-                // its stable runtime hold under our still-live cohort pin.
-                drop(view);
-                dec_ref_bits(py, class.bits);
-            }
+            assert!(
+                !molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_managed_type_view(class.bits),
+                "managed class projection survived the shutdown callback drain"
+            );
         }
         for class in &self.classes {
             crate::class_break_cycles(py, class.bits);
@@ -327,7 +719,7 @@ impl RuntimeClassRetirement {
                 "runtime class metadata acquired a callback-capable subclass"
             );
             assert!(
-                !super::object_class_has_finalizer(py, ptr),
+                !super::object_has_finalizer(py, ptr),
                 "runtime class metadata acquired a finalizer"
             );
         }
@@ -354,13 +746,45 @@ mod tests {
     static EXPECTED_ANNOTATIONS: AtomicU64 = AtomicU64::new(0);
     static CALLBACK_OBSERVATIONS: AtomicU64 = AtomicU64::new(0);
 
+    // Observe storage without materializing missing annotations during retirement.
+    fn namespace_annotations(py: &PyToken<'_>, class: *mut u8) -> u64 {
+        unsafe {
+            let dict = crate::obj_from_bits(crate::class_dict_bits(class))
+                .as_ptr()
+                .unwrap();
+            crate::object::ops::dict_get_str_bytes_borrowed(py, dict, b"__annotations__")
+                .or_else(|| {
+                    crate::object::ops::dict_get_str_bytes_borrowed(
+                        py,
+                        dict,
+                        b"__annotations_cache__",
+                    )
+                })
+                .unwrap_or(0)
+        }
+    }
+
+    fn set_annotations(py: &PyToken<'_>, class: u64, value: Option<u64>) {
+        let name = crate::attr_name_bits_from_bytes(py, b"__annotations__").unwrap();
+        match value {
+            Some(value) => {
+                crate::molt_set_attr_name(class, name, value);
+            }
+            None => {
+                crate::molt_del_attr_name(class, name);
+            }
+        }
+        dec_ref_bits(py, name);
+        assert!(!crate::exception_pending(py));
+    }
+
     extern "C" fn inspect_replacement(_self_bits: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
             let owner = crate::obj_from_bits(OBSERVED_CLASS.load(Ordering::SeqCst))
                 .as_ptr()
                 .expect("test class remains pinned");
             let expected = EXPECTED_ANNOTATIONS.load(Ordering::SeqCst);
-            let published = unsafe { ClassReferenceSlot::Annotations.load(owner) };
+            let published = namespace_annotations(py, owner);
             let name = unsafe { ClassReferenceSlot::Name.load(owner) };
             let metaclass = unsafe { crate::object_class_bits(owner) };
             if published == expected
@@ -433,24 +857,21 @@ mod tests {
             );
             assert!(!old_ptr.is_null());
             let old = MoltObject::from_ptr(old_ptr).bits();
-            unsafe { ClassReferenceSlot::Annotations.replace_borrowed(py, owner_ptr, old) };
+            set_annotations(py, owner, Some(old));
             dec_ref_bits(py, old);
             dec_ref_bits(py, observer);
             dec_ref_bits(py, incoming); // now borrowed only through the outgoing dictionary
             OBSERVED_CLASS.store(owner, Ordering::SeqCst);
             EXPECTED_ANNOTATIONS.store(incoming, Ordering::SeqCst);
             CALLBACK_OBSERVATIONS.store(0, Ordering::SeqCst);
-            unsafe { ClassReferenceSlot::Annotations.replace_borrowed(py, owner_ptr, incoming) };
+            set_annotations(py, owner, Some(incoming));
             assert_eq!(CALLBACK_OBSERVATIONS.load(Ordering::SeqCst), 1);
-            assert_eq!(
-                unsafe { ClassReferenceSlot::Annotations.load(owner_ptr) },
-                incoming
-            );
+            assert_eq!(namespace_annotations(py, owner_ptr), incoming);
             assert_eq!(
                 unsafe { (*crate::header_from_obj_ptr(incoming_ptr)).ref_count_snapshot() },
                 1
             );
-            unsafe { ClassReferenceSlot::Annotations.replace_borrowed(py, owner_ptr, 0) };
+            set_annotations(py, owner, None);
             dec_ref_bits(py, owner);
             dec_ref_bits(py, observer_class);
             OBSERVED_CLASS.store(0, Ordering::SeqCst);
@@ -468,7 +889,7 @@ mod tests {
             let namespace = callback_instance(py, observer_class);
             let key = crate::attr_name_bits_from_bytes(py, b"payload").unwrap();
             crate::molt_set_attr_name(owner, key, namespace);
-            unsafe { ClassReferenceSlot::Annotations.replace_borrowed(py, owner_ptr, annotation) };
+            set_annotations(py, owner, Some(annotation));
             dec_ref_bits(py, annotation);
             dec_ref_bits(py, namespace);
             dec_ref_bits(py, key);
@@ -494,12 +915,13 @@ mod tests {
                 words[slot as usize] = MoltObject::from_int(index as i64).bits();
             }
             let ptr = words.as_mut_ptr().cast::<u8>();
-            let old = unsafe { detach_class_references(ptr) };
+            let old = unsafe { detach_class_references(ptr, ClassReferenceRelease::Terminal) };
             for (index, slot) in ClassReferenceSlot::ALL.into_iter().enumerate() {
                 assert_eq!(old[index], MoltObject::from_int(index as i64).bits());
                 assert_eq!(unsafe { slot.load(ptr) }, MoltObject::none().bits());
             }
-            for index in [4, 8, 9] {
+            assert_eq!(words[4], 0xA55A + 1);
+            for index in [8, 9, super::super::layout::CLASS_DECLARATIONS_WORD] {
                 assert_eq!(words[index], 0xA55A);
             }
         });

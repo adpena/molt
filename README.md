@@ -14,8 +14,10 @@ Python or ecosystem compatibility beyond its verified subset. See the
 [release milestone](ROADMAP.md#first-release-milestone).
 Release readiness also requires the declared workload and resource budgets in
 the [performance authority](tools/PERF_AUTHORITY.md#v10-acceptance-scope).
-Publication requires same-source semantic exit evidence; stable releases also
-require a signed H0 phase exit. See the [release contract](packaging/PACKAGING.md).
+Every release, including `v0.0.1`, requires the complete same-source E1-E4
+exit bundle: the native/WASM NumPy/SciPy witness, native/LLVM performance,
+verified-subset compatibility and structural gates. Stable `v1.0` additionally
+requires an authenticated H0 phase exit. See the [release contract](packaging/PACKAGING.md).
 These gates do not imply that the remaining release matrix has passed.
 The [Pact acceptance lanes](docs/agent/PROOF_QUEUE.md#named-pact-witness-lanes)
 bind native/WASM execution and oracle parity to portable, source-pinned receipts;
@@ -37,7 +39,9 @@ defines test selection, source-change checks, and the exact cross-target pass la
 
 - CPython `>=3.12` parity target within the verified subset.
   Current target-version policies are `3.12`, `3.13`, and `3.14`; accepting a
-  version policy does not certify every feature on that version.
+  version policy does not certify every feature on that version. The Python
+  running the CLI must be at least the selected target minor; see
+  [frontend selection](packaging/INSTALL.md#requirements).
 - Compiled artifacts must work without a host Python installation.
 - CPython module names retain their standard-library role. Molt-specific
   helpers live under `moltlib`, including `moltlib.io.stream` for bounded file
@@ -52,13 +56,16 @@ defines test selection, source-change checks, and the exact cross-target pass la
 
 ## What Molt Supports Today
 
-- Native AOT compilation through Cranelift by default, with LLVM opt-in.
+- Native AOT compilation through Cranelift by default. LLVM is an opt-in
+  source-checkout build; the current prebuilt compiler feature set omits it.
   The experimental Rust source emitter is a separate backend.
 - Standalone binary workflows with no runtime dependency on local CPython.
 - A growing Rust-first stdlib lowering program with generated audit surfaces.
 - Differential testing against CPython as a core validation path.
 - WASM build workflows, with cross-target parity still incomplete and actively
-  tracked.
+  tracked. The Node runner uses WASI plus Molt's host imports and deployment
+  manifest. Deployments need the matching runner assets or an admitted host
+  adapter; a linked module alone does not certify an arbitrary WASI host.
 - Third-party integration through shared import/runtime primitives and
   source-recompiled extensions. C-API symbol coverage alone does not establish
   package compatibility. See the [extension ABI contract](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
@@ -69,6 +76,28 @@ defines test selection, source-change checks, and the exact cross-target pass la
   reuse. Unbound library providers must be resolved to checksummed static inputs.
   See the [source-build contract](docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md)
   for linker capability gates and the remaining lazy-source admission boundary.
+
+## Install
+
+Use a prebuilt distribution for your platform when its release is available:
+a downloaded platform wheel installed with `pip install <wheel-path>`, a
+published package-manager distribution, or a GitHub release bundle. The current
+release workflow produces wheel assets but has no PyPI upload step; the
+`pip install molt` registry route still requires publication.
+The compiler and runtime ship prebuilt; compiling your program does not require
+building Molt or installing Rust. See [binary installation](packaging/INSTALL.md)
+for requirements, available installation routes, and standalone execution limits.
+
+Binary bundles require explicit dependency setup with
+`molt setup --install-cli-dependencies`; normal launches do not install or repair
+dependencies. Platform wheels use their pip environment. `molt doctor` identifies
+the active installation, runtime availability, and competing PATH entries.
+Source contributors use the checkout instructions below.
+
+- Package and installer paths: see [docs/getting-started.md](docs/getting-started.md)
+- Packaging details: [packaging/README.md](packaging/README.md)
+- Installation diagnostics: `molt doctor --json` (not a
+  compatibility or release certification).
 
 ## Source Checkout Quickstart
 
@@ -105,8 +134,9 @@ WASM package bundles normalize host metadata and use portable paths; unsupported
 or colliding archive names fail with a diagnostic before replacing prior output.
 
 These profiles select optimization of **your program**, not the compiler itself.
-Release bundles ship a production-optimized compiler that is reused for both
-profiles, alongside the matching runtime sources. Compiler developers can opt
+Release bundles, package-manager installs and platform wheels ship a
+production-optimized compiler and prebuilt runtimes for both profiles; installed
+compilation never builds Rust. Compiler developers can opt
 into a development host build with `MOLT_BACKEND_PROFILE=dev` in a source checkout.
 `--diagnostics` reports the compiler identity/profile separately from the program
 and runtime profiles, together with build-phase and cache information.
@@ -117,28 +147,13 @@ status, `--progress off` to disable status, or `--quiet` to suppress successful
 compiler notices too. Errors and guest output remain visible; JSON mode emits
 no progress chatter.
 
-## Install
-
-Release bundles keep one immutable CLI/compiler source and a separate private
-dependency environment. `molt setup --install-cli-dependencies` explicitly
-authorizes dependency installation; normal launches do not install or repair it.
-Compilation and readiness checks do not install Rust targets either; missing
-toolchains produce actionable setup diagnostics for you to review and run.
-Cython regeneration also checks the selected build environment without installing
-or upgrading packages; missing or incompatible dependencies require explicit setup.
-`molt doctor` identifies the active installation and competing PATH entries
-without changing them. See [binary installation](packaging/INSTALL.md).
-
-- Package and installer paths: see [docs/getting-started.md](docs/getting-started.md)
-- Packaging details: [packaging/README.md](packaging/README.md)
-- Toolchain diagnostics: `uv run --python 3.12 molt doctor --json` (not a
-  compatibility or release certification).
-
 ## Status
 
 Current detailed state lives in [docs/spec/STATUS.md](docs/spec/STATUS.md).
-Forward priorities live in [ROADMAP.md](ROADMAP.md). The near-term execution
-slice lives in [docs/ROADMAP_90_DAYS.md](docs/ROADMAP_90_DAYS.md).
+Forward priorities and near-term sequencing live in
+[ROADMAP.md](ROADMAP.md#current-priorities). Correctness, installed compile
+latency, generated-program performance, memory, startup, and delivered size
+remain release priorities; a passing demonstration does not qualify v1.0.
 
 For compatibility and proof detail:
 

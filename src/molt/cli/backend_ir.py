@@ -497,12 +497,11 @@ def _build_module_registry(
 ) -> ModuleRegistry:
     """Derive the per-build ModuleRegistry from the binary-image closure plan.
 
-    Init-lane membership (rows whose ``MODULE_INIT_TABLE`` entry is non-null)
-    is exactly the legacy isolate-dispatch membership
-    (``_isolate_import_module_order``), so runtime importability is preserved
-    one-to-one while the string_eq dispatch chain itself is deleted.  Rows
-    without an init lane fail closed inside ``molt_module_ensure`` with a
-    diagnostic naming the admission channel (invariant I11).
+    Runtime builtin kinds own their initialization independently of explicit
+    imports. Other rows acquire an init lane from the admitted import closure
+    or generated entry roots. Rows without an init lane fail closed inside
+    ``molt_module_ensure`` with a diagnostic naming the admission channel
+    (invariant I11).
     """
     native_module_order = [spec.module for spec in native_module_init_specs]
     dispatchable = set(
@@ -512,21 +511,24 @@ def _build_module_registry(
             native_module_order=native_module_order,
         )
     )
-    # The entry module, __main__, sys, and the spawn entry override are
+    # The entry module, __main__, and the spawn entry override are
     # ensure()-reached from generated code even when no explicit import names
     # them; they always own an init lane.
-    forced_init = {entry_module, "__main__", "sys"}
+    forced_init = {entry_module, "__main__"}
     if spawn_enabled:
         forced_init.add(ENTRY_OVERRIDE_SPAWN)
 
     entries: list[ModuleRegistryEntry] = []
     module_order_set = set(module_order)
     for name in module_order:
-        has_init = name in dispatchable or name in forced_init
+        kind = runtime_builtin_kind(name)
+        has_init = (
+            kind == "runtime_builtin" or name in dispatchable or name in forced_init
+        )
         entries.append(
             ModuleRegistryEntry(
                 name=name,
-                kind=runtime_builtin_kind(name),
+                kind=kind,
                 init_symbol=(
                     SimpleTIRGenerator.module_init_symbol(name) if has_init else ""
                 ),
@@ -1821,82 +1823,14 @@ def _finalize_backend_ir(
     return ir
 
 
-def _normalize_ir_labels(ir: Mapping[str, Any]) -> dict[str, Any]:
-    """Remap label/state IDs in emitted IR to sequential values per function.
-
-    Different backends compile different sets of stdlib initialization functions
-    before user code, which shifts the global label counter.  Normalizing labels
-    makes the emitted IR deterministic regardless of backend, ensuring parity
-    tests compare semantic content rather than implementation-specific counters.
-    """
-    normalized: dict[str, Any] = dict(ir)
-    functions = normalized.get("functions")
-    if not isinstance(functions, list):
-        return normalized
-
-    # Keys in an op whose integer value is a label/state ID.
-    _LABEL_KEYS = frozenset({"value"})
-    # Op kinds that define or reference labels.
-    _LABEL_OPS = frozenset(
-        {
-            "label",
-            "jump",
-            "br_if",
-            "check_exception",
-            "for_iter_next",
-        }
-    )
-
-    new_functions = []
-    for func in functions:
-        if not isinstance(func, dict):
-            new_functions.append(func)
-            continue
-        ops = func.get("ops")
-        if not isinstance(ops, list):
-            new_functions.append(func)
-            continue
-
-        # First pass: collect all label IDs in order of appearance.
-        label_map: dict[int, int] = {}
-        next_id = 1
-        for op in ops:
-            if not isinstance(op, dict):
-                continue
-            kind = op.get("kind", "")
-            if kind not in _LABEL_OPS:
-                continue
-            val = op.get("value")
-            if isinstance(val, int) and val not in label_map:
-                label_map[val] = next_id
-                next_id += 1
-
-        # Second pass: rewrite label IDs.
-        new_ops = []
-        for op in ops:
-            if not isinstance(op, dict):
-                new_ops.append(op)
-                continue
-            kind = op.get("kind", "")
-            if kind in _LABEL_OPS and "value" in op:
-                val = op["value"]
-                if isinstance(val, int) and val in label_map:
-                    op = {**op, "value": label_map[val]}
-            new_ops.append(op)
-
-        new_func = {**func, "ops": new_ops}
-        new_functions.append(new_func)
-
-    normalized["functions"] = new_functions
-    return normalized
-
-
 def _write_emitted_ir(emit_ir_path: Path | None, ir: Mapping[str, Any]) -> str | None:
     if emit_ir_path is None:
         return None
     try:
-        normalized = _normalize_ir_labels(ir)
-        _atomic_write_json(emit_ir_path, normalized, indent=2, default=_json_ir_default)
+        # Emit exactly the backend input. Label, handler and saved-state IDs
+        # share typed cross-references; a diagnostic-only partial renumbering
+        # corrupts replay and can make evidence describe a different program.
+        _atomic_write_json(emit_ir_path, ir, indent=2, default=_json_ir_default)
     except OSError as exc:
         return f"Failed to write IR: {exc}"
     return None

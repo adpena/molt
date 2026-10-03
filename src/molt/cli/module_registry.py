@@ -80,9 +80,9 @@ _KIND_CODES: Mapping[str, int] = {
 
 
 # Reinit policy after `del sys.modules[name]` (design §4.3 / parity row 5.8):
-# source modules fully re-execute; extension modules resurrect from the
-# first-init dict snapshot (snapshot custody lands in PR4; until then the
-# runtime fails closed on extension reinit with a named diagnostic).
+# source modules fully re-execute. The runtime extension initializer owns
+# phase-aware reinit: legacy single-phase m_size==-1 uses its first successful
+# dict snapshot; reinitializable single-phase and multi-phase modules rerun.
 def _row_deps(value: object) -> tuple[object, ...]:
     if isinstance(value, list | tuple):
         return tuple(value)
@@ -134,6 +134,10 @@ class ModuleRegistryEntry:
         if self.kind not in _KIND_CODES:
             raise ValueError(
                 f"module registry entry '{self.name}' has unknown kind '{self.kind}'"
+            )
+        if self.kind == "runtime_builtin" and not self.init_symbol:
+            raise ValueError(
+                f"runtime builtin registry entry '{self.name}' requires init_symbol"
             )
         if self.kind == "alias":
             if not self.alias_of:
@@ -473,6 +477,17 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
         if row.get("id") != idx:
             problems.append(f"row {row.get('name')!r} has id {row.get('id')} != {idx}")
         row_name = row.get("name")
+        init_symbol = row.get("init_symbol", "")
+        flags = row.get("flags", 0)
+        if row.get("kind") == "runtime_builtin" and (
+            not isinstance(init_symbol, str)
+            or not init_symbol
+            or not isinstance(flags, int)
+            or not flags & MODULE_FLAG_HAS_BODY
+        ):
+            problems.append(
+                f"runtime builtin registry row {row_name!r} requires an init body"
+            )
         parent = _optional_row_index(
             row.get("parent"),
             row_name=row_name,

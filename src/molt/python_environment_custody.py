@@ -822,8 +822,13 @@ def capture_current_python_environment(
     admitted_site_bootstrap_paths: Sequence[str] = (),
     admitted_external_roots: Sequence[Path] = (),
     capture_context: PythonFileCaptureContext | None = None,
+    with_custody: bool = False,
 ) -> dict[str, object]:
     """Capture an exact immutable environment using the active interpreter."""
+
+    if with_custody:
+        # Load envelope dependencies before the immutable native-image census.
+        from molt.python_capture import python_capture_payload
 
     validate_active_import_finders(bootstrap_pending=True)
     if capture_context is None:
@@ -1049,11 +1054,14 @@ def capture_current_python_environment(
         "console_scripts": console_scripts,
         "native_modules": native_modules,
     }
-    capture_context.verify()
-    return {
+    payload = {
         **material,
         "environment_closure_sha256": canonical_json_sha256(material),
     }
+    if with_custody:
+        return python_capture_payload(payload, capture_context)
+    capture_context.verify()
+    return payload
 
 
 def python_environment_executable_files(

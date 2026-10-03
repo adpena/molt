@@ -154,3 +154,66 @@ pub unsafe extern "C" fn Py_CLEAR(op: *mut *mut PyObject) {
         }
     }
 }
+
+/// Keep a borrowed native object alive across reentrant operations. Releasing
+/// it must not replace the active exception.
+pub struct OwnedPyObject(*mut PyObject);
+
+impl OwnedPyObject {
+    /// Adopt an already owned reference without an additional INCREF/DECREF pair.
+    ///
+    /// # Safety
+    /// A non-null pointer must carry one owned reference transferred to this guard.
+    pub unsafe fn from_owned(object: *mut PyObject) -> Self {
+        Self(object)
+    }
+
+    /// # Safety
+    /// A non-null pointer must remain live until this guard retains it.
+    pub unsafe fn from_borrowed(object: *mut PyObject) -> Self {
+        unsafe { Py_XINCREF(object) };
+        Self(object)
+    }
+
+    /// Retain a non-owning observation only while its allocation is live.
+    /// Internal teardown pins may have a positive C count after the runtime
+    /// has committed death; those pins are not permission to resurrect it.
+    /// Refusal leaves the reference count and both exception channels intact.
+    ///
+    /// # Safety
+    /// A non-null pointer must remain allocated through this call. Callers
+    /// observing registry addresses must validate their allocation generation.
+    pub unsafe fn try_from_borrowed(object: *mut PyObject) -> Option<Self> {
+        if object.is_null() {
+            return None;
+        }
+        let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+        if unsafe { (*object).ob_refcnt } == 0 {
+            return None;
+        }
+        if let Some(bits) = crate::bridge::GLOBAL_BRIDGE.managed_handle_for_pyobj(object)
+            && unsafe { (crate::hooks::hooks_or_stubs().try_mark_abi_view)(bits, 1) } == 0
+        {
+            return None;
+        }
+        unsafe { Py_INCREF(object) };
+        Some(Self(object))
+    }
+
+    pub fn as_ptr(&self) -> *mut PyObject {
+        self.0
+    }
+
+    /// Transfer the owned reference without releasing it.
+    pub fn into_ptr(self) -> *mut PyObject {
+        let object = self.0;
+        std::mem::forget(self);
+        object
+    }
+}
+
+impl Drop for OwnedPyObject {
+    fn drop(&mut self) {
+        unsafe { crate::api::errors::release_preserving_error(&[self.0]) };
+    }
+}

@@ -158,3 +158,39 @@ def write_test_native_link_manifest(
         runtime_build_identity=build_identity,
     )
     return build_identity
+
+
+def native_codegen_binding(runtime_lib: Path, build_identity: RuntimeBuildIdentity):
+    """Bind real fixture file generations for tests unrelated to symbol reading."""
+    from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
+    from molt.cli.runtime_callable_symbols import _runtime_callable_symbols_digest
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    symbols = runtime_lib.with_name(runtime_lib.name + ".test-callables")
+    if not symbols.exists():
+        symbols.write_text("molt_test_intrinsic\n", encoding="utf-8")
+    return NativeRuntimeCodegenBinding(
+        runtime_lib=runtime_lib,
+        build_identity=build_identity,
+        archive=stable_regular_file_identity(runtime_lib, label="test codegen archive"),
+        callable_symbols=stable_regular_file_identity(
+            symbols, label="test codegen symbols"
+        ),
+        semantic_digest=_runtime_callable_symbols_digest(
+            tuple(sorted(set(symbols.read_text().splitlines())))
+        ),
+    )
+
+
+def transport_codegen_binding(root: Path, *, target_triple: str | None = None):
+    """Real file generations for transport tests, without compiling a runtime."""
+    root.mkdir(parents=True, exist_ok=True)
+    archive = root / "transport-runtime.a"
+    write_test_static_archive(archive)
+    identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        family_seed="transport-runtime",
+        host_target=_host_target_triple(),
+    )
+    return native_codegen_binding(archive, identity)

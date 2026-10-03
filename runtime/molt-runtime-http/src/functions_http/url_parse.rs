@@ -298,17 +298,3 @@ pub(super) fn urllib_parse_qsl_impl(
     Ok(pairs)
 }
 
-pub(super) fn urllib_request_pending_exception_kind_name(
-    _py: &molt_runtime_core::CoreGilToken,
-) -> Option<String> {
-    if !exception_pending(_py) {
-        return None;
-    }
-    let exc_bits = molt_exception_last();
-    let out = maybe_ptr_from_bits(exc_bits)
-        .and_then(|ptr| string_obj_to_owned(obj_from_bits(unsafe { exception_kind_bits(ptr) })));
-    if !obj_from_bits(exc_bits).is_none() {
-        dec_ref_bits(_py, exc_bits);
-    }
-    out
-}

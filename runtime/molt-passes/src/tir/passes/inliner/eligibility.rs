@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::ir::ParameterCustody;
 use crate::tir::blocks::Terminator;
 use crate::tir::call_facts::{InlineEligibility, InlineWhyNot};
 use crate::tir::call_graph::CallGraph;
@@ -12,6 +13,7 @@ use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
+use super::activation::releases_unowned_parameter;
 use super::super::ip_summary::ModuleSummaries;
 
 /// inlining this arc (and likely permanently - these are never simple leaves).
@@ -51,6 +53,12 @@ fn is_generator_or_async_op(opcode: OpCode) -> bool {
 ///   into a subscript of a function. The arity guard cannot catch this (the
 ///   closure's extra param re-balances the operand count). Threading the real
 ///   env is a separate perf arc; refusing is conservative-correct.
+/// * **unowned parameter release** - the body releases a `Borrowed` parameter
+///   other than by a Python `del` ([`releases_unowned_parameter`]). The
+///   activation owns no reference there, so the release would end the
+///   caller's. Parameter custody is otherwise no gate: the splice binds each
+///   parameter the activation owns through an owned alias and clears it at
+///   every exit.
 pub fn is_inlineable(
     callee: &TirFunction,
     call_graph: &CallGraph,
@@ -74,7 +82,8 @@ pub fn is_inlineable(
 /// Gate-evaluation order (the first failing gate is the reported reason, so the
 /// reason is deterministic): the [`inline_safety_gate`] correctness gates
 /// (execution context -> physical partition -> recursion -> handlers ->
-/// generator -> entry-predecessor -> closure) first, then
+/// generator -> entry-predecessor -> closure -> unowned parameter release)
+/// first, then
 /// the cost-model op-count budget ([`InlineWhyNot::OverBudget`]). This matches the
 /// short-circuit order of the prior `is_inline_safe && within_budget` predicate
 /// exactly, so the bool is byte-identical at every call site.
@@ -123,6 +132,9 @@ pub(super) fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries)
 ///    the entry.
 /// 5. **closure** - the first param is the implicit captured-env param
 ///    ([`is_closure`]); the direct param->operand splice would miscompile it.
+/// 6. **unowned parameter release** - an explicit release, other than `del`,
+///    of a `Borrowed` parameter ([`releases_unowned_parameter`]); the
+///    activation owns no reference to release there.
 fn inline_safety_gate(callee: &TirFunction, call_graph: &CallGraph) -> Option<InlineWhyNot> {
     if callee.execution_context != molt_ir::ExecutionContextPolicy::None {
         return Some(InlineWhyNot::ExecutionContext);
@@ -148,6 +160,11 @@ fn inline_safety_gate(callee: &TirFunction, call_graph: &CallGraph) -> Option<In
     }
     if is_closure(callee) {
         return Some(InlineWhyNot::Closure);
+    }
+    if releases_unowned_parameter(callee, |position| {
+        callee.parameter_custody(position) != ParameterCustody::Transferred
+    }) {
+        return Some(InlineWhyNot::UnownedParameterRelease);
     }
     None
 }

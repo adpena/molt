@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import functools
 import os
-import tomllib
 from typing import Collection
 
 from molt._runtime_feature_gates import (
@@ -64,6 +63,11 @@ def _runtime_cargo_features_cached(
     if hip_enabled:
         features.append("molt_gpu_hip")
     return tuple(features)
+
+
+# Native runtime feature required by programs with admitted source-built
+# extensions; the build pipeline and installed-runtime production share it.
+SOURCE_EXTENSION_RUNTIME_FEATURES: tuple[str, ...] = ("source_extension_loader",)
 
 
 def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
@@ -132,7 +136,6 @@ def runtime_cargo_feature_for_profile(profile: str) -> str:
     return cargo_feature
 
 
-@functools.lru_cache(maxsize=1)
 def _runtime_cargo_feature_graph() -> dict[str, tuple[str, ...]]:
     """The ``[features]`` table of ``runtime/molt-runtime/Cargo.toml``.
 
@@ -141,9 +144,10 @@ def _runtime_cargo_feature_graph() -> dict[str, tuple[str, ...]]:
     ``crate?/feat`` cross-crate feature activations, verbatim).  Anchored at the
     compiler root via ``_compiler_root`` so the read is cwd-independent.
     """
+    from molt.cli.cargo_source_closure import _read_cargo_document
+
     cargo_path = _compiler_root() / "runtime" / "molt-runtime" / "Cargo.toml"
-    with cargo_path.open("rb") as handle:
-        manifest = tomllib.load(handle)
+    manifest = _read_cargo_document(cargo_path)
     features = manifest.get("features", {})
     return {
         name: tuple(entries)
@@ -178,7 +182,6 @@ def _expand_cargo_feature(feature: str) -> frozenset[str]:
     return frozenset(reached)
 
 
-@functools.lru_cache(maxsize=32)
 def profile_link_features(
     profile: str | None,
     *,

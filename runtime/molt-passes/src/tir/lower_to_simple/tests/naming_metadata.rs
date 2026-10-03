@@ -115,6 +115,7 @@ fn block_argument_roundtrip_uses_valid_local_slot_transport() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1125,6 +1126,7 @@ fn tir_round_trip_preserves_method_ic_as_first_class_ops() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -1245,6 +1247,7 @@ fn tir_round_trip_preserves_guarded_field_set_offset() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -1280,6 +1283,7 @@ fn tir_round_trip_preserves_guarded_field_get_offset() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -1318,6 +1322,7 @@ fn tir_round_trip_preserves_call_async_metadata() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -1396,6 +1401,7 @@ fn tir_round_trip_preserves_typed_field_class_identity() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -1498,6 +1504,7 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -1520,6 +1527,7 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
     let relowered_op = relowered
@@ -1672,6 +1680,7 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -1801,4 +1810,30 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
         .expect("exception_stack_exit operand must come from a load_var");
     assert_eq!(set_depth_arg_op.kind, "load_var");
     assert_eq!(exit_arg_op.kind, "load_var");
+}
+
+
+#[test]
+fn guarded_load_uses_field_custody_and_preserves_its_offset() {
+    use crate::ir::{FunctionIR, OpIR};
+    use crate::tir::lower_from_simple::lower_to_tir;
+
+    let source = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        name: "guarded_load_owner".into(),
+        params: vec!["obj".into()],
+        ops: vec![OpIR {
+            kind: "guarded_load".into(), args: Some(vec!["obj".into()]),
+            value: Some(24), out: Some("field".into()), class_name: Some("C".into()),
+            ..OpIR::default()
+        }],
+        param_types: None, source_file: None, is_extern: false,
+        codegen_partition: false, parameter_custody: Vec::new(), execution_context: Default::default(),
+    };
+    let tir = lower_to_tir(&source);
+    assert!(tir.blocks.values().flat_map(|block| &block.ops).any(|op| op.opcode == OpCode::LoadAttr));
+    let lowered = lower_to_simple_ir(&tir);
+    let load = lowered.iter().find(|op| op.kind == "guarded_load").unwrap();
+    assert_eq!(load.value, Some(24));
+    assert_eq!(load.class_name.as_deref(), Some("C"));
 }

@@ -30,11 +30,12 @@ fn test_type_ready_fails_closed_when_tp_dict_alloc_fails() {
     // stub hook table (alloc_dict returns 0 => NULL + MemoryError). PyType_Ready
     // then correctly returns -1 and does NOT set Py_TPFLAGS_READY rather than
     // marking a half-initialized type ready. (A real runtime supplies alloc_dict;
-    // the fully-readied hierarchy is covered by test_type_ready_inheritance.rs
-    // against a registered hook table.)
+    // the fully-readied hierarchy is covered by the runtime module
+    // cpython_abi_hooks::native_namespace_tests::readiness.)
     init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.tp_name = c"NoDictionary".as_ptr();
     tp.tp_flags = 0;
     let result = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
     assert_eq!(
@@ -46,20 +47,39 @@ fn test_type_ready_fails_closed_when_tp_dict_alloc_fails() {
         0,
         "a failed PyType_Ready must not mark the type READY"
     );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+        (&raw mut PyExc_MemoryError).cast(),
+        "the fixture must reach dictionary allocation, not fail earlier admission"
+    );
+    assert!(tp.tp_dict.is_null());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
-fn test_type_ready_idempotent_when_already_ready() {
-    // With Py_TPFLAGS_READY pre-set, PyType_Ready short-circuits to success
-    // without touching tp_dict, so it is idempotent even under stubs.
+fn test_ready_flag_without_namespace_reenters_readiness_and_fails_closed() {
+    // Static shells initialize C slots before a runtime dictionary exists.
+    // READY alone cannot hide declarations behind a permanently NULL tp_dict.
+    // Stub dictionary allocation fails, so this incomplete shell stays unready.
     init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.tp_name = c"IncompleteShell".as_ptr();
     tp.tp_flags = Py_TPFLAGS_READY;
-    let flags_before = tp.tp_flags;
-    let rc = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
-    assert_eq!(rc, 0);
-    assert_eq!(tp.tp_flags, flags_before);
+    // Retrying the same failed shell must retry allocation, without a stale
+    // READY or READYING bit turning it into a false success or recursion error.
+    for _ in 0..2 {
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        let rc = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
+        assert_eq!(rc, -1);
+        assert_eq!(tp.tp_flags & (Py_TPFLAGS_READY | Py_TPFLAGS_READYING), 0);
+        assert!(tp.tp_dict.is_null());
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+            (&raw mut PyExc_MemoryError).cast(),
+            "a valid named shell must reach dictionary allocation on each attempt"
+        );
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +91,54 @@ fn test_generic_alloc_null_type_returns_null() {
     init();
     let result = unsafe { molt_cpython_abi::api::typeobj::PyType_GenericAlloc(ptr::null_mut(), 0) };
     assert!(result.is_null());
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+        (&raw mut PyExc_SystemError).cast::<PyObject>()
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn test_variable_allocation_overflow_sets_memory_error_across_all_entrypoints() {
+    use molt_cpython_abi::api::{errors, memory, typeobj};
+    init();
+    let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.tp_basicsize = std::mem::size_of::<PyVarObject>() as Py_ssize_t;
+    // Exercise checked multiplication and checked addition independently, without
+    // asking the host allocator for a huge but representable allocation.
+    for (itemsize, count) in [(3, Py_ssize_t::MAX), (Py_ssize_t::MAX, 2)] {
+        tp.tp_itemsize = itemsize;
+        for route in 0..3 {
+            let result = unsafe {
+                match route {
+                    0 => memory::_PyObject_NewVar(&mut tp, count).cast::<PyObject>(),
+                    1 => memory::_PyObject_GC_NewVar(&mut tp, count).cast::<PyObject>(),
+                    _ => typeobj::PyType_GenericAlloc(&mut tp, count),
+                }
+            };
+            assert!(result.is_null());
+            assert_eq!(
+                unsafe { errors::PyErr_Occurred() },
+                (&raw mut PyExc_MemoryError).cast::<PyObject>()
+            );
+            unsafe { errors::PyErr_Clear() };
+        }
+    }
+}
+
+#[test]
+fn test_native_gc_allocation_rejects_missing_traversal_with_an_exception() {
+    init();
+    let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    tp.tp_flags = Py_TPFLAGS_HAVE_GC;
+    let result = unsafe { molt_cpython_abi::api::memory::_PyObject_GC_New(&mut tp) };
+    assert!(result.is_null());
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+        (&raw mut PyExc_SystemError).cast::<PyObject>()
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
@@ -114,6 +182,11 @@ fn test_generic_new_null_type_returns_null() {
         )
     };
     assert!(result.is_null());
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+        (&raw mut PyExc_SystemError).cast::<PyObject>()
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]

@@ -120,6 +120,10 @@ fn split_collect_names(ops: &[OpIR], params: &[String]) -> BTreeSet<String> {
     names
 }
 
+/// Load each live-in binding from the split frame, taking it: the frame empties
+/// the slot, so the running chunk is the binding's only owner. The chunk
+/// releases the binding at the binding's own Python boundary, or hands it back
+/// to the frame at its exit.
 fn split_frame_load_ops(
     frame_name: &str,
     frame_slot_for: &BTreeMap<String, usize>,
@@ -127,6 +131,18 @@ fn split_frame_load_ops(
     occupied: &mut BTreeSet<String>,
 ) -> Vec<OpIR> {
     let mut ops = Vec::new();
+    let emptied = live_names
+        .iter()
+        .any(|name| frame_slot_for.contains_key(name))
+        .then(|| {
+            let emptied = split_frame_name("__molt_split_frame_taken", occupied);
+            ops.push(OpIR {
+                kind: "const_none".to_string(),
+                out: Some(emptied.clone()),
+                ..OpIR::default()
+            });
+            emptied
+        });
     for name in live_names {
         let Some(slot) = frame_slot_for.get(name) else {
             continue;
@@ -140,10 +156,17 @@ fn split_frame_load_ops(
         });
         ops.push(OpIR {
             kind: "index".to_string(),
-            args: Some(vec![frame_name.to_string(), slot_name]),
+            args: Some(vec![frame_name.to_string(), slot_name.clone()]),
             out: Some(name.clone()),
             ..OpIR::default()
         });
+        if let Some(emptied) = &emptied {
+            ops.push(OpIR {
+                kind: "store_index".to_string(),
+                args: Some(vec![frame_name.to_string(), slot_name, emptied.clone()]),
+                ..OpIR::default()
+            });
+        }
     }
     ops
 }
@@ -236,12 +259,9 @@ struct SplitLocalFrameOwner<'a> {
     failure_tail: &'a [OpIR],
 }
 
-fn split_local_frame_owner(
-    ops: &[OpIR],
-    drop_marker_count: usize,
-) -> Option<SplitLocalFrameOwner<'_>> {
-    let entry_end = drop_marker_count.checked_add(2)?;
-    let entry_ops = ops.get(drop_marker_count..entry_end)?;
+fn split_local_frame_owner(ops: &[OpIR]) -> Option<SplitLocalFrameOwner<'_>> {
+    let entry_end = 2;
+    let entry_ops = ops.get(..entry_end)?;
     if entry_ops[0].kind != "trace_enter_slot"
         || entry_ops[1].kind != "check_exception"
         || ops
@@ -273,7 +293,7 @@ fn split_local_frame_owner(
     if ops.iter().enumerate().any(|(index, op)| {
         simpleir_kind_uses_function_label_id(&op.kind)
             && op.value == Some(failure_label)
-            && index != drop_marker_count + 1
+            && index != 1
             && index != tail_start
     }) {
         // Include every generated label role, not only the splitter's branch
@@ -323,7 +343,8 @@ pub(super) fn verify_split_generated_ops(func: &FunctionIR) -> Result<(), String
 
 /// The freshly allocated frame identity, not a spelling prefix, identifies
 /// generated accesses. Validate both the slot producer and the actual value
-/// being loaded/stored against the layout used by the emitters.
+/// being loaded/stored against the layout used by the emitters. A take,
+/// which empties a loaded slot, directly follows its load.
 pub(super) fn verify_split_frame_ops(
     func: &FunctionIR,
     frame_name: &str,
@@ -347,6 +368,20 @@ pub(super) fn verify_split_frame_ops(
         };
         let slot = value_name.and_then(|name| frame_slot_for.get(name));
         let producer = idx.checked_sub(1).and_then(|index| func.ops.get(index));
+        if op.kind == "store_index"
+            && args.len() == 3
+            && !frame_slot_for.contains_key(&args[2])
+            && producer.is_some_and(|load| {
+                load.kind == "index"
+                    && load.args.as_deref() == Some(&args[..2])
+                    && load
+                        .out
+                        .as_ref()
+                        .is_some_and(|name| frame_slot_for.contains_key(name))
+            })
+        {
+            continue;
+        }
         if !producer.is_some_and(|producer| {
             producer.kind == "const"
                 && producer.out.as_ref() == args.get(1)
@@ -455,6 +490,12 @@ pub(super) fn split_chunk_name(source_function_name: &str, index: usize) -> Stri
 /// enough or no safe split points exist; otherwise returns `Ok((stub, chunks))`
 /// where `stub` is the replacement parent function and `chunks` are the
 /// extracted pieces.
+///
+/// The stub is the callable entry and keeps the source's parameter custody;
+/// every chunk is a transport that borrows its parameters. A transferred
+/// parameter and every transported binding move through the split frame one
+/// owner at a time, so the chunk that rebinds, deletes or finally releases a
+/// binding holds its only reference there.
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
@@ -472,14 +513,15 @@ pub fn split_large_function(
         return Err(Box::new(func));
     }
     let execution_context = func.execution_context;
-    let drop_fact_markers: Vec<OpIR> = func
-        .ops
-        .iter()
-        .take_while(|op| is_drop_fact_marker_op(op))
-        .cloned()
-        .collect();
+    // Outlining creates owners (the transport container and its element
+    // reads). Completed drop plans belong to their original CFG and cannot
+    // authorize those new owners. Both backend pipelines partition before the
+    // terminal drop phase; reject an already lowered body without changing it.
+    if func.ops.iter().any(is_drop_fact_marker_op) {
+        return Err(Box::new(func));
+    }
     let local_frame_owner = if execution_context == ExecutionContextPolicy::Local {
-        let Some(owner) = split_local_frame_owner(&func.ops, drop_fact_markers.len()) else {
+        let Some(owner) = split_local_frame_owner(&func.ops) else {
             // A staged module prologue can publish state and fail before frame
             // entry. Never hoist entry across it or discard its rollback path.
             return Err(Box::new(func));
@@ -504,10 +546,20 @@ pub fn split_large_function(
         return Err(Box::new(func));
     };
     let name_index = SplitNameIndex::new(all_ops);
+    // A transferred parameter is a binding the stub owns. It travels through
+    // the split frame like any binding, so it is no chunk parameter.
+    let transferred_parameters: BTreeSet<&str> = func
+        .params
+        .iter()
+        .zip(&func.parameter_custody)
+        .filter(|&(_, &custody)| custody == molt_ir::ParameterCustody::Transferred)
+        .map(|(name, _)| name.as_str())
+        .collect();
     let parameter_names = func
         .params
         .iter()
         .map(String::as_str)
+        .filter(|name| !transferred_parameters.contains(name))
         .collect::<BTreeSet<_>>();
 
     // Every generated label reference is protected by the same range and
@@ -686,6 +738,14 @@ pub fn split_large_function(
             }
         }
     }
+    // The stub puts each transferred parameter that a chunk reads into the
+    // frame, and the first chunk takes it from there.
+    frame_names.extend(
+        transferred_parameters
+            .iter()
+            .filter(|name| name_index.is_live_before(name, 0))
+            .map(|name| name.to_string()),
+    );
     let frame_slot_for: BTreeMap<String, usize> = frame_names
         .iter()
         .enumerate()
@@ -791,9 +851,6 @@ pub fn split_large_function(
         if execution_context == ExecutionContextPolicy::Local {
             chunk_ops.retain(|op| op.kind != "trace_exit");
         }
-        if !drop_fact_markers.is_empty() {
-            chunk_ops.retain(|op| !is_drop_fact_marker_op(op));
-        }
 
         let chunk_name = chunk_names[i].clone();
         let terminal = if body_has_value_returns {
@@ -818,9 +875,9 @@ pub fn split_large_function(
             ChunkReturnProtocol::Fallthrough
         };
 
-        // Both return protocols share one frame-transport placement. Ownership
-        // facts remain the leading prefix, ahead of every generated frame load.
-        let mut chunk_prologue = drop_fact_markers.clone();
+        // Both return protocols share one frame-transport placement. Every
+        // generated owner is analyzed with its new function's terminal drops.
+        let mut chunk_prologue = Vec::new();
         if uses_split_frame {
             let stores =
                 split_frame_store_ops(&frame_name, &frame_slot_for, &live_out, &mut occupied_names);
@@ -855,7 +912,12 @@ pub fn split_large_function(
                 }));
             }
         }
-        let mut chunk_params = func.params.clone();
+        let mut chunk_params: Vec<String> = func
+            .params
+            .iter()
+            .filter(|name| !transferred_parameters.contains(name.as_str()))
+            .cloned()
+            .collect();
         if uses_split_frame {
             chunk_params.push(frame_name.clone());
         }
@@ -871,6 +933,9 @@ pub fn split_large_function(
             is_extern: false,
             codegen_partition: true,
             execution_context: chunk_execution_context,
+            // A chunk is a transport, never a Python entry: it borrows every
+            // parameter, and the stub's calls to it adopt nothing.
+            parameter_custody: Vec::new(),
         });
         plans.push(ChunkPlan {
             name: chunk_name,
@@ -889,7 +954,13 @@ pub fn split_large_function(
     }
     if uses_split_frame {
         let mut frame_init_args = Vec::with_capacity(frame_slot_for.len());
-        for _ in 0..frame_slot_for.len() {
+        // `frame_slot_for` numbers `frame_names` in order. A transferred
+        // parameter's slot starts with the argument itself.
+        for name in &frame_names {
+            if transferred_parameters.contains(name.as_str()) {
+                frame_init_args.push(name.clone());
+                continue;
+            }
             let slot_init = split_frame_name("__molt_split_frame_init", &mut occupied_names);
             stub_ops.push(OpIR {
                 kind: "const_none".to_string(),
@@ -909,9 +980,28 @@ pub fn split_large_function(
             value: Some(exception_return_label),
             ..OpIR::default()
         });
+        // The frame now holds each transferred argument, so the stub's own
+        // reference ends here and the chunk that takes it is its only owner.
+        // If the allocation fails, the stub still owns the argument and its
+        // exits release it.
+        stub_ops.extend(
+            frame_names
+                .iter()
+                .filter(|name| transferred_parameters.contains(name.as_str()))
+                .map(|name| OpIR {
+                    kind: "del_boundary".to_string(),
+                    args: Some(vec![name.clone()]),
+                    ..OpIR::default()
+                }),
+        );
     }
     for plan in &plans {
-        let mut call_args = func.params.clone();
+        let mut call_args: Vec<String> = func
+            .params
+            .iter()
+            .filter(|name| !transferred_parameters.contains(name.as_str()))
+            .cloned()
+            .collect();
         if uses_split_frame {
             call_args.push(frame_name.clone());
         }
@@ -996,6 +1086,8 @@ pub fn split_large_function(
         is_extern: false,
         codegen_partition: true,
         execution_context,
+        // The stub is the callable entry: it keeps the source's custody.
+        parameter_custody: func.parameter_custody,
     };
 
     for chunk in &chunks {

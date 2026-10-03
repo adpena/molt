@@ -26,6 +26,18 @@ pub(crate) struct MoltAuxSidecar {
     frame_builtins: MoltAuxWord,
     /// Exact code object captured at construction, independent of symbol rebinding.
     frame_code: MoltAuxWord,
+    /// Owned active await continuation. Wakeup subscriptions may disappear before
+    /// resumption; they do not own Python delegation or cr_await introspection.
+    frame_awaited: MoltAuxWord,
+    /// Initialized local slots plus the monotonic count of published cells.
+    /// `FRAME_LOCALS_PRESTART` marks a prefix a frame proxy initialized before
+    /// the compiled prologue ran.
+    frame_locals_phase: MoltAuxWord,
+    /// Owned `FRAME_BINDINGS` payload of the activation's frame object,
+    /// attached on first observation. The activation's completion or death
+    /// hands its bindings to it (when an observer shares it) or detaches it
+    /// before the task storage it reads goes away.
+    frame_bindings: MoltAuxWord,
     pub(crate) extended_size: usize,
 }
 
@@ -40,6 +52,9 @@ impl MoltAuxSidecar {
             frame_globals: MoltAuxWord::new(0),
             frame_builtins: MoltAuxWord::new(0),
             frame_code: MoltAuxWord::new(0),
+            frame_awaited: MoltAuxWord::new(0),
+            frame_locals_phase: MoltAuxWord::new(0),
+            frame_bindings: MoltAuxWord::new(0),
             extended_size,
         }
     }
@@ -83,6 +98,151 @@ pub(crate) fn object_frame_context_bits(ptr: *mut u8) -> [u64; 3] {
 #[inline]
 pub(crate) fn object_frame_code_bits(ptr: *mut u8) -> u64 {
     object_frame_context_bits(ptr)[2]
+}
+
+/// Set in the locals phase while a frame proxy's write, not the compiled
+/// prologue, initialized the body prefix of a created activation.
+const FRAME_LOCALS_PRESTART: u64 = 1 << 62;
+
+pub(crate) fn object_frame_locals_phase(ptr: *mut u8) -> usize {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    (unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_locals_phase
+        .load(Ordering::Acquire)
+        & !FRAME_LOCALS_PRESTART) as usize
+}
+
+/// Whether a frame proxy initialized the body prefix before the prologue.
+pub(crate) fn object_frame_locals_prestart(ptr: *mut u8) -> bool {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    snapshot.kind == super::HEADER_AUX_KIND_SIDECAR
+        && unsafe { super::sidecar_from_snapshot(snapshot) }
+            .frame_locals_phase
+            .load(Ordering::Acquire)
+            & FRAME_LOCALS_PRESTART
+            != 0
+}
+
+/// Caller holds the GIL and the compiled invocation's activation owner.
+/// Publishing a phase ends a proxy's pre-start initialization.
+pub(crate) unsafe fn object_set_frame_locals_phase(ptr: *mut u8, phase: usize) {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    assert_eq!(snapshot.kind, super::HEADER_AUX_KIND_SIDECAR);
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_locals_phase
+        .store(phase as u64, Ordering::Release);
+}
+
+/// A frame proxy initialized a created activation's body prefix (phase 1)
+/// before its prologue. Caller holds the GIL and has checked phase 0.
+pub(crate) unsafe fn object_mark_frame_locals_prestart(ptr: *mut u8) {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    assert_eq!(snapshot.kind, super::HEADER_AUX_KIND_SIDECAR);
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_locals_phase
+        .store(1 | FRAME_LOCALS_PRESTART, Ordering::Release);
+}
+
+/// Borrow the activation frame object's payload; zero until observed.
+#[inline]
+pub(crate) fn object_frame_bindings_bits(ptr: *mut u8) -> u64 {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_bindings
+        .load(Ordering::Acquire)
+}
+
+/// Install `payload` (the caller's owned reference moves in) unless a
+/// payload is already attached. Returns the attached payload, borrowed; zero
+/// when the task has no sidecar, in which case the caller keeps `payload`.
+pub(crate) unsafe fn object_install_frame_bindings(ptr: *mut u8, payload: u64) -> u64 {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    match unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_bindings
+        .compare_exchange(0, payload, Ordering::AcqRel, Ordering::Acquire)
+    {
+        Ok(_) => payload,
+        Err(existing) => existing,
+    }
+}
+
+/// Detach the frame object's payload; the caller owns the returned reference.
+pub(crate) unsafe fn object_take_frame_bindings_bits(ptr: *mut u8) -> u64 {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_bindings
+        .swap(0, Ordering::AcqRel)
+}
+
+/// Borrow the active continuation while holding the task's execution authority.
+#[inline]
+pub(crate) fn object_frame_awaited_bits(ptr: *mut u8) -> u64 {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_awaited
+        .load(Ordering::Acquire)
+}
+
+/// Transfer a new owned continuation to an existing task. Publish before any
+/// callback-capable release; a finalizer may inspect or resume another task.
+/// The task must already have its constructor-selected sidecar.
+pub(crate) unsafe fn object_replace_frame_awaited_owned(
+    py: &crate::PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+) {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    assert_eq!(snapshot.kind, super::HEADER_AUX_KIND_SIDECAR);
+    let sidecar = unsafe { super::sidecar_from_snapshot(snapshot) };
+    let bits = if crate::obj_from_bits(bits).is_none() {
+        0
+    } else {
+        bits
+    };
+    let previous = sidecar.frame_awaited.swap(bits, Ordering::AcqRel);
+    if previous != 0 {
+        crate::dec_ref_bits(py, previous);
+    }
+}
+
+/// Detach without releasing so GC and terminal cleanup can first publish the
+/// complete inert activation, then release all of its owned edges together.
+pub(crate) unsafe fn object_take_frame_awaited_bits(ptr: *mut u8) -> u64 {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_awaited
+        .swap(0, Ordering::AcqRel)
+}
+
+/// A closed frame relinquishes its namespaces while cr_code remains observable.
+pub(crate) unsafe fn object_take_frame_namespaces_bits(ptr: *mut u8) -> [u64; 2] {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return [0; 2];
+    }
+    let sidecar = unsafe { super::sidecar_from_snapshot(snapshot) };
+    [
+        sidecar.frame_globals.swap(0, Ordering::AcqRel),
+        sidecar.frame_builtins.swap(0, Ordering::AcqRel),
+    ]
 }
 
 #[inline]
@@ -230,6 +390,52 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn active_await_owner_survives_subscription_removal_and_retires_once() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            use crate::{dec_ref_bits, inc_ref_bits};
+            let child = crate::molt_task_new(1, 0, crate::TASK_KIND_FUTURE);
+            let child_ptr = crate::obj_from_bits(child).as_ptr().unwrap();
+            let refcount =
+                || unsafe { (*crate::header_from_obj_ptr(child_ptr)).ref_count_snapshot() };
+            let baseline = refcount();
+            for clear_first in [false, true] {
+                let parent = crate::molt_task_new(1, 0, crate::TASK_KIND_COROUTINE);
+                let parent_ptr = crate::obj_from_bits(parent).as_ptr().unwrap();
+                inc_ref_bits(py, child);
+                unsafe { super::object_replace_frame_awaited_owned(py, parent_ptr, child) };
+                assert_eq!(refcount(), baseline + 1);
+                crate::await_waiter_register(py, parent_ptr, child_ptr);
+                crate::await_waiter_clear(py, parent_ptr);
+                assert_eq!(super::object_frame_awaited_bits(parent_ptr), child);
+                assert_eq!(refcount(), baseline + 1);
+                let mut occurrences = 0;
+                unsafe {
+                    crate::object::heap_lifecycle::visit_owned_values(
+                        py,
+                        parent_ptr,
+                        &mut |edge| {
+                            occurrences += usize::from(edge == child);
+                        },
+                    );
+                }
+                assert_eq!(occurrences, 1);
+                if clear_first {
+                    for _ in 0..2 {
+                        unsafe { crate::object::heap_lifecycle::clear_cycle_edges(py, parent_ptr) };
+                        assert_eq!(super::object_frame_awaited_bits(parent_ptr), 0);
+                        assert_eq!(refcount(), baseline);
+                    }
+                }
+                dec_ref_bits(py, parent);
+                assert_eq!(refcount(), baseline);
+            }
+            dec_ref_bits(py, child);
+            assert!(!crate::exception_pending(py));
+        });
+    }
+
     #[test]
     fn suspended_namespace_aliases_are_two_owners_with_idempotent_retirement() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();

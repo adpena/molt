@@ -32,15 +32,6 @@ class CallImportedAttributeDispatchMixin(GeneratorMixinBase):
                 if self._should_attempt_runtime_module_import(
                     module_name
                 ) or self._is_internal_module(module_name):
-                    lowered_handle_ctor = (
-                        self._try_emit_intrinsic_handle_class_constructor(
-                            allowlist_key,
-                            func_id,
-                            node,
-                        )
-                    )
-                    if lowered_handle_ctor is not None:
-                        return lowered_handle_ctor
                     lowered_imported_call = (
                         self._try_emit_imported_module_direct_or_task_call(
                             allowlist_key,

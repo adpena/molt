@@ -1,84 +1,28 @@
 use super::*;
+use molt_cpython_abi::api::errors::with_preserved_error;
+
+#[cfg(test)]
+mod comparison_consumer_tests;
 
 pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> bool {
-    let Some(ptr) = obj_from_bits(obj_bits).as_ptr() else {
-        // Tagged immediates (int/bool/float/None) have no `tp_as_mapping`.
-        return false;
-    };
-    let tid = unsafe { object_type_id(ptr) };
-    match tid {
-        TYPE_ID_DICT | TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL | TYPE_ID_TUPLE
-        | TYPE_ID_STRING | TYPE_ID_BYTES | TYPE_ID_BYTEARRAY | TYPE_ID_RANGE
-        | TYPE_ID_MEMORYVIEW => true,
-        type_id if crate::object::heap_kind_has_class_shape(type_id) => {
-            // Dict subclasses and arbitrary user mappings: a real `__getitem__`
-            // method resolvable on the instance's class MRO.  Mirrors the
-            // `TYPE_ID_OBJECT` subscript path in `molt_index`.
-            let Some(getitem_name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") else {
-                return false;
-            };
-            // `attr_lookup_ptr` returns `None` cleanly (no pending exception)
-            // when the dunder is absent — exactly as the `TYPE_ID_OBJECT`
-            // subscript path in `molt_index` relies on.
-            let found = unsafe { attr_lookup_ptr(_py, ptr, getitem_name_bits) };
-            dec_ref_bits(_py, getitem_name_bits);
-            match found {
-                Some(bound) => {
-                    dec_ref_bits(_py, bound);
-                    true
-                }
-                None => false,
-            }
+    if let Some(ptr) = obj_from_bits(obj_bits).as_ptr()
+        && unsafe { object_type_id(ptr) } == crate::TYPE_ID_FOREIGN
+    {
+        let native = unsafe { crate::object::foreign::foreign_ptr_from_obj(ptr) };
+        let status = unsafe {
+            molt_cpython_abi::api::abstract_mapping::PyMapping_Check(
+                std::ptr::with_exposed_provenance_mut(native),
+            )
+        };
+        if !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null()
+            || exception_pending(_py)
+        {
+            crate::cpython_abi_hooks::propagate_native_failure(_py, "native mapping admission");
+            return false;
         }
-        // Bare type objects, slice, set/frozenset, dict views, generators, …:
-        // no `mp_subscript`.  (A metaclass that defines `__getitem__` so its
-        // instances are subscriptable is out of scope for the class-namespace
-        // contract and is not used as a `__prepare__` result in practice.)
-        _ => false,
+        return status != 0;
     }
-}
-
-unsafe fn memoryview_strided_contains_byte(
-    data: *const u8,
-    len: usize,
-    stride: isize,
-    byte: u8,
-) -> Option<bool> {
-    for idx in 0..len {
-        let offset = memoryview_linear_offset(idx, stride)?;
-        if unsafe { *data.offset(offset) } == byte {
-            return Some(true);
-        }
-    }
-    Some(false)
-}
-
-unsafe fn memoryview_strided_contains_bytes(
-    data: *const u8,
-    len: usize,
-    stride: isize,
-    needle: &[u8],
-) -> Option<bool> {
-    if needle.is_empty() {
-        return Some(true);
-    }
-    if needle.len() > len {
-        return Some(false);
-    }
-    for start in 0..=len - needle.len() {
-        let mut matched = true;
-        for (offset_idx, &expected) in needle.iter().enumerate() {
-            let offset = memoryview_linear_offset(start + offset_idx, stride)?;
-            if unsafe { *data.offset(offset) } != expected {
-                matched = false;
-                break;
-            }
-        }
-        if matched {
-            return Some(true);
-        }
-    }
-    Some(false)
+    unsafe { crate::builtins::attr::has_special_method(_py, obj_bits, b"__getitem__") }
 }
 
 #[unsafe(no_mangle)]
@@ -95,16 +39,31 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
         // Fast path: dict[key] — skips exception_pending and type dispatch chain.
         if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
             unsafe {
-                if !builtin_only && !crate::object::iterable::builtin_receiver(_py, obj_ptr) {
+                if !builtin_only
+                    && (object_type_id(obj_ptr) == crate::TYPE_ID_FOREIGN
+                        || !crate::object::iterable::builtin_receiver(_py, obj_ptr))
+                {
                     if let Some(method) =
                         crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__getitem__")
                     {
                         let result = call_callable1(_py, method, key_bits);
-                        dec_ref_bits(_py, method);
+                        with_preserved_error(|| dec_ref_bits(_py, method));
                         return result;
                     }
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
+                    }
+                    // Classes also support __class_getitem__; ordinary values
+                    // have exhausted their live protocol at this boundary.
+                    if object_type_id(obj_ptr) != TYPE_ID_TYPE {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            &format!(
+                                "'{}' object is not subscriptable",
+                                type_name(_py, obj_from_bits(obj_bits))
+                            ),
+                        );
                     }
                 }
                 if object_is_exact_builtin_dict(_py, obj_ptr) {
@@ -173,7 +132,16 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     }
                     let fmt = match memoryview_format_from_bits(memoryview_format_bits(ptr)) {
                         Some(fmt) => fmt,
-                        None => return MoltObject::none().bits(),
+                        None => {
+                            let format =
+                                string_obj_to_owned(obj_from_bits(memoryview_format_bits(ptr)))
+                                    .unwrap_or_default();
+                            return raise_exception::<_>(
+                                _py,
+                                "NotImplementedError",
+                                &format!("memoryview: unsupported format {format}"),
+                            );
+                        }
                     };
                     let data = memoryview_data(ptr);
                     if data.is_null() {
@@ -342,7 +310,11 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                             new_shape,
                             new_strides,
                         )
-                        .map(|storage| storage.with_owner(memoryview_owner_bits(ptr)));
+                        .map(|storage| {
+                            storage
+                                .with_owner(memoryview_owner_bits(ptr))
+                                .with_native_lease((*memoryview_ptr(ptr)).native_lease.clone())
+                        });
                         let out_ptr = match storage {
                             Some(storage) => alloc_memoryview_from_storage(_py, storage),
                             None => std::ptr::null_mut(),
@@ -542,6 +514,15 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
+                        let slice = match crate::object::ops_sys::DecodedSlice::decode(
+                            _py,
+                            obj_from_bits(slice_start_bits(slice_ptr)),
+                            obj_from_bits(slice_stop_bits(slice_ptr)),
+                            obj_from_bits(slice_step_bits(slice_ptr)),
+                        ) {
+                            Ok(slice) => slice,
+                            Err(err) => return slice_error(_py, err),
+                        };
                         let Some(elems) = crate::object::seq_access::snapshot(
                             _py,
                             ptr,
@@ -549,16 +530,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         ) else {
                             return MoltObject::none().bits();
                         };
-                        let len = elems.len() as isize;
-                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                        let (start, stop, step) = match normalize_slice_indices(
-                            _py, len, start_obj, stop_obj, step_obj,
-                        ) {
-                            Ok(vals) => vals,
-                            Err(err) => return slice_error(_py, err),
-                        };
+                        let (start, stop, step) = slice.adjust(elems.len() as isize);
                         let out_ptr = if step == 1 {
                             let s = start as usize;
                             let e = stop as usize;
@@ -729,7 +701,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         if let Some(value) =
                             range_value_at_index_i64(start_i64, stop_i64, step_i64, idx_i64 as i128)
                         {
-                            return MoltObject::from_int(value).bits();
+                            return int_bits_from_i64(_py, value);
                         }
                         return raise_exception::<_>(
                             _py,
@@ -779,8 +751,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         ) {
                             exception_stack_push();
                             let res = call_callable1(_py, call_bits, key_bits);
-                            dec_ref_bits(_py, call_bits);
+                            with_preserved_error(|| dec_ref_bits(_py, call_bits));
                             if exception_pending(_py) {
+                                with_preserved_error(|| dec_ref_bits(_py, res));
                                 exception_stack_pop(_py);
                                 return MoltObject::none().bits();
                             }
@@ -792,6 +765,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         }
                     }
                     return raise_key_error_with_key(_py, key_bits);
+                }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
                 }
                 if type_id == TYPE_ID_DICT_KEYS_VIEW
                     || type_id == TYPE_ID_DICT_VALUES_VIEW
@@ -811,8 +787,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                             dec_ref_bits(_py, name_bits);
                             exception_stack_push();
                             let res = call_callable1(_py, call_bits, key_bits);
-                            dec_ref_bits(_py, call_bits);
+                            with_preserved_error(|| dec_ref_bits(_py, call_bits));
                             if exception_pending(_py) {
+                                with_preserved_error(|| dec_ref_bits(_py, res));
                                 exception_stack_pop(_py);
                                 return MoltObject::none().bits();
                             }
@@ -820,6 +797,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                             return res;
                         }
                         dec_ref_bits(_py, name_bits);
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
                     }
                     // CPython rule: a type is subscriptable IFF `__class_getitem__`
                     // is resolvable on it. The explicit-call path above handles a
@@ -970,11 +950,51 @@ pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
 /// treat the ABI return as a newly owned value (StoreIndex has zero IR results).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
+    store_index_impl(obj_bits, key_bits, val_bits, false)
+}
+
+pub(crate) extern "C" fn molt_setitem_builtin(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
+    store_index_impl(obj_bits, key_bits, val_bits, true)
+}
+
+pub(crate) extern "C" fn molt_setitem_builtin_method(
+    obj_bits: u64,
+    key_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    let _ = molt_setitem_builtin(obj_bits, key_bits, val_bits);
+    MoltObject::none().bits()
+}
+
+fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: bool) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         // Fast path: dict[key] = val — skips type dispatch chain.
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
+                if !builtin_only
+                    && (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
+                        || !crate::object::iterable::builtin_receiver(_py, ptr))
+                {
+                    if let Some(method) =
+                        crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__setitem__")
+                    {
+                        let result = call_callable2(_py, method, key_bits, val_bits);
+                        with_preserved_error(|| {
+                            dec_ref_bits(_py, method);
+                            dec_ref_bits(_py, result);
+                        });
+                        return if exception_pending(_py) {
+                            MoltObject::none().bits()
+                        } else {
+                            obj_bits
+                        };
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return unsupported_item_mutation(_py, obj_bits, false);
+                }
                 if object_type_id(ptr) == TYPE_ID_DICT {
                     dict_set_in_place(_py, ptr, key_bits, val_bits);
                     if exception_pending(_py) {
@@ -1006,16 +1026,16 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
-                        let len = list_len(ptr) as isize;
-                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                        let (start, stop, step) = match normalize_slice_indices(
-                            _py, len, start_obj, stop_obj, step_obj,
+                        let slice = match crate::object::ops_sys::DecodedSlice::decode(
+                            _py,
+                            obj_from_bits(slice_start_bits(slice_ptr)),
+                            obj_from_bits(slice_stop_bits(slice_ptr)),
+                            obj_from_bits(slice_step_bits(slice_ptr)),
                         ) {
-                            Ok(vals) => vals,
+                            Ok(slice) => slice,
                             Err(err) => return slice_error(_py, err),
                         };
+                        let (start, stop, step) = slice.adjust(list_len(ptr) as isize);
                         let new_items = match collect_iterable_values(
                             _py,
                             val_bits,
@@ -1546,41 +1566,6 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     }
                     return obj_bits;
                 }
-                if type_id == TYPE_ID_OBJECT {
-                    let class_bits = object_class_bits(ptr);
-                    if class_bits != 0 {
-                        let mappingproxy_bits =
-                            crate::builtins::types::mappingproxy_class_bits(_py);
-                        if class_bits == mappingproxy_bits {
-                            return raise_exception::<u64>(
-                                _py,
-                                "TypeError",
-                                "'mappingproxy' object does not support item assignment",
-                            );
-                        }
-                        let builtins = builtin_classes(_py);
-                        if issubclass_bits(class_bits, builtins.dict)
-                            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__setitem__")
-                        {
-                            if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
-                                dec_ref_bits(_py, name_bits);
-                                exception_stack_push();
-                                crate::call::discard_owned_call_result(
-                                    _py,
-                                    call_callable2(_py, call_bits, key_bits, val_bits),
-                                );
-                                dec_ref_bits(_py, call_bits);
-                                if exception_pending(_py) {
-                                    exception_stack_pop(_py);
-                                    return MoltObject::none().bits();
-                                }
-                                exception_stack_pop(_py);
-                                return obj_bits;
-                            }
-                            dec_ref_bits(_py, name_bits);
-                        }
-                    }
-                }
                 if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
@@ -1591,37 +1576,55 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     }
                     return obj_bits;
                 }
-                if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__setitem__") {
-                    if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
-                        dec_ref_bits(_py, name_bits);
-                        exception_stack_push();
-                        crate::call::discard_owned_call_result(
-                            _py,
-                            call_callable2(_py, call_bits, key_bits, val_bits),
-                        );
-                        dec_ref_bits(_py, call_bits);
-                        if exception_pending(_py) {
-                            exception_stack_pop(_py);
-                            return MoltObject::none().bits();
-                        }
-                        exception_stack_pop(_py);
-                        return obj_bits;
-                    }
-                    dec_ref_bits(_py, name_bits);
-                }
             }
         }
-        MoltObject::none().bits()
+        unsupported_item_mutation(_py, obj_bits, false)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
+    del_index_impl(obj_bits, key_bits, false)
+}
+
+pub(crate) extern "C" fn molt_delitem_builtin(obj_bits: u64, key_bits: u64) -> u64 {
+    del_index_impl(obj_bits, key_bits, true)
+}
+
+pub(crate) extern "C" fn molt_delitem_builtin_method(obj_bits: u64, key_bits: u64) -> u64 {
+    let _ = molt_delitem_builtin(obj_bits, key_bits);
+    MoltObject::none().bits()
+}
+
+fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let key = obj_from_bits(key_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
+                if !builtin_only
+                    && (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
+                        || !crate::object::iterable::builtin_receiver(_py, ptr))
+                {
+                    if let Some(method) =
+                        crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__delitem__")
+                    {
+                        let result = call_callable1(_py, method, key_bits);
+                        with_preserved_error(|| {
+                            dec_ref_bits(_py, method);
+                            dec_ref_bits(_py, result);
+                        });
+                        return if exception_pending(_py) {
+                            MoltObject::none().bits()
+                        } else {
+                            obj_bits
+                        };
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return unsupported_item_mutation(_py, obj_bits, true);
+                }
                 if object_type_id(ptr) == TYPE_ID_LIST_BOOL
                     || object_type_id(ptr) == TYPE_ID_LIST_INT
                 {
@@ -1660,16 +1663,16 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
-                        let len = list_len(ptr) as isize;
-                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                        let (start, stop, step) = match normalize_slice_indices(
-                            _py, len, start_obj, stop_obj, step_obj,
+                        let slice = match crate::object::ops_sys::DecodedSlice::decode(
+                            _py,
+                            obj_from_bits(slice_start_bits(slice_ptr)),
+                            obj_from_bits(slice_stop_bits(slice_ptr)),
+                            obj_from_bits(slice_step_bits(slice_ptr)),
                         ) {
-                            Ok(vals) => vals,
+                            Ok(slice) => slice,
                             Err(err) => return slice_error(_py, err),
                         };
+                        let (start, stop, step) = slice.adjust(list_len(ptr) as isize);
                         if step == 1 {
                             let s = start as usize;
                             let mut e = stop as usize;
@@ -1682,7 +1685,7 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             return obj_bits;
                         }
                         let mut indices = collect_slice_indices(start, stop, step);
-                        if step > 0 {
+                        if step < 0 {
                             indices.reverse();
                         }
                         if !crate::object::list_mutation::remove_indices(_py, ptr, &indices) {
@@ -1812,28 +1815,25 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                     }
                     return raise_key_error_with_key(_py, key_bits);
                 }
-                if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__delitem__") {
-                    if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
-                        dec_ref_bits(_py, name_bits);
-                        exception_stack_push();
-                        crate::call::discard_owned_call_result(
-                            _py,
-                            call_callable1(_py, call_bits, key_bits),
-                        );
-                        dec_ref_bits(_py, call_bits);
-                        if exception_pending(_py) {
-                            exception_stack_pop(_py);
-                            return MoltObject::none().bits();
-                        }
-                        exception_stack_pop(_py);
-                        return obj_bits;
-                    }
-                    dec_ref_bits(_py, name_bits);
-                }
             }
         }
-        MoltObject::none().bits()
+        unsupported_item_mutation(_py, obj_bits, true)
     })
+}
+
+fn unsupported_item_mutation(py: &PyToken<'_>, object: u64, delete: bool) -> u64 {
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let operation = if delete { "deletion" } else { "assignment" };
+    raise_exception::<_>(
+        py,
+        "TypeError",
+        &format!(
+            "'{}' object does not support item {operation}",
+            type_name(py, obj_from_bits(object))
+        ),
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -1854,21 +1854,6 @@ pub extern "C" fn molt_getitem_unchecked(obj_bits: u64, key_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_setitem_method(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(obj_bits);
-        if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
-                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                        return MoltObject::none().bits();
-                    };
-                    dict_set_in_place(_py, dict_ptr, key_bits, val_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::none().bits();
-                }
-            }
-        }
         let _ = molt_store_index(obj_bits, key_bits, val_bits);
         MoltObject::none().bits()
     })
@@ -1884,23 +1869,158 @@ pub extern "C" fn molt_delitem_method(obj_bits: u64, key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
-    // Tolerate None container from undefined SSA paths on exception handler branches.
-    if obj_from_bits(container_bits).is_none() {
-        return MoltObject::from_bool(false).bits();
+    contains_impl(container_bits, item_bits, false)
+}
+
+pub(crate) extern "C" fn molt_contains_builtin(container_bits: u64, item_bits: u64) -> u64 {
+    contains_impl(container_bits, item_bits, true)
+}
+
+/// Builtin sequence membership reads one owned item at a time. A callback can
+/// resize or promote a compact list, so reload its representation on each step.
+unsafe fn sequence_contains_builtin(py: &PyToken<'_>, ptr: *mut u8, needle: u64) -> u64 {
+    let item = obj_from_bits(needle);
+    let inline_integer = item.as_int().or_else(|| item.as_bool().map(i64::from));
+    if let Some(needle) = inline_integer {
+        match unsafe { object_type_id(ptr) } {
+            TYPE_ID_LIST_INT => {
+                let found = unsafe { crate::object::layout::list_int_vec_ref(ptr) }
+                    .iter()
+                    .any(|&value| value == needle);
+                return MoltObject::from_bool(found).bits();
+            }
+            TYPE_ID_LIST_BOOL => {
+                let found = unsafe { crate::object::layout::list_bool_vec_ref(ptr) }
+                    .iter()
+                    .any(|&value| i64::from(value != 0) == needle);
+                return MoltObject::from_bool(found).bits();
+            }
+            _ => {}
+        }
     }
+    let mut index = 0;
+    loop {
+        let value = match unsafe { object_type_id(ptr) } {
+            TYPE_ID_LIST | TYPE_ID_TUPLE => {
+                let Some(item) = (unsafe { crate::object::seq_access::pin_item(py, ptr, index) })
+                else {
+                    return MoltObject::from_bool(false).bits();
+                };
+                item.into_bits()
+            }
+            TYPE_ID_LIST_INT => {
+                let raw = unsafe { crate::object::layout::list_int_vec_ref(ptr) }
+                    .as_slice()
+                    .get(index)
+                    .copied();
+                let Some(raw) = raw else {
+                    return MoltObject::from_bool(false).bits();
+                };
+                int_bits_from_i64(py, raw)
+            }
+            TYPE_ID_LIST_BOOL => {
+                let raw = unsafe { crate::object::layout::list_bool_vec_ref(ptr) }
+                    .as_slice()
+                    .get(index)
+                    .copied();
+                let Some(raw) = raw else {
+                    return MoltObject::from_bool(false).bits();
+                };
+                MoltObject::from_bool(raw != 0).bits()
+            }
+            _ => {
+                return raise_exception::<_>(
+                    py,
+                    "SystemError",
+                    "invalid sequence membership storage",
+                );
+            }
+        };
+        if exception_pending(py) {
+            dec_ref_bits(py, value);
+            return MoltObject::none().bits();
+        }
+        let outcome =
+            crate::object::ops_compare::compare_object_eq_bool(py, obj_from_bits(value), item);
+        dec_ref_bits(py, value);
+        match outcome {
+            crate::object::ops_compare::CompareBoolOutcome::True => {
+                return MoltObject::from_bool(true).bits();
+            }
+            crate::object::ops_compare::CompareBoolOutcome::Error => {
+                return MoltObject::none().bits();
+            }
+            crate::object::ops_compare::CompareBoolOutcome::False
+            | crate::object::ops_compare::CompareBoolOutcome::NotComparable => {}
+        }
+        index += 1;
+    }
+}
+fn iterable_contains(_py: &PyToken<'_>, container_bits: u64, item_bits: u64) -> u64 {
+    let item = obj_from_bits(item_bits);
+    // OwnedIterator already owns __iter__/__getitem__ fallback,
+    // item custody, exhaustion and errors. Membership adds only
+    // identity-or-rich-equality and releases each owned item.
+    let Some(mut iter) = crate::object::iterable::OwnedIterator::new(_py, container_bits) else {
+        return MoltObject::none().bits();
+    };
+    loop {
+        let value = match iter.next() {
+            Ok(Some(value)) => value,
+            Ok(None) => return MoltObject::from_bool(false).bits(),
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let outcome =
+            crate::object::ops_compare::compare_object_eq_bool(_py, obj_from_bits(value), item);
+        dec_ref_bits(_py, value);
+        match outcome {
+            crate::object::ops_compare::CompareBoolOutcome::True => {
+                return MoltObject::from_bool(true).bits();
+            }
+            crate::object::ops_compare::CompareBoolOutcome::Error => {
+                return MoltObject::none().bits();
+            }
+            crate::object::ops_compare::CompareBoolOutcome::False
+            | crate::object::ops_compare::CompareBoolOutcome::NotComparable => {}
+        }
+    }
+}
+
+fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let container = obj_from_bits(container_bits);
         let item = obj_from_bits(item_bits);
         if let Some(ptr) = container.as_ptr() {
             unsafe {
+                if !builtin_only && !crate::object::iterable::builtin_receiver(_py, ptr) {
+                    if let Some(method) = crate::builtins::attr::lookup_special_method(
+                        _py,
+                        container_bits,
+                        b"__contains__",
+                    ) {
+                        let result = call_callable1(_py, method, item_bits);
+                        dec_ref_bits(_py, method);
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, result);
+                            return MoltObject::none().bits();
+                        }
+                        let truth = is_truthy(_py, obj_from_bits(result));
+                        dec_ref_bits(_py, result);
+                        return if exception_pending(_py) {
+                            MoltObject::none().bits()
+                        } else {
+                            MoltObject::from_bool(truth).bits()
+                        };
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                }
                 let type_id = object_type_id(ptr);
                 if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
-                    if !ensure_hashable(_py, item_bits, HashContext::DictKey) {
-                        return MoltObject::none().bits();
-                    }
                     let found = dict_find_entry(_py, dict_ptr, item_bits);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
@@ -1908,131 +2028,25 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     return MoltObject::from_bool(found.is_some()).bits();
                 }
                 match type_id {
-                    TYPE_ID_LIST => {
-                        // Fast path: for NaN-boxed integers/bools/None, identity
-                        // (bit-equality) implies value equality. Scan the raw u64
-                        // slice first to avoid per-element inc_ref/eq/dec_ref.
-                        // This is the hot path for `x in [1, 2, 3]` style range checks.
-                        if item.as_int().is_some() || item.is_bool() || item.is_none() {
-                            let found = crate::object::seq_access::with_borrowed(ptr, |elems| {
-                                simd_contains_u64(elems, item_bits)
-                            });
-                            if found {
-                                return MoltObject::from_bool(true).bits();
-                            }
-                            return MoltObject::from_bool(false).bits();
-                        }
-                        let mut idx = 0usize;
-                        while let Some(elem) = crate::object::seq_access::pin_item(_py, ptr, idx) {
-                            let elem_bits = elem.bits();
-                            // Identity check: bit-equality implies identity.
-                            // Non-NaN floats are stored inline with unique bit
-                            // patterns; NaN floats are heap-allocated with unique
-                            // pointer addresses. Both cases make bit-equality
-                            // correct for identity.
-                            if elem_bits == item_bits {
-                                return MoltObject::from_bool(true).bits();
-                            }
-                            let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
-                                Some(val) => val,
-                                None => return MoltObject::none().bits(),
-                            };
-                            if eq {
-                                return MoltObject::from_bool(true).bits();
-                            }
-                            idx += 1;
-                        }
-                        return MoltObject::from_bool(false).bits();
+                    TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL | TYPE_ID_TUPLE => {
+                        return sequence_contains_builtin(_py, ptr, item_bits);
                     }
-                    TYPE_ID_LIST_INT => {
-                        // list[int] stores raw i64 — compare against the
-                        // needle's int value directly for O(n) scan.
-                        let elems = crate::object::layout::list_int_vec_ref(ptr);
-                        if let Some(needle) = to_i64(item) {
-                            for &raw in elems.iter() {
-                                if raw == needle {
-                                    return MoltObject::from_bool(true).bits();
-                                }
-                            }
-                            return MoltObject::from_bool(false).bits();
-                        }
-                        // Non-int needle: box each element and compare.
-                        for &raw in elems.iter() {
-                            let elem_bits = MoltObject::from_int(raw).bits();
-                            let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
-                                Some(val) => val,
-                                None => return MoltObject::none().bits(),
-                            };
-                            if eq {
-                                return MoltObject::from_bool(true).bits();
-                            }
-                        }
-                        return MoltObject::from_bool(false).bits();
-                    }
-                    TYPE_ID_LIST_BOOL => {
-                        // list[bool] stores raw u8 (0/1) — compare against
-                        // the needle's bool value directly.
-                        let elems = crate::object::layout::list_bool_vec_ref(ptr);
-                        if let Some(needle_bool) = item.as_bool() {
-                            let needle_u8: u8 = if needle_bool { 1 } else { 0 };
-                            for &raw in elems.iter() {
-                                if raw == needle_u8 {
-                                    return MoltObject::from_bool(true).bits();
-                                }
-                            }
-                            return MoltObject::from_bool(false).bits();
-                        }
-                        // Non-bool needle (e.g. int 1 == True): box each element.
-                        for &raw in elems.iter() {
-                            let elem_bits = MoltObject::from_bool(raw != 0).bits();
-                            let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
-                                Some(val) => val,
-                                None => return MoltObject::none().bits(),
-                            };
-                            if eq {
-                                return MoltObject::from_bool(true).bits();
-                            }
-                        }
-                        return MoltObject::from_bool(false).bits();
-                    }
-                    TYPE_ID_TUPLE => {
-                        let result =
-                            crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
-                                // Same identity fast path for tuples with inline-int/bool/None needle.
-                                if item.as_int().is_some() || item.is_bool() || item.is_none() {
-                                    return MoltObject::from_bool(simd_contains_u64(
-                                        elems, item_bits,
-                                    ))
-                                    .bits();
-                                }
-                                for &elem_bits in elems.iter() {
-                                    if elem_bits == item_bits {
-                                        return MoltObject::from_bool(true).bits();
-                                    }
-                                    let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
-                                        Some(val) => val,
-                                        None => return MoltObject::none().bits(),
-                                    };
-                                    if eq {
-                                        return MoltObject::from_bool(true).bits();
-                                    }
-                                }
-                                MoltObject::from_bool(false).bits()
-                            });
-                        return result.unwrap_or_else(|| MoltObject::none().bits());
+                    TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_ITEMS_VIEW => {
+                        use crate::object::ops_compare::builtin_families::BuiltinComparison;
+                        let family = if type_id == TYPE_ID_DICT_KEYS_VIEW {
+                            BuiltinComparison::DictKeys
+                        } else {
+                            BuiltinComparison::DictItems
+                        };
+                        return family.invoke_contains(_py, container_bits, item_bits);
                     }
                     TYPE_ID_SET | TYPE_ID_FROZENSET => {
-                        if !ensure_hashable(_py, item_bits, HashContext::SetElement) {
-                            return MoltObject::none().bits();
-                        }
-                        let order = set_order(ptr);
-                        let hashes = set_hashes(ptr);
-                        let table = set_table(ptr);
-                        let found = set_find_entry(_py, order, hashes, table, item_bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        return MoltObject::from_bool(found.is_some()).bits();
+                        return crate::object::ops_set::set_contains(
+                            _py,
+                            container_bits,
+                            item_bits,
+                            crate::object::ops_set::SetContainsPolicy::Python,
+                        );
                     }
                     TYPE_ID_STRING => {
                         let Some(item_ptr) = item.as_ptr() else {
@@ -2067,301 +2081,50 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         return MoltObject::from_bool(idx >= 0).bits();
                     }
                     TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
-                        let hay_len = bytes_len(ptr);
-                        let hay_bytes = std::slice::from_raw_parts(bytes_data(ptr), hay_len);
-                        if let Some(byte) = item.as_int() {
-                            if !(0..=255).contains(&byte) {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "ValueError",
-                                    "byte must be in range(0, 256)",
-                                );
-                            }
-                            let found = memchr(byte as u8, hay_bytes).is_some();
-                            return MoltObject::from_bool(found).bits();
-                        }
-                        if let Some(item_ptr) = item.as_ptr() {
-                            let item_type = object_type_id(item_ptr);
-                            if item_type == TYPE_ID_BYTES || item_type == TYPE_ID_BYTEARRAY {
-                                let needle_len = bytes_len(item_ptr);
-                                let needle_bytes =
-                                    std::slice::from_raw_parts(bytes_data(item_ptr), needle_len);
-                                if needle_bytes.is_empty() {
-                                    return MoltObject::from_bool(true).bits();
-                                }
-                                let idx = bytes_find_impl(hay_bytes, needle_bytes);
-                                return MoltObject::from_bool(idx >= 0).bits();
-                            }
-                        }
-                        return raise_exception::<_>(
+                        return crate::object::ops_bytes::bytes_contains_builtin(
                             _py,
-                            "TypeError",
-                            &format!(
-                                "a bytes-like object is required, not '{}'",
-                                type_name(_py, item)
-                            ),
+                            container_bits,
+                            item_bits,
                         );
                     }
                     TYPE_ID_RANGE => {
-                        let candidate = if let Some(f) = as_float_extended(item) {
-                            if !f.is_finite() || f.fract() != 0.0 {
-                                return MoltObject::from_bool(false).bits();
-                            }
-                            bigint_from_f64_trunc(f)
-                        } else {
-                            let type_err = format!(
-                                "'{}' object cannot be interpreted as an integer",
-                                type_name(_py, item)
-                            );
-                            let Some(val) = index_bigint_from_obj(_py, item_bits, &type_err) else {
-                                if exception_pending(_py) {
-                                    molt_exception_clear();
-                                }
-                                return MoltObject::from_bool(false).bits();
-                            };
-                            val
-                        };
-                        let Some((start, stop, step)) = range_components_bigint(ptr) else {
-                            return MoltObject::none().bits();
-                        };
-                        if step.is_zero() {
-                            return MoltObject::from_bool(false).bits();
-                        }
-                        let in_range = if step.is_positive() {
-                            candidate >= start && candidate < stop
-                        } else {
-                            candidate <= start && candidate > stop
-                        };
-                        if !in_range {
-                            return MoltObject::from_bool(false).bits();
-                        }
-                        let offset = candidate - start;
-                        let step_abs = if step.is_negative() { -step } else { step };
-                        let aligned = offset.mod_floor(&step_abs).is_zero();
-                        return MoltObject::from_bool(aligned).bits();
-                    }
-                    TYPE_ID_MEMORYVIEW => {
-                        if memoryview_released(ptr) {
-                            return raise_released_memoryview(_py);
-                        }
-                        let data = memoryview_data(ptr);
-                        if data.is_null() {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                &format!(
-                                    "a bytes-like object is required, not '{}'",
-                                    type_name(_py, item)
-                                ),
-                            );
-                        }
-                        let len = memoryview_len(ptr);
-                        let itemsize = memoryview_itemsize(ptr);
-                        let stride = memoryview_stride(ptr);
-                        if itemsize != 1 {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "memoryview itemsize not supported",
-                            );
-                        }
-                        if stride == 1 {
-                            let hay = std::slice::from_raw_parts(data.cast_const(), len);
-                            if let Some(byte) = item.as_int() {
-                                if !(0..=255).contains(&byte) {
-                                    return raise_exception::<_>(
-                                        _py,
-                                        "ValueError",
-                                        "byte must be in range(0, 256)",
-                                    );
-                                }
-                                let found = memchr(byte as u8, hay).is_some();
-                                return MoltObject::from_bool(found).bits();
-                            }
-                            if let Some(item_ptr) = item.as_ptr() {
-                                let item_type = object_type_id(item_ptr);
-                                if item_type == TYPE_ID_BYTES || item_type == TYPE_ID_BYTEARRAY {
-                                    let needle_len = bytes_len(item_ptr);
-                                    let needle_bytes = std::slice::from_raw_parts(
-                                        bytes_data(item_ptr),
-                                        needle_len,
-                                    );
-                                    if needle_bytes.is_empty() {
-                                        return MoltObject::from_bool(true).bits();
-                                    }
-                                    let idx = bytes_find_impl(hay, needle_bytes);
-                                    return MoltObject::from_bool(idx >= 0).bits();
-                                }
-                            }
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                &format!(
-                                    "a bytes-like object is required, not '{}'",
-                                    type_name(_py, item)
-                                ),
-                            );
-                        }
-                        if let Some(byte) = item.as_int() {
-                            if !(0..=255).contains(&byte) {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "ValueError",
-                                    "byte must be in range(0, 256)",
-                                );
-                            }
-                            let Some(found) = memoryview_strided_contains_byte(
-                                data.cast_const(),
-                                len,
-                                stride,
-                                byte as u8,
-                            ) else {
+                        if let Some(candidate) = range_lookup_candidate(_py, item_bits) {
+                            let Some((start, stop, step)) = range_components_bigint(ptr) else {
                                 return MoltObject::none().bits();
                             };
-                            return MoltObject::from_bool(found).bits();
+                            return MoltObject::from_bool(
+                                range_index_for_candidate(&start, &stop, &step, &candidate)
+                                    .is_some(),
+                            )
+                            .bits();
                         }
-                        if let Some(item_ptr) = item.as_ptr() {
-                            let item_type = object_type_id(item_ptr);
-                            if item_type == TYPE_ID_BYTES || item_type == TYPE_ID_BYTEARRAY {
-                                let needle_len = bytes_len(item_ptr);
-                                let needle_bytes =
-                                    std::slice::from_raw_parts(bytes_data(item_ptr), needle_len);
-                                if needle_bytes.is_empty() {
-                                    return MoltObject::from_bool(true).bits();
-                                }
-                                let Some(found) = memoryview_strided_contains_bytes(
-                                    data.cast_const(),
-                                    len,
-                                    stride,
-                                    needle_bytes,
-                                ) else {
-                                    return MoltObject::none().bits();
-                                };
-                                return MoltObject::from_bool(found).bits();
-                            }
-                        }
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            &format!(
-                                "a bytes-like object is required, not '{}'",
-                                type_name(_py, item)
-                            ),
-                        );
+                        return iterable_contains(_py, container_bits, item_bits);
                     }
                     _ => {}
                 }
-                if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__contains__") {
-                    if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, name_bits) {
-                        dec_ref_bits(_py, name_bits);
-                        let res_bits = call_callable1(_py, call_bits, item_bits);
-                        dec_ref_bits(_py, call_bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        if !is_not_implemented_bits(_py, res_bits) {
-                            let truthy = is_truthy(_py, obj_from_bits(res_bits));
-                            dec_ref_bits(_py, res_bits);
-                            return MoltObject::from_bool(truthy).bits();
-                        }
-                        dec_ref_bits(_py, res_bits);
+                if let Some(call_bits) = crate::builtins::attr::lookup_special_method(
+                    _py,
+                    container_bits,
+                    b"__contains__",
+                ) {
+                    let result = call_callable1(_py, call_bits, item_bits);
+                    dec_ref_bits(_py, call_bits);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, result);
+                        return MoltObject::none().bits();
+                    }
+                    let truth = is_truthy(_py, obj_from_bits(result));
+                    dec_ref_bits(_py, result);
+                    return if exception_pending(_py) {
+                        MoltObject::none().bits()
                     } else {
-                        dec_ref_bits(_py, name_bits);
-                    }
+                        MoltObject::from_bool(truth).bits()
+                    };
                 }
-                let iter_bits = molt_iter(container_bits);
-                if !obj_from_bits(iter_bits).is_none() {
-                    loop {
-                        let pair_bits = molt_iter_next(iter_bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        let pair_obj = obj_from_bits(pair_bits);
-                        let Some(pair_ptr) = pair_obj.as_ptr() else {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "object is not an iterator",
-                            );
-                        };
-                        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "object is not an iterator",
-                            );
-                        }
-                        let pair = crate::object::seq_access::with_immutable_tuple_slice(
-                            pair_ptr,
-                            |elems| (elems.len() >= 2).then(|| (elems[0], elems[1])),
-                        )
-                        .flatten();
-                        let Some((val_bits, done_bits)) = pair else {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "object is not an iterator",
-                            );
-                        };
-                        if is_truthy(_py, obj_from_bits(done_bits)) {
-                            return MoltObject::from_bool(false).bits();
-                        }
-                        if obj_eq(_py, obj_from_bits(val_bits), item) {
-                            return MoltObject::from_bool(true).bits();
-                        }
-                    }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
                 }
-                if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") {
-                    if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, name_bits) {
-                        dec_ref_bits(_py, name_bits);
-                        let mut idx = 0i64;
-                        loop {
-                            let idx_bits = MoltObject::from_int(idx).bits();
-                            exception_stack_push();
-                            let val_bits = call_callable1(_py, call_bits, idx_bits);
-                            if exception_pending(_py) {
-                                let exc_bits = molt_exception_last();
-                                let exc_obj = obj_from_bits(exc_bits);
-                                let mut is_index_error = false;
-                                if let Some(exc_ptr) = exc_obj.as_ptr()
-                                    && object_type_id(exc_ptr) == TYPE_ID_EXCEPTION
-                                {
-                                    let kind_bits = exception_kind_bits(exc_ptr);
-                                    let kind_obj = obj_from_bits(kind_bits);
-                                    if let Some(kind_ptr) = kind_obj.as_ptr()
-                                        && object_type_id(kind_ptr) == TYPE_ID_STRING
-                                    {
-                                        let bytes = std::slice::from_raw_parts(
-                                            string_bytes(kind_ptr),
-                                            string_len(kind_ptr),
-                                        );
-                                        if bytes == b"IndexError" {
-                                            is_index_error = true;
-                                        }
-                                    }
-                                }
-                                if is_index_error {
-                                    clear_exception(_py);
-                                    exception_stack_pop(_py);
-                                    dec_ref_bits(_py, exc_bits);
-                                    return MoltObject::from_bool(false).bits();
-                                }
-                                exception_stack_pop_restore_last(_py, exc_bits);
-                                dec_ref_bits(_py, exc_bits);
-                                return MoltObject::none().bits();
-                            }
-                            exception_stack_pop(_py);
-                            if obj_eq(_py, obj_from_bits(val_bits), item) {
-                                dec_ref_bits(_py, val_bits);
-                                return MoltObject::from_bool(true).bits();
-                            }
-                            dec_ref_bits(_py, val_bits);
-                            idx += 1;
-                        }
-                    } else {
-                        dec_ref_bits(_py, name_bits);
-                    }
-                }
+                return iterable_contains(_py, container_bits, item_bits);
             }
         }
         raise_exception::<_>(
@@ -2382,22 +2145,12 @@ pub extern "C" fn molt_list_contains(container_bits: u64, item_bits: u64) -> u64
         let container = obj_from_bits(container_bits);
         if let Some(ptr) = container.as_ptr() {
             unsafe {
-                let mut idx = 0usize;
-                while let Some(elem) = crate::object::seq_access::pin_item(_py, ptr, idx) {
-                    let elem_bits = elem.bits();
-                    if elem_bits == item_bits {
-                        return MoltObject::from_bool(true).bits();
-                    }
-                    let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
-                        Some(val) => val,
-                        None => return MoltObject::none().bits(),
-                    };
-                    if eq {
-                        return MoltObject::from_bool(true).bits();
-                    }
-                    idx += 1;
+                if object_type_id(ptr) != TYPE_ID_LIST
+                    || !crate::object::iterable::builtin_receiver(_py, ptr)
+                {
+                    return molt_contains(container_bits, item_bits);
                 }
-                return MoltObject::from_bool(false).bits();
+                return sequence_contains_builtin(_py, ptr, item_bits);
             }
         }
         molt_contains(container_bits, item_bits)

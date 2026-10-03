@@ -2,15 +2,17 @@
 
 Move-only extraction from frontend/__init__.py. Owns the generator's canonical
 name-binding storage paths: boxed locals, free-var cells, class-body namespace
-routing, unbound guards, plain-local ownership boundaries, and locals-cache
-updates used by visitor mixins.
+routing, unbound guards, and a synchronous frame's binding homes, which own
+its Python bindings.
 """
 
 from __future__ import annotations
 
 import ast
 from contextlib import contextmanager
+from functools import partial
 from typing import (
+    TYPE_CHECKING,
     Callable,
     Iterable,
     Iterator,
@@ -37,6 +39,9 @@ from molt.frontend.lowering.generator_state import (
     FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS,
 )
 from molt.frontend.sema.funcmeta import parse_stateful_function_type_hint
+
+if TYPE_CHECKING:
+    from molt.frontend.lowering.function_lifecycle import FrameRestoreScope
 
 
 _ProjectionValue = TypeVar("_ProjectionValue")
@@ -133,14 +138,20 @@ class LocalBindingMixin(GeneratorMixinBase):
             return None
         return fact.exact_builtin_name()
 
-    def _expression_has_invalidated_binding(self, node: ast.expr) -> bool:
-        """Query source-order authority before cached-name/call specialization."""
+    def _expression_has_invalidated_binding(self, node: ast.expr) -> bool | None:
+        """Query source-order authority before cached-name/call specialization.
+
+        None when the binding analysis has no fact for the name. A read of a
+        frame's home-backed binding then counts as possibly invalidated
+        (`_load_local_value` takes the same tri-state): only a source fact can
+        prove a cached view current.
+        """
         while isinstance(node, ast.Attribute):
             node = node.value
         if not isinstance(node, ast.Name) or self.python_binding_index is None:
-            return False
+            return None
         fact = self.python_binding_index.expression_fact(node)
-        return fact is not None and fact.binding_invalidated
+        return None if fact is None else fact.binding_invalidated
 
     def _call_has_bound_builtin_name(self, node: ast.expr) -> bool:
         if not isinstance(node, ast.Name) or not self._name_resolves_to_builtin(
@@ -290,6 +301,28 @@ class LocalBindingMixin(GeneratorMixinBase):
                 init = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=init))
         cell = self._emit_cell_new(init)
+        if self.frame_home_slots is not None:
+            # MAKE_CELL: the cell enters the variable's home, and the frame
+            # reaches it through the store's view from here on. The cell took
+            # its own reference, so a parameter's frame reference ends here.
+            cell = self._emit_frame_home_store(
+                name,
+                cell,
+                kind=(
+                    "FRAME_HOME_CELL"
+                    if self._frame_slot_is_cell(name)
+                    else "FRAME_HOME_PRIVATE_CELL"
+                ),
+            )
+            if init.name == self.parameter_bindings.get(name):
+                self.emit(
+                    MoltOp(
+                        kind="DEL_BOUNDARY",
+                        args=[init],
+                        result=MoltValue("none"),
+                        metadata={"var": name},
+                    )
+                )
         self.boxed_locals[name] = cell
         if init.type_hint:
             self.boxed_local_hints[name] = init.type_hint
@@ -299,11 +332,13 @@ class LocalBindingMixin(GeneratorMixinBase):
         self.locals[name] = cell
         if self.is_async():
             offset = self._async_local_offset(name)
+            offset_value = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[offset], result=offset_value))
             self.emit(
                 MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", offset, cell],
-                    result=MoltValue("none"),
+                    kind="CALL",
+                    args=["molt_frame_cell_publish", offset_value, cell],
+                    result=MoltValue(self.next_var(), type_hint="None"),
                 )
             )
 
@@ -521,17 +556,29 @@ class LocalBindingMixin(GeneratorMixinBase):
             names.append(varkw)
         return names
 
-    def _prebox_scope_cell_vars(self, cell_vars: Sequence[str]) -> None:
+    def _prebox_scope_cell_vars(
+        self, cell_vars: Sequence[str], *, private_cells: Sequence[str] = ()
+    ) -> None:
+        if self.is_async():
+            self.emit(
+                MoltOp(
+                    kind="CALL",
+                    args=["molt_frame_locals_begin"],
+                    result=MoltValue(self.next_var(), type_hint="None"),
+                )
+            )
         for name in cell_vars:
             self._box_local(name)
             self.closure_locals.add(name)
+        for name in private_cells:
+            self._box_local(name)
 
     def _emit_free_var_load(
         self,
         name: str,
         *,
         guard_unbound: bool = True,
-        binding_invalidated: bool = False,
+        binding_invalidated: bool | None = None,
     ) -> MoltValue | None:
         cell = self._load_free_var_cell(name)
         if cell is None:
@@ -647,7 +694,10 @@ class LocalBindingMixin(GeneratorMixinBase):
     def _propagate_func_type_hint(
         self, value_node: MoltValue, source_expr: ast.AST | None
     ) -> None:
-        if not isinstance(source_expr, ast.Name):
+        if (
+            not isinstance(source_expr, ast.Name)
+            or self._expression_has_invalidated_binding(source_expr) is not False
+        ):
             return
         source_info = self.locals.get(source_expr.id) or self.globals.get(
             source_expr.id
@@ -690,15 +740,6 @@ class LocalBindingMixin(GeneratorMixinBase):
         if slot.role is AsyncFrameSlotRole.PUBLIC:
             return self.async_public_hints.get(name, "Any")
         return self.async_internal_hints.get(name, "Any")
-
-    def _is_public_frame_binding(self, name: str) -> bool:
-        if (
-            name in self.scope_assigned
-            or name in self.async_locals
-            or name in self.parameter_bindings
-        ):
-            return True
-        return False
 
     def _active_class_ns_scope(self, name: str) -> "_ClassNsScope | None":
         # The innermost class-body scope manages ``name`` when the body is being
@@ -748,7 +789,11 @@ class LocalBindingMixin(GeneratorMixinBase):
             )
 
     def _class_ns_load(
-        self, scope: "_ClassNsScope", name: str, *, binding_invalidated: bool = False
+        self,
+        scope: "_ClassNsScope",
+        name: str,
+        *,
+        binding_invalidated: bool | None = None,
     ) -> MoltValue | None:
         # Source binding invalidation does not change the storage owner. Probe
         # the live mapping even for never-stored names: __prepare__ or callbacks
@@ -837,11 +882,24 @@ class LocalBindingMixin(GeneratorMixinBase):
         name: str,
         *,
         guard_unbound: bool = True,
-        binding_invalidated: bool = False,
+        binding_invalidated: bool | None = None,
+        binding_may_be_unbound: bool | None = None,
     ) -> MoltValue | None:
         # Class-body loads own the full mapping/lexical/global lookup chain.
         # Comprehension and function scopes bypass the class mapping through
         # their scope boundary, not by falling through on a missing class key.
+        # `binding_invalidated` is the binding analysis's fact for this read,
+        # None when the caller has none; a frame's plain binding is then read
+        # from its home wherever a frame proxy could have written it.
+        # Source reads use the canonical source-point binding fact. The
+        # emitter projection remains only for synthesized reads with no AST
+        # fact: assignments emitted inside a loop do not dominate its exit.
+        possibly_unbound = (
+            name in self.unbound_check_names
+            if binding_may_be_unbound is None
+            else binding_may_be_unbound
+        )
+
         class_scope = self._active_class_ns_scope(name)
         if class_scope is not None:
             value = self._class_ns_load(
@@ -859,6 +917,7 @@ class LocalBindingMixin(GeneratorMixinBase):
                 result = MoltValue(
                     value.name,
                     type_hint="Any" if binding_invalidated else value.type_hint,
+                    borrows_binding=True,
                 )
                 exact_class = (
                     None if binding_invalidated else self._exact_class_for_name(name)
@@ -866,19 +925,40 @@ class LocalBindingMixin(GeneratorMixinBase):
                 if exact_class is not None:
                     self._stamp_exact_class(result, exact_class)
                 return result
-            value = self._load_comprehension_slot(binding)
-            if binding.is_cell:
-                value = self._emit_cell_get(
-                    value, type_hint="Any" if binding_invalidated else binding.type_hint
-                )
-            elif binding_invalidated:
-                value = MoltValue(value.name, type_hint="Any")
-            exact_class = (
-                None if binding_invalidated else self._exact_class_for_name(name)
+            possibly_unbound = (
+                not binding.definitely_bound
+                if binding_may_be_unbound is None
+                else binding_may_be_unbound
             )
-            if exact_class is not None:
-                self._stamp_exact_class(value, exact_class)
-            if guard_unbound and not binding.definitely_bound:
+            if (
+                not binding.is_cell
+                and binding.variable_slot is not None
+                and self._comprehension_binds_homes()
+                and (
+                    possibly_unbound or self._binding_read_needs_home(binding_invalidated)
+                )
+            ):
+                # The scope's binding lives in its name's home: a read that may
+                # precede its first store observes the home's unbound state,
+                # and a frame proxy may have written it since the last store.
+                value = self._emit_frame_home_load(name)
+            else:
+                value = self._load_comprehension_slot(binding)
+                if binding.is_cell:
+                    value = self._emit_cell_get(
+                        value,
+                        type_hint="Any" if binding_invalidated else binding.type_hint,
+                    )
+                elif binding_invalidated:
+                    value = MoltValue(value.name, type_hint="Any")
+                if not binding.is_cell and binding.variable_slot is not None:
+                    value.borrows_binding = True
+                exact_class = (
+                    None if binding_invalidated else self._exact_class_for_name(name)
+                )
+                if exact_class is not None:
+                    self._stamp_exact_class(value, exact_class)
+            if guard_unbound and possibly_unbound:
                 self._emit_unbound_local_guard(value, name)
             return value
         if self.current_func_name != "molt_main" and name in self.global_decls:
@@ -892,7 +972,7 @@ class LocalBindingMixin(GeneratorMixinBase):
                 if exact_class is not None:
                     self._stamp_exact_class(res, exact_class)
                 self._copy_container_hints_for_name_load(name, res.name)
-            if guard_unbound and name in self.unbound_check_names:
+            if guard_unbound and possibly_unbound:
                 self._emit_unbound_local_guard(res, name)
             return res
         if self.is_async() and (
@@ -907,10 +987,21 @@ class LocalBindingMixin(GeneratorMixinBase):
             if exact_class is not None:
                 self._stamp_exact_class(res, exact_class)
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
-            if guard_unbound and name in self.unbound_check_names:
+            if guard_unbound and possibly_unbound:
                 self._emit_unbound_local_guard(res, name)
             return res
         cached = self.locals.get(name)
+        possibly_unbound = cached is None or possibly_unbound
+        if self._frame_home_is_plain(name) and (
+            possibly_unbound or self._binding_read_needs_home(binding_invalidated)
+        ):
+            # The home is the binding. A read that may precede its store
+            # observes the home's unbound state, and from 3.13 a callback may
+            # have rebound it through a frame proxy since this frame wrote it.
+            res = self._emit_frame_home_load(name)
+            if guard_unbound and possibly_unbound:
+                self._emit_unbound_local_guard(res, name)
+            return res
         if cached is None:
             return None
         # Emit explicit load_var for non-boxed function locals so TIR can
@@ -927,6 +1018,7 @@ class LocalBindingMixin(GeneratorMixinBase):
             res = MoltValue(
                 self.next_var(),
                 type_hint="Any" if binding_invalidated else cached.type_hint,
+                borrows_binding=True,
             )
             self.emit(
                 MoltOp(
@@ -941,171 +1033,219 @@ class LocalBindingMixin(GeneratorMixinBase):
                 self._publish_exact_local(name, exact_class)
             if not binding_invalidated:
                 self._copy_container_hints_for_name_load(name, res.name)
-            if guard_unbound and name in self.unbound_check_names:
+            if guard_unbound and possibly_unbound:
                 self._emit_unbound_local_guard(res, name)
             return res
         result = MoltValue(
-            cached.name, type_hint="Any" if binding_invalidated else cached.type_hint
+            cached.name, type_hint="Any" if binding_invalidated else cached.type_hint,
+            borrows_binding=self.current_func_name != "molt_main",
         )
         exact_class = None if binding_invalidated else self._exact_class_for_name(name)
         if exact_class is not None:
             self._stamp_exact_class(result, exact_class)
         return result
 
-    def _capture_plain_local_del_boundary(
-        self, name: str, value: MoltValue | None
-    ) -> MoltValue | None:
-        if (
-            value is None
-            or value.name in ("none", "")
-            or self.current_func_name == "molt_main"
-            or name not in self.scope_assigned
-            or name in self.closure_locals
-            or name in self.boxed_locals
-            or self.is_async()
-        ):
-            return None
-        # A syntactic first assignment is not necessarily a runtime first
-        # assignment: loop backedges carry the previous iteration's slot value.
-        # The pre-seeded Missing value therefore cannot suppress the overwrite
-        # boundary. Releasing Missing is a runtime no-op, while always reading
-        # the current slot gives every plain STORE_VAR one canonical
-        # STORE_FAST-style release boundary across loops and branches.
-        # `self.locals[name]` is the syntactic cached producer. Across loop
-        # phis the current frame slot may be a block argument, so make the
-        # boundary capture the displaced slot before publication. The release
-        # itself must occur after the new slot and its locals-cache projection
-        # are visible, without reloading the newly published value.
-        boundary_value = MoltValue(self.next_var(), type_hint=value.type_hint)
+    def _frame_home_slot(self, name: str) -> int:
+        """The code slot of ``name`` in the running synchronous frame.
+
+        The code object's slot declaration is the layout the runtime gives
+        the frame's homes; every Python binding of an optimized frame has one.
+        """
+        slots = self.frame_home_slots
+        slot = None if slots is None else slots.get(name)
+        if slot is None:
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT,
+                f"binding {name!r} has no code slot in {self.current_func_name}",
+            )
+        return slot
+
+    def _frame_slot_is_cell(self, name: str) -> bool:
+        """Whether ``name`` is a cell variable of the running frame's code."""
+        declaration = self.frame_code_slots
+        return declaration is not None and name in declaration.cellvars
+
+    def _frame_home_is_plain(self, name: str) -> bool:
+        """Whether ``name``'s home in the running synchronous frame holds its
+        binding itself, as `_store_local_value` stores it: a local this frame
+        binds without a cell. A read that may precede its store must load
+        that home."""
+        slots = self.frame_home_slots
+        return (
+            slots is not None
+            and name in slots
+            and name not in self.boxed_locals
+            and name not in self.free_vars
+        )
+
+    def _emit_frame_home_store(
+        self,
+        name: str,
+        value: MoltValue,
+        *,
+        kind: str = "FRAME_HOME_STORE",
+        slot: int | None = None,
+    ) -> MoltValue:
+        """Bind ``name`` in its home, which takes ``value``'s reference.
+
+        The home publishes the new binding before it releases the one it
+        displaces, as STORE_FAST does, so a finalizer that release runs sees
+        the new binding. ``FRAME_HOME_CELL`` binds the frame's cell of a
+        captured or free variable, ``FRAME_HOME_PRIVATE_CELL`` a cell the
+        compiler keeps for a plain local. The result is the binding's view:
+        the published object or raw carrier, borrowed until the slot's next
+        write. A plain store's boxed view can allocate; ``emit`` authors its
+        immediate exception edge. Cell stores transfer existing cell objects.
+        """
+        view = MoltValue(
+            self.next_var(), type_hint=value.type_hint, borrows_binding=True
+        )
         self.emit(
             MoltOp(
-                kind="LOAD_VAR",
+                kind=kind,
+                args=[value],
+                result=view,
+                metadata={
+                    "slot": self._frame_home_slot(name) if slot is None else slot
+                },
+            )
+        )
+        self._copy_container_hints_for_name_load(value.name, view.name)
+        if value.name in self.const_ints:
+            self.const_ints[view.name] = self.const_ints[value.name]
+        return view
+
+    def _emit_frame_home_load(self, name: str) -> MoltValue:
+        """Read ``name``'s plain binding from its home: a view of whatever it
+        holds now, of unknown type, the missing sentinel while unbound."""
+        result = MoltValue(self.next_var(), type_hint="Any", borrows_binding=True)
+        self.emit(
+            MoltOp(
+                kind="FRAME_HOME_LOAD",
                 args=[],
-                result=boundary_value,
-                metadata={"var": name},
+                result=result,
+                metadata={"slot": self._frame_home_slot(name)},
             )
         )
-        return boundary_value
+        return result
 
-    def _emit_plain_local_del_boundary(
-        self, name: str, boundary_value: MoltValue | None
-    ) -> None:
-        if boundary_value is None:
-            return
+    def _emit_frame_home_take(self, name: str) -> MoltValue:
+        """Move ``name``'s binding out of its home and leave it unbound: PEP
+        709's save of an enclosing binding. The result is owned: the object,
+        the cell, or the missing sentinel while unbound."""
+        result = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
-                kind="DEL_BOUNDARY",
-                args=[boundary_value],
+                kind="FRAME_HOME_TAKE",
+                args=[],
+                result=result,
+                metadata={"slot": self._frame_home_slot(name)},
+            )
+        )
+        return result
+
+    def _emit_frame_home_clear(self, name: str) -> None:
+        """``del name``: the home is left unbound and releases the binding."""
+        self.emit(
+            MoltOp(
+                kind="FRAME_HOME_CLEAR",
+                args=[],
                 result=MoltValue("none"),
-                metadata={"var": name},
+                metadata={"slot": self._frame_home_slot(name)},
             )
         )
 
-    def _emit_plain_local_alias_retain(self, name: str, value: MoltValue) -> MoltValue:
-        if (
-            value.name in ("none", "")
-            or value.type_hint == "missing"
-            or self.current_func_name == "molt_main"
-            or name not in self.scope_assigned
-            or name in self.closure_locals
-            or name in self.boxed_locals
-            or self.is_async()
-        ):
-            return value
-        producer = self._op_by_result.get(value.name)
-        loaded_plain_local = False
-        if producer is not None and producer.kind == "LOAD_VAR":
-            source_name = (producer.metadata or {}).get("var")
-            loaded_plain_local = (
-                isinstance(source_name, str)
-                and source_name != name
-                and source_name in self.locals
-                and source_name not in self.closure_locals
-                and source_name not in self.boxed_locals
-            )
-        has_existing_binding = any(
-            other_name != name and other_value.name == value.name
-            for other_name, other_value in self.locals.items()
+    def _binding_read_needs_home(self, binding_invalidated: bool | None) -> bool:
+        """Whether a read of a frame's plain binding must come from its home.
+
+        Only a PEP 667 frame proxy writes a live optimized frame's bindings,
+        so before 3.13 the frame's own view is current. From 3.13 a read the
+        binding analysis has not proven clean, including one without a fact,
+        reads the home: a callback may have rebound it through a proxy.
+        """
+        return (
+            self.frame_home_slots is not None
+            and self.target_python >= (3, 13)
+            and binding_invalidated is not False
         )
-        if not has_existing_binding and not loaded_plain_local:
-            return value
-        # `alias = local` gives the alias its own frame-owned reference in
-        # CPython. Model that as a value-producing alias so TIR ownership sees a
-        # distinct droppable root instead of a side-effect retain on shared bits.
+
+    def _comprehension_binds_homes(self) -> bool:
+        """Whether a comprehension lowered here binds its names in the running
+        frame's homes. A class body lowered inline is a code object of its
+        own, which keeps no homes."""
+        return self.frame_home_slots is not None and not any(
+            scope.class_node is not None for scope in self._class_ns_stack
+        )
+
+    def _frame_home_restore_kind(
+        self, name: str, bindings: Mapping[str, ComprehensionBinding]
+    ) -> str:
+        """The home store that puts back ``name``'s enclosing binding, which
+        ``bindings`` (the enclosing comprehension scopes) may shadow."""
+        outer = bindings.get(name)
+        if outer is not None:
+            return "FRAME_HOME_CELL" if outer.is_cell else "FRAME_HOME_STORE"
+        if name in self.boxed_locals and name not in self.free_vars:
+            return (
+                "FRAME_HOME_CELL"
+                if self._frame_slot_is_cell(name)
+                else "FRAME_HOME_PRIVATE_CELL"
+            )
+        return "FRAME_HOME_STORE"
+
+    def _emit_frame_home_prologue(self, parameters: Sequence[str]) -> None:
+        """Bind a synchronous frame's parameters and free variables in their homes.
+
+        The entry adopts every Python argument: each parameter's reference
+        moves into its home, and the frame reads it through the store's view.
+        A parameter a cell holds entered its home with the cell (``_box_local``),
+        a free variable's home holds the closure's cell, and every other local
+        starts unbound, as its home does.
+        """
+        declaration = self.frame_code_slots
+        if declaration is None:
+            return
+        for name in parameters:
+            if name in self.boxed_locals:
+                continue
+            view = self._emit_frame_home_store(name, self.locals[name])
+            self.locals[name] = view
+            # Bound from entry: a read before its next store or delete borrows
+            # this view (or its SSA transport) rather than loading the home.
+            self.unbound_check_names.discard(name)
+            if name in self.scope_assigned:
+                self.emit(
+                    MoltOp(
+                        kind="STORE_VAR",
+                        args=[view],
+                        result=MoltValue("none"),
+                        metadata={"var": name},
+                    )
+                )
+        free_base = len(declaration.slots()) - len(declaration.freevars)
+        for index, name in enumerate(declaration.freevars):
+            cell = self._load_free_var_cell(name)
+            if cell is None:
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    f"free variable {name!r} of {self.current_func_name} "
+                    "has no closure cell",
+                )
+            self._emit_frame_home_store(
+                name, cell, kind="FRAME_HOME_CELL", slot=free_base + index
+            )
+
+    def _capture_expression_reference(self, value: MoltValue) -> MoltValue:
+        """Capture a borrowed expression before its storage can be released."""
+        return self._emit_owned_value_alias(value) if value.borrows_binding else value
+
+    def _emit_owned_value_alias(self, value: MoltValue) -> MoltValue:
         exact_class = self._exact_class_for_value(value)
         retained = MoltValue(self.next_var(), type_hint=value.type_hint)
         self.emit(MoltOp(kind="BINDING_ALIAS", args=[value], result=retained))
         if exact_class is not None:
             self._stamp_exact_class(retained, exact_class)
         return retained
-
-    def _plain_local_scope_exit_bindings(self) -> list[tuple[str, MoltValue]]:
-        if (
-            self.current_func_name == "molt_main"
-            or self.is_async()
-            or self.in_generator
-        ):
-            return []
-        params = set(self.funcs_map.get(self.current_func_name, {}).get("params", []))
-        candidate_names = sorted(set(self.scope_assigned) | params)
-        bindings: list[tuple[str, MoltValue]] = []
-        for name in candidate_names:
-            if (
-                not self._is_public_frame_binding(name)
-                or name in self.closure_locals
-                or name in self.boxed_locals
-                or name in self.global_decls
-                or name in self.nonlocal_decls
-            ):
-                continue
-            value = self.locals.get(name)
-            if (
-                value is None
-                or value.name in ("none", "")
-                or value.type_hint == "missing"
-                or self._plain_local_scope_exit_boundary_exempt(value)
-            ):
-                continue
-            bindings.append((name, value))
-        return bindings
-
-    @staticmethod
-    def _plain_local_scope_exit_boundary_exempt(value: MoltValue) -> bool:
-        hint = value.type_hint or ""
-        return hint == "code"
-
-    def _value_reads_plain_local_binding(
-        self, value: MoltValue, bindings: list[tuple[str, MoltValue]]
-    ) -> bool:
-        if value.name in ("none", "") or value.type_hint == "missing":
-            return False
-        for _, bound_value in bindings:
-            if bound_value.name == value.name:
-                return True
-        producer = self._op_by_result.get(value.name)
-        if producer is not None and producer.kind == "LOAD_VAR":
-            source_name = (producer.metadata or {}).get("var")
-            return any(name == source_name for name, _ in bindings)
-        return False
-
-    def _emit_plain_local_scope_exit_boundaries(
-        self, preserve: MoltValue | None = None
-    ) -> None:
-        bindings = self._plain_local_scope_exit_bindings()
-        if not bindings:
-            return
-        for name, value in bindings:
-            # Returning a local transfers that binding's existing owner to the
-            # caller. Do not release it at the synthetic scope-exit boundary,
-            # and do not manufacture a second owner here. The shared TIR drop
-            # authority publishes exactly one +1 only when the returned root is
-            # genuinely borrowed (for example, a parameter).
-            if preserve is not None and self._value_reads_plain_local_binding(
-                preserve, [(name, value)]
-            ):
-                continue
-            boundary_value = self._capture_plain_local_del_boundary(name, value)
-            self._emit_plain_local_del_boundary(name, boundary_value)
 
     def _capture_class_import_state(self) -> dict[str, object]:
         """Isolate lexical import projections while executing a class body."""
@@ -1209,14 +1349,9 @@ class LocalBindingMixin(GeneratorMixinBase):
         name: str,
         value: MoltValue,
         *,
-        emit_rebind_boundary: bool = True,
         publish_module: bool = False,
     ) -> None:
         exact_class = self._exact_class_for_value(value)
-
-        def update_locals_cache() -> None:
-            self._emit_locals_cache_update(name, value)
-
         self._invalidate_loop_guard(name)
         class_scope = self._active_class_ns_scope(name)
         if class_scope is not None:
@@ -1267,7 +1402,6 @@ class LocalBindingMixin(GeneratorMixinBase):
             self._emit_cell_set(cell, value)
             if value.type_hint:
                 self.boxed_local_hints[name] = value.type_hint
-            update_locals_cache()
             return
         if self.is_async():
             slot = self._async_binding_slot(name)
@@ -1283,7 +1417,6 @@ class LocalBindingMixin(GeneratorMixinBase):
                     self.async_public_hints[name] = value.type_hint
                 else:
                     self.async_internal_hints[name] = value.type_hint
-            update_locals_cache()
             return
         # Do NOT cache in self.locals when the variable is module-backed
         # (in module_global_mutations). The canonical store is the module dict
@@ -1296,108 +1429,45 @@ class LocalBindingMixin(GeneratorMixinBase):
             self.current_func_name == "molt_main"
             and name in self.module_global_mutations
         ):
-            update_locals_cache()
             return
         if value.name in self.bytearray_len_hints:
             self.bytearray_len_hints[name] = self.bytearray_len_hints[value.name]
         else:
             self.bytearray_len_hints.pop(name, None)
-        boundary_value = None
-        if emit_rebind_boundary:
-            value = self._emit_plain_local_alias_retain(name, value)
-            previous = self.locals.get(name)
-            if previous is not None and previous.name != value.name:
-                boundary_value = self._capture_plain_local_del_boundary(name, previous)
-        self.locals[name] = value
-        # Named-local fact (#58 ordering keystone): stamp `bound_local` on the
-        # op that PRODUCED the bound value. CPython holds a named local in the
-        # frame until `del`/rebinding/scope exit, so a finalizer-sensitive
-        # value bound to a name must not be released at its SSA last-use; an
-        # UNNAMED expression temp (e.g. `bag.append(A())`'s argument) dies at
-        # the statement like CPython's stack ref. The IR otherwise erases this
-        # distinction. Same condition as the named-local STORE_VAR below —
-        # this is metadata on an already-emitted op, not a new op.
-        if (
-            self.current_func_name != "molt_main"
-            and name in self.scope_assigned
-            and value.name not in ("none", "")
-        ):
-            producer = self._op_by_result.get(value.name)
-            if producer is not None:
-                if producer.metadata is None:
-                    producer.metadata = {}
-                producer.metadata["bound_local"] = True
-        # Emit explicit store_var for non-boxed function locals so TIR can
-        # track variable mutations through loop iterations via SSA phis.
-        if (
-            self.current_func_name != "molt_main"
-            and not self.is_async()
-            and name in self.scope_assigned
-            and name not in self.boxed_locals
-        ):
+        if self.frame_home_slots is None:
+            # Module code: the module namespace is the binding; this is its
+            # lexical projection. Nothing was displaced here, so the producer
+            # fact survives emission's coarse heap effect.
+            self.locals[name] = value
+            if exact_class is not None:
+                self._stamp_exact_class(value, exact_class)
+                self._publish_exact_local(name, exact_class)
+            return
+        # The binding's home takes the value's reference and releases the
+        # binding it displaces, as STORE_FAST does. The frame carries the
+        # store's view; reads borrow it while no write can intervene.
+        view = self._emit_frame_home_store(name, value)
+        self.locals[name] = view
+        if name in self.scope_assigned:
+            # The view's SSA transport across the body's control flow.
             self.emit(
                 MoltOp(
                     kind="STORE_VAR",
-                    args=[value],
+                    args=[view],
                     result=MoltValue("none"),
                     metadata={"var": name},
                 )
             )
-        update_locals_cache()
-        self._emit_plain_local_del_boundary(name, boundary_value)
-        if boundary_value is None and exact_class is not None:
-            # The generated STORE_VAR/heap effect is deliberately coarse. A
-            # first publication (or same-value publication) has displaced no
-            # callback-capable owner, so the producer fact remains valid after
-            # emission cleared the ambient cursor.
-            self._stamp_exact_class(value, exact_class)
-            self._publish_exact_local(name, exact_class)
 
-    def _emit_locals_cache_update(self, name: str, value: MoltValue) -> None:
-        # Compiler bindings have a separate typed origin and never enter
-        # Python-visible frame locals, independent of their spelling.
-        if not self._is_public_frame_binding(name):
-            return
-        cache_cell = self.locals_cache_cell
-        if cache_cell is None:
-            return
-        cache = self._load_scratch_cell(cache_cell)
-        key = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
-        if value.type_hint == "missing":
-            # Keep the pinned frame-locals cache in sync for `del`/unbound transitions.
-            self.emit(
-                MoltOp(
-                    kind="DICT_UPDATE_MISSING",
-                    args=[cache, key, value],
-                    result=MoltValue("none"),
-                )
-            )
-            return
-        self.emit(
-            MoltOp(
-                kind="DICT_SET",
-                args=[cache, key, value],
-                result=MoltValue("none"),
-            )
-        )
-
-    def _emit_delete_local_value(
-        self, name: str, missing: MoltValue, old_value: MoltValue
-    ) -> None:
-        self._update_python_argument_zero(name, missing)
+    def _emit_delete_local_value(self, name: str, missing: MoltValue) -> None:
+        """``del name`` of a synchronous frame's plain local: its home is left
+        unbound and releases the binding. No missing value is carried: the
+        caller marks the name possibly unbound, so a later read loads the home.
+        ``missing`` only keeps the name's lexical entry."""
         self._invalidate_loop_guard(name)
         self.bytearray_len_hints.pop(name, None)
+        self._emit_frame_home_clear(name)
         self.locals[name] = missing
-        self.emit(
-            MoltOp(
-                kind="DELETE_VAR",
-                args=[missing, old_value],
-                result=MoltValue("none"),
-                metadata={"var": name},
-            )
-        )
-        self._emit_locals_cache_update(name, missing)
 
     def _load_comprehension_slot(self, binding: ComprehensionBinding) -> MoltValue:
         value = MoltValue(
@@ -1447,7 +1517,12 @@ class LocalBindingMixin(GeneratorMixinBase):
     def _comprehension_scope(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp
     ) -> Iterator[None]:
-        """Fresh PEP 709 locals; caller storage survives normal and exceptional exit."""
+        """Fresh PEP 709 locals; caller storage survives normal and exceptional exit.
+
+        In a synchronous frame each scope binding takes over its name's home:
+        the enclosing binding is moved out on entry and stored back on both
+        exits, the exceptional one with its exception pending.
+        """
         names = {
             name
             for comp in node.generators
@@ -1458,6 +1533,13 @@ class LocalBindingMixin(GeneratorMixinBase):
         old_shadow = self.comp_shadow_locals
         old_locals = {name: self.locals.get(name) for name in names}
         old_unbound = self.unbound_check_names & names
+        homes = self._comprehension_binds_homes()
+        restore_kinds = (
+            {name: self._frame_home_restore_kind(name, old_bindings) for name in names}
+            if homes
+            else {}
+        )
+        home_scopes: list[FrameRestoreScope] = []
         restore_projections = (
             self._mask_exact_binding_projection(names),
             _mask_binding_projection(self.boxed_local_hints, names),
@@ -1476,11 +1558,30 @@ class LocalBindingMixin(GeneratorMixinBase):
         frame_scope = None
         try:
             for name in sorted(names):
+                if homes:
+                    # Move the enclosing binding out. Every exit taken after
+                    # the move, a failed move of a later name included, puts
+                    # it back.
+                    saved = self._emit_frame_home_take(name)
+                    home_scopes.append(
+                        self._enter_frame_restore_scope(
+                            partial(
+                                self._emit_frame_home_store,
+                                name,
+                                saved,
+                                kind=restore_kinds[name],
+                            )
+                        )
+                    )
                 missing = self._emit_missing_value()
                 value = missing
                 is_cell = name in captured
                 if is_cell:
                     value = self._emit_cell_new(missing)
+                    if homes:
+                        value = self._emit_frame_home_store(
+                            name, value, kind="FRAME_HOME_CELL"
+                        )
                 slot = (
                     self._allocate_async_frame_slot(AsyncFrameSlotRole.SCRATCH)
                     if self.is_async()
@@ -1492,15 +1593,22 @@ class LocalBindingMixin(GeneratorMixinBase):
                     is_cell=is_cell,
                 )
                 self.comprehension_bindings[name] = binding
-                self._store_comprehension_slot(binding, value)
+                if is_cell or not homes:
+                    # A plain binding in a home starts unbound there, as the
+                    # take left it, with no missing transport: a read before
+                    # its first store loads the home.
+                    self._store_comprehension_slot(binding, value)
                 # Lexical closure selection sees the source name, while every
                 # actual read/write uses the scoped transport above.
                 self.locals[name] = missing
             if (
-                self.python_frame_context_active
+                not homes
+                and self.python_frame_context_active
                 and isinstance(self.current_python_first_arg, str)
                 and self.current_python_first_arg in names
             ):
+                # A synchronous frame's argument zero is its first home, which
+                # the scope's binding took over by itself.
                 frame_scope = self._enter_python_frame_context_scope()
             yield
         finally:
@@ -1517,6 +1625,8 @@ class LocalBindingMixin(GeneratorMixinBase):
                     self.locals[name] = value
             if frame_scope is not None:
                 self._exit_python_frame_context_scope(frame_scope)
+            for scope in reversed(home_scopes):
+                self._exit_frame_restore_scope(scope)
 
     def _store_comprehension_local_value(self, name: str, value: MoltValue) -> None:
         binding = self.comprehension_bindings.get(name)
@@ -1529,6 +1639,9 @@ class LocalBindingMixin(GeneratorMixinBase):
                 cell = self._load_comprehension_slot(binding)
                 self._emit_cell_set(cell, value)
             else:
+                if binding.variable_slot is not None and self._comprehension_binds_homes():
+                    # The scope's binding took over its name's home.
+                    value = self._emit_frame_home_store(name, value)
                 self._store_comprehension_slot(binding, value)
             self.locals[name] = value
             return

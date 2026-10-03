@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
@@ -34,6 +33,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from tools import harness_memory_guard  # noqa: E402
 from molt import artifact_publication  # noqa: E402
+from molt.tool_releases import ToolReleaseError, run_pinned_tool  # noqa: E402
 from molt import _wasm_abi_generated as _WASM_ABI  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     WASM_EXTERN_KIND_FUNCTION,
@@ -235,11 +235,6 @@ def strip_imports(wasm_path: Path, output_path: Path, result: AnalysisResult) ->
     2. Inject no-op function bodies for each stripped import
     3. Reassemble to WASM binary
     """
-    wasm_tools = shutil.which("wasm-tools")
-    if not wasm_tools:
-        print("ERROR: wasm-tools not found in PATH", file=sys.stderr)
-        sys.exit(1)
-
     strippable = result.strippable_imports
     if not strippable:
         print("No strippable imports found. Output is a copy of input.")
@@ -251,8 +246,11 @@ def strip_imports(wasm_path: Path, output_path: Path, result: AnalysisResult) ->
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     tmp_output = artifact_publication.staged_output_path(output_path)
     try:
-        strip_proc = harness_memory_guard.guarded_completed_process(
-            [wasm_tools, "strip", str(wasm_path), "-o", str(tmp_output)],
+        strip_proc = run_pinned_tool(
+            "wasm-tools",
+            ["strip", str(wasm_path), "-o", str(tmp_output)],
+            run=harness_memory_guard.guarded_completed_process,
+            repo_root=REPO_ROOT,
             prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
@@ -266,6 +264,9 @@ def strip_imports(wasm_path: Path, output_path: Path, result: AnalysisResult) ->
             )
             sys.exit(1)
         artifact_publication.publish_validated_outputs([(tmp_output, output_path)])
+    except ToolReleaseError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     finally:
         try:
             tmp_output.unlink()

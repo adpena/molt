@@ -17,6 +17,35 @@ use super::ops::{OpCode, TirOp};
 use super::types::TirType;
 use super::values::ValueId;
 
+/// Semantic container result for the canonical SimpleIR constructor kind.
+/// Copy-carried constructors produce a container, never operand zero's element
+/// type. This fact is shared by refinement and allocator provenance; it grants
+/// neither an exact class from annotations nor a physical storage layout.
+/// Element/key types and tuple arity stay unknown until separately proved.
+pub fn container_constructor_result_type(kind: &str) -> Option<TirType> {
+    let dynbox = || Box::new(TirType::DynBox);
+    match kind {
+        // List builders (variadic elements, typed-int list, runtime fill, range
+        // materialization, `.copy()`) — all produce `list`; the element type is
+        // not tracked here. NOTE: `list_index_range` is deliberately absent — it
+        // is `list.index(value, start, end)`, which returns the int index, not a
+        // list (frontend `type_hint="int"`).
+        "list_new" | "list_int_new" | "list_fill_new" | "list_from_range" | "list_copy" => {
+            Some(TirType::List(dynbox()))
+        }
+        // Dict builders. Keys/values not tracked here.
+        "dict_new" | "dict_from_obj" => Some(TirType::Dict(dynbox(), dynbox())),
+        // Set / frozenset builders. molt has no distinct frozenset container
+        // kind; both probe through the shared set hash layout, so both type
+        // `Set` for dispatch (`molt_set_contains` handles set + frozenset).
+        "set_new" | "frozenset_new" => Some(TirType::Set(dynbox())),
+        // Tuple builders. The element types/arity are not needed for container
+        // dispatch, so an unknown-arity tuple is the canonical "is a tuple" fact.
+        "tuple_new" | "tuple_from_list" => Some(TirType::Tuple(Vec::new())),
+        _ => None,
+    }
+}
+
 static DYNAMIC_OPERAND_TYPE: TirType = TirType::DynBox;
 
 trait OperandTypes {
@@ -249,6 +278,7 @@ fn op_instance_facts_from_types<T: OperandTypes + ?Sized>(
         return Some(facts);
     }
     let rule = opcode_type_refine_operand_type_rule_table(opcode);
+    let primitive_effects = primitive_operator_effects(opcode, operand_types);
     if !matches!(
         rule,
         TypeRefineOperandTypeRule::Add
@@ -261,11 +291,13 @@ fn op_instance_facts_from_types<T: OperandTypes + ?Sized>(
             | TypeRefineOperandTypeRule::IntegerShift
             | TypeRefineOperandTypeRule::IntegerInvert
     ) {
-        return None;
+        // Multi-result checked operations share primitive effect cases without
+        // inventing a single-result type. Unknown combinations use the opcode floor.
+        return primitive_effects.map(|effects| facts(None, effects));
     }
     Some(facts(
         operator_result_type(rule, operand_types),
-        primitive_operator_effects(opcode, operand_types).unwrap_or(OPCODE_EFFECTS_IMPURE),
+        primitive_effects.unwrap_or(OPCODE_EFFECTS_IMPURE),
     ))
 }
 
@@ -302,10 +334,35 @@ pub fn op_instance_effects_for_op(
         .map_or_else(|| opcode_effects_table(op.opcode), |facts| facts.effects)
 }
 
+/// Conditional CFG transfer applies Python truthiness just like `Bool`.
+/// Integer Switch and saved-state dispatch are structural machine operations;
+/// they do not imply Python equality or poll invocation. Inputs must be exact
+/// scalar facts, never annotation-derived value types.
+pub fn terminator_effects(
+    terminator: &super::blocks::Terminator,
+    exact: &HashMap<ValueId, TirType>,
+) -> OpcodeEffects {
+    use super::blocks::Terminator;
+    match terminator {
+        Terminator::CondBranch { cond, .. } => {
+            let operand = exact.get(cond).unwrap_or(&DYNAMIC_OPERAND_TYPE);
+            op_instance_facts(OpCode::Bool, std::slice::from_ref(operand))
+                .map_or(OPCODE_EFFECTS_IMPURE, |facts| facts.effects)
+        }
+        Terminator::Branch { .. }
+        | Terminator::Switch { .. }
+        | Terminator::StateDispatch { .. }
+        | Terminator::Return { .. }
+        | Terminator::Unreachable => OPCODE_EFFECTS_PURE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::op_kinds_generated::{ALL_OPCODES, OPCODE_EFFECTS_PURE_MAY_THROW};
+    use crate::tir::op_kinds_generated::{
+        ALL_OPCODES, OPCODE_EFFECTS_PURE_MAY_THROW, opcode_fixed_result_count_table,
+    };
     use crate::tir::ops::{AttrDict, Dialect};
 
     fn boxed(ty: &TirType, depth: usize) -> TirType {
@@ -397,8 +454,63 @@ mod tests {
                 let mut unresolved = concrete.clone();
                 unresolved[index] = boxed(&TirType::Never, 2);
                 let facts = op_instance_facts(opcode, &unresolved).unwrap();
-                assert_eq!(facts.result_type, Some(TirType::Never), "{opcode:?}");
+                // Effects-only multi-result facts do not project one type
+                // onto all result slots. Their indexed types stay in the
+                // generated result authority, even with unresolved operands.
+                let expected_result =
+                    (opcode_fixed_result_count_table(opcode) == Some(1)).then_some(TirType::Never);
+                assert_eq!(facts.result_type, expected_result, "{opcode:?}");
                 assert_eq!(facts.effects, OPCODE_EFFECTS_IMPURE, "{opcode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn checked_operators_share_effects_without_broadcasting_a_single_result() {
+        let types = [
+            TirType::Bool,
+            TirType::I64,
+            TirType::BigInt,
+            TirType::F64,
+            TirType::Str,
+            TirType::Bytes,
+            TirType::None,
+            TirType::Never,
+            TirType::DynBox,
+            TirType::UserClass("Override".into()),
+        ];
+        for (checked, ordinary) in [
+            (OpCode::CheckedAdd, OpCode::Add),
+            (OpCode::CheckedMul, OpCode::Mul),
+        ] {
+            assert_eq!(opcode_fixed_result_count_table(checked), Some(2));
+            let op = TirOp {
+                dialect: Dialect::Molt,
+                opcode: checked,
+                operands: vec![ValueId(0), ValueId(1)],
+                results: vec![ValueId(2), ValueId(3)],
+                attrs: AttrDict::new(),
+                source_span: None,
+            };
+            for left in &types {
+                for right in &types {
+                    for depth_left in 0..=2 {
+                        for depth_right in 0..=2 {
+                            let operands = [boxed(left, depth_left), boxed(right, depth_right)];
+                            let expected = op_instance_facts(ordinary, &operands).unwrap().effects;
+                            let facts = op_instance_facts(checked, &operands).unwrap();
+                            assert_eq!(facts.result_type, None, "{checked:?} {operands:?}");
+                            assert_eq!(facts.effects, expected, "{checked:?} {operands:?}");
+                            let exact = HashMap::from([
+                                (ValueId(0), operands[0].clone()),
+                                (ValueId(1), operands[1].clone()),
+                            ]);
+                            let mapped = op_instance_facts_for_op(&op, &exact).unwrap();
+                            assert_eq!(mapped.result_type, None, "{checked:?} {operands:?}");
+                            assert_eq!(mapped.effects, expected, "{checked:?} {operands:?}");
+                        }
+                    }
+                }
             }
         }
     }

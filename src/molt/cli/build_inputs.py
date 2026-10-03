@@ -10,6 +10,7 @@ import tomllib
 import tracemalloc
 from typing import Any, cast
 
+from molt.source_root import compiler_source_root
 from molt.capability_manifest import (
     VALID_AUDIT_SINKS as _VALID_AUDIT_SINKS,
     AuditConfig,
@@ -72,7 +73,6 @@ from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.output import CliFailure as _CliFailure, fail as _fail
 from molt.cli.profile_feedback import _load_pgo_profile, _load_runtime_feedback
 from molt.cli.project_roots import (
-    _find_molt_root,
     _find_project_root,
     _has_project_markers,
     _require_molt_root,
@@ -320,6 +320,8 @@ def _resolve_build_entry(
     lib_paths: list[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     build_config: Mapping[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
+    source_cwd: Path | None = None,
 ) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
     selector, selector_error = _resolve_build_entry_selector(
         file_path=file_path,
@@ -337,6 +339,8 @@ def _resolve_build_entry(
         cwd_root,
         respect_pythonpath=respect_pythonpath,
         lib_paths=lib_paths or [],
+        env=env,
+        source_cwd=source_cwd,
     )
     if module_root_resolution.missing_env_roots:
         missing = ", ".join(module_root_resolution.missing_env_roots)
@@ -353,7 +357,7 @@ def _resolve_build_entry(
     source_path: Path | None = None
     entry_module: str | None = None
     if file_path:
-        source_path = Path(file_path).resolve()
+        source_path = ((source_cwd or Path.cwd()) / Path(file_path)).resolve()
         if not source_path.exists():
             return None, _fail(
                 f"File not found: {source_path}", json_output, command=command
@@ -759,7 +763,7 @@ def _prepare_build_roots(
     )
     if not _has_project_markers(project_root) and _has_project_markers(cwd_root):
         project_root = cwd_root
-    molt_root = _find_molt_root(project_root, cwd_root)
+    molt_root = compiler_source_root()
     root_error = _require_molt_root(molt_root, json_output, "build")
     if root_error is not None:
         return None, root_error
@@ -897,7 +901,11 @@ def _resolve_module_root_resolution(
     *,
     respect_pythonpath: bool,
     lib_paths: list[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    source_cwd: Path | None = None,
 ) -> _ModuleRootResolution:
+    request_env = os.environ if env is None else env
+    request_cwd = Path.cwd() if source_cwd is None else source_cwd
     module_roots: list[Path] = []
     external_roots: list[Path] = []
     internal_roots: set[Path] = set()
@@ -910,7 +918,7 @@ def _resolve_module_root_resolution(
         if not external:
             internal_roots.add(resolved)
 
-    hermetic_module_roots = os.environ.get(
+    hermetic_module_roots = request_env.get(
         "MOLT_HERMETIC_MODULE_ROOTS", ""
     ).lower() in {
         "1",
@@ -919,7 +927,7 @@ def _resolve_module_root_resolution(
         "on",
     }
     missing_env_roots: list[str] = []
-    extra_roots = os.environ.get("MOLT_MODULE_ROOTS", "")
+    extra_roots = request_env.get("MOLT_MODULE_ROOTS", "")
     if extra_roots:
         for entry in extra_roots.split(os.pathsep):
             if not entry:
@@ -928,6 +936,7 @@ def _resolve_module_root_resolution(
             entry_path = (
                 alias_entry[1] if alias_entry is not None else Path(entry).expanduser()
             )
+            entry_path = request_cwd / entry_path
             if entry_path.exists():
                 add_root(entry_path, external=True)
             else:
@@ -949,17 +958,17 @@ def _resolve_module_root_resolution(
         for vendor_root in _vendor_roots(root):
             add_root(vendor_root, external=False)
     if respect_pythonpath:
-        pythonpath = os.environ.get("PYTHONPATH", "")
+        pythonpath = request_env.get("PYTHONPATH", "")
         if pythonpath:
             for entry in pythonpath.split(os.pathsep):
                 if not entry:
                     continue
-                entry_path = Path(entry).expanduser()
+                entry_path = request_cwd / Path(entry).expanduser()
                 if entry_path.exists():
                     add_root(entry_path, external=True)
     # --lib-path / [tool.molt] lib-paths: explicit third-party package roots
     for lp in lib_paths or []:
-        lp_path = Path(lp).expanduser()
+        lp_path = request_cwd / Path(lp).expanduser()
         if lp_path.exists():
             add_root(lp_path, external=True)
     # Auto-detect active venv site-packages when no explicit lib paths given
@@ -1036,6 +1045,8 @@ def _resolve_wrapper_build_entry(
     json_output: bool,
     command: str,
     build_args: Sequence[str] = (),
+    env: Mapping[str, str] | None = None,
+    source_cwd: Path | None = None,
 ) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
     config = _load_molt_config(project_root)
     build_cfg = _resolve_build_config(config)
@@ -1057,7 +1068,7 @@ def _resolve_wrapper_build_entry(
         target_python = _wrapper_target_python(build_args, project_root=project_root)
     except ValueError as exc:
         return None, _fail(str(exc), json_output, command=command)
-    cwd_root = _find_project_root(Path.cwd())
+    cwd_root = _find_project_root(Path.cwd() if source_cwd is None else source_cwd)
     return _resolve_build_entry(
         file_path=file_path,
         module=module,
@@ -1070,6 +1081,8 @@ def _resolve_wrapper_build_entry(
         lib_paths=lib_paths or None,
         target_python=target_python,
         build_config=build_cfg,
+        env=env,
+        source_cwd=source_cwd,
     )
 
 

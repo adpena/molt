@@ -8,13 +8,6 @@ pub(crate) use generators_async_socket::*;
 
 const ASYNCIO_SOCKET_IO_EVENT_READ: i64 = 1;
 const ASYNCIO_SOCKET_IO_EVENT_WRITE: i64 = 2;
-const ASYNCIO_TIMER_SLOT_HANDLE: usize = 0;
-const ASYNCIO_TIMER_SLOT_DELAY: usize = 1;
-const ASYNCIO_TIMER_SLOT_LOOP: usize = 2;
-const ASYNCIO_TIMER_SLOT_SCHEDULED: usize = 3;
-const ASYNCIO_TIMER_SLOT_READY_LOCK: usize = 4;
-const ASYNCIO_TIMER_SLOT_READY: usize = 5;
-const ASYNCIO_TIMER_SLOT_WAIT: usize = 6;
 const ASYNCIO_FD_WATCHER_SLOT_REGISTRY: usize = 0;
 const ASYNCIO_FD_WATCHER_SLOT_FILENO: usize = 1;
 const ASYNCIO_FD_WATCHER_SLOT_CALLBACK: usize = 2;
@@ -29,10 +22,6 @@ const ASYNCIO_SERVER_ACCEPT_SLOT_WRITER_CTOR: usize = 4;
 const ASYNCIO_SERVER_ACCEPT_SLOT_CLOSED_PROBE: usize = 5;
 const ASYNCIO_SERVER_ACCEPT_SLOT_FD: usize = 6;
 const ASYNCIO_SERVER_ACCEPT_SLOT_WAIT: usize = 7;
-const ASYNCIO_READY_RUNNER_SLOT_LOOP: usize = 0;
-const ASYNCIO_READY_RUNNER_SLOT_READY_LOCK: usize = 1;
-const ASYNCIO_READY_RUNNER_SLOT_READY: usize = 2;
-const ASYNCIO_READY_RUNNER_SLOT_WAIT: usize = 3;
 
 unsafe fn asyncio_fd_ready_select_once(
     _py: &PyToken<'_>,
@@ -135,10 +124,8 @@ unsafe fn asyncio_close_connection_best_effort(_py: &PyToken<'_>, conn_bits: u64
     }
 }
 
-unsafe fn asyncio_oserror_errno_from_exception(_py: &PyToken<'_>, exc_bits: u64) -> Option<i64> {
-    unsafe {
-        let exc_ptr = obj_from_bits(exc_bits).as_ptr()?;
-        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
+fn asyncio_oserror_errno_from_exception(_py: &PyToken<'_>, exc_bits: u64) -> Option<i64> {
+        if !crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, "OSError") {
             return None;
         }
         if crate::builtins::exceptions::exception_matches_builtin_name(
@@ -155,17 +142,39 @@ unsafe fn asyncio_oserror_errno_from_exception(_py: &PyToken<'_>, exc_bits: u64)
         ) {
             return Some(libc::EINTR as i64);
         }
-        let args_bits = exception_materialized_args_bits(_py, exc_ptr);
-        let args_ptr = obj_from_bits(args_bits).as_ptr()?;
-        if object_type_id(args_ptr) != TYPE_ID_TUPLE {
-            return None;
-        }
-        let args = crate::object::seq_access::snapshot(
-            _py,
-            args_ptr,
-            "exception argument snapshot allocation failed",
-        )?;
-        args.first().and_then(|bits| to_i64(obj_from_bits(*bits)))
+        let value = crate::builtins::exceptions::ExceptionStorage::for_exception(_py, exc_bits)?
+            .typed_field(_py, molt_obj_model::ExceptionTypedField::OSErrorErrno)?;
+        to_i64(obj_from_bits(value.bits()))
+}
+
+#[cfg(test)]
+mod exception_storage_tests {
+    use super::*;
+
+    #[test]
+    fn retry_errno_uses_native_and_managed_oserror_field_not_mutated_args() {
+        use crate::builtins::exceptions::{ExceptionFieldSlot, exception_replace_field_bits, exception_typed_field_replace_internal};
+        use molt_cpython_abi::{abi_types::PyExc_OSError, api::{errors, refcount::OwnedPyObject}, bridge::GLOBAL_BRIDGE};
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let native = errors::molt_native_exception_new(&raw mut PyExc_OSError, std::ptr::null_mut(), std::ptr::null_mut());
+                assert!(!native.is_null());
+                let native = OwnedPyObject::from_owned(native);
+                let native_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
+                let managed = MoltObject::from_ptr(crate::alloc_exception(py, "OSError", "retry")).bits();
+                let args = MoltObject::from_ptr(alloc_tuple(py, &[MoltObject::from_int(libc::EINTR as i64).bits()])).bits();
+                for exception in [managed, native_bits] {
+                    exception_typed_field_replace_internal(py, exception, molt_obj_model::ExceptionTypedField::OSErrorErrno, MoltObject::from_int(libc::EALREADY as i64).bits()).unwrap();
+                    exception_replace_field_bits(py, exception, ExceptionFieldSlot::Args, args).unwrap();
+                    assert_eq!(asyncio_oserror_errno_from_exception(py, exception), Some(libc::EALREADY as i64));
+                    assert!(!exception_pending(py));
+                    dec_ref_bits(py, exception);
+                }
+                dec_ref_bits(py, args);
+            }
+        });
     }
 }
 
@@ -191,8 +200,16 @@ unsafe fn asyncio_pending_with_wait(
             // Raw bit reinterpretation can misread tagged sentinels (e.g. None) as fds.
             let fd = to_i64(obj_from_bits(fd_bits)).unwrap_or(-1);
             waiter_bits = if fd < 0 {
+                // Stream-backed DB/process completions are pulled by the host
+                // imports in stream.recv/send. On WASM their next poll is a
+                // real task-owned deadline, using the same host-progress
+                // interval as process and socket waits, rather than sleep(0).
+                #[cfg(target_arch = "wasm32")]
+                let delay = crate::async_rt::io_poller::HOST_PROGRESS_POLL_SLICE.as_secs_f64();
+                #[cfg(not(target_arch = "wasm32"))]
+                let delay = 0.0;
                 molt_async_sleep(
-                    MoltObject::from_float(0.0).bits(),
+                    MoltObject::from_float(delay).bits(),
                     MoltObject::none().bits(),
                 )
             } else {
@@ -205,7 +222,12 @@ unsafe fn asyncio_pending_with_wait(
             if obj_from_bits(waiter_bits).is_none() {
                 return waiter_bits as i64;
             }
-            *payload_ptr.add(slot_idx) = waiter_bits;
+            crate::object::payload_refs::store_owned(
+                _py,
+                payload_ptr.cast(),
+                slot_idx * std::mem::size_of::<u64>(),
+                waiter_bits,
+            );
         }
         let wait_res = molt_future_poll(waiter_bits);
         if wait_res == pending_bits_i64() {
@@ -270,227 +292,8 @@ fn asyncio_msg_dontwait() -> i64 {
     }
 }
 
-unsafe fn asyncio_drop_payload_slots(_py: &PyToken<'_>, payload_ptr: *mut u64, slots: usize) {
-    unsafe {
-        for idx in 0..slots {
-            asyncio_drop_slot_ref(_py, payload_ptr, idx);
-        }
-    }
-}
-
-/// # Safety
-/// - All arguments must be valid runtime objects.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_timer_handle_new(
-    handle_bits: u64,
-    delay_bits: u64,
-    loop_bits: u64,
-    scheduled_bits: u64,
-    ready_lock_bits: u64,
-    ready_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
-            asyncio_timer_handle_poll_fn_addr(),
-            (7 * std::mem::size_of::<u64>()) as u64,
-        );
-        if obj_from_bits(obj_bits).is_none() {
-            return obj_bits;
-        }
-        let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
-            return MoltObject::none().bits();
-        };
-        let payload_ptr = obj_ptr as *mut u64;
-        unsafe {
-            *payload_ptr.add(ASYNCIO_TIMER_SLOT_HANDLE) = handle_bits;
-            *payload_ptr.add(ASYNCIO_TIMER_SLOT_DELAY) = delay_bits;
-            *payload_ptr.add(ASYNCIO_TIMER_SLOT_LOOP) = loop_bits;
-            *payload_ptr.add(ASYNCIO_TIMER_SLOT_SCHEDULED) = scheduled_bits;
-            *payload_ptr.add(ASYNCIO_TIMER_SLOT_READY_LOCK) = ready_lock_bits;
-            *payload_ptr.add(ASYNCIO_TIMER_SLOT_READY) = ready_bits;
-            *payload_ptr.add(ASYNCIO_TIMER_SLOT_WAIT) = MoltObject::none().bits();
-        }
-        inc_ref_bits(_py, handle_bits);
-        inc_ref_bits(_py, delay_bits);
-        inc_ref_bits(_py, loop_bits);
-        inc_ref_bits(_py, scheduled_bits);
-        inc_ref_bits(_py, ready_lock_bits);
-        inc_ref_bits(_py, ready_bits);
-        obj_bits
-    })
-}
-
-/// # Safety
-/// - All arguments must be valid runtime objects.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_timer_schedule(
-    handle_bits: u64,
-    delay_bits: u64,
-    loop_bits: u64,
-    scheduled_bits: u64,
-    ready_lock_bits: u64,
-    ready_bits: u64,
-) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let delay_obj = obj_from_bits(molt_float_from_obj(delay_bits));
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            let delay = delay_obj.as_float().unwrap_or(0.0);
-            if !delay.is_finite() || delay <= 0.0 {
-                if asyncio_loop_enqueue_handle_inner(
-                    _py,
-                    loop_bits,
-                    ready_lock_bits,
-                    ready_bits,
-                    handle_bits,
-                )
-                .is_none()
-                {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::none().bits();
-            }
-
-            let add_bits = asyncio_call_method1(_py, scheduled_bits, b"add", handle_bits);
-            if exception_pending(_py) {
-                return add_bits;
-            }
-            if !obj_from_bits(add_bits).is_none() {
-                dec_ref_bits(_py, add_bits);
-            }
-
-            let timer_bits = molt_asyncio_timer_handle_new(
-                handle_bits,
-                delay_bits,
-                loop_bits,
-                scheduled_bits,
-                ready_lock_bits,
-                ready_bits,
-            );
-            if obj_from_bits(timer_bits).is_none() {
-                return timer_bits;
-            }
-            let task_bits = asyncio_call_method1(_py, loop_bits, b"create_task", timer_bits);
-            dec_ref_bits(_py, timer_bits);
-            if exception_pending(_py) {
-                return task_bits;
-            }
-            task_bits
-        })
-    }
-}
-
-/// # Safety
-/// - All arguments must be valid runtime objects.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_timer_handle_cancel(
-    scheduled_bits: u64,
-    handle_bits: u64,
-    timer_task_bits: u64,
-) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            if !obj_from_bits(timer_task_bits).is_none() {
-                let cancel_bits = asyncio_call_method0(_py, timer_task_bits, b"cancel");
-                if exception_pending(_py) {
-                    asyncio_clear_pending_exception(_py);
-                } else if !obj_from_bits(cancel_bits).is_none() {
-                    dec_ref_bits(_py, cancel_bits);
-                }
-            }
-            let discard_bits = asyncio_call_method1(_py, scheduled_bits, b"discard", handle_bits);
-            if exception_pending(_py) {
-                asyncio_clear_pending_exception(_py);
-            } else if !obj_from_bits(discard_bits).is_none() {
-                dec_ref_bits(_py, discard_bits);
-            }
-            MoltObject::none().bits()
-        })
-    }
-}
-
-/// # Safety
-/// - `obj_bits` must be a valid timer-handle wrapper future pointer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_timer_handle_poll(obj_bits: u64) -> i64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let obj_ptr = ptr_from_bits(obj_bits);
-            if obj_ptr.is_null() {
-                return MoltObject::none().bits() as i64;
-            }
-            let _header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = crate::object::object_payload_size(obj_ptr);
-            if payload_bytes < 7 * std::mem::size_of::<u64>() {
-                return raise_exception::<i64>(
-                    _py,
-                    "RuntimeError",
-                    "invalid asyncio timer payload",
-                );
-            }
-            let payload_ptr = obj_ptr as *mut u64;
-            if crate::object::object_state(obj_ptr) == 0 {
-                let delay_bits = *payload_ptr.add(ASYNCIO_TIMER_SLOT_DELAY);
-                let delay_obj = obj_from_bits(molt_float_from_obj(delay_bits));
-                if exception_pending(_py) {
-                    return MoltObject::none().bits() as i64;
-                }
-                let delay = delay_obj.as_float().unwrap_or(0.0);
-                if delay.is_finite() && delay > 0.0 {
-                    let waiter_bits = molt_async_sleep(
-                        MoltObject::from_float(delay).bits(),
-                        MoltObject::none().bits(),
-                    );
-                    if obj_from_bits(waiter_bits).is_none() {
-                        return waiter_bits as i64;
-                    }
-                    *payload_ptr.add(ASYNCIO_TIMER_SLOT_WAIT) = waiter_bits;
-                }
-                crate::object::object_set_state(obj_ptr, 1);
-            }
-
-            let wait_bits = *payload_ptr.add(ASYNCIO_TIMER_SLOT_WAIT);
-            if !obj_from_bits(wait_bits).is_none() {
-                let wait_res = molt_future_poll(wait_bits);
-                if wait_res == pending_bits_i64() {
-                    return pending_bits_i64();
-                }
-                if exception_pending(_py) {
-                    return wait_res;
-                }
-                asyncio_drop_slot_ref(_py, payload_ptr, ASYNCIO_TIMER_SLOT_WAIT);
-            }
-
-            let handle_bits = *payload_ptr.add(ASYNCIO_TIMER_SLOT_HANDLE);
-            let scheduled_bits = *payload_ptr.add(ASYNCIO_TIMER_SLOT_SCHEDULED);
-            let discard_bits = asyncio_call_method1(_py, scheduled_bits, b"discard", handle_bits);
-            if exception_pending(_py) {
-                return discard_bits as i64;
-            }
-            if !obj_from_bits(discard_bits).is_none() {
-                dec_ref_bits(_py, discard_bits);
-            }
-            let cancelled = match asyncio_method_truthy(_py, handle_bits, b"cancelled") {
-                Some(flag) => flag,
-                None => return MoltObject::none().bits() as i64,
-            };
-            if cancelled {
-                asyncio_drop_payload_slots(_py, payload_ptr, 7);
-                return MoltObject::none().bits() as i64;
-            }
-            let run_bits = asyncio_call_method0(_py, handle_bits, b"_run");
-            if exception_pending(_py) {
-                return run_bits as i64;
-            }
-            if !obj_from_bits(run_bits).is_none() {
-                dec_ref_bits(_py, run_bits);
-            }
-            asyncio_drop_payload_slots(_py, payload_ptr, 7);
-            MoltObject::none().bits() as i64
-        })
-    }
+unsafe fn asyncio_drop_payload_slots<const N: usize>(_py: &PyToken<'_>, payload_ptr: *mut u64) {
+    unsafe { crate::object::payload_refs::clear_prefix::<N>(_py, payload_ptr.cast()) };
 }
 
 /// # Safety
@@ -744,7 +547,7 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_poll(obj_bits: u64) -> i64 {
                 dec_ref_bits(_py, contains_bits);
             }
             if !still_registered {
-                asyncio_drop_payload_slots(_py, payload_ptr, 6);
+                asyncio_drop_payload_slots::<6>(_py, payload_ptr);
                 return MoltObject::none().bits() as i64;
             }
 
@@ -755,7 +558,7 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_poll(obj_bits: u64) -> i64 {
                 if obj_from_bits(waiter_bits).is_none() {
                     if exception_pending(_py) {
                         let exc_bits = asyncio_take_pending_exception_bits(_py);
-                        let fatal = asyncio_exception_is_fatal_base(_py, exc_bits);
+                        let fatal = asyncio_exception_escapes_callback(_py, exc_bits);
                         if fatal {
                             let raised = molt_raise(exc_bits);
                             dec_ref_bits(_py, exc_bits);
@@ -790,14 +593,14 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_poll(obj_bits: u64) -> i64 {
                 }
                 if exception_pending(_py) {
                     let exc_bits = asyncio_take_pending_exception_bits(_py);
-                    let fatal = asyncio_exception_is_fatal_base(_py, exc_bits);
+                    let fatal = asyncio_exception_escapes_callback(_py, exc_bits);
                     if fatal {
                         let raised = molt_raise(exc_bits);
                         dec_ref_bits(_py, exc_bits);
                         return raised as i64;
                     }
                     dec_ref_bits(_py, exc_bits);
-                    asyncio_drop_payload_slots(_py, payload_ptr, 6);
+                    asyncio_drop_payload_slots::<6>(_py, payload_ptr);
                     return MoltObject::none().bits() as i64;
                 }
                 asyncio_drop_slot_ref(_py, payload_ptr, ASYNCIO_FD_WATCHER_SLOT_WAIT);
@@ -813,7 +616,7 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_poll(obj_bits: u64) -> i64 {
                 dec_ref_bits(_py, contains_bits);
             }
             if !still_registered {
-                asyncio_drop_payload_slots(_py, payload_ptr, 6);
+                asyncio_drop_payload_slots::<6>(_py, payload_ptr);
                 return MoltObject::none().bits() as i64;
             }
 
@@ -822,7 +625,7 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_poll(obj_bits: u64) -> i64 {
             let callback_res = asyncio_call_with_args(_py, callback_bits, args_bits);
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
-                let fatal = asyncio_exception_is_fatal_base(_py, exc_bits);
+                let fatal = asyncio_exception_escapes_callback(_py, exc_bits);
                 if fatal {
                     let raised = molt_raise(exc_bits);
                     dec_ref_bits(_py, exc_bits);
@@ -944,7 +747,7 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
                 dec_ref_bits(_py, closed_bits);
             }
             if is_closed {
-                asyncio_drop_payload_slots(_py, payload_ptr, 8);
+                asyncio_drop_payload_slots::<8>(_py, payload_ptr);
                 return MoltObject::none().bits() as i64;
             }
 
@@ -965,12 +768,12 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
             }
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
-                if asyncio_exception_kind_is(_py, exc_bits, "CancelledError") {
+                if asyncio_exception_is_cancelled(_py, exc_bits) {
                     dec_ref_bits(_py, exc_bits);
-                    asyncio_drop_payload_slots(_py, payload_ptr, 8);
+                    asyncio_drop_payload_slots::<8>(_py, payload_ptr);
                     return MoltObject::none().bits() as i64;
                 }
-                let fatal = asyncio_exception_is_fatal_base(_py, exc_bits);
+                let fatal = asyncio_exception_escapes_callback(_py, exc_bits);
                 if fatal {
                     let raised = molt_raise(exc_bits);
                     dec_ref_bits(_py, exc_bits);
@@ -989,7 +792,7 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
             }
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
-                let fatal = asyncio_exception_is_fatal_base(_py, exc_bits);
+                let fatal = asyncio_exception_escapes_callback(_py, exc_bits);
                 if fatal {
                     let raised = molt_raise(exc_bits);
                     dec_ref_bits(_py, exc_bits);
@@ -1007,7 +810,7 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
             );
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
-                if asyncio_exception_is_fatal_base(_py, exc_bits) {
+                if asyncio_exception_escapes_callback(_py, exc_bits) {
                     let raised = molt_raise(exc_bits);
                     dec_ref_bits(_py, exc_bits);
                     dec_ref_bits(_py, conn_bits);
@@ -1022,7 +825,7 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
             let reader_bits = call_callable1(_py, reader_ctor_bits, conn_bits);
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
-                let fatal = asyncio_exception_is_fatal_base(_py, exc_bits);
+                let fatal = asyncio_exception_escapes_callback(_py, exc_bits);
                 asyncio_close_connection_best_effort(_py, conn_bits);
                 dec_ref_bits(_py, conn_bits);
                 if fatal {
@@ -1038,7 +841,7 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
             let writer_bits = call_callable1(_py, writer_ctor_bits, conn_bits);
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
-                let fatal = asyncio_exception_is_fatal_base(_py, exc_bits);
+                let fatal = asyncio_exception_escapes_callback(_py, exc_bits);
                 if !obj_from_bits(reader_bits).is_none() {
                     dec_ref_bits(_py, reader_bits);
                 }
@@ -1063,7 +866,7 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
             }
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
-                let fatal = asyncio_exception_is_fatal_base(_py, exc_bits);
+                let fatal = asyncio_exception_escapes_callback(_py, exc_bits);
                 asyncio_close_connection_best_effort(_py, conn_bits);
                 dec_ref_bits(_py, conn_bits);
                 if fatal {
@@ -1082,7 +885,7 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
             }
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
-                let fatal = asyncio_exception_is_fatal_base(_py, exc_bits);
+                let fatal = asyncio_exception_escapes_callback(_py, exc_bits);
                 asyncio_close_connection_best_effort(_py, conn_bits);
                 dec_ref_bits(_py, conn_bits);
                 if fatal {
@@ -1097,111 +900,6 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
                 dec_ref_bits(_py, spawn_bits);
             }
             dec_ref_bits(_py, conn_bits);
-            pending_bits_i64()
-        })
-    }
-}
-
-/// # Safety
-/// - All arguments must be valid runtime objects.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_ready_runner_new(
-    loop_bits: u64,
-    ready_lock_bits: u64,
-    ready_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
-            asyncio_ready_runner_poll_fn_addr(),
-            (4 * std::mem::size_of::<u64>()) as u64,
-        );
-        if obj_from_bits(obj_bits).is_none() {
-            return obj_bits;
-        }
-        let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
-            return MoltObject::none().bits();
-        };
-        let payload_ptr = obj_ptr as *mut u64;
-        unsafe {
-            *payload_ptr.add(ASYNCIO_READY_RUNNER_SLOT_LOOP) = loop_bits;
-            *payload_ptr.add(ASYNCIO_READY_RUNNER_SLOT_READY_LOCK) = ready_lock_bits;
-            *payload_ptr.add(ASYNCIO_READY_RUNNER_SLOT_READY) = ready_bits;
-            *payload_ptr.add(ASYNCIO_READY_RUNNER_SLOT_WAIT) = MoltObject::none().bits();
-        }
-        inc_ref_bits(_py, loop_bits);
-        inc_ref_bits(_py, ready_lock_bits);
-        inc_ref_bits(_py, ready_bits);
-        obj_bits
-    })
-}
-
-/// # Safety
-/// - `obj_bits` must be a valid ready-runner wrapper future pointer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_ready_runner_poll(obj_bits: u64) -> i64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let obj_ptr = ptr_from_bits(obj_bits);
-            if obj_ptr.is_null() {
-                return MoltObject::none().bits() as i64;
-            }
-            let _header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = crate::object::object_payload_size(obj_ptr);
-            if payload_bytes < 4 * std::mem::size_of::<u64>() {
-                return raise_exception::<i64>(
-                    _py,
-                    "RuntimeError",
-                    "invalid asyncio ready runner payload",
-                );
-            }
-            let payload_ptr = obj_ptr as *mut u64;
-            let loop_bits = *payload_ptr.add(ASYNCIO_READY_RUNNER_SLOT_LOOP);
-            let closed = match asyncio_method_truthy(_py, loop_bits, b"is_closed") {
-                Some(flag) => flag,
-                None => return MoltObject::none().bits() as i64,
-            };
-            if closed {
-                asyncio_drop_payload_slots(_py, payload_ptr, 4);
-                return MoltObject::none().bits() as i64;
-            }
-
-            let ready_lock_bits = *payload_ptr.add(ASYNCIO_READY_RUNNER_SLOT_READY_LOCK);
-            let ready_bits = *payload_ptr.add(ASYNCIO_READY_RUNNER_SLOT_READY);
-            let drained_bits = molt_asyncio_ready_queue_drain(ready_lock_bits, ready_bits);
-            if exception_pending(_py) {
-                return drained_bits as i64;
-            }
-            if !obj_from_bits(drained_bits).is_none() {
-                dec_ref_bits(_py, drained_bits);
-            }
-
-            let mut waiter_bits = *payload_ptr.add(ASYNCIO_READY_RUNNER_SLOT_WAIT);
-            if obj_from_bits(waiter_bits).is_none() {
-                waiter_bits = molt_async_sleep(
-                    MoltObject::from_float(0.0).bits(),
-                    MoltObject::none().bits(),
-                );
-                if obj_from_bits(waiter_bits).is_none() {
-                    return waiter_bits as i64;
-                }
-                *payload_ptr.add(ASYNCIO_READY_RUNNER_SLOT_WAIT) = waiter_bits;
-            }
-            let wait_res = molt_future_poll(waiter_bits);
-            if wait_res == pending_bits_i64() {
-                return pending_bits_i64();
-            }
-            if exception_pending(_py) {
-                let exc_bits = asyncio_take_pending_exception_bits(_py);
-                if asyncio_exception_kind_is(_py, exc_bits, "CancelledError") {
-                    dec_ref_bits(_py, exc_bits);
-                    asyncio_drop_payload_slots(_py, payload_ptr, 4);
-                    return MoltObject::none().bits() as i64;
-                }
-                let raised = molt_raise(exc_bits);
-                dec_ref_bits(_py, exc_bits);
-                return raised as i64;
-            }
-            asyncio_drop_slot_ref(_py, payload_ptr, ASYNCIO_READY_RUNNER_SLOT_WAIT);
             pending_bits_i64()
         })
     }

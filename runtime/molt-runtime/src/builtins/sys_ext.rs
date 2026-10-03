@@ -6,7 +6,12 @@
 // No capability gates needed: these intrinsics return process metadata and
 // language-level constants that are always available.
 
-use crate::builtins::numbers::int_bits_from_i64;
+use crate::builtins::numbers::{index_c_int_from_obj, int_bits_from_i64};
+use crate::object::ops_hash::{
+    PY_HASH_ALGORITHM, PY_HASH_ALGORITHM_BITS, PY_HASH_CUTOFF, PY_HASH_IMAG, PY_HASH_INF,
+    PY_HASH_MODULUS, PY_HASH_NAN, PY_HASH_SEED_BITS, PY_HASH_WIDTH,
+};
+use crate::object::ops_sys::sys_tuple_from_owned;
 use crate::state::runtime_state::{RuntimeState, runtime_state};
 use crate::*;
 use std::sync::Mutex;
@@ -22,6 +27,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering as AtomicOrdering};
 fn str_bits(_py: &PyToken<'_>, s: &str) -> u64 {
     let ptr = alloc_string(_py, s.as_bytes());
     if ptr.is_null() {
+        crate::record_memory_error_without_allocation(_py);
         MoltObject::none().bits()
     } else {
         MoltObject::from_ptr(ptr).bits()
@@ -175,10 +181,13 @@ fn release_owned_bits(_py: &PyToken<'_>, bits: u64) {
 // 1. Scalar constants
 // ---------------------------------------------------------------------------
 
-/// `sys.maxsize` -> isize::MAX
+/// `sys.maxsize`: `PY_SSIZE_T_MAX` of the target C data model, the same
+/// `Py_ssize_t` the C-API layer and builtin `sum()` use.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_maxsize() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, isize::MAX as i64) })
+    crate::with_gil_entry_nopanic!(_py, {
+        int_bits_from_i64(_py, molt_cpython_abi::Py_ssize_t::MAX as i64)
+    })
 }
 
 /// `sys.maxunicode` -> 0x10FFFF (Unicode max code point)
@@ -275,12 +284,7 @@ pub extern "C" fn molt_sys_float_info() -> u64 {
             MoltObject::from_int(f64::RADIX as i64).bits(),
             MoltObject::from_int(1).bits(), // FLT_ROUNDS: 1 = round to nearest
         ];
-        let ptr = alloc_tuple(_py, &values);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
+        sys_tuple_from_owned(_py, &values)
     })
 }
 
@@ -291,17 +295,12 @@ pub extern "C" fn molt_sys_int_info() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         // Molt uses NaN-boxed 47-bit inline ints; for API compat report CPython-compatible values
         let values: [u64; 4] = [
-            MoltObject::from_int(30).bits(),   // bits_per_digit (CPython default)
-            MoltObject::from_int(4).bits(),    // sizeof_digit (4 bytes = uint32)
-            MoltObject::from_int(4300).bits(), // default_max_str_digits
-            MoltObject::from_int(640).bits(),  // str_digits_check_threshold
+            MoltObject::from_int(30).bits(), // bits_per_digit (CPython default)
+            MoltObject::from_int(4).bits(),  // sizeof_digit (4 bytes = uint32)
+            MoltObject::from_int(DEFAULT_INT_MAX_STR_DIGITS).bits(),
+            MoltObject::from_int(INT_STR_DIGITS_CHECK_THRESHOLD).bits(),
         ];
-        let ptr = alloc_tuple(_py, &values);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
+        sys_tuple_from_owned(_py, &values)
     })
 }
 
@@ -310,34 +309,22 @@ pub extern "C" fn molt_sys_int_info() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_hash_info() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let width = if cfg!(target_pointer_width = "64") {
-            64i64
-        } else {
-            32
-        };
-        let modulus = if cfg!(target_pointer_width = "64") {
-            (1i64 << 61) - 1
-        } else {
-            (1i64 << 31) - 1
-        };
-        let alg_bits = str_bits(_py, "siphash13");
-        let values: [u64; 9] = [
-            MoltObject::from_int(width).bits(),   // width
-            MoltObject::from_int(modulus).bits(), // modulus
-            MoltObject::from_int(314159).bits(),  // inf hash
-            MoltObject::from_int(0).bits(),       // nan hash
-            MoltObject::from_int(1000003).bits(), // imag multiplier
-            alg_bits,                             // algorithm name
-            MoltObject::from_int(64).bits(),      // hash_bits
-            MoltObject::from_int(128).bits(),     // seed_bits
-            MoltObject::from_int(0).bits(),       // cutoff
-        ];
-        let ptr = alloc_tuple(_py, &values);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
+        let alg_bits = str_bits(_py, PY_HASH_ALGORITHM);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
+        let values: [u64; 9] = [
+            MoltObject::from_int(PY_HASH_WIDTH as i64).bits(),
+            int_bits_from_i64(_py, PY_HASH_MODULUS as i64),
+            MoltObject::from_int(PY_HASH_INF).bits(),
+            MoltObject::from_int(PY_HASH_NAN).bits(),
+            MoltObject::from_int(PY_HASH_IMAG).bits(),
+            alg_bits,
+            MoltObject::from_int(PY_HASH_ALGORITHM_BITS as i64).bits(),
+            MoltObject::from_int(PY_HASH_SEED_BITS as i64).bits(),
+            MoltObject::from_int(PY_HASH_CUTOFF as i64).bits(),
+        ];
+        sys_tuple_from_owned(_py, &values)
     })
 }
 
@@ -354,18 +341,16 @@ pub extern "C" fn molt_sys_thread_info() -> u64 {
             "pthread"
         };
         let name_bits = str_bits(_py, name_str);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         let lock_bits = str_bits(_py, "mutex+cond");
         let values: [u64; 3] = [
             name_bits,
             lock_bits,
             MoltObject::none().bits(), // version (None = unknown)
         ];
-        let ptr = alloc_tuple(_py, &values);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
+        sys_tuple_from_owned(_py, &values)
     })
 }
 
@@ -489,69 +474,71 @@ pub extern "C" fn molt_sys_intern(s_bits: u64) -> u64 {
 /// compatibility.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_getsizeof(obj_bits: u64, default_bits: u64) -> u64 {
-    let _ = default_bits; // accepted for API compat; Molt never raises TypeError here
-    let obj = obj_from_bits(obj_bits);
+    crate::with_gil_entry_nopanic!(_py, {
+        let _ = default_bits; // accepted for API compat; Molt never raises TypeError here
+        let obj = obj_from_bits(obj_bits);
 
-    // Inline NaN-boxed values
-    if obj.is_none() || obj.is_bool() {
-        return MoltObject::from_int(16).bits();
-    }
-    if obj.is_int() {
-        return MoltObject::from_int(28).bits(); // CPython int: 28 bytes
-    }
-    if obj.is_float() {
-        return MoltObject::from_int(24).bits(); // CPython float: 24 bytes
-    }
+        // Inline NaN-boxed values
+        if obj.is_none() || obj.is_bool() {
+            return MoltObject::from_int(16).bits();
+        }
+        if obj.is_int() {
+            return MoltObject::from_int(28).bits(); // CPython int: 28 bytes
+        }
+        if obj.is_float() {
+            return MoltObject::from_int(24).bits(); // CPython float: 24 bytes
+        }
 
-    // Heap-allocated objects — dispatch on type_id
-    let Some(ptr) = obj.as_ptr() else {
-        return MoltObject::from_int(8).bits(); // unknown inline tag
-    };
-    let type_id = unsafe { object_type_id(ptr) };
-    let size: i64 = match type_id {
-        TYPE_ID_STRING => {
-            let len = unsafe { string_len(ptr) } as i64;
-            49 + len + 1 // CPython compact-ASCII str: ~49 + len + NUL
-        }
-        TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
-            let len = unsafe { bytes_len(ptr) } as i64;
-            33 + len // CPython bytes: ~33 + len
-        }
-        TYPE_ID_LIST | TYPE_ID_LIST_BUILDER => {
-            let len = unsafe { crate::builtins::containers::list_len(ptr) } as i64;
-            56 + len * 8 // CPython list: 56 + 8 per element slot
-        }
-        TYPE_ID_TUPLE => {
-            let len = unsafe { crate::builtins::containers::tuple_len(ptr) } as i64;
-            40 + len * 8 // CPython tuple: 40 + 8 per element
-        }
-        TYPE_ID_DICT => {
-            let len = unsafe { crate::builtins::containers::dict_len(ptr) } as i64;
-            64 + len * 3 * 8 // CPython dict: ~64 + 3*8 per entry (hash, key, value)
-        }
-        TYPE_ID_SET | TYPE_ID_FROZENSET => {
-            let len = unsafe { crate::builtins::containers::set_len(ptr) } as i64;
-            200 + len * 8 // CPython set: ~200 + 8 per entry
-        }
-        TYPE_ID_RANGE => 48,        // CPython range: 48 bytes
-        TYPE_ID_SLICE => 56,        // CPython slice: 56 bytes
-        TYPE_ID_FUNCTION => 136,    // CPython function: ~136 bytes
-        TYPE_ID_BOUND_METHOD => 48, // CPython bound method: ~48 bytes
-        TYPE_ID_MODULE => 72,       // CPython module: ~72 bytes
-        TYPE_ID_TYPE => 864,        // CPython type: ~864 bytes
-        TYPE_ID_COMPLEX => 32,      // CPython complex: 32 bytes
-        TYPE_ID_EXCEPTION => unsafe {
-            // Runtime exceptions have one compact common prefix plus the exact
-            // schema-owned typed tail selected from their real class MRO.
-            (std::mem::size_of::<MoltHeader>()
-                + crate::builtins::exceptions::exception_payload_words(ptr)
-                    * std::mem::size_of::<u64>()) as i64
-        },
-        TYPE_ID_BIGINT => 32, // approximation for arbitrary-precision int
-        TYPE_ID_CODE => 176,  // CPython code object: ~176 bytes
-        _ => 64,              // reasonable default for other heap objects
-    };
-    MoltObject::from_int(size).bits()
+        // Heap-allocated objects — dispatch on type_id
+        let Some(ptr) = obj.as_ptr() else {
+            return MoltObject::from_int(8).bits(); // unknown inline tag
+        };
+        let type_id = unsafe { object_type_id(ptr) };
+        let size: i64 = match type_id {
+            TYPE_ID_STRING => {
+                let len = unsafe { string_len(ptr) } as i64;
+                49 + len + 1 // CPython compact-ASCII str: ~49 + len + NUL
+            }
+            TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
+                let len = unsafe { bytes_len(ptr) } as i64;
+                33 + len // CPython bytes: ~33 + len
+            }
+            TYPE_ID_LIST | TYPE_ID_LIST_BUILDER => {
+                let len = unsafe { crate::builtins::containers::list_len(ptr) } as i64;
+                56 + len * 8 // CPython list: 56 + 8 per element slot
+            }
+            TYPE_ID_TUPLE => {
+                let len = unsafe { crate::builtins::containers::tuple_len(ptr) } as i64;
+                40 + len * 8 // CPython tuple: 40 + 8 per element
+            }
+            TYPE_ID_DICT => {
+                let len = unsafe { crate::builtins::containers::dict_len(ptr) } as i64;
+                64 + len * 3 * 8 // CPython dict: ~64 + 3*8 per entry (hash, key, value)
+            }
+            TYPE_ID_SET | TYPE_ID_FROZENSET => {
+                let len = unsafe { crate::builtins::containers::set_len(ptr) } as i64;
+                200 + len * 8 // CPython set: ~200 + 8 per entry
+            }
+            TYPE_ID_RANGE => 48,        // CPython range: 48 bytes
+            TYPE_ID_SLICE => 56,        // CPython slice: 56 bytes
+            TYPE_ID_FUNCTION => 136,    // CPython function: ~136 bytes
+            TYPE_ID_BOUND_METHOD => 48, // CPython bound method: ~48 bytes
+            TYPE_ID_MODULE => 72,       // CPython module: ~72 bytes
+            TYPE_ID_TYPE => 864,        // CPython type: ~864 bytes
+            TYPE_ID_COMPLEX => 32,      // CPython complex: 32 bytes
+            TYPE_ID_EXCEPTION => unsafe {
+                // Runtime exceptions have one compact common prefix plus the exact
+                // schema-owned typed tail selected from their real class MRO.
+                (std::mem::size_of::<MoltHeader>()
+                    + crate::builtins::exceptions::exception_payload_words(ptr)
+                        * std::mem::size_of::<u64>()) as i64
+            },
+            TYPE_ID_BIGINT => 32, // approximation for arbitrary-precision int
+            TYPE_ID_CODE => 176,  // CPython code object: ~176 bytes
+            _ => 64,              // reasonable default for other heap objects
+        };
+        int_bits_from_i64(_py, size)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -749,16 +736,7 @@ pub extern "C" fn molt_sys_stdlib_module_names() -> u64 {
             }
             bits_vec.push(MoltObject::from_ptr(ptr).bits());
         }
-        let ptr = alloc_tuple(_py, &bits_vec);
-        // alloc_tuple inc_refs each element, so dec_ref our locals
-        for &b in &bits_vec {
-            dec_ref_bits(_py, b);
-        }
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
+        sys_tuple_from_owned(_py, &bits_vec)
     })
 }
 
@@ -804,16 +782,7 @@ pub extern "C" fn molt_sys_builtin_module_names() -> u64 {
             }
             bits_vec.push(MoltObject::from_ptr(ptr).bits());
         }
-        let ptr = alloc_tuple(_py, &bits_vec);
-        // alloc_tuple inc_refs each element, so dec_ref our locals
-        for &b in &bits_vec {
-            dec_ref_bits(_py, b);
-        }
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
+        sys_tuple_from_owned(_py, &bits_vec)
     })
 }
 
@@ -934,7 +903,7 @@ pub extern "C" fn molt_sys_get_int_max_str_digits() -> u64 {
         let val = sys_state(_py)
             .int_max_str_digits
             .load(AtomicOrdering::Relaxed);
-        MoltObject::from_int(val).bits()
+        int_bits_from_i64(_py, val)
     })
 }
 
@@ -942,16 +911,10 @@ pub extern "C" fn molt_sys_get_int_max_str_digits() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_set_int_max_str_digits(maxdigits_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let val = match to_i64(obj_from_bits(maxdigits_bits)) {
-            Some(v) => v,
-            None => {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "set_int_max_str_digits() argument must be a positive integer or zero",
-                );
-            }
+        let Some(value) = index_c_int_from_obj(_py, maxdigits_bits) else {
+            return MoltObject::none().bits();
         };
+        let val = i64::from(value);
         if val != 0 && val < INT_STR_DIGITS_CHECK_THRESHOLD {
             let msg = format!(
                 "maxdigits must be 0 or larger than {}",
@@ -1002,8 +965,18 @@ pub extern "C" fn molt_sys_call_tracing_validate(func_bits: u64, args_bits: u64)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_addaudithook(hook_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if !is_truthy(_py, obj_from_bits(molt_is_callable(hook_bits))) {
-            return raise_exception::<u64>(_py, "TypeError", "expected a callable object");
+        if !audit_event_noargs(_py, "sys.addaudithook") {
+            let exception = molt_exception_last_pending();
+            let suppressed = crate::builtins::exceptions::exception_matches_builtin_name(
+                _py,
+                exception,
+                "Exception",
+            );
+            if suppressed {
+                clear_exception(_py);
+            }
+            dec_ref_bits(_py, exception);
+            return MoltObject::none().bits();
         }
         inc_ref_bits(_py, hook_bits);
         sys_state(_py)
@@ -1015,50 +988,142 @@ pub extern "C" fn molt_sys_addaudithook(hook_bits: u64) -> u64 {
     })
 }
 
-/// `sys.audit(event, *args)` -> None
-/// Returns the hooks list length so the Python side can dispatch.
-/// Hooks are stored in Rust; the Python side calls each via the returned
-/// handle list.  For simplicity we return count; 0 means no hooks.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_audit_hook_count() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hooks = sys_state(_py)
-            .audit_hooks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        MoltObject::from_int(hooks.len() as i64).bits()
-    })
-}
-
-/// `sys._audit_get_hooks()` -> list of callable bits
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_audit_get_hooks() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hooks = {
-            let hooks = sys_state(_py)
+/// Dispatch through the live runtime-owned list: a hook appended by a
+/// callback is visited in this event. Pin only the current hook under the owner
+/// lock; Python calls and releases always occur after unlocking.
+fn dispatch_audit_event(py: &PyToken<'_>, event_bits: u64, args_bits: u64) -> bool {
+    let mut index = 0;
+    loop {
+        let hook = {
+            let hooks = sys_state(py)
                 .audit_hooks
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            for &bits in hooks.iter() {
-                pin_owned_bits(_py, bits);
-            }
-            hooks.clone()
+            hooks
+                .get(index)
+                .copied()
+                .inspect(|&bits| pin_owned_bits(py, bits))
         };
-        if hooks.is_empty() {
-            let ptr = alloc_list(_py, &[]);
-            if ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_ptr(ptr).bits();
+        let Some(hook) = hook else {
+            return true;
+        };
+        index += 1;
+        // Optional public lookup still executes descriptors/__getattribute__.
+        // AttributeError means missing; other failures and truthiness failures
+        // abort dispatch even when no tracing hook is active.
+        let Some(name) = attr_name_bits_from_bytes(py, b"__cantrace__") else {
+            release_owned_bits(py, hook);
+            return false;
+        };
+        let cantrace = molt_get_attr_name_default(hook, name, MoltObject::from_bool(false).bits());
+        dec_ref_bits(py, name);
+        if !exception_pending(py) {
+            let _enabled = is_truthy(py, obj_from_bits(cantrace));
         }
-        let ptr = alloc_list(_py, &hooks);
-        for &bits in hooks.iter() {
-            release_owned_bits(_py, bits);
+        dec_ref_bits(py, cantrace);
+        if exception_pending(py) {
+            release_owned_bits(py, hook);
+            return false;
         }
-        if ptr.is_null() {
+        let result = unsafe { call_callable2(py, hook, event_bits, args_bits) };
+        // Canonical result/owner release runs finalizers and weakref callbacks
+        // through the unraisable transaction, preserving pending exceptions.
+        crate::call::discard_owned_call_result(py, result);
+        release_owned_bits(py, hook);
+        if exception_pending(py) {
+            return false;
+        }
+    }
+}
+
+pub(crate) fn audit_event_noargs(py: &PyToken<'_>, event: &str) -> bool {
+    if sys_state(py)
+        .audit_hooks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_empty()
+    {
+        return true;
+    }
+    crate::builtins::exceptions::with_saved_raised_exception(py, || {
+        let event_bits = str_bits(py, event);
+        if obj_from_bits(event_bits).is_none() {
+            return false;
+        }
+        let args = alloc_tuple(py, &[]);
+        if args.is_null() {
+            dec_ref_bits(py, event_bits);
+            return false;
+        }
+        let args_bits = MoltObject::from_ptr(args).bits();
+        let completed = dispatch_audit_event(py, event_bits, args_bits);
+        dec_ref_bits(py, args_bits);
+        dec_ref_bits(py, event_bits);
+        completed
+    })
+}
+
+/// `sys.audit(event, *args)` shares runtime dispatch with intrinsic events.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_audit(event_bits: u64, args_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        // String backing includes str subclasses; admission never invokes
+        // __str__ or another user conversion. Hooks receive a plain str.
+        let Some(event_ptr) = obj_from_bits(event_bits)
+            .as_ptr()
+            .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+        else {
+            let name = type_name(py, obj_from_bits(event_bits));
+            let message = if crate::object::ops_sys::runtime_target_minor(py) >= 14 {
+                format!("audit() argument 1 must be str, not {name}")
+            } else {
+                format!("expected str for argument 'event', not {name}")
+            };
+            return raise_exception::<u64>(py, "TypeError", &message);
+        };
+        let tuple = obj_from_bits(args_bits)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TUPLE });
+        if !tuple {
+            return raise_exception::<u64>(py, "TypeError", "audit arguments must be a tuple");
+        }
+        let event_length = unsafe { string_len(event_ptr) };
+        let normalized_length = unsafe {
+            std::slice::from_raw_parts(string_bytes(event_ptr), event_length)
+                .iter()
+                .position(|&byte| byte == 0)
+                .unwrap_or(event_length)
+        };
+        // Python 3.14 validates C-string admission even without installed hooks.
+        // Earlier versions truncate at the first NUL when dispatching.
+        if normalized_length != event_length
+            && crate::object::ops_sys::runtime_target_minor(py) >= 14
+        {
+            return raise_exception::<u64>(py, "ValueError", "embedded null character");
+        }
+        if sys_state(py)
+            .audit_hooks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+        {
             return MoltObject::none().bits();
         }
-        MoltObject::from_ptr(ptr).bits()
+        crate::builtins::exceptions::with_saved_raised_exception(py, || {
+            let normalized = unsafe {
+                let bytes =
+                    std::slice::from_raw_parts(string_bytes(event_ptr), string_len(event_ptr));
+                alloc_string(py, &bytes[..normalized_length])
+            };
+            if normalized.is_null() {
+                return false;
+            }
+            let normalized_bits = MoltObject::from_ptr(normalized).bits();
+            let completed = dispatch_audit_event(py, normalized_bits, args_bits);
+            dec_ref_bits(py, normalized_bits);
+            completed
+        });
+        MoltObject::none().bits()
     })
 }
 
@@ -1224,6 +1289,382 @@ mod tests {
     }
 
     #[test]
+    fn sys_metadata_hash_fields_describe_actual_numeric_hashing() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let bits = molt_sys_hash_info();
+            assert!(!exception_pending(py));
+            let ptr = obj_from_bits(bits).as_ptr().unwrap();
+            unsafe {
+                crate::object::seq_access::with_immutable_tuple_slice(ptr, |fields| {
+                    assert_eq!(fields.len(), 9);
+                    assert_eq!(to_i64(obj_from_bits(fields[0])), Some(isize::BITS as i64));
+                    let modulus = to_i64(obj_from_bits(fields[1])).unwrap();
+                    assert_eq!(crate::object::ops_hash::hash_int(modulus), 0);
+                    assert_eq!(crate::object::ops_hash::hash_int(modulus + 1), 1);
+                    assert_eq!(crate::object::ops_hash::hash_int(-modulus - 1), -2);
+                    if let Some(modulus_ptr) = obj_from_bits(fields[1]).as_ptr() {
+                        assert_eq!(
+                            ref_count(modulus_ptr),
+                            1,
+                            "tuple owns the sole field reference"
+                        );
+                    }
+                });
+            }
+            dec_ref_bits(py, bits);
+        });
+    }
+
+    #[test]
+    fn sys_metadata_owned_publication_releases_fields_on_success_and_failure() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreBudget;
+        impl Drop for RestoreBudget {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let field = str_bits(py, "owned sys metadata field");
+            let ptr = obj_from_bits(field).as_ptr().unwrap();
+            let initial = ref_count(ptr);
+            inc_ref_bits(py, field);
+            let tuple = sys_tuple_from_owned(py, &[field]);
+            assert!(!obj_from_bits(tuple).is_none());
+            assert_eq!(ref_count(ptr), initial + 1);
+            dec_ref_bits(py, tuple);
+            assert_eq!(ref_count(ptr), initial);
+
+            inc_ref_bits(py, field);
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_allocations: Some(0),
+                ..Default::default()
+            })));
+            let budget = RestoreBudget;
+            assert!(obj_from_bits(sys_tuple_from_owned(py, &[field])).is_none());
+            assert!(exception_pending(py));
+            assert_eq!(ref_count(ptr), initial);
+            drop(budget);
+            clear_exception(py);
+
+            raise_exception::<u64>(py, "ValueError", "original metadata error");
+            let original = molt_exception_last_pending();
+            inc_ref_bits(py, field);
+            assert!(obj_from_bits(sys_tuple_from_owned(py, &[field])).is_none());
+            let observed = molt_exception_last_pending();
+            assert_eq!(
+                observed, original,
+                "publication must preserve the first error"
+            );
+            assert_eq!(ref_count(ptr), initial);
+            clear_exception(py);
+            dec_ref_bits(py, observed);
+            dec_ref_bits(py, original);
+            dec_ref_bits(py, field);
+        });
+    }
+
+    #[test]
+    fn sys_metadata_constructors_never_publish_partial_results_under_denial() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreBudget;
+        impl Drop for RestoreBudget {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for constructor in [
+                molt_sys_float_info,
+                molt_sys_int_info,
+                molt_sys_hash_info,
+                molt_sys_thread_info,
+                molt_sys_stdlib_module_names,
+                molt_sys_builtin_module_names,
+                crate::molt_sys_flags_payload,
+                crate::molt_sys_implementation_payload,
+                crate::molt_sys_version_info,
+            ] {
+                // Stabilize immortal string interning before exercising every
+                // remaining field/tuple allocation boundary.
+                let warm = constructor();
+                assert!(!exception_pending(py));
+                dec_ref_bits(py, warm);
+                let mut completed = false;
+                let mut failed = false;
+                for limit in 0..=64 {
+                    set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                        max_allocations: Some(limit),
+                        ..Default::default()
+                    })));
+                    let budget = RestoreBudget;
+                    let result = constructor();
+                    if obj_from_bits(result).is_none() {
+                        assert!(exception_pending(py), "silent metadata failure at {limit}");
+                        failed = true;
+                    } else {
+                        assert!(
+                            !exception_pending(py),
+                            "partial metadata escaped at {limit}"
+                        );
+                        completed = true;
+                        dec_ref_bits(py, result);
+                    }
+                    drop(budget);
+                    clear_exception(py);
+                    if completed {
+                        break;
+                    }
+                }
+                assert!(failed && completed);
+            }
+        });
+    }
+
+    #[test]
+    fn sys_metadata_version_components_publish_full_width_owned_integers() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let info = crate::state::runtime_state::PythonVersionInfo {
+                major: 3,
+                minor: 12,
+                micro: i64::MAX,
+                releaselevel: "final".to_owned(),
+                serial: i64::MAX,
+            };
+            let bits = crate::object::ops_sys::alloc_sys_version_info_tuple(py, &info).unwrap();
+            assert!(!exception_pending(py));
+            unsafe {
+                crate::object::seq_access::with_immutable_tuple_slice(
+                    obj_from_bits(bits).as_ptr().unwrap(),
+                    |fields| {
+                        for index in [2, 4] {
+                            assert_eq!(to_i64(obj_from_bits(fields[index])), Some(i64::MAX));
+                            assert_eq!(
+                                ref_count(obj_from_bits(fields[index]).as_ptr().unwrap()),
+                                1
+                            );
+                        }
+                    },
+                );
+            }
+            dec_ref_bits(py, bits);
+        });
+    }
+
+    #[test]
+    fn sys_metadata_limit_inputs_reject_wide_values_before_mutating_state() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for (setter, getter) in [
+                (
+                    molt_sys_set_int_max_str_digits as extern "C" fn(u64) -> u64,
+                    molt_sys_get_int_max_str_digits as extern "C" fn() -> u64,
+                ),
+                (
+                    crate::molt_setrecursionlimit as extern "C" fn(u64) -> u64,
+                    crate::molt_getrecursionlimit as extern "C" fn() -> u64,
+                ),
+            ] {
+                let original = getter();
+                setter(MoltObject::from_int(i32::MAX as i64).bits());
+                assert!(!exception_pending(py));
+                assert_eq!(to_i64(obj_from_bits(getter())), Some(i32::MAX as i64));
+                for value in [i32::MAX as i128 + 1, i32::MIN as i128 - 1, 1i128 << 80] {
+                    let bits = crate::builtins::numbers::int_bits_from_i128(py, value);
+                    setter(bits);
+                    dec_ref_bits(py, bits);
+                    assert!(exception_pending(py));
+                    let error = molt_exception_last_pending();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        error,
+                        "OverflowError"
+                    ));
+                    clear_exception(py);
+                    dec_ref_bits(py, error);
+                    assert_eq!(to_i64(obj_from_bits(getter())), Some(i32::MAX as i64));
+                }
+                setter(original);
+                dec_ref_bits(py, original);
+                assert!(!exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
+    fn sys_metadata_environment_fields_preserve_full_width_integer_values() {
+        struct RestoreEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnvironment {
+            fn drop(&mut self) {
+                for (key, value) in &self.0 {
+                    unsafe {
+                        match value {
+                            Some(value) => std::env::set_var(key, value),
+                            None => std::env::remove_var(key),
+                        }
+                    }
+                }
+            }
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let keys = ["MOLT_SYS_API_VERSION", "PYTHONOPTIMIZE"];
+        let _environment = RestoreEnvironment(keys.map(|key| (key, std::env::var_os(key))).into());
+        for key in keys {
+            unsafe {
+                std::env::set_var(key, i64::MAX.to_string());
+            }
+        }
+        crate::with_gil_entry_nopanic!(py, {
+            let api = crate::molt_sys_api_version();
+            assert_eq!(to_i64(obj_from_bits(api)), Some(i64::MAX));
+            dec_ref_bits(py, api);
+            let flags = crate::molt_sys_flags_payload();
+            assert!(!exception_pending(py));
+            let key = str_bits(py, "optimize");
+            let value =
+                unsafe { dict_get_in_place(py, obj_from_bits(flags).as_ptr().unwrap(), key) }
+                    .unwrap();
+            assert_eq!(to_i64(obj_from_bits(value)), Some(i64::MAX));
+            assert_eq!(ref_count(obj_from_bits(value).as_ptr().unwrap()), 1);
+            dec_ref_bits(py, key);
+            dec_ref_bits(py, flags);
+        });
+    }
+
+    static AUDIT_LATE: AtomicU64 = AtomicU64::new(0);
+    static AUDIT_VETO: AtomicU64 = AtomicU64::new(0);
+    static AUDIT_EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+    extern "C" fn audit_first(event: u64, _args: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            match string_obj_to_owned(obj_from_bits(event)).as_deref() {
+                Some("molt.audit.live") => {
+                    AUDIT_EVENTS.lock().unwrap().push("first-live");
+                    molt_sys_addaudithook(AUDIT_LATE.load(AtomicOrdering::Relaxed));
+                    assert!(audit_event_noargs(py, "molt.audit.inner"));
+                }
+                Some("molt.audit.inner") => AUDIT_EVENTS.lock().unwrap().push("first-inner"),
+                Some("sys.addaudithook") => AUDIT_EVENTS.lock().unwrap().push("first-add"),
+                _ => {}
+            }
+            MoltObject::none().bits()
+        })
+    }
+
+    extern "C" fn audit_late(event: u64, _args: u64) -> u64 {
+        match string_obj_to_owned(obj_from_bits(event)).as_deref() {
+            Some("molt.audit.live") => AUDIT_EVENTS.lock().unwrap().push("late-live"),
+            Some("molt.audit.inner") => AUDIT_EVENTS.lock().unwrap().push("late-inner"),
+            _ => {}
+        }
+        MoltObject::none().bits()
+    }
+
+    extern "C" fn audit_gate(event: u64, _args: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            if string_obj_to_owned(obj_from_bits(event)).as_deref() == Some("sys.addaudithook") {
+                match AUDIT_VETO.load(AtomicOrdering::Relaxed) {
+                    1 => return raise_exception::<u64>(py, "ValueError", "veto"),
+                    2 => return raise_exception::<u64>(py, "KeyboardInterrupt", "veto"),
+                    _ => {}
+                }
+            }
+            MoltObject::none().bits()
+        })
+    }
+
+    fn audit_callback(py: &PyToken<'_>, address: *const ()) -> u64 {
+        let ptr = alloc_function_obj(
+            py,
+            crate::provenance::abi::expose_function_address(address),
+            2,
+        );
+        assert!(!ptr.is_null());
+        unsafe { crate::object::layout::function_set_call_target_ptr(ptr, address) };
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    #[test]
+    fn audit_visits_live_additions_reenters_and_applies_registration_failure_policy() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            AUDIT_EVENTS.lock().unwrap().clear();
+            AUDIT_VETO.store(0, AtomicOrdering::Relaxed);
+            let first = audit_callback(py, audit_first as *const ());
+            let late = audit_callback(py, audit_late as *const ());
+            let gate = audit_callback(py, audit_gate as *const ());
+            AUDIT_LATE.store(late, AtomicOrdering::Relaxed);
+            molt_sys_addaudithook(first);
+            assert!(audit_event_noargs(py, "molt.audit.live"));
+            assert_eq!(
+                *AUDIT_EVENTS.lock().unwrap(),
+                [
+                    "first-live",
+                    "first-add",
+                    "first-inner",
+                    "late-inner",
+                    "late-live",
+                ]
+            );
+            molt_sys_addaudithook(gate);
+            let count = sys_state(py).audit_hooks.lock().unwrap().len();
+            AUDIT_VETO.store(1, AtomicOrdering::Relaxed);
+            molt_sys_addaudithook(late);
+            assert!(!exception_pending(py));
+            assert_eq!(sys_state(py).audit_hooks.lock().unwrap().len(), count);
+            AUDIT_VETO.store(2, AtomicOrdering::Relaxed);
+            molt_sys_addaudithook(late);
+            assert!(exception_pending(py));
+            let exception = molt_exception_last_pending();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                exception,
+                "KeyboardInterrupt"
+            ));
+            clear_exception(py);
+            dec_ref_bits(py, exception);
+            assert_eq!(sys_state(py).audit_hooks.lock().unwrap().len(), count);
+            AUDIT_VETO.store(0, AtomicOrdering::Relaxed);
+            raise_exception::<u64>(py, "ValueError", "incoming");
+            let incoming = molt_exception_last_pending();
+            assert!(audit_event_noargs(py, "molt.audit.inner"));
+            let restored = molt_exception_last_pending();
+            assert_eq!(restored, incoming);
+            dec_ref_bits(py, restored);
+            // Failed audit replaces the incoming raised owner. It is not
+            // automatically chained as handled context while the hook runs.
+            AUDIT_VETO.store(2, AtomicOrdering::Relaxed);
+            assert!(!audit_event_noargs(py, "sys.addaudithook"));
+            let replacement = molt_exception_last_pending();
+            assert_ne!(replacement, incoming);
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                replacement,
+                "KeyboardInterrupt"
+            ));
+            clear_exception(py);
+            dec_ref_bits(py, incoming);
+            dec_ref_bits(py, replacement);
+            AUDIT_VETO.store(0, AtomicOrdering::Relaxed);
+            sys_ext_clear_state(py, runtime_state(py));
+            molt_sys_addaudithook(MoltObject::from_int(1).bits());
+            assert!(!exception_pending(py));
+            assert!(!audit_event_noargs(py, "molt.audit.noncallable"));
+            clear_exception(py);
+            sys_ext_clear_state(py, runtime_state(py));
+            for bits in [first, late, gate] {
+                dec_ref_bits(py, bits);
+            }
+            AUDIT_LATE.store(0, AtomicOrdering::Relaxed);
+            assert!(!exception_pending(py));
+        });
+    }
+
+    #[test]
     fn sys_platlibdir_matches_platform_contract() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
@@ -1279,7 +1720,7 @@ mod tests {
             let hook_refs_initial = ref_count(hook_ptr);
             assert!(obj_from_bits(molt_sys_addaudithook(hook_bits)).is_none());
             assert_eq!(ref_count(hook_ptr), hook_refs_initial + 1);
-            assert_eq!(to_i64(obj_from_bits(molt_sys_audit_hook_count())), Some(1));
+            assert_eq!(sys_state(_py).audit_hooks.lock().unwrap().len(), 1);
 
             assert!(
                 obj_from_bits(molt_sys_setswitchinterval(
@@ -1310,7 +1751,7 @@ mod tests {
             assert_eq!(ref_count(hook_ptr), hook_refs_initial);
             assert!(obj_from_bits(molt_sys_gettrace()).is_none());
             assert!(obj_from_bits(molt_sys_getprofile()).is_none());
-            assert_eq!(to_i64(obj_from_bits(molt_sys_audit_hook_count())), Some(0));
+            assert!(sys_state(_py).audit_hooks.lock().unwrap().is_empty());
             assert_eq!(
                 to_f64(obj_from_bits(molt_sys_getswitchinterval())),
                 Some(0.005)

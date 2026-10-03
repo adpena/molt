@@ -10,7 +10,11 @@ from typing import Any, cast
 
 from molt.file_hashing import _sha256_bytes
 from molt.file_publication import atomic_write_bytes
-from molt.toolchain_identity import open_stable_regular_file
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    capture_stable_regular_file,
+    open_stable_regular_file,
+)
 
 
 class ExactJsonError(ValueError):
@@ -61,12 +65,15 @@ def _finite_float(value: str) -> float:
 def loads_exact(value: str) -> Any:
     """Decode standard JSON without lossy duplicate keys or non-finite numbers."""
 
-    return json.loads(
-        value,
-        object_pairs_hook=_object,
-        parse_constant=_constant,
-        parse_float=_finite_float,
-    )
+    try:
+        return json.loads(
+            value,
+            object_pairs_hook=_object,
+            parse_constant=_constant,
+            parse_float=_finite_float,
+        )
+    except RecursionError as exc:
+        raise ExactJsonError("JSON nesting exceeds the decoder limit") from exc
 
 
 def read_exact(path: Path, *, max_bytes: int, label: str) -> Any:
@@ -80,6 +87,14 @@ def read_exact(path: Path, *, max_bytes: int, label: str) -> Any:
         if len(raw) > max_bytes:
             raise ExactJsonError(f"{label} exceeds size limit: {path}")
     return loads_exact(raw.decode("utf-8", errors="strict"))
+
+
+def capture_exact(
+    path: Path, *, max_bytes: int, label: str
+) -> tuple[StableRegularFileIdentity, Any]:
+    """Capture one bounded JSON generation and its physical content identity."""
+    identity, raw = capture_stable_regular_file(path, label=label, max_bytes=max_bytes)
+    return identity, loads_exact(raw.decode("utf-8", errors="strict"))
 
 
 def canonical_json_bytes(value: object, *, default: Any | None = None) -> bytes:

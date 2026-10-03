@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::tir::simple_def_use::simple_ir_out_result;
 
 /// Single-source kind authority for [`handle_exception_control_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -26,6 +27,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     loop_depth: i32,
     label_blocks: &BTreeMap<i64, Block>,
     label_transport_plans: &BTreeMap<i64, BlockTransportPlan>,
+    ssa_values: &NativeSsaValues,
     cfg_liveness: &crate::tir::cfg_liveness::SimpleCfgLiveness,
     reachable_blocks: &mut BTreeSet<Block>,
     is_block_filled: &mut bool,
@@ -37,7 +39,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     tracked_obj_vars: &mut Vec<String>,
@@ -107,10 +108,8 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*exc]);
             let res = builder.inst_results(call)[0];
-            if let Some(out) = op.out.as_ref()
-                && out != "none"
-            {
-                def_var_named(&mut *builder, vars, out.clone(), res);
+            if let Some(out) = simple_ir_out_result(op) {
+                def_var_named(&mut *builder, vars, out, res);
             }
         }
         kind if crate::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
@@ -225,18 +224,16 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             }
             let fallthrough = builder.create_block();
             let fallthrough_transport = if op_idx < cfg_liveness.live_after_op.len() {
-                BlockTransportPlan::from_live_names(
-                    cfg_liveness.live_after(op_idx),
-                    vars,
-                    representation_plan,
-                    slot_backed_join_slots,
+                BlockTransportPlan::from_live_ids(
+                    cfg_liveness.live_after(op_idx).iter().copied(),
+                    ssa_values,
+                    crate::tir::dominators::SimpleProgramPoint::After(op_idx),
                 )
             } else {
-                BlockTransportPlan::from_live_names(
-                    &BTreeSet::new(),
-                    vars,
-                    representation_plan,
-                    slot_backed_join_slots,
+                BlockTransportPlan::from_live_ids(
+                    std::iter::empty(),
+                    ssa_values,
+                    crate::tir::dominators::SimpleProgramPoint::After(op_idx),
                 )
             };
             fallthrough_transport.append_block_params(&mut *builder, fallthrough);
@@ -281,7 +278,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             maybe_debug_seal("check_exception_fallthrough", op_idx, fallthrough);
             seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough);
             crate::switch_to_block_tracking(&mut *builder, fallthrough, &mut *is_block_filled);
-            fallthrough_transport.bind_block_params(&mut *builder, fallthrough);
+            fallthrough_transport.bind_block_params(&mut *builder, fallthrough, ssa_values);
             // check_exception's fallthrough is always a fresh empty
             // block — force-clear is_block_filled so subsequent ops
             // (add, loop_index_next) are never incorrectly skipped by

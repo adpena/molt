@@ -1,64 +1,82 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::tir::analysis::AnalysisManager;
-use crate::tir::blocks::{BlockId, LoopRole, Terminator};
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
-use crate::tir::passes::liveness::{TirLiveness, TirLivenessResult};
+use crate::tir::passes::liveness::{compute_liveness_in_domain, compute_raw_scalars};
 use crate::tir::passes::ownership_lattice_min::{
-    DropEligibility, OwnershipLattice, OwnershipRootFacts, PythonLifetimeFacts,
-    StatementReleasePlan, op_consumed_operand_root, op_result_absorbs_operand_ownership,
-    terminator_branch_args, terminator_uses_root,
+    DropEligibility, OperandTransfer, OwnershipLattice, OwnershipRootFacts, PythonLifetimeFacts,
+    StatementReleasePlan, op_result_absorbs_operand_ownership, terminator_branch_args,
+    terminator_uses_root,
 };
 use crate::tir::values::ValueId;
 
 use super::arcs::{
-    ArcDescriptor, EdgeSplit, exception_arcs_for_block, push_edge_split, retarget_arc,
-    terminator_arcs,
+    ArcSite, EdgeSplit, exception_arcs_for_block, push_edge_split, retarget_arc, terminator_arcs,
 };
 use super::audit::emit_drop_inner_stage_audit;
+use super::availability::PointAvailability;
 use super::exception_region::{
-    ExceptionRegionDropInsertion, explicit_release_values,
-    insert_exception_creation_drops_at_raise, insert_exception_region_match_drops,
+    ExceptionRegionDropInsertion, insert_exception_creation_drops_at_raise,
+    insert_exception_region_match_drops,
 };
+use super::transfers::TransferPlan;
 use super::util::{
-    attr_is_true, is_return_deferral_barrier, is_suspension_point, make_op,
-    ordered_unique_after_op_values, sorted_unique_values, sorted_values, terminator_mentions_value,
+    attr_is_true, is_return_deferral_barrier, make_op, ordered_unique_after_op_values,
+    sorted_unique_values, sorted_values,
 };
 use super::{DROP_INSERTED_ATTR, EXCEPTION_REGION_DROPS_INSERTED_ATTR};
 use crate::tir::passes::PassStats;
 
 /// Run drop insertion. See module docs for the algorithm.
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
+    run_planned(func, am, None)
+}
+
+/// The frame clear DropInsertion plans before one `Return` (design 20 §1.6).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct FrameClear {
+    /// Roots released before the return, in placement order: the lexical
+    /// bindings that reach it owned and the deferred named owners.
+    pub(crate) releases: Vec<ValueId>,
+    /// Lexical roots the return publishes rather than releases.
+    pub(crate) published: Vec<ValueId>,
+}
+
+impl FrameClear {
+    /// The frame's whole teardown once the return value holds a reference of
+    /// its own: every binding, the published ones included, in the frame's
+    /// release order.
+    pub(crate) fn teardown(&self) -> Vec<ValueId> {
+        let mut bindings = self.releases.clone();
+        bindings.extend_from_slice(&self.published);
+        sorted_unique_values(&bindings)
+    }
+}
+
+/// The frame clear of each reachable `Return` block of `func`, exactly as
+/// `run` places it. An inlined activation reproduces it at its exits. Plans a
+/// copy; `func` is unchanged.
+pub(crate) fn frame_clear(func: &TirFunction) -> BTreeMap<BlockId, FrameClear> {
+    let mut probe = func.clone();
+    let mut clears = BTreeMap::new();
+    run_planned(&mut probe, &mut AnalysisManager::new(), Some(&mut clears));
+    clears
+}
+
+fn run_planned(
+    func: &mut TirFunction,
+    am: &mut AnalysisManager,
+    frame_clears: Option<&mut BTreeMap<BlockId, FrameClear>>,
+) -> PassStats {
     let mut stats = PassStats {
         name: "drop_insertion",
         ..Default::default()
     };
 
-    // Conservative activation gate. Drop placement keys on single-entry
-    // dominance (per-block last-use, edge-dying at successor entry), so it is
-    // UNSOUND over any CFG that is not dominator-structured. Two such shapes are
-    // bailed:
-    //
-    //  1. Real exception-HANDLER regions (`try`/`except` → `TryStart`/`TryEnd`,
-    //     or a `StateBlockStart`/`StateBlockEnd`-delimited region) —
-    //     `has_exception_handlers()`. (A bare universal `CheckException` is NOT a
-    //     handler — it propagates to the function exception EXIT — and is fully
-    //     handled as an ordinary CFG successor.)
-    //
-    //  2. A lowered coroutine `_poll` STATE MACHINE (`StateSwitch` dispatch +
-    //     `StateTransition`/`StateYield`) — `has_state_machine()`. Constructing
-    //     a task is not evidence that the containing function is re-entrant.
-    //     The state dispatch RE-ENTERS resume blocks, so a value defined in one
-    //     state region reaches a resume block the dominator walk does NOT see as
-    //     dominated; a drop placed there is a use-before-def (the LLVM verifier
-    //     rejects it: `dec_ref %v` before `%v = ...`; on native it double-frees).
-    //     Design §2.9's frame-finalizer model handles the high-level SUSPENSION,
-    //     but NOT this post-lowering re-entrant CFG. A generator can be lowered to
-    //     a `_poll` body carrying `StateSwitch` WITHOUT the `StateBlock*`
-    //     delimiters, so predicate (1) alone misses it — hence the dedicated
-    //     `has_state_machine()` check. State-machine drop activation requires
-    //     StateSwitch-aware, def-reaching liveness as the ownership fact source.
+    // Every invocation, including generator/coroutine polls, uses the same
+    // ownership authority. Suspension is made explicit before analysis.
     //
     // Idempotency: a function may be re-lifted (the native module path re-lifts
     // `ir.functions` → TIR for the inliner) and re-run through this pipeline (the
@@ -85,6 +103,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         None,
         audit_start.elapsed().as_millis(),
     );
+    // Storage across activations is explicit in ClosureStore/ClosureLoad.
+    // Expose the hidden suspension exits before asking the shared ownership
+    // analyses where each invocation's references end.
+    let activation_exits = super::activation::expose_activation_exits(func);
+    if activation_exits != 0 {
+        stats.facts_changed += activation_exits;
+        am.invalidate_cfg();
+    }
     let exception_region_drops_already_inserted =
         attr_is_true(func, EXCEPTION_REGION_DROPS_INSERTED_ATTR);
     let exception_creation_drops = if exception_region_drops_already_inserted {
@@ -113,35 +139,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             am.invalidate_ops();
         }
     }
-    if func.has_state_machine() {
-        // STRIP `DelBoundary` boundary markers before bailing: this pass is
-        // the only consumer on drop-activated targets, and a bailed function
-        // inserts no drops at all (its temporaries already leak — the
-        // pre-existing handler-function class), so the boundary has nothing
-        // to bind to. Leaving it would hit backend lowerings that have no
-        // arm for it.
-        let mut stripped = 0usize;
-        for block in func.blocks.values_mut() {
-            let before = block.ops.len();
-            block.ops.retain(|op| op.opcode != OpCode::DelBoundary);
-            stripped += before - block.ops.len();
-        }
-        stats.ops_removed += stripped;
-        if debug_this {
-            let _ = crate::debug_artifacts::write_debug_artifact(
-                format!("drop/{}.txt", func.name),
-                format!(
-                    "[DROP] {} BAILED: exc_handlers={} state_machine={} exception_region_match_drops={} del_boundaries_stripped={}\n",
-                    func.name,
-                    func.has_exception_handlers(),
-                    func.has_state_machine(),
-                    exception_region_inserted.dec_refs_added,
-                    stripped,
-                ),
-            );
-        }
-        return stats;
-    }
     emit_drop_inner_stage_audit(
         func,
         "after-pre-bail-slice",
@@ -152,17 +149,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         audit_start.elapsed().as_millis(),
     );
 
-    let live: TirLivenessResult = am.get::<TirLiveness>(func).clone();
-    emit_drop_inner_stage_audit(
-        func,
-        "after-liveness",
-        None,
-        None,
-        Some(live.raw_scalars.len()),
-        live.live_in.len().checked_add(live.live_out.len()),
-        audit_start.elapsed().as_millis(),
-    );
-
     // Alias-root canonicalization (design 20 §1.2) and root-only ownership facts
     // are stable across the DelBoundary normalization below: DelBoundary carries
     // no results and therefore cannot change alias roots or result-validity /
@@ -170,7 +156,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // the normalized op stream so their op indices remain exact.
     let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(func);
     let ownership_root_facts = OwnershipRootFacts::compute(func, &aliases);
-    let drop_eligibility = DropEligibility::new(&aliases, &ownership_root_facts, &live.raw_scalars);
+    let raw_scalars = compute_raw_scalars(func);
+    let drop_eligibility = DropEligibility::new(&aliases, &ownership_root_facts, &raw_scalars);
     let canon = |v: ValueId| -> ValueId { drop_eligibility.root(v) };
 
     emit_drop_inner_stage_audit(
@@ -193,23 +180,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // `load_var`→`Copy` every iteration; a per-copy drop double-frees the live
     // accumulator). This is the SAME union-find the liveness analysis used, so the
     // live sets (in root space) line up with these canonicalized placements.
-    // Interior-borrow keepalive (design 20). A value produced by a borrowing read
-    // (`LoadAttr`/`Index`) may borrow into / index its SOURCE object's backing
-    // store; using such a result keeps the source object live. This is the SAME
-    // relation the liveness analysis consumes (so cross-block keepalive is already
-    // reflected in `live.is_live_out`), applied here ALSO to the within-block
-    // straight-line `last_use` scan: a source object's last in-block "touch" must
-    // extend through the last use of any borrow result derived from it, or the drop
-    // would land before the consumer reads the borrow. (The round-6 BLOCKER-1 UAF:
-    // `Counter._handle` is a raw-int registry handle whose owning wrapper's
-    // finalizer destroys the registry entry — dropping the wrapper after the
-    // `get_attr` but before `molt_counter_len(handle)` made `len(Counter(...))`
-    // return 0.) FAIL-CLOSED: for an owned-result load this only defers the drop a
-    // few ops (harmless); for the borrow/handle case it is required for soundness.
-    let borrows = crate::tir::passes::alias_analysis::build_borrow_provenance(func, &aliases);
     emit_drop_inner_stage_audit(
         func,
-        "after-alias-borrow",
+        "after-alias",
         None,
         None,
         None,
@@ -224,6 +197,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // Class-3 (non-owning, unmapped) `Copy` results are their OWN alias root (the
     // union-find declines to fold them), so the `r == v` rail alone would admit
     // them; exclude the lattice-owned non-owning roots explicitly.
+    // Capture source binding provenance before DelBoundary becomes DecRef.
+    // Normalization changes placement, not these stable alias-root facts.
+    // A physical DecRef may instead belong to an exception or expression owner.
+    let mut python_lifetime_facts = PythonLifetimeFacts::compute(func, &aliases);
+
     // ── 0a. `del`-boundary normalization (#58) ────────────────────────────────
     // The frontend carries a function-scope `del x` as `DelBoundary(v)` so the
     // Python lifetime boundary survives optimization (it used to lower to
@@ -231,7 +209,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // coincidentally early). This pass is the release authority on
     // drop-activated targets, so the boundary BECOMES the release: rewrite in
     // place to `DecRef(root)` when the root is pass-owned (droppable); delete
-    // otherwise (raw carrier / param / stack / borrowed alias — CPython's
+    // otherwise (raw carrier / borrowed param / stack / borrowed alias — CPython's
     // frame-slot decref is equally unobservable there). Rewritten roots are
     // recorded in `PythonLifetimeFacts`: §1 must never place a second drop
     // (exactly-once — the alloc's +1 now belongs to the del), and §0b must
@@ -252,6 +230,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     continue;
                 };
                 let r = canon(v);
+                assert!(
+                    !ownership_root_facts.is_binding_view_root(r),
+                    "DropInsertion({}): DelBoundary of binding view {:?}; clear the owning home instead",
+                    func.name,
+                    r
+                );
                 // `DelBoundary` is unconditional. A conditionally-valid result
                 // may be stale on one outgoing edge, so deletion is the only
                 // safe normalization for that root.
@@ -274,38 +258,30 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         stats.ops_removed += removed;
         stats.values_changed += normalized;
     }
+    python_lifetime_facts.refresh_explicit_release_roots(func, &aliases);
 
-    let ownership_lattice =
-        OwnershipLattice::compute_with_root_facts(func, &aliases, ownership_root_facts.clone());
-    let python_lifetime_facts = PythonLifetimeFacts::compute(func, &aliases);
+    // Normalize uses before solving liveness. Deleted DelBoundary operands must
+    // not keep phantom uses alive; definitions and representations are unchanged,
+    // so the established domain can be reused without repeating its analysis.
+    let live = compute_liveness_in_domain(func, &aliases, &raw_scalars);
+    emit_drop_inner_stage_audit(
+        func,
+        "after-liveness",
+        None,
+        None,
+        Some(live.raw_scalars.len()),
+        live.live_in.len().checked_add(live.live_out.len()),
+        audit_start.elapsed().as_millis(),
+    );
+    let ownership_lattice = OwnershipLattice::compute(func, &aliases);
     let statement_release_plan = StatementReleasePlan::compute(
         &ownership_lattice,
         &python_lifetime_facts,
         &drop_eligibility,
     );
-    let explicit_release_blocks: HashMap<ValueId, HashSet<BlockId>> = func
-        .blocks
-        .iter()
-        .flat_map(|(&bid, block)| {
-            block.ops.iter().flat_map(move |op| {
-                explicit_release_values(op)
-                    .into_iter()
-                    .map(canon)
-                    .map(move |root| (root, bid))
-                    .collect::<Vec<_>>()
-            })
-        })
-        .fold(HashMap::new(), |mut acc, (root, bid)| {
-            acc.entry(root).or_default().insert(bid);
-            acc
-        });
+    let explicit_release_roots = python_lifetime_facts.explicit_release_roots();
     let boundary_release_roots =
         python_lifetime_facts.boundary_release_roots(&drop_eligibility, &ownership_lattice);
-    let python_lifetime_roots: HashSet<ValueId> = boundary_release_roots
-        .iter()
-        .chain(explicit_release_blocks.keys())
-        .copied()
-        .collect();
     emit_drop_inner_stage_audit(
         func,
         "after-boundary-root-planning",
@@ -314,48 +290,16 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         Some(
             boundary_release_roots
                 .len()
-                .saturating_add(explicit_release_blocks.len()),
+                .saturating_add(explicit_release_roots.len()),
         ),
         None,
         audit_start.elapsed().as_millis(),
     );
 
-    let pred_map_term = crate::tir::dominators::build_pred_map_with(
-        func,
-        crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
-    );
-    let idoms = crate::tir::dominators::compute_idoms_with(
-        func,
-        &pred_map_term,
-        crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
-    );
-    let def_block: HashMap<ValueId, BlockId> = {
-        let mut m: HashMap<ValueId, BlockId> = HashMap::new();
-        for (&bid, block) in &func.blocks {
-            for arg in &block.args {
-                m.insert(arg.id, bid);
-            }
-            for op in &block.ops {
-                for &r in &op.results {
-                    m.insert(r, bid);
-                }
-            }
-        }
-        m
-    };
-    emit_drop_inner_stage_audit(
-        func,
-        "after-dominators-def-block",
-        None,
-        None,
-        Some(def_block.len()),
-        Some(idoms.len()),
-        audit_start.elapsed().as_millis(),
-    );
-
     // The plan: per block, a list of (insert_after_op_index OR at-entry, value)
     // DecRef placements, plus per-block at-entry edge-dying drops, plus
-    // suspension IncRefs. We collect first (read-only over `func`), then apply.
+    // IncRefs before adopting ops. We collect first (read-only over `func`),
+    // then apply.
     struct BlockPlan {
         /// DecRef(v) to insert immediately AFTER op at this index (straight-line
         /// last-use). Keyed by op index → values dropped after it.
@@ -366,20 +310,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         /// DecRef(v) to insert just BEFORE the terminator (loop-carried phi whose
         /// last live use is the back-edge / values live-in but dead before exit).
         before_term: Vec<ValueId>,
-        /// IncRef(v) to insert immediately BEFORE the op at this index (a
-        /// suspension point). Keyed by op index → values inc-ref'd before it.
+        /// IncRef(v) to insert immediately BEFORE the op at this index, with
+        /// multiplicity: the retains of an adopting op (`transfers.rs`).
         before_op: HashMap<usize, Vec<ValueId>>,
-        /// IncRef(v) to insert immediately BEFORE an exception-transfer op, with
-        /// an exactly paired normal-fallthrough DecRef in `after_exception_op`.
-        /// This models a borrowed value passed as an exception-transfer edge
-        /// payload into an owned handler block arg: on the exceptional path the
-        /// handler arg owns the retained +1; on the normal path the retain is
-        /// released immediately after the transfer op. Unlike `before_op`,
-        /// duplicate entries are load-bearing and are not deduplicated during
-        /// insertion.
-        before_exception_op: HashMap<usize, Vec<ValueId>>,
-        /// Normal-fallthrough release for `before_exception_op` retains.
-        after_exception_op: HashMap<usize, Vec<ValueId>>,
         /// IncRef(v) to insert just BEFORE the terminator (the mixed-ownership-phi
         /// retain, design §ownership / §5): a BORROWED value `v` this block passes
         /// as a branch arg into a successor's OWNED block-arg (phi) must be retained
@@ -399,26 +332,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     + plan.at_entry.len()
                     + plan.before_term.len()
                     + plan.before_op.values().map(Vec::len).sum::<usize>()
-                    + plan
-                        .before_exception_op
-                        .values()
-                        .map(Vec::len)
-                        .sum::<usize>()
-                    + plan
-                        .after_exception_op
-                        .values()
-                        .map(Vec::len)
-                        .sum::<usize>()
                     + plan.before_term_incref.len()
             })
             .sum()
     };
-
-    // Predecessor map (terminator-only edges) for edge-dying placement.
-    let pred_map = crate::tir::dominators::build_pred_map_with(
-        func,
-        crate::tir::dominators::CfgEdgePolicy::Full,
-    );
 
     let block_ids: Vec<BlockId> = {
         let mut v: Vec<BlockId> = func.blocks.keys().copied().collect();
@@ -429,707 +346,78 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         func,
         crate::tir::dominators::CfgEdgePolicy::Full,
     );
+    let exception_labels = crate::tir::dominators::exception_label_to_block(func);
+    let exceptional_entries: HashSet<BlockId> = func
+        .blocks
+        .values()
+        .flat_map(|block| {
+            exception_arcs_for_block(&exception_labels, block)
+                .into_iter()
+                .filter(|arc| {
+                    crate::tir::dominators::exception_edge_binds_handler_arguments(
+                        block.ops[arc.op_index].opcode,
+                    )
+                })
+        })
+        .map(|arc| arc.target)
+        .collect();
     // Critical-edge splits to materialize.  One split block is the edge-local RC
     // authority for a concrete outgoing terminator arc: it may hold IncRefs for
-    // borrowed values entering owned phis and/or DecRefs for path-specific Python
-    // lifetime releases.  Collected here, applied after the op rebuild so block-id
+    // borrowed values entering owned phis and/or DecRefs for path-specific
+    // releases.  Collected here, applied after the op rebuild so block-id
     // allocation does not disturb in-place op insertion.
     let mut edge_splits: Vec<EdgeSplit> = Vec::new();
 
-    // Per-edge: the roots live INTO the successor's body (so we can test clean-
-    // transfer condition (c) without re-deriving liveness).
-    //
-    // A root is "live into a successor body" iff some live-in value of a successor
-    // `S` aliases it AND that value is not one of `S`'s own block args (block args
-    // are killed at `S`'s entry — they are the phi we may be feeding, not a body
-    // use). This is the precise "consumed elsewhere than via a phi we feed" test.
-    let edge_body_live_roots: HashMap<(BlockId, ArcDescriptor), HashSet<ValueId>> = {
-        let mut m: HashMap<(BlockId, ArcDescriptor), HashSet<ValueId>> = HashMap::new();
-        for &bid in &block_ids {
-            if !reachable.contains(&bid) {
-                continue;
-            }
-            let block = &func.blocks[&bid];
-            for arc in terminator_arcs(&block.terminator) {
-                if !reachable.contains(&arc.target) {
-                    continue;
-                }
-                let mut roots: HashSet<ValueId> = HashSet::new();
-                let succ_args: HashSet<ValueId> = func
-                    .blocks
-                    .get(&arc.target)
-                    .map(|s| s.args.iter().map(|a| a.id).collect())
-                    .unwrap_or_default();
-                if let Some(set) = live.live_in.get(&arc.target) {
-                    for &m in set {
-                        if !succ_args.contains(&m) {
-                            roots.insert(canon(m));
-                        }
-                    }
-                }
-                m.insert((bid, arc.descriptor), roots);
-            }
-        }
-        m
-    };
+    // One availability authority for every placement below. A release may name
+    // a root only where its definition reaches on every normal and exceptional
+    // path, a conditional result only inside its initialized region, and only
+    // where the root's name still owns its object. The same custody classifies
+    // every block-argument binding, on terminator and exception arcs alike, for
+    // the retains placed below. Computed after `DelBoundary` normalization,
+    // whose op indices it records. Placement only reads `func` until the plans
+    // are applied.
+    let mut points = PointAvailability::compute_with_transport(
+        func,
+        &ownership_root_facts,
+        &drop_eligibility,
+        &live,
+        &exception_labels,
+        &reachable,
+    );
+    let (moves, canonical_arcs) = points.transport_counts();
     emit_drop_inner_stage_audit(
         func,
-        "after-edge-body-live-roots",
+        "after-phi-transport",
         Some(plans.len()),
         Some(edge_splits.len()),
-        Some(edge_body_live_roots.values().map(HashSet::len).sum()),
-        Some(edge_body_live_roots.len()),
+        Some(moves),
+        Some(canonical_arcs),
         audit_start.elapsed().as_millis(),
     );
 
-    // A branch argument can transfer an owned root into a successor block arg
-    // (phi). The immediate successor-entry drop is already guarded by
-    // `incoming_arg_roots` in §3. The same transfer remains active through
-    // descendant blocks while the phi is live there: the source root is no longer
-    // the release authority, and dropping it on a later die-edge would double-free
-    // the object when the phi itself is released.
-    let block_mentions_value = |bid: BlockId, value: ValueId| -> bool {
-        func.blocks.get(&bid).is_some_and(|block| {
-            block.ops.iter().any(|op| op.operands.contains(&value))
-                || terminator_mentions_value(&block.terminator, value)
-        })
-    };
-    let transferred_phi_edges_by_root: HashMap<ValueId, Vec<(ValueId, BlockId)>> = {
-        let mut by_root: HashMap<ValueId, Vec<(ValueId, BlockId)>> = HashMap::new();
-        for &pred in &block_ids {
-            if !reachable.contains(&pred) {
-                continue;
-            }
-            let Some(pred_block) = func.blocks.get(&pred) else {
-                continue;
-            };
-            for arc in terminator_arcs(&pred_block.terminator) {
-                if !reachable.contains(&arc.target) {
-                    continue;
-                }
-                let Some(target_block) = func.blocks.get(&arc.target) else {
-                    continue;
-                };
-                for (pos, &arg) in arc.args.iter().enumerate() {
-                    if live.is_raw_scalar(arg)
-                        || drop_eligibility.is_conditionally_valid_result_root(arg)
-                    {
-                        continue;
-                    }
-                    let root = canon(arg);
-                    let Some(phi) = target_block.args.get(pos) else {
-                        continue;
-                    };
-                    if root == phi.id
-                        || ownership_lattice.is_conditionally_valid_result_root(root)
-                        || !drop_eligibility.is_droppable(root)
-                    {
-                        continue;
-                    }
-                    by_root.entry(root).or_default().push((phi.id, arc.target));
-                }
-            }
-        }
-        by_root
-    };
-    emit_drop_inner_stage_audit(
-        func,
-        "after-transferred-phi-edges",
-        Some(plans.len()),
-        Some(edge_splits.len()),
-        Some(transferred_phi_edges_by_root.values().map(Vec::len).sum()),
-        Some(transferred_phi_edges_by_root.len()),
-        audit_start.elapsed().as_millis(),
-    );
-    let transferred_phi_args_by_root: HashMap<ValueId, HashSet<ValueId>> =
-        transferred_phi_edges_by_root
+    // Boundary-held reference custody. Python local owners and explicitly
+    // released references keep their objects to their declared boundary rather
+    // than their last SSA use. An explicit release alone is not a local binding. The obligation follows the object: a join, loop or handler argument
+    // that some canonical arc moves one of them into holds the object now and
+    // keeps it to the same boundary. Only function-owned roots carry it; an
+    // explicit boundary on a borrowed root (`del` of a parameter) releases
+    // nothing. The lexical planner below places these releases; the SSA
+    // placements (§1, §1b, §1c, §3, §3b) leave them alone.
+    let boundary_held_roots = points.with_carriers(
+        boundary_release_roots
             .iter()
-            .map(|(&root, transfers)| {
-                (
-                    root,
-                    transfers
-                        .iter()
-                        .map(|(phi, _)| *phi)
-                        .collect::<HashSet<_>>(),
-                )
-            })
-            .collect();
-    let transferred_phi_live_blocks_by_root: HashMap<ValueId, HashSet<BlockId>> = {
-        let mut by_root: HashMap<ValueId, HashSet<BlockId>> = HashMap::new();
-        for (&root, transfers) in &transferred_phi_edges_by_root {
-            for &(phi, transfer_target) in transfers {
-                let mut after_transfer: HashSet<BlockId> = HashSet::new();
-                let mut forward_stack = vec![transfer_target];
-                while let Some(cur) = forward_stack.pop() {
-                    if !reachable.contains(&cur) || !after_transfer.insert(cur) {
-                        continue;
-                    }
-                    let Some(block) = func.blocks.get(&cur) else {
-                        continue;
-                    };
-                    for arc in terminator_arcs(&block.terminator) {
-                        forward_stack.push(arc.target);
-                    }
-                }
-
-                let mut reaches_phi_mention: HashSet<BlockId> = HashSet::new();
-                let mut reverse_stack: Vec<BlockId> = after_transfer
-                    .iter()
-                    .copied()
-                    .filter(|&bid| block_mentions_value(bid, phi))
-                    .collect();
-                while let Some(cur) = reverse_stack.pop() {
-                    if !after_transfer.contains(&cur) || !reaches_phi_mention.insert(cur) {
-                        continue;
-                    }
-                    if let Some(preds) = pred_map.get(&cur) {
-                        reverse_stack.extend(preds.iter().copied());
-                    }
-                }
-                by_root.entry(root).or_default().extend(reaches_phi_mention);
-            }
-        }
-        by_root
-    };
-    emit_drop_inner_stage_audit(
-        func,
-        "after-transferred-phi-live-blocks",
-        Some(plans.len()),
-        Some(edge_splits.len()),
-        Some(
-            transferred_phi_live_blocks_by_root
-                .values()
-                .map(HashSet::len)
-                .sum(),
-        ),
-        Some(transferred_phi_live_blocks_by_root.len()),
-        audit_start.elapsed().as_millis(),
-    );
-    // Python local cleanup roots are born at `store_var` source roots, but the
-    // actual owner can move through block args as control flow joins. Track that
-    // origin transitive closure so a cleanup `DecRef(phi)` is recognized as the
-    // release authority for the original store-var source root.
-    let python_origin_roots_by_carrier_root: HashMap<ValueId, HashSet<ValueId>> = {
-        let mut origins: HashMap<ValueId, HashSet<ValueId>> = HashMap::new();
-        for &root in &python_lifetime_roots {
-            origins.entry(root).or_default().insert(root);
-        }
-
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for &pred in &block_ids {
-                if !reachable.contains(&pred) {
-                    continue;
-                }
-                let Some(pred_block) = func.blocks.get(&pred) else {
-                    continue;
-                };
-                for arc in terminator_arcs(&pred_block.terminator) {
-                    if !reachable.contains(&arc.target) {
-                        continue;
-                    }
-                    let Some(target_block) = func.blocks.get(&arc.target) else {
-                        continue;
-                    };
-                    let mut transferred_current_roots: HashSet<ValueId> = HashSet::new();
-                    for (pos, &arg) in arc.args.iter().enumerate() {
-                        if live.is_raw_scalar(arg)
-                            || drop_eligibility.is_conditionally_valid_result_root(arg)
-                        {
-                            continue;
-                        }
-                        let current_root = canon(arg);
-                        let Some(source_roots) = origins.get(&current_root).cloned() else {
-                            continue;
-                        };
-                        let Some(phi) = target_block.args.get(pos) else {
-                            continue;
-                        };
-                        if !drop_eligibility.is_droppable(phi.id) {
-                            continue;
-                        }
-                        if edge_body_live_roots
-                            .get(&(pred, arc.descriptor))
-                            .is_some_and(|roots| roots.contains(&current_root))
-                        {
-                            continue;
-                        }
-                        if !transferred_current_roots.insert(current_root) {
-                            continue;
-                        }
-                        let entry = origins.entry(phi.id).or_default();
-                        for source_root in source_roots {
-                            if entry.insert(source_root) {
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        origins
-    };
-    emit_drop_inner_stage_audit(
-        func,
-        "after-python-origin-roots",
-        Some(plans.len()),
-        Some(edge_splits.len()),
-        Some(
-            python_origin_roots_by_carrier_root
-                .values()
-                .map(HashSet::len)
-                .sum(),
-        ),
-        Some(python_origin_roots_by_carrier_root.len()),
-        audit_start.elapsed().as_millis(),
-    );
-
-    // A source Python root can stop being the current cleanup carrier after it
-    // clean-transfers through block args. Project the direct phi-live map back
-    // onto each source origin so return-boundary planning does not release the
-    // stale source root when a live carrier will be released downstream.
-    let python_origin_transferred_phi_live_blocks_by_root: HashMap<ValueId, HashSet<BlockId>> = {
-        let mut by_root = transferred_phi_live_blocks_by_root.clone();
-        for (&carrier_root, source_roots) in &python_origin_roots_by_carrier_root {
-            let Some(blocks) = transferred_phi_live_blocks_by_root.get(&carrier_root) else {
-                continue;
-            };
-            for &source_root in source_roots {
-                if !python_lifetime_roots.contains(&source_root) {
-                    continue;
-                }
-                by_root
-                    .entry(source_root)
-                    .or_default()
-                    .extend(blocks.iter().copied());
-            }
-        }
-        by_root
-    };
-    emit_drop_inner_stage_audit(
-        func,
-        "after-python-origin-transferred-phi-live-blocks",
-        Some(plans.len()),
-        Some(edge_splits.len()),
-        Some(
-            python_origin_transferred_phi_live_blocks_by_root
-                .values()
-                .map(HashSet::len)
-                .sum(),
-        ),
-        Some(python_origin_transferred_phi_live_blocks_by_root.len()),
-        audit_start.elapsed().as_millis(),
-    );
-    let transferred_phi_live_on_block = |root: ValueId, bid: BlockId| -> bool {
-        python_origin_transferred_phi_live_blocks_by_root
-            .get(&root)
-            .is_some_and(|blocks| blocks.contains(&bid))
-    };
-
-    let python_origin_release_blocks: HashMap<ValueId, HashSet<BlockId>> = {
-        let mut by_root = explicit_release_blocks.clone();
-        for (&bid, block) in &func.blocks {
-            for op in &block.ops {
-                for value in explicit_release_values(op) {
-                    let release_root = canon(value);
-                    if let Some(source_roots) =
-                        python_origin_roots_by_carrier_root.get(&release_root)
-                    {
-                        for &source_root in source_roots {
-                            if python_lifetime_roots.contains(&source_root) {
-                                by_root.entry(source_root).or_default().insert(bid);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        by_root
-    };
-
-    let boundary_roots_handled_before_return: HashMap<BlockId, HashSet<ValueId>> = {
-        let mut handled: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
-        let mut transferred_value_roots: HashMap<ValueId, HashSet<ValueId>> = HashMap::new();
-        let mut incoming: HashMap<
-            (BlockId, ValueId),
-            Vec<(BlockId, ArcDescriptor, Vec<ValueId>, bool)>,
-        > = HashMap::new();
-        let mut boundary_roots: Vec<ValueId> = boundary_release_roots.iter().copied().collect();
-        boundary_roots.sort_unstable_by_key(|v| v.0);
-        for &pred in &block_ids {
-            if !reachable.contains(&pred) {
-                continue;
-            }
-            let Some(pred_block) = func.blocks.get(&pred) else {
-                continue;
-            };
-            for arc in terminator_arcs(&pred_block.terminator) {
-                if !reachable.contains(&arc.target) {
-                    continue;
-                }
-                let Some(target_block) = func.blocks.get(&arc.target) else {
-                    continue;
-                };
-                let mut transferred_on_arc: HashSet<ValueId> = HashSet::new();
-                for (pos, &arg) in arc.args.iter().enumerate() {
-                    if live.is_raw_scalar(arg)
-                        || drop_eligibility.is_conditionally_valid_result_root(arg)
-                    {
-                        continue;
-                    }
-                    let current_root = canon(arg);
-                    let Some(source_roots) = python_origin_roots_by_carrier_root.get(&current_root)
-                    else {
-                        continue;
-                    };
-                    let body_live = edge_body_live_roots
-                        .get(&(pred, arc.descriptor))
-                        .is_some_and(|s| s.contains(&current_root));
-                    if body_live || !transferred_on_arc.insert(current_root) {
-                        continue;
-                    }
-                    let Some(phi) = target_block.args.get(pos) else {
-                        continue;
-                    };
-                    if drop_eligibility.is_droppable(phi.id) {
-                        transferred_value_roots.entry(phi.id).or_default().extend(
-                            source_roots
-                                .iter()
-                                .copied()
-                                .filter(|root| python_lifetime_roots.contains(root)),
-                        );
-                    }
-                }
-                if !matches!(target_block.terminator, Terminator::Return { .. }) {
-                    continue;
-                }
-                for &root in &boundary_roots {
-                    if ownership_lattice.is_conditionally_valid_result_root(root)
-                        || terminator_uses_root(&target_block.terminator, root, &canon)
-                    {
-                        continue;
-                    }
-                    match def_block.get(&root) {
-                        Some(&dblk)
-                            if crate::tir::dominators::dominates(dblk, arc.target, &idoms) => {}
-                        _ => continue,
-                    }
-                    let body_live = edge_body_live_roots
-                        .get(&(pred, arc.descriptor))
-                        .is_some_and(|s| s.contains(&root));
-                    if transferred_phi_live_on_block(root, pred) {
-                        handled.entry(arc.target).or_default().insert(root);
-                        continue;
-                    }
-                    let transfers_root = !body_live
-                        && arc.args.iter().enumerate().any(|(pos, &arg)| {
-                            if live.is_raw_scalar(arg)
-                                || drop_eligibility.is_conditionally_valid_result_root(arg)
-                            {
-                                return false;
-                            }
-                            let current_root = canon(arg);
-                            if !python_origin_roots_by_carrier_root
-                                .get(&current_root)
-                                .is_some_and(|roots| roots.contains(&root))
-                            {
-                                return false;
-                            }
-                            target_block
-                                .args
-                                .get(pos)
-                                .is_some_and(|phi| drop_eligibility.is_droppable(phi.id))
-                        });
-                    incoming.entry((arc.target, root)).or_default().push((
-                        pred,
-                        arc.descriptor,
-                        arc.args.clone(),
-                        transfers_root,
-                    ));
-                }
-            }
-        }
-        for ((target, root), arcs) in incoming {
-            let any_transferred = arcs.iter().any(|(_, _, _, transferred)| *transferred);
-            if !any_transferred {
-                continue;
-            }
-            handled.entry(target).or_default().insert(root);
-            if arcs.iter().all(|(_, _, _, transferred)| *transferred) {
-                continue;
-            }
-            for (pred, arc, args, transferred) in arcs {
-                if transferred {
-                    continue;
-                }
-                push_edge_split(
-                    &mut edge_splits,
-                    pred,
-                    arc,
-                    target,
-                    args,
-                    vec![],
-                    vec![root],
-                );
-            }
-        }
-        let mut explicit_roots: Vec<ValueId> = python_lifetime_roots
-            .iter()
+            .chain(explicit_release_roots)
             .copied()
-            .filter(|root| explicit_release_blocks.contains_key(root))
-            .collect();
-        explicit_roots.sort_unstable_by_key(|root| root.0);
-        let mut explicit_released_entry_roots: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
-        let explicit_release_dominates_block = |root: ValueId, block: BlockId| -> bool {
-            python_origin_release_blocks
-                .get(&root)
-                .is_some_and(|blocks| {
-                    blocks.iter().any(|&release_block| {
-                        release_block == block
-                            || crate::tir::dominators::dominates(release_block, block, &idoms)
-                    })
-                })
-        };
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for &root in &explicit_roots {
-                let Some(&root_def) = def_block.get(&root) else {
-                    continue;
-                };
-                let mut incoming_by_target: BTreeMap<
-                    BlockId,
-                    Vec<(BlockId, ArcDescriptor, Vec<ValueId>, bool)>,
-                > = BTreeMap::new();
-                for &pred in &block_ids {
-                    if !reachable.contains(&pred) {
-                        continue;
-                    }
-                    if !crate::tir::dominators::dominates(root_def, pred, &idoms) {
-                        continue;
-                    }
-                    let released_before_edge = explicit_released_entry_roots
-                        .get(&pred)
-                        .is_some_and(|roots| roots.contains(&root))
-                        || explicit_release_dominates_block(root, pred);
-                    let Some(pred_block) = func.blocks.get(&pred) else {
-                        continue;
-                    };
-                    for arc in terminator_arcs(&pred_block.terminator) {
-                        if !reachable.contains(&arc.target) {
-                            continue;
-                        }
-                        if explicit_released_entry_roots
-                            .get(&arc.target)
-                            .is_some_and(|roots| roots.contains(&root))
-                        {
-                            continue;
-                        }
-                        let Some(target_block) = func.blocks.get(&arc.target) else {
-                            continue;
-                        };
-                        if matches!(target_block.terminator, Terminator::Return { .. }) {
-                            continue;
-                        }
-                        if edge_body_live_roots
-                            .get(&(pred, arc.descriptor))
-                            .is_some_and(|roots| roots.contains(&root))
-                        {
-                            continue;
-                        }
-                        if transferred_phi_live_on_block(root, pred) {
-                            continue;
-                        }
-                        let transfers_root = arc.args.iter().enumerate().any(|(pos, &arg)| {
-                            if live.is_raw_scalar(arg)
-                                || drop_eligibility.is_conditionally_valid_result_root(arg)
-                            {
-                                return false;
-                            }
-                            let current_root = canon(arg);
-                            python_origin_roots_by_carrier_root
-                                .get(&current_root)
-                                .is_some_and(|roots| roots.contains(&root))
-                                && target_block
-                                    .args
-                                    .get(pos)
-                                    .is_some_and(|phi| drop_eligibility.is_droppable(phi.id))
-                        });
-                        if transfers_root {
-                            continue;
-                        }
-                        incoming_by_target.entry(arc.target).or_default().push((
-                            pred,
-                            arc.descriptor,
-                            arc.args,
-                            released_before_edge,
-                        ));
-                    }
-                }
-                for (target, arcs) in incoming_by_target {
-                    let any_released = arcs.iter().any(|(_, _, _, released)| *released);
-                    let any_unreleased = arcs.iter().any(|(_, _, _, released)| !*released);
-                    if !(any_released && any_unreleased) {
-                        continue;
-                    }
-                    for (pred, arc, args, released) in arcs {
-                        if released {
-                            continue;
-                        }
-                        push_edge_split(
-                            &mut edge_splits,
-                            pred,
-                            arc,
-                            target,
-                            args,
-                            vec![],
-                            vec![root],
-                        );
-                    }
-                    explicit_released_entry_roots
-                        .entry(target)
-                        .or_default()
-                        .insert(root);
-                    handled.entry(target).or_default().insert(root);
-                    changed = true;
-                }
-            }
-        }
-        for root in explicit_roots {
-            let Some(&root_def) = def_block.get(&root) else {
-                continue;
-            };
-            for &pred in &block_ids {
-                if !reachable.contains(&pred) {
-                    continue;
-                }
-                if !crate::tir::dominators::dominates(root_def, pred, &idoms) {
-                    continue;
-                }
-                let released_before_edge = explicit_released_entry_roots
-                    .get(&pred)
-                    .is_some_and(|roots| roots.contains(&root))
-                    || explicit_release_dominates_block(root, pred);
-                if released_before_edge {
-                    continue;
-                }
-                let Some(pred_block) = func.blocks.get(&pred) else {
-                    continue;
-                };
-                for arc in terminator_arcs(&pred_block.terminator) {
-                    if !reachable.contains(&arc.target) {
-                        continue;
-                    }
-                    let Some(target_block) = func.blocks.get(&arc.target) else {
-                        continue;
-                    };
-                    if !matches!(target_block.terminator, Terminator::Return { .. }) {
-                        continue;
-                    }
-                    if terminator_uses_root(&target_block.terminator, root, &canon)
-                        || edge_body_live_roots
-                            .get(&(pred, arc.descriptor))
-                            .is_some_and(|roots| roots.contains(&root))
-                    {
-                        continue;
-                    }
-                    if transferred_phi_live_on_block(root, pred) {
-                        handled.entry(arc.target).or_default().insert(root);
-                        continue;
-                    }
-                    let transfers_root = arc.args.iter().enumerate().any(|(pos, &arg)| {
-                        if live.is_raw_scalar(arg)
-                            || drop_eligibility.is_conditionally_valid_result_root(arg)
-                        {
-                            return false;
-                        }
-                        let current_root = canon(arg);
-                        python_origin_roots_by_carrier_root
-                            .get(&current_root)
-                            .is_some_and(|roots| roots.contains(&root))
-                            && target_block
-                                .args
-                                .get(pos)
-                                .is_some_and(|phi| drop_eligibility.is_droppable(phi.id))
-                    });
-                    if transfers_root {
-                        handled.entry(arc.target).or_default().insert(root);
-                        continue;
-                    }
-                    push_edge_split(
-                        &mut edge_splits,
-                        pred,
-                        arc.descriptor,
-                        arc.target,
-                        arc.args.clone(),
-                        vec![],
-                        vec![root],
-                    );
-                    handled.entry(arc.target).or_default().insert(root);
-                }
-            }
-        }
-        for &bid in &block_ids {
-            if !reachable.contains(&bid) {
-                continue;
-            }
-            let Some(block) = func.blocks.get(&bid) else {
-                continue;
-            };
-            if !matches!(block.terminator, Terminator::Return { .. }) {
-                continue;
-            }
-            for op in &block.ops {
-                if !matches!(op.opcode, OpCode::DecRef | OpCode::DelBoundary) {
-                    continue;
-                }
-                let Some(&release_value) = op.operands.first() else {
-                    continue;
-                };
-                let release_root = canon(release_value);
-                let Some(roots) = transferred_value_roots
-                    .get(&release_value)
-                    .or_else(|| transferred_value_roots.get(&release_root))
-                    .or_else(|| python_origin_roots_by_carrier_root.get(&release_root))
-                else {
-                    continue;
-                };
-                let release_def_dominates = def_block
-                    .get(&release_value)
-                    .is_some_and(|&dblk| crate::tir::dominators::dominates(dblk, bid, &idoms));
-                if !release_def_dominates {
-                    continue;
-                }
-                for &root in roots {
-                    if terminator_uses_root(&block.terminator, root, &canon) {
-                        continue;
-                    }
-                    match def_block.get(&root) {
-                        Some(&dblk) if crate::tir::dominators::dominates(dblk, bid, &idoms) => {
-                            handled.entry(bid).or_default().insert(root);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        handled
-    };
-    emit_drop_inner_stage_audit(
-        func,
-        "after-boundary-roots-before-return",
-        Some(plans.len()),
-        Some(edge_splits.len()),
-        Some(
-            boundary_roots_handled_before_return
-                .values()
-                .map(HashSet::len)
-                .sum(),
-        ),
-        Some(boundary_roots_handled_before_return.len()),
-        audit_start.elapsed().as_millis(),
+            .filter(|&root| drop_eligibility.is_droppable(root)),
     );
+
+    // Reference-release custody and Python binding custody are distinct.
+    // Both follow the same canonical moves; only positive binding provenance
+    // requires a home store to end the old source-name owner. In particular an
+    // exception MatchRef stays owned by its region when a handler binds it.
+    let binding_custody_seeds =
+        python_lifetime_facts.binding_custody_roots(&drop_eligibility, &ownership_lattice);
+    let binding_roots = points.with_carriers(binding_custody_seeds.iter().copied());
 
     // ── 0b. Python named-owner release deferral ──
     // Explicit DEL_BOUNDARY/slot ownership remains authoritative. For a
@@ -1138,22 +426,19 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // results and mutable classes can have observable destruction.
     //
     // This existing planner accepts only owned op-defined roots in their own
-    // Return block, with no suspension, ownership transfer, explicit RC boundary,
-    // or named-slot ownership. Unmarked expression temporaries retain last-use
-    // release. Mid-block exception cleanup is not proved by return placement;
-    // this change does not claim broader exception-path lifetime coverage.
+    // Return block, with no suspension, branch transfer, explicit RC boundary,
+    // or named-slot ownership. An operation that adopts such a root receives a
+    // retained reference (`transfers.rs`). Unmarked expression temporaries
+    // retain last-use release. Mid-block exception cleanup is not proved by
+    // return placement; this change does not claim broader exception-path
+    // lifetime coverage.
     let deferred: HashSet<ValueId>;
     let mut deferred_return_placements: Vec<(BlockId, ValueId)> = Vec::new();
     {
         let named_owner_roots =
             python_lifetime_facts.return_boundary_candidate_roots(&drop_eligibility);
-        let has_suspension = !named_owner_roots.is_empty()
-            && func
-                .blocks
-                .values()
-                .any(|b| b.ops.iter().any(|o| is_suspension_point(o.opcode)));
         let mut accepted: HashSet<ValueId> = HashSet::new();
-        if !named_owner_roots.is_empty() && !has_suspension {
+        if !named_owner_roots.is_empty() {
             // Gate (c): one scan over the whole function for disqualifying uses.
             // Gate (b') NAMED-LOCAL proof, collected in the same scan: only a
             // value the frontend stamped `bound_local` (its result is bound to
@@ -1185,9 +470,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                             disqualified.insert(canon(operand));
                         }
                     }
-                    if let Some(r) = op_consumed_operand_root(op, &canon) {
-                        disqualified.insert(r);
-                    }
                     // Gate (c) transfer rail: an operand ABSORBED by a
                     // container constructor keeps its SSA-last-use release —
                     // the CONTAINER value carries the Python scope boundary.
@@ -1208,14 +490,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 if !python_lifetime_facts.is_return_boundary_deferred_root(r, &drop_eligibility) {
                     continue;
                 }
-                let Some(&dblk) = def_block.get(&r) else {
-                    continue;
-                };
                 // Gate (b): an op-defined root (not a phi) whose own block
                 // ends in `Return`.
-                if func.blocks[&dblk].args.iter().any(|a| a.id == r) {
+                let Some(dblk) = points.result_block(r) else {
                     continue;
-                }
+                };
                 if !reachable.contains(&dblk) {
                     continue;
                 }
@@ -1241,18 +520,95 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         audit_start.elapsed().as_millis(),
     );
 
+    // ── Taken operands ───────────────────────────────────────────────────────
+    // A frame home store consumes the binding it stores, a runtime entry that
+    // frees its builder consumes it, and a source Python call instruction
+    // adopts each argument whose custody is `Transferred`, on both of their
+    // continuations (`transfers.rs`). Plan each taking op once: an owned root
+    // that nothing reads afterwards moves its own +1 into the first position
+    // naming it, unless a Python boundary keeps it, and every other position
+    // is retained right before the op. "Reads afterwards" is the one last-read
+    // projection that §1's last-use releases read below. A move retires the
+    // root's name there, before any placement asks where the root is owned.
+    //
+    // The deferred and statement releases below are placed by root, not by
+    // where the root is still owned, so those roots always keep theirs. A
+    // lexical binding stays bound across adoption and generic consumption,
+    // and is retained there. A binding store ends the binding it stores: the home
+    // owns the object from then on, so a lexical root moves into it, and no
+    // `Return`, landing, arc or `DelBoundary` release names it again.
+    let last_reads: HashMap<BlockId, HashMap<ValueId, usize>> = block_ids
+        .iter()
+        .copied()
+        .filter(|bid| reachable.contains(bid))
+        .map(|bid| {
+            let block = &func.blocks[&bid];
+            (
+                bid,
+                points.last_reads(block, bid, &live, &exception_labels, &canon),
+            )
+        })
+        .collect();
+    let has_binding_custody = |root: ValueId| binding_roots.contains(&root);
+    let transfers = TransferPlan::compute(
+        func,
+        &block_ids,
+        &drop_eligibility,
+        &live,
+        &last_reads,
+        &|root: ValueId, transfer: OperandTransfer| {
+            deferred.contains(&root)
+                || statement_release_plan.contains_released_root(root)
+                || ((transfer != OperandTransfer::BindingStore || !has_binding_custody(root))
+                    && (boundary_held_roots.contains(&root)
+                        || python_lifetime_facts.has_explicit_release_boundary(root)))
+        },
+        &has_binding_custody,
+        &|root| {
+            let mut sources: Vec<_> = binding_custody_seeds
+                .iter()
+                .copied()
+                .filter(|&seed| points.with_carriers([seed]).contains(&root))
+                .collect();
+            sources.sort_unstable();
+            sources
+                .into_iter()
+                .map(|seed| {
+                    format!(
+                        "{seed:?}: {}",
+                        python_lifetime_facts.describe_binding_provenance(seed, &ownership_lattice)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        },
+    );
+    points.retire_adopted(transfers.moved());
+    let (moved, retained) = transfers.counts();
+    emit_drop_inner_stage_audit(
+        func,
+        "after-adopted-operands",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(moved),
+        Some(retained),
+        audit_start.elapsed().as_millis(),
+    );
+
+    // The handler-argument positions each `CheckException` must retain. Its
+    // landing block retains them on the exceptional path only (§2b).
+    let mut landing_retains: HashMap<(BlockId, usize), Vec<usize>> = HashMap::new();
     for &bid in &block_ids {
         if !reachable.contains(&bid) {
             continue;
         }
         let block = &func.blocks[&bid];
+        let exception_arcs = exception_arcs_for_block(&exception_labels, block);
         let mut plan = BlockPlan {
             after_op: HashMap::new(),
             at_entry: Vec::new(),
             before_term: Vec::new(),
             before_op: HashMap::new(),
-            before_exception_op: HashMap::new(),
-            after_exception_op: HashMap::new(),
             before_term_incref: Vec::new(),
         };
 
@@ -1290,31 +646,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 }
             }
         }
-        // Last op-use index per ROOT (max over all aliases). A use of operand `v`
-        // at index `idx` is a last-use candidate for `canon(v)` AND for every
-        // source-object root `v` borrows from (interior-borrow keepalive): the
-        // source must stay live through the borrow result's last use.
-        let mut last_use: HashMap<ValueId, usize> = HashMap::new();
-        let record_use = |root: ValueId, idx: usize, lu: &mut HashMap<ValueId, usize>| {
-            lu.entry(root)
-                .and_modify(|e| {
-                    if idx > *e {
-                        *e = idx;
-                    }
-                })
-                .or_insert(idx);
-        };
-        for (idx, op) in block.ops.iter().enumerate() {
-            for &operand in &op.operands {
-                record_use(canon(operand), idx, &mut last_use);
-                if !borrows.is_empty() {
-                    for src_root in borrows.keepalive_roots(operand, &canon) {
-                        record_use(src_root, idx, &mut last_use);
-                    }
-                }
-            }
-        }
-        for (&v, &idx) in &last_use {
+        // Last read index per ownership root, including transparent aliases and
+        // each observation's handler demand: the one projection that the
+        // adoption plan also read (`PointAvailability::last_reads`).
+        let last_use = &last_reads[&bid];
+        for (&v, &idx) in last_use {
             // `v` is already a root (last_use is keyed by canon'd operands).
             if !drop_eligibility.is_droppable(v) {
                 continue;
@@ -1341,12 +677,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 continue;
             }
             // Releasing a Python-bound finalizer-sensitive root can execute
-            // Python `__del__`. Unless an explicit DecRef already marks the
-            // Python `del` boundary, hold named-local roots until the dominated
-            // return boundary rather than firing at SSA last read. Unbound
-            // expression temporaries are intentionally not in
-            // `boundary_release_roots`; they keep last-use placement.
-            if boundary_release_roots.contains(&v) {
+            // Python `__del__`. Lexical custody holds a named-local owner, and
+            // the block args that took its object, until its Python boundary
+            // rather than firing at SSA last read. Unbound expression
+            // temporaries are not lexical; they keep last-use placement.
+            if boundary_held_roots.contains(&v) {
                 continue;
             }
             // Consumed by the terminator (Return value / cond) — canonicalize the
@@ -1354,12 +689,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if terminator_uses_root(&block.terminator, v, &canon) {
                 continue;
             }
-            // Consumed AS AN OPERAND by its last-use op (design §1.2
-            // takes-ownership): a CallArgs builder handed to `call_bind` /
-            // `call_indirect` is freed inside the call (PtrDropGuard). Ownership
-            // transferred to the op exactly like a Return value — no trailing
-            // DecRef, or we double-free the `TYPE_ID_CALLARGS` object.
-            if op_consumed_operand_root(&block.ops[idx], &canon) == Some(v) {
+            // Moved into its last-use op, which takes it (`transfers.rs`): a
+            // frame home store, a CallArgs builder that `call_bind` /
+            // `call_indirect` free, or an argument of a source Python call
+            // instruction. The op owns it on both continuations, like a Return
+            // value, so a trailing DecRef would release it twice.
+            if transfers.moves(bid, idx, v) {
                 continue;
             }
             // The owned object dies after op `idx` in this block: drop the root
@@ -1426,10 +761,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     continue;
                 }
                 // Zero-use Python-bound finalizer-sensitive roots are still
-                // locals for finalizer ordering: drop them at the frame
-                // boundary, not immediately after construction. Unbound
-                // expression temporaries are not Python-bound and die here.
-                if boundary_release_roots.contains(&r) {
+                // locals for finalizer ordering: lexical custody drops them at
+                // the frame boundary, not immediately after construction.
+                // Unbound expression temporaries are not lexical and die here.
+                if boundary_held_roots.contains(&r) {
                     continue;
                 }
                 // Consumed by the terminator (Return value / cond).
@@ -1442,31 +777,27 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             }
         }
 
-        if matches!(block.terminator, Terminator::Return { .. })
-            && !boundary_release_roots.is_empty()
-        {
-            let mut roots: Vec<ValueId> = boundary_release_roots.iter().copied().collect();
-            roots.sort_unstable_by_key(|v| v.0);
-            for root in roots {
-                if ownership_lattice.is_conditionally_valid_result_root(root) {
-                    continue;
-                }
-                if terminator_uses_root(&block.terminator, root, &canon) {
-                    continue;
-                }
-                if boundary_roots_handled_before_return
-                    .get(&bid)
-                    .is_some_and(|roots| roots.contains(&root))
-                {
-                    continue;
-                }
-                match def_block.get(&root) {
-                    Some(&dblk) if crate::tir::dominators::dominates(dblk, bid, &idoms) => {
-                        plan.before_term.push(root);
-                    }
-                    _ => {}
-                }
+        // ── 1c. Dead block args ───────────────────────────────────────────────
+        // Every canonical arc moves or retains a +1 into each owned block arg
+        // it binds, exception edges included. An arg that nothing in its block
+        // reads, forwards or keeps live dies on entry, so it is released there,
+        // once on every entry: joins, loop headers and handlers alike. Every arc
+        // must bind it an owned reference; a raw or uninitialized input leaves
+        // it alone. A lexical arg keeps its object to its Python boundary.
+        for (position, arg) in block.args.iter().enumerate() {
+            let root = arg.id;
+            if !drop_eligibility.is_droppable(root)
+                || !points.binds_owner_on_every_arc(bid, position)
+                || boundary_held_roots.contains(&root)
+                || last_use.contains_key(&root)
+                || branch_arg_roots.contains(&root)
+                || live.is_live_out(bid, root)
+                || terminator_uses_root(&block.terminator, root, &canon)
+                || statement_release_plan.contains_released_root(root)
+            {
+                continue;
             }
+            plan.at_entry.push(root);
         }
 
         if let Some(by_op) = statement_release_plan.after_op().get(&bid) {
@@ -1481,102 +812,34 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             plan.after_op.entry(idx).or_default().extend(roots);
         }
 
-        // ── 2. Suspension-point IncRef ───────────────────────────────────────
-        // For each yield op at index `i`, every heap-carrying value that is
-        // (a) DEFINED before the yield (an op result at index < i, or a block
-        // arg), AND (b) live ACROSS the yield (live-out of the block — used after
-        // a resume) gets an IncRef immediately before the yield so the suspended
-        // frame owns its own reference.
-        //
-        // Requirement (a) is soundness-critical: a value defined AFTER the yield
-        // is not yet in scope at the yield, so referencing it in an IncRef placed
-        // before the yield would be a use-before-def (a TIR verify failure).
-        // Build the set of values defined at or before each op position.
-        if block.ops.iter().any(|o| is_suspension_point(o.opcode)) {
-            // `live_out` is already in alias-root space (liveness canonicalized).
-            let live_out_here: HashSet<ValueId> = live
-                .live_out
-                .get(&bid)
-                .into_iter()
-                .flatten()
-                .copied()
-                .collect();
-            // Roots defined at-or-before each op (block args are roots).
-            let mut defined: HashSet<ValueId> = block.args.iter().map(|a| canon(a.id)).collect();
-            for (idx, op) in block.ops.iter().enumerate() {
-                if is_suspension_point(op.opcode) {
-                    let mut seen: HashSet<ValueId> = HashSet::new();
-                    for &v in &live_out_here {
-                        // `v` is a root; IncRef the root if it is droppable and
-                        // already defined before the yield.
-                        if drop_eligibility.is_droppable(v)
-                            && defined.contains(&v)
-                            && seen.insert(v)
-                        {
-                            plan.before_op.entry(idx).or_default().push(v);
-                        }
-                    }
-                }
-                // The op's results become defined AFTER it executes (in root
-                // space — a copy result canonicalizes to an already-defined root).
-                for &r in &op.results {
-                    defined.insert(canon(r));
-                }
+        // ── 2b. Exception-edge owned-arg retain ─────────────────────────────
+        // A raising `CheckException` binds its handler's block args to its
+        // operands exactly like branch args bind a phi, and `points` classifies
+        // them with the §5 rules. A function-owned root that the handler body
+        // does not read moves its single +1 into the first argument it binds.
+        // The +1 stays with the normal continuation when the check does not
+        // raise, and `points` reports the root unowned wherever the handler
+        // path leads. Any other owned binding (a borrowed payload, a root the
+        // handler still reads, a root bound twice) needs a +1 on the
+        // exceptional path only. The check's landing block retains it there
+        // (`exception_edges.rs`), so the normal path pays nothing and the
+        // observation stays point-exact. A region registration (`TryStart`)
+        // keeps its handler reachable but never raises into it: `points`
+        // records no binding for it, so it retains nothing.
+        for arc in exception_arcs {
+            let positions = points.retained_positions(bid, ArcSite::Exception(arc.op_index));
+            if !positions.is_empty() {
+                landing_retains.insert((bid, arc.op_index), positions);
             }
         }
 
-        // ── 2b. Exception-edge owned-arg retain ─────────────────────────────
-        // `CheckException`/`TryStart` carry implicit edges to handler blocks.
-        // When the target handler has droppable block args, the edge has the same
-        // uniform-owned-phi obligation as an ordinary branch edge, except the edge
-        // is conditional inside the op: the normal fallthrough must keep its
-        // original ownership while the exceptional transfer may need a retained
-        // +1. Therefore a borrowed/non-owned payload gets:
-        //
-        //     IncRef(v); CheckException(...v...); DecRef(v)
-        //
-        // The `DecRef` is skipped when the check transfers to the handler, so the
-        // retained +1 becomes the handler arg's owned reference. On the normal
-        // path it is balanced immediately. A clean function-owned payload needs no
-        // retain: the single +1 conditionally flows to the handler on the
-        // exceptional path and remains with the normal path otherwise.
-        for arc in exception_arcs_for_block(func, block) {
-            let Some(handler) = func.blocks.get(&arc.target) else {
-                continue;
-            };
-            if handler.args.is_empty() {
-                continue;
-            }
-            let mut retains = Vec::new();
-            for (idx, &v) in arc.args.iter().enumerate() {
-                let Some(handler_arg) = handler.args.get(idx) else {
-                    continue;
-                };
-                if !drop_eligibility.is_droppable(handler_arg.id)
-                    || drop_eligibility.is_raw_scalar_root(canon(v))
-                {
-                    continue;
-                }
-                let root = canon(v);
-                if drop_eligibility.is_conditionally_valid_result_root(v) {
-                    continue;
-                }
-                if drop_eligibility.is_droppable(root) {
-                    continue;
-                }
-                retains.push(v);
-            }
-            if retains.is_empty() {
-                continue;
-            }
-            plan.before_exception_op
-                .entry(arc.op_index)
+        // An adopting op's retains (`transfers.rs`), one per position that
+        // cannot take its root's own +1.
+        for (idx, operands) in transfers.retains(bid) {
+            plan.before_op
+                .entry(idx)
                 .or_default()
-                .extend(retains.iter().copied());
-            plan.after_exception_op
-                .entry(arc.op_index)
-                .or_default()
-                .extend(retains);
+                .extend_from_slice(operands);
         }
 
         plans.insert(bid, plan);
@@ -1591,15 +854,138 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         audit_start.elapsed().as_millis(),
     );
 
+    // ── Lexical custody ──────────────────────────────────────────────────────
+    // A lexical root keeps its object to a Python boundary rather than its last
+    // SSA use. It is released
+    //   * before the terminator of a Return that it reaches owned on every
+    //     entry and that does not return it; and
+    //   * on a terminator arc from a block whose exit owns it into a join that
+    //     it does not reach owned the same way: another entry lacks it, or the
+    //     arc re-enters the root's own definition without binding its argument
+    //     to itself. The arc does not move it, and nothing past the arc can use
+    //     it: SSA dominance, a move's clean-transfer condition, a release or
+    //     validity rules each such use out. A root that the join still reads
+    //     is left unreleased rather than freed under that read.
+    // A move, an explicit release or an adoption ends custody by itself,
+    // and a check's landing releases what its handler abandons. An arc that is
+    // its target's only entry carries every owner there unchanged. An arc
+    // release sits on a split of the arc itself, where the owner ends.
+    let mut lexical: Vec<ValueId> = boundary_held_roots.iter().copied().collect();
+    lexical.sort_unstable_by_key(|root| root.0);
+    for &bid in &block_ids {
+        if !reachable.contains(&bid) {
+            continue;
+        }
+        let block = &func.blocks[&bid];
+        if matches!(block.terminator, Terminator::Return { .. }) {
+            let plan = plans
+                .get_mut(&bid)
+                .expect("reachable block plan must exist before lexical custody");
+            for &root in &lexical {
+                if points.available_at_exit(root, bid)
+                    && !terminator_uses_root(&block.terminator, root, &canon)
+                {
+                    plan.before_term.push(root);
+                }
+            }
+            continue;
+        }
+        for arc in terminator_arcs(&block.terminator) {
+            if points.incoming_sources(arc.target).len() < 2 {
+                continue;
+            }
+            let site = ArcSite::Terminator(arc.descriptor);
+            let target = &func.blocks[&arc.target];
+            let releases: Vec<ValueId> = lexical
+                .iter()
+                .copied()
+                .filter(|&root| {
+                    if points.moves_on(bid, site, root)
+                        || points.lives_into_body(root, arc.target)
+                        || !points.available_at_exit(root, bid)
+                    {
+                        return false;
+                    }
+                    let rebinds =
+                        points.definition_block(root) == Some(arc.target)
+                            && !target.args.iter().zip(&arc.args).any(|(argument, &value)| {
+                                argument.id == root && canon(value) == root
+                            });
+                    rebinds || !points.available_at_entry(root, arc.target)
+                })
+                .collect();
+            if !releases.is_empty() {
+                push_edge_split(
+                    &mut edge_splits,
+                    bid,
+                    arc.descriptor,
+                    arc.target,
+                    arc.args,
+                    vec![],
+                    releases,
+                );
+            }
+        }
+    }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-lexical-custody",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(lexical.len()),
+        Some(points.retirement_counts().1),
+        audit_start.elapsed().as_millis(),
+    );
+
+    // A frame-clear query stops here. Every `Return` release is planned: the
+    // lexical ones above and the deferred named owners of §0b. What follows is
+    // SSA last-use, edge and publication placement.
+    if let Some(frame_clears) = frame_clears {
+        for &bid in &block_ids {
+            if !reachable.contains(&bid) {
+                continue;
+            }
+            let block = &func.blocks[&bid];
+            if !matches!(block.terminator, Terminator::Return { .. }) {
+                continue;
+            }
+            let mut releases = plans[&bid].before_term.clone();
+            releases.extend(
+                deferred_return_placements
+                    .iter()
+                    .filter(|&&(exit, _)| exit == bid)
+                    .map(|&(_, root)| root),
+            );
+            let published = lexical
+                .iter()
+                .copied()
+                .filter(|&root| terminator_uses_root(&block.terminator, root, &canon))
+                .collect();
+            frame_clears.insert(
+                bid,
+                FrameClear {
+                    releases: sorted_unique_values(&releases),
+                    published,
+                },
+            );
+        }
+        return stats;
+    }
+
     // ── 0c. Owned return publication ────────────────────────────────────────
-    // Calls borrow every argument but return one owned result. A direct return
-    // of a parameter (or any transparent alias of it) therefore cannot merely
-    // forward the borrowed bits: the caller would later release an ownership
-    // edge that the callee never minted. Publish that edge here, at the shared
-    // TIR boundary consumed by every backend. Fresh/function-owned results
-    // transfer their existing +1 and receive no retain. Mixed block-arg phis
-    // are made uniformly owned by §5 below, so they likewise need no second
-    // return retain.
+    // A call returns one owned result. A direct return of a borrowed parameter
+    // (or any transparent alias of it) therefore cannot merely forward the
+    // borrowed bits: the caller would later release an ownership edge that the
+    // callee never minted. Publish that edge here, at the shared TIR boundary
+    // consumed by every backend. Fresh/function-owned results, a transferred
+    // parameter among them, transfer their existing +1 and receive no retain.
+    // A return that frame teardown could invalidate returns the frontend's
+    // owned capture (`binding_alias`), taken before the teardown starts; a read
+    // after the returned root's own release is malformed, and nothing here
+    // repairs it. A frame binding view is such a return, and one that would
+    // need a retain here fails the producer contract. Mixed block-arg phis are
+    // made uniformly owned by §5 below, so they likewise need no second return
+    // retain.
     //
     // This stage deliberately MERGES into the completed per-block plan. An
     // earlier pre-plan implementation was silently overwritten by the canonical
@@ -1627,6 +1013,20 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if drop_eligibility.return_requires_owned_publication(value)
                 && retained_roots.insert(root)
             {
+                // A frame binding view names what only its home owns, and the
+                // frame's exit, which immediately precedes every normal return
+                // of a framed body, releases the homes before this retain could
+                // run. No placement keeps it: the frontend returns an owned
+                // capture (`binding_alias`) taken before the exit. The retain
+                // would be a use-after-free, and nothing after this pass knows
+                // views, so the producer contract fails here, before any backend
+                // sees the body.
+                assert!(
+                    !ownership_root_facts.is_binding_view_root(root),
+                    "{}: return of frame binding view {value:?} after the frame's exit; \
+                     the frontend must return an owned capture taken before `trace_exit`",
+                    func.name
+                );
                 retained_values.push(value);
             }
         }
@@ -1655,8 +1055,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     //     alive across the edge), AND
     //   * V is NOT live-in to B (B does not need it), AND
     //   * V is NOT a block arg of B (block args are re-supplied by the edge), AND
-    //   * V's defining block DOMINATES B (V is provably available at B's entry —
-    //     SSA-dominance soundness; see below), AND
+    //   * V is AVAILABLE at B's entry: defined, initialized if it is a
+    //     conditional result, and still owned, on every normal and exceptional
+    //     path into B (see below), AND
     //   * V is droppable.
     // This releases the value on the path where it dies. Because every path into
     // B that delivered V must release it, and B is a join, dropping once at B's
@@ -1664,76 +1065,59 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // require V to be dead-in to B and live-out of EVERY predecessor that can
     // reach B (so no path still needs it). The elim pass later hoists/dedups.
     //
-    // DOMINANCE GUARD (soundness-critical, FAIL-CLOSED). The backward liveness
-    // dataflow OVER-APPROXIMATES across the universal `CheckException` edges (C2
-    // commit 430e09793): a value can be marked live-out of an exception-edge
-    // predecessor whose def-block does NOT terminator-dominate the handler/join
-    // block B. A `DecRef(V)` placed at B's entry where V's def does not dominate
-    // B is a use-before-def → SSA dominance violation (observed as the LLVM
-    // verifier "Instruction does not dominate all uses!" abort on
-    // `molt_dec_ref_obj(%isinstance)`).
-    //
-    // We use the **TerminatorOnly** dominator tree, NOT the Full (analysis) one.
-    // This is the SAME view the TIR verifier and the LLVM/native codegen use for
-    // SSA dominance (dominators.rs CfgEdgePolicy doc): a handler block reached
-    // only via a mid-block exception edge has NO terminator-predecessor, so a
-    // value defined in the protected region does NOT terminator-dominate it.
-    // The Full tree would (wrongly, for codegen purposes) say a value defined
-    // mid-block AFTER a CheckException "dominates" that op's handler — but the
-    // exception edge leaves from BEFORE the def, so at the instruction level the
-    // def does not dominate the handler. TerminatorOnly dominance matches what
-    // codegen enforces, so a guard built on it never admits an
-    // exception-path use-before-def.
-    //
-    // FAIL-CLOSED: if V's def-block does not terminator-dominate B, we DO NOT
-    // drop here (keep the +1 / accept a possible leak on that exception path) —
-    // the under-release direction. Never over-release (UAF).
-    // (`pred_map_term` / `idoms` / `def_block` are built once, above §0b,
-    // which shares this exact TerminatorOnly view.)
+    // AVAILABILITY GUARD (soundness-critical, FAIL-CLOSED). The entry DecRef runs
+    // on every path into B, including an exception edge that leaves a block
+    // before V's definition. Block dominance cannot decide that. The Full tree
+    // lets a definition below a `CheckException` "dominate" the handler. The
+    // TerminatorOnly tree ignores the exception entries of a mixed block, one
+    // with both terminator and exception predecessors, such as the exit that
+    // `raise; jump exit` shares with every check. `PointAvailability` splits
+    // blocks at each observation and also answers conditional-result validity.
+    // It also declines where some path into B arrives after V gave up its
+    // object: an arc, terminator or exception, that moved V into a block
+    // argument, or an explicit release or adoption. A handler whose
+    // argument a check's payload binds is the common case: liveness reports V
+    // dead there, while every predecessor still has it live-out on its normal
+    // continuation. When it declines, V is not dropped here. §3b releases it on
+    // the normal arcs that still own it, and landings on the exceptional
+    // entries that do. A use-before-def is the LLVM verifier "Instruction does
+    // not dominate all uses!" abort; a release of a moved root is `invalid
+    // object header before dec_ref`. Never over-release; a residual leak is the
+    // fail-closed direction.
     for &bid in &block_ids {
         if !reachable.contains(&bid) {
             continue;
         }
-        let preds = match pred_map.get(&bid) {
-            Some(p) if !p.is_empty() => p,
-            _ => continue,
-        };
+        let preds = points.incoming_sources(bid);
+        if preds.is_empty() {
+            continue;
+        }
+        // Exceptional abandonment has one ordered owner: the observation's
+        // landing. An entry release would split that unwind between two
+        // planners, making an older last-use operand die before a younger
+        // owner that was live on the skipped normal continuation. Ordinary
+        // entries into the same block are handled edge-exactly by section 3b.
+        if exceptional_entries.contains(&bid) {
+            continue;
+        }
         let block_args: HashSet<ValueId> = func.blocks[&bid].args.iter().map(|a| a.id).collect();
-        // Roots that some predecessor passes as a branch ARG into THIS block's
-        // phi(s). Such a value transfers its ownership INTO the block arg on the
-        // edge — it is NOT dying on entry, even though liveness reports it dead-in
-        // to `B` (its successor-side identity is the block arg, a distinct SSA
-        // value). Edge-dropping it here would double-free: the block arg (phi) is
-        // the owner now and is released by ITS own last-use / loop / exit drop.
-        // (This is the dual of the §5 mixed-ownership retain: §5 ensures the
-        // transferred value is owned; this ensures the transfer itself is not also
+        // A root that an incoming arc moves into one of THIS block's args is not
+        // dying on entry, even though liveness reports it dead-in to `B` (its
+        // successor-side identity is the block arg, a distinct SSA value). The
+        // block arg (phi) is the owner now and is released by ITS own last use,
+        // dead-arg entry release or lexical boundary. (This is the dual of the
+        // §5 mixed-ownership retain: §5 ensures the transferred value is owned;
+        // the availability guard below ensures the transfer itself is not also
         // released at the join. Without it, an owned value forwarded into a phi
         // through a multi-block chain — the shape the inliner produces for
-        // `x = a + a; return x + a` — was dropped BOTH at the join entry AND at the
-        // phi's last use → `invalid object header before dec_ref`.) The per-arc
-        // `terminator_arcs` enumeration (filtered to `arc.target == bid`) is the
-        // precise per-edge form — it is the single arc-enumeration helper §5 also
-        // uses, so there is one source of truth for "args forwarded on this edge".
-        let incoming_arg_roots: HashSet<ValueId> = {
-            let mut s = HashSet::new();
-            for p in preds {
-                if let Some(pblock) = func.blocks.get(p) {
-                    for arc in terminator_arcs(&pblock.terminator) {
-                        if arc.target == bid {
-                            for &v in &arc.args {
-                                s.insert(canon(v));
-                            }
-                        }
-                    }
-                }
-            }
-            s
-        };
-        // `incoming_arg_roots` is deliberately join-wide because one at-entry
-        // drop cannot distinguish incoming paths.  The precise per-arc phase
-        // below handles roots that transfer or die on only a subset of incoming
-        // edges.  Keeping this phase join-wide preserves the compact common case;
-        // only genuinely path-specific ownership allocates an edge block.
+        // `x = a + a; return x + a` — was dropped BOTH at the join entry AND at
+        // the phi's last use → `invalid object header before dec_ref`.) The
+        // guard reads every canonical arc, including a check's payload bound to
+        // a handler arg, and every earlier move that reaches `B` before the root
+        // is defined again. One at-entry drop cannot distinguish incoming paths,
+        // so a root that transfers or dies on only some incoming arcs is
+        // released per arc by §3b or by the exceptional landings; only
+        // genuinely path-specific ownership allocates an edge block.
         let mut candidates: HashSet<ValueId> = HashSet::new();
         for p in preds {
             if let Some(set) = live.live_out.get(p) {
@@ -1746,24 +1130,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 .get(&bid)
                 .is_some_and(|set| set.iter().any(|&m| canon(m) == root))
         };
-        let transferred_phi_live_at = |root: ValueId| -> bool {
-            let Some(phis) = transferred_phi_args_by_root.get(&root) else {
-                return false;
-            };
-            let live_in = live
-                .live_in
-                .get(&bid)
-                .is_some_and(|set| set.iter().any(|v| phis.contains(v)));
-            let live_out = live
-                .live_out
-                .get(&bid)
-                .is_some_and(|set| set.iter().any(|v| phis.contains(v)));
-            let mentioned_here = phis.iter().any(|&phi| block_mentions_value(bid, phi));
-            let after_transfer_reaches_phi = transferred_phi_live_blocks_by_root
-                .get(&root)
-                .is_some_and(|blocks| blocks.contains(&bid));
-            live_in || live_out || mentioned_here || after_transfer_reaches_phi
-        };
         // Roots already scheduled to drop at this block's entry (dedup by root,
         // not raw value — two aliases of the same group must drop once).
         let mut entry_root_seen: HashSet<ValueId> = HashSet::new();
@@ -1771,51 +1137,22 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if !drop_eligibility.is_droppable(v) {
                 continue;
             }
-            // Conditionally-valid iterator value result (§2.8): NEVER drop it on a
-            // die-edge. On the exhaustion edge the value-out slot is uninitialized
-            // garbage; a `DecRef` here is a UAF (review P0 #2(b)). On the not-done
-            // edge it is consumed by the body's straight-line drop instead. We test
-            // the alias ROOT so a transparent copy of the value result is covered
-            // too. (An `IterNextUnboxed` value result is never itself a transparent
-            // alias of another value — it is a fresh op result — so its root is
-            // itself unless a later `Copy` of it widened the group; in that case
-            // the whole group is conditionally-valid and equally unsafe to
-            // edge-drop.)
-            if drop_eligibility.is_conditionally_valid_result_root(v)
-                || ownership_lattice.is_conditionally_valid_result_root(canon(v))
-            {
-                continue;
-            }
+            // A conditionally-valid iterator value is dropped here only where it
+            // is initialized: the availability guard below never admits its
+            // exhaustion edge, whose slot holds stale bits (review P0 #2(b)).
             let root = canon(v);
             // Python lifetime boundaries are path-conditioned release
             // authorities. The single at-entry edge-dying form would run on every
             // path into `bid`, so pairing it with a body-only statement/rebind
             // boundary or a later scope-exit boundary can release the same local
-            // owner twice. Fail closed by leaving such roots to the Python
-            // boundary planners rather than synthesizing a join-entry drop from
-            // SSA liveness alone.
-            if boundary_release_roots.contains(&root)
-                || explicit_release_blocks.contains_key(&root)
+            // owner twice. Lexical custody and the statement plan own these
+            // roots; SSA liveness alone never synthesizes a join-entry drop.
+            if boundary_held_roots.contains(&root)
                 || statement_release_plan.contains_released_root(root)
             {
                 continue;
             }
             if block_args.contains(&v) || block_args.iter().any(|&a| canon(a) == root) {
-                continue;
-            }
-            // Transferred-into-phi exclusion: `v` (or an alias) is passed as a
-            // branch arg into THIS block's phi by some predecessor → its ownership
-            // moves into the block arg, it does not die here. Dropping it would
-            // double-free the phi's object.
-            if incoming_arg_roots.contains(&root) {
-                continue;
-            }
-            // A prior edge may have transferred this source root into a phi in an
-            // ancestor/join block. While that phi is live through this block, the
-            // phi remains the release authority. Dropping the old source root here
-            // would release the same owned object once under the pre-transfer name
-            // and once under the phi name.
-            if transferred_phi_live_at(root) {
                 continue;
             }
             // Dead on entry to B (root-level — no alias member live-in).
@@ -1835,12 +1172,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if !all_preds_deliver {
                 continue;
             }
-            // DOMINANCE GUARD (fail-closed): V's def-block must dominate B under
-            // the TerminatorOnly tree, else V is not provably defined at B's
-            // entry and the DecRef would be a use-before-def. Skip (keep the +1).
-            match def_block.get(&v) {
-                Some(&dblk) if crate::tir::dominators::dominates(dblk, bid, &idoms) => {}
-                _ => continue,
+            // AVAILABILITY GUARD (fail-closed; see above): defined, initialized
+            // and still owned on every entry.
+            if !points.available_at_entry(v, bid) {
+                continue;
             }
             // One drop per root group at this entry.
             if !entry_root_seen.insert(root) {
@@ -1853,8 +1188,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     at_entry: Vec::new(),
                     before_term: Vec::new(),
                     before_op: HashMap::new(),
-                    before_exception_op: HashMap::new(),
-                    after_exception_op: HashMap::new(),
                     before_term_incref: Vec::new(),
                 })
                 .at_entry
@@ -1885,9 +1218,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // predecessor can release immediately before its terminator.  A branching
     // predecessor gets one split block for the dying arc; `push_edge_split`
     // coalesces every release on that arc, so CFG growth is bounded by ownership-
-    // divergent edges rather than by values.  Conditional iterator result slots,
-    // Python lifetime-bound roots, transferred phis, and borrowed values retain
-    // their existing authorities and are excluded here.
+    // divergent edges rather than by values.  Lexical roots, moved roots and
+    // borrowed values keep their own authorities and are excluded here. A
+    // conditional iterator result is released only where `PointAvailability`
+    // finds it initialized, never on its exhaustion edge.
     let entry_planned_roots_by_block: HashMap<BlockId, HashSet<ValueId>> = plans
         .iter()
         .map(|(&block, plan)| {
@@ -1927,15 +1261,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if !reachable.contains(&arc.target) {
                 continue;
             }
-            // With one normal outgoing arc into a single-predecessor block, the
-            // compact at-entry rule above is already exact: the predecessor's
-            // definition dominates the target and no sibling path can lack the
-            // owner. Avoid opening per-edge sets on this overwhelmingly common
-            // straight-line CFG shape.
-            if arcs.len() == 1
-                && pred_map_term
-                    .get(&arc.target)
-                    .is_some_and(|preds| preds.len() == 1)
+            // When this arc is its target's only canonical entry, the compact
+            // at-entry rule above is already exact: no exception edge or sibling
+            // arc can reach the target without the owner. Avoid opening per-edge
+            // sets on this overwhelmingly common straight-line CFG shape.
+            if points.incoming_sources(arc.target).len() == 1
+                && !exceptional_entries.contains(&arc.target)
             {
                 continue;
             }
@@ -1943,7 +1274,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             let pred_planned_roots = before_term_planned_roots_by_block.get(&pred);
             let transferred_roots: HashSet<ValueId> =
                 arc.args.iter().map(|&value| canon(value)).collect();
-            let body_live_roots = edge_body_live_roots.get(&(pred, arc.descriptor));
             let mut arc_root_seen: HashSet<ValueId> = HashSet::new();
 
             for &value in &candidates {
@@ -1952,20 +1282,23 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     || entry_planned_roots.is_some_and(|roots| roots.contains(&root))
                     || pred_planned_roots.is_some_and(|roots| roots.contains(&root))
                     || transferred_roots.contains(&root)
-                    || body_live_roots.is_some_and(|roots| roots.contains(&root))
-                    || boundary_release_roots.contains(&root)
-                    || explicit_release_blocks.contains_key(&root)
+                    || points.lives_into_body(root, arc.target)
+                    || boundary_held_roots.contains(&root)
                     || statement_release_plan.contains_released_root(root)
-                    || drop_eligibility.is_conditionally_valid_result_root(value)
-                    || ownership_lattice.is_conditionally_valid_result_root(root)
                     || !drop_eligibility.is_droppable(value)
                 {
                     continue;
                 }
-                match def_block.get(&value) {
-                    Some(&def)
-                        if def == pred || crate::tir::dominators::dominates(def, pred, &idoms) => {}
-                    _ => continue,
+                // The one availability authority: defined on every entry of
+                // `pred`, exceptional ones included, and for a conditional
+                // result initialized at `pred`'s exit or by this very arc.
+                let available = if arcs.len() == 1 {
+                    points.available_at_exit(value, pred)
+                } else {
+                    points.available_on_arc(value, pred, arc.target)
+                };
+                if !available {
+                    continue;
                 }
 
                 if arcs.len() == 1 {
@@ -1976,8 +1309,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                             at_entry: Vec::new(),
                             before_term: Vec::new(),
                             before_op: HashMap::new(),
-                            before_exception_op: HashMap::new(),
-                            after_exception_op: HashMap::new(),
                             before_term_incref: Vec::new(),
                         })
                         .before_term
@@ -2006,192 +1337,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         audit_start.elapsed().as_millis(),
     );
 
-    // ── 4. Loop-carried phi drop-old before the back-edge (design §2.7) ──────
-    // Pure reassignment loops can overwrite an owned header phi without reading
-    // that phi in the loop body. Straight-line last-use placement cannot see a
-    // use, and edge-dying handles only the exit value, so the previous iteration's
-    // value must be released on the back-edge that overwrites the slot.
-    {
-        let mut loop_headers: Vec<BlockId> = func
-            .loop_roles
-            .iter()
-            .filter_map(|(&bid, role)| (*role == LoopRole::LoopHeader).then_some(bid))
-            .collect();
-        loop_headers.sort_unstable_by_key(|block| block.0);
-
-        for header_bid in loop_headers {
-            if !reachable.contains(&header_bid) {
-                continue;
-            }
-            let Some(header) = func.blocks.get(&header_bid) else {
-                continue;
-            };
-            if header.args.is_empty() {
-                continue;
-            }
-
-            let loop_blocks = crate::tir::dominators::collect_loop_blocks(
-                func,
-                &pred_map_term,
-                &idoms,
-                header_bid,
-            );
-            let mut body_used_roots: HashSet<ValueId> = HashSet::new();
-            for &loop_block in &loop_blocks {
-                let Some(block) = func.blocks.get(&loop_block) else {
-                    continue;
-                };
-                for op in &block.ops {
-                    for &operand in &op.operands {
-                        body_used_roots.insert(canon(operand));
-                    }
-                }
-            }
-
-            let mut body_forwarded_into_phi_roots: HashSet<ValueId> = HashSet::new();
-            for &loop_block in &loop_blocks {
-                let Some(block) = func.blocks.get(&loop_block) else {
-                    continue;
-                };
-                for arc in terminator_arcs(&block.terminator) {
-                    if arc.target == header_bid {
-                        continue;
-                    }
-                    let target_has_phis = func
-                        .blocks
-                        .get(&arc.target)
-                        .is_some_and(|target| !target.args.is_empty());
-                    if !target_has_phis {
-                        continue;
-                    }
-                    for &value in &arc.args {
-                        body_forwarded_into_phi_roots.insert(canon(value));
-                    }
-                }
-            }
-
-            let mut latches: Vec<BlockId> = pred_map_term
-                .get(&header_bid)
-                .map(|preds| {
-                    preds
-                        .iter()
-                        .copied()
-                        .filter(|&pred| crate::tir::dominators::dominates(header_bid, pred, &idoms))
-                        .collect()
-                })
-                .unwrap_or_default();
-            latches.sort_unstable_by_key(|block| block.0);
-
-            for latch_bid in latches {
-                if !reachable.contains(&latch_bid) {
-                    continue;
-                }
-                let term = func.blocks[&latch_bid].terminator.clone();
-                let arcs = terminator_arcs(&term);
-                let latch_already_released: HashSet<ValueId> = {
-                    let mut released: HashSet<ValueId> = HashSet::new();
-                    if let Some(existing) = plans.get(&latch_bid) {
-                        for &value in &existing.at_entry {
-                            released.insert(canon(value));
-                        }
-                        for &value in &existing.before_term {
-                            released.insert(canon(value));
-                        }
-                        for values in existing.after_op.values() {
-                            for &value in values {
-                                released.insert(canon(value));
-                            }
-                        }
-                        for values in existing.before_op.values() {
-                            for &value in values {
-                                released.insert(canon(value));
-                            }
-                        }
-                    }
-                    if let Some(block) = func.blocks.get(&latch_bid) {
-                        for op in &block.ops {
-                            if op.opcode == OpCode::DecRef
-                                && let Some(&value) = op.operands.first()
-                            {
-                                released.insert(canon(value));
-                            }
-                        }
-                    }
-                    released
-                };
-                let arcs_to_header = arcs.iter().filter(|arc| arc.target == header_bid).count();
-                for arc in &arcs {
-                    if arc.target != header_bid {
-                        continue;
-                    }
-                    let header = &func.blocks[&header_bid];
-                    let mut arc_releases: Vec<ValueId> = Vec::new();
-                    for (pos, phi) in header.args.iter().enumerate() {
-                        let phi_id = phi.id;
-                        if !drop_eligibility.is_droppable(phi_id) {
-                            continue;
-                        }
-                        if body_used_roots.contains(&canon(phi_id)) {
-                            continue;
-                        }
-                        if latch_already_released.contains(&canon(phi_id)) {
-                            continue;
-                        }
-                        if body_forwarded_into_phi_roots.contains(&canon(phi_id)) {
-                            continue;
-                        }
-                        let Some(&edge_value) = arc.args.get(pos) else {
-                            continue;
-                        };
-                        if canon(edge_value) == canon(phi_id) {
-                            continue;
-                        }
-                        arc_releases.push(phi_id);
-                    }
-                    if arc_releases.is_empty() {
-                        continue;
-                    }
-                    if arcs_to_header == 1 && !arc.is_self_loop_into_own_phi(latch_bid) {
-                        let plan = plans.entry(latch_bid).or_insert_with(|| BlockPlan {
-                            after_op: HashMap::new(),
-                            at_entry: Vec::new(),
-                            before_term: Vec::new(),
-                            before_op: HashMap::new(),
-                            before_exception_op: HashMap::new(),
-                            after_exception_op: HashMap::new(),
-                            before_term_incref: Vec::new(),
-                        });
-                        for value in arc_releases {
-                            plan.before_term.push(value);
-                        }
-                    } else {
-                        push_edge_split(
-                            &mut edge_splits,
-                            latch_bid,
-                            arc.descriptor,
-                            arc.target,
-                            arc.args.clone(),
-                            vec![],
-                            arc_releases,
-                        );
-                    }
-                }
-            }
-        }
-    }
-    emit_drop_inner_stage_audit(
-        func,
-        "after-loop-carried-phi-drop",
-        Some(plans.len()),
-        Some(edge_splits.len()),
-        Some(planned_insertion_count(&plans)),
-        Some(reachable.len()),
-        audit_start.elapsed().as_millis(),
-    );
-
     // ── 5. Mixed-ownership phi retain (design §ownership) ─────────────────────
     // A TIR block argument is the SSA phi: each predecessor edge passes a value
-    // that binds the arg on entry. The straight-line / edge-dying / loop-carried
+    // that binds the arg on entry. The straight-line / edge-dying / dead-arg
     // rules above treat a DROPPABLE (heap, function-owned) block arg as carrying
     // exactly ONE owned `+1` — they DROP it on the path where it dies and TRANSFER
     // it (no drop) where it is forwarded as a branch arg. That is sound ONLY when
@@ -2240,18 +1388,18 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // catch — never a UAF). A blanket "never drop mixed phis" is rejected by spec:
     // it would leak the previous accumulator EVERY iteration (O(n) residual).
     //
-    // PLACEMENT must be edge-exact. When this block (`P`) reaches the phi block via
-    // a SINGLE arc carrying these args (an unconditional `Branch`, or a
-    // `CondBranch`/`Switch` with exactly one arm to that target — the preheader and
-    // if-arm shapes molt lowers), the `IncRef` goes just before `P`'s terminator
-    // (`before_term_incref`). When `P` reaches the target on MULTIPLE arcs with
-    // different args (a critical edge — e.g. a `Switch` routing two cases to one
-    // block), a before-terminator `IncRef` would wrongly fire on the other arc; we
-    // SPLIT that critical edge (a fresh block holding the `IncRef` + a `Branch`),
-    // which is why this pass is `Mutates::Cfg`.
+    // `points` (`availability.rs`) owns this classification for every canonical
+    // arc. §2b places its exception-edge retains, this section its terminator
+    // retains, and each clean transfer's root is reported unowned to every
+    // release placed downstream of it.
     //
-    // Owned phis bail with the function (state-machine / exception-handler gate at
-    // the top of `run`), so this never runs over `_poll` / handler CFGs.
+    // PLACEMENT is edge-exact. An unconditional, non-self edge can retain
+    // before its terminator. Every conditional, switch and self edge uses a
+    // split block so no sibling path executes its retains. The split carries
+    // the original payload and preserves repeated ownership obligations.
+    //
+    // The same owned-phi contract applies to ordinary, activation and handler
+    // CFGs; availability distinguishes their actual incoming ownership.
 
     for &bid in &block_ids {
         if !reachable.contains(&bid) {
@@ -2262,95 +1410,21 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         let term = func.blocks[&bid].terminator.clone();
         let arcs = terminator_arcs(&term);
         for arc in &arcs {
-            let Some(succ_block) = func.blocks.get(&arc.target) else {
-                continue;
-            };
-            if succ_block.args.is_empty() {
-                continue;
-            }
-            // How many arcs of THIS block target `arc.target` (placement ambiguity:
-            // >1 ⇒ critical edge, must split to place an edge-exact IncRef).
-            let arcs_to_target = arcs.iter().filter(|a| a.target == arc.target).count();
-            // Compute the retains for THIS arc.
-            let mut arc_retains: Vec<ValueId> = Vec::new();
-            let mut transferred_roots: HashSet<ValueId> = HashSet::new();
-            for (pos, &v) in arc.args.iter().enumerate() {
-                let Some(phi) = succ_block.args.get(pos) else {
-                    continue;
-                };
-                let phi_id = phi.id;
-                // The phi must be an OWNED obj-lane phi (droppable) for the
-                // transfer-ownership assumption to apply. A non-droppable phi
-                // (raw/param/stack) is never dropped → no retain obligation.
-                if !drop_eligibility.is_droppable(phi_id) {
-                    continue;
-                }
-                // (a) raw/inline edge value → self-balancing, cannot RC. Skip.
-                if drop_eligibility.is_raw_scalar_root(canon(v)) {
-                    continue;
-                }
-                let root = canon(v);
-                // (b) clean transfer requires the value be function-owned with a
-                //     non-parameter root. A borrowed value (param-rooted, or a
-                //     non-owning copy, or otherwise not droppable) is NOT a clean
-                //     transfer → retain.
-                //
-                // Test droppability on the ROOT, not on `v` directly: in the
-                // alias-root model `is_droppable(x)` is FALSE for any non-root alias
-                // (`canon(x) != x`), but a forwarded value is very often an alias of
-                // a fresh owned root (`s_next = Copy(s + "x")`, a bare-`Copy` SSA
-                // move the union-find folds into `s + "x"`). Checking `is_droppable(v)`
-                // would then misclassify that clean-owned forward as borrowed and
-                // RETAIN it every iteration — a per-iteration leak of the
-                // accumulator (the exact "fresh owned back-edge value must NOT be
-                // retained" hazard). `is_droppable(root)` already excludes params /
-                // stack / non-owning-copy roots, so it is the correct ownership
-                // test for the value the edge actually delivers.
-                let function_owned = drop_eligibility.is_droppable(root);
-                // Conditionally-valid iterator value result feeding a phi: its
-                // backing slot is only valid on the not-done path — never mint an
-                // independent ref obligation for it on an edge. Treat as needing a
-                // retain only if we cannot prove clean transfer; but since it is
-                // never `droppable`-owned in the transfer sense here, fall through
-                // to the borrowed branch is unsafe (it would IncRef a possibly
-                // uninitialized slot). So SKIP iter-cond values entirely (they are
-                // handled by the body straight-line rule on the valid path).
-                if drop_eligibility.is_conditionally_valid_result_root(v)
-                    || ownership_lattice.is_conditionally_valid_result_root(root)
-                {
-                    continue;
-                }
-                let clean_transfer = function_owned
-                    // (c) sole downstream owner on THIS executed arc: if the root is
-                    //     not live into the successor body, its original +1 may move
-                    //     into exactly one owned phi. Additional owned phis on the
-                    //     same arc need one retain each.
-                    && !edge_body_live_roots
-                        .get(&(bid, arc.descriptor))
-                        .is_some_and(|s| s.contains(&root))
-                    && transferred_roots.insert(root);
-                if clean_transfer {
-                    continue;
-                }
-                // BORROWED edge into an owned phi → retain `v` on THIS arc.
-                arc_retains.push(v);
-            }
+            // Retain each owned phi binding that cannot take its root's own +1.
+            let arc_retains = points.retains(bid, ArcSite::Terminator(arc.descriptor));
             if arc_retains.is_empty() {
                 continue;
             }
-            if arcs_to_target == 1 && !arc.is_self_loop_into_own_phi(bid) {
-                // Single, unambiguous arc to the target: place the IncRef before
-                // this block's terminator. (A self-loop where the block is its own
-                // successor AND its terminator forwards into its own phi is treated
-                // as ambiguous below — splitting keeps the IncRef off the in-block
-                // straight-line path.)
+            if arcs.len() == 1 && !arc.is_self_loop_into_own_phi(bid) {
+                // Only an unconditional edge may retain before its terminator.
+                // With multiple outgoing arcs, a retain here would also execute
+                // on unselected siblings, even if their destinations differ.
+                // Self-loops split too, isolating the retain from body releases.
                 let p = plans.entry(bid).or_insert_with(|| BlockPlan {
                     after_op: HashMap::new(),
                     at_entry: Vec::new(),
                     before_term: Vec::new(),
                     before_op: HashMap::new(),
-                    before_exception_op: HashMap::new(),
-                    after_exception_op: HashMap::new(),
                     before_term_incref: Vec::new(),
                 });
                 for v in arc_retains {
@@ -2395,8 +1469,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 at_entry: Vec::new(),
                 before_term: Vec::new(),
                 before_op: HashMap::new(),
-                before_exception_op: HashMap::new(),
-                after_exception_op: HashMap::new(),
                 before_term_incref: Vec::new(),
             })
             .before_term
@@ -2411,9 +1483,74 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         Some(reachable.len()),
         audit_start.elapsed().as_millis(),
     );
+    let (regions, region_blocks) = points.retirement_counts();
+    emit_drop_inner_stage_audit(
+        func,
+        "after-retirement-regions",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(regions),
+        Some(region_blocks),
+        audit_start.elapsed().as_millis(),
+    );
+
+    // An operation's normal cleanup cannot precede the observation of its
+    // failure: that would run a finalizer before the exceptional edge unwinds
+    // the remaining expression owners. Reuse async-work placement's exact
+    // observation authority, including a uniquely reached successor block.
+    // Keep each producer's operand/result release order on success; the
+    // exceptional landing derives its unwind from final normal-path liveness.
+    let mut after_observation: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
+    let exact_types = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let const_ints = crate::tir::passes::check_exception_elim::classify::const_int_values(func);
+    let predecessors = crate::tir::dominators::build_pred_map(func);
+    let mut release_sites: Vec<_> = plans
+        .iter()
+        .flat_map(|(&bid, plan)| plan.after_op.keys().map(move |&index| (bid, index)))
+        .collect();
+    release_sites.sort_unstable();
+    for (bid, index) in release_sites {
+        let op = &func.blocks[&bid].ops[index];
+        if !crate::tir::passes::check_exception_elim::classify::op_may_raise(
+            &exact_types,
+            &const_ints,
+            op,
+        ) || op.opcode == OpCode::CheckException
+        {
+            continue;
+        }
+        let Some(crate::tir::passes::exception_observation::PostOperationObservation::Check(
+            block,
+            observation,
+        )) = crate::tir::passes::exception_observation::post_operation_observation(
+            func,
+            bid,
+            index,
+            None,
+            &predecessors,
+            &exact_types,
+            &const_ints,
+        )
+        else {
+            continue;
+        };
+        let values = plans
+            .get_mut(&bid)
+            .unwrap()
+            .after_op
+            .remove(&index)
+            .unwrap();
+        after_observation
+            .entry((block, observation))
+            .or_default()
+            .extend(ordered_unique_after_op_values(&values, op, &canon));
+    }
 
     // ── Apply the plans ──────────────────────────────────────────────────────
     let mut inserted = stats.ops_added;
+    // Each check's landing retains, keyed by its index in the rebuilt block.
+    let mut observation_retains: HashMap<(BlockId, usize), Vec<usize>> =
+        HashMap::with_capacity(landing_retains.len());
     let mut plan_block_ids: Vec<BlockId> = plans.keys().copied().collect();
     plan_block_ids.sort_unstable_by_key(|bid| bid.0);
     for bid in plan_block_ids {
@@ -2431,23 +1568,20 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             inserted += 1;
         }
         for (idx, op) in block.ops.iter().enumerate() {
-            // before_op IncRefs (suspension).
+            // before_op IncRefs, with multiplicity (adoption retains).
             if let Some(vals) = plan.before_op.get(&idx) {
-                for v in sorted_unique_values(vals) {
-                    new_ops.push(make_op(OpCode::IncRef, vec![v]));
-                    inserted += 1;
-                }
-            }
-            if let Some(vals) = plan.before_exception_op.get(&idx) {
                 for v in sorted_values(vals) {
                     new_ops.push(make_op(OpCode::IncRef, vec![v]));
                     inserted += 1;
                 }
+            }
+            if let Some(positions) = landing_retains.remove(&(bid, idx)) {
+                observation_retains.insert((bid, new_ops.len()), positions);
             }
             new_ops.push(op.clone());
-            if let Some(vals) = plan.after_exception_op.get(&idx) {
-                for v in sorted_values(vals) {
-                    new_ops.push(make_op(OpCode::DecRef, vec![v]));
+            if let Some(values) = after_observation.remove(&(bid, idx)) {
+                for value in values {
+                    new_ops.push(make_op(OpCode::DecRef, vec![value]));
                     inserted += 1;
                 }
             }
@@ -2479,6 +1613,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
         block.ops = new_ops;
     }
+    assert!(
+        after_observation.is_empty(),
+        "DropInsertion lost an exception observation's success cleanup"
+    );
+    assert!(
+        landing_retains.is_empty(),
+        "DropInsertion planned landing retains in a block it did not rebuild"
+    );
     emit_drop_inner_stage_audit(
         func,
         "after-plan-apply",
@@ -2531,6 +1673,22 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         audit_start.elapsed().as_millis(),
     );
 
+    // Ordinary releases/consuming calls are now physical lifetime boundaries.
+    // Close paths that bypass them at an exact exception observation, using the
+    // shared liveness/ownership domain and explicit landing-block payloads. The
+    // same landings retain the handler arguments that §2b planned.
+    // Only no-result RC operations and argument-free edge blocks were added
+    // since this domain was computed; definitions, aliases and representations
+    // are unchanged. Reuse it instead of repeating carrier/value-range analysis.
+    inserted += super::exception_edges::insert_exception_edge_releases(
+        func,
+        &drop_eligibility,
+        &ownership_root_facts,
+        &aliases,
+        &live.raw_scalars,
+        &observation_retains,
+    );
+
     // Full-function drop authority is a semantic fact, not a mutation count.
     // A function with zero inserted DecRefs can still have borrowed parameters
     // or transparent aliases that the native legacy tracker would otherwise
@@ -2542,6 +1700,13 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     stats.facts_changed += 1;
     if debug_this {
         let mut out = format!("[DROP] {} inserted={} blocks:\n", func.name, inserted);
+        let mut bindings: Vec<_> = binding_roots.iter().copied().collect();
+        let mut held: Vec<_> = boundary_held_roots.iter().copied().collect();
+        bindings.sort_unstable();
+        held.sort_unstable();
+        out.push_str(&format!(
+            "  binding_custody={bindings:?} boundary_held={held:?}\n"
+        ));
         if !deferred.is_empty() {
             let mut d: Vec<u32> = deferred.iter().map(|v| v.0).collect();
             d.sort_unstable();
@@ -2591,12 +1756,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     _ => String::new(),
                 };
                 out.push_str(&format!(
-                    "    {:?} ops={:?} -> {:?}  [{}]{}\n",
+                    "    {:?} ops={:?} -> {:?}  [{}]{} source={:?} wire_out={:?}\n",
                     op.opcode,
                     ops,
                     res,
                     reprs.join(","),
-                    kind
+                    kind,
+                    op.source_op_index(),
+                    op.attrs.get("_simple_out"),
                 ));
             }
         }

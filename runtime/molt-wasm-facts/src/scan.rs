@@ -20,6 +20,38 @@ pub fn scan_wasm_link_facts(bytes: &[u8]) -> Result<WasmLinkFacts, String> {
 
 type SectionEmitter<'a> = dyn FnMut(u8, &[u8]) -> Result<(), String> + 'a;
 
+fn section_bytes(bytes: &[u8], range: std::ops::Range<u64>) -> Result<&[u8], &'static str> {
+    // Parser positions are format offsets, independent of the host pointer width.
+    // Narrow only when borrowing from the actual input buffer, without truncation.
+    let start =
+        usize::try_from(range.start).map_err(|_| "wasm section offset exceeds address space")?;
+    let end =
+        usize::try_from(range.end).map_err(|_| "wasm section offset exceeds address space")?;
+    bytes
+        .get(start..end)
+        .ok_or("wasm section range exceeds input")
+}
+
+#[cfg(test)]
+mod section_range_tests {
+    use super::section_bytes;
+
+    #[test]
+    fn parser_offsets_are_checked_at_the_input_boundary() {
+        let bytes = [10, 20, 30, 40];
+        assert_eq!(section_bytes(&bytes, 1..3), Ok(&bytes[1..3]));
+        assert_eq!(section_bytes(&bytes, 4..4), Ok(&bytes[4..4]));
+        for (start, end) in [
+            (0, 5),
+            (3, 1),
+            (1 << 32, (1 << 32) + 2),
+            (u64::MAX, u64::MAX),
+        ] {
+            assert!(section_bytes(&bytes, start..end).is_err(), "{start}..{end}");
+        }
+    }
+}
+
 pub(crate) fn scan_wasm_link_facts_with_sections(
     bytes: &[u8],
     mut emit_section: Option<&mut SectionEmitter<'_>>,
@@ -54,7 +86,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     let mut validator = Validator::new();
     let mut validator_allocations = FuncValidatorAllocations::default();
     let mut operator_reader_allocations = OperatorsReaderAllocations::default();
-    let mut pending_code_section: Option<(u8, std::ops::Range<usize>, u32)> = None;
+    let mut pending_code_section: Option<(u8, std::ops::Range<u64>, u32)> = None;
     let mut module_header_seen = false;
 
     for payload in Parser::new(0).parse_all(bytes) {
@@ -414,12 +446,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                         .ok_or("code body count exceeds code section declaration")?;
                     if *remaining == 0 {
                         if let Some(emitter) = emit_section.as_mut() {
-                            (**emitter)(
-                                *id,
-                                bytes
-                                    .get(range.clone())
-                                    .ok_or("wasm code section range exceeds input")?,
-                            )?;
+                            (**emitter)(*id, section_bytes(bytes, range.clone())?)?;
                         }
                         pending_code_section = None;
                     }
@@ -435,12 +462,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                         .take()
                         .ok_or("missing empty code section publication state")?;
                     if let Some(emitter) = emit_section.as_mut() {
-                        (**emitter)(
-                            id,
-                            bytes
-                                .get(range)
-                                .ok_or("wasm code section range exceeds input")?,
-                        )?;
+                        (**emitter)(id, section_bytes(bytes, range)?)?;
                     }
                 }
             }
@@ -465,10 +487,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
             && let Some((id, range)) = raw_section
             && let Some(emitter) = emit_section.as_mut()
         {
-            (**emitter)(
-                id,
-                bytes.get(range).ok_or("wasm section range exceeds input")?,
-            )?;
+            (**emitter)(id, section_bytes(bytes, range)?)?;
         }
     }
 

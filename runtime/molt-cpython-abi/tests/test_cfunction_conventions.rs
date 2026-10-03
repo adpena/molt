@@ -7,7 +7,7 @@ use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::api::{
     cfunction::CFunctionConvention, errors, mapping, numbers, object, refcount, sequences, strings,
 };
-use molt_cpython_abi::hooks::BorrowedHandleResult;
+use molt_cpython_abi::hooks::{BorrowedHandleResult, OwnedHandleResult};
 use molt_lang_obj_model::MoltObject;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -35,7 +35,23 @@ unsafe extern "C" fn dict_set(bits: u64, key: u64, value: u64) -> i32 {
     }
     0
 }
-unsafe extern "C" fn dict_get(bits: u64, key: u64) -> BorrowedHandleResult {
+unsafe extern "C" fn resolve_fixture_dict(
+    bits: u64,
+    _: u8,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    if DICTS.lock().unwrap().contains_key(&bits) {
+        molt_cpython_abi::hooks::BorrowedHandleResult::ok(bits)
+    } else {
+        molt_cpython_abi::hooks::BorrowedHandleResult::missing()
+    }
+}
+
+unsafe extern "C" fn dict_get(
+    bits: u64,
+    key: u64,
+    _: molt_cpython_abi::hooks::DictHashSource,
+    _: i64,
+) -> BorrowedHandleResult {
     match DICTS
         .lock()
         .unwrap()
@@ -48,15 +64,15 @@ unsafe extern "C" fn dict_get(bits: u64, key: u64) -> BorrowedHandleResult {
         None => BorrowedHandleResult::missing(),
     }
 }
-unsafe extern "C" fn dict_del(bits: u64, key: u64) -> i32 {
+unsafe extern "C" fn dict_pop(bits: u64, key: u64) -> OwnedHandleResult {
     let mut dicts = DICTS.lock().unwrap();
     let dict = dicts.get_mut(&bits).unwrap();
     let Some(index) = dict.iter().position(|pair| pair.0 == key) else {
-        return -1;
+        return OwnedHandleResult::missing();
     };
-    dict.remove(index);
-    0
+    OwnedHandleResult::ok(dict.remove(index).1)
 }
+
 unsafe extern "C" fn dict_len(bits: u64) -> usize {
     DICTS.lock().unwrap().get(&bits).unwrap().len()
 }
@@ -86,8 +102,9 @@ fn setup() {
     support::fake_strings::wire(&mut hooks);
     hooks.alloc_dict = alloc_dict;
     hooks.dict_set = dict_set;
+    hooks.dict_resolve = resolve_fixture_dict;
     hooks.dict_get = dict_get;
-    hooks.dict_del = dict_del;
+    hooks.dict_pop = dict_pop;
     hooks.dict_len = dict_len;
     hooks.dict_entry = dict_entry;
     hooks.classify_heap = classify;

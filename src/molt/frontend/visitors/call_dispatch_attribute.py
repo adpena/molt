@@ -51,14 +51,6 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
     def _try_emit_attribute_receiver_call(self, node: ast.Call) -> Any:
         if isinstance(node.func, ast.Attribute):
             attr_node = node.func
-            if (
-                node.func.attr == "format"
-                and isinstance(node.func.value, ast.Constant)
-                and isinstance(node.func.value.value, str)
-            ):
-                lowered = self._lower_string_format_call(node, node.func.value.value)
-                if lowered is not None:
-                    return lowered
             receiver = self.visit(attr_node.value)
             if receiver is None:
                 raise FrontendRejection(
@@ -713,15 +705,10 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     )
                     return res
             if method == "tobytes" and receiver.type_hint == "memoryview":
-                if node.args:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "tobytes expects 0 arguments"
-                    )
-                res = MoltValue(self.next_var(), type_hint="bytes")
-                self.emit(
-                    MoltOp(kind="MEMORYVIEW_TOBYTES", args=[receiver], result=res)
-                )
-                return res
+                # The descriptor owns order, keyword and arity validation. A
+                # transport hint cannot discard argument expressions or a
+                # user object's actual attribute lookup.
+                return self._emit_dynamic_call(node, load_attr_callee())
             if method == "count":
                 if receiver.type_hint in {"str", "bytes", "bytearray"}:
                     if len(node.args) not in (1, 2, 3):

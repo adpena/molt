@@ -1,20 +1,16 @@
 //! One owner for ordinary instance attributes: inline until dictionary exposure,
-//! dictionary-backed afterwards. Declared slots never participate in that move.
+//! dictionary-backed afterwards. Declared and intrinsic slots never move.
+//! Function public dictionaries use this same physical owner, staged
+//! publication, validation, and retirement protocol. Typed callable metadata
+//! lives in function_metadata and never depends on dictionary contents.
 
-use crate::builtins::attr::class_own_slot_field_offset;
+pub(crate) use super::class_layout::ClassField as InstanceField;
 use crate::*;
 use std::mem::size_of;
 
-#[derive(Clone, Copy)]
-pub(crate) struct InstanceField {
-    pub(crate) name: u64,
-    pub(crate) offset: usize,
-    pub(crate) declared_slot: bool,
-}
-
 /// The same layout traversal serves backing transitions, GC, and serialization.
-/// A copied inherited offset retains its declaring slot's storage class. Fields
-/// never alias the trailing managed dictionary word, even in malformed layouts.
+/// Concrete typed rows retain every physical owner, including hidden inherited
+/// slots. The pinned class record outlives callback-capable visits.
 pub(crate) unsafe fn for_each_instance_field(
     py: &PyToken<'_>,
     object: *mut u8,
@@ -30,22 +26,33 @@ pub(crate) unsafe fn for_each_instance_field(
             }
             // Descriptor keys and slot classes are immutable after publication.
             // No mutable Vec borrow survives a callback.
-            let count = (*fields).len().min((*desc).field_keys.len());
+            assert_eq!(
+                (*fields).len(),
+                (*desc).field_layout.len(),
+                "dataclass projection must cover every owner"
+            );
+            let count = (*fields).len();
             for index in 0..count {
                 visit(
                     InstanceField {
-                        name: (&(*desc).field_keys)[index],
+                        name: (&(*desc).field_layout)[index].name,
                         offset: index * size_of::<u64>(),
-                        declared_slot: (&(*desc).declared_slots)[index],
+                        kind: (&(*desc).field_layout)[index].kind,
                     },
                     (*fields).as_mut_ptr().add(index),
                 );
             }
             return;
         }
-        let extent = object_payload_size(object).saturating_sub(size_of::<u64>());
+        let extent =
+            super::native_instance::field_payload_size(object).saturating_sub(size_of::<u64>());
         for_each_class_field(py, class, extent, &mut |field| {
-            visit(field, object.add(field.offset).cast());
+            visit(
+                field,
+                super::native_instance::field_base(object)
+                    .add(field.offset)
+                    .cast(),
+            );
         });
     }
 }
@@ -70,7 +77,9 @@ pub(crate) unsafe fn initialize_fields(
         }
         let extent = payload_bytes.saturating_sub(size_of::<u64>());
         for_each_class_field(py, class, extent, &mut |field| {
-            *object.add(field.offset).cast::<u64>() = missing;
+            *super::native_instance::field_base_for_class(object, class)
+                .add(field.offset)
+                .cast::<u64>() = missing;
         });
         if exception_pending(py) {
             Err(())
@@ -87,68 +96,22 @@ unsafe fn for_each_class_field(
     visit: &mut dyn FnMut(InstanceField),
 ) {
     unsafe {
-        let mut fields: Vec<InstanceField> = Vec::new();
-        for class_bits in class_mro_view(py, class).iter().copied() {
-            let Some(current) = obj_from_bits(class_bits).as_ptr() else {
-                continue;
-            };
-            if object_type_id(current) != TYPE_ID_TYPE {
-                continue;
-            }
-            // Physical fields never consult the mutable class namespace. The
-            // sealed map owns exact string keys and integer offsets, so this
-            // traversal cannot run equality callbacks during GC or transfer.
-            let offsets_bits = super::layout::class_field_offsets_bits(current);
-            assert_ne!(
-                offsets_bits, 0,
-                "physical field traversal requires a sealed class layout"
+        super::class_layout::for_each_field(py, class, &mut |field| {
+            assert!(
+                field.offset % size_of::<u64>() == 0
+                    && field
+                        .offset
+                        .checked_add(size_of::<u64>())
+                        .is_some_and(|end| end <= field_extent),
+                "sealed physical field must fit the instance extent"
             );
-            let Some(offsets) = obj_from_bits(offsets_bits).as_ptr() else {
-                assert_eq!(
-                    offsets_bits,
-                    MoltObject::none().bits(),
-                    "invalid sealed field map"
-                );
-                continue;
-            };
-            assert_eq!(
-                object_type_id(offsets),
-                TYPE_ID_DICT,
-                "invalid sealed field map"
-            );
-            for pair in dict_order(offsets).chunks_exact(2) {
-                let offset = obj_from_bits(pair[1])
-                    .as_int()
-                    .and_then(|offset| usize::try_from(offset).ok())
-                    .expect("sealed physical field offset must be a nonnegative integer");
-                assert!(
-                    offset % size_of::<u64>() == 0
-                        && offset
-                            .checked_add(size_of::<u64>())
-                            .is_some_and(|end| end <= field_extent),
-                    "sealed physical field must fit the instance extent"
-                );
-                let declared_slot =
-                    class_own_slot_field_offset(py, current, pair[0]) == Some(offset);
-                if let Some(field) = fields.iter_mut().find(|field| field.offset == offset) {
-                    field.declared_slot |= declared_slot;
-                } else {
-                    fields.push(InstanceField {
-                        name: pair[0],
-                        offset,
-                        declared_slot,
-                    });
-                }
-            }
-        }
-        for field in fields {
             visit(field);
-        }
+        });
     }
 }
 
 pub(crate) unsafe fn field_at_offset(
-    py: &PyToken<'_>,
+    _py: &PyToken<'_>,
     object: *mut u8,
     offset: usize,
 ) -> Option<InstanceField> {
@@ -160,22 +123,45 @@ pub(crate) unsafe fn field_at_offset(
                 return None;
             }
             return Some(InstanceField {
-                name: *(&(*desc).field_keys).get(index)?,
+                name: (&(*desc).field_layout).get(index)?.name,
                 offset,
-                declared_slot: *(&(*desc).declared_slots).get(index)?,
+                kind: (&(*desc).field_layout).get(index)?.kind,
             });
         }
         let class = obj_from_bits(object_class_bits(object)).as_ptr()?;
         if object_type_id(class) != TYPE_ID_TYPE {
             return None;
         }
-        let mut result = None;
-        for_each_instance_field(py, object, class, &mut |field, _| {
-            if field.offset == offset {
-                result = Some(field);
-            }
-        });
-        result
+        let field = super::class_layout::field_at_offset(class, offset)?;
+        let extent =
+            super::native_instance::field_payload_size(object).saturating_sub(size_of::<u64>());
+        assert!(
+            field.offset % size_of::<u64>() == 0
+                && field
+                    .offset
+                    .checked_add(size_of::<u64>())
+                    .is_some_and(|end| end <= extent),
+            "sealed physical field must fit the instance extent"
+        );
+        Some(field)
+    }
+}
+
+/// Dataclass vectors preserve public field indices while projecting every
+/// canonical declared-slot offset onto one distinct backing element.
+pub(crate) unsafe fn dataclass_slot_storage_offset(
+    object: *mut u8,
+    slot_offset: usize,
+) -> Option<usize> {
+    unsafe {
+        let desc = dataclass_desc_ptr(object);
+        if desc.is_null() {
+            return None;
+        }
+        (&(*desc).field_layout)
+            .iter()
+            .position(|field| field.slot_offset == Some(slot_offset))
+            .and_then(|index| index.checked_mul(size_of::<u64>()))
     }
 }
 
@@ -209,11 +195,18 @@ pub(crate) unsafe fn current_dictionary(
 unsafe fn inferred_inline_owners(py: &PyToken<'_>, object: *mut u8) -> Vec<(u64, *mut u64, u64)> {
     unsafe {
         let mut fields = Vec::new();
+        // Native payloads can own dictionaries without hosting managed inline
+        // fields. Their typed prefix/items must never be interpreted as slots.
+        if !super::heap_kind_has_class_shape(object_type_id(object))
+            && object_type_id(object) != TYPE_ID_DATACLASS
+        {
+            return fields;
+        }
         if let Some(class) = obj_from_bits(object_class_bits(object)).as_ptr()
             && object_type_id(class) == TYPE_ID_TYPE
         {
             for_each_instance_field(py, object, class, &mut |field, slot| {
-                if !field.declared_slot && !is_missing_bits(py, *slot) {
+                if field.kind.is_inferred() && !is_missing_bits(py, *slot) {
                     fields.push((field.name, slot, *slot));
                 }
             });
@@ -229,27 +222,71 @@ unsafe fn publish(
     object: *mut u8,
     dictionary: u64,
     fields: Vec<(u64, *mut u64, u64)>,
-) {
+) -> bool {
     unsafe {
+        // The dictionary location and this publication row are the only
+        // representation-specific steps. Exception projection must succeed
+        // before the previous dictionary owner can be retired.
+        if object_type_id(object) == TYPE_ID_EXCEPTION {
+            debug_assert!(fields.is_empty());
+            let result = crate::builtins::exceptions::exception_replace_field_bits(
+                py,
+                MoltObject::from_ptr(object).bits(),
+                crate::builtins::exceptions::ExceptionFieldSlot::Dict,
+                if dictionary == 0 {
+                    MoltObject::none().bits()
+                } else {
+                    dictionary
+                },
+            );
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                if dictionary != 0 {
+                    dec_ref_bits(py, dictionary);
+                }
+            });
+            if let Err(message) = result {
+                if !exception_pending(py) {
+                    raise_exception::<()>(py, "SystemError", message);
+                }
+                return false;
+            }
+            return true;
+        }
+        let missing = if fields.is_empty() {
+            0
+        } else {
+            missing_bits(py)
+        };
+        if exception_pending(py) {
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                if dictionary != 0 {
+                    dec_ref_bits(py, dictionary);
+                }
+            });
+            return false;
+        }
         let previous = instance_dict_bits(object);
         // Reset can retire initialized scalar fields without publishing a dict.
         // Their empty words must still pass through missing/class-fallback lookup.
         object_mark_has_ptrs(py, object);
         instance_set_dict_bits(py, object, dictionary);
-        let missing = missing_bits(py);
         for (_, slot, _) in &fields {
             **slot = missing;
         }
-        for (_, _, value) in fields {
-            dec_ref_bits(py, value);
-        }
-        if previous != 0 {
-            dec_ref_bits(py, previous);
-        }
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            for (_, _, value) in fields {
+                dec_ref_bits(py, value);
+            }
+            if previous != 0 {
+                dec_ref_bits(py, previous);
+            }
+        });
+        true
     }
 }
 
-/// `Some` replaces __dict__; `None` deletes it and restores lazy empty backing.
+/// `Some` replaces __dict__; `None` restores lazy empty instance backing.
+/// Function dictionaries follow PyObject_GenericSetDict and cannot be deleted.
 /// Declared slots and their same-name dictionary entries are independent.
 pub(crate) unsafe fn replace_dictionary(
     py: &PyToken<'_>,
@@ -259,6 +296,10 @@ pub(crate) unsafe fn replace_dictionary(
     unsafe {
         if !allows_dictionary(py, object) {
             raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            return;
+        }
+        if replacement.is_none() && object_type_id(object) == TYPE_ID_FUNCTION {
+            raise_exception::<()>(py, "TypeError", "cannot delete __dict__");
             return;
         }
         if let Some(bits) = replacement
@@ -284,7 +325,7 @@ pub(crate) unsafe fn replace_dictionary(
         if bits != 0 {
             inc_ref_bits(py, bits);
         }
-        publish(py, object, bits, fields);
+        let _ = publish(py, object, bits, fields);
     }
 }
 
@@ -313,7 +354,7 @@ pub(crate) unsafe fn resolve(
             );
             return None;
         };
-        if field.declared_slot {
+        if !field.kind.is_inferred() {
             Some(FieldStorage::Inline(slot))
         } else {
             Some(FieldStorage::Dictionary {
@@ -324,18 +365,15 @@ pub(crate) unsafe fn resolve(
     }
 }
 
-/// Return a borrowed dictionary, moving inferred inline owners exactly once.
-/// Build before publication; clear every transferred word before any release.
-/// Allocation failure leaves the instance and all existing ownership unchanged.
-pub(crate) unsafe fn materialize(py: &PyToken<'_>, object: *mut u8) -> Option<u64> {
+/// Stage a first dictionary, including its first insertion, before publishing
+/// any owner. Public reads and private callable writers share this transition.
+unsafe fn materialize_with_pairs(
+    py: &PyToken<'_>,
+    object: *mut u8,
+    initial_pairs: &[u64],
+) -> Option<u64> {
     unsafe {
-        if !allows_dictionary(py, object) {
-            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
-            return None;
-        }
-        if let Some(existing) = current_dictionary(py, object).ok()? {
-            return Some(existing);
-        }
+        debug_assert!(current_dictionary(py, object).ok().flatten().is_none());
         let fields = inferred_inline_owners(py, object);
         if exception_pending(py) {
             return None;
@@ -343,6 +381,7 @@ pub(crate) unsafe fn materialize(py: &PyToken<'_>, object: *mut u8) -> Option<u6
         let pairs: Vec<u64> = fields
             .iter()
             .flat_map(|(name, _, value)| [*name, *value])
+            .chain(initial_pairs.iter().copied())
             .collect();
         let dict = alloc_dict_with_pairs(py, &pairs);
         if dict.is_null() {
@@ -353,11 +392,80 @@ pub(crate) unsafe fn materialize(py: &PyToken<'_>, object: *mut u8) -> Option<u6
         }
         let bits = MoltObject::from_ptr(dict).bits();
         if exception_pending(py) {
-            dec_ref_bits(py, bits);
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
             return None;
         }
-        publish(py, object, bits, fields);
-        Some(bits)
+        publish(py, object, bits, fields).then_some(bits)
+    }
+}
+
+/// Return a borrowed public dictionary, moving inferred inline owners exactly
+/// once. Allocation failure leaves the object and all existing owners unchanged.
+pub(crate) unsafe fn materialize(py: &PyToken<'_>, object: *mut u8) -> Option<u64> {
+    unsafe {
+        if exception_pending(py) {
+            return None;
+        }
+        if !allows_dictionary(py, object) {
+            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            return None;
+        }
+        if let Some(existing) = current_dictionary(py, object).ok()? {
+            return Some(existing);
+        }
+        materialize_with_pairs(py, object, &[])
+    }
+}
+
+/// Update an admitted physical dictionary owner, retaining displaced entries
+/// until the caller commits dependent metadata. Public callers must first check
+/// class capability; runtime callable metadata may use its private backing.
+pub(crate) unsafe fn set_item_deferred<'a, 'py>(
+    py: &'a PyToken<'py>,
+    object: *mut u8,
+    name: u64,
+    value: u64,
+) -> Result<Option<super::ops::DetachedDictReferences<'a, 'py>>, ()> {
+    unsafe {
+        if exception_pending(py) {
+            return Err(());
+        }
+        if super::instance_dict_bits_ptr(object).is_null() {
+            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            return Err(());
+        }
+        let Some(dictionary) = current_dictionary(py, object)? else {
+            return materialize_with_pairs(py, object, &[name, value])
+                .map(|_| None)
+                .ok_or(());
+        };
+        // Key equality may replace the object's dictionary. Pin the original
+        // mapping throughout the update and preserve errors when retiring it.
+        inc_ref_bits(py, dictionary);
+        let result = super::ops::dict_set_deferred(
+            py,
+            obj_from_bits(dictionary).as_ptr().unwrap(),
+            name,
+            value,
+        );
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, dictionary));
+        if result.is_err() && !exception_pending(py) {
+            raise_exception::<()>(py, "MemoryError", "instance dictionary insertion failed");
+        }
+        result.map(Some)
+    }
+}
+
+/// Ordinary instance and dataclass writers use the same staged first insertion
+/// as private callable metadata. Public capability remains a sealed class fact.
+pub(crate) unsafe fn set_item(py: &PyToken<'_>, object: *mut u8, name: u64, value: u64) {
+    unsafe {
+        if !allows_dictionary(py, object) {
+            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            return;
+        }
+        let result = set_item_deferred(py, object, name, value);
+        molt_cpython_abi::api::errors::with_preserved_error(|| drop(result));
     }
 }
 
@@ -369,12 +477,20 @@ pub(crate) unsafe fn allows_dictionary(py: &PyToken<'_>, object: *mut u8) -> boo
             return !desc.is_null() && (*desc).allows_dict;
         }
         !crate::object::instance_dict_bits_ptr(object).is_null()
-            && !obj_from_bits(object_class_bits(object))
-                .as_ptr()
-                .is_some_and(|class| {
-                    crate::builtins::attr::class_slots_info(py, class)
-                        .is_some_and(|info| !info.allows_dict)
-                })
+            && class_allows_dictionary(py, object)
+    }
+}
+
+/// Public dictionary capability is sealed on the real Python type. Native
+/// functions use this policy independently of their private metadata backing.
+pub(crate) unsafe fn class_allows_dictionary(py: &PyToken<'_>, object: *mut u8) -> bool {
+    unsafe {
+        obj_from_bits(crate::type_of_bits(py, MoltObject::from_ptr(object).bits()))
+            .as_ptr()
+            .is_some_and(|class| {
+                crate::builtins::attr::class_slots_info(py, class)
+                    .is_some_and(|info| info.allows_dict)
+            })
     }
 }
 
@@ -401,7 +517,7 @@ pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
             return;
         };
         let mut detached = super::backing::tracked_vec_box_from_raw(detached);
-        // Traversal deduplicates physical offsets; dataclass indices are unique.
+        // Sealed physical offsets and projected dataclass indices are unique.
         // Reserve and collect the complete transition before destructive writes.
         for_each_instance_field(py, object, class, &mut |_, slot| {
             detached.push((slot, *slot));
@@ -465,7 +581,7 @@ pub(crate) unsafe fn slot_state_names<'a, 'py>(
         let mut count = if desc.is_null() {
             0
         } else {
-            (*desc).field_keys.len()
+            (*desc).field_layout.len()
         };
         visit_declarations(&mut |_| {
             count = count.saturating_add(1);
@@ -483,11 +599,18 @@ pub(crate) unsafe fn slot_state_names<'a, 'py>(
             names.push(name);
         });
         if !desc.is_null() {
-            for (index, &name) in (*desc).field_keys.iter().enumerate() {
-                if (&(*desc).declared_slots)[index]
+            // Hidden physical rows are already represented by their captured
+            // class declarations. Only logical descriptor-only names can add
+            // observable state reads here.
+            for field in (&(*desc).field_layout)
+                .iter()
+                .take((*desc).field_names.len())
+            {
+                let name = field.name;
+                if field.kind.is_declared_slot()
                     && !names
                         .iter()
-                        .any(|&seen| crate::builtins::attr::exact_string_bits_equal(seen, name))
+                        .any(|&seen| crate::object::ops_compare::string_storage_equal(seen, name))
                 {
                     inc_ref_bits(py, name);
                     names.push(name);

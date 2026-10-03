@@ -12,7 +12,9 @@ from types import SimpleNamespace
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from molt.backend_executable_names import is_backend_executable_name  # noqa: E402
 from tools.windows_process_api import bind_process_query_api, process_query_api  # noqa: E402
 
 
@@ -25,7 +27,6 @@ WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES = frozenset(
         "clang.exe",
         "clang-cl.exe",
         "lld-link.exe",
-        "molt-backend.exe",
         "node.exe",
         "python.exe",
         "pythonw.exe",
@@ -136,7 +137,10 @@ def _windows_process_snapshot_rows_hard_timeout() -> list[
 
 
 def _windows_process_needs_full_command_line(exe_name: str) -> bool:
-    return exe_name.strip().casefold() in WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES
+    return (
+        exe_name.strip().casefold() in WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES
+        or is_backend_executable_name(exe_name)
+    )
 
 
 def _windows_process_memory_counters_type(ctypes_module, wintypes_module):

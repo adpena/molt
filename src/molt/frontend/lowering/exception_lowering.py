@@ -134,31 +134,33 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         err_val = self._emit_exception_new("TypeError", message)
         self.emit(MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none")))
 
+    def _emit_builtin_exception_match(
+        self, exc_val: MoltValue, builtin_name: str
+    ) -> MoltValue:
+        """Match a compiler-owned protocol exception by canonical class tag.
+
+        Source handler expressions must use live lookup in _emit_exception_match.
+        This operation is for language protocols such as async iteration, whose
+        termination class cannot be changed by rebinding a Python name.
+        """
+        tag = BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS[builtin_name]
+        result = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(
+            MoltOp(
+                kind="EXCEPTION_MATCH_BUILTIN",
+                args=[exc_val],
+                result=result,
+                metadata={"exception_name": builtin_name, "exception_tag": tag},
+            )
+        )
+        return result
+
     def _emit_exception_match(
         self, handler: ast.ExceptHandler, exc_val: MoltValue
     ) -> MoltValue:
         if handler.type is None:
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[1], result=res))
-            return res
-        if (
-            isinstance(handler.type, ast.Name)
-            and (kind_tag := BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS.get(handler.type.id))
-            is not None
-        ):
-            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            res = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="EXCEPTION_MATCH_BUILTIN",
-                    args=[exc_val],
-                    result=res,
-                    metadata={
-                        "exception_name": handler.type.id,
-                        "exception_tag": kind_tag,
-                    },
-                )
-            )
             return res
         # Evaluate the handler expression with the pending exception temporarily
         # cleared. Attribute-based handlers (e.g. `except mod.Error`) otherwise
@@ -182,13 +184,14 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[0], result=res))
             return res
-        # Keep the pending exception cleared while matching. `isinstance`
-        # only needs the explicit exception object and resolved class value;
-        # restoring the global "last exception" here reintroduces stale
-        # exception state into the handler CFG and is not semantically needed
-        # for the match itself.
+        # Exception handlers validate every top-level tuple item before matching
+        # canonical inheritance; isinstance permits invalid handlers and invokes
+        # user metaclass hooks that the exception protocol must not call.
+        matcher = self._emit_intrinsic_function("molt_exception_match_handler")
         res = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="ISINSTANCE", args=[exc_val, class_val], result=res))
+        self.emit(
+            MoltOp(kind="CALL_FUNC", args=[matcher, exc_val, class_val], result=res)
+        )
         return res
 
     def _active_exception_value(self, exc: ActiveException) -> MoltValue:
@@ -709,10 +712,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         else:
             handler_label = self.function_exception_label
         if handler_label is not None:
-            if (
-                self.current_func_name == "molt_main"
-                or self.current_func_name.startswith("molt_init_")
-            ):
+            if self._is_module_entry():
                 self._emit_line_marker_force()
             self.emit(
                 MoltOp(

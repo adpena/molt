@@ -53,9 +53,10 @@ pub(super) fn apply_transform(
             ty: TirType::I64,
         });
 
-        let cmp_opcode = match c.step_const {
-            Some(s) if s < 0 => OpCode::Gt,
-            _ => OpCode::Lt,
+        let cmp_opcode = if c.step_const < 0 {
+            OpCode::Gt
+        } else {
+            OpCode::Lt
         };
 
         let cond_val = c.done_val;
@@ -104,7 +105,9 @@ pub(super) fn apply_transform(
         func.value_types.insert(next_val, TirType::I64);
 
         if let Some(block) = func.blocks.get_mut(&back_bid) {
-            let nsw_safe = matches!(c.step_const, Some(1) | Some(-1));
+            // A unit step stops at the bound itself: the exact-int induction
+            // variable never passes it.
+            let nsw_safe = matches!(c.step_const, 1 | -1);
             let add_op = TirOp {
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,

@@ -208,6 +208,36 @@ pub extern "C" fn molt_importlib_source_loader_payload(
     })
 }
 
+/// Record the extension-admission role on the actual class declared by
+/// machinery. Names, facade rebinding and sys.modules removal cannot erase it.
+/// Declaring this role only adds admission checks; it never authorizes loading.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_extension_loader_type_declare(class_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = obj_from_bits(class_bits).as_ptr() else {
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                "extension loader declaration requires a type",
+            );
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_TYPE {
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                "extension loader declaration requires a type",
+            );
+        }
+        unsafe {
+            crate::object::class_storage::class_declare(
+                ptr,
+                crate::object::class_storage::ClassDeclaration::ExtensionLoader,
+            );
+        }
+        MoltObject::none().bits()
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_extension_loader_payload(
     module_name_bits: u64,
@@ -475,6 +505,7 @@ fn importlib_admit_dynamic_extension(
     importlib_source_extension_loader_contract(_py, module_name, path)
 }
 
+#[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
 fn importlib_extension_exec_owns_publication(
     _py: &PyToken<'_>,
     module_bits: u64,
@@ -502,7 +533,7 @@ fn importlib_extension_exec_owns_publication(
 pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
     _py: &PyToken<'_>,
     module_bits: u64,
-    module_name_bits: u64,
+    _module_name_bits: u64,
     module_name: &str,
     path: &str,
 ) -> Result<(), u64> {
@@ -551,10 +582,10 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
     #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
     {
         let publish_cache =
-            importlib_extension_exec_owns_publication(_py, module_bits, module_name_bits)?;
+            importlib_extension_exec_owns_publication(_py, module_bits, _module_name_bits)?;
         let result = crate::cpython_abi_hooks::execute_prepared_extension(
             module_bits,
-            module_name_bits,
+            _module_name_bits,
             publish_cache,
         );
         if exception_pending(_py) {
@@ -573,7 +604,7 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
         }
         return Ok(());
     }
-    #[allow(unreachable_code)]
+    #[cfg(not(all(feature = "cext_loader", not(target_arch = "wasm32"))))]
     Err(importlib_extension_exec_unavailable(
         _py,
         module_name,
@@ -586,7 +617,7 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
 pub extern "C" fn molt_importlib_extension_loader_create_module(
     module_name_bits: u64,
     path_bits: u64,
-    spec_bits: u64,
+    _spec_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
@@ -623,7 +654,7 @@ pub extern "C" fn molt_importlib_extension_loader_create_module(
                 molt_cpython_abi::loader::create_cpython_extension(
                     std::path::Path::new(&path),
                     &module_name,
-                    spec_bits,
+                    _spec_bits,
                 )
             } {
                 Ok(bits) => bits,
@@ -644,7 +675,7 @@ pub extern "C" fn molt_importlib_extension_loader_create_module(
                 }
             };
         }
-        #[allow(unreachable_code)]
+        #[cfg(not(all(feature = "cext_loader", not(target_arch = "wasm32"))))]
         importlib_extension_exec_unavailable(_py, &module_name, &path, "extension")
     })
 }

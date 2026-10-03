@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -9,9 +8,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, cast
 
+from molt.backend_executable_names import backend_executable_name
+from molt.cargo_execution_policy import source_build_disabled_reason
 from molt.cli.artifact_state import (
     _artifact_state_path,
     _artifact_state_path_for_build_state_root,
@@ -21,33 +23,38 @@ from molt.cli.artifact_state import (
 )
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
 from molt.cli.build_locks import _build_lock
-from molt.cli.cache_fingerprints import _backend_source_paths
+from molt.cli.cache_fingerprints import (
+    _backend_source_identity_inputs,
+    _backend_source_paths,
+)
 from molt.cli.cargo_execution import (
-    _cargo_build_env,
-    _maybe_enable_native_cpu,
-    _run_cargo_with_sccache_retry,
+    CargoPlanExecutionError,
+    _run_resolved_cargo_plan,
 )
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
-from molt.cli.compiler_metadata import _compiler_clean_source_state, _rustc_version
-from molt.file_hashing import _hash_source_tree_metadata, _hash_source_tree_paths
+from molt.cli.compiler_metadata import _compiler_clean_source_state
+from molt.cli.compiler_identity import (
+    BackendBuildAdmission,
+    CompilerIdentityError,
+    CompilerSourceGeneration,
+    backend_build_admission,
+    installed_compiler_admission,
+)
 from molt.cli.native_toolchain import _codesign_binary
 from molt.cli.runtime_fingerprints import (
+    _artifact_semantic_fingerprint,
     _read_runtime_fingerprint,
-    _runtime_artifact_fingerprint_matches,
     _refresh_runtime_fingerprint_metadata,
-    _stored_fingerprint_matches_source_metadata,
-    _stored_fingerprint_matches_clean_source_state,
+    _runtime_artifact_fingerprint_matches,
     _runtime_fingerprint_metadata_needs_refresh,
+    _stored_fingerprint_matches_clean_source_state,
+    _stored_fingerprint_matches_source_metadata,
     _write_runtime_fingerprint,
 )
 from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
-from molt.cli.setup_readiness import (
-    _llvm_backend_unavailable_message,
-)
 from molt.cli.static_archive_identity import artifact_content_identity
-from molt.llvm_toolchain import LlvmToolchainConfigError, required_llvm_backend_pin
 from molt.exact_json import canonical_json_sha256, read_exact
-from molt.compiler_distribution import installed_compiler
+from molt.file_hashing import _hash_source_tree_metadata, _hash_source_tree_paths
 from molt.python_identity_common import _valid_sha256
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -56,10 +63,9 @@ from molt.toolchain_identity import (
     verify_stable_regular_file_identity,
 )
 
-
-_BACKEND_PROBE_VALIDATION_SCHEMA_VERSION = 2
+_BACKEND_PROBE_VALIDATION_SCHEMA_VERSION = 3
 _BACKEND_PROBE_VALIDATION_MAX_BYTES = 64 * 1024
-_BACKEND_COMPILER_CACHE_FINGERPRINT_SCHEMA_VERSION = 2
+_BACKEND_COMPILER_CACHE_FINGERPRINT_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -86,10 +92,7 @@ def _backend_compiler_cache_fingerprint(
     payload = {
         "schema": _BACKEND_COMPILER_CACHE_FINGERPRINT_SCHEMA_VERSION,
         "binary": dict(binary_identity),
-        "source": {
-            key: fingerprint.get(key)
-            for key in ("hash", "rustc", "inputs_digest", "meta_digest")
-        }
+        "source": _artifact_semantic_fingerprint(fingerprint)
         if fingerprint is not None
         else None,
     }
@@ -217,12 +220,7 @@ def _backend_probe_validation_payload(
         },
         "probe_target": probe_target,
         "backend_features": sorted(backend_features),
-        "fingerprint": {
-            "hash": fingerprint_hash,
-            "rustc": fingerprint.get("rustc"),
-            "inputs_digest": fingerprint.get("inputs_digest"),
-            "meta_digest": fingerprint.get("meta_digest"),
-        },
+        "fingerprint": _artifact_semantic_fingerprint(fingerprint),
     }
 
 
@@ -267,15 +265,22 @@ def _backend_fingerprint(
     project_root: Path,
     *,
     cargo_profile: str,
-    rustflags: str,
+    build_admission: BackendBuildAdmission,
     backend_features: tuple[str, ...],
     stored_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    source_paths, lock_digest = _backend_source_identity_inputs(
+        project_root, _backend_source_paths(project_root, backend_features)
+    )
     meta = f"profile:{cargo_profile}\n"
-    meta += f"rustflags:{rustflags}\n"
+    meta += f"cargo_build:{build_admission.fingerprint}\n"
     meta += f"features:{','.join(backend_features)}\n"
+    meta += f"locked_dependencies:{lock_digest}\n"
     meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
-    rustc_info = _rustc_version()
+    rustc_info = canonical_json_sha256(next(
+        item.content_record() for item in build_admission.plan.executable_custody
+        if item.label == "tool/rustc"
+    ))
     source_state = _compiler_clean_source_state(project_root)
     if _stored_fingerprint_matches_clean_source_state(
         stored_fingerprint,
@@ -291,7 +296,6 @@ def _backend_fingerprint(
             "meta_digest": meta_digest,
             "source_state": source_state,
         }
-    source_paths = _backend_source_paths(project_root, backend_features)
     inputs_meta = _hash_source_tree_metadata(source_paths, project_root)
     inputs_digest = inputs_meta[0] if inputs_meta is not None else None
     if _stored_fingerprint_matches_source_metadata(
@@ -313,8 +317,8 @@ def _backend_fingerprint(
     hasher.update(meta.encode("utf-8"))
     try:
         _hash_source_tree_paths(source_paths, project_root, hasher)
-    except OSError:
-        return None
+    except OSError as exc:
+        raise CompilerIdentityError(f"Compiler sources could not be read: {exc}") from exc
     return {
         "hash": hasher.hexdigest(),
         "rustc": rustc_info,
@@ -337,62 +341,65 @@ def _ensure_backend_binary(
     # Installed compilers are immutable release inputs, never Cargo outputs.
     # Admit before every developer skip/hydration/rebuild path.
     try:
-        installed = installed_compiler(project_root)
+        installed = installed_compiler_admission(project_root, backend_features, cargo_profile)
         if installed is not None:
-            if backend_bin != installed.binary:
+            if backend_bin != installed.compiler.binary:
                 raise ValueError(
                     "Selected compiler differs from the installed compiler"
                 )
-            identity = installed.verify_binary(backend_features, cargo_profile)
             return _BackendBinaryEnsureResult(
                 ok=True,
-                cache_compiler_fingerprint=_backend_compiler_cache_fingerprint(
-                    {"hash": installed.source_sha}, identity
-                ),
+                cache_compiler_fingerprint=installed.fingerprint,
             )
     except (OSError, ValueError) as exc:
         return _backend_ensure_failure("installed_compiler", str(exc))
-    # MOLT_SKIP_RUNTIME_REBUILD=1 also skips the backend fingerprint check.
-    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
-        if backend_bin.exists():
-            return _backend_ensure_success(binary_path=backend_bin)
-    rustflags = os.environ.get("RUSTFLAGS", "")
+    try:
+        build_admission = backend_build_admission(
+            project_root, backend_features, cargo_profile, os.environ
+        )
+    except CompilerIdentityError as exc:
+        return _backend_ensure_failure("backend_source_identity", str(exc))
     fingerprint_path = _backend_fingerprint_path(
         project_root, backend_bin, cargo_profile
     )
     probe_validation_path = _backend_probe_validation_path(
         project_root, backend_bin, cargo_profile
     )
-    stage_start = time.perf_counter()
-    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
-    _record_backend_binary_stage_ms(
-        stage_timings_ms,
-        "backend_binary_read_fingerprint",
-        stage_start,
-    )
-    stage_start = time.perf_counter()
-    fingerprint = _backend_fingerprint(
-        project_root,
-        cargo_profile=cargo_profile,
-        rustflags=rustflags,
-        backend_features=backend_features,
-        stored_fingerprint=stored_fingerprint,
-    )
-    _record_backend_binary_stage_ms(
-        stage_timings_ms,
-        "backend_binary_compute_fingerprint",
-        stage_start,
-    )
-    # All feature lanes publish the same canonical Cargo output before copying
-    # their aliases; that shared publication, not the alias, owns the lock.
+    # Every feature lane publishes the same Cargo output before its alias.
     lock_name = f"backend.{cargo_profile}"
     with _build_lock(project_root, lock_name):
+        try:
+            build_admission.verify()
+        except CompilerIdentityError as exc:
+            return _backend_ensure_failure("backend_source_identity", str(exc))
+        stage_start = time.perf_counter()
+        stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+        _record_backend_binary_stage_ms(
+            stage_timings_ms,
+            "backend_binary_read_fingerprint",
+            stage_start,
+        )
+        stage_start = time.perf_counter()
+        try:
+            fingerprint = _backend_fingerprint(
+                project_root,
+                cargo_profile=cargo_profile,
+                build_admission=build_admission,
+                backend_features=backend_features,
+                stored_fingerprint=stored_fingerprint,
+            )
+        except (OSError, ValueError) as exc:
+            return _backend_ensure_failure("backend_source_identity", str(exc))
+        _record_backend_binary_stage_ms(
+            stage_timings_ms,
+            "backend_binary_compute_fingerprint",
+            stage_start,
+        )
         rebuilt_source_identity: StableRegularFileIdentity | None = None
         rebuilt_alias_identity: StableRegularFileIdentity | None = None
 
         def _canonical_cargo_backend_output() -> Path:
-            exe_suffix = ".exe" if os.name == "nt" else ""
-            return backend_bin.parent / f"molt-backend{exe_suffix}"
+            return backend_bin.parent / backend_executable_name(os_name=os.name)
 
         def _materialize_backend_binary_from(
             source: Path,
@@ -507,7 +514,14 @@ def _ensure_backend_binary(
                     "backend_binary_probe",
                     stage_start,
                 )
-                return _backend_ensure_failure("backend_feature_probe", str(exc))
+                detail = str(exc)
+                if isinstance(exc, subprocess.TimeoutExpired):
+                    for label, output in (("stderr", exc.stderr), ("stdout", exc.stdout)):
+                        if tail := _process_text_tail(output):
+                            detail += f"\nProbe {label}:\n{tail}"
+                return _backend_ensure_failure(
+                    "backend_feature_probe", detail, command=probe_cmd
+                )
             finally:
                 try:
                     probe_path.unlink()
@@ -600,6 +614,7 @@ def _ensure_backend_binary(
                 stage_start,
             )
         _quick_target = _backend_probe_target()
+        probe_failure: _BackendBinaryEnsureResult | None = None
         alias_failure = _refresh_feature_tagged_backend_alias(_quick_target)
         if alias_failure is not None:
             return alias_failure
@@ -651,6 +666,7 @@ def _ensure_backend_binary(
                 )
             if _probe_result.phase == "backend_probe_publication":
                 return _probe_result
+            probe_failure = _probe_result
         else:
             _record_backend_binary_stage_ms(
                 stage_timings_ms,
@@ -690,12 +706,17 @@ def _ensure_backend_binary(
                 )
             if _probe_result.phase == "backend_probe_publication":
                 return _probe_result
+            probe_failure = _probe_result
         else:
             _record_backend_binary_stage_ms(
                 stage_timings_ms,
                 "backend_binary_canonical_hydrate",
                 stage_start,
             )
+        if reason := source_build_disabled_reason("Backend compiler"):
+            if probe_failure is not None and probe_failure.detail:
+                reason += f"\nBackend feature probe failed: {probe_failure.detail}"
+            return _backend_ensure_failure("rebuild-policy", reason)
         # Raw Cargo outputs and source-only sidecars do not establish provenance.
         # Confirm the source/feature build before publishing content-bound receipts.
         if not json_output:
@@ -704,52 +725,26 @@ def _ensure_backend_binary(
                 "running Cargo to establish build provenance...",
                 file=sys.stderr,
             )
-        if "llvm" in backend_features:
-            llvm_message = _llvm_backend_unavailable_message(project_root)
-            if llvm_message is not None:
-                return _backend_ensure_failure("backend_toolchain", llvm_message)
         # Cache entries include backend/tooling/runtime identity in their keys.
         # A backend rebuild therefore invalidates by selecting new keys, not by
         # deleting shared immutable cache artifacts that concurrent sessions may
         # still be reading. Size/age retention belongs to `molt clean`.
-        cmd = [
-            "cargo",
-            "build",
-            "--package",
-            "molt-backend",
-            "--bin",
-            "molt-backend",
-            "--profile",
-            cargo_profile,
-        ]
-        if backend_features:
-            cmd.append("--no-default-features")
-            cmd.extend(["--features", ",".join(backend_features)])
-        build_env = _cargo_build_env()
-        # Per-session build isolation: route cargo output to
-        # target/sessions/<id>/ under the canonical target root
-        # when MOLT_SESSION_ID is active to prevent concurrent agents from
-        # clobbering each other's backend artifacts.
-        build_env["CARGO_TARGET_DIR"] = str(_cargo_target_root(project_root))
-        # When building with the LLVM feature, ensure the pinned llvm-sys
-        # prefix env var points at the matching Homebrew install so
-        # inkwell/llvm-sys can link without extra shell setup.
-        if "llvm" in backend_features:
-            try:
-                llvm_pin = required_llvm_backend_pin(project_root)
-            except LlvmToolchainConfigError:
-                llvm_pin = None
-            if llvm_pin is not None and llvm_pin.env_var not in build_env:
-                llvm_prefix = f"/opt/homebrew/opt/llvm@{llvm_pin.major}"
-                if os.path.isdir(llvm_prefix):
-                    build_env[llvm_pin.env_var] = llvm_prefix
-        _maybe_enable_native_cpu(build_env)
+        # Live generation custody is distinct from semantic cache identity. It
+        # rejects A -> B -> A edits while Cargo could have consumed B, even when
+        # bytes and mtime are restored before the final content comparison.
+        try:
+            source_generation = CompilerSourceGeneration.capture([
+                *_backend_source_paths(project_root, backend_features),
+                project_root / "Cargo.lock",
+            ])
+        except (OSError, ValueError) as exc:
+            return _backend_ensure_failure("backend_source_identity", str(exc))
+        cmd = list(build_admission.plan.command)
         try:
             stage_start = time.perf_counter()
-            build = _run_cargo_with_sccache_retry(
-                cmd,
-                cwd=project_root,
-                env=build_env,
+            source_generation.verify()
+            build = _run_resolved_cargo_plan(
+                build_admission.plan,
                 timeout=cargo_timeout,
                 json_output=json_output,
                 label="Backend build",
@@ -758,6 +753,10 @@ def _ensure_backend_binary(
                 stage_timings_ms,
                 "backend_binary_cargo_build",
                 stage_start,
+            )
+        except (CargoPlanExecutionError, CompilerIdentityError, OSError, ValueError) as exc:
+            return _backend_ensure_failure(
+                "backend_source_identity", str(exc), command=cmd
             )
         except subprocess.TimeoutExpired:
             _record_backend_binary_stage_ms(
@@ -782,74 +781,52 @@ def _ensure_backend_binary(
                 returncode=build.returncode,
                 command=cmd,
             )
+        # Cargo success is not publication authority: discard operation caches
+        # and compare every source/lock input against the pre-build generation.
+        # The execution plan verifies exact config/tool/resource bytes separately.
+        try:
+            from molt.cli.cache_fingerprints import _fresh_compiler_identity_inputs
+
+            build_admission.verify()
+            source_generation.verify()
+            with _fresh_compiler_identity_inputs():
+                current = _backend_fingerprint(
+                    project_root,
+                    cargo_profile=cargo_profile,
+                    build_admission=build_admission,
+                    backend_features=backend_features,
+                    stored_fingerprint=None,
+                )
+            if current is None or _artifact_semantic_fingerprint(current) != _artifact_semantic_fingerprint(fingerprint):
+                raise CompilerIdentityError("Compiler sources changed during Cargo build")
+            source_generation.verify()
+        except (OSError, ValueError) as exc:
+            return _backend_ensure_failure("backend_source_identity", str(exc), command=cmd)
         # Cargo always produces target/<profile>/molt-backend regardless of
-        # features.  When the requested feature set is non-default, copy
+        # features. For every selected feature set, including native, copy
         # the freshly-built binary to the feature-tagged path so that
         # concurrent or sequential builds with different feature sets
         # (native vs wasm vs rust) do not overwrite each other.
         _materialization = _materialize_rebuilt_backend_binary()
         if not _materialization:
             return _materialization
-        # -- Post-build feature probe (defense-in-depth) -----------------
-        # Cargo's incremental cache may skip recompilation when only
-        # features change, leaving a binary built for the wrong target.
-        # Probe the binary and, on mismatch, clean + rebuild once.
+        # Admit the built compiler before publishing provenance. A failed probe
+        # is a failed build outcome: rerunning the same Cargo plan changes no
+        # input and cannot establish why that compiler was unusable.
         _probe_target = _backend_probe_target()
         _probe_result = _probe_backend_binary_support(_probe_target)
         if _probe_result.phase == "backend_probe_publication" and not _probe_result:
             return _probe_result
         if not _probe_result:
-            if not json_output:
-                print(
-                    "Backend feature mismatch detected; cleaning and rebuilding...",
-                    file=sys.stderr,
-                )
-            # Skip cargo clean: the deterministic rebuild path plus post-build
-            # feature probe is the authority, while cargo clean would hold the
-            # Cargo lock and block concurrent sessions.
-            try:
-                rebuild = _run_cargo_with_sccache_retry(
-                    cmd,
-                    cwd=project_root,
-                    env=build_env,
-                    timeout=cargo_timeout,
-                    json_output=json_output,
-                    label="Backend rebuild (feature fix)",
-                )
-            except subprocess.TimeoutExpired:
-                return _backend_ensure_failure(
-                    "backend_feature_rebuild",
-                    "Backend rebuild timed out.",
-                    command=cmd,
-                )
-            if rebuild.returncode != 0:
-                return _backend_ensure_failure(
-                    "backend_feature_rebuild",
-                    _completed_process_failure_detail(
-                        "Backend feature rebuild", rebuild
-                    ),
-                    returncode=rebuild.returncode,
-                    command=cmd,
-                )
-            _materialization = _materialize_rebuilt_backend_binary()
-            if not _materialization:
-                return _materialization
-            _reprobe_result = _probe_backend_binary_support(_probe_target)
-            if (
-                _reprobe_result.phase == "backend_probe_publication"
-                and not _reprobe_result
-            ):
-                return _reprobe_result
-            if not _reprobe_result:
-                detail = "Backend feature probe failed after rebuild."
-                if _reprobe_result.detail:
-                    detail = f"{detail}\n{_reprobe_result.detail}"
-                return _backend_ensure_failure(
-                    "backend_feature_probe",
-                    detail,
-                    command=cmd,
-                )
-        # -- End post-build feature probe --------------------------------
+            detail = "Built backend failed its feature probe."
+            if _probe_result.detail:
+                detail += f"\n{_probe_result.detail}"
+            return _backend_ensure_failure(
+                "backend_feature_probe",
+                detail,
+                returncode=_probe_result.returncode,
+                command=_probe_result.command,
+            )
         if fingerprint is not None:
             try:
                 cargo_output = _canonical_cargo_backend_output()

@@ -563,48 +563,45 @@ pub fn textwrap_indent_default_impl(text: &str, prefix: &str) -> String {
 }
 
 pub fn textwrap_dedent_impl(text: &str) -> String {
-    // CPython textwrap.dedent: remove common leading whitespace from all lines.
-    let mut margin: Option<&str> = None;
-    let lines: Vec<&str> = text.split('\n').collect();
+    String::from_utf8(textwrap_dedent_bytes(text.as_bytes())).expect("dedent preserves UTF-8")
+}
+
+/// Dedent only examines ASCII indentation; every other byte, including Python
+/// lone-surrogate WTF-8, passes through the same implementation unchanged.
+pub fn textwrap_dedent_bytes(text: &[u8]) -> Vec<u8> {
+    let mut margin: Option<&[u8]> = None;
+    let lines: Vec<&[u8]> = text.split(|byte| *byte == b'\n').collect();
     for &line in &lines {
-        let stripped = line.trim_start_matches([' ', '\t']);
-        if stripped.is_empty() {
+        let indent_len = line
+            .iter()
+            .take_while(|byte| **byte == b' ' || **byte == b'\t')
+            .count();
+        if indent_len == line.len() {
             continue;
         }
-        let indent = &line[..line.len() - stripped.len()];
-        if let Some(m) = margin {
-            // Find common prefix between margin and indent
-            let common_len = m
-                .chars()
-                .zip(indent.chars())
-                .take_while(|(a, b)| a == b)
-                .count();
-            // Need byte length of common prefix
-            let byte_len = m
-                .char_indices()
-                .nth(common_len)
-                .map(|(i, _)| i)
-                .unwrap_or(m.len());
-            margin = Some(&m[..byte_len]);
-        } else {
-            margin = Some(indent);
-        }
+        let indent = &line[..indent_len];
+        margin = Some(match margin {
+            Some(current) => {
+                let common = current
+                    .iter()
+                    .zip(indent)
+                    .take_while(|(left, right)| left == right)
+                    .count();
+                &current[..common]
+            }
+            None => indent,
+        });
     }
-    let margin = margin.unwrap_or("");
-    let margin_len = margin.len();
-    let mut result = String::with_capacity(text.len());
-    for (i, line) in lines.iter().enumerate() {
-        if i > 0 {
-            result.push('\n');
+    let margin = margin.unwrap_or(b"");
+    let mut result = Vec::with_capacity(text.len());
+    for (index, line) in lines.iter().enumerate() {
+        if index != 0 {
+            result.push(b'\n');
         }
-        if line.trim_start_matches([' ', '\t']).is_empty() {
-            // Whitespace-only line: strip all leading whitespace
-            // This normalization also applies when the common margin is empty.
-        } else if line.len() >= margin_len && &line[..margin_len] == margin {
-            result.push_str(&line[margin_len..]);
-        } else {
-            result.push_str(line);
+        if line.iter().all(|byte| *byte == b' ' || *byte == b'\t') {
+            continue;
         }
+        result.extend_from_slice(line.strip_prefix(margin).unwrap_or(line));
     }
     result
 }

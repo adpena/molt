@@ -30,7 +30,7 @@ The fix is a first-class **TIR-level `DropInsertion` pass** that runs post-optim
 
 ### 1.1 Fundamental Invariant
 
-Every operation that returns a new heap reference returns it with `ref_count += 1` relative to the caller's view. This is CPython's convention and molt's runtime implements it consistently: `molt_add`, `molt_mul`, string concat, `alloc_object`, `alloc_list`, `bigint_bits`, all return *owned* references. The callee never decrefs its arguments (it borrows them). This means:
+Every operation that returns a new heap reference returns it with `ref_count += 1` relative to the caller's view. This is CPython's convention and molt's runtime implements it consistently: `molt_add`, `molt_mul`, string concat, `alloc_object`, `alloc_list`, `bigint_bits`, all return *owned* references. A callee borrows its arguments unless its declared parameter custody takes them over (§1.6). This means:
 
 - **Owned**: the current SSA value-holder is responsible for exactly one dec-ref before it goes out of scope.
 - **Borrowed**: the value was not newly allocated by this operation and the holder has no dec-ref obligation unless it inc-refs first.
@@ -53,7 +53,7 @@ The following table specifies the ownership state of the **result** of each majo
 | `LoadAttr`, `Index`, `ModuleGetAttr`, `ModuleImportFrom`, `ModuleGetGlobal`, `ModuleGetName`, `ModuleCacheGet` | Owned (runtime ops inc-ref before returning) | Borrowed |
 | `StoreAttr`, `StoreIndex`, `ModuleSetAttr`, `ModuleCacheSet` | None | Borrowed (the container inc-refs the value it stores; the caller keeps its own ref) |
 | `DelAttr`, `DelIndex`, `ModuleDelGlobal`, `ModuleDelGlobalIfPresent`, `ModuleCacheDel` | None | Borrowed |
-| `Call`, `CallMethod`, `CallBuiltin` | Owned | Borrowed (callee borrows args per ABI) |
+| `Call`, `CallMethod`, `CallBuiltin` | Owned | Borrowed, except operands whose typed custody is `Transferred`: the call adopts them (§1.6) |
 | `Import`, `ImportFrom`, `ModuleImportFrom` | Owned | Borrowed |
 | `BuildList`, `BuildDict`, `BuildTuple`, `BuildSet`, `BuildSlice` | Owned | Elements are *inc-ref'd by the container*; the builder still holds its own ref and must dec-ref |
 | `GetIter`, `IterNext`, `IterNextUnboxed`, `ForIter` | Owned (new iterator or next-value allocation) | Borrowed |
@@ -66,7 +66,7 @@ The following table specifies the ownership state of the **result** of each majo
 | `ConstInt` | Raw/inline when represented without a heap; owned when materialized as an out-of-inline-range integer | N/A |
 | `ConstFloat`, `ConstBool`, `ConstNone` | Inline (no heap) | N/A |
 | `ConstStr`, `ConstBytes`, `ConstBigInt` | Owned (materialized at entry; see §1.4) | N/A |
-| `Copy` | Borrowed alias (same bits, no new ref) | Borrowed |
+| `Copy` | Borrowed alias (same bits, no new ref); an owned alias (`binding_alias`) holds a reference of its own, which its lowering retains | Borrowed |
 | `BoxVal` | Owned (allocs if needed) | Borrowed |
 | `UnboxVal` | Raw scalar (no heap obligation), or independently owned heap result | Borrowed; never implicitly consumes the operand |
 | `TypeGuard` | Borrowed alias | Borrowed |
@@ -76,15 +76,45 @@ The following table specifies the ownership state of the **result** of each majo
 | `WarnStderr` | None | Borrowed |
 | `ScfIf`, `ScfFor`, `ScfWhile`, `ScfYield` | Varies by region | Borrowed |
 
+Equal values are not equal owners. A pass that rewrites an operation into a
+`Copy` of an equal value (value numbering, load forwarding, an algebraic
+identity, tuple scalarization, generator frame promotion) keeps the owner the
+result had, through one authority, `ownership_lattice_min::Replacements`. A
+replaced result keeps an owner only where its operation's result contract gave
+it one, by the eligibility DropInsertion reads: the result was its own alias
+root, and not the result of a `Copy` whose lowering mints no reference (a
+borrowed getter, an inert marker). Such a result, when read and a heap
+reference, becomes an owned alias (`binding_alias`) of the equal value, and
+keeps the replaced producer's `bound_local` provenance. Each name then keeps
+its own reference and its own boundary: a `del`, a rebinding or a frame clear
+of one never ends the other's, and DropInsertion never merges or deduplicates
+releases. A raw carrier holds no reference, by the raw facts DropInsertion
+itself reads, and a `TypeGuard` result forwards its operand's, so their copies
+stay transparent. An operation can also hold a reference that no result
+names: an elided generator frame holds each argument and each value stored
+in a slot, so a fused parameter slot or slot store is an owned alias of its
+value. The inliner's parameter bindings and return captures build their
+owned aliases through the same authority (§1.6).
+
 ### 1.3 Generator and Async Suspension Points
 
-`StateYield`, `Yield`, and `YieldFrom` are suspension points. At a suspension, all SSA values that are live *across* the yield (used after the next resume) must be treated as escaping into the coroutine frame. The coroutine frame owns those references while suspended. Consequently:
+Each generator/coroutine poll invocation has its own SSA owners. Terminal
+DropInsertion normalizes `StateYield` and `StateTransition` into explicit state
+writes, polling, branches, wait registration, and ordinary `Return` exits. A
+yield transfers its result to the caller; a pending wait transfers the poll
+sentinel. Invocation-local references end on these exits through ordinary
+ownership analysis.
 
-- Live-across-yield values must be inc-ref'd before the yield and dec-ref'd on frame teardown (gen.close()/forced drop), not at the next use.
-- Values used only *before* the yield are still dropped at their last use before the yield.
-- Suspension and callback boundaries are shared alias-analysis RC barriers. Refcount elimination cancels only retain-before-release pairs on the same execution path; frame-local capture state never authorizes deleting a heap object's final release.
+Persistence belongs to `ClosureStore`/`ClosureLoad` and runtime frame teardown.
+Storing a value gives the frame its own reference; loading produces an
+invocation-local owner. Merely retaining an SSA value before suspension cannot
+make it available in another invocation. There is no implicit retain-before-
+yield rule or backend suspension cleanup lane. High-level `Yield`/`YieldFrom`
+must be lowered before terminal ownership and are rejected if they survive.
 
-Frame teardown (`AllocTask` frame with gen.close()) must dec-ref all live frame slots. This is handled by the existing coroutine finalizer path in `async_rt/generators.rs`; the compiler must ensure the frame *has* those refs at suspension — which the IncRef-before-yield rule above guarantees.
+Suspension and callback boundaries remain alias-analysis RC barriers. Any
+future elimination must prove the frame and invocation references separately,
+including close, throw, exceptions, and observable finalizer reentry.
 
 ### 1.4 Constant String/Bytes/BigInt Materialization
 
@@ -138,6 +168,22 @@ multiply-one with a copy: signed-zero results and signaling-NaN quieting are
 observable. Typed exact-integer identities remain owned by the shared optimizer;
 backend emission does not imply permission to relax floating-point semantics.
 
+An activation binding and an evaluated expression are different owners. The
+source binding analysis records reads by lexical slot while evaluating the
+current statement. A later store/delete to that slot marks those reads for
+capture; callback effects also require capture where PEP 667 permits live frame
+writes. These are conservative, source-ordered facts from the existing binding
+walk, not a second syntax scan. Lowering captures only actual borrowed slot
+values with `BINDING_ALIAS`; cell, namespace and heap-producing reads already own
+their results. Transparent expression joins preserve the borrowed-storage fact.
+Return evaluation captures a borrowed result before finally/with cleanup and
+frame teardown, including implicit expression returns. Assignment expressions
+likewise retain an independent result before publishing their binding, since
+publication may release a displaced value and reenter Python. DropInsertion
+then plans the independent expression owner; it
+must neither postpone the slot's explicit release nor reuse a released slot as
+the expression's reference. Stable ordinary reads remain borrowed.
+
 Sequence builders have one ownership protocol: append borrows its input,
 reserves capacity, then retains a successfully stored element. Its i32 status
 is zero on success and nonzero with a pending exception on failure. The builder
@@ -189,9 +235,204 @@ The following summarizes the C-ABI that generated code and the runtime both comm
 | `molt_store_attr_name(obj, name, val)` | Borrowed | void |
 | `molt_object_new_bound(class_bits)` | Borrowed (instance retains class) | Owned |
 | `molt_object_init_stack(storage, class_bits, payload_size)` (unsafe runtime API, not a compiler opcode) | Caller proves backing outlives every owner; borrowed class | Owned; runtime validates stable class lifetime before touching caller storage |
-| Compiled function call `f(a, b, ...)` | Borrowed (callee borrows all args) | Owned |
+| Compiled function call `f(a, b, ...)` | Per parameter custody (§1.6): borrowed `+0`, or transferred `+1` that the call adopts | Owned |
 | `molt_iter_next(iter)` | Borrowed | Owned |
 | Generator `_poll(frame, send_val)` | Borrowed | Owned |
+
+### 1.6 Parameter and Operand Custody
+
+A callable declares, per parameter, who holds the argument's reference
+(`ParameterCustody`, projected into TIR as the `parameter_custody` function
+attr). The frontend declares it; no pass infers it from names, type hints or a
+callee lookup.
+
+- A `Borrowed` parameter arrives `+0`: the caller keeps its reference and the
+  callee never releases it. Closure and activation-transport parameters stay
+  borrowed.
+- A `Transferred` parameter arrives `+1`, owned by the activation. It is a
+  Python frame binding, never released at its last SSA read. A framed body
+  stores it into its frame home at entry: the store consumes it, and the home
+  releases it at the next store, a `del` or the frame's exit (see Frame homes
+  below). An exceptional exit before that store releases it there. Otherwise
+  it is released at its `DelBoundary` (exit, rebind, `del`), by lexical custody
+  before each `Return` that does not return it, and by landings on exceptional
+  exits.
+- A return evaluates its expression before frame teardown starts, as CPython's
+  `LOAD_FAST` precedes its frame clear: a teardown release can run a finalizer
+  that observes the frame or rebinds the returned binding. Where such a release
+  can precede the return, the frontend returns an owned capture
+  (`binding_alias`) taken before it, and the exit releases every binding.
+  Otherwise the returned binding moves its own `+1`. Reading a binding after
+  its own release is malformed IR, which no pass repairs.
+- An inlined call keeps this contract (`inliner/activation.rs`). A parameter
+  the activation owns binds to an owned `binding_alias` of its argument: every
+  `Transferred` parameter, and a `Borrowed` one whose argument the caller
+  could otherwise release inside the body. Each exit runs the frame clear that
+  DropInsertion plans for the callee's own `Return`, then releases the borrowed
+  bindings, as the caller releases a borrowed argument after the call. A
+  return that names a frame binding returns an owned capture taken first. A
+  raw argument binds directly, and so does a `Borrowed` parameter's argument
+  that outlives the call anyway: a caller parameter or a value the caller reads
+  later. A callee that releases a `Borrowed` parameter other than by `del` is
+  not inlined (`InlineWhyNot::UnownedParameterRelease`).
+
+Every source-level Python call instruction adopts its arguments, as CPython's
+CALL moves its stack references into the callee whatever the callee is. That
+covers direct, guarded, dynamic and method calls (the `argument_custody` op
+attr). Expanded calls convey their arguments through the CallArgs builder that
+`call_bind` adopts. The callable follows the call form:
+- An ordinary call (CALL) adopts its callable. The invocation releases an
+  adopted bound method before its callee runs, so a temporary receiver lives
+  only in the callee's `self`, while a stored bound method keeps its receiver.
+- An expanded call (CPython's `CALL_FUNCTION_EX`, the builder's `Expanded`
+  call form) borrows its callable through the invocation.
+
+A raw direct call carries exactly its target's parameter custody. Runtime helper
+calls, builtins, FFI, calls the compiler synthesizes (megafunction chunk calls)
+and runtime-originated invocations stay borrowed: they carry no custody.
+
+The instruction owns adopted references on both continuations, whether or not
+the callee runs. `op_transferred_operands` is the one taking query. It tells an
+operand that a generated consume row or `Consumed` opcode operand consumes
+from one that a source call adopts by its typed custody. A consumed operand
+whose operation produces a generated binding view is a `BindingStore`:
+the home becomes the binding's owner. Generic consumption, such as freeing a
+CallArgs builder, leaves any Python binding of that operand intact.
+For each taking position,
+DropInsertion does one of two things (`drop_insertion/transfers.rs`):
+- it moves a dead owner's own `+1` into the first position that names it. A
+  binding store must move an existing lexical owner, since its home becomes
+  the binding's owner. Adoption and generic consumption retain a lexical
+  owner's reference, since they leave the binding bound. A moved root's name
+  retires at the op, so no later release names it;
+- otherwise it retains one right before the op. So `f(x, x)` owes two, and a
+  temporary read again after its store keeps its own reference to that read.
+
+A Python binding owner that cannot move into its home is malformed producer
+IR. DropInsertion rejects stale cached reads, old explicit releases, and
+deferred named owners that would otherwise leave a second owner behind.
+Statement-held expression temporaries (including walrus and chained
+assignments), owned captures, borrowed parameters, and binding views can
+legitimately retain independent references across a store. `DelBoundary` on
+a binding view is also rejected: clearing its owning home implements `del`.
+
+An explicit physical `DecRef` proves a reference's release boundary; it does
+not establish Python binding custody. A handler MatchRef, for example, stays
+owned by its exception region when `except ... as name` stores the object in a
+home. The home receives its own reference and remains valid after the region
+releases the MatchRef. The same rule applies to explicitly released expression
+captures, including references carried through joins. `PythonLifetimeFacts`
+records positive binding provenance from transferred parameters, `bound_local`,
+legacy finalizer-sensitive local stores, and source deletion/rebinding
+boundaries. It captures source boundaries before `DelBoundary` normalizes to
+`DecRef`, then refreshes the physical release projection after normalization.
+Both binding provenance and boundary-held references follow the existing
+`PointAvailability` move graph. Release placement still consumes the complete
+boundary-held set; the store assertion consumes only actual binding provenance.
+Failure diagnostics report the producer/source index and the provenance seed
+that carried binding custody to the rejected store.
+
+"Dead" is read from the same last-read projection that places last-use
+releases. A raw carrier holds no reference: boxing it at the call boundary
+transfers any fresh reference the boxing allocates, and the caller neither
+retains nor releases it.
+
+Frame homes (frame-slot custody). A synchronous Python frame's homes own its
+bindings. A home store (`frame_home_store`, `frame_home_cell`,
+`frame_home_private_cell`) consumes its operand. Its result, like a home
+load's, is a binding view (generated `classifier_binding_view`): the object
+the home holds, with no reference of its own, valid until the next write to
+its slot. `OwnershipRootFacts` never releases a view, nor a block argument
+that every binding arc passes a view (`binding_view_roots`, joined around
+loops); an operation that takes a view receives a retained reference. Any
+other input keeps a join an owner. The frontend reads a view only where no
+write to its slot can have run since the view was produced, the store's own
+release of the binding it displaced included, and otherwise loads the home
+again. A `Return`'s publication retain sits at the terminator, after the
+frame's exit has released the homes, so a returned binding is the frontend's
+owned capture (`binding_alias`), taken before the exit. DropInsertion refuses
+a heap view that reaches a `Return` rather than emit that retain: no verifier
+after it knows views, and the SimpleIR frame-lifecycle rule checks only that
+`trace_exit` immediately precedes the return. Home accesses are impure: value
+numbering, load forwarding and copy propagation never merge, forward or fold
+one.
+
+A plain store can allocate when its result needs a boxed view of a raw
+integer. The frontend authors a `CheckException` immediately after that store,
+before a later effect or `TRY_END`; the existing preserved-Copy effect floor
+keeps the check through optimization, SSA owns its handler payload, and
+DropInsertion owns exceptional cleanup. The home keeps the published binding
+on either continuation; its borrowed view never acquires a separate drop.
+Cell and private-cell stores transfer existing cell objects without allocating.
+PEP 709 restoration likewise transfers the already-boxed owned result of
+`frame_home_take`, so its suppressed cleanup preserves the pending exception.
+
+The compiler carries custody unchanged from the frontend to every entry:
+- **Wire.** `FunctionIR.parameter_custody` and `OpIR.argument_custody` are typed
+  fields of the versioned function contract, so they reach every cache digest.
+  All-borrowed custody is the absent field. Generated `[[source_call_kind]]`
+  rows (`op_kinds.toml`) name the source call spellings, their first adoptable
+  operand and their callable operand. Admission checks a builder call's callable
+  custody against its builder's call form, requires a raw direct call to carry
+  exactly its target's parameter custody, and rejects adoption by a runtime
+  entry.
+- **Declarations and linkage.** An extern declaration keeps its definition's
+  custody, and the native linkage row freezes it for consumer objects.
+- **Megafunction splitting** runs before RC placement and refuses a body whose
+  RC is placed. The stub is the callable entry and keeps its custody; chunks
+  and the stub's calls to them borrow. The stub moves each transferred argument
+  into the split frame, and each chunk takes the bindings it reads out of the
+  frame and hands back the live ones. So one owner holds each binding at a
+  time, and a rebind or `del` inside a chunk releases it at the store.
+- **Method fusion** runs before the TIR lift on every lane. A fused source call
+  adopts its receiver (or `self`) with its arguments, as CPython's method-form
+  `LOAD_ATTR` and `CALL` do; an unmarked call stays borrowed.
+- **Targets.** The drop plane is custody's one consumer, and it runs exactly
+  where the target plan claims deterministic Python lifetimes (the generated
+  `DETERMINISTIC_LIFETIME` capability). A target without that claim, GC-managed
+  Luau or a source target, has no reference for custody to move.
+
+Callable code-slot publication is the metadata admission boundary. The shared
+frontend emitter initializes signature, free-variable, cell-variable and
+execution metadata before publishing any slot; runtime frame-plan caching may
+therefore observe only a complete callable description.
+
+Generator and coroutine terminal state has one runtime owner. Generated bodies
+return or suspend without publishing a closed flag. Generator iterator dispatch
+delegates to the same send primitive. Runtime completion publishes closure and
+retires binding storage together, before caller-visible completion; close, throw
+and repeated terminal operations consume that transition once. Construction
+still initializes an open state. This preserves local finalizer order and
+retained-frame observations across the complete callable family.
+
+The executing side owns the rest of the contract:
+- **Callee custody.** The invocation authority moves adopted arguments into a
+  `Transferred` entry, and retains any argument it supplies from its own
+  storage, such as a bound method's `__self__`. For a borrowing callee it keeps
+  adopted arguments across the call and releases them when the callee returns.
+  A compiled direct leg (a guarded call's resolved target, a `call_func` probe)
+  compares the instruction's custody with the entry's declared custody at each
+  position and releases what the instruction adopted but the entry borrows.
+- **Adopted callables.** The invocation releases an adopted bound method before
+  the callee runs, after taking references to its `__func__` and `__self__`; it
+  releases any other adopted callable once the callee returns. A failure on the
+  way still releases it exactly once.
+- **Failure before the callee runs** (frame admission, binding mismatch,
+  descriptor resolution, a pending exception): each adopted reference is
+  released exactly once.
+- **Guarded calls.** The resolved and fallback legs adopt identically.
+- **Raw-carrier parameters.** An entry may convert a `Transferred` parameter to
+  a raw carrier only where the representation plan proves its identity and frame
+  visibility unobservable.
+- **Frame records.** A runtime frame record that can outlive its activation
+  holds its own references to the bindings it captures.
+- **Frame exit order.** An exit captures its return value, publishes the frame
+  bindings while its activation is still the active frame, and deactivates it
+  (`trace_exit`), whose runtime then releases or moves the homes. A finalizer
+  those releases run sees the caller as the active frame, as in CPython. No
+  compiled code releases a home binding; the releases DropInsertion places
+  before a `Return` (compiler temporaries with explicit boundaries) sit
+  immediately before the terminator, after deactivation.
 
 ---
 
@@ -275,70 +516,197 @@ In TIR's MLIR-style block-argument encoding, "insert on the edge to bb3" means i
 
 **Implementation choice**: to keep the initial pass simpler, emit drops at the *beginning* of successor blocks for values that die on entry rather than splitting edges. This keeps the pass `OpsOnly` (no block creation). The elim pass then handles the common case where both successors drop the same value by hoisting the drop to the predecessor. The edge-split form (cleaner, avoids redundant drops on hot paths) is the Phase 3 upgrade.
 
-**Current invariant (2026-06-18)**: a branch-argument transfer is not only an
-immediate successor-entry exclusion. Once an owned root is clean-transferred
-into a successor block argument, that block argument remains the release
-authority for every reachable descendant block that can still reach a use,
-return, release boundary, or onward branch-argument forwarding of that block
-argument. The return-edge Python-lifetime cleanup path must use the same
-path-aware transfer fact before inserting cleanup split blocks; otherwise a
-pre-transfer source root can be released on a branch-to-return path and then the
-transferred phi releases the same object at the return boundary. This is pinned
-by `typing._load_collections_abc`: the list-comprehension result bound to
-`missing` transferred through a block arg, and the old source root was released
-on the `if not missing` return path before the `missing` phi release at
-`typing.py:605`, causing `invalid object header before dec_ref`. The
-implementation records `(source_root, phi, transfer_target)` and computes the
-blocks reachable after that specific transfer that can still reach a phi
-mention; a shared return target alone is not proof for unrelated non-transfer
-edges.
+**Custody over every control arc.** One record in
+`drop_insertion/availability.rs` (`PhiTransport`) owns what every canonical
+control arc does with ownership. A terminator arc binds its target's block
+arguments at its source's exit. A `CheckException` binds its operands to its
+handler's arguments when it raises, and the normal continuation keeps every
+owner. A `TryStart` registers its region: its arc keeps the handler reachable
+for dominance, liveness and verification, and custody counts it among the
+handler's entries, but no backend transfers through it and it binds nothing
+(`dominators::exception_edge_binds_handler_arguments`). Each binding of an
+owned argument is classified once:
 
-**Current invariant (2026-06-18, Python lifetime authority)**: roots released by
-Python lifetime machinery are not generic SSA edge-dying candidates. The
-drop-insertion pass treats explicit `DelBoundary`/`DeleteVar`/pre-existing
-`DecRef`, statement finalizer release, and `store_var` scope-exit cleanup as a
-single `python_release_authority_roots` set. Edge-dying must skip those roots
-because a successor-entry drop is path-insensitive, while the Python lifetime
-boundary may be path-local or may intentionally run later at return cleanup.
-This is pinned by `collections.namedtuple`: `_field_getter` is stored in a local
-and used through a `copy_var` alias inside the intrinsic/fallback field loops.
-SSA liveness made the alias appear dead at loop exit, but scope cleanup still
-owned the function object until `return cls`; dropping at loop exit and again at
-return produced `invalid object header before dec_ref` at
-`collections/__init__.py:479`.
+- **transfer**: a function-owned root that the target body does not read moves
+  its `+1` into the first argument it binds;
+- **retain**: any other owned binding (a borrowed value, a root the target body
+  still reads, or a root bound a second time) gets its own `+1` on that arc;
+- **unowned**: a raw carrier, a non-owned argument, or a conditional result
+  that the arc does not initialize.
 
-**Current invariant (2026-06-20, Python local epoch remapping)**: `store_var`
-scope cleanup is keyed by the current local epoch, not by every source root that
-was ever stored in the local. A source root that clean-transfers into block
-arguments must be remapped through that block-arg chain; an explicit cleanup
-`DecRef` of the final carrier releases the source epoch. A later same-slot
-rebind closes the prior epoch only on paths through the rebind and must remove
-the old source root from shared return/cleanup eligibility. Otherwise a local
-such as tinygrad's `or_clause` can drop the current cleanup phi and then drop
-the stale initial list source root after it has already been released on the
-rebind path. Pinned by
-`store_var_rebind_epoch_closes_old_scope_cleanup_candidate`.
+A root's name gives up its object at a transfer, at an explicit release
+(`DelBoundary`, `DeleteVar`, a pre-existing `DecRef`) and at an operation that
+adopts its own `+1` (§1.6).
+From that point it owns nothing on any path until its definition runs again,
+although that definition still reaches. Every placement asks one query,
+`PointAvailability`: defined, initialized and still owned. A join or handler
+entry therefore never releases a root that an incoming arc moved into its
+argument, nor one that an earlier arc moved on some path into it. The block
+argument releases the object at its own last use, on entry when nothing reads
+it, or at its lexical boundary. Regression pins:
 
-**Current invariant (2026-06-20, origin carrier liveness)**: a `store_var`
-source root that has clean-transferred into a later block-arg carrier remains
-released by that carrier wherever the carrier is live, including descendant
-return-cleanup blocks that do not pass the source root as a return-block
-argument. Return-boundary planning must project transferred-phi liveness through
-the Python origin map before deciding to edge-split or return-drop the stale
-source root. Otherwise a local such as the tinygrad adapter's parsed `args`
-namespace can be released once by the live carrier and again by the original
-`parse_args()` source root. Pinned by
-`store_var_origin_carrier_live_to_return_cleanup_suppresses_source_release`.
+- `typing._load_collections_abc`: a list-comprehension result bound to
+  `missing` moved into a block argument. Its source root was released on the
+  `if not missing` return path, and the `missing` argument released the same
+  object (`invalid object header before dec_ref` at `typing.py:605`).
+- The public native `args_kwargs_eval_order` module: a loop tuple moved into the
+  handler argument of every observation in a protected body, and the handler
+  entry released the loop's own name as well.
+
+Both are pinned by `ownership_memory/drop_insertion/phi_transport.rs` and
+`store_var_transfer_phi_live_in_descendant_blocks_old_root_drop`.
+
+**Lexical custody.** Python lifetime sources stay separate from transport. A
+`store_var` local with a Python boundary (`bound_local`, or
+finalizer-sensitive), a transferred parameter and an explicitly released root
+are lexical: they keep
+their objects to a Python boundary rather than their last SSA use. The
+obligation follows the object. A block argument that some arc moves a lexical
+root into holds that object now, so it is lexical too. SSA placement (last use,
+dead results, dead arguments, edge dying) never releases a lexical root. The
+lexical planner releases it:
+
+- before a Return that it reaches owned on every entry, unless the Return
+  transfers it; and
+- on a split of a terminator arc into a join that it does not reach owned the
+  same way: another entry lacks it, or the arc re-enters the root's own
+  definition without binding its argument to itself.
+
+A move, an explicit release or an adoption ends custody by itself, and a
+check's landing releases what its handler abandons. The return boundary, the
+explicit `del` and rebind boundaries and loop rebinding all read this one
+authority. Regression pins:
+
+- `collections.namedtuple`: `_field_getter` looked dead at a loop exit through
+  a `copy_var` alias, while scope cleanup still owned it until `return cls`
+  (`collections/__init__.py:479`). Lexical roots are never edge-dropped.
+- tinygrad's `or_clause`: a rebind closes the prior epoch only on its own path.
+  The cleanup releases the current carrier, and the stale initial source is not
+  released after it (`store_var_rebind_epoch_closes_old_scope_cleanup_candidate`).
+- tinygrad's parsed `args` namespace: a source that moved into a live carrier is
+  not released again at the return
+  (`store_var_origin_carrier_live_to_return_cleanup_suppresses_source_release`).
+- A local moved into a join argument on one arm only is released on the other
+  arm's own arc (`store_var_boundary_moved_on_one_arm_is_released_on_the_other`).
+
+Transport does not give a named local CPython's frame lifetime by itself. Where
+lowering emits no scope-exit cleanup (module code, closures, boxed and async
+locals), a local that reaches a shared exit without a common carrier is released
+on its arc into that exit, before the exit's statements. That frame-retention
+requirement remains a cross-layer contract (§2.6).
 
 ### 2.6 Exception Edges
 
-C2 (commit `430e09793`) made exception observation universal: every potentially-throwing op is followed by `CheckException(→ handler_label, → normal_label)`. Values that are live at the throw site must be dropped on BOTH the normal and exception continuation paths if they are dead after the check.
+C2 (commit `430e09793`) made exception observation universal: every
+potentially-throwing op is followed by `CheckException(→ handler_label)`. The
+exceptional edge leaves at the observation, not at the block terminator.
+Liveness therefore enters handler demand at that operation
+(`liveness/solver.rs`), and a value defined below a check is never live on its
+exceptional edge.
 
-The algorithm handles this naturally: `CheckException` is `is_rc_barrier` (alias_analysis.rs: yes, it is — it observes and potentially modifies the exception state). When computing the last use of V in a block, if V is used before a `CheckException` and not used after, the drop must be inserted on both successor paths (normal continuation and handler). If V is used after the `CheckException` (i.e., only on the normal path), the drop goes only on the normal path; the handler path must also drop V because V is live at the throw point.
+Placement follows one availability rule, in `drop_insertion/availability.rs`.
+An RC operation may name a root only where the root's definition reaches on
+every path, exception edges included (`ProgramPointDominance`). A
+conditionally-valid result must also lie inside the region its producer
+initializes, which `OwnershipRootFacts` records: an `IterNextUnboxed` value is
+initialized below its sole not-done entry. The root's name must also still own
+its object (§2.5). Block dominance cannot answer this.
+The full-CFG tree lets a definition below a check "dominate" its handler. The
+terminator-only tree ignores the exception entries of a mixed block, such as
+the exit that `raise; jump exit` shares with every check.
 
-Concretely: V is live at the `CheckException` op if V appears in any op at or before the `CheckException` and in at least one op after the `CheckException` on the normal path. If V is live-in to the handler block, it must be dropped there.
+After ordinary placement, a check may leave the normal continuation still
+needing an owned root that the handler path does not name, or its payload may
+need a retained handler argument (§2.5). The exceptional cleanup planner in
+`drop_insertion/exception_edges.rs` interns release suffixes by exact SSA root
+and complete continuation. The terminal continuation includes the original
+handler and its argument representations. A suffix reached by multiple
+observations becomes a shared block that releases its captured root and
+branches to its continuation. Every observation entering that suffix has
+already proved the definition and initialization of every captured root through
+`PointAvailability`; region registrations never enter it.
 
-The existing `refcount_elim` pass already handles the common case (adjacent IncRef+DecRef across barriers) and will elide pairs the inserter emits redundantly.
+Handler arguments remain explicit block arguments. Retains run before releases
+and preserve repeated-argument multiplicity. Unshared release prefixes remain
+parameterized: alpha-equivalent prefixes share code by continuation, ordered
+parameter representations, forwarded-argument count and retained positions.
+Their incoming edges supply their own values. This preserves code sharing for
+different SSA names without capturing another edge's values. Releases remain
+in reverse creation order; labels use the whole function's exception namespace.
+
+For a growing construction prefix, shared suffixes avoid emitting each
+observation's complete release list and transporting it through block arguments.
+Planning still visits each observation's release set; unrelated release
+sequences need not share. This is a representation optimization, not a change
+to Python lifetime, pending-error custody or supported behavior. Ownership-path
+checks cover every failure position, repeated borrowed handler arguments,
+point availability and pass idempotence. Public native and linked-WASM execution,
+downstream lowering, emitted bytes and memory must establish product impact;
+pass-level counts alone do not establish installed-user latency.
+
+Native labels, check fallthroughs and operation snapshots retain actual emitted
+Cranelift values for immutable definitions proven available by shared
+`SimpleDefinitionFacts` and `SimpleExecutionDominance`. Availability alone does
+not prove emission: a textually later initializer dominating a backward body
+keeps explicit transport until its value has been emitted. Mutable definitions,
+stack-backed storage, resume/frame custody and residual pre-SSA loop carriers
+also retain their explicit transport.
+
+Liveness and every native transport consumer use the existing `SimpleNameTable`
+identity. Block boundaries retain compact bitsets; per-operation boundaries
+retain sparse ID vectors, avoiding a full name-width bitset for every operation
+in a sparse function. Variable, representation and storage projections are
+resolved once after setup. Emitted values and unique definitions use that same
+identity; no second interner or context registry is introduced. A transport plan
+owns the deterministic order of its edge arguments, parameters and bindings.
+Snapshots inspect an operation's defined IDs once, preserving unrelated values
+across backend mini-CFGs without repeated string classification.
+
+Structured lowering captures consumed phi definitions at their logical source
+positions. A following load never implicitly writes a neighboring storage home:
+join storage mutations are explicit IR definitions. This deletes the inferred
+phi-home discovery/write lane without changing lexical lifetime or retain/drop
+placement. Focused liveness and native codegen checks and current-source
+public native/linked-WASM stdout replay pass against CPython 3.12 with Python
+absent from guest PATH. Native guest stderr matches the oracle; independent
+WASM guest-stderr attribution and the wider declared matrix remain open.
+
+Production SSA definition verification now covers every executable exceptional block
+through `ProgramPointDominance::compute_executable`. Each observation leaves
+at its operation position, so definitions below an entering check are rejected,
+as are captures available on only one arm. Handler-local definitions and
+explicit block-argument payloads remain valid. Region registrations keep their
+structural retention and label checks but do not manufacture execution paths.
+The verifier's private terminator-only dominance metadata is deleted; this is
+one shared dominator implementation with explicit analysis and execution views.
+When exception-pop splitting creates a continuation with replacement arguments,
+DropInsertion uses this same executable program-point authority to remap every
+operation and terminator operand where those arguments are available. Protected
+bodies entered only through an exception observation have no ordinary predecessor
+path; a terminator-only remapper would leave stale pre-split argument uses.
+Definition availability does not prove conditional initialization or ownership:
+`PointAvailability`, `OwnershipRootFacts` and transfer custody still own those
+obligations. Cleanup-run coalescing remains separate representation work;
+component transport measurements do not qualify installed-user latency or the
+full declared target/profile matrix.
+
+`ExceptionRegions` carries pending-error custody through the landing into the
+lexical handler. A `TryStart` only registers its region: it has no landing and
+retains nothing, because no path enters its handler through it.
+
+A lexical root may reach a join or exit whose other entries lack it. Its
+release then sits on the normal arcs where its custody ends, and landings cover
+the exceptional entries, because nothing downstream names the root any more.
+
+Two residuals remain.
+- Timing: such a release can precede a handler that CPython would run while the
+  frame still holds the local.
+- Order: landings release in reverse creation order. CPython unwinds expression
+  temporaries that way, but clears frame locals in ascending order after the
+  handler, while the traceback holds the frame.
+
+Named-local lifetime on exceptional paths needs frame and traceback custody;
+sorting alone does not model it.
 
 ### 2.7 Loop-Carried Ownership
 
@@ -354,11 +722,21 @@ loop_exit:
   DecRef(total_final)                 // loop exit value must be dropped
 ```
 
-The rule: for each back-edge `→ loop_header(new_val)`, if `old_val` (the phi register for the preceding iteration) is not used after this point in the body, insert `DecRef(old_val)` just before the back-edge branch. This is the "consumer releases the slot" rule — equivalent to CPython's `STORE_FAST` dec-ref on overwrite.
+A header phi is an ordinary block argument; no loop-specific release rule
+exists. Each arc into the header moves or retains a `+1` into it (§2.5). The
+phi's last use releases it, like `DecRef(total)` above. A phi that nothing reads
+is dead on entry to the header and is released there, once per entry, including
+the value the loop exits with. A phi that only the exit reads dies on the arc
+into the body and is released there by edge-dying placement. A lexical phi, a
+Python local's carrier, is released on the back edge that rebinds it, after the
+new value exists: CPython's `STORE_FAST` release on overwrite. A frontend rebind
+that emits its own `DelBoundary` releases it there instead. Pinned by
+`dead_loop_phi_is_released_on_header_entry`, `loop_carried_phi_dropped_on_backedge`
+and `store_var_boundary_transferred_through_loop_phi_releases_phi_once`.
 
-The existing partial implementation in `function_compiler.rs:3566` (`loop_reassign_old_val`) does exactly this for the SimpleIR codegen path. The TIR drop pass supersedes it structurally: the SimpleIR path's ad-hoc dec-ref must be disabled/guarded when the TIR drop pass is active (Phase 4 cleanup).
-
-At loop *exit*, any loop-carried phi that is not returned or stored must be dropped. This is the "dead on exit" case handled by the straight-line placement rule above.
+The SimpleIR codegen path's own `loop_reassign_old_val` release
+(`function_compiler.rs`) is guarded off for `drop_inserted` functions, so the
+TIR pass stays the single RC authority (§4.1).
 
 ### 2.8 Representation-Aware Filtering
 
@@ -484,17 +862,27 @@ before a conformance or release claim.
 
 ### 2.9 Suspension Point Survival
 
-For each `StateYield`, `Yield`, `YieldFrom` op:
-1. Compute the set of values live-across-this-yield (used after the matching resume point or in a post-yield block).
-2. For each live-across value V that is `Owned`:
-   - Insert `IncRef(V)` immediately before the yield op (the frame now holds its own reference to V while suspended).
-   - The *existing* reference remains live in the frame; the yielded value itself is a borrow to the caller.
-3. On resume: no additional action — the IncRef'd reference is consumed at the point of last use post-resume.
-4. On generator close (teardown): the frame's coroutine finalizer is responsible for dropping all alive frame slots. The finalizer already walks the GEN frame slots and calls `dec_ref_bits` for each (async_rt/generators.rs). The IncRef-before-yield above ensures the frame slot has a valid reference for the finalizer to release.
+The shared activation normalization is in
+`drop_insertion/activation.rs`:
 
-This is the minimal correct model. A future ownership-driven fusion could eliminate the
-IncRef/DecRef pair when the frame slot and resume-local alias are proven identical, but no
-executable reuse analysis currently claims that optimization.
+1. `StateYield(value, next)` becomes `StateSet(next)` and `Return(value)`.
+2. `StateTransition` saves the pending state, calls the canonical
+   `molt_future_poll` ABI, and tests the exact pending sentinel with `IsPending`.
+   The pending arm registers `TaskWait` and returns. The ready arm stores the
+   result in its explicit closure slot when required, saves the running state,
+   and follows the ordinary continuation.
+3. DropInsertion places releases and result transfers on that explicit CFG.
+   Resume entries can use only arguments, definitions dominated within this
+   invocation, and explicit closure loads.
+4. `StateDispatch` transports an explicit saved-state to control-label map.
+   State identifiers need not equal labels, and multiple states may select one
+   label. Native, LLVM, and WASM consume this shared transport; they do not infer
+   targets from physical operation order or hidden suspension operations.
+
+Runtime frame teardown releases stored references. An invocation release never
+stands in for releasing a frame slot, or vice versa. The existing activation
+and exception-region tests protect this distinction; public compiled guest
+execution is still required to establish target conformance.
 
 ---
 
@@ -514,31 +902,32 @@ Already implements:
 
 After drop insertion, `refcount_elim` runs again (a second invocation is added to the post-insertion pass sequence). The new insertion supplies the ops that the elim pass was previously starved of — now it can prove more elisions.
 
-**Current invariant (2026-06-20, post-drop exception transfer barriers)**:
-post-drop balanced-pair cleanup may remove `IncRef`/`DecRef` pairs only across
-ops that execute on the same control-flow path. `Raise`, `CheckException`, and
-`TryStart` are RC barriers in `AliasAnalysis::is_rc_barrier`: `Raise` does not
-fall through, and `CheckException`/`TryStart` carry implicit handler edges whose
-payload retains are consumed only on that exceptional path. In particular,
-`IncRef(v); CheckException(v); DecRef(v)` is not a balanced same-path pair: the
-handler edge skips the trailing `DecRef` and owns the retained payload until the
-handler block releases it. This is pinned by
+**Exception transfer barriers.** Post-drop balanced-pair cleanup may remove
+`IncRef`/`DecRef` pairs only across ops that execute on the same control-flow
+path. `Raise`, `CheckException`, and `TryStart` are RC barriers in
+`AliasAnalysis::is_rc_barrier`: `Raise` does not fall through, a
+`CheckException` carries an implicit handler edge, and a `TryStart` is an
+impure region registration. DropInsertion retains a check's payload in the
+check's landing block, on the exceptional path only (§2.6). A pair around the
+check would not be a balanced same-path pair, because the handler edge skips
+its trailing `DecRef`. A `TryStart` never transfers and binds no payload
+(`dominators::exception_edge_binds_handler_arguments`), so DropInsertion
+places no retain around it. `lower_to_simple` materializes handler
+block-argument stores before emitting either op. A check's stores carry its
+retained payload into native lowering; this protects
+`functools.cached_property.__get__` native lowering from releasing the
+descriptor owner while the handler path still needs `self`/`instance`. A
+`TryStart`'s stores copy bits and carry no reference: every executed entry
+into the handler is a check that stores its own payload first. Drop
+insertion and exceptional landings read only the edges that bind; post-drop
+refcount cleanup and SimpleIR lowering read every exception-transfer edge.
+Pinned by
+`exception_edge_borrowed_payload_retains_for_owned_handler_arg`,
+`try_start_registration_retains_nothing_for_its_payload`,
+`dead_handler_argument_unbound_at_region_entry_releases_what_its_check_moved`,
 `post_drop_keeps_check_exception_edge_payload_retain_release`,
-`post_drop_keeps_try_start_edge_payload_retain_release`, and
-`exception_control_transfer_ops_are_rc_barriers`. `lower_to_simple` must also
-materialize handler block-argument stores for both `CheckException` and
-`TryStart` before emitting the transfer op; otherwise the retained payload would
-survive TIR but disappear before native lowering. This protects
-`functools.cached_property.__get__` native lowering from releasing the descriptor
-owner while the handler path still needs `self`/`instance`.
-
-**Current invariant (2026-06-20, insertion coverage)**: drop insertion, post-drop
-refcount cleanup, and SimpleIR lowering all treat `CheckException` and
-`TryStart` through the same exception-transfer-edge authority. The focused proof
-chain is `exception_edge_borrowed_payload_retains_for_owned_handler_arg`,
-`try_start_edge_borrowed_payload_retains_for_owned_handler_arg`,
-`post_drop_keeps_check_exception_edge_payload_retain_release`,
-`post_drop_keeps_try_start_edge_payload_retain_release`,
+`post_drop_keeps_rc_pair_across_try_start_registration`,
+`exception_control_transfer_ops_are_rc_barriers`,
 `check_exception_materializes_handler_arg_stores`, and
 `try_start_materializes_handler_arg_stores`.
 
@@ -581,15 +970,18 @@ No new native-backend code is needed for DecRef emission — the mechanism alrea
 
 The existing loop-body reassignment dec-ref in `function_compiler.rs:3566-3628` must be **disabled** once the TIR drop pass is live for that function, to avoid double-drops. The disable condition: if the function's TIR was processed by the drop insertion pass (detectable by a function-level attr `"drop_inserted": true` set by the pass), skip the `loop_reassign_old_val` path in the SimpleIR backend. This is the Phase 4 cleanup task; it is not a structural blocker for Phase 1 correctness because the loop-reassign path only fires on a narrow subset and the TIR drop pass inserts the same DecRef, but it WILL cause double-free if both paths fire simultaneously. **Phase 1 must include this guard from the start.**
 
-**Current invariant (2026-06-18)**: SimpleIR still transports full-RC authority
-as a leading `drop_inserted` marker op because `FunctionIR` has no function-level
-attrs. Any transform that extracts executable body functions from a drop-inserted
-function must preserve that marker on the extracted body functions. Megafunction
-splitting is the concrete case: every extracted chunk inherits the original
-drop-fact markers so native preanalysis suppresses legacy value tracking while
-lowering TIR-inserted `dec_ref` ops. The synthetic split stub is deliberately
-not marked because it creates fresh split-frame carrier values after the drop
-phase and must remain under normal native cleanup.
+**Current invariant:** SimpleIR transports completed ownership as leading
+`drop_inserted` and `exception_region_drops_inserted` facts. They describe the
+original function's CFG; copying them cannot authorize owners introduced by an
+outlining transform. Megafunction splitting therefore runs before terminal
+ownership, and refuses already lowered bodies without mutating the function or
+its symbol reservations. Native and WASM bound initial bodies before TIR and
+partition optimization growth before the module phase. The shared cached
+pipeline rebuilds SSA and analysis only for new stubs/chunks, preserving the
+optimized TIR of unchanged functions. The generated transport allocations,
+element reads, wrapper calls and exceptional exits then receive their own drop
+plans. There is no post-RC splitter or separate native cleanup lane for newly
+generated wrappers.
 
 > **ACTIVATION FINDING (2026-06-05, RC activation session) — §4.1 understated the native RC overlap; it is an ACTIVATION PREREQUISITE, not a Phase-4 cleanup.** Two things were discovered when DropInsertion was wired into `build_default_pipeline`:
 >
@@ -603,7 +995,7 @@ phase and must remain under normal native cleanup.
 >
 > **(B) Three drop-pass SOUNDNESS fixes landed (correct, unit-tested, behavior-neutral while dormant):**
 > * `terminator_args_to_target` — a value passed as a branch ARG to a successor transfers ownership to that successor's block param and must NOT be edge-dropped at the successor's entry (the prior edge-dying rule double-freed it). Fixed a `while True: break` UAF. Test: `branch_arg_transfer_not_edge_dropped`.
-> * `TirFunction::has_state_machine()` — the drop pass now ALSO bails on lowered coroutine `_poll` state machines (`StateSwitch`/`StateTransition`/`StateYield`/`Chan*Yield`), not just `StateBlockStart/End`. A generator can lower to a `_poll` body carrying `StateSwitch` without the block delimiters; the re-entrant state dispatch made the dominator-based liveness place a `DecRef` in a resume block BEFORE the value's def (an LLVM-verifier `dec_ref %v` before `%v = …` failure + a native double-free). `AllocTask` remains state-machine construction and an inlining barrier, but construction is not evidence that its ordinary caller has a re-entrant CFG; those callers continue through drop insertion. Tests: `state_machine_function_gets_no_drops`, `generator_construction_does_not_disable_later_owned_temporary_drops`.
+> **Retired suspension bailout.** Lowered poll bodies now use the same terminal ownership pass as ordinary functions. Explicit activation exits and closure storage replace the former `has_state_machine()` bailout; see sections 1.3 and 2.9. `AllocTask` remains a construction/inlining fact, not an exemption from ownership.
 > * `refcount_elim::run` now honors the `drop_inserted` marker (falls back to the balance-preserving subset, like `run_post_drop`). The native/LLVM module phase RE-RUNS the whole per-function pipeline on already-`drop_inserted` functions (post-inline rebuild / module-slot promotion); on that re-run the FULL `refcount_elim` Step 5/6 was DELETING the lone ownership-release DecRefs (re-opening the leak — this is why LLVM string-concat leaked even though the drop pass had inserted the DecRef). The marker check closes it. (A `loop_carried_phi_dropped_on_backedge` test pins the real-phi loop-accumulator drop shape.)
 >
 > **(C) HISTORICAL / SUPERSEDED — this 2026-06-06 activation blocker text is preserved as audit trail, not current status.** Later same-file findings corrected the module-store hypothesis, cache-confound analysis superseded the broad stdlib-module-init claim, and the 2026-06-18 Python lifetime authority invariant above is the current drop-insertion rule. A 40-sample random sweep of `tests/differential/basic` on native (passes WIRED) showed **13/40 NEW `invalid object header before dec_ref` UAFs**: `args_kwargs_eval_order`, `bool_short_circuit_order`, `comprehension_nested_lambda_scope`, `nonlocal_and_class_closure`, `class_mro_entries_with_bases`, `method_find_custom_class`, `import_package_init`, `context_return_unwind_scope`, `dict_subclass_slots_weakref_ref`, `recursion_limit`, `call_arity_trampoline`, `async_generator_athrow_after_stop`, `asyncgen_hooks_api`. Minimal repro: a **module-global** list + a function that reads it (`log = []`; `def side(t,v): log.append(t); return v`; `side("a",False) and side("b",True)`) → UAF. Root cause class: the drop pass treats values whose single owning reference is held by a longer-lived container (the **module dict** for a global binding; likely also cell/closure storage) as ordinary dead temps and drops them, freeing an object another function still reaches via the global/cell — the drop is on a path where the object is NOT actually dead. The drop pass's ownership-transfer set is INCOMPLETE: it covers Return values and branch args, but NOT global/cell stores. **NOTE:** this is NOT the §1.2 "ModuleSetAttr/ModuleCacheSet = borrowed, caller drops at last use" case as written — the UAF means either that convention is violated by the runtime/codegen (the global store does not actually inc-ref, so the function's drop is the last ref) or the module-dict binding IS the sole owner (so the function must transfer, not drop). RESOLVING THIS REQUIRES auditing the `molt_module_cache_set` / global-load refcount contract end-to-end (drop pass ⨯ runtime), not a localized drop-pass tweak. **Until the drop pass is sound across the full `tests/differential/basic` corpus (native AND llvm) under `MOLT_ASSERT_NO_LEAK=1` with ZERO new UAFs, the two passes stay OUT of `build_default_pipeline`.** Everything in (A)/(B) is already on `main` behind the `drop_inserted` marker (inert while dormant), so activation is a 2-line pipeline append + restoring the +2 pinned-pass-name entries and the `stats.len()` 28→30 assertion.
@@ -625,7 +1017,7 @@ phase and must remain under normal native cleanup.
 >
 > **(B) FIXED — the SECOND un-gated native value-tracking RC source: per-call-site dead-argument release (`arg_cleanup`).** Finding #2(A) claimed the heap-result *registration* gate (`function_compiler.rs:24441`, `!drop_inserted`) is the SINGLE source feeding every drain site. That is true for the `tracked_*`/`block_tracked_*` lists — but the `"call"` op handler ALSO computes a SEPARATE `arg_cleanup` set DIRECTLY from the SimpleIR `last_use` map (`function_compiler.rs` ~line 15414), NOT from the tracked lists, and `local_dec_ref_obj`s every call argument that dies at its call. With the TIR drop pass active this DOUBLE-FREES every dead call arg (the TIR pass already emits `DecRef(arg)` after the call) → the exact heap-layout-dependent `invalid object header before dec_ref` / refcount-underflow abort. **Fix (this session): gate the `arg_cleanup` population on `!drop_inserted`** so for drop-inserted functions the TIR `DecRef`s are the sole authority (empty `arg_cleanup` → emit-loop no-op, root-filtered retains become identity, `already_decrefed` un-polluted). Verified WHEN ACTIVE: `recursion_limit` (-6 abort → exit 0 byte-identical), `method_find_custom_class` (intermittent -6 → deterministic pass), and the whole call-arg-double-free class fixed. The OTHER call handlers were audited: `"call_internal"`/`"call_guarded"`/`"call_func"`/`"call_method"` have NO un-gated `arg_cleanup` (only the `tracked_*` drains, already gated). This is a complete sub-piece of the Phase-5 native-RC retirement: when shared DropInsertion marks a function with `drop_inserted`, this native call-argument lane is suppressed and the TIR `DecRef`s are the release authority.
 >
-> **(C) THE REMAINING BLOCKER — a DROP-INDUCED native-codegen value-confusion in the closure-CALL path.** After (B), the residual native-corpus failures are closure / `nonlocal` shapes (e.g. `nonlocal_and_class_closure`) that fail as `TypeError: 'function' object is not subscriptable` (exit 1, a caught Python error, NOT an abort). **Tight isolation (verified):** `def f(): x=1; def inner(): return x; return inner()` (READ-ONLY capture, CALLED) FAILS with drops active but PASSES byte-identical on the dormant `main` backend → a genuine drop-INDUCED regression, not pre-existing. `def f(): x=1; def inner(): nonlocal x; x=5; return x` (closure created but NOT called) PASSES. So the trigger is **closure-create + closure-CALL + drop insertion**, independent of `nonlocal`/cell-write and of whether `x` is returned (a variant returning a constant after the call STILL fails). **Runtime ground truth** (`MOLT_DEBUG_SUBSCRIPT=1` + `MOLT_DEBUG_DECREF_ZERO=1` on the active binary): the indexed object is a LIVE function (`type_id=221`, freed only AFTER the subscript) — so this is a VALUE confusion, NOT a use-after-free: the SSA value that should hold the closure env tuple/cell holds the inner FUNCTION object at the `Index` site. **Drop-pass trace** (alias-root + producer, for `nlb__nonlocal_basic`): every inserted DecRef is individually RC-balanced — `DecRef(cell=list_new)`, `DecRef(closure_tuple=tuple_new)`, `DecRef(function=func_new_closure)` each exactly once; `func_new_closure` classifies as `FreshValue` (its result is its own alias root, correctly droppable). So the bug is NOT an RC imbalance in the drop pass; it is the inserted `DecRef`/`IncRef` ops perturbing the native backend's Cranelift variable/slot management for the closure-call's env-extraction (`call_guarded` reads `molt_function_closure_bits(func_obj)` at `function_compiler.rs:16289-16300`, prepends it as arg 0; `inner` then does `Index(closure, 0)`), such that `inner` receives the function object instead of its closure tuple. **NEXT (de-risked):** re-wire the two passes, build the read-only-capture-called repro, dump CLIF (`MOLT_DUMP_CLIF=1 MOLT_DUMP_CLIF_FUNC=...`) for `__inner` and the creating fn WITH drops vs the dormant CLIF, and find where the env-extraction operand or the function-object variable diverges — the fix is almost certainly a native `call_guarded`/closure-env slot-reuse guard that must respect the inserted RC ops (mirror the `!drop_inserted` slot-store/slot-load gates already in `function_compiler.rs`), NOT the (proven-balanced) drop pass.
+> **(C) THE REMAINING BLOCKER — a DROP-INDUCED native-codegen value-confusion in the closure-CALL path.** After (B), the residual native-corpus failures are closure / `nonlocal` shapes (e.g. `nonlocal_and_class_closure`) that fail as `TypeError: 'function' object is not subscriptable` (exit 1, a caught Python error, NOT an abort). **Tight isolation (verified):** `def f(): x=1; def inner(): return x; return inner()` (READ-ONLY capture, CALLED) FAILS with drops active but PASSES byte-identical on the dormant `main` backend → a genuine drop-INDUCED regression, not pre-existing. `def f(): x=1; def inner(): nonlocal x; x=5; return x` (closure created but NOT called) PASSES. So the trigger is **closure-create + closure-CALL + drop insertion**, independent of `nonlocal`/cell-write and of whether `x` is returned (a variant returning a constant after the call STILL fails). **Runtime ground truth** (`MOLT_DEBUG_SUBSCRIPT=1` + `MOLT_DEBUG_DECREF_ZERO=1` on the active binary): the indexed object is a LIVE function (`type_id=221`, freed only AFTER the subscript) — so this is a VALUE confusion, NOT a use-after-free: the SSA value that should hold the closure env tuple/cell holds the inner FUNCTION object at the `Index` site. **Drop-pass trace** (alias-root + producer, for `nlb__nonlocal_basic`): every inserted DecRef is individually RC-balanced — `DecRef(cell=list_new)`, `DecRef(closure_tuple=tuple_new)`, `DecRef(function=func_new_closure)` each exactly once; `func_new_closure` classifies as `OwnedValue` (its result is its own alias root, correctly droppable). So the bug is NOT an RC imbalance in the drop pass; it is the inserted `DecRef`/`IncRef` ops perturbing the native backend's Cranelift variable/slot management for the closure-call's env-extraction (`call_guarded` reads `molt_function_closure_bits(func_obj)` at `function_compiler.rs:16289-16300`, prepends it as arg 0; `inner` then does `Index(closure, 0)`), such that `inner` receives the function object instead of its closure tuple. **NEXT (de-risked):** re-wire the two passes, build the read-only-capture-called repro, dump CLIF (`MOLT_DUMP_CLIF=1 MOLT_DUMP_CLIF_FUNC=...`) for `__inner` and the creating fn WITH drops vs the dormant CLIF, and find where the env-extraction operand or the function-object variable diverges — the fix is almost certainly a native `call_guarded`/closure-env slot-reuse guard that must respect the inserted RC ops (mirror the `!drop_inserted` slot-store/slot-load gates already in `function_compiler.rs`), NOT the (proven-balanced) drop pass.
 >
 > **WORKFLOW LESSONS (cost most of this session):** (1) the per-session backend daemon caches the compiled binary in memory — after `cargo build`, refresh daemon state only through backend-daemon identity custody, `MOLT_BACKEND_DAEMON=0`, or the custody-aware sentinel; never raw-kill daemon PIDs, Codex/Claude ancestry, parent shells, or watcher processes. (2) `cargo build` from the worktree with a RELATIVE `CARGO_TARGET_DIR` writes to the WORKTREE's `target/`, but `python3 -m molt` is editable-installed from the MAIN repo and reads `/Users/adpena/Projects/molt/target/sessions/<id>/` — build with an ABSOLUTE `CARGO_TARGET_DIR=/Users/adpena/Projects/molt/target/sessions/<id>` (+ `--manifest-path <worktree>/Cargo.toml`). (3) custom diagnostic env vars do NOT reach the codegen worker unless added to the CLI `_BACKEND_REQUEST_ENV_KNOBS` allow-list (`src/molt/cli.py:174`); use a sentinel FILE (`/tmp/...`) inside the pass, or an already-allow-listed var (`MOLT_DUMP_IR`, `MOLT_DEBUG_ARTIFACT_DIR`, `MOLT_DEBUG_SUBSCRIPT`, `MOLT_DEBUG_DECREF_ZERO`). Activation stays a 2-line `build_default_pipeline` append + the +2 pinned-pass-name entries + `stats.len()` 28→30 once (C) is fixed and the full corpus is clean (native AND llvm) under `MOLT_ASSERT_NO_LEAK=1`.
 
@@ -803,7 +1195,7 @@ Files to create/modify:
   - Straight-line placement: for each block, walk ops, identify last-use positions, insert `DecRef` after last use.
   - Successor-edge placement: for each block-exit edge where a value V is live-in to the predecessor but not live-in to the target successor AND V is not passed as a branch argument to that successor — insert `DecRef(V)` at the end of the current block before the terminator. When the CondBranch has two successors with different dead-value sets, use the "before-the-terminator" insertion for values that die on ALL successors (common-prefix), and for values that die only on one successor, insert after the terminator switch by placing them at the start of the successor block (this keeps the pass OpsOnly — no edge-splitting).
   - Loop-exit placement: detect loop exit edges using `LoopForest`. For phi values that are the back-edge carrier (last live use at the back-edge branch), insert `DecRef` before the loop-exit branch.
-  - Suspension handling: for each `StateYield`/`Yield`/`YieldFrom` op, for each value that is live-across-this-yield (in `LiveIn` of the resume continuation block), insert `IncRef(V)` immediately before the yield op.
+  - Suspension handling: normalize activation exits before ownership analysis; explicit closure storage owns persistence and ordinary Return rules transfer/release invocation references (section 2.9).
   - Owned allocations: preserve root/alias/CFG final drops; reject unsupported raw and class-frame compiler operations before emission.
   - Borrow inference: if V's only remaining use after the drop candidate is as an operand to a `Call`/`CallMethod`/`CallBuiltin` where V is dead after the call, and no IncRef is needed (no heap-exposing barrier between definition and call), skip the IncRef+DecRef pair entirely.
   - Set `func.attrs.insert("drop_inserted", AttrValue::Bool(true))` for every non-bailed full-function analysis, even when no physical `DecRef`/`IncRef` is inserted; report this as `PassStats.attrs_changed` so pass-manager snapshot restore preserves metadata-only RC authority changes.
@@ -949,11 +1341,17 @@ The per-iteration flow: each `Add` creates a new owned BigInt, the previous one 
 
 **Treatment**: Liveness projects the shared carrier map and exact None provenance through `non_heap_values_for`; it has no separate by-type raw-scalar classifier. Result-slot and executable-phi regressions cover the checked fast path and annotation/subclass negatives. Performance claims still require a source-bound benchmark receipt.
 
-### R4: Generator frame missing inc-ref before yield
+### R4: Confusing frame storage and invocation ownership
 
-**Risk**: A live-across-yield value is not inc-ref'd, so the frame slot holds a stale borrowed reference. On resume the value may have been freed by the caller, causing use-after-free.
+**Risk**: An SSA retain without an explicit closure store leaks or leaves a
+resume path without a defined value; releasing a frame slot as an invocation
+temporary can instead cause a use-after-free.
 
-**Treatment**: The suspension handling logic (§2.9) explicitly inserts IncRef before each yield for live-across values. Validated by the generator/async unit test in Phase 3 and by the existing compliance tests which include generator parity cases.
+**Treatment**: Explicit closure storage owns persistence, activation exits are
+ordinary returns, and shared program-point availability admits RC operations
+only where their operands are defined and initialized. Section 2.9 describes
+the shared contract. Target execution must cover yield, pending/ready waits,
+exception restoration, and frame close.
 
 ### R5: ConstBigInt materialization leaks on multiple calls
 
@@ -1028,9 +1426,22 @@ authorities instead of their historical monolith paths or line numbers.
 - Representation lattice and proof map: `runtime/molt-ir/src/repr.rs`, `runtime/molt-passes/src/representation_facts.rs`
 - Liveness/non-heap projection: `runtime/molt-passes/src/tir/passes/liveness/raw.rs`
 - Drop insertion and RC elimination: `runtime/molt-passes/src/tir/passes/drop_insertion/`, `runtime/molt-passes/src/tir/passes/refcount_elim/`
+- A replaced result keeps its owner: `runtime/molt-passes/src/tir/passes/ownership_lattice_min/replacement.rs`
 - Effect and alias consumers: `runtime/molt-passes/src/tir/passes/effects.rs`, `runtime/molt-passes/src/tir/passes/alias_analysis/`
 - Pipeline: `runtime/molt-passes/src/tir/pass_manager.rs`
 - LLVM dispatch: `runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs`
 - SimpleIR transport: `runtime/molt-passes/src/tir/lower_to_simple/`
 - Cranelift RC emission: `runtime/molt-backend-native/src/native_backend/simple_backend/refcount.rs`
 - Future reuse/FBIP design: `docs/design/foundation/27_perceus_borrow_inference.md`
+
+
+The historical leaf union above is superseded by final-body callback facts.
+`NativeBackendModuleContext` transports source ABI and callable metadata only;
+it is frozen before workers finalize lifetimes and carries no leaf claims.
+Each native worker always computes its leaf set after lifetime finalization
+from the shared operation/terminator callback-site analysis. Native leaf
+admission additionally requires the full `drop_inserted` authority fact on the
+same body, which disables legacy native cleanup; the exception-region-only
+marker does not qualify. Cross-object
+targets retain recursion guards without a final-body proof. The closure/task
+metadata union remains; the stale pre-drop leaf authority has been deleted.

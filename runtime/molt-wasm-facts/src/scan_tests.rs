@@ -50,6 +50,30 @@ fn module_with_bodies(bodies: &[Vec<Instruction<'static>>]) -> Vec<u8> {
     module.finish()
 }
 
+#[test]
+fn section_publication_preserves_empty_and_deferred_code_bytes() {
+    for bodies in [
+        vec![],
+        vec![vec![Instruction::Nop]],
+        vec![
+            vec![Instruction::Nop],
+            vec![Instruction::I32Const(23), Instruction::Drop],
+        ],
+    ] {
+        let original = module_with_bodies(&bodies);
+        let mut published = Module::new();
+        scan::scan_wasm_link_facts_with_sections(
+            &original,
+            Some(&mut |id, data| {
+                published.section(&wasm_encoder::RawSection { id, data });
+                Ok(())
+            }),
+        )
+        .expect("valid encoded module passes section publication");
+        assert_eq!(published.finish(), original);
+    }
+}
+
 fn callable_table_attestation(slot: u32, function_index: u32, type_index: u32) -> Vec<u8> {
     let mut payload = Vec::new();
     1u32.encode(&mut payload);
