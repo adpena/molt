@@ -12,10 +12,10 @@ _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 def isfuture(obj) -> bool:
-    cls = obj.__class__
-    if cls.__name__ == "Future":
-        return True
-    return getattr(obj, "_asyncio_future_blocking", None) is not None
+    return (
+        hasattr(obj.__class__, "_asyncio_future_blocking")
+        and obj._asyncio_future_blocking is not None
+    )
 
 
 __all__ = ["format_helpers", "isfuture", "reprlib"]

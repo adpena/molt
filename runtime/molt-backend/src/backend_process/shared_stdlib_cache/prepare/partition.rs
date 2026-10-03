@@ -29,12 +29,7 @@ pub(crate) fn prepare_stdlib_partition(
         request.explicit_stdlib_module_symbols,
         module_registry_roots,
     );
-    ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(|err| {
-        eprintln!(
-            "{}: warning: failed to create stdlib parent: {err}",
-            request.log_prefix
-        );
-    });
+    ensure_output_parent_dir(stdlib_path.to_str().unwrap_or(""))?;
 
     let current_partition_manifest =
         shared_stdlib_partition_manifest(&stdlib_funcs, &module_context).map_err(|err| {

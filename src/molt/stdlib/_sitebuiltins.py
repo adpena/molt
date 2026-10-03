@@ -66,14 +66,10 @@ class Quitter:
         return None
 
 
-try:
-    # Keep `inspect.signature` parity for callable instances.
-    _Helper.__call__.__text_signature__ = "(self, *args, **kwds)"  # type: ignore[attr-defined]
-    Quitter.__call__.__text_signature__ = "(self, code=None)"  # type: ignore[attr-defined]
-except Exception:  # noqa: BLE001
-    # Non-fatal: __text_signature__ is cosmetic (inspect.signature parity).
-    # On WASM/micro builds, method objects may not support arbitrary attributes.
-    pass
+# These are managed functions during construction on every target. A failed
+# metadata write is an initialization failure, not a cosmetic omission.
+_Helper.__call__.__text_signature__ = "(self, *args, **kwds)"  # type: ignore[attr-defined]
+Quitter.__call__.__text_signature__ = "(self, code=None)"  # type: ignore[attr-defined]
 
 
 quit = Quitter("quit")

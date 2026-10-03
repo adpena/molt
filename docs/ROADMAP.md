@@ -1,14 +1,18 @@
-# Molt Roadmap: The Evolution of Python
+# Molt Roadmap Archive
 
-Molt compiles a verified subset of Python into extremely fast, single-file native binaries and WASM. This document tracks our progress from research prototype to production-grade systems runtime.
+This document preserves historical milestone and design notes. Its completion
+markers and dated measurements do not establish current support or release
+acceptance. Molt compiles a verified subset of Python to native code and WASM;
+performance claims require the [performance authority](../tools/PERF_AUTHORITY.md).
 
 **Ultimate Goal:** A Go-like developer experience for Python, producing binaries that rival C/Rust in performance and safety, suitable for high-concurrency web services, databases, and data pipelines.
 
 **Document role:** Detailed roadmap archive/reference.
-For canonical current state, use `docs/spec/STATUS.md`.
-For the active forward-looking project plan, use `/ROADMAP.md`.
-For near-term sequencing, use `docs/ROADMAP_90_DAYS.md`.
-For historical milestone framing, use `docs/spec/areas/process/0006-roadmap.md`.
+For canonical current state, use [STATUS.md](spec/STATUS.md).
+For the active forward-looking project plan, use [ROADMAP.md](../ROADMAP.md).
+The active roadmap also owns near-term sequencing; this archive adds no
+independent schedule or release checklist.
+For historical milestone framing, use the [process roadmap](spec/areas/process/0006-roadmap.md).
 
 **Version policy:** Molt targets **Python 3.12+** semantics only. When 3.12/3.13/3.14 diverge, document the chosen target in specs/tests.
 
@@ -202,7 +206,7 @@ Ten-item parity plan details live in `docs/spec/areas/compat/surfaces/stdlib/std
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths.
 - Implemented: `builtins` bootstrap no longer probes host `builtins`; descriptor constructors are intrinsic-backed (`molt_classmethod_new`, `molt_staticmethod_new`, `molt_property_new`) with fail-fast missing-intrinsic behavior.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P0, status:partial): complete concurrency substrate lowering in strict order (`socket`/`select`/`selectors` -> `threading` -> `asyncio`) with intrinsic-only compiled semantics in native + wasm.
-- Implemented: asyncio timer/watcher teardown and subprocess stdio normalization now lower through Rust intrinsics (`molt_asyncio_timer_handle_cancel`, `molt_asyncio_fd_watcher_unregister`, `molt_asyncio_subprocess_stdio_normalize`), removing Python-side callback/task teardown loops and `NotImplementedError` fallback for unsupported subprocess stdio objects.
+- Implemented: asyncio timer/watcher teardown and subprocess stdio normalization lower through Rust intrinsics (`molt_event_loop_cancel_timer`, `molt_asyncio_fd_watcher_unregister`, `molt_asyncio_subprocess_stdio_normalize`), removing Python-side callback/task teardown loops and `NotImplementedError` fallback for unsupported subprocess stdio objects.
 - Implemented: asyncio runtime capability gates for SSL transport, Unix sockets, and child-watchers now lower through Rust intrinsics (`molt_asyncio_require_ssl_transport_support`, `molt_asyncio_require_unix_socket_support`, `molt_asyncio_require_child_watcher_support`) with deterministic runtime errors instead of Python `NotImplementedError` branches.
 - Implemented: asyncio SSL orchestration is runtime-owned (`molt_asyncio_ssl_transport_orchestrate`); `ssl=False` lowers to an explicit non-SSL intrinsic payload path, client TLS execution (`open_connection`/`create_connection`, `open_unix_connection`/`create_unix_connection`, and client/server-side `start_tls`) lowers through runtime rustls stream intrinsics (`molt_asyncio_tls_client_connect_new`, `molt_asyncio_tls_client_from_fd_new`, `molt_asyncio_tls_server_payload`, `molt_asyncio_tls_server_from_fd_new`), and server TLS execution for `start_server`/`start_unix_server` uses the same runtime cert/key payload + fd-upgrade intrinsics.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): finish asyncio transport feature coverage after intrinsic capability gates (remaining native/wasm TLS edge parity and complete child-watcher behavior on supported hosts).

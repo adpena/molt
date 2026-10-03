@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from pathlib import Path
 
 import pytest
@@ -129,7 +131,7 @@ def test_final_gnu_coff_link_has_no_msvc_archive_policy_or_definition_options(
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda *args, **kwargs: [],
+        lambda *args, **kwargs: SimpleNamespace(flags=(), verify=lambda: None),
     )
     monkeypatch.setattr(
         native_link_command,

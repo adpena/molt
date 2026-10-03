@@ -1,11 +1,11 @@
 use super::facts::{contains_bottom_type, is_bottom_type};
-use super::hints::{parse_guard_type, parse_return_type_str, structural_builtin_return_type};
+use super::hints::{parse_guard_type, parse_return_type_str};
 use crate::tir::op_kinds_generated::{
     TypeRefineAttrResultTypeRule, TypeRefineOperandTypeRule, opcode_accepts_shape,
     opcode_operand_independent_result_tir_type, opcode_type_refine_attr_result_type_rule_table,
     opcode_type_refine_operand_type_rule_table,
 };
-use crate::tir::ops::{AttrDict, AttrValue, OpCode, builtin_call_view};
+use crate::tir::ops::{AttrDict, AttrValue, OpCode};
 use crate::tir::types::TirType;
 
 pub(super) fn infer_result_facts_with_attrs(
@@ -71,19 +71,17 @@ pub(super) fn attr_result_type_override<T>(
                 _ => None,
             })
         }
-        TypeRefineAttrResultTypeRule::CallBuiltinReturnType => {
-            let call = builtin_call_view(opcode, attrs, operands)?;
-            if call.wire_kind != "call_builtin" {
-                return None;
-            }
-            structural_builtin_return_type(call.named_target()?)
-        }
         TypeRefineAttrResultTypeRule::TypeGuard => parse_guard_type(attrs),
         TypeRefineAttrResultTypeRule::CopyOriginalKind => {
             let original_kind = match attrs.get("_original_kind") {
                 Some(AttrValue::Str(k)) => Some(k.as_str()),
                 _ => None,
             };
+            if let Some(ty) =
+                original_kind.and_then(crate::tir::op_semantics::container_constructor_result_type)
+            {
+                return Some(ty);
+            }
             if original_kind == Some("len") && operands.len() == 1 {
                 return Some(TirType::I64);
             }
@@ -91,9 +89,9 @@ pub(super) fn attr_result_type_override<T>(
                 || {
                     original_kind
                         .filter(|k| {
-                            crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(k)
+                            crate::tir::passes::alias_analysis::copy_kind_mints_owned_value(k)
                         })
-                        .map(fresh_value_kind_result_type)
+                        .map(owned_value_kind_result_type)
                 },
             )
         }
@@ -195,7 +193,7 @@ fn infer_single_result_type_with_attrs(
             }
             _ => None,
         },
-        // Fresh-value and raw-carrier Copy spellings are handled by the attr
+        // Owned-value and raw-carrier Copy spellings are handled by the attr
         // rule before this point. The operand rule means transparent aliasing.
         TypeRefineOperandTypeRule::Copy => operand_types.first().cloned(),
 
@@ -213,19 +211,11 @@ fn infer_single_result_type_with_attrs(
     }
 }
 
-/// Result type of a fresh-value-minting op (one that falls back to
-/// `OpCode::Copy` carrying its kind in `_original_kind` but, per
-/// [`crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref`],
-/// constructs a NEW owned object rather than aliasing operand[0]).
-///
-/// The result type is intrinsic to the op, NOT operand[0]'s type. The vast
-/// majority mint heap objects the TIR does not model further (`complex`, dicts,
-/// lists, sets, tuples, ranges, slices, iterators, generic instances) → DynBox.
-/// A handful mint a statically-known scalar/str result and are typed precisely
-/// so the scalar lanes still fire on them. `int()`/`int_from_*` are intentionally
-/// DynBox (may return a heap BigInt; an I64 type would license a trusted-unbox on
-/// a BigInt pointer — the same carrier-soundness rule `ConstBigInt` follows).
-fn fresh_value_kind_result_type(kind: &str) -> TirType {
+/// An owned result has an independent value type, never operand zero's type.
+/// Ownership does not prove allocation freshness or native-callable identity:
+/// `builtin_func` can acquire any public replacement and therefore is DynBox.
+/// Scalar conversion primitives retain their explicitly declared result types.
+fn owned_value_kind_result_type(kind: &str) -> TirType {
     match kind {
         "float_from_obj" => TirType::F64,
         "str_from_obj" | "repr_from_obj" | "ascii_from_obj" | "string_format" | "string_join" => {

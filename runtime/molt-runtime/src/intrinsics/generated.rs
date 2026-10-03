@@ -2265,12 +2265,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_asyncgen_shutdown",
-        symbol: "molt_asyncgen_shutdown",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_block_on",
         symbol: "molt_block_on",
         arity: 1,
@@ -2343,39 +2337,9 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_asyncio_wait_for_new",
-        symbol: "molt_asyncio_wait_for_new",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_wait_new",
-        symbol: "molt_asyncio_wait_new",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_gather_new",
-        symbol: "molt_asyncio_gather_new",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_asyncio_cancel_pending",
         symbol: "molt_asyncio_cancel_pending",
         arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_ready_batch_run",
-        symbol: "molt_asyncio_ready_batch_run",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_ready_queue_drain",
-        symbol: "molt_asyncio_ready_queue_drain",
-        arity: 2,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -2565,12 +2529,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_asyncio_to_thread",
-        symbol: "molt_asyncio_to_thread",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_asyncio_require_unix_socket_support",
         symbol: "molt_asyncio_require_unix_socket_support",
         arity: 0,
@@ -2649,18 +2607,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_asyncio_taskgroup_on_task_done",
-        symbol: "molt_asyncio_taskgroup_on_task_done",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_taskgroup_request_cancel",
-        symbol: "molt_asyncio_taskgroup_request_cancel",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_asyncio_tasks_add_done_callback",
         symbol: "molt_asyncio_tasks_add_done_callback",
         arity: 2,
@@ -2679,39 +2625,9 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_asyncio_future_invoke_callbacks",
-        symbol: "molt_asyncio_future_invoke_callbacks",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_asyncio_event_set_waiters",
         symbol: "molt_asyncio_event_set_waiters",
         arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_loop_enqueue_handle",
-        symbol: "molt_asyncio_loop_enqueue_handle",
-        arity: 4,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_timer_handle_new",
-        symbol: "molt_asyncio_timer_handle_new",
-        arity: 6,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_timer_schedule",
-        symbol: "molt_asyncio_timer_schedule",
-        arity: 6,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_timer_handle_cancel",
-        symbol: "molt_asyncio_timer_handle_cancel",
-        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -2742,12 +2658,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_asyncio_server_accept_loop_new",
         symbol: "molt_asyncio_server_accept_loop_new",
         arity: 6,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_ready_runner_new",
-        symbol: "molt_asyncio_ready_runner_new",
-        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -3957,12 +3867,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_signal_raise",
-        symbol: "molt_signal_raise",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_env_get",
         symbol: "molt_env_get",
         arity: 2,
@@ -4625,6 +4529,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_io_member_get",
+        symbol: "molt_io_member_get",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_bytesio_new",
         symbol: "molt_bytesio_new",
         arity: 2,
@@ -4949,6 +4859,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_get_awaitable",
+        symbol: "molt_get_awaitable",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_task_register_token_owned",
         symbol: "molt_task_register_token_owned",
         arity: 2,
@@ -5153,6 +5069,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_thread_timeout_max",
+        symbol: "molt_thread_timeout_max",
+        arity: 0,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_thread_join",
         symbol: "molt_thread_join",
         arity: 2,
@@ -5330,12 +5252,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_condition_wait",
         symbol: "molt_condition_wait",
         arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_condition_wait_for",
-        symbol: "molt_condition_wait_for",
-        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -6563,6 +6479,48 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_module_type_new",
+        symbol: "molt_module_type_new",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_module_init",
+        symbol: "molt_module_init",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_module_getattribute",
+        symbol: "molt_module_getattribute",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_module_setattr",
+        symbol: "molt_module_setattr",
+        arity: 3,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_module_delattr",
+        symbol: "molt_module_delattr",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_module_dir",
+        symbol: "molt_module_dir",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_module_repr",
+        symbol: "molt_module_repr",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_namespace_get",
         symbol: "molt_namespace_get",
         arity: 3,
@@ -6620,6 +6578,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_uuid_uuid5_bytes",
         symbol: "molt_uuid_uuid5_bytes",
         arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_extension_loader_type_declare",
+        symbol: "molt_importlib_extension_loader_type_declare",
+        arity: 1,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -7289,6 +7253,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_exception_match_handler",
+        symbol: "molt_exception_match_handler",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_exception_active",
         symbol: "molt_exception_active",
         arity: 0,
@@ -7457,24 +7427,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_traceback_source_line",
-        symbol: "molt_traceback_source_line",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_infer_col_offsets",
-        symbol: "molt_traceback_infer_col_offsets",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_format_caret_line",
-        symbol: "molt_traceback_format_caret_line",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_traceback_format_exception_only",
         symbol: "molt_traceback_format_exception_only",
         arity: 2,
@@ -7538,7 +7490,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_getframe",
         symbol: "molt_getframe",
         arity: 1,
-        defaults: &[],
+        defaults: &[IntrinsicDefaultValue::Int(0)],
     },
     IntrinsicSpec {
         name: "molt_getrecursionlimit",
@@ -7567,7 +7519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_asyncgen_hooks_set",
         symbol: "molt_asyncgen_hooks_set",
-        arity: 2,
+        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -7610,12 +7562,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_inspect_currentframe",
         symbol: "molt_inspect_currentframe",
         arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_frame_context_set",
-        symbol: "molt_frame_context_set",
-        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -7685,8 +7631,8 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_inspect_isawaitable",
-        symbol: "molt_inspect_isawaitable",
+        name: "molt_inspect_isnativeawaitable",
+        symbol: "molt_inspect_isnativeawaitable",
         arity: 1,
         defaults: &[],
     },
@@ -9113,6 +9059,24 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_require_intrinsic_runtime",
+        symbol: "molt_require_intrinsic_runtime",
+        arity: 2,
+        defaults: &[IntrinsicDefaultValue::None],
+    },
+    IntrinsicSpec {
+        name: "molt_load_intrinsic_runtime",
+        symbol: "molt_load_intrinsic_runtime",
+        arity: 2,
+        defaults: &[IntrinsicDefaultValue::None],
+    },
+    IntrinsicSpec {
+        name: "molt_runtime_active_runtime",
+        symbol: "molt_runtime_active_runtime",
+        arity: 0,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_argparse_add_argument",
         symbol: "molt_argparse_add_argument",
         arity: 10,
@@ -9817,13 +9781,13 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_concurrent_future_exception",
         symbol: "molt_concurrent_future_exception",
-        arity: 2,
+        arity: 4,
         defaults: &[],
     },
     IntrinsicSpec {
         name: "molt_concurrent_future_result",
         symbol: "molt_concurrent_future_result",
-        arity: 2,
+        arity: 4,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -12191,6 +12155,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_signal_set_interrupt",
+        symbol: "molt_signal_set_interrupt",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_signal_set_wakeup_fd",
         symbol: "molt_signal_set_wakeup_fd",
         arity: 1,
@@ -12977,150 +12947,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_counter_add",
-        symbol: "molt_counter_add",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_and",
-        symbol: "molt_counter_and",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_clear",
-        symbol: "molt_counter_clear",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_contains",
-        symbol: "molt_counter_contains",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_copy",
-        symbol: "molt_counter_copy",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_delitem",
-        symbol: "molt_counter_delitem",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_drop",
-        symbol: "molt_counter_drop",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_elements",
-        symbol: "molt_counter_elements",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_from_iterable",
-        symbol: "molt_counter_from_iterable",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_from_mapping",
-        symbol: "molt_counter_from_mapping",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_getitem",
-        symbol: "molt_counter_getitem",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_items",
-        symbol: "molt_counter_items",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_len",
-        symbol: "molt_counter_len",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_most_common",
-        symbol: "molt_counter_most_common",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_neg",
-        symbol: "molt_counter_neg",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_new",
-        symbol: "molt_counter_new",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_or",
-        symbol: "molt_counter_or",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_pos",
-        symbol: "molt_counter_pos",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_pop",
-        symbol: "molt_counter_pop",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_setitem",
-        symbol: "molt_counter_setitem",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_sub",
-        symbol: "molt_counter_sub",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_subtract",
-        symbol: "molt_counter_subtract",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_total",
-        symbol: "molt_counter_total",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_counter_update",
-        symbol: "molt_counter_update",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_defaultdict_copy",
         symbol: "molt_defaultdict_copy",
         arity: 1,
@@ -13331,6 +13157,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_event_loop_spawn",
+        symbol: "molt_event_loop_spawn",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_event_loop_new",
         symbol: "molt_event_loop_new",
         arity: 0,
@@ -13397,20 +13229,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_event_loop_next_deadline_delay",
-        symbol: "molt_event_loop_next_deadline_delay",
+        name: "molt_event_loop_wait",
+        symbol: "molt_event_loop_wait",
         arity: 1,
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_event_loop_has_pending",
-        symbol: "molt_event_loop_has_pending",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_event_loop_ready_count",
-        symbol: "molt_event_loop_ready_count",
+        name: "molt_event_loop_wake",
+        symbol: "molt_event_loop_wake",
         arity: 1,
         defaults: &[],
     },
@@ -14012,12 +13838,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_asyncio_future_cancelled",
         symbol: "molt_asyncio_future_cancelled",
         arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_future_add_done_callback_fast",
-        symbol: "molt_asyncio_future_add_done_callback_fast",
-        arity: 2,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -14681,15 +14501,9 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_sys_audit_hook_count",
-        symbol: "molt_sys_audit_hook_count",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_sys_audit_get_hooks",
-        symbol: "molt_sys_audit_get_hooks",
-        arity: 0,
+        name: "molt_sys_audit",
+        symbol: "molt_sys_audit",
+        arity: 2,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -14869,7 +14683,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_dataclasses_eq",
         symbol: "molt_dataclasses_eq",
-        arity: 2,
+        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -15245,12 +15059,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_type_of_borrowed",
-        symbol: "molt_type_of_borrowed",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_dict_getitem_borrowed",
         symbol: "molt_dict_getitem_borrowed",
         arity: 2,
@@ -15421,6 +15229,18 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_xml_register_namespace",
         symbol: "molt_xml_register_namespace",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_iterator_throw",
+        symbol: "molt_iterator_throw",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_dict_count_elements",
+        symbol: "molt_dict_count_elements",
         arity: 2,
         defaults: &[],
     },

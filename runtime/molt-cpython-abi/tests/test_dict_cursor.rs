@@ -4,7 +4,7 @@
 //! These need a fake dict model whose `dict_entry`/`dict_set`/`classify_heap`
 //! hooks would collide with another test file's first-wins `RUNTIME_HOOKS`
 //! OnceLock, so they get their own test binary (fresh OnceLock). A process-wide
-//! `TEST_LOCK` serializes the tests because they share the fake dict statics.
+//! shared support transaction serializes the fixture and builtin-root lifetime.
 //!
 //! LOAD-BEARING revert proof (reproduced manually per M05): reverting
 //! `PyDict_Next` to its pre-fix stub (`*pos = size; return 0` + RuntimeError when
@@ -18,12 +18,11 @@ mod support;
 
 use molt_cpython_abi::abi_types::{MoltTypeTag, Py_ssize_t, PyObject};
 use molt_lang_obj_model::MoltObject;
+use std::collections::{HashMap, HashSet};
 use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-// Serializes the tests below (they share the fake dict statics).
-static TEST_LOCK: Mutex<()> = Mutex::new(());
 // The fake `other` dict's entries (key_bits, val_bits), indexed by the cursor.
 static ENTRIES: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
 // Recorded (dict_bits, key_bits, val_bits) writes via dict_set.
@@ -32,16 +31,20 @@ static SETS: Mutex<Vec<(u64, u64, u64)>> = Mutex::new(Vec::new());
 static PRESENT: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 static CLEARS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 static LOOKUP_KEYS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
-static NEXT_FOREIGN_WRAPPER: AtomicU64 = AtomicU64::new(0x7e00_0000);
+static FIXTURE_DICTS: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
+static PROXIES: Mutex<Option<HashMap<u64, u64>>> = Mutex::new(None);
 static FOREIGN_C_PTR: AtomicUsize = AtomicUsize::new(0);
 static FOREIGN_WRAPPER: AtomicU64 = AtomicU64::new(0);
 
 unsafe extern "C" fn fx_dict_entry(
-    _d: u64,
+    d: u64,
     index: usize,
     out_key: *mut u64,
     out_val: *mut u64,
 ) -> std::os::raw::c_int {
+    if !is_fixture_dict(d) {
+        return unsafe { support::fake_runtime::dict_entry(d, index, out_key, out_val) };
+    }
     let e = ENTRIES.lock().unwrap();
     match e.get(index) {
         Some(&(k, v)) => {
@@ -58,14 +61,40 @@ unsafe extern "C" fn fx_dict_entry(
         None => 0,
     }
 }
-unsafe extern "C" fn fx_classify_heap(_b: u64) -> u8 {
-    MoltTypeTag::Dict as u8
+unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
+    if is_fixture_dict(bits) {
+        MoltTypeTag::Dict as u8
+    } else {
+        unsafe { support::fake_runtime::classify_heap(bits) }
+    }
 }
 unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) -> i32 {
+    if !is_fixture_dict(d) {
+        return unsafe { support::fake_runtime::dict_set(d, k, v) };
+    }
     SETS.lock().unwrap().push((d, k, v));
     0
 }
-unsafe extern "C" fn fx_dict_get(_d: u64, k: u64) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+unsafe extern "C" fn resolve_fixture_dict(
+    bits: u64,
+    merge_source: u8,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    if is_fixture_dict(bits) {
+        molt_cpython_abi::hooks::BorrowedHandleResult::ok(bits)
+    } else {
+        unsafe { support::fake_runtime::dict_resolve(bits, merge_source) }
+    }
+}
+
+unsafe extern "C" fn fx_dict_get(
+    d: u64,
+    k: u64,
+    source: molt_cpython_abi::hooks::DictHashSource,
+    hash: i64,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    if !is_fixture_dict(d) {
+        return unsafe { support::fake_runtime::dict_get(d, k, source, hash) };
+    }
     LOOKUP_KEYS.lock().unwrap().push(k);
     if PRESENT.lock().unwrap().contains(&k) {
         molt_cpython_abi::hooks::BorrowedHandleResult::ok(k)
@@ -74,25 +103,75 @@ unsafe extern "C" fn fx_dict_get(_d: u64, k: u64) -> molt_cpython_abi::hooks::Bo
     }
 }
 unsafe extern "C" fn fx_foreign_new(c_ptr: usize) -> u64 {
-    assert_ne!(c_ptr, 0);
-    assert_eq!(FOREIGN_C_PTR.swap(c_ptr, Ordering::SeqCst), 0);
-    let address = NEXT_FOREIGN_WRAPPER.fetch_add(0x10, Ordering::SeqCst) as usize;
-    let wrapper = MoltObject::from_ptr(address as *mut u8).bits();
-    assert_eq!(FOREIGN_WRAPPER.swap(wrapper, Ordering::SeqCst), 0);
-    wrapper
+    let bits = unsafe { support::fake_runtime::foreign_new(c_ptr) };
+    // Only the deliberately opaque foreign key is this test's tracked probe.
+    // Native exception/type helpers use the same shared foreign custody model.
+    if unsafe { (*(c_ptr as *mut PyObject)).ob_type.is_null() } {
+        assert_eq!(FOREIGN_C_PTR.swap(c_ptr, Ordering::SeqCst), 0);
+        assert_eq!(FOREIGN_WRAPPER.swap(bits, Ordering::SeqCst), 0);
+    }
+    bits
 }
 unsafe extern "C" fn fx_dec_ref(bits: u64) {
-    if bits == FOREIGN_WRAPPER.load(Ordering::SeqCst) && bits != 0 {
+    unsafe { support::fake_runtime::dec_ref(bits) };
+    if unsafe { support::fake_runtime::ref_count(bits) } == 0 {
+        if let Some(dicts) = FIXTURE_DICTS.lock().unwrap().as_mut() {
+            dicts.remove(&bits);
+        }
+        let dict = PROXIES
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|proxies| proxies.remove(&bits));
+        if let Some(dict) = dict {
+            unsafe { fx_dec_ref(dict) };
+        }
+    }
+    if bits != 0
+        && bits == FOREIGN_WRAPPER.load(Ordering::SeqCst)
+        && unsafe { support::fake_runtime::ref_count(bits) } == 0
+    {
         FOREIGN_WRAPPER.store(0, Ordering::SeqCst);
-        let c_ptr = FOREIGN_C_PTR.swap(0, Ordering::SeqCst);
-        assert_ne!(c_ptr, 0);
-        unsafe { molt_cpython_abi::bridge::molt_foreign_object_release(c_ptr) };
+        assert_ne!(FOREIGN_C_PTR.swap(0, Ordering::SeqCst), 0);
     }
 }
-unsafe extern "C" fn fx_dict_len(_b: u64) -> usize {
-    ENTRIES.lock().unwrap().len()
+unsafe extern "C" fn fx_mappingproxy_new(dict: u64) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    let proxy = support::fake_runtime::fresh_handle();
+    unsafe { support::fake_runtime::inc_ref(dict) };
+    PROXIES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(proxy, dict);
+    molt_cpython_abi::hooks::OwnedHandleResult::ok(proxy)
+}
+unsafe extern "C" fn fx_object_set_item(object: u64, _: u64, _: *const u64) -> i32 {
+    assert!(
+        PROXIES
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|proxies| proxies.contains_key(&object))
+    );
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetString(
+            (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast(),
+            c"mappingproxy does not support item assignment".as_ptr(),
+        );
+    }
+    -1
+}
+unsafe extern "C" fn fx_dict_len(bits: u64) -> usize {
+    if is_fixture_dict(bits) {
+        ENTRIES.lock().unwrap().len()
+    } else {
+        unsafe { support::fake_runtime::dict_len(bits) }
+    }
 }
 unsafe extern "C" fn fx_dict_op(op: u32, dict: u64) -> u64 {
+    if !is_fixture_dict(dict) {
+        return unsafe { support::fake_runtime::dict_op(op, dict) };
+    }
     if op == molt_cpython_abi::DictOp::Clear as u32 {
         CLEARS.lock().unwrap().push(dict);
         ENTRIES.lock().unwrap().clear();
@@ -104,9 +183,13 @@ unsafe extern "C" fn fx_dict_op(op: u32, dict: u64) -> u64 {
 
 fn install() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
+    support::fake_runtime::wire(&mut hooks);
+    hooks.mappingproxy_new = fx_mappingproxy_new;
+    hooks.object_set_item = fx_object_set_item;
     hooks.dict_entry = fx_dict_entry;
     hooks.classify_heap = fx_classify_heap;
     hooks.dict_set = fx_dict_set;
+    hooks.dict_resolve = resolve_fixture_dict;
     hooks.dict_get = fx_dict_get;
     hooks.dict_len = fx_dict_len;
     hooks.dict_op = fx_dict_op;
@@ -115,10 +198,23 @@ fn install() {
     support::prepare_abi_test_thread(hooks);
 }
 
-// A ptr-tagged handle whose inner pointer is never dereferenced: classify is
-// faked and the handle only flows through faked hooks + bridge identity maps.
-fn fake_dict_handle(addr: usize) -> u64 {
-    MoltObject::from_ptr(addr as *mut u8).bits()
+// Only these explicit probes use the scripted cursor model. Native type and
+// exception dictionaries keep the shared runtime's real storage and ownership.
+fn is_fixture_dict(bits: u64) -> bool {
+    FIXTURE_DICTS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|dicts| dicts.contains(&bits))
+}
+fn fake_dict_handle() -> u64 {
+    let bits = support::fake_runtime::fresh_handle();
+    FIXTURE_DICTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(bits);
+    bits
 }
 
 fn register(handle: u64) -> *mut PyObject {
@@ -133,11 +229,10 @@ fn handle_of(p: *mut PyObject) -> u64 {
 
 #[test]
 fn setdefaultref_optional_sink_preserves_status_and_reference_ownership() {
-    let _guard = TEST_LOCK.lock().unwrap();
     install();
     PRESENT.lock().unwrap().clear();
     SETS.lock().unwrap().clear();
-    let dict = register(fake_dict_handle(0x8500));
+    let dict = register(fake_dict_handle());
     let key = register(MoltObject::from_int(0x8511).bits());
     let default_value = register(MoltObject::from_int(0x8522).bits());
     let key_bits = handle_of(key);
@@ -246,7 +341,6 @@ fn setdefaultref_optional_sink_preserves_status_and_reference_ownership() {
 
 #[test]
 fn next_yields_all_entries_no_exception() {
-    let _guard = TEST_LOCK.lock().unwrap();
     install();
     let (k1, v1) = (
         MoltObject::from_int(0x1111).bits(),
@@ -258,7 +352,7 @@ fn next_yields_all_entries_no_exception() {
     );
     *ENTRIES.lock().unwrap() = vec![(k1, v1), (k2, v2)];
 
-    let dict = register(fake_dict_handle(0x5000));
+    let dict = register(fake_dict_handle());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let mut pos: Py_ssize_t = 0;
@@ -281,11 +375,11 @@ fn next_yields_all_entries_no_exception() {
         unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
         "PyDict_Next must NOT leave a stray pending exception on normal termination"
     );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(dict) };
 }
 
 #[test]
 fn merge_populates_target_override() {
-    let _guard = TEST_LOCK.lock().unwrap();
     install();
     let (k1, v1) = (
         MoltObject::from_int(0x1a1a).bits(),
@@ -299,8 +393,8 @@ fn merge_populates_target_override() {
     SETS.lock().unwrap().clear();
     PRESENT.lock().unwrap().clear();
 
-    let op = register(fake_dict_handle(0x6000));
-    let other = register(fake_dict_handle(0x7000));
+    let op = register(fake_dict_handle());
+    let other = register(fake_dict_handle());
     let op_bits = handle_of(op);
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
@@ -322,11 +416,15 @@ fn merge_populates_target_override() {
         keys.contains(&k1) && keys.contains(&k2),
         "both source keys must be merged"
     );
+    drop(sets);
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(op);
+        molt_cpython_abi::api::refcount::Py_DECREF(other);
+    }
 }
 
 #[test]
 fn update_overwrites_and_clear_empties() {
-    let _guard = TEST_LOCK.lock().unwrap();
     install();
     let key = MoltObject::from_int(0x55).bits();
     let old_value = MoltObject::from_int(0x66).bits();
@@ -335,8 +433,8 @@ fn update_overwrites_and_clear_empties() {
     *PRESENT.lock().unwrap() = vec![key];
     SETS.lock().unwrap().clear();
     CLEARS.lock().unwrap().clear();
-    let target = register(fake_dict_handle(0x8100));
-    let source = register(fake_dict_handle(0x8200));
+    let target = register(fake_dict_handle());
+    let source = register(fake_dict_handle());
     let target_bits = handle_of(target);
     SETS.lock().unwrap().push((target_bits, key, old_value));
 
@@ -353,13 +451,16 @@ fn update_overwrites_and_clear_empties() {
     unsafe { molt_cpython_abi::api::mapping::PyDict_Clear(target) };
     assert_eq!(&*CLEARS.lock().unwrap(), &[target_bits]);
     assert!(ENTRIES.lock().unwrap().is_empty());
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(target);
+        molt_cpython_abi::api::refcount::Py_DECREF(source);
+    }
 }
 
 #[test]
 fn dict_proxy_is_read_only() {
-    let _guard = TEST_LOCK.lock().unwrap();
     install();
-    let dict = register(fake_dict_handle(0x8300));
+    let dict = register(fake_dict_handle());
     let proxy = unsafe { molt_cpython_abi::api::mapping::PyDictProxy_New(dict) };
     assert!(!proxy.is_null());
     let key = register(MoltObject::from_int(1).bits());
@@ -370,20 +471,30 @@ fn dict_proxy_is_read_only() {
         -1
     );
     assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast(),
+            )
+        },
+        1
+    );
     unsafe {
         molt_cpython_abi::api::errors::PyErr_Clear();
         molt_cpython_abi::api::refcount::Py_DECREF(proxy);
+        molt_cpython_abi::api::refcount::Py_DECREF(dict);
+        molt_cpython_abi::api::refcount::Py_DECREF(key);
+        molt_cpython_abi::api::refcount::Py_DECREF(value);
     }
 }
 
 #[test]
 fn test_dict_getitem_preserves_entry_error_and_routes_foreign_key() {
-    let _guard = TEST_LOCK.lock().unwrap();
     install();
     LOOKUP_KEYS.lock().unwrap().clear();
     PRESENT.lock().unwrap().clear();
 
-    let dict = register(fake_dict_handle(0x8400));
+    let dict = register(fake_dict_handle());
     let marker = register(MoltObject::from_int(0x5eed).bits());
     let exc_type = (&raw mut molt_cpython_abi::abi_types::PyExc_RuntimeError).cast::<PyObject>();
     molt_cpython_abi::api::errors::restore_current_error_exact(

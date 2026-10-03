@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Sequence
@@ -26,7 +27,7 @@ from molt.cli.static_archive_identity import (
     StaticArchiveMemberIdentity,
     static_archive_member_identities,
 )
-from molt.file_hashing import content_change_time_ns
+from molt.compiler_distribution import installed_compiler
 from molt.source_root import compiler_source_root
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -86,6 +87,8 @@ _SYMBOL_SET_FIELDS = (
     "weak_defined",
 )
 
+_SYMBOL_WHITESPACE = re.compile(r"\s")
+
 
 def _symbol_table_payload(facts: _NativeGlobalSymbolFacts) -> dict[str, object]:
     return {name: sorted(getattr(facts, name)) for name in _SYMBOL_SET_FIELDS}
@@ -109,19 +112,31 @@ def _symbol_facts_payload(facts: _NativeGlobalSymbolFacts) -> dict[str, object]:
     }
 
 
-def _decode_symbol_table(value: object) -> _NativeGlobalSymbolFacts | None:
+def _decode_symbol_table(
+    value: object, *, validated_symbols: set[str]
+) -> _NativeGlobalSymbolFacts | None:
     if not isinstance(value, dict) or set(value) != set(_SYMBOL_SET_FIELDS):
         return None
     tables: list[frozenset[str]] = []
     for name in _SYMBOL_SET_FIELDS:
         symbols = value[name]
-        if not isinstance(symbols, list) or not all(
-            isinstance(symbol, str) and symbol and not any(c.isspace() for c in symbol)
-            for symbol in symbols
-        ):
+        if not isinstance(symbols, list):
             return None
-        if symbols != sorted(set(symbols)):
-            return None
+        previous: str | None = None
+        for symbol in symbols:
+            if not isinstance(symbol, str) or not symbol:
+                return None
+            # Strict ordering proves both canonical order and uniqueness without
+            # sorting or constructing another temporary set for every table.
+            if previous is not None and symbol <= previous:
+                return None
+            if symbol not in validated_symbols:
+                # Unicode \s has the same whitespace semantics as str.isspace;
+                # the regex engine scans each distinct symbol outside Python.
+                if _SYMBOL_WHITESPACE.search(symbol) is not None:
+                    return None
+                validated_symbols.add(symbol)
+            previous = symbol
         tables.append(frozenset(symbols))
     facts = _NativeGlobalSymbolFacts(
         tables[0], tables[1], tables[2], tables[3], weak_defined=tables[4]
@@ -141,10 +156,15 @@ def _decode_symbol_facts(
 ) -> _NativeGlobalSymbolFacts | None:
     if not isinstance(value, dict):
         return None
+    # Repeated strings across fields and archive members share lexical admission
+    # only inside this payload. Member identity and table structure stay checked.
+    validated_symbols: set[str] = set()
     if members is None:
         if set(value) != {"object"}:
             return None
-        facts = _decode_symbol_table(value["object"])
+        facts = _decode_symbol_table(
+            value["object"], validated_symbols=validated_symbols
+        )
         return (
             None if facts is None else replace(facts, artifact_digest=artifact_digest)
         )
@@ -174,7 +194,9 @@ def _decode_symbol_facts(
             identity.sha256,
         ):
             return None
-        symbols = _decode_symbol_table(row["symbols"])
+        symbols = _decode_symbol_table(
+            row["symbols"], validated_symbols=validated_symbols
+        )
         if symbols is None:
             return None
         bound.append(_NativeArchiveMemberSymbolFacts(identity, symbols))
@@ -452,24 +474,39 @@ def _require_unchanged_symbol_artifact(
         ) from error
 
 
-_NativeObjectSymbolCacheKey = tuple[
-    str, int, int, int, str, str, str, str, str, tuple[str, ...]
-]
-_NativeArchiveSymbolCacheKey = tuple[
-    str, int, int, int, str, str, str, str, tuple[str, ...], str
-]
-_NATIVE_OBJECT_SYMBOL_SETS_CACHE: dict[
-    _NativeObjectSymbolCacheKey,
+@dataclass(frozen=True, slots=True)
+class _NativeSymbolFactsCacheKey:
+    size: int
+    symbol_target: str
+    reader_identity: tuple[str, ...]
+    artifact_digest: str
+
+
+_NATIVE_OBJECT_SYMBOL_SETS_CACHE: OrderedDict[
+    _NativeSymbolFactsCacheKey,
     _NativeGlobalSymbolFacts,
-] = {}
+] = OrderedDict()
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT = 256
 _NATIVE_OBJECT_SYMBOL_FACTS_SCHEMA_VERSION = 6
 _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT = 32
-_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION = 5
-_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE: dict[
-    _NativeArchiveSymbolCacheKey,
+_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION = 6
+_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE: OrderedDict[
+    _NativeSymbolFactsCacheKey,
     _NativeGlobalSymbolFacts,
-] = {}
+] = OrderedDict()
+
+
+def _remember_native_symbol_facts(
+    cache: OrderedDict[_NativeSymbolFactsCacheKey, _NativeGlobalSymbolFacts],
+    key: _NativeSymbolFactsCacheKey,
+    facts: _NativeGlobalSymbolFacts,
+    *,
+    limit: int,
+) -> None:
+    cache[key] = facts
+    cache.move_to_end(key)
+    while len(cache) > limit:
+        cache.popitem(last=False)
 
 
 def _target_uses_macho_symbol_decoration(target_triple: str | None) -> bool:
@@ -718,29 +755,17 @@ def _native_object_symbol_facts_sidecar_path(path: Path) -> Path:
     return path.with_suffix(".symbols.json")
 
 
-def _native_object_symbol_cache_key(
-    path: Path,
-    object_digest: str,
+def _native_symbol_facts_cache_key(
+    identity: StableRegularFileIdentity,
     *,
     reader_identity: tuple[str, ...],
     target_triple: str | None,
-) -> _NativeObjectSymbolCacheKey | None:
-    try:
-        resolved = path.resolve()
-        stat = path.stat()
-    except OSError:
-        return None
-    return (
-        os.fspath(resolved),
-        int(stat.st_size),
-        int(stat.st_mtime_ns),
-        int(getattr(stat, "st_ctime_ns", 0)),
-        object_digest,
-        os.environ.get("MOLT_TARGET_ROOT", ""),
-        os.environ.get("PATH", ""),
-        os.environ.get("MOLT_NM_TIMEOUT_SEC", ""),
-        _symbol_normalization_target(target_triple),
-        reader_identity,
+) -> _NativeSymbolFactsCacheKey:
+    return _NativeSymbolFactsCacheKey(
+        size=identity.size,
+        symbol_target=_symbol_normalization_target(target_triple),
+        reader_identity=reader_identity,
+        artifact_digest=identity.sha256,
     )
 
 
@@ -833,18 +858,17 @@ def _native_object_global_symbol_facts(
         target_triple=target_triple,
         requirement=requirement,
     )
-    cache_key = _native_object_symbol_cache_key(
-        path,
-        object_digest,
+    cache_key = _native_symbol_facts_cache_key(
+        identity,
         reader_identity=reader.cache_identity,
         target_triple=target_triple,
     )
-    if cache_key is not None:
-        cached = _NATIVE_OBJECT_SYMBOL_SETS_CACHE.get(cache_key)
-        if cached is not None and requirement.accepts(cached):
-            _require_unchanged_symbol_reader(path, reader)
-            _require_unchanged_symbol_artifact(path, identity)
-            return cached
+    cached = _NATIVE_OBJECT_SYMBOL_SETS_CACHE.get(cache_key)
+    if cached is not None and requirement.accepts(cached):
+        _require_unchanged_symbol_reader(path, reader)
+        _require_unchanged_symbol_artifact(path, identity)
+        _NATIVE_OBJECT_SYMBOL_SETS_CACHE.move_to_end(cache_key)
+        return cached
     members = _symbol_artifact_members(path)
     if object_digest:
         symbol_facts = _read_native_object_symbol_facts(
@@ -857,8 +881,12 @@ def _native_object_global_symbol_facts(
         if symbol_facts is not None and requirement.accepts(symbol_facts):
             _require_unchanged_symbol_reader(path, reader)
             _require_unchanged_symbol_artifact(path, identity)
-            if cache_key is not None:
-                _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = symbol_facts
+            _remember_native_symbol_facts(
+                _NATIVE_OBJECT_SYMBOL_SETS_CACHE,
+                cache_key,
+                symbol_facts,
+                limit=_NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT,
+            )
             return symbol_facts
     facts = _read_native_global_symbol_facts(
         path,
@@ -870,13 +898,12 @@ def _native_object_global_symbol_facts(
     )
     _require_unchanged_symbol_artifact(path, identity)
     facts = replace(facts, artifact_digest=object_digest)
-    if cache_key is not None:
-        if (
-            len(_NATIVE_OBJECT_SYMBOL_SETS_CACHE)
-            >= _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT
-        ):
-            _NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-        _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = facts
+    _remember_native_symbol_facts(
+        _NATIVE_OBJECT_SYMBOL_SETS_CACHE,
+        cache_key,
+        facts,
+        limit=_NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT,
+    )
     if object_digest:
         with contextlib.suppress(OSError):
             _write_native_object_symbol_facts(
@@ -1071,34 +1098,21 @@ def _native_archive_global_symbol_facts(
     else:
         _require_unchanged_symbol_artifact(path, identity)
     resolved = identity.path
-    stat = resolved.stat()
-    changed = content_change_time_ns(resolved, stat)
-    if changed is None:
-        raise NativeSymbolInspectionError(
-            path, ["content-change identity is unavailable"]
-        )
-    symbol_target = _symbol_normalization_target(target_triple)
     reader = _native_symbol_reader(
         nm_command=nm_command,
         target_triple=target_triple,
         requirement=requirement,
     )
-    cache_key: _NativeArchiveSymbolCacheKey = (
-        os.fspath(resolved),
-        identity.size,
-        stat.st_mtime_ns,
-        changed,
-        os.environ.get("MOLT_TARGET_ROOT", ""),
-        os.environ.get("PATH", ""),
-        os.environ.get("MOLT_NM_TIMEOUT_SEC", ""),
-        symbol_target,
-        reader.cache_identity,
-        identity.sha256,
+    cache_key = _native_symbol_facts_cache_key(
+        identity,
+        target_triple=target_triple,
+        reader_identity=reader.cache_identity,
     )
     cached = _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.get(cache_key)
     if cached is not None and requirement.accepts(cached):
         _require_unchanged_symbol_reader(path, reader)
         _require_unchanged_symbol_artifact(path, identity)
+        _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.move_to_end(cache_key)
         return cached
     persistent_cache_path = _native_archive_symbol_cache_path(cache_key)
     members = _symbol_artifact_members(resolved, require_archive=True)
@@ -1111,7 +1125,12 @@ def _native_archive_global_symbol_facts(
     if persistent_facts is not None and requirement.accepts(persistent_facts):
         _require_unchanged_symbol_reader(path, reader)
         _require_unchanged_symbol_artifact(path, identity)
-        _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE[cache_key] = persistent_facts
+        _remember_native_symbol_facts(
+            _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE,
+            cache_key,
+            persistent_facts,
+            limit=_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT,
+        )
         return persistent_facts
     facts = _read_native_global_symbol_facts(
         resolved,
@@ -1123,12 +1142,12 @@ def _native_archive_global_symbol_facts(
     )
     _require_unchanged_symbol_artifact(path, identity)
     facts = replace(facts, artifact_digest=identity.sha256)
-    if (
-        len(_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE)
-        >= _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT
-    ):
-        _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
-    _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE[cache_key] = facts
+    _remember_native_symbol_facts(
+        _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE,
+        cache_key,
+        facts,
+        limit=_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT,
+    )
     with contextlib.suppress(OSError):
         _write_native_archive_symbol_cache(
             persistent_cache_path,
@@ -1156,24 +1175,23 @@ def _native_archive_global_symbol_sets(
 
 
 def _native_archive_symbol_cache_identity(
-    cache_key: _NativeArchiveSymbolCacheKey,
+    cache_key: _NativeSymbolFactsCacheKey,
 ) -> dict[str, object]:
+    # Resolve and admit the current readers before consulting this cache. Their
+    # content identities, the parser protocol and the target already capture
+    # the output-bearing selection. Ambient PATH and timeout spelling must not
+    # invalidate facts produced by those same immutable reader/archive bytes.
+    # The operation's separate file and reader fences still detect mutation.
     return {
-        "path": cache_key[0],
-        "size": cache_key[1],
-        "mtime_ns": cache_key[2],
-        "ctime_ns": cache_key[3],
-        "target_root": cache_key[4],
-        "path_env": cache_key[5],
-        "timeout_env": cache_key[6],
-        "symbol_target": cache_key[7],
-        "nm_command": list(cache_key[8]),
-        "artifact_digest": cache_key[9],
+        "size": cache_key.size,
+        "symbol_target": cache_key.symbol_target,
+        "nm_command": list(cache_key.reader_identity),
+        "artifact_digest": cache_key.artifact_digest,
     }
 
 
 def _native_archive_symbol_cache_path(
-    cache_key: _NativeArchiveSymbolCacheKey,
+    cache_key: _NativeSymbolFactsCacheKey,
 ) -> Path:
     identity = _native_archive_symbol_cache_identity(cache_key)
     digest = hashlib.sha256(
@@ -1190,7 +1208,7 @@ def _native_archive_symbol_cache_path(
 def _read_native_archive_symbol_cache(
     path: Path,
     *,
-    cache_key: _NativeArchiveSymbolCacheKey,
+    cache_key: _NativeSymbolFactsCacheKey,
     members: tuple[StaticArchiveMemberIdentity, ...],
 ) -> _NativeGlobalSymbolFacts | None:
     try:
@@ -1205,7 +1223,7 @@ def _read_native_archive_symbol_cache(
         return None
     return _decode_symbol_facts(
         payload.get("facts"),
-        artifact_digest=cache_key[9],
+        artifact_digest=cache_key.artifact_digest,
         members=members,
     )
 
@@ -1213,7 +1231,7 @@ def _read_native_archive_symbol_cache(
 def _write_native_archive_symbol_cache(
     path: Path,
     *,
-    cache_key: _NativeArchiveSymbolCacheKey,
+    cache_key: _NativeSymbolFactsCacheKey,
     facts: _NativeGlobalSymbolFacts,
 ) -> None:
     _atomic_write_json(
@@ -1240,6 +1258,11 @@ def _nm_candidate_binaries() -> list[str]:
     Order newest/most-capable readers first; the extraction loop validates each
     candidate (clean exit AND a non-empty ``molt_*`` set) before trusting it.
     """
+    # Installed runtime projections are shipped, but application objects and
+    # source extensions still use this shared reader. Those consumers must not
+    # rediscover Rust merely to inspect native objects with host LLVM/binutils.
+    source_checkout = installed_compiler(compiler_source_root()) is None
     return [
-        str(path) for path in llvm_tool_candidates("nm", include_rust_toolchain=True)
+        str(path)
+        for path in llvm_tool_candidates("nm", include_rust_toolchain=source_checkout)
     ]

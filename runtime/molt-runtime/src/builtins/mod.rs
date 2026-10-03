@@ -20,6 +20,7 @@ pub(crate) mod contextlib;
 pub(crate) mod contextvars;
 pub(crate) mod copy_mod;
 pub(crate) mod dbm_dumb;
+pub(crate) mod diagnostic_suggestions;
 pub(crate) mod enum_ext;
 pub(crate) mod exceptions;
 pub(crate) mod fcntl;
@@ -49,6 +50,7 @@ pub(crate) mod methods;
 mod micro_stubs;
 pub(crate) mod module_table;
 pub(crate) mod modules;
+pub(crate) mod native_arguments;
 pub(crate) mod numbers;
 pub(crate) mod operator;
 #[cfg(not(feature = "stdlib_path"))]

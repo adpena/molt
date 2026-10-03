@@ -11,10 +11,10 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 ## Summary
 
 - `compile-error`: `8`
-- `implemented-exact`: `183`
+- `implemented-exact`: `191`
 - `implemented-target-limited`: `14`
-- `not-admitted`: `198`
-- `total`: `403`
+- `not-admitted`: `192`
+- `total`: `405`
 
 ## Matrix
 
@@ -30,7 +30,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `and` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `ascii_from_obj` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `async_work_poll` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `asyncgen_locals_register` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `band` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `binding_alias` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `binop` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -133,7 +132,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `dict_copy` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_from_obj` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_get` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `dict_inc` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_items` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `dict_keys` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `dict_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -195,6 +193,13 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `for_iter` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `for_range` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `format_string` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `frame_home_cell` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_home_clear` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_home_load` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_home_private_cell` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_home_store` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_home_take` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_locals` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `frame_locals_set` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `frozenset_add` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `frozenset_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -202,7 +207,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `func_new_closure` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `function_closure_bits` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `ge` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `gen_locals_register` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `get_attr` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `get_attr_generic_obj` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `get_attr_generic_ptr` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -218,7 +222,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `guard_type` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `guarded_field_get` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `guarded_field_set` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `guarded_load` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `guarded_load` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `has_attr_name` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `id` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `identity_alias` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -242,7 +246,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `int` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `int_from_obj` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `int_from_str_of_obj` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `intarray_from_seq` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `invert` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `invoke_ffi` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `is` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -292,8 +295,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `lt` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `matmul` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `memoryview_cast` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `memoryview_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `memoryview_tobytes` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `missing` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `mod` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `mod_` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
@@ -319,6 +320,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `not` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `object_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `object_set_class` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `operator_index` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `or` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `ord` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `ord_at` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -357,6 +359,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `state_switch` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `state_transition` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `state_yield` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `stateful_locals_register` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `staticmethod_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `store` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `store_index` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -405,7 +408,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `sum` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `super_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `sys_executable` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `taq_ingest_line` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `trace_enter_slot` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `trace_exit` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `trunc` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -419,10 +421,10 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `unbox` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `unbox_to_raw_int` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `unpack_sequence` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `vec_max_*` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `vec_min_*` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `vec_prod_*` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `vec_sum_*` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `vec_max` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `vec_min` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `vec_prod` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `vec_sum` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 
 ## Status Definitions
 

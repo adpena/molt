@@ -6,7 +6,6 @@ use crate::wasm::task_runtime::{
     WasmTaskRuntimeLayout, emit_register_cancel_token, emit_store_task_payload_local,
     emit_task_payload_base,
 };
-use crate::wasm_binary::emit_call;
 use crate::wasm_values::emit_boxed_none;
 use wasm_encoder::{Function, Instruction};
 
@@ -78,31 +77,6 @@ pub(super) fn emit_async_task_runtime_op(
             }
             func.instruction(&Instruction::End);
             finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, res);
-        }
-        "state_yield" => {
-            let args = op.args.as_ref().unwrap();
-            func.instruction(&Instruction::LocalGet(0));
-            func.instruction(&Instruction::I64Const(op.value.unwrap()));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjSetState],
-            );
-            let pair = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(pair));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
-            );
-            func.instruction(&Instruction::LocalGet(pair));
-            if let Some(out) = locals.bound_op_result_slot(op) {
-                func.instruction(&Instruction::LocalTee(out));
-            }
-            context
-                .frame
-                .emit_const_anchor_releases(func, import_ids, reloc_enabled);
-            func.instruction(&Instruction::Return);
         }
         _ => return false,
     }

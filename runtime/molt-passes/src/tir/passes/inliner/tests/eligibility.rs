@@ -365,3 +365,61 @@ fn inline_classification_owns_context_and_partition_restrictions() {
         }
     }
 }
+
+/// Parameter custody alone never refuses inlining: the splice's activation
+/// owns what the callee owns. A callee that releases a borrowed parameter
+/// other than by `del` would end the caller's reference, which no activation
+/// can give back, so it is refused with that typed reason. The same release of
+/// a transferred parameter ends the activation's own binding and inlines.
+#[test]
+fn inline_classification_refuses_only_unowned_parameter_releases() {
+    use crate::tir::call_facts::{InlineEligibility, InlineWhyNot};
+    use molt_ir::ParameterCustody;
+    let tti = TargetInfo::native_release_fast();
+    let eligible = InlineEligibility::Eligible;
+    let refused = InlineEligibility::WhyNot(InlineWhyNot::UnownedParameterRelease);
+    for (custody, release, expected) in [
+        (ParameterCustody::Transferred, None, eligible),
+        (ParameterCustody::Borrowed, Some(OpCode::DelBoundary), eligible),
+        (ParameterCustody::Transferred, Some(OpCode::DeleteVar), eligible),
+        (ParameterCustody::Borrowed, Some(OpCode::DeleteVar), refused),
+        (ParameterCustody::Borrowed, Some(OpCode::DecRef), refused),
+    ] {
+        let mut callee = add_callee();
+        callee.set_parameter_custody(&[ParameterCustody::Borrowed, custody]);
+        if let Some(opcode) = release {
+            // `DeleteVar` releases the value at operand 1; the others release
+            // their one operand.
+            let released = ValueId(1);
+            let operands = match opcode {
+                OpCode::DeleteVar => vec![ValueId(0), released],
+                _ => vec![released],
+            };
+            let entry = callee.entry_block;
+            callee.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands,
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            });
+        }
+        let m = module(vec![callee]);
+        let (cg, summaries) = analysis(&m);
+        assert_eq!(
+            super::super::eligibility::classify_inline_eligibility(
+                &m.functions[0],
+                &cg,
+                &summaries,
+                &tti
+            ),
+            expected,
+            "{custody:?} released by {release:?}"
+        );
+        assert_eq!(
+            super::super::eligibility::is_inline_safe(&m.functions[0], &cg),
+            expected.is_eligible()
+        );
+    }
+}

@@ -14,7 +14,13 @@ import time
 from typing import Any, Collection, Mapping, Sequence, cast
 import uuid
 
+from molt.backend_environment import environment_keys, codegen_environment_inputs
 from molt import backend_daemon_custody as _daemon_custody
+from molt.backend_executable_names import (
+    DEFAULT_BACKEND_FEATURES as _DEFAULT_BACKEND_FEATURES,
+    backend_executable_name,
+    backend_features_for_target as _backend_features_for_target,
+)
 from molt.build_state_layout import build_state_root
 from molt.compiler_distribution import installed_compiler
 from molt.exact_json import canonical_json_sha256
@@ -36,117 +42,55 @@ from molt.cli.backend_daemon_paths import (
 )
 from molt.cli.backend_daemon_startup import _backend_daemon_spawn_probe_timeout
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
-from molt.cli.cache_keys import _json_ir_default
-from molt.cli.cargo_profiles import _active_artifact_profile_dirs
+from molt.cli.compiler_identity import (
+    CompilerIdentityError,
+    installed_compiler_admission,
+)
+from molt.cli.cache_keys import _json_ir_default, _write_backend_ir_text
 from molt.cli.command_runtime import _load_cli_harness_memory_guard
 from molt.cli.config_resolution import ENTRY_OVERRIDE_ENV
 from molt.cli.env_paths import _resolve_env_path
 from molt.cli.models import _BackendDaemonCompileResult
+from molt.cli.runtime_native_codegen import (
+    NativeRuntimeCodegenBinding,
+    native_runtime_codegen_environment,
+)
 from molt.cli.backend_artifact_contract import BackendArtifactContract
 from molt.cli.runtime_paths import (
     _build_state_root,
     _cargo_profile_dir,
-    _cargo_target_root,
     _cargo_target_root_cached,
     _molt_session_id,
-    _runtime_lib_archive_names,
 )
 
 
 _BACKEND_DAEMON_PROTOCOL_VERSION = 1
 
 
-_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 5
+_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 7
 
 
-_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 7
+_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 9
 
 
-_BACKEND_CODEGEN_REQUEST_ENV_KNOBS = (
-    "MOLT_DISABLE_DEAD_FUNC_ELIM",
-    "MOLT_BACKEND_BATCH_SIZE",
-    "MOLT_BACKEND_BATCH_OP_BUDGET",
-    "MOLT_MAX_FUNCTION_OPS",
-    "MOLT_DISABLE_RC_COALESCING",
-    "TIR_DUMP",
-    "TIR_OPT_STATS",
-    "MOLT_DUMP_CLIF",
-    "MOLT_DUMP_CLIF_ON_ERROR",
-    "MOLT_DUMP_CLIF_ON_CFG_ERROR",
-    "MOLT_DUMP_CLIF_FUNC",
-    "MOLT_DUMP_CLIF_FILE",
-    "MOLT_DUMP_CLIF_FILE_FILTER",
-    "MOLT_DUMP_FINAL_FUNC_IR",
-    "MOLT_DUMP_IR",
-    "MOLT_DUMP_IR_FILE",
-    "MOLT_DEBUG_WASM_LOCALS_FUNC",
-    # Optimization-pass instruments (mirrors the backend's
-    # DAEMON_REQUEST_ENV_KEYS — an instrument is useless if the CLI strips
-    # its env key before the daemon sees it).
-    "MOLT_DEBUG_ARTIFACT_DIR",
-    "MOLT_OVERFLOW_PEEL_STATS",
-    "MOLT_PROMOTE_DEBUG",
-    "MOLT_INLINE_STATS",
-    "MOLT_VERIFY_ANALYSIS",
-    "MOLT_DEBUG_BIND",
-    "MOLT_BACKEND",
-    "MOLT_DEBUG_CHECK_EXC",
-    "MOLT_DEBUG_CHECK_EXCEPTION",
-    "MOLT_LLVM_DUMP_IR",
-    "MOLT_BACKEND_TIMING",
-    "MOLT_MEMGVN_REPORT",
-    "MOLT_MEMGVN_REPORT_BASELINE",
-    "MOLT_MEMGVN_DIAG",
-    "MOLT_MEMGVN_DUMP",
-    "MOLT_DEBUG_DROP",
-    "MOLT_DEBUG_LOWER_FUNC",
-    "MOLT_TIR_DUMP",
+# Catalog projections, not independent knob lists. Every request control is
+# reset by the daemon from the same catalog before applying the request.
+_BACKEND_CODEGEN_REQUEST_ENV_KNOBS = environment_keys(
+    "common", "native", "wasm", "runtime_identity", "diagnostic", "observation"
 )
-
-
-_BACKEND_RESOURCE_ENV_KNOBS = (
-    "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
-    "MOLT_CLI_MEMORY_AVAILABLE_GB",
-    "MOLT_CLI_MEM_AVAILABLE_GB",
-    "MOLT_MEMORY_AVAILABLE_GB",
-    "MOLT_MEM_AVAILABLE_GB",
-    "MOLT_BACKEND_MAX_RSS_GB",
-    "MOLT_BACKEND_MEMORY_RESERVE_GB",
-    "MOLT_CLI_MEMORY_RESERVE_GB",
-    "MOLT_CLI_MEM_RESERVE_GB",
-    "MOLT_MEMORY_RESERVE_GB",
-    "MOLT_MEM_RESERVE_GB",
-    "RAYON_NUM_THREADS",
-)
-
-
+_BACKEND_RESOURCE_ENV_KNOBS = environment_keys("resource")
 _BACKEND_REQUEST_ENV_KNOBS = (
     _BACKEND_CODEGEN_REQUEST_ENV_KNOBS + _BACKEND_RESOURCE_ENV_KNOBS
 )
-
-
-_NATIVE_CODEGEN_ENV_KNOBS = _BACKEND_CODEGEN_REQUEST_ENV_KNOBS + (
-    "MOLT_BACKEND_COMPILER_FINGERPRINT",
-    "MOLT_BACKEND_OPT_LEVEL",
-    "MOLT_BACKEND_REGALLOC_ALGORITHM",
-    "MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2",
-    "MOLT_BACKEND_LIBCALL_CALL_CONV",
-    "MOLT_BACKEND_ENABLE_VERIFIER",
-    "MOLT_DISABLE_STRUCT_ELIDE",
-    "MOLT_PORTABLE",
+_NATIVE_CODEGEN_ENV_KNOBS = environment_keys(
+    "common",
+    "native",
+    "runtime_identity",
+    "build_identity",
+    "diagnostic",
+    "observation",
 )
-
-
-_WASM_CODEGEN_ENV_KNOBS = (
-    "MOLT_WASM_DATA_BASE",
-    "MOLT_WASM_MIN_PAGES",
-    "MOLT_WASM_LINK",
-    "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
-    "MOLT_WASM_TABLE_BASE",
-)
-
-
-_DEFAULT_BACKEND_FEATURES: tuple[str, ...] = ("native-backend",)
+_WASM_CODEGEN_ENV_KNOBS = environment_keys("wasm")
 
 
 @functools.lru_cache(maxsize=256)
@@ -166,13 +110,14 @@ def _backend_bin_path_cached(
         cwd_str,
         session_id,
     )
-    exe_suffix = ".exe" if os_name == "nt" else ""
-    # Disambiguate binary path by feature set to prevent native/wasm/rust
-    # backend builds from overwriting each other's artifacts.
-    if backend_features != _DEFAULT_BACKEND_FEATURES:
-        features_tag = "_".join(sorted(backend_features)).replace("-", "_")
-        return target_root / profile_dir / f"molt-backend.{features_tag}{exe_suffix}"
-    return target_root / profile_dir / f"molt-backend{exe_suffix}"
+    # Cargo's unqualified output is mutable publication input, including for
+    # native. Every selected variant has its own admitted executable so a
+    # different target's Cargo build cannot replace it.
+    return (
+        target_root
+        / profile_dir
+        / backend_executable_name(os_name=os_name, features=backend_features)
+    )
 
 
 def _backend_bin_path(
@@ -192,36 +137,6 @@ def _backend_bin_path(
         backend_features,
         _molt_session_id(),
     )
-
-
-def _backend_features_for_target(
-    *,
-    is_wasm: bool,
-    is_luau_transpile: bool,
-    is_rust_transpile: bool,
-    env: Mapping[str, str] | None = None,
-) -> tuple[str, ...]:
-    """Resolve the cargo feature set the backend binary is built with.
-
-    Single source of truth for the target -> backend-feature mapping: the build
-    dispatch path selects features from these booleans, and the cache-key
-    binary-identity resolver reuses the same mapping so the key tracks the exact
-    binary the daemon will run. The ``MOLT_BACKEND == "llvm"`` branch adds the
-    ``llvm`` feature, which changes both the binary's codegen and its on-disk
-    path (feature-tagged), so it must participate in the identity.
-    """
-    source = env if env is not None else os.environ
-    if is_luau_transpile:
-        features: tuple[str, ...] = ("luau-backend",)
-    elif is_rust_transpile:
-        features = ("rust-backend",)
-    elif is_wasm:
-        features = ("wasm-backend",)
-    else:
-        features = ("native-backend",)
-    if source.get("MOLT_BACKEND") == "llvm":
-        features = (*features, "llvm")
-    return features
 
 
 def _backend_features_for_build_target(
@@ -256,30 +171,6 @@ def _backend_binary_identity(backend_bin: Path) -> str:
     return canonical_json_sha256({"schema": 2, "binary": identity})
 
 
-def _runtime_lib_freshness_candidates(
-    target_root: Path,
-    *,
-    target_triple: str | None = None,
-    profile_dirs: tuple[str, ...] | None = None,
-) -> tuple[Path, ...]:
-    profile_dirs = profile_dirs or _active_artifact_profile_dirs()
-    names = _runtime_lib_archive_names(target_triple)
-    candidates: list[Path] = []
-    seen: set[Path] = set()
-    for profile_dir in profile_dirs:
-        roots = [target_root / profile_dir]
-        if target_triple:
-            roots.append(target_root / target_triple / profile_dir)
-        for root in roots:
-            for name in names:
-                path = root / name
-                if path in seen:
-                    continue
-                seen.add(path)
-                candidates.append(path)
-    return tuple(candidates)
-
-
 @functools.lru_cache(maxsize=64)
 def _backend_codegen_env_inputs_cached(
     is_wasm: bool,
@@ -297,27 +188,13 @@ def _backend_codegen_env_inputs(
     is_wasm: bool,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    source = env if env is not None else os.environ
-    native_values = tuple(
-        (key, value)
-        for key in _NATIVE_CODEGEN_ENV_KNOBS
-        if (value := (source.get(key) or "").strip())
+    source = (
+        env if env is not None else native_runtime_codegen_environment(os.environ, None)
     )
-    wasm_values = tuple(
-        (key, value)
-        for key in _WASM_CODEGEN_ENV_KNOBS
-        if (value := (source.get(key) or "").strip())
-    )
+    payload = codegen_environment_inputs(is_wasm=is_wasm, env=source)
     if env is None:
-        return _backend_codegen_env_inputs_cached(
-            is_wasm,
-            native_values,
-            wasm_values,
-        )
-    payload = {key: value for key, value in native_values}
-    if is_wasm:
-        payload.update({key: value for key, value in wasm_values})
-    return {name: payload[name] for name in sorted(payload)}
+        return _backend_codegen_env_inputs_cached(is_wasm, tuple(payload.items()), ())
+    return payload
 
 
 def _command_has_path_separator(command: str) -> bool:
@@ -348,122 +225,49 @@ def _backend_daemon_config_digest(
     backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
 ) -> str:
     source = env if env is not None else os.environ
-    payload = {
-        "schema": _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION,
-        "project_root": str(project_root.resolve()),
-        "cargo_profile": cargo_profile,
-        "codegen": _backend_codegen_env_inputs(is_wasm=False, env=env),
-        "backend_features": sorted(backend_features),
-        "backend_compiler_fingerprint": source.get(
-            "MOLT_BACKEND_COMPILER_FINGERPRINT", ""
-        ),
-        "compiler_runtime_backend_fingerprint": _cache_fingerprint(
-            backend_features=backend_features
-        ),
-        "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
-    }
-    if backend_bin is not None:
-        payload["freshness"] = _backend_daemon_freshness_inputs(
-            project_root,
-            backend_bin,
-            target_triple=target_triple,
-        )
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _path_freshness_fingerprint(path: Path) -> dict[str, object]:
     try:
-        stat = path.stat()
-    except OSError:
-        return {
-            "path": os.fspath(path),
-            "exists": False,
-        }
-    return {
-        "path": os.fspath(path),
-        "exists": True,
-        "mtime_ns": stat.st_mtime_ns,
-        "size": stat.st_size,
-    }
-
-
-def _source_tree_freshness_fingerprint(root: Path, pattern: str) -> dict[str, object]:
-    newest_path: str | None = None
-    newest_mtime_ns = 0
-    file_count = 0
-    try:
-        if not root.is_dir():
-            return {
-                "root": os.fspath(root),
-                "exists": False,
-                "pattern": pattern,
-                "file_count": 0,
-                "newest_mtime_ns": 0,
-                "newest_path": None,
-            }
-        for path in root.rglob(pattern):
-            try:
-                if not path.is_file():
-                    continue
-                stat = path.stat()
-            except OSError:
-                continue
-            file_count += 1
-            if stat.st_mtime_ns > newest_mtime_ns:
-                newest_mtime_ns = stat.st_mtime_ns
-                newest_path = os.fspath(path)
-    except OSError:
-        return {
-            "root": os.fspath(root),
-            "exists": False,
-            "pattern": pattern,
-            "file_count": file_count,
-            "newest_mtime_ns": newest_mtime_ns,
-            "newest_path": newest_path,
-        }
-    return {
-        "root": os.fspath(root),
-        "exists": True,
-        "pattern": pattern,
-        "file_count": file_count,
-        "newest_mtime_ns": newest_mtime_ns,
-        "newest_path": newest_path,
-    }
-
-
-def _backend_daemon_freshness_inputs(
-    project_root: Path,
-    backend_bin: Path,
-    *,
-    target_triple: str | None = None,
-) -> dict[str, object]:
-    target_root = _cargo_target_root(project_root)
-    runtime_candidates = [
-        _path_freshness_fingerprint(path)
-        for path in _runtime_lib_freshness_candidates(
-            target_root,
-            target_triple=target_triple,
+        installed = installed_compiler_admission(
+            project_root, backend_features, cargo_profile
         )
-        if path.exists()
-    ]
-    return {
-        "backend_bin": _backend_binary_identity(backend_bin),
-        "target_root": os.fspath(target_root),
-        "target_triple": target_triple,
-        "runtime_libs": runtime_candidates,
-        "frontend_init": _path_freshness_fingerprint(
-            project_root / "src" / "molt" / "frontend" / "__init__.py"
-        ),
-        "backend_rs": _source_tree_freshness_fingerprint(
-            project_root / "runtime" / "molt-backend" / "src",
-            "*.rs",
-        ),
-        "runtime_rs": _source_tree_freshness_fingerprint(
-            project_root / "runtime" / "molt-runtime" / "src",
-            "*.rs",
-        ),
-    }
+        if (
+            installed is not None
+            and backend_bin is not None
+            and backend_bin != installed.compiler.binary
+        ):
+            raise CompilerIdentityError(
+                "Daemon compiler differs from admitted installation"
+            )
+        # Admission already binds compiler source, prepared Cargo inputs and bytes.
+        # Preserve request codegen/runtime ABI identity, without rescanning sources
+        # or resolving the same developer plan a second time for daemon selection.
+        compiler = (
+            installed.fingerprint
+            if installed is not None
+            else source.get("MOLT_BACKEND_COMPILER_FINGERPRINT", "")
+        )
+        if not compiler:
+            compiler = _cache_fingerprint(
+                backend_features=backend_features,
+                env=source,
+                cargo_profile=cargo_profile,
+            )
+        payload = {
+            "schema": _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION,
+            "project_root": str(project_root.resolve()),
+            "cargo_profile": cargo_profile,
+            "codegen": _backend_codegen_env_inputs(is_wasm=False, env=source),
+            "backend_features": sorted(backend_features),
+            "backend_compiler_fingerprint": compiler,
+            "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
+            "target_triple": target_triple,
+        }
+        if backend_bin is not None:
+            payload["backend_binary"] = _backend_binary_identity(backend_bin)
+        return canonical_json_sha256(payload)
+    except CompilerIdentityError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise CompilerIdentityError(f"Daemon compiler identity: {exc}") from exc
 
 
 def _short_backend_daemon_socket_dir(default_dir: Path) -> Path:
@@ -495,11 +299,9 @@ def _backend_daemon_paths_cached(
     tempdir_str: str,
     session_id: str = "",  # Must be in cache key for session isolation
 ) -> tuple[Path, Path, Path]:
-    project_root = Path(project_root_str)
-    daemon_digest = config_digest or _backend_daemon_config_digest(
-        project_root,
-        cargo_profile,
-    )
+    if not config_digest:
+        raise CompilerIdentityError("Daemon paths require an admitted config digest")
+    daemon_digest = config_digest
     return _backend_daemon_paths_bundle(
         project_root_str=project_root_str,
         cargo_profile=cargo_profile,
@@ -523,7 +325,7 @@ def _backend_daemon_socket_path(
     socket_path, _log_path, _pid_path = _backend_daemon_paths_cached(
         os.fspath(project_root),
         cargo_profile,
-        config_digest,
+        config_digest or _backend_daemon_config_digest(project_root, cargo_profile),
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip(),
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
         os.fspath(_build_state_root(project_root)),
@@ -543,7 +345,7 @@ def _backend_daemon_log_path(
     _socket_path, log_path, _pid_path = _backend_daemon_paths_cached(
         os.fspath(project_root),
         cargo_profile,
-        config_digest,
+        config_digest or _backend_daemon_config_digest(project_root, cargo_profile),
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip(),
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
         os.fspath(_build_state_root(project_root)),
@@ -563,7 +365,7 @@ def _backend_daemon_identity_path(
     _socket_path, _log_path, identity_path = _backend_daemon_paths_cached(
         os.fspath(project_root),
         cargo_profile,
-        config_digest,
+        config_digest or _backend_daemon_config_digest(project_root, cargo_profile),
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip(),
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
         os.fspath(_build_state_root(project_root)),
@@ -714,97 +516,6 @@ def _sweep_orphaned_backend_daemon_locks_once(project_root: Path) -> None:
     except Exception:
         # Sweep is best-effort — never block daemon spawn on cleanup errors.
         pass
-
-
-def _backend_daemon_binary_is_newer(
-    backend_bin: Path,
-    identity_path: Path,
-    *,
-    target_triple: str | None = None,
-) -> bool:
-    """Check if the backend binary OR runtime library is newer than the daemon.
-
-    This prevents the daemon from serving stale compiled code when either
-    the backend or runtime has been rebuilt.
-    """
-    try:
-        identity_mtime = identity_path.stat().st_mtime + 1e-6
-        if backend_bin.stat().st_mtime > identity_mtime:
-            return True
-        # Also check if the runtime library was rebuilt. The daemon
-        # links compiled output against the runtime, so a stale daemon
-        # produces binaries with old runtime behavior.  The staticlib
-        # bundles all sub-crates (serial, crypto, compression, math, tk)
-        # so checking the linkable runtime aliases covers the entire
-        # multi-crate tree without conflating stdlib profile identities.
-        #
-        # Discover project root from Cargo.toml proximity to backend binary,
-        # handling CARGO_TARGET_DIR and non-standard layouts.
-        candidate = backend_bin.parent
-        for _ in range(5):
-            if (candidate / "Cargo.toml").exists():
-                break
-            candidate = candidate.parent
-        else:
-            candidate = backend_bin.parent.parent.parent  # fallback
-        # Resolve the runtime artifact root through the canonical cargo-target
-        # resolver so explicit CARGO_TARGET_DIR always wins over session fallback.
-        target_root = _cargo_target_root(candidate)
-        for runtime_lib in _runtime_lib_freshness_candidates(
-            target_root,
-            target_triple=target_triple,
-        ):
-            try:
-                if runtime_lib.stat().st_mtime > identity_mtime:
-                    return True
-            except OSError:
-                continue
-        # Also check frontend source — if the compiler itself changed,
-        # the daemon's cached compilations may produce different IR.
-        frontend_init = candidate / "src" / "molt" / "frontend" / "__init__.py"
-        try:
-            if frontend_init.stat().st_mtime > identity_mtime:
-                return True
-        except OSError:
-            pass
-        # Check backend AND runtime Rust source files — cargo's incremental
-        # compilation may NOT update the binary mtime when it determines the
-        # output is equivalent (content hash match).  But if any .rs source in
-        # the backend or runtime crate tree is newer than the daemon PID, the
-        # daemon may be stale. This catches source edits followed by a cargo
-        # build that skips the final link step due to an equivalent output hash.
-        #
-        # The runtime is split across the main `molt-runtime` crate and extracted
-        # subcrates (`molt-runtime-math`, `molt-runtime-serial`, ...). An edit to
-        # any of them can change the linkable runtime behavior, so all runtime
-        # crates participate in daemon staleness.
-        runtime_root = candidate / "runtime"
-        src_dirs = [candidate / "runtime" / "molt-backend" / "src"]
-        try:
-            if runtime_root.is_dir():
-                src_dirs.extend(
-                    crate_dir / "src"
-                    for crate_dir in sorted(runtime_root.glob("molt-runtime*"))
-                    if (crate_dir / "src").is_dir()
-                )
-        except OSError:
-            pass
-        for src_dir in src_dirs:
-            try:
-                if not src_dir.is_dir():
-                    continue
-                # Check the newest .rs file in the source tree.
-                newest_rs = max(
-                    (f.stat().st_mtime for f in src_dir.rglob("*.rs") if f.is_file()),
-                    default=0.0,
-                )
-                if newest_rs > identity_mtime:
-                    return True
-            except OSError:
-                continue
-        return False
-    except OSError:
-        return False
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1117,7 +828,7 @@ def _backend_daemon_request_payload_bytes(
 def _write_backend_ir_json_file(path: Path, ir: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(ir, handle, separators=(",", ":"), default=_json_ir_default)
+        _write_backend_ir_text(handle, ir)
 
 
 def _write_backend_ir_lease(project_root: Path, ir: Mapping[str, Any]) -> Path:
@@ -1169,6 +880,7 @@ def _backend_daemon_compile_request_bytes(
     stdlib_module_symbols_json: str | None = None,
     probe_cache_only: bool = False,
     include_health: bool = False,
+    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> tuple[bytes | None, str | None]:
     contract_error = _backend_daemon_artifact_contract_error(
         artifact_contract,
@@ -1181,6 +893,8 @@ def _backend_daemon_compile_request_bytes(
     )
     if contract_error is not None:
         return None, contract_error
+    if artifact_contract.is_native and native_runtime_codegen_binding is None:
+        return None, "native backend request requires a runtime codegen binding"
     effective_cache_key = _backend_artifact_source_key(
         cache_key,
         stdlib_object_cache_key=stdlib_object_cache_key,
@@ -1247,14 +961,14 @@ def _backend_daemon_compile_request_bytes(
         env_passthrough["MOLT_STDLIB_CACHE_MANIFEST"] = stdlib_object_manifest
     if stdlib_module_symbols_json:
         env_passthrough["MOLT_STDLIB_MODULE_SYMBOLS"] = stdlib_module_symbols_json
-    # Per-app callable resolver validation set: the file of callable symbols the
-    # linked runtime staticlib defines. Set in the ambient env once the runtime
-    # lib is ready (see `_stage_runtime_callable_symbols_for_native_codegen`);
-    # forward it so the daemon's resolver never references a callable absent
-    # from the staticlib.
-    runtime_callable_symbols = os.environ.get("MOLT_RUNTIME_CALLABLE_SYMBOLS")
-    if runtime_callable_symbols:
-        env_passthrough["MOLT_RUNTIME_CALLABLE_SYMBOLS"] = runtime_callable_symbols
+    # Callable inputs are selected by this operation's binding, never ambient
+    # Python process state. Rust admits the exact supplied bytes before parsing.
+    try:
+        env_passthrough = native_runtime_codegen_environment(
+            env_passthrough, native_runtime_codegen_binding
+        )
+    except (OSError, ValueError) as exc:
+        return None, f"native callable dispatch admission failed: {exc}"
     if env_passthrough:
         payload["env"] = env_passthrough
     return _backend_daemon_request_payload_bytes(payload)
@@ -1443,42 +1157,28 @@ def _start_backend_daemon(
             existing_identity,
             allow_health_probe=True,
         ):
-            if _backend_daemon_binary_is_newer(
-                backend_bin=backend_bin,
-                identity_path=identity_path,
-                target_triple=target_triple,
-            ):
-                _report_daemon_issue(
-                    "Backend daemon freshness changed for "
-                    f"{identity_path}; preserving verified pid "
-                    f"{existing_identity.pid} and using one-shot backend compile "
-                    "for this request. Production daemon paths must encode the "
-                    "backend/runtime/source freshness digest."
+            if socket_path.exists():
+                probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
+                ready, _ = _backend_daemon_wait_until_ready(
+                    socket_path,
+                    ready_timeout=probe_window,
+                    probe_timeout=probe_window,
                 )
-                return False
-            else:
-                if socket_path.exists():
-                    probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
-                    ready, _ = _backend_daemon_wait_until_ready(
-                        socket_path,
-                        ready_timeout=probe_window,
-                        probe_timeout=probe_window,
-                    )
-                    if ready:
-                        return True
-                    # A verified daemon that misses the short startup probe may
-                    # simply be inside a long synchronous compile. Treat the
-                    # identity as authoritative and let the compile request
-                    # queue on that socket; restarting here can orphan a busy
-                    # daemon and submit the same heavy full-IR request twice.
+                if ready:
                     return True
-                else:
-                    _terminate_backend_daemon_identity(
-                        existing_identity,
-                        grace=1.0,
-                    )
-                    _remove_backend_daemon_identity(identity_path)
-                    existing_identity = None
+                # A verified daemon that misses the short startup probe may
+                # simply be inside a long synchronous compile. Treat the
+                # identity as authoritative and let the compile request
+                # queue on that socket; restarting here can orphan a busy
+                # daemon and submit the same heavy full-IR request twice.
+                return True
+            else:
+                _terminate_backend_daemon_identity(
+                    existing_identity,
+                    grace=1.0,
+                )
+                _remove_backend_daemon_identity(identity_path)
+                existing_identity = None
         else:
             _report_daemon_issue(
                 "Ignoring stale backend daemon identity "
@@ -1698,6 +1398,7 @@ def _compile_with_backend_daemon(
     stdlib_module_symbols: Collection[str] | None = None,
     timeout: float | None,
     daemon_identity: _BackendDaemonIdentity | None = None,
+    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> _BackendDaemonCompileResult:
     contract_error = _backend_daemon_artifact_contract_error(
         artifact_contract,
@@ -1746,6 +1447,7 @@ def _compile_with_backend_daemon(
             stdlib_object_manifest=stdlib_object_manifest,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
             include_health=False,
+            native_runtime_codegen_binding=native_runtime_codegen_binding,
         )
         return full_request_bytes, encode_err
 
@@ -1786,6 +1488,7 @@ def _compile_with_backend_daemon(
             stdlib_module_symbols_json=stdlib_module_symbols_json,
             probe_cache_only=True,
             include_health=False,
+            native_runtime_codegen_binding=native_runtime_codegen_binding,
         )
         if probe_encode_err is not None:
             return _BackendDaemonCompileResult(

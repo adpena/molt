@@ -50,19 +50,18 @@ def test_cargo_spawn_failure_is_structured(tmp_path, monkeypatch, capsys):
     def unavailable(*args, **kwargs):
         raise FileNotFoundError("cargo executable missing")
 
-    monkeypatch.setattr(backend_binary, "_run_cargo_with_sccache_retry", unavailable)
+    monkeypatch.setattr(backend_binary, "_run_resolved_cargo_plan", unavailable)
     assert _dispatch(["internal-backend-build", "--target", "native", "--json"]) == 2
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert payload["data"]["failure"]["phase"] == "backend_cargo_build"
     assert "cargo executable missing" in captured.err
+    assert payload["data"]["stage_timings_ms"]["backend_binary_cargo_build"] >= 0
 
 
 @pytest.mark.parametrize("target", ["native", "wasm", "luau", "rust"])
-@pytest.mark.parametrize(
-    "failure_stage", ["initial", "sccache-retry", "feature-rebuild"]
-)
-def test_backend_admission_preserves_stale_lockfile_on_every_cargo_attempt(
+@pytest.mark.parametrize("failure_stage", ["initial", "wrapper", "feature-probe"])
+def test_backend_admission_preserves_lockfile_on_its_single_cargo_attempt(
     target, failure_stage, tmp_path, monkeypatch, capsys
 ):
     import os
@@ -77,33 +76,24 @@ def test_backend_admission_preserves_stale_lockfile_on_every_cargo_attempt(
     _fake_backend_toolchain(monkeypatch)
     monkeypatch.setattr(
         backend_binary,
-        "_run_cargo_with_sccache_retry",
-        cargo_execution._run_cargo_with_sccache_retry,
+        "_run_resolved_cargo_plan",
+        cargo_execution._run_resolved_cargo_plan,
     )
-    original_environment = backend_binary._cargo_build_env
-
-    def environment():
-        env = original_environment()
-        if failure_stage == "sccache-retry":
-            env["RUSTC_WRAPPER"] = "sccache"
-        return env
-
-    monkeypatch.setattr(backend_binary, "_cargo_build_env", environment)
+    if failure_stage == "wrapper":
+        monkeypatch.setenv("RUSTC_WRAPPER", "sccache")
     attempts = []
     probes = []
     stale_lock_error = "the lock file needs to be updated but --locked was passed"
 
     def external(cmd, **kwargs):
-        # Exercise the real attempt/retry controller at its external boundary.
-        # Model Cargo's observable stale-lock behavior, including the unsafe
-        # update a missing flag would permit, rather than asserting argv alone.
+        # Keep the real resolved-plan executor and its capacity boundary. Model
+        # the lockfile mutation an accidentally unlocked Cargo call would allow.
         attempts.append((list(cmd), kwargs["env"].get("RUSTC_WRAPPER")))
-        if failure_stage == "sccache-retry" and len(attempts) == 1:
+        if failure_stage == "wrapper":
             return subprocess.CompletedProcess(
                 cmd, 2, "", "sccache: error: cache server unavailable"
             )
-        stale = failure_stage != "feature-rebuild" or len(attempts) > 1
-        if stale:
+        if failure_stage == "initial":
             if "--locked" in cmd:
                 return subprocess.CompletedProcess(cmd, 101, "", stale_lock_error)
             lockfile.write_bytes(b"version = 4\n# unexpectedly updated resolution\n")
@@ -119,9 +109,7 @@ def test_backend_admission_preserves_stale_lockfile_on_every_cargo_attempt(
 
     def probe(cmd, **kwargs):
         probes.append(list(cmd))
-        if failure_stage == "feature-rebuild" and len(probes) == 1:
-            return subprocess.CompletedProcess(cmd, 1, b"", b"feature mismatch")
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return subprocess.CompletedProcess(cmd, 1, b"", b"feature mismatch")
 
     monkeypatch.setattr(cargo_execution, "_run_completed_command", external)
     monkeypatch.setattr(backend_binary, "_run_subprocess_captured_to_tempfiles", probe)
@@ -132,19 +120,23 @@ def test_backend_admission_preserves_stale_lockfile_on_every_cargo_attempt(
     assert result == 2
     assert payload["status"] == "error"
     assert payload["data"]["failure"]["phase"] == (
-        "backend_feature_rebuild"
-        if failure_stage == "feature-rebuild"
+        "backend_feature_probe"
+        if failure_stage == "feature-probe"
         else "backend_cargo_build"
     )
-    assert payload["data"]["failure"]["returncode"] == 101
-    assert stale_lock_error in captured.err
+    expected_code, expected_message = {
+        "initial": (101, stale_lock_error),
+        "wrapper": (2, "sccache: error: cache server unavailable"),
+        "feature-probe": (1, "feature mismatch"),
+    }[failure_stage]
+    assert payload["data"]["failure"]["returncode"] == expected_code
+    assert expected_message in captured.err
     assert "receipts" not in payload["data"]
-    assert len(attempts) == (1 if failure_stage == "initial" else 2)
-    assert all(command.count("--locked") == 1 for command, _wrapper in attempts)
-    assert len(probes) == (1 if failure_stage == "feature-rebuild" else 0)
-    if failure_stage == "sccache-retry":
+    assert len(attempts) == 1
+    assert attempts[0][0].count("--locked") == 1
+    assert len(probes) == (1 if failure_stage == "feature-probe" else 0)
+    if failure_stage == "wrapper":
         assert attempts[0][1] == "sccache"
-        assert attempts[1][1] in (None, "")
 
 
 @pytest.mark.parametrize("override,expected", [(None, 1200), ("0.2", 0.2)])
@@ -303,8 +295,8 @@ def test_real_cargo_capacity_rejection_preserves_prewarm_json(
     # Keep Cargo admission real: capacity must fail before any external launch.
     monkeypatch.setattr(
         backend_binary,
-        "_run_cargo_with_sccache_retry",
-        cargo_execution._run_cargo_with_sccache_retry,
+        "_run_resolved_cargo_plan",
+        cargo_execution._run_resolved_cargo_plan,
     )
     monkeypatch.setenv("MOLT_DISK_GUARD_HIGH_WATER_GB", bad_capacity)
 
@@ -319,9 +311,10 @@ def test_real_cargo_capacity_rejection_preserves_prewarm_json(
 
 
 @pytest.mark.parametrize("failure_kind", ["capacity", "spawn"])
-def test_real_feature_rebuild_rejection_preserves_json_and_timing(
+def test_feature_probe_failure_does_not_retry_a_different_build_environment(
     failure_kind, tmp_path, monkeypatch, capsys
 ):
+    import os
     import subprocess
     from molt.cli import cargo_execution
 
@@ -329,50 +322,41 @@ def test_real_feature_rebuild_rejection_preserves_json_and_timing(
     _fake_backend_toolchain(monkeypatch)
     monkeypatch.setattr(
         backend_binary,
-        "_run_cargo_with_sccache_retry",
-        cargo_execution._run_cargo_with_sccache_retry,
+        "_run_resolved_cargo_plan",
+        cargo_execution._run_resolved_cargo_plan,
     )
     external_calls = []
 
     def external(cmd, **kwargs):
         external_calls.append(cmd)
         if len(external_calls) > 1:
-            raise FileNotFoundError("feature rebuild cargo vanished")
+            raise FileNotFoundError("unexpected retry cargo vanished")
         output = (
             Path(kwargs["env"]["CARGO_TARGET_DIR"])
             / "release"
-            / ("molt-backend.exe" if __import__("os").name == "nt" else "molt-backend")
+            / ("molt-backend.exe" if os.name == "nt" else "molt-backend")
         )
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"backend executable")
+        output.chmod(0o755)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def mismatch(cmd, **kwargs):
         if failure_kind == "capacity":
             monkeypatch.setenv("MOLT_DISK_GUARD_HIGH_WATER_GB", "abc")
-            # The backend captured build_env before its first Cargo attempt;
-            # update that same environment at the actual external boundary.
-            captured_env["MOLT_DISK_GUARD_HIGH_WATER_GB"] = "abc"
         return subprocess.CompletedProcess(cmd, 1, b"", b"feature mismatch")
 
-    captured_env = {}
-    original_attempt = cargo_execution._run_cargo_attempt
-
-    def attempt(*args, **kwargs):
-        nonlocal captured_env
-        captured_env = kwargs["env"]
-        return original_attempt(*args, **kwargs)
-
-    monkeypatch.setattr(cargo_execution, "_run_cargo_attempt", attempt)
     monkeypatch.setattr(cargo_execution, "_run_completed_command", external)
     monkeypatch.setattr(
         backend_binary, "_run_subprocess_captured_to_tempfiles", mismatch
     )
     assert _dispatch(["internal-backend-build", "--target", "native", "--json"]) == 2
     payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["failure"]["phase"] == "backend_feature_rebuild"
-    assert payload["data"]["stage_timings_ms"]["backend_binary_feature_rebuild"] >= 0
-    assert len(external_calls) == (1 if failure_kind == "capacity" else 2)
+    assert payload["data"]["failure"]["phase"] == "backend_feature_probe"
+    assert payload["data"]["stage_timings_ms"]["backend_binary_cargo_build"] >= 0
+    assert payload["data"]["stage_timings_ms"]["backend_binary_probe"] >= 0
+    assert "feature mismatch" in payload["errors"][0]
+    assert len(external_calls) == 1
 
 
 def test_alias_copy_rejects_bytes_changed_after_successful_probe(

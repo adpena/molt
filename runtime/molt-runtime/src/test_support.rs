@@ -115,45 +115,56 @@ impl Drop for MaximumCapabilityTierTestEnvironment {
 
 struct PendingExceptionSnapshot {
     c_error: Option<molt_cpython_abi::api::errors::OwnedCError>,
-    runtime_error_bits: Option<u64>,
+    runtime_error: Option<crate::builtins::exceptions::RaisedSnapshot>,
 }
 
 impl PendingExceptionSnapshot {
     fn detach() -> Self {
         let c_error = molt_cpython_abi::api::errors::take_current_error();
-        let runtime_error_bits = crate::with_gil_entry_nopanic!(_py, {
-            if !crate::exception_pending(_py) {
-                None
-            } else {
-                let bits = crate::exception_last_bits_noinc(_py)
-                    .expect("pending runtime exception must have an owned instance");
-                crate::inc_ref_bits(_py, bits);
-                crate::clear_exception(_py);
-                Some(bits)
-            }
+        let runtime_error = crate::with_gil_entry_nopanic!(py, {
+            Some(crate::builtins::exceptions::take_raised(py))
         });
         Self {
             c_error,
-            runtime_error_bits,
+            runtime_error,
         }
     }
 
-    fn restore(self) {
-        drop(molt_cpython_abi::api::errors::take_current_error());
-        crate::with_gil_entry_nopanic!(_py, {
-            crate::clear_exception(_py);
-            if let Some(bits) = self.runtime_error_bits {
-                let ptr = crate::obj_from_bits(bits)
-                    .as_ptr()
-                    .expect("snapshotted runtime exception must remain live");
-                crate::record_exception(_py, ptr);
-                crate::dec_ref_bits(_py, bits);
-            }
-        });
+    fn restore(mut self) {
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
         if let Some(error) = self.c_error {
             molt_cpython_abi::api::errors::restore_current_error_exact(error);
         }
+        crate::with_gil_entry_nopanic!(py, {
+            crate::builtins::exceptions::resolve_raised(py, &mut self.runtime_error);
+        });
     }
+}
+
+#[test]
+fn pending_exception_snapshot_preserves_emergency_runtime_state() {
+    use crate::builtins::exceptions::RaisedSnapshot;
+
+    let _transaction = RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        crate::record_memory_error_without_allocation(py);
+        let snapshot = PendingExceptionSnapshot::detach();
+        assert!(matches!(
+            snapshot.runtime_error,
+            Some(RaisedSnapshot::Emergency(_))
+        ));
+        assert!(!crate::exception_pending(py));
+        crate::record_memory_error_without_allocation(py);
+        snapshot.restore();
+        assert!(crate::exception_pending(py));
+        let restored = PendingExceptionSnapshot::detach();
+        assert!(matches!(
+            restored.runtime_error,
+            Some(RaisedSnapshot::Emergency(_))
+        ));
+        restored.restore();
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    });
 }
 
 /// One scoped authority for process-global runtime test state.
@@ -165,6 +176,7 @@ impl PendingExceptionSnapshot {
 pub(crate) struct RuntimeTestTransaction {
     pending_calls: PendingCallTestCustody,
     pending_exceptions: Option<PendingExceptionSnapshot>,
+    interpreter_sys: Option<crate::builtins::module_table::InterpreterSysTestSnapshot>,
     gc: Option<crate::object::gc::GcRuntimeTestSnapshot>,
     execution_thread_attached: bool,
     retained_thread_state_before: bool,
@@ -286,6 +298,9 @@ impl RuntimeTestTransaction {
         let execution_thread_attached =
             molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
         let pending_exceptions = PendingExceptionSnapshot::detach();
+        let interpreter_sys = crate::with_gil_entry_nopanic!(py, {
+            crate::builtins::module_table::InterpreterSysTestSnapshot::detach(py)
+        });
         let gc = isolate_gc.then(|| {
             crate::with_gil_entry_nopanic!(_py, {
                 let state = &crate::runtime_state(_py).gc;
@@ -308,6 +323,7 @@ impl RuntimeTestTransaction {
         Self {
             pending_calls,
             pending_exceptions: Some(pending_exceptions),
+            interpreter_sys: Some(interpreter_sys),
             gc,
             execution_thread_attached,
             retained_thread_state_before,
@@ -318,6 +334,11 @@ impl RuntimeTestTransaction {
 
 impl Drop for RuntimeTestTransaction {
     fn drop(&mut self) {
+        if let Some(snapshot) = self.interpreter_sys.take() {
+            crate::with_gil_entry_nopanic!(py, {
+                snapshot.restore(py);
+            });
+        }
         if let Some(snapshot) = self.gc.take() {
             crate::with_gil_entry_nopanic!(_py, {
                 let outcome = unsafe { crate::object::gc::collect_cycles(_py) };
@@ -497,4 +518,53 @@ fn transaction_rejects_gil_before_process_state_lock() {
         failure.is_err(),
         "GIL-first fixture admission must fail before waiting on the process-state mutex"
     );
+}
+
+/// Standalone runtime tests explicitly publish the same provider namespace as
+/// a compiled initializer. This fixture owns/restores its cache projection;
+/// production lookup has no test-only materialization or secondary cache.
+pub(crate) struct NativeProviderTestNamespace {
+    name: u64,
+    previous: u64,
+    module: u64,
+}
+
+impl NativeProviderTestNamespace {
+    pub(crate) fn new(py: &crate::PyToken<'_>, provider: &str) -> Self {
+        let name = crate::attr_name_bits_from_bytes(py, provider.as_bytes()).unwrap();
+        let previous = crate::molt_module_cache_get(name);
+        crate::clear_exception(py);
+        crate::molt_module_cache_del(name);
+        crate::clear_exception(py);
+        let module = crate::molt_module_new(name);
+        assert!(!crate::obj_from_bits(module).is_none());
+        assert!(crate::intrinsics::registry::publish_python_native_namespace(py, provider, module));
+        crate::molt_module_cache_set(name, module);
+        assert!(!crate::exception_pending(py));
+        Self {
+            name,
+            previous,
+            module,
+        }
+    }
+
+    pub(crate) fn bits(&self) -> u64 {
+        self.module
+    }
+}
+
+impl Drop for NativeProviderTestNamespace {
+    fn drop(&mut self) {
+        crate::with_gil_entry_nopanic!(py, {
+            crate::clear_exception(py);
+            crate::molt_module_cache_del(self.name);
+            crate::clear_exception(py);
+            if !crate::obj_from_bits(self.previous).is_none() {
+                crate::molt_module_cache_set(self.name, self.previous);
+            }
+            for bits in [self.name, self.previous, self.module] {
+                crate::dec_ref_bits(py, bits);
+            }
+        });
+    }
 }

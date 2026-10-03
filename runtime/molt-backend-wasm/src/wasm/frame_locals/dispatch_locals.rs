@@ -6,7 +6,6 @@ pub(in crate::wasm) struct WasmDispatchFrameLocals {
     pub(in crate::wasm) state_local: u32,
     pub(in crate::wasm) resume_state_local: Option<u32>,
     pub(in crate::wasm) block_map_base_local: u32,
-    pub(in crate::wasm) return_local: u32,
     pub(in crate::wasm) self_ptr_local: Option<u32>,
     pub(in crate::wasm) state_remap_base_local: Option<u32>,
     pub(in crate::wasm) state_remap_value_local: Option<u32>,
@@ -47,11 +46,6 @@ impl WasmFrameLocals {
             local_types,
             local_count,
         );
-        let return_local = self.allocate_anonymous(
-            WasmFrameAnonymousLocal::DispatchReturn,
-            local_types,
-            local_count,
-        );
         let state_remap_base_local = stateful.then(|| {
             self.allocate_anonymous(
                 WasmFrameAnonymousLocal::DispatchStateRemapBase,
@@ -71,7 +65,6 @@ impl WasmFrameLocals {
             state_local,
             resume_state_local,
             block_map_base_local,
-            return_local,
             self_ptr_local,
             state_remap_base_local,
             state_remap_value_local,

@@ -8,6 +8,11 @@ separate under-ceiling mixins.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_private_names import (
+    python_import_binding,
+    python_source_field,
+    resolve_python_private_names,
+)
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis import native_support_slice as _native_support_slice
@@ -194,6 +199,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         return pruned
 
     def visit_Module(self, node: ast.Module) -> None:
+        resolve_python_private_names(node)
         future_annotations = self._module_has_future_annotations(node)
         syntax_error = class_annotation_syntax_error(
             node,
@@ -227,7 +233,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             ):
                 identifiers.add(item.name)
             elif isinstance(item, ast.alias):
-                identifiers.add(item.asname or item.name.partition(".")[0])
+                identifiers.add(python_import_binding(item))
             elif isinstance(item, ast.ExceptHandler) and item.name is not None:
                 identifiers.add(item.name)
             elif (
@@ -295,11 +301,12 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         self.class_definition_pending = set(self.module_declared_classes)
         self.reserved_func_symbols = {}
         for func_name, kind in self.module_declared_funcs.items():
+            function_kind = normalize_function_kind(kind)
             if (
-                normalize_function_kind(kind) is not None
+                function_kind is not None
                 and func_name not in self.module_elided_deleted_funcs
             ):
-                self._reserve_function_symbol(func_name)
+                self._reserve_function_symbol(func_name, kind=function_kind)
         self.module_defined_funcs = set()
         # module_func_defaults is populated by _populate_sema_state above (the
         # AST-derived defaults from SemaResult, with the known_func_defaults
@@ -554,7 +561,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                 if alias.asname:
                     self._typing_import_aliases.add(alias.asname)
                 # Fall through — typing names have runtime significance.
-            bind_name = alias.asname or module_name.split(".")[0]
+            bind_name = python_import_binding(alias)
             if self._source_imports_use_transaction():
                 if alias.asname:
                     bound_val = self._emit_source_import_alias_binding(module_name)
@@ -673,21 +680,16 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                     "require_intrinsic",
                     "_require_intrinsic",
                 }:
-                    bound_val = self._emit_runtime_function_with_none_defaults(
-                        "molt_require_intrinsic_runtime",
-                        2,
-                        default_count=1,
+                    bound_val = self._emit_intrinsic_function(
+                        "molt_require_intrinsic_runtime"
                     )
                 elif alias.name in {"load_intrinsic", "_load_intrinsic"}:
-                    bound_val = self._emit_runtime_function_with_none_defaults(
-                        "molt_load_intrinsic_runtime",
-                        2,
-                        default_count=1,
+                    bound_val = self._emit_intrinsic_function(
+                        "molt_load_intrinsic_runtime"
                     )
                 elif alias.name == "runtime_active":
-                    bound_val = self._emit_runtime_function(
-                        "molt_runtime_active_runtime",
-                        0,
+                    bound_val = self._emit_intrinsic_function(
+                        "molt_runtime_active_runtime"
                     )
                 else:
                     bound_val = MoltValue(self.next_var(), type_hint="None")
@@ -697,7 +699,9 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                     bind_name, module_name, attr_name=alias.name
                 )
             return None
-        fromlist_names = tuple(alias.name for alias in node.names)
+        fromlist_names = tuple(
+            python_source_field(alias, "name") for alias in node.names
+        )
         if runtime_relative or self._source_imports_use_transaction():
             module_val = self._emit_source_import_transaction(
                 transaction_name,
@@ -734,9 +738,6 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                 imported_child_module in self.known_modules
                 or imported_child_module in self.stdlib_allowlist
             )
-            if module_name == "asyncio" and attr_name in {"run", "sleep"}:
-                module_prefix = f"{self._sanitize_module_name(module_name)}__"
-                attr_val.type_hint = f"Func:{module_prefix}{attr_name}"
             known_func_hint = self._known_module_function_type_hint(
                 module_name, attr_name
             )

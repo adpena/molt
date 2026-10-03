@@ -26,7 +26,7 @@ use super::{
 #[cfg(feature = "native-backend")]
 use super::{
     DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE,
-    NativeApplicationArtifactOptions, NativeBatchModuleMetadata, NativeBatchObjectJob,
+    NativeApplicationArtifactOptions, NativeBatchObjectJob,
     append_referenced_external_declarations, batch_external_function_names,
     compile_native_application_artifact_to_path, compile_stdlib_cache_archive,
     external_function_declarations, is_user_owned_symbol, partition_functions_for_batches,

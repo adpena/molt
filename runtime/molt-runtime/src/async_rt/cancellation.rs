@@ -22,6 +22,9 @@ pub(crate) struct CancelTokenEntry {
     pub(crate) parent: u64,
     pub(crate) cancelled: bool,
     pub(crate) refs: u64,
+    // Immutable scheduling identity, explicitly bound by an asyncio Task spawn.
+    // This does not inherit cancellation parentage and owns no guest reference.
+    pub(crate) loop_handle: Option<u64>,
 }
 
 fn trace_cancel_msg() -> bool {
@@ -42,6 +45,7 @@ pub(crate) fn default_cancel_tokens() -> HashMap<u64, CancelTokenEntry> {
             parent: 0,
             cancelled: false,
             refs: 1,
+            loop_handle: None,
         },
     );
     map
@@ -55,6 +59,40 @@ thread_local! {
 
 pub(crate) fn cancel_tokens(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, CancelTokenEntry>> {
     &runtime_state(_py).cancel_tokens
+}
+
+pub(super) fn task_loop_handle(_py: &PyToken<'_>, task_ptr: *mut u8) -> Option<u64> {
+    let token = task_tokens(_py)
+        .lock()
+        .unwrap()
+        .get(&PtrSlot(task_ptr))
+        .copied()?;
+    cancel_tokens(_py).lock().unwrap().get(&token)?.loop_handle
+}
+
+pub(super) fn bind_task_loop(
+    _py: &PyToken<'_>,
+    task_ptr: *mut u8,
+    loop_handle: u64,
+) -> Result<(), &'static str> {
+    let token = task_tokens(_py)
+        .lock()
+        .unwrap()
+        .get(&PtrSlot(task_ptr))
+        .copied()
+        .ok_or("asyncio Task has no owned execution token")?;
+    if token == 1 {
+        return Err("asyncio Task requires an owned execution token");
+    }
+    let mut tokens = cancel_tokens(_py).lock().unwrap();
+    let entry = tokens
+        .get_mut(&token)
+        .ok_or("asyncio Task execution token is retired")?;
+    if entry.loop_handle.is_some_and(|owner| owner != loop_handle) {
+        return Err("asyncio Task belongs to a different event loop");
+    }
+    entry.loop_handle = Some(loop_handle);
+    Ok(())
 }
 
 pub(crate) fn task_tokens(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, u64>> {
@@ -136,6 +174,9 @@ pub(crate) fn task_cancellation_detach(
     crate::gil_assert();
     if task_ptr.is_null() {
         return;
+    }
+    if let Some(bits) = super::scheduler::take_task_sleep(_py, task_ptr) {
+        sink.detach(bits);
     }
     let task_slot = PtrSlot(task_ptr);
     if let Some(bits) = task_cancel_messages(_py).lock().unwrap().remove(&task_slot) {
@@ -256,6 +297,8 @@ pub(crate) fn ensure_task_token(_py: &PyToken<'_>, task_ptr: *mut u8, fallback: 
 
 pub(crate) fn clear_task_token(_py: &PyToken<'_>, task_ptr: *mut u8) {
     crate::gil_assert();
+    // Loop identity belongs to the token. Retire its timer before the token.
+    super::scheduler::cancel_task_sleep(_py, task_ptr);
     let task_slot = PtrSlot(task_ptr);
     let mut map = task_tokens(_py).lock().unwrap();
     let token = map.remove(&task_slot);
@@ -435,6 +478,7 @@ pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
                 parent: parent_id,
                 cancelled: false,
                 refs: 1,
+                loop_handle: None,
             },
         );
         MoltObject::from_int(id as i64).bits()

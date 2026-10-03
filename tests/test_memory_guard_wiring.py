@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tomllib
 
 import pytest
 
@@ -18,10 +19,24 @@ from molt import temporary_artifacts
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_packaged_bootstrap_exports_only_valid_pytest_hooks():
+def test_repository_plugin_exports_only_valid_pytest_hooks():
     manager = pytest.PytestPluginManager()
-    manager.register(pytest_memory_guard_bootstrap, "molt_memory_guard")
+    manager.register(
+        pytest_memory_guard_config_plugin, "molt.pytest_memory_guard_config_plugin"
+    )
     manager.check_pending()
+
+
+def test_installation_has_no_global_pytest_hook_but_repository_loads_guard():
+    metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text("utf-8"))
+    # This metadata drives entry-point autoload in every environment where Molt
+    # is installed. Repository custody belongs to pytest's local configuration.
+    assert not metadata["project"].get("entry-points", {}).get("pytest11")
+    addopts = metadata["tool"]["pytest"]["ini_options"]["addopts"]
+    assert any(
+        addopts[index : index + 2] == ["-p", "molt.pytest_memory_guard_config_plugin"]
+        for index in range(len(addopts) - 1)
+    )
 
 
 @pytest.mark.parametrize(
@@ -135,10 +150,7 @@ def test_wiring_audit_locks_down_pytest_and_ci_gate_custody() -> None:
         for contract in check_memory_guard_wiring.PYTHON_GUARD_CONTRACTS
     }
 
-    assert contracts["pyproject.toml"] == (
-        "molt.pytest_memory_guard_bootstrap",
-        "molt.pytest_memory_guard_config_plugin",
-    )
+    assert contracts["pyproject.toml"] == ("molt.pytest_memory_guard_config_plugin",)
     assert contracts["src/molt/pytest_memory_guard_config_plugin.py"] == (
         "pytest_load_initial_conftests",
         "pytest_runtest_call",
@@ -1098,7 +1110,6 @@ def test_pytest_startup_rejects_hook_disabling_flags() -> None:
         ("--noconftest",),
         ("--confcutdir", str(REPO_ROOT.parent)),
         (f"--confcutdir={REPO_ROOT.parent}",),
-        ("-p", "no:molt_memory_guard"),
         ("-p", "no:molt.pytest_memory_guard_config_plugin"),
         ("-pno:molt.pytest_memory_guard_bootstrap",),
     ):
@@ -1112,7 +1123,6 @@ def test_pytest_startup_rejects_hook_disabling_flags() -> None:
 
 def test_pytest_startup_rejects_hook_disabling_pytest_addopts() -> None:
     for env in (
-        {"PYTEST_ADDOPTS": "-p no:molt_memory_guard"},
         {"PYTEST_ADDOPTS": "-p no:molt.pytest_memory_guard_config_plugin"},
         {"PYTEST_ADDOPTS": "-pno:molt.pytest_memory_guard_bootstrap"},
     ):

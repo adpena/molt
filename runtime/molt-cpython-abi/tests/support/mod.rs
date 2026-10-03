@@ -4,12 +4,19 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::{Mutex, MutexGuard};
 
 #[allow(dead_code)]
 pub mod fake_complex;
 #[allow(dead_code)]
 pub mod fake_foreign;
+#[allow(dead_code)]
+pub mod fake_runtime;
 pub mod fake_strings;
+
+// Builtin shells and the hook table are process-owned. A per-thread ledger
+// cannot retire their roots while another fixture is executing against them.
+static ABI_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, Default)]
 struct NativeGcState {
@@ -116,10 +123,14 @@ unsafe extern "C" fn native_gc_claim_finalizer(addr: usize) -> std::os::raw::c_i
 #[must_use = "the ABI integration transaction must live for the whole C-API test"]
 pub struct AbiTestThreadStateTransaction {
     _not_send: PhantomData<Rc<()>>,
+    _exclusive: MutexGuard<'static, ()>,
 }
 
 impl AbiTestThreadStateTransaction {
     pub fn new(mut hooks: RuntimeHooks) -> Self {
+        let exclusive = ABI_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         hooks.runtime_is_initialized = runtime_is_initialized;
         hooks.gil_ensure = gil_ensure;
         hooks.gil_leave = gil_leave;
@@ -147,8 +158,10 @@ impl AbiTestThreadStateTransaction {
             "ABI integration test inherited an attached PyThreadState"
         );
         molt_cpython_abi::bridge::molt_cpython_abi_init();
+        unsafe { molt_cpython_abi::abi_types::prepare_builtin_static_type_runtime_state() };
         Self {
             _not_send: PhantomData,
+            _exclusive: exclusive,
         }
     }
 }
@@ -156,6 +169,10 @@ impl AbiTestThreadStateTransaction {
 impl Drop for AbiTestThreadStateTransaction {
     fn drop(&mut self) {
         unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        // Use the production root-retirement authority while hooks and the
+        // execution attachment still exist. This does not sweep native nodes:
+        // fixture-owned leaks must still fail the unchanged ledger assertion.
+        unsafe { molt_cpython_abi::abi_types::retire_builtin_static_type_runtime_state() };
         molt_cpython_abi::api::object::detach_runtime_execution_thread();
         molt_cpython_abi::api::object::clear_runtime_execution_thread_state();
         NATIVE_GC_NODES.with(|nodes| {
@@ -164,6 +181,56 @@ impl Drop for AbiTestThreadStateTransaction {
                 nodes.is_empty(),
                 "ABI integration test leaked native GC identities: {nodes:?}"
             );
+        });
+    }
+}
+
+/// A test-owned static type shell whose published roots cannot outlive its
+/// physical storage. PyObject_Free also revokes its production type receipt.
+#[allow(dead_code)]
+pub struct StaticType(*mut molt_cpython_abi::abi_types::PyTypeObject);
+
+#[allow(dead_code)]
+impl StaticType {
+    pub fn new() -> Self {
+        unsafe {
+            let pointer = molt_cpython_abi::api::memory::PyObject_Malloc(std::mem::size_of::<
+                molt_cpython_abi::abi_types::PyTypeObject,
+            >())
+            .cast::<molt_cpython_abi::abi_types::PyTypeObject>();
+            assert!(!pointer.is_null());
+            pointer.write(std::mem::zeroed());
+            (*pointer).ob_base.ob_base.ob_refcnt = 1;
+            Self(pointer)
+        }
+    }
+    pub fn as_ptr(&self) -> *mut molt_cpython_abi::abi_types::PyTypeObject {
+        self.0
+    }
+}
+impl std::ops::Deref for StaticType {
+    type Target = molt_cpython_abi::abi_types::PyTypeObject;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.0 }
+    }
+}
+impl std::ops::DerefMut for StaticType {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.0 }
+    }
+}
+impl Drop for StaticType {
+    fn drop(&mut self) {
+        molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
+            for field in [
+                &raw mut (*self.0).tp_dict,
+                &raw mut (*self.0).tp_mro,
+                &raw mut (*self.0).tp_bases,
+                &raw mut (*self.0).tp_cache,
+            ] {
+                molt_cpython_abi::api::refcount::Py_CLEAR(field);
+            }
+            molt_cpython_abi::api::memory::PyObject_Free(self.0.cast());
         });
     }
 }

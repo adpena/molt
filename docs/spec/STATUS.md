@@ -36,7 +36,31 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
 
 ## Implemented Surfaces
 
-- Native AOT compilation uses Cranelift by default; LLVM is opt-in. The Rust
+- Build diagnostics capture the terminal result after native finalization,
+  artifact publication and requested analysis. Native link reuse, native objects
+  and linked WASM consume the same reporting contract: diagnostics failures stay
+  explicit, preserve primary build errors and prevent premature success while
+  retaining valid published artifacts. The
+  [benchmarking contract](../BENCHMARKING.md) distinguishes this interval from
+  process wall time. Installed-user cold, warm and edit latency remain unqualified.
+- Synchronous Python frames keep bindings in runtime-owned frame homes.
+  Expression captures hold independent references; frame exit and retained
+  traceback/locals observations consume the same binding storage. Call-entry
+  custody is declared in the shared IR, with closure transport remaining
+  borrowed. Callable code slots publish only after signature, closure, cell and
+  execution metadata initialization. Runtime completion owns generator/coroutine
+  closed-state publication and binding retirement; generated bodies and iterator
+  dispatch no longer publish terminal state independently. See the
+  [ownership contract](../design/foundation/20_rc-ownership-drop-insertion.md)
+  and [runtime lifecycle](areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md).
+  The existing frame-binding representative matches all 13 CPython 3.12
+  stdout cases through public native and linked-WASM compilation/execution,
+  with Python absent from guest PATH. Native stderr matches the empty oracle;
+  the Node WASI warning is retained, with independent WASM guest-stderr
+  attribution open. This does not establish every locals-proxy, suspension,
+  finalizer, concurrency, or target-version cell.
+- Native AOT compilation uses Cranelift by default; LLVM is opt-in for source
+  builds and is absent from the current prebuilt compiler feature set. The Rust
   source emitter is a separate experimental target, not the native backend.
 - Native Cranelift codegen decomposition is active at function-boundary
   granularity:
@@ -55,9 +79,10 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   pre-materialization, heap-literal prologue hoisting, data-segment interning,
   per-kind stack-slot maps, module string-slot exports, and heap-literal
   `rc_skip_dec` custody.
-- Plain-local alias rebinding now lowers through the `binding_alias` owned-alias
-  lane, with generated op-kind classifier tables and TIR ownership/representation
-  analyses treating it as source bits plus an independent droppable reference.
+- Frame-home loads and stores expose borrowed binding views, valid until the
+  next write to that slot. `binding_alias` creates an independent owned capture
+  when a value must survive rebinding or frame exit; shared ownership facts
+  distinguish these captures from the frame's binding storage.
 - Standalone binary workflows are a first-class product requirement.
 - Differential testing against CPython is a core validation path.
 - Ordinary class construction keeps runtime `type.__call__` as the semantic
@@ -201,8 +226,11 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
 - Runtime intrinsic manifest defaults now participate in that same metadata
   contract. `tools/gen_intrinsics.py` parses supported concrete trailing
   defaults from `runtime/molt-runtime/src/intrinsics/manifest.pyi`, emits
-  `IntrinsicSpec.defaults`, and runtime eager/lazy registration attaches
-  matching `__defaults__` tuples. `operator.length_hint(obj, default=0)` is the
+  `IntrinsicSpec.defaults`, and runtime eager/lazy registration installs
+  matching private binder metadata. Bootstrap intrinsic handles use the same
+  authority; frontend lowering no longer mutates their public `__defaults__`.
+  Public native-callable metadata and descriptor identity remain under integration.
+  `operator.length_hint(obj, default=0)` is the
   first default-bearing intrinsic and preserves CPython precedence: the default
   is validated/normalized through the integer-index protocol before any length
   lookup, `__len__` wins over `__length_hint__`, and the normalized default is
@@ -285,14 +313,12 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   branchless counting, fast-math type seeding, strength-reduction type seeding,
   and GVN consume that helper instead of carrying private
   Const*/comparison/module-result opcode matches.
-- Call graph and CallFacts dispatch are registry-owned:
-  `call_opcode_roles` generates the exhaustive `opcode_call_role_table` for
-  first-class Call/CallMethod/CallBuiltin/Copy behavior, and
-  `call_graph_user_call_kinds` generates
-  `simpleir_kind_is_call_graph_user_call` for Copy `_original_kind` fallbacks.
-  `call_graph.rs` and `call_facts.rs` own target resolution, GPU runtime-symbol
-  carve-outs, builtin no-throw proof, and fact lattice semantics, not private
-  call opcode or call-kind sets.
+- Call graph and CallFacts share operation-aware `FunctionCallSites` from
+  mandatory `may_call_python` opcode effects, exact scalar provenance, typed-slot
+  release/presence proofs, and direct/GPU target provenance. Dynamic protocols,
+  namespace access, preserved runtime operations, async-work polls, and release
+  finalizers remain opaque edges. Proven primitives retain callback freedom.
+  `async_work_poll_after_kinds` solely places call-return observations.
 - SCCP constant-folding membership is registry-owned:
   `sccp_constant_seed_rules` and `sccp_constant_eval_rules` generate exhaustive
   rule tables for lattice seeding and constant evaluation. `sccp.rs` owns the
@@ -563,10 +589,11 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   (no limit) unless the env is set; capability-tier default-on policy is
   deferred pending tier-vocabulary disambiguation. See `docs/RESOURCE_CONTROLS.md`.
 - Test execution memory custody is mandatory. Direct pytest entrypoints are
-  guarded before collection by root `sitecustomize.py`, the packaged
-  `molt.pytest_memory_guard_bootstrap` pytest entry point, and the
-  repo-configured `molt.pytest_memory_guard_config_plugin` fallback for disabled
-  plugin autoload: unguarded pytest re-execs through `tools/memory_guard.py`,
+  guarded before collection by root `sitecustomize.py` and the explicitly
+  repo-configured `molt.pytest_memory_guard_config_plugin`. Installing Molt
+  registers no global pytest entry point. The repository's explicit plugin
+  remains active when autoload is disabled: unguarded pytest re-execs through
+  `tools/memory_guard.py`,
   interpreter-option and programmatic `pytest.main()` launches use pytest's
   initial hook args as the re-exec authority, forged guard markers fail closed
   unless the live ancestor chain contains this repo's memory guard, and
@@ -901,6 +928,19 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   and returns the normal error sentinel to native code instead of transferring a
   borrowed pending exception object through the result value.
 
+Project dependency commands share live user-project discovery independently of
+compiler inputs. They preserve explicit invalid selections for diagnostics and
+observe new or removed project markers without stale path-cache results.
+`install`, `install add`, `deps`, and `vendor` reject sealed compiler inputs as
+a project; project environments use the host's layout, and vendor outputs use
+the selected project root. Default dependency sync resolves the transitive
+closure, preserves requirements-file semantics and removes stale packages.
+The uv project lock and source mappings survive sync after `install add`.
+Persistence and installation failures return errors. The offline public-CLI
+workflow in `tests/cli/test_dependency_project.py` exercises these behaviors on
+Windows, including nested invocation paths and an empty sync. This is command
+regression coverage, not an installed release receipt or other-platform proof.
+
 ## Intentionally Unsupported
 
 - Unrestricted dynamic execution (`exec`, `eval`, `compile`) in compiled binaries.
@@ -911,6 +951,126 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
 
 ## Known Major Gaps / Blockers
 
+- Homebrew now renders its install directories from the bundle authority,
+  retaining runtime cells and hidden source inputs, and binds Python 3.14. Its
+  package test compiles and runs an existing argument-binding guest in release
+  mode against CPython. Actual Homebrew installation and full native/WASM
+  version/profile acceptance remain unexecuted here. Source parsing still
+  requires the CLI interpreter to be at least the selected target minor.
+- Dependency resolution is host/interpreter-bound; unmanaged POSIX `.venv`
+  roots can shadow managed packages. Target-bound environment resolution and
+  consistent package admission remain open.
+- Semantic receipts currently omit the actual Molt compiler digest/profile/
+  features and runtime cell/generation. Bind these to candidate admission
+  through existing diagnostics and inventories; same-source smoke execution
+  does not prove the complete shipped semantic surface.
+- The repaired dependency-command boundary has Windows public-CLI regression
+  coverage; complete installed-distribution and advertised platform acceptance
+  remains open. Stable `test`, `bench`, `clean` and preview `lint`/`profile`
+  still use compiler-input roots for their execution or cleanup and need their
+  public role and mutable-output boundary reconciled.
+- The release workflow lacks required runtime-inventory production and inputs.
+  Verified-subset execution has no declared guest-profile axis, defaults to
+  development, and ignores stderr by default. Performance receipts
+  also need the actual compiler profile/identity, and the required LLVM gate
+  does not match the current prebuilt feature set. See the
+  [release authority](../../packaging/PACKAGING.md) and
+  [performance authority](../../tools/PERF_AUTHORITY.md).
+- Shared fused-reduction, inline-storage and operand-custody corrections are
+  integrated across their compiler/runtime consumers. The representative bigint
+  workflow executes correctly on native and linked WASM for Python 3.12. The
+  mixed integer/float promotion repair matches a 163-line CPython 3.12 oracle on
+  native and linked WASM, preserving conversion errors across nine arithmetic
+  consumers. Source-point boundness is integrated for plain locals, cells,
+  coroutine slots and comprehension reads; all 18 new focused cases pass. The
+  original native reduction guest now confirms the overflow and empty-loop
+  target fixes. Three output mismatches remain: numeric-subclass reflected
+  methods and in-place error diagnostics. Four existing
+  Python 3.13/3.14 fusion failures also reproduce with pre-edit binding methods. The
+  reduction, mutation, target-binding, callback/finalizer, signal and wider
+  target/version/profile cells remain unqualified; integrated source alone
+  does not establish performance or deterministic-semantics acceptance.
+- The full list-subclass native storage repair is integrated: allocation,
+  initialization, class slots/dictionary, GC, attributes and source/descriptor
+  dispatch now share admitted list storage. Native generic indexing and loop
+  hoists require allocator-rooted exact class facts and observe physical Vec,
+  compact-int or compact-bool storage through one helper. Generated policies
+  are current. Focused runtime layout/ownership, shared type-refinement,
+  representation and native admission checks pass. The original descriptor
+  program matches all 154 independent CPython 3.12 lines on public native and
+  linked-WASM dev/edge execution with Python absent from guest PATH. Native
+  stderr is empty; compile-free execution of the same WASM manifest preserves
+  Node host warnings separately and has empty guest/runner stderr. Shared solid
+  base selection, concrete field projection and declaring-slot descriptors now
+  govern physical inheritance. The expanded native release constructor program
+  passes all 45 oracle lines, including incompatible-base rejection. The
+  maintained class-layout fixture passes all 53 CPython 3.12 lines on native
+  release with empty stderr and Python absent from guest PATH, including private
+  slots, class transfer and finalizer reentry. Private identifiers are resolved
+  once before lexical analysis/lowering while source spellings remain available
+  for metadata and annotation stringization. A complementary native release
+  program passes its 12-line oracle across closures, nested/global definitions,
+  generators and coroutine completion. Shared sealed slot-capability admission
+  is integrated across constructors and query consumers; its owning runtime
+  checks and standalone native attribute workload pass. Class-publication
+  ordering, reentry and remaining native dictionary consumers are under
+  integration and have not yet passed execution. These changes invalidate affected prior
+  evidence; expanded linked-WASM and dependent wider consumers remain unqualified.
+  Generic copy hooks/reconstruction, caller-visible deepcopy memo semantics and
+  default subtype pickle restoration
+  remain blockers; the mutable-object identity-return fallback is incorrect.
+  Copy's borrowed heap-atom returns and inconsistent child releases also violate
+  its owned-result contract. Correctness includes lifetime and failure cleanup,
+  not only matching printed values.
+- Asyncio idle waiting now uses the runtime ready/deadline authority, with a
+  sticky native wake route for loop work, signals and C pending calls. The
+  Python capped-sleep lane is removed; poll-dependent WASM operations use the
+  existing task timers. Windows runtime park/wake and signal-dispatch checks pass;
+  standalone guest, Unix signal delivery and WASM progress validation remain
+  pending. Idle CPU, wakeup latency and I/O throughput remain unmeasured.
+- The Python frontend still runs optimization passes alongside the Rust midend.
+  Failed cross-block verification can take a conservative retry without a final
+  verification, and diagnostics are conditional. Shared fact/pass ownership and
+  explicit failure handling remain structural correctness and compile-cost work.
+- Windows-native network tests are part of the declared release projection;
+  the WinSock/runtime readiness boundary must close for those coordinates.
+- Node WASI's host experimental warning currently reaches public-run stderr.
+  Host diagnostics and guest warnings/errors must be preserved and distinguished
+  when closing stderr comparison; blanket warning suppression is not acceptance.
+- Shared exception cleanup factors repeated suffixes by exact SSA identity and
+  continuation, preserving explicit handler payloads, retain multiplicity and
+  reverse release order through the [shared lifetime contract](../design/foundation/20_rc-ownership-drop-insertion.md#26-exception-edges).
+  Focused ownership-path checks cover growing construction prefixes and every
+  failure position. The cleanup compiler checkpoint's public native and
+  linked-WASM ownership guests match CPython 3.12 stdout with Python absent from
+  PATH. Native stderr also matches; Node's WASI host warning is retained on WASM.
+  Production SSA verification now uses executable program-point dominance for
+  exceptional captures and handler-local definitions. Non-executing region
+  registrations retain their structural checks. Focused verification includes
+  malformed early and cross-arm captures. DropInsertion's split-continuation
+  remapping shares this authority, including protected bodies entered only
+  through an exception observation. Focused regressions and public native replay
+  pass, including the previously rejected stdlib body. Actual public linked-WASM
+  execution on the integrated change also matches the CPython 3.12 stdout oracle
+  without Python on PATH. The Node host warning is retained; independent WASM
+  guest-stderr attribution and the wider declared matrix remain open. Native
+  labels, exceptional fallthroughs and operation snapshots now reuse actual
+  emitted SSA values when canonical definition/execution facts prove availability.
+  Mutable joins and stack/frame/resume custody retain explicit transport. All
+  consumers share compact canonical name IDs; operation liveness stays sparse.
+  Structured phi capture follows its logical source position, and inferred
+  neighboring storage writes are deleted. Focused liveness and native codegen
+  checks and public native/linked-WASM stdout replay of the transport implementation pass
+  against CPython 3.12 with Python absent from guest PATH. Native guest stderr
+  matches the oracle; independent WASM guest-stderr attribution and the wider
+  declared matrix remain open.
+  Cleanup-run coalescing and installed-user latency remain open.
+- Startup ceilings for the shipped runtime and WASM, plus complete compile,
+  size and resource budgets, remain missing or unseeded. The existing native/LLVM
+  baseline ceilings remain in force.
+- Complete installed-user, target/version/profile, reproducibility,
+  performance/resource, and source-bound release acceptance remains open.
+  Partial native or WASM execution does not qualify an integrated candidate.
 - CPython coverage is incomplete across language, stdlib, and target-specific
   behavior.
 - Native and WASM parity is still incomplete for several claimed surfaces.
@@ -1030,10 +1190,29 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   `len`/`contains`, and LLVM `len`; `container_type` / `type_hint` strings
   alone no longer select those specialized paths. Semantic `list[int]` remains
   distinct from flat `list_int` storage proof, so direct storage optimizations
-  now require a separate `ContainerStorageKind::FlatListInt` fact seeded by
-  structural `list_int_new` producers and queried through the shared
-  representation plan. `bce_safe` remains an independent bounds proof rather
-  than storage authority.
+  now require a separate `ContainerStorageKind::FlatListInt` fact from the
+  shared value-keyed physical-storage proof and representation plan. Inline
+  range admission, producer operands, aliases, mutation and binding exposure
+  govern that proof; native and WASM LIR consume it without opcode-only
+  reconstruction. `bce_safe` remains an independent bounds proof.
+  Inline fill, repeat and promotion preserve original heap-integer owners.
+  The public native and linked-WASM dev/edge Python 3.12 bigint workflow
+  matches all 15 independent CPython output lines with Python absent from PATH,
+  including previously failing heap-sized literal repetition and constant
+  comprehensions. Native guest stderr is empty. Diagnostic replay of the same
+  linked manifest also has empty guest/runner stderr, with Node's WASI host
+  warning retained separately using its standard warning-redirection option.
+  This is representative development evidence, not release acceptance.
+  Mutation/alias/reduction consumers and the wider declared matrix remain open.
+  Source multiplication uses canonical numeric/reflected dispatch before
+  sequence count conversion. Explicit list repetition descriptors share the
+  same mutation primitive but invoke the sequence slot directly. The original
+  container-dunder program now matches all 154 CPython 3.12 lines on
+  native and linked WASM, including inherited list initialization, explicit
+  subclass descriptors and callback reentry. These are representative
+  development cells; expanded boundaries and release acceptance remain open.
+  A source operator result cannot acquire physical storage proof from its
+  opcode or an integer element annotation alone.
 - Native int-lane lowering now reads raw i64 values from
   `ScalarRepresentationPlan` raw-int carrier predicates instead of a separate
   raw-int shadow transport, cloned `int_primary_vars` set, or name-keyed
@@ -1395,6 +1574,12 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
 
 ## Performance Summary
 
+The generated snapshot and focused rechecks below are historical development
+measurements from May 2026, not current-candidate or installed-user evidence.
+They do not satisfy the [performance authority's freshness and acceptance
+requirements](../../tools/PERF_AUTHORITY.md#freshness-rule). Current release
+claims require source-bound measurements through that authority.
+
 <!-- GENERATED:bench-summary:start -->
 Latest run: 2026-05-23 (macOS arm64, CPython 3.12.13).
 Top speedups: `bench_class_hierarchy.py` 6.94x, `bench_bytes_find_only.py` 6.27x, `bench_sum.py` 5.30x, `bench_bytes_find.py` 5.00x, `bench_gc_pressure.py` 1.32x.
@@ -1429,12 +1614,13 @@ numeric construction. Evidence:
 `bench/results/json_roundtrip_baseline_20260520.json` and
 `bench/results/json_roundtrip_byte_parser_20260520.json`.
 
-Focused Counter recheck: `bench_counter_words.py` moved from the generated
-full-run `0.31x` CPython entry to `1.0341x` CPython on current `main` after
-the compiler lowered exact `collections.Counter(list|tuple)` construction plus
-exact Counter indexing/length to Rust intrinsics. The focused run preserved
-output parity and recorded `git_rev=a5ccd8d5e`; evidence is in
-`bench/results/counter_words_head_20260520.json`.
+Counter uses the shared native dictionary subclass storage and compiled Python
+methods. Its streaming tally primitive shares dictionary hash lookup and store
+operations, while overridden mapping methods retain ordinary Python dispatch.
+The removed handle-backed implementation's benchmark at `git_rev=a5ccd8d5e`
+(`bench/results/counter_words_head_20260520.json`) is historical evidence only;
+it does not qualify the current implementation or establish a current speedup.
+Native, linked-WASM and authoritative performance qualification remain required.
 
 ## Deep Links
 

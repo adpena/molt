@@ -944,6 +944,10 @@ mod tests {
                 "WhyNot(EntryHasPredecessor)",
             ),
             (InlineWhyNot::Closure, "WhyNot(Closure)"),
+            (
+                InlineWhyNot::UnownedParameterRelease,
+                "WhyNot(UnownedParameterRelease)",
+            ),
             (InlineWhyNot::OverBudget, "WhyNot(OverBudget)"),
         ] {
             let eligibility = InlineEligibility::WhyNot(reason);

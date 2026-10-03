@@ -1151,7 +1151,7 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
         let buffer =
             match crate::object::buffer_exports::ScopedWritableBuffer::new(_py, buffer_bits) {
                 Ok(buffer) => buffer,
-                Err(crate::object::buffer_exports::WritableBufferError::Pending) => {
+                Err(crate::object::buffer_exports::BufferAccessError::Pending) => {
                     return MoltObject::none().bits();
                 }
                 Err(err) => {

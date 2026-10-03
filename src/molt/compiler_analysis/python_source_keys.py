@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_private_names import python_source_field
 import hashlib
 import struct
 from collections.abc import Iterator
@@ -193,7 +194,9 @@ def python_ast_digest(tree: ast.AST) -> str:
                 frames.pop()
                 continue
             if frame.ast_slots:
-                child = getattr(frame.owner, cast(str, child), _AST_MISSING)
+                child = python_source_field(
+                    cast(ast.AST, frame.owner), cast(str, child), _AST_MISSING
+                )
                 if child is _AST_MISSING:
                     stream.write(b"0")
                     continue

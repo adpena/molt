@@ -338,19 +338,24 @@ if not isinstance(_devnull_raw, str):
 devnull = _devnull_raw
 del _devnull_raw
 
-# sysconf_names — built from runtime intrinsic flat list
+# Runtime target capability owns both namespace admission and numeric names.
 _sysconf_names_raw = _MOLT_OS_SYSCONF_NAMES()
-sysconf_names: dict[str, int] = {}
-if isinstance(_sysconf_names_raw, (list, tuple)):
+if _sysconf_names_raw is not None:
+    if not isinstance(_sysconf_names_raw, (list, tuple)) or len(_sysconf_names_raw) % 2:
+        raise RuntimeError("os sysconf_names intrinsic returned invalid table")
+    sysconf_names: dict[str, int] = {}
     _i = 0
-    while _i + 1 < len(_sysconf_names_raw):
+    while _i < len(_sysconf_names_raw):
         _k = _sysconf_names_raw[_i]
         _v = _sysconf_names_raw[_i + 1]
-        if isinstance(_k, str) and isinstance(_v, int):
-            sysconf_names[_k] = _v
+        if not isinstance(_k, str) or not isinstance(_v, int):
+            raise RuntimeError("os sysconf_names intrinsic returned invalid entry")
+        sysconf_names[_k] = _v
         _i += 2
     del _i
-del _sysconf_names_raw
+else:
+    __all__.remove("sysconf")
+    __all__.remove("sysconf_names")
 
 _ENV_MISSING = object()
 
@@ -1427,13 +1432,16 @@ def setsid() -> int:
     return int(_MOLT_OS_SETSID())
 
 
-def sysconf(name: int | str) -> int:
-    if isinstance(name, str):
-        _name = sysconf_names.get(name, -1)
-        if _name == -1:
-            raise ValueError("unrecognized configuration name")
-        name = _name
-    return int(_MOLT_OS_SYSCONF(int(name)))
+if _sysconf_names_raw is not None:
+    def sysconf(name: int | str) -> int:
+        if isinstance(name, str):
+            _name = sysconf_names.get(name, -1)
+            if _name == -1:
+                raise ValueError("unrecognized configuration name")
+            name = _name
+        return int(_MOLT_OS_SYSCONF(int(name)))
+
+del _sysconf_names_raw
 
 
 # POSIX `time_t` on every platform molt targets is a signed 64-bit integer;

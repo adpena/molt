@@ -254,6 +254,23 @@ pub(crate) struct MaterializedPointers {
 }
 
 impl MaterializedPointers {
+    /// Builtin mutation addresses physical list storage, including subtypes;
+    /// it must never redispatch through an overridden iteration protocol.
+    pub(crate) unsafe fn from_list_storage(object: *mut PyObject) -> Option<Self> {
+        let read = unsafe { crate::api::sequences::ListRead::acquire(object) }?;
+        let len = unsafe { read.len() };
+        let mut result = Self::with_capacity(len)?;
+        for index in 0..len {
+            let item = unsafe { read.item(index) };
+            if item.is_null() {
+                return None;
+            }
+            unsafe { crate::api::refcount::Py_INCREF(item) };
+            result.pointers.push(item);
+        }
+        Some(result)
+    }
+
     fn with_capacity(capacity: usize) -> Option<Self> {
         let mut pointers = Vec::new();
         if pointers.try_reserve_exact(capacity).is_err() {
@@ -278,9 +295,7 @@ impl MaterializedPointers {
 
 impl Drop for MaterializedPointers {
     fn drop(&mut self) {
-        for pointer in self.pointers.drain(..).filter(|pointer| !pointer.is_null()) {
-            unsafe { crate::api::refcount::Py_DECREF(pointer) };
-        }
+        unsafe { crate::api::errors::release_preserving_error(&self.pointers) };
     }
 }
 
@@ -305,37 +320,39 @@ unsafe fn list_from_materialized_pointers(mut items: MaterializedPointers) -> *m
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum SequenceMaterialization {
+    List,
+    Tuple,
+    Fast,
+}
+
 /// The one C-visible iterable construction authority. Native list/tuple inputs
 /// take the indexed fast path; all others use their actual iterator. Carrying
 /// exact pointers deletes value-bit rematerialization and preserves `is`.
 pub(crate) unsafe fn materialize_iterable_pointers(
     o: *mut PyObject,
     fast_error_message: Option<*const c_char>,
+    kind: SequenceMaterialization,
 ) -> Option<MaterializedPointers> {
-    if let Some(bits) = resolve_bits(o) {
-        let tag = classify(bits);
-        if tag == tag_list() || tag == tag_tuple() {
-            let h = hooks_or_stubs();
-            let len = if tag == tag_list() {
-                unsafe { (h.list_len)(bits) }
-            } else {
-                unsafe { (h.tuple_len)(bits) }
-            };
-            let mut out = MaterializedPointers::with_capacity(len)?;
-            for index in 0..len {
-                let pointer = if tag == tag_list() {
-                    unsafe { crate::api::sequences::PyList_GetItem(o, index as Py_ssize_t) }
-                } else {
-                    unsafe { crate::api::sequences::PyTuple_GetItem(o, index as Py_ssize_t) }
-                };
-                if pointer.is_null() {
-                    return None;
-                }
-                unsafe { crate::api::refcount::Py_INCREF(pointer) };
-                out.pointers.push(pointer);
-            }
-            return Some(out);
+    if unsafe { crate::api::sequences::PyList_CheckExact(o) } != 0 {
+        return unsafe { MaterializedPointers::from_list_storage(o) };
+    }
+    if unsafe { crate::api::sequences::PyTuple_CheckExact(o) } != 0 {
+        let len = unsafe { crate::api::sequences::PyTuple_Size(o) };
+        if len < 0 {
+            return None;
         }
+        let mut out = MaterializedPointers::with_capacity(len as usize)?;
+        for index in 0..len {
+            let pointer = unsafe { crate::api::sequences::PyTuple_GetItem(o, index) };
+            if pointer.is_null() {
+                return None;
+            }
+            unsafe { crate::api::refcount::Py_INCREF(pointer) };
+            out.pointers.push(pointer);
+        }
+        return Some(out);
     }
 
     let iter = unsafe { crate::api::object::PyObject_GetIter(o) };
@@ -356,7 +373,25 @@ pub(crate) unsafe fn materialize_iterable_pointers(
         }
         return None;
     }
-    let mut out = MaterializedPointers::with_capacity(0)?;
+    // Root the iterator across length-hint callbacks and failed allocation.
+    let iter_owner = unsafe { crate::api::refcount::OwnedPyObject::from_owned(iter) };
+    let consult = !matches!(kind, SequenceMaterialization::Tuple)
+        || unsafe { (hooks_or_stubs().tuple_uses_length_hint)() };
+    let hint = if consult {
+        let source = if matches!(kind, SequenceMaterialization::Fast) {
+            iter
+        } else {
+            o
+        };
+        let hint = unsafe { crate::api::object::PyObject_LengthHint(source, 8) };
+        if hint < 0 {
+            return None;
+        }
+        hint as usize
+    } else {
+        0
+    };
+    let mut out = MaterializedPointers::with_capacity(hint)?;
     loop {
         let item = unsafe { crate::api::object::PyIter_Next(iter) };
         if item.is_null() {
@@ -364,15 +399,14 @@ pub(crate) unsafe fn materialize_iterable_pointers(
         }
         if out.pointers.try_reserve(1).is_err() {
             unsafe {
-                crate::api::refcount::Py_DECREF(item);
-                crate::api::refcount::Py_DECREF(iter);
                 crate::api::errors::PyErr_NoMemory();
+                crate::api::errors::release_preserving_error(&[item]);
             }
             return None;
         }
         out.pointers.push(item);
     }
-    unsafe { crate::api::refcount::Py_DECREF(iter) };
+    drop(iter_owner);
     if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
         return None;
     }
@@ -729,109 +763,28 @@ pub unsafe extern "C" fn PySequence_DelItem(o: *mut PyObject, i: Py_ssize_t) -> 
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Contains(o: *mut PyObject, value: *mut PyObject) -> c_int {
-    // CPython: sq_contains, else iterator search with Py_EQ VALUE equality.
-    // The pre-fix scan compared raw handle bits (equal-but-distinct heap
-    // strings/ints always missed) and returned silent -1 for anything else.
     if o.is_null() || value.is_null() {
         unsafe { set_null_error() };
         return -1;
     }
-    if let Some(result) = unsafe { exact_sequence_search(o, value, IterSearch::Contains) } {
-        return result as c_int;
-    }
-    if let Some(bits) = observed_bits(o) {
-        let h = hooks_or_stubs();
-        let tag = classify(bits);
-        let val_bits = observed_bits(value);
-        if tag == tag_str() {
-            // 'in <string>' is SUBSTRING containment and requires a str operand.
-            if let Some(vb) = val_bits
-                && classify(vb) == tag_str()
-                && let (Some(hay), Some(needle)) =
-                    (unsafe { str_slice(bits) }, unsafe { str_slice(vb) })
-            {
-                if let (Ok(hay), Ok(needle)) =
-                    (std::str::from_utf8(hay), std::str::from_utf8(needle))
-                {
-                    return hay.contains(needle) as c_int;
-                }
-                return 0;
-            }
-            unsafe {
-                set_type_error(format!(
-                    "'in <string>' requires string as left operand, not {}",
-                    type_name(value)
-                ));
-            }
+    if GLOBAL_BRIDGE.managed_handle_for_pyobj(o).is_some() {
+        // Managed class semantics belong to molt_contains, including overrides,
+        // hash admission, byte substrings and arithmetic range membership.
+        let Some(container) = (unsafe { crate::bridge::RuntimeValue::acquire(o) }) else {
             return -1;
-        }
-        if tag == tag_bytes()
-            && let Some(hay) = unsafe { bytes_slice(bits) }
+        };
+        let Some(needle) = (unsafe { crate::bridge::RuntimeValue::acquire(value) }) else {
+            return -1;
+        };
+        let result = unsafe { (hooks_or_stubs().object_contains)(container.bits(), needle.bits()) };
+        if unsafe { crate::api::errors::check_native_status(result, "object containment inquiry") }
+            < 0
         {
-            if let Some(vb) = val_bits {
-                // int in bytes: byte-value membership.
-                if let Some(iv) = MoltObject::from_bits(vb).as_int() {
-                    if !(0..=255).contains(&iv) {
-                        unsafe {
-                            crate::api::errors::PyErr_SetString(
-                                (&raw mut crate::abi_types::PyExc_ValueError)
-                                    .cast::<crate::abi_types::PyObject>(),
-                                c"byte must be in range(0, 256)".as_ptr(),
-                            );
-                        }
-                        return -1;
-                    }
-                    return hay.contains(&(iv as u8)) as c_int;
-                }
-                // bytes in bytes: sub-slice containment.
-                if classify(vb) == tag_bytes()
-                    && let Some(needle) = unsafe { bytes_slice(vb) }
-                {
-                    if needle.is_empty() {
-                        return 1;
-                    }
-                    return hay.windows(needle.len()).any(|w| w == needle) as c_int;
-                }
-            }
-            unsafe {
-                set_type_error(format!(
-                    "a bytes-like object is required, not '{}'",
-                    type_name(value)
-                ));
-            }
             return -1;
         }
-        if tag == tag_dict() {
-            // `x in dict` is a key lookup through the runtime dict authority.
-            if let Some(val_bits) = val_bits {
-                return match unsafe { (h.dict_get)(bits, val_bits) }.decode() {
-                    crate::hooks::DecodedHandleResult::Ok(_) => 1,
-                    crate::hooks::DecodedHandleResult::Missing => {
-                        if crate::api::errors::transfer_runtime_pending_to_current() {
-                            -1
-                        } else {
-                            0
-                        }
-                    }
-                    crate::hooks::DecodedHandleResult::Error => {
-                        if !crate::api::errors::transfer_runtime_pending_to_current() {
-                            unsafe {
-                                crate::api::errors::PyErr_SetString(
-                                    (&raw mut crate::abi_types::PyExc_SystemError)
-                                        .cast::<crate::abi_types::PyObject>(),
-                                    c"runtime dict containment failed without setting an exception"
-                                        .as_ptr(),
-                                )
-                            };
-                        }
-                        -1
-                    }
-                };
-            }
-            return 0;
-        }
+        return result;
     }
-    // Foreign tier: sq_contains, else the iterator search CPython falls to.
+    // Native types retain CPython's physical sq_contains, then iterator search.
     if let Some(m) = unsafe { seq_methods(o) } {
         let sq_contains = unsafe { (*m).sq_contains };
         if !sq_contains.is_null() {
@@ -850,123 +803,93 @@ enum IterSearch {
     Index,
 }
 
-/// Allocation-free exact list/tuple search through the canonical physical
-/// pointer arrays. RichCompareBool supplies the identity fast path and complete
-/// recursive Python equality; no handwritten bits classifier may substitute.
-unsafe fn exact_sequence_search(
-    o: *mut PyObject,
-    value: *mut PyObject,
-    mode: IterSearch,
-) -> Option<Py_ssize_t> {
-    let is_list = unsafe { crate::api::sequences::PyList_CheckExact(o) } != 0;
-    let is_tuple = unsafe { crate::api::sequences::PyTuple_CheckExact(o) } != 0;
-    if !is_list && !is_tuple {
-        return None;
-    }
-    let len = if is_list {
-        unsafe { crate::api::sequences::PyList_Size(o) }
-    } else {
-        unsafe { crate::api::sequences::PyTuple_Size(o) }
-    };
-    if len < 0 {
-        return Some(-1);
-    }
-    let mut count = 0;
-    for index in 0..len {
-        let item = if is_list {
-            unsafe { crate::api::sequences::PyList_GetItem(o, index) }
-        } else {
-            unsafe { crate::api::sequences::PyTuple_GetItem(o, index) }
-        };
-        if item.is_null() {
-            return Some(-1);
+/// One owned iterator search for count, index and native containment fallback.
+/// The iterator owns live sequence traversal; no borrowed element or sampled
+/// list length survives an equality callback. Cleanup preserves the exact error.
+unsafe fn iter_search(o: *mut PyObject, value: *mut PyObject, mode: IterSearch) -> Py_ssize_t {
+    use crate::api::refcount::OwnedPyObject;
+    let iter = unsafe { OwnedPyObject::from_owned(crate::api::object::PyObject_GetIter(o)) };
+    if iter.as_ptr().is_null() {
+        // Match CPython's noniterable diagnostic without replacing arbitrary
+        // exceptions raised by __iter__ or its descriptor.
+        if unsafe {
+            crate::api::errors::PyErr_ExceptionMatches(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+            )
+        } != 0
+        {
+            unsafe {
+                set_type_error(format!(
+                    "argument of type '{}' is not iterable",
+                    type_name(o)
+                ));
+            }
         }
-        let equal = unsafe { crate::api::typeobj::PyObject_RichCompareBool(item, value, PY_EQ) };
+        return -1;
+    }
+    let mut position: Py_ssize_t = 0;
+    let mut wrapped = false;
+    loop {
+        let item =
+            unsafe { OwnedPyObject::from_owned(crate::api::object::PyIter_Next(iter.as_ptr())) };
+        if item.as_ptr().is_null() {
+            if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                return -1;
+            }
+            break;
+        }
+        let equal =
+            unsafe { crate::api::typeobj::PyObject_RichCompareBool(item.as_ptr(), value, PY_EQ) };
+        drop(item);
         if equal < 0 {
-            return Some(-1);
+            return -1;
         }
         if equal != 0 {
             match mode {
-                IterSearch::Contains => return Some(1),
-                IterSearch::Count => count += 1,
-                IterSearch::Index => return Some(index),
-            }
-        }
-    }
-    Some(match mode {
-        IterSearch::Contains => 0,
-        IterSearch::Count => count,
-        IterSearch::Index => {
-            unsafe {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_ValueError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    c"sequence.index(x): x not in sequence".as_ptr(),
-                );
-            }
-            -1
-        }
-    })
-}
-
-/// Iterator-protocol search: drains `PyObject_GetIter(o)` comparing each item
-/// to `value` with `PyObject_RichCompareBool(..., Py_EQ)`. Returns the CPython
-/// result contract for each mode (-1 with an exception on error).
-unsafe fn iter_search(o: *mut PyObject, value: *mut PyObject, mode: IterSearch) -> Py_ssize_t {
-    let iter = unsafe { crate::api::object::PyObject_GetIter(o) };
-    if iter.is_null() {
-        unsafe {
-            set_type_error(format!(
-                "argument of type '{}' is not iterable",
-                type_name(o)
-            ));
-        }
-        return -1;
-    }
-    let mut count: Py_ssize_t = 0;
-    let mut index: Py_ssize_t = 0;
-    let mut found: Py_ssize_t = -1;
-    loop {
-        let item = unsafe { crate::api::object::PyIter_Next(iter) };
-        if item.is_null() {
-            break;
-        }
-        let eq = unsafe { crate::api::typeobj::PyObject_RichCompareBool(item, value, PY_EQ) };
-        unsafe { crate::api::refcount::Py_DECREF(item) };
-        if eq < 0 {
-            unsafe { crate::api::refcount::Py_DECREF(iter) };
-            return -1;
-        }
-        if eq > 0 {
-            match mode {
-                IterSearch::Contains => {
-                    unsafe { crate::api::refcount::Py_DECREF(iter) };
-                    return 1;
+                IterSearch::Contains => return 1,
+                IterSearch::Count => {
+                    let Some(next) = position.checked_add(1) else {
+                        unsafe {
+                            crate::api::errors::PyErr_SetString(
+                                (&raw mut crate::abi_types::PyExc_OverflowError).cast(),
+                                c"count exceeds C integer size".as_ptr(),
+                            );
+                        }
+                        return -1;
+                    };
+                    position = next;
                 }
-                IterSearch::Count => count += 1,
                 IterSearch::Index => {
-                    if found < 0 {
-                        found = index;
-                        unsafe { crate::api::refcount::Py_DECREF(iter) };
-                        return found;
+                    if wrapped {
+                        unsafe {
+                            crate::api::errors::PyErr_SetString(
+                                (&raw mut crate::abi_types::PyExc_OverflowError).cast(),
+                                c"index exceeds C integer size".as_ptr(),
+                            );
+                        }
+                        return -1;
                     }
+                    return position;
                 }
             }
         }
-        index += 1;
-    }
-    unsafe { crate::api::refcount::Py_DECREF(iter) };
-    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-        return -1;
+        if matches!(mode, IterSearch::Index) {
+            // Overflow becomes an error only if a later item matches. A long
+            // exhausted search still raises ValueError, as CPython does.
+            if let Some(next) = position.checked_add(1) {
+                position = next;
+            } else {
+                wrapped = true;
+            }
+        }
     }
     match mode {
         IterSearch::Contains => 0,
-        IterSearch::Count => count,
+        IterSearch::Count => position,
         IterSearch::Index => {
             unsafe {
                 crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_ValueError)
-                        .cast::<crate::abi_types::PyObject>(),
+                    (&raw mut crate::abi_types::PyExc_ValueError).cast(),
                     c"sequence.index(x): x not in sequence".as_ptr(),
                 );
             }
@@ -1149,8 +1072,19 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
             return unsafe { f(s1, s2) };
         }
     }
-    if unsafe { PySequence_Check(s1) } != 0
-        && unsafe { PySequence_Check(s2) } != 0
+    let Some(is_sequence) = (unsafe { sequence_check(s1) }) else {
+        return ptr::null_mut();
+    };
+    let other_is_sequence = if is_sequence {
+        let Some(value) = (unsafe { sequence_check(s2) }) else {
+            return ptr::null_mut();
+        };
+        value
+    } else {
+        false
+    };
+    if is_sequence
+        && other_is_sequence
         && let Some(result) =
             unsafe { sequence_add_numeric_fallback(SequenceNumericMode::Regular, s1, s2) }
     {
@@ -1270,7 +1204,10 @@ pub unsafe extern "C" fn PySequence_Repeat(o: *mut PyObject, count: Py_ssize_t) 
             return unsafe { f(o, count) };
         }
     }
-    if unsafe { PySequence_Check(o) } != 0
+    let Some(is_sequence) = (unsafe { sequence_check(o) }) else {
+        return ptr::null_mut();
+    };
+    if is_sequence
         && let Some(result) =
             unsafe { sequence_multiply_numeric_fallback(SequenceNumericMode::Regular, o, count) }
     {
@@ -1290,7 +1227,9 @@ pub unsafe extern "C" fn PySequence_List(o: *mut PyObject) -> *mut PyObject {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    let Some(items) = (unsafe { materialize_iterable_pointers(o, None) }) else {
+    let Some(items) =
+        (unsafe { materialize_iterable_pointers(o, None, SequenceMaterialization::List) })
+    else {
         return ptr::null_mut();
     };
     unsafe { list_from_materialized_pointers(items) }
@@ -1325,7 +1264,9 @@ pub unsafe extern "C" fn _PyList_Extend(
     {
         // Snapshot exact list/tuple sources, including self-extension, before
         // mutating the destination.
-        let Some(items) = (unsafe { materialize_iterable_pointers(iterable, None) }) else {
+        let Some(items) = (unsafe {
+            materialize_iterable_pointers(iterable, None, SequenceMaterialization::List)
+        }) else {
             return ptr::null_mut();
         };
         for &item in &items.pointers {
@@ -1378,7 +1319,9 @@ pub unsafe extern "C" fn PySequence_Tuple(o: *mut PyObject) -> *mut PyObject {
     if unsafe { crate::api::sequences::PyList_CheckExact(o) } != 0 {
         return unsafe { crate::api::sequences::PyList_AsTuple(o) };
     }
-    let Some(mut items) = (unsafe { materialize_iterable_pointers(o, None) }) else {
+    let Some(mut items) =
+        (unsafe { materialize_iterable_pointers(o, None, SequenceMaterialization::Tuple) })
+    else {
         return ptr::null_mut();
     };
     let Some(tuple_len) = checked_py_ssize(items.len()) else {
@@ -1405,9 +1348,6 @@ pub unsafe extern "C" fn PySequence_Count(o: *mut PyObject, value: *mut PyObject
         unsafe { set_null_error() };
         return -1;
     }
-    if let Some(result) = unsafe { exact_sequence_search(o, value, IterSearch::Count) } {
-        return result;
-    }
     // CPython: _PySequence_IterSearch(COUNT) over any iterable.
     unsafe { iter_search(o, value, IterSearch::Count) }
 }
@@ -1418,35 +1358,42 @@ pub unsafe extern "C" fn PySequence_Index(o: *mut PyObject, value: *mut PyObject
         unsafe { set_null_error() };
         return -1;
     }
-    if let Some(result) = unsafe { exact_sequence_search(o, value, IterSearch::Index) } {
-        return result;
-    }
     unsafe { iter_search(o, value, IterSearch::Index) }
 }
 
 // ─── PySequence_Check ────────────────────────────────────────────────────
 
+/// Fallible internal admission preserves runtime projection failures. Public
+/// PySequence_Check keeps its Boolean result and leaves any error indicated.
+pub unsafe fn sequence_check(o: *mut PyObject) -> Option<bool> {
+    if o.is_null() {
+        return Some(false);
+    }
+    if let Some(bits) = GLOBAL_BRIDGE.managed_handle_for_pyobj(o) {
+        let result = unsafe { (hooks_or_stubs().sequence_check)(bits) };
+        if result < 0 {
+            unsafe { crate::api::errors::check_native_status(-1, "sequence slot inquiry") };
+            return None;
+        }
+        return Some(result != 0);
+    }
+    let ty = unsafe { (*o).ob_type };
+    if !ty.is_null()
+        && unsafe {
+            crate::api::typeobj::PyType_IsSubtype(ty, &raw mut crate::abi_types::PyDict_Type)
+        } != 0
+    {
+        return Some(false);
+    }
+    Some(match unsafe { seq_methods(o) } {
+        Some(methods) => !unsafe { (*methods).sq_item }.is_null(),
+        None => false,
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Check(o: *mut PyObject) -> c_int {
-    // CPython: 0 for dicts, else `tp_as_sequence && sq_item != NULL` — a
-    // foreign C sequence (ndarray) must report 1 (the pre-fix hardcoded 0 was
-    // the MISSING_DISPATCH row).
-    if o.is_null() {
-        return 0;
-    }
-    if let Some(bits) = resolve_bits(o) {
-        let tag = classify(bits);
-        if tag == tag_dict() {
-            return 0;
-        }
-        if tag == tag_list() || tag == tag_tuple() || tag == tag_str() || tag == tag_bytes() {
-            return 1;
-        }
-    }
-    match unsafe { seq_methods(o) } {
-        Some(m) => (!unsafe { (*m).sq_item }.is_null()) as c_int,
-        None => 0,
-    }
+    i32::from(unsafe { sequence_check(o) }.unwrap_or(false))
 }
 
 // ─── PySequence_Fast — fast access to list/tuple items ───────────────────
@@ -1469,7 +1416,9 @@ pub unsafe extern "C" fn PySequence_Fast(
         unsafe { crate::api::refcount::Py_INCREF(o) };
         return o;
     }
-    let Some(items) = (unsafe { materialize_iterable_pointers(o, Some(msg)) }) else {
+    let Some(items) =
+        (unsafe { materialize_iterable_pointers(o, Some(msg), SequenceMaterialization::Fast) })
+    else {
         return ptr::null_mut();
     };
     unsafe { list_from_materialized_pointers(items) }
@@ -1552,8 +1501,19 @@ pub unsafe extern "C" fn PySequence_InPlaceConcat(
             return unsafe { f(o1, o2) };
         }
     }
-    if unsafe { PySequence_Check(o1) } != 0
-        && unsafe { PySequence_Check(o2) } != 0
+    let Some(is_sequence) = (unsafe { sequence_check(o1) }) else {
+        return ptr::null_mut();
+    };
+    let other_is_sequence = if is_sequence {
+        let Some(value) = (unsafe { sequence_check(o2) }) else {
+            return ptr::null_mut();
+        };
+        value
+    } else {
+        false
+    };
+    if is_sequence
+        && other_is_sequence
         && let Some(result) =
             unsafe { sequence_add_numeric_fallback(SequenceNumericMode::InPlace, o1, o2) }
     {
@@ -1589,7 +1549,7 @@ pub unsafe extern "C" fn PySequence_InPlaceRepeat(
                 return ptr::null_mut();
             }
         } else if count > 1 {
-            let Some(snapshot) = (unsafe { materialize_iterable_pointers(o, None) }) else {
+            let Some(snapshot) = (unsafe { MaterializedPointers::from_list_storage(o) }) else {
                 return ptr::null_mut();
             };
             for _ in 1..count {
@@ -1615,7 +1575,10 @@ pub unsafe extern "C" fn PySequence_InPlaceRepeat(
             return unsafe { f(o, count) };
         }
     }
-    if unsafe { PySequence_Check(o) } != 0
+    let Some(is_sequence) = (unsafe { sequence_check(o) }) else {
+        return ptr::null_mut();
+    };
+    if is_sequence
         && let Some(result) =
             unsafe { sequence_multiply_numeric_fallback(SequenceNumericMode::InPlace, o, count) }
     {
@@ -1623,4 +1586,69 @@ pub unsafe extern "C" fn PySequence_InPlaceRepeat(
     }
     unsafe { set_type_error(format!("'{}' object can't be repeated", type_name(o))) };
     ptr::null_mut()
+}
+
+/// Index-bound slice construction owns both temporary integers. The public
+/// header and linked extensions enter the same physical slice/item authority.
+unsafe fn slice_from_indices(
+    low: Py_ssize_t,
+    high: Py_ssize_t,
+) -> crate::api::refcount::OwnedPyObject {
+    use crate::api::refcount::OwnedPyObject;
+    unsafe {
+        let start = OwnedPyObject::from_owned(crate::api::numbers::PyLong_FromSsize_t(low));
+        if start.as_ptr().is_null() {
+            return start;
+        }
+        let stop = OwnedPyObject::from_owned(crate::api::numbers::PyLong_FromSsize_t(high));
+        if stop.as_ptr().is_null() {
+            return stop;
+        }
+        OwnedPyObject::from_owned(crate::api::slice::PySlice_New(
+            start.as_ptr(),
+            stop.as_ptr(),
+            ptr::null_mut(),
+        ))
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySequence_GetSlice(
+    obj: *mut PyObject,
+    low: Py_ssize_t,
+    high: Py_ssize_t,
+) -> *mut PyObject {
+    if obj.is_null() {
+        unsafe { set_null_error() };
+        return ptr::null_mut();
+    }
+    let slice = unsafe { slice_from_indices(low, high) };
+    if slice.as_ptr().is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { crate::api::object::PyObject_GetItem(obj, slice.as_ptr()) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySequence_SetSlice(
+    obj: *mut PyObject,
+    low: Py_ssize_t,
+    high: Py_ssize_t,
+    value: *mut PyObject,
+) -> c_int {
+    if obj.is_null() {
+        unsafe { set_null_error() };
+        return -1;
+    }
+    let slice = unsafe { slice_from_indices(low, high) };
+    if slice.as_ptr().is_null() {
+        return -1;
+    }
+    unsafe {
+        if value.is_null() {
+            crate::api::object::PyObject_DelItem(obj, slice.as_ptr())
+        } else {
+            crate::api::object::PyObject_SetItem(obj, slice.as_ptr(), value)
+        }
+    }
 }

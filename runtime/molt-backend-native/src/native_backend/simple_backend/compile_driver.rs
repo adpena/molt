@@ -93,6 +93,10 @@ impl SimpleBackend {
                 .validate_function_linkage_abis(&ir.functions)
                 .unwrap_or_else(|error| panic!("invalid native module context: {error}"));
         }
+        // Capture each function's entry custody while its extern declaration
+        // is still present; `func_new` lowering reads it.
+        self.function_entry_custody =
+            merge_function_entry_custody(self.module_context.as_ref(), &ir.functions);
         //  LLVM backend dispatch
         // When MOLT_BACKEND=llvm and the llvm feature is compiled in, route
         // through the LLVM backend instead of Cranelift.  Each function is
@@ -132,21 +136,6 @@ impl SimpleBackend {
                     .to_str()
                     .unwrap_or(""),
             );
-            // Fuse `obj.method(args)` / `super().method(args)` dispatch into the
-            // allocation-free `call_method_ic` / `call_super_method_ic` ops
-            // BEFORE lifting to TIR. Unlike the Cranelift path (which fuses the
-            // post-roundtrip SimpleIR immediately before `compile_func`), the
-            // LLVM path lowers directly from the per-function-optimized TIR, so
-            // the IC ops enter the TIR roundtrip as first-class TIR opcodes
-            // and lower through dedicated LLVM opcode arms. Built from the same
-            // fused `func` as `function_repr_facts`, keeping the SimpleIR /
-            // TIR pair aligned. Extern (declaration-only) functions have empty
-            // bodies  nothing to fuse.
-            for func in &mut ir.functions {
-                if !func.is_extern {
-                    fuse_method_dispatch(func);
-                }
-            }
             let mut llvm_cached_tir = crate::tir::pipeline_cache::run_cached_tir_pipeline(
                 &mut ir.functions,
                 crate::tir::pipeline_cache::TirPipelineRunOptions {
@@ -240,6 +229,11 @@ impl SimpleBackend {
                     )
                 })
                 .collect();
+            let parameter_custody: BTreeMap<_, _> = ir
+                .functions
+                .iter()
+                .map(|function| (function.name.clone(), function.parameter_custody.clone()))
+                .collect();
             llvm.function_linkage_abis = tir_funcs
                 .iter()
                 .filter(|(is_extern, _)| !*is_extern)
@@ -262,6 +256,15 @@ impl SimpleBackend {
                         tir_func.name.clone(),
                         NativeFunctionLinkageAbi {
                             source_signature,
+                            parameter_custody: parameter_custody
+                                .get(&tir_func.name)
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "LLVM function `{}` lost its entry custody",
+                                        tir_func.name
+                                    )
+                                }),
                             param_types,
                             return_type,
                         },
@@ -383,15 +386,10 @@ impl SimpleBackend {
 
             return CompileOutput { bytes };
         }
-        // Re-analyze after dead function elimination and megafunction
-        // splitting so defined_functions/closure_functions reflect only the
-        // surviving (and newly created chunk) functions. The leaf set is
-        // consumed by codegen (recursion-guard skip). When a whole-program
-        // module context is already set (the batched path), its leaf set wins
-        // over this per-batch one (see `effective_leaf_functions` below), so
-        // skip the redundant per-batch whole-program leaf lift here.
-        let need_local_leaves = self.module_context.is_none();
-        let ir_analysis = analyze_native_backend_ir(&ir, need_local_leaves, source_callables);
+        // Analyze the exact post-lifetime/post-partition bodies codegen emits.
+        // Shared batch context predates worker finalization and carries no leaf
+        // claims. External targets retain guards without a final-body proof.
+        let ir_analysis = analyze_native_backend_ir(&ir, source_callables);
         // Compile functions into one module. Backend codegen failures are hard
         // failures: the compiler must not produce partial objects with
         // runtime-aborting placeholders for functions it could not compile.
@@ -449,7 +447,7 @@ impl SimpleBackend {
         // UNION the module context's whole-program metadata with this batch's
         // LOCAL scan (design-20 finding #3C activation): a `module_context` that
         // was built from a DIFFERENT function set (the stdlib cache) does not
-        // contain a closure/task/leaf defined only in this batch. Replacing the
+        // contain a closure/task defined only in this batch. Replacing the
         // local scan dropped those, so a `call_guarded` to a user closure
         // skipped env extraction  garbage closure  subscript TypeError. Mirror
         // the union that `merge_function_arities`/`merge_function_has_ret`
@@ -465,8 +463,6 @@ impl SimpleBackend {
             module_context.as_ref(),
             ir_analysis.task_closure_sizes.clone(),
         );
-        let effective_leaf_functions =
-            merge_leaf_functions(module_context.as_ref(), ir_analysis.leaf_functions.clone());
         let mut local_function_has_ret: BTreeMap<String, bool> = extern_function_signatures
             .iter()
             .map(|(name, signature)| (name.clone(), signature.returns_value))
@@ -484,17 +480,9 @@ impl SimpleBackend {
         let mut last_progress = std::time::Instant::now();
         let mut deferred_codegen_ops = 0usize;
 
-        for mut func_ir in ir.functions {
+        for func_ir in ir.functions {
             let func_name = func_ir.name.clone();
             let func_op_count = func_ir.ops.len().max(1);
-            // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs +
-            // call_bind) into a single allocation-free `call_method_ic` op
-            // (CPython LOAD_METHOD/CALL_METHOD optimisation).  Run as the LAST
-            // transformation before codegen. TIR has first-class IC opcodes, but
-            // this backend consumes the final SimpleIR stream, so the fused ops
-            // must not re-enter the TIR roundtrip or the whole-program leaf/alias
-            // analyses (all already complete).
-            fuse_method_dispatch(&mut func_ir);
             let func_start = std::time::Instant::now();
             self.compile_func(
                 func_ir,
@@ -503,7 +491,7 @@ impl SimpleBackend {
                 &effective_task_closure_sizes,
                 &ir_analysis.defined_functions,
                 &effective_closure_functions,
-                &effective_leaf_functions,
+                &ir_analysis.leaf_functions,
                 &effective_function_arities,
                 &effective_function_has_ret,
             );

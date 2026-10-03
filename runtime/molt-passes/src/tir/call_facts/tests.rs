@@ -574,3 +574,52 @@ fn call_facts_reports_shared_partition_and_frame_inline_reasons() {
         );
     }
 }
+
+#[test]
+fn namespace_acquisition_callbacks_remain_opaque_and_prevent_leaf_proofs() {
+    for opcode in [
+        OpCode::ModuleGetGlobal,
+        OpCode::ModuleGetAttr,
+        OpCode::ModuleGetName,
+        OpCode::ModuleImportFrom,
+    ] {
+        let mut caller = TirFunction::new(
+            "caller".into(),
+            vec![TirType::DynBox, TirType::Str],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let operands = caller.blocks[&caller.entry_block]
+            .args
+            .iter()
+            .map(|argument| argument.id)
+            .collect();
+        let result = caller.fresh_value();
+        let block = caller.blocks.get_mut(&caller.entry_block).unwrap();
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands,
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        block.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let local = CallFactsTable::build_local(&caller);
+        let m = module(vec![caller]);
+        let graph = CallGraph::build(&m);
+        assert!(graph.makes_any_call("caller"), "{opcode:?}");
+        assert!(graph.has_opaque_call("caller"), "{opcode:?}");
+        assert!(!graph.leaf_functions().contains("caller"), "{opcode:?}");
+        let module_table = module_table_for(&m, "caller");
+        for facts in [local.get(result), module_table.get(result)] {
+            let facts = facts.expect("callback-capable namespace acquisition records call facts");
+            assert_eq!(facts.target, CallTargetFact::Opaque, "{opcode:?}");
+            assert_eq!(facts.leaf, FactValue::Unknown, "{opcode:?}");
+            assert_eq!(facts.no_throw, FactValue::Unknown, "{opcode:?}");
+            assert_eq!(facts.inlinable, InlineEligibility::Unknown, "{opcode:?}");
+        }
+    }
+}

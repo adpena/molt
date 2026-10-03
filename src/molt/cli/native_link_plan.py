@@ -11,6 +11,7 @@ import sys
 from typing import TYPE_CHECKING, Iterator, Sequence
 
 if TYPE_CHECKING:
+    from molt.cli.native_link_manifest import NativeLinkInputs
     from molt.cli.source_extension_link_requirements import (
         SourceExtensionLinkRequirements,
     )
@@ -153,6 +154,7 @@ class NativeLinkPlan:
     normalized_target: str | None
     sidecars: tuple[NativeLinkSidecar, ...] = ()
     selection_requirements: SourceExtensionLinkRequirements | None = None
+    runtime_inputs: NativeLinkInputs | None = None
 
     def sidecar_facts(self) -> tuple[dict[str, object], ...]:
         return tuple(sidecar.fact() for sidecar in self.sidecars)

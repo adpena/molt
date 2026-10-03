@@ -6310,14 +6310,14 @@ def test_python_header_buffer_descriptor_smoke(tmp_path: Path) -> None:
                 "    if (view.readonly != 1 || view.ndim != 1 || view.internal != NULL) {",
                 "        return -3;",
                 "    }",
-                "    if (view._molt_view.data != (uint8_t *)data || view._molt_view.len != 4) {",
+                "    if (view.format != NULL || view.shape != NULL) {",
                 "        return -4;",
                 "    }",
-                "    if (view._molt_view.shape[0] != 4 || view._molt_view.strides[0] != 1) {",
+                "    if (view.strides != NULL || view.obj != NULL) {",
                 "        return -5;",
                 "    }",
                 "    PyBuffer_Release(&view);",
-                "    if (view.buf != NULL || view._molt_view.data != NULL) {",
+                "    if (view.buf != NULL || view.obj != NULL) {",
                 "        return -6;",
                 "    }",
                 "    return 0;",
@@ -6469,7 +6469,7 @@ def test_python_header_buffer_descriptor_smoke(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_python_header_type_module_wrappers_smoke(tmp_path: Path) -> None:
+def test_python_header_type_module_declarations_smoke(tmp_path: Path) -> None:
     clang = shutil.which("clang")
     if clang is None:
         pytest.skip("clang is required for Python.h compatibility smoke test")
@@ -6592,13 +6592,42 @@ def test_python_header_type_module_wrappers_smoke(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_python_header_source_compat_descriptors_fail_closed() -> None:
+def test_python_header_type_construction_has_one_linked_authority() -> None:
     header = (ROOT / "include" / "molt" / "Python.h").read_text(encoding="utf-8")
-
-    assert "requires --abi-tier cpython-abi" in header
-    assert (
-        '_molt_type_wrap_single_arg_builtin("property", getter_callable)' not in header
+    exports = (ROOT / "include/molt/shared/_typeobject_exports.h").read_text(
+        encoding="utf-8"
     )
+
+    assert '#include "shared/_typeobject_exports.h"' in header
+    for name in (
+        "PyType_FromSpec",
+        "PyType_FromSpecWithBases",
+        "PyType_FromModuleAndSpec",
+        "PyType_FromMetaclass",
+        "PyType_Ready",
+        "PyType_GetSlot",
+        "PyType_GetFlags",
+        "PyType_GetDict",
+        "PyType_GetName",
+        "PyType_GetQualName",
+        "PyType_GetModule",
+        "PyType_GetModuleState",
+        "PyType_GetModuleByDef",
+    ):
+        assert name in exports
+        assert f'_molt_host_abi_symbol("{name}")' in exports
+    for retired in (
+        "_molt_type_wrap_single_arg_builtin",
+        "_molt_type_make_slot_callable",
+        "_molt_type_install_",
+        "_molt_type_add_methods",
+        "_molt_type_add_getset",
+        "_molt_type_attach_module",
+        "_molt_type_get_attached_module",
+        "_MOLT_TYPE_MODULE_ATTR",
+    ):
+        assert retired not in header
+    assert "_molt_builtin_class_lookup_utf8" in header
     assert "Py_INCREF(Py_None);\n    return Py_None;" not in header
 
 

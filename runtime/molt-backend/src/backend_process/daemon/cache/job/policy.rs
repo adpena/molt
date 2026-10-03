@@ -10,6 +10,9 @@ pub(crate) fn daemon_memory_cache_allowed_for_job(
     job: &DaemonJobRequest,
     stdlib_archive_path: Option<&str>,
 ) -> bool {
+    if molt_ir::backend_environment::compilation_diagnostics_requested() {
+        return false;
+    }
     if job.is_wasm {
         return true;
     }

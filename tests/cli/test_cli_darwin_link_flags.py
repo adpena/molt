@@ -130,11 +130,13 @@ def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
         runtime_build_identity=build_identity,
     )
 
-    link_flags = cli._collect_cargo_native_link_deps(
-        runtime_lib,
-        target_triple=target_triple,
-        object_format="macho",
-        runtime_build_identity=build_identity,
+    link_flags = list(
+        cli._collect_cargo_native_link_deps(
+            runtime_lib,
+            target_triple=target_triple,
+            object_format="macho",
+            runtime_build_identity=build_identity,
+        ).flags
     )
 
     assert link_flags == [
@@ -199,11 +201,13 @@ def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
         runtime_build_identity=build_identity,
     )
 
-    link_flags = cli._collect_cargo_native_link_deps(
-        runtime_lib,
-        target_triple=target_triple,
-        object_format="macho",
-        runtime_build_identity=build_identity,
+    link_flags = list(
+        cli._collect_cargo_native_link_deps(
+            runtime_lib,
+            target_triple=target_triple,
+            object_format="macho",
+            runtime_build_identity=build_identity,
+        ).flags
     )
 
     assert link_flags == ["-framework", "Security"]

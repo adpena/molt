@@ -1,6 +1,133 @@
 use super::*;
 use std::collections::HashSet;
 
+/// Adapter source is shared by initial public namespace publication and explicit
+/// runtime references. The provider closure determines executability; a string
+/// in this match is not a support declaration. Public lookup never allocates one.
+pub(super) fn builtin_runtime_adapter(symbol: &str) -> Option<&'static str> {
+    Some(match symbol {
+        "molt_max_builtin" => {
+            "function(a, ...) return math.max(table.unpack(a, 1, molt_sequence_len(a))) end"
+        }
+        "molt_min_builtin" => {
+            "function(a, ...) return math.min(table.unpack(a, 1, molt_sequence_len(a))) end"
+        }
+        "molt_abs_builtin" => "function(a, ...) return math.abs(a[1]) end",
+        "molt_round_builtin" => "function(a, ...) return math.round(a[1]) end",
+        "molt_print_builtin" => {
+            "function(a, ...) return molt_print(table.unpack(a, 1, molt_sequence_len(a))) end"
+        }
+        "molt_len" => "function(a, ...) return molt_len(a[1]) end",
+        "molt_int_builtin" | "molt_int" => "function(a, ...) return molt_int(a[1]) end",
+        "molt_float_builtin" | "molt_float" => "function(a, ...) return molt_float(a[1]) end",
+        "molt_str_builtin" | "molt_str" => "function(a, ...) return molt_str(a[1]) end",
+        "molt_bool_builtin" | "molt_bool" => "function(a, ...) return molt_bool(a[1]) end",
+        "molt_sum_builtin" => "function(a, ...) return molt_sum(a[1]) end",
+        "molt_any_builtin" => "function(a, ...) return molt_any(a[1]) end",
+        "molt_all_builtin" => "function(a, ...) return molt_all(a[1]) end",
+        "molt_sorted_builtin" => {
+            "function(a, ...) return molt_sorted(table.unpack(a, 1, molt_sequence_len(a))) end"
+        }
+        "molt_reversed_builtin" => "function(a, ...) return molt_reversed(a[1]) end",
+        "molt_enumerate_builtin" => {
+            "function(a, ...) return molt_enumerate(table.unpack(a, 1, molt_sequence_len(a))) end"
+        }
+        "molt_zip_builtin" => {
+            "function(a, ...) return molt_zip(table.unpack(a, 1, molt_sequence_len(a))) end"
+        }
+        "molt_isinstance" => "function(a, ...) return molt_isinstance(a[1], a[2]) end",
+        "molt_issubclass" => "function(a, ...) return molt_issubclass(a[1], a[2]) end",
+        "molt_classmethod_new" => {
+            "function(a, ...) return {__molt_descriptor_kind=\"classmethod\", __func=a[1]} end"
+        }
+        "molt_staticmethod_new" => {
+            "function(a, ...) return {__molt_descriptor_kind=\"staticmethod\", __func=a[1]} end"
+        }
+        "molt_property_new" => {
+            "function(a, ...) return {__molt_descriptor_kind=\"property\", __get=a[1], __set=a[2], __del=a[3]} end"
+        }
+        "molt_hash_builtin" => "function(a, ...) return molt_hash(a[1]) end",
+        "molt_ord" => "function(a, ...) return molt_ord(a[1]) end",
+        "molt_chr" => "function(a, ...) return string.char(a[1]) end",
+        "molt_repr_builtin" => "function(a, ...) return molt_repr(a[1]) end",
+        "molt_id" => "function(a, ...) return molt_id(a[1]) end",
+        "molt_callable_builtin" => "function(a, ...) return type(a[1]) == \"function\" end",
+        "molt_iter_checked" => "function(a, ...) return molt_iter(a[1]) end",
+        "molt_next_builtin" => {
+            "function(a, ...) return molt_next(table.unpack(a, 1, molt_sequence_len(a))) end"
+        }
+        "molt_getattr_builtin" => {
+            "function(a, ...) local value = if type(a[1]) == \"function\" then molt_func_attr_get(a[1], a[2]) else molt_get_attr(a[1], a[2]); if value ~= nil then return value end; if a[3] ~= nil then return a[3] end; error({__type=\"AttributeError\", __msg=tostring(a[2])}) end"
+        }
+        "molt_set_attr_name" => {
+            "function(a, ...) if type(a[1]) == \"function\" then return molt_function_attr_set(a[1], a[2], a[3]) end; return molt_set_attr(a[1], a[2], a[3]) end"
+        }
+        "molt_del_attr_name" => {
+            "function(a, ...) if type(a[1]) == \"function\" then return molt_function_attr_del(a[1], a[2]) end; return molt_del_attr(a[1], a[2]) end"
+        }
+        "molt_has_attr_name" => {
+            "function(a, ...) if type(a[1]) == \"function\" then return molt_func_attr_get(a[1], a[2]) ~= nil end; return molt_has_attr(a[1], a[2]) end"
+        }
+        "molt_divmod_builtin" => "function(a, ...) return molt_divmod(a[1], a[2]) end",
+        "molt_hex_builtin" => "function(a, ...) return molt_hex(a[1]) end",
+        "molt_oct_builtin" => "function(a, ...) return molt_oct(a[1]) end",
+        "molt_bin_builtin" => "function(a, ...) return molt_bin(a[1]) end",
+        "molt_ascii_from_obj" => "function(a, ...) return molt_ascii(a[1]) end",
+        "molt_format_builtin" => {
+            "function(a, ...) return molt_format(table.unpack(a, 1, molt_sequence_len(a))) end"
+        }
+        "molt_dir_builtin" => "function(a, ...) return molt_dir(a[1]) end",
+        "molt_vars_builtin" => "function(a, ...) return molt_vars(a[1]) end",
+        "molt_function_init_metadata_packed" => {
+            "function(a, ...) return molt_function_init_metadata_packed(a[1], a[2], a[3], a[4]) end"
+        }
+        "molt_function_set_defaults" => {
+            "function(a, ...) return molt_function_set_defaults(a[1], a[2], a[3]) end"
+        }
+        _ => return None,
+    })
+}
+
+/// Publish each supported declaration once into the existing module namespace.
+/// The generated declaration table owns public names; deletion and replacement
+/// after this bootstrap are authoritative for every subsequent lookup.
+pub(super) fn builtin_namespace_publication(library: &runtime_prelude::RuntimeLibrary) -> String {
+    use molt_ir::python_builtin_callables_generated::PYTHON_BUILTIN_CALLABLES;
+
+    let mut source = String::from(";(function()\n\tlocal namespace = molt_dict_new()\n");
+    for spec in PYTHON_BUILTIN_CALLABLES {
+        if let Some(adapter) = builtin_runtime_adapter(spec.runtime_name) {
+            if let Err(reason) = library.validate_adapter(adapter) {
+                // Never publish a callable whose provider is an undefined global.
+                // Public acquisition still honors a replacement mapping.
+                source.push_str(&format!(
+                    "\t-- Unavailable default builtin {}: {reason}\n",
+                    spec.python_name
+                ));
+                continue;
+            }
+            source.push_str(&format!(
+                "\tmolt_dict_set(namespace, \"{}\", molt_function_set_builtin({adapter}))\n",
+                escape_luau_string(spec.python_name),
+            ));
+        } else {
+            source.push_str(&format!(
+                "\t-- Unavailable default builtin {}: no Luau adapter for {}\n",
+                spec.python_name, spec.runtime_name,
+            ));
+        }
+    }
+    source.push_str("\tmolt_module_cache[\"builtins\"] = namespace\nend)()\n\n");
+    source
+}
+
+pub(super) fn is_public_builtin_acquisition(op: &OpIR) -> bool {
+    op.builtin_name
+        .as_deref()
+        .and_then(molt_ir::python_builtin_callables_generated::python_builtin_callable)
+        .is_some()
+}
+
 fn checked_call_expr(callable: &str, args: &str) -> String {
     if args.is_empty() {
         format!("molt_call_checked({callable})")
@@ -116,119 +243,29 @@ impl LuauBackend {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     let s_val = op.s_value.as_deref().unwrap_or("");
-                    // Builtin wrappers consume the binder's packed positional
-                    // vector. `molt_function_set_builtin` records that ABI in
-                    // the same metadata authority used by every call shape.
-                    let mapped = match s_val {
-                        "molt_max_builtin" => {
-                            "function(a, ...) return math.max(table.unpack(a, 1, molt_sequence_len(a))) end"
-                        }
-                        "molt_min_builtin" => {
-                            "function(a, ...) return math.min(table.unpack(a, 1, molt_sequence_len(a))) end"
-                        }
-                        "molt_abs_builtin" => "function(a, ...) return math.abs(a[1]) end",
-                        "molt_round_builtin" => "function(a, ...) return math.round(a[1]) end",
-                        "molt_print_builtin" => {
-                            "function(a, ...) return molt_print(table.unpack(a, 1, molt_sequence_len(a))) end"
-                        }
-                        "molt_len" => "function(a, ...) return molt_len(a[1]) end",
-                        "molt_int_builtin" | "molt_int" => {
-                            "function(a, ...) return molt_int(a[1]) end"
-                        }
-                        "molt_float_builtin" | "molt_float" => {
-                            "function(a, ...) return molt_float(a[1]) end"
-                        }
-                        "molt_str_builtin" | "molt_str" => {
-                            "function(a, ...) return molt_str(a[1]) end"
-                        }
-                        "molt_bool_builtin" | "molt_bool" => {
-                            "function(a, ...) return molt_bool(a[1]) end"
-                        }
-                        "molt_sum_builtin" => "function(a, ...) return molt_sum(a[1]) end",
-                        "molt_any_builtin" => "function(a, ...) return molt_any(a[1]) end",
-                        "molt_all_builtin" => "function(a, ...) return molt_all(a[1]) end",
-                        "molt_sorted_builtin" => {
-                            "function(a, ...) return molt_sorted(table.unpack(a, 1, molt_sequence_len(a))) end"
-                        }
-                        "molt_reversed_builtin" => {
-                            "function(a, ...) return molt_reversed(a[1]) end"
-                        }
-                        "molt_enumerate_builtin" => {
-                            "function(a, ...) return molt_enumerate(table.unpack(a, 1, molt_sequence_len(a))) end"
-                        }
-                        "molt_zip_builtin" => {
-                            "function(a, ...) return molt_zip(table.unpack(a, 1, molt_sequence_len(a))) end"
-                        }
-                        "molt_isinstance" => {
-                            "function(a, ...) return molt_isinstance(a[1], a[2]) end"
-                        }
-                        "molt_issubclass" => {
-                            "function(a, ...) return molt_issubclass(a[1], a[2]) end"
-                        }
-                        "molt_classmethod_new" => {
-                            "function(a, ...) return {__molt_descriptor_kind=\"classmethod\", __func=a[1]} end"
-                        }
-                        "molt_staticmethod_new" => {
-                            "function(a, ...) return {__molt_descriptor_kind=\"staticmethod\", __func=a[1]} end"
-                        }
-                        "molt_property_new" => {
-                            "function(a, ...) return {__molt_descriptor_kind=\"property\", __get=a[1], __set=a[2], __del=a[3]} end"
-                        }
-                        "molt_hash_builtin" => "function(a, ...) return molt_hash(a[1]) end",
-                        "molt_ord" => "function(a, ...) return molt_ord(a[1]) end",
-                        "molt_chr" => "function(a, ...) return string.char(a[1]) end",
-                        "molt_repr_builtin" => "function(a, ...) return molt_repr(a[1]) end",
-                        "molt_id" => "function(a, ...) return molt_id(a[1]) end",
-                        "molt_callable_builtin" => {
-                            "function(a, ...) return type(a[1]) == \"function\" end"
-                        }
-                        "molt_iter_checked" => "function(a, ...) return molt_iter(a[1]) end",
-                        "molt_next_builtin" => {
-                            "function(a, ...) return molt_next(table.unpack(a, 1, molt_sequence_len(a))) end"
-                        }
-                        "molt_getattr_builtin" => {
-                            "function(a, ...) local value = if type(a[1]) == \"function\" then molt_func_attr_get(a[1], a[2]) else molt_get_attr(a[1], a[2]); if value ~= nil then return value end; if a[3] ~= nil then return a[3] end; error({__type=\"AttributeError\", __msg=tostring(a[2])}) end"
-                        }
-                        "molt_set_attr_name" => {
-                            "function(a, ...) if type(a[1]) == \"function\" then return molt_function_attr_set(a[1], a[2], a[3]) end; return molt_set_attr(a[1], a[2], a[3]) end"
-                        }
-                        "molt_del_attr_name" => {
-                            "function(a, ...) if type(a[1]) == \"function\" then return molt_function_attr_del(a[1], a[2]) end; return molt_del_attr(a[1], a[2]) end"
-                        }
-                        "molt_has_attr_name" => {
-                            "function(a, ...) if type(a[1]) == \"function\" then return molt_func_attr_get(a[1], a[2]) ~= nil end; return molt_has_attr(a[1], a[2]) end"
-                        }
-                        "molt_divmod_builtin" => {
-                            "function(a, ...) return molt_divmod(a[1], a[2]) end"
-                        }
-                        "molt_hex_builtin" => "function(a, ...) return molt_hex(a[1]) end",
-                        "molt_oct_builtin" => "function(a, ...) return molt_oct(a[1]) end",
-                        "molt_bin_builtin" => "function(a, ...) return molt_bin(a[1]) end",
-                        "molt_ascii_from_obj" => "function(a, ...) return molt_ascii(a[1]) end",
-                        "molt_format_builtin" => {
-                            "function(a, ...) return molt_format(table.unpack(a, 1, molt_sequence_len(a))) end"
-                        }
-                        "molt_dir_builtin" => "function(a, ...) return molt_dir(a[1]) end",
-                        "molt_vars_builtin" => "function(a, ...) return molt_vars(a[1]) end",
-                        "molt_function_init_metadata_packed" => {
-                            "function(a, ...) return molt_function_init_metadata_packed(a[1], a[2], a[3], a[4]) end"
-                        }
-                        "molt_function_set_defaults" => {
-                            "function(a, ...) return molt_function_set_defaults(a[1], a[2], a[3]) end"
-                        }
-                        // Runtime intrinsics that have no Luau equivalent.
-                        "molt_function_set_builtin"
-                        | "molt_open_builtin"
-                        | "molt_aiter"
-                        | "molt_anext_builtin" => {
+                    // A public acquisition reads the captured namespace even
+                    // when this target has no canonical default implementation.
+                    if is_public_builtin_acquisition(op) {
+                        let [name] = op.args.as_deref().unwrap_or(&[]) else {
                             self.emit_unsupported_op(op);
                             return true;
-                        }
-                        _ => {
-                            self.emit_unsupported_op(op);
-                            return true;
-                        }
+                        };
+                        let name = sanitize_ident(name);
+                        self.emit_line(&format!("local {out} = molt_frame_builtin_get({name})"));
+                        return true;
+                    }
+                    // Only explicit runtime constructors require an executable
+                    // adapter. Admission and publication use the same closure.
+                    let Some(mapped) = builtin_runtime_adapter(s_val) else {
+                        self.emit_unsupported_op(op);
+                        return true;
                     };
+                    if let Err(reason) = runtime_prelude::library()
+                        .and_then(|library| library.validate_adapter(mapped))
+                    {
+                        self.emit_unsupported_op_with_reason(op, &reason);
+                        return true;
+                    }
                     self.emit_line(&format!("local {out} = {mapped}"));
                     self.emit_line(&format!("molt_function_set_builtin({out})"));
                 }

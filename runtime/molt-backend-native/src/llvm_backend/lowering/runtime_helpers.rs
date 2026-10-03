@@ -24,7 +24,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     /// Emit a classified positional boxed ABI call for either a direct runtime
-    /// CALL or a preserved operation. Both routes share boxing and return rules.
+    /// CALL or a preserved operation. Both routes share admission, the
+    /// borrowed-operand custody and the canonical result custody.
     pub(super) fn emit_boxed_runtime_call(&mut self, op: &TirOp, abi: &RuntimeBoxedAbi) {
         let symbol = abi.symbol;
         // Semantic classification is not availability in the selected runtime.
@@ -68,75 +69,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ));
             return;
         }
-        // Runtime arguments borrow their object values. Materializing a raw
-        // full-width integer may mint a temporary BigInt owner; the original
-        // raw SSA value's RC cannot retire that owner. Already-boxed values
-        // remain borrowed and must not enter this cleanup list.
-        let mut temporary_owners = Vec::new();
-        let arg_bits: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
-            .operands
-            .iter()
-            .map(|&id| {
-                let (bits, owns_temporary) =
-                    self.materialize_dynbox_operand_with_temporary_owner(id);
-                if owns_temporary {
-                    temporary_owners.push(bits);
-                }
-                bits.into()
-            })
-            .collect();
-        let result = match return_abi {
-            RuntimeReturnAbi::Void => {
-                let func = self.ensure_runtime_void_fn(symbol, op.operands.len());
-                self.backend
-                    .builder
-                    .build_call(func, &arg_bits, symbol)
-                    .unwrap();
-                None
-            }
-            RuntimeReturnAbi::I64 => {
-                let func = self.ensure_runtime_i64_fn(symbol, op.operands.len());
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(func, &arg_bits, symbol)
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                Some(result)
-            }
+        let callee = match return_abi {
+            RuntimeReturnAbi::Void => self.ensure_runtime_void_fn(symbol, abi.arity),
+            RuntimeReturnAbi::I64 => self.ensure_runtime_i64_fn(symbol, abi.arity),
         };
-        // A borrowed return can alias a temporary boxed argument. Retain a
-        // named result before releasing those argument owners; discarded
-        // borrowed results acquire no credit and require no release.
-        if abi.result == RuntimeBoxedReturn::BorrowedValue
-            && !op.results.is_empty()
-            && let Some(result) = result
-        {
-            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-            self.backend
-                .builder
-                .build_call(retain, &[result.into()], "")
-                .unwrap();
-        }
-        if !temporary_owners.is_empty() {
-            let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-            for bits in temporary_owners {
-                self.backend
-                    .builder
-                    .build_call(release, &[bits.into()], "")
-                    .unwrap();
-            }
-        }
-        if let Some(result) = result
-            && (matches!(
-                abi.result,
-                RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue
-            ) || !op.results.is_empty())
-        {
-            // Bound borrowed results now own the retain acquired above.
-            self.bind_owned_runtime_result(op, result);
-        }
+        self.emit_positional_runtime_call(
+            op,
+            callee,
+            RuntimeResultCustody::Boxed(abi.result),
+            "boxed_call",
+            symbol,
+        );
     }
 
     /// Bind a transferred object owner, or retire it when the op discards it.
@@ -155,104 +98,205 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
     }
 
-    pub(super) fn emit_call_bind_runtime(
-        &self,
-        callable: BasicValueEnum<'ctx>,
-        arg_ids: &[ValueId],
-    ) -> BasicValueEnum<'ctx> {
+    /// Build a positional CallArgs for `args` and let `consume` bind it. The
+    /// builder reserves exactly `args.len()` positional slots, so no push can
+    /// fail; each push retains its argument and returns None. `consume`
+    /// (`molt_call_bind*`, `molt_call_builtin`) owns and frees the builder.
+    /// A failed allocation returns the raw word 0 with MemoryError pending.
+    /// Every builder entry and consumer observes a pending exception first, so
+    /// the pushes then retain nothing and the consumer returns None without
+    /// running a callee: the runtime protocol needs no branch here.
+    pub(super) fn with_callargs(
+        &mut self,
+        args: &[inkwell::values::IntValue<'ctx>],
+        consume: impl FnOnce(
+            &mut Self,
+            inkwell::values::IntValue<'ctx>,
+        ) -> inkwell::values::IntValue<'ctx>,
+    ) -> inkwell::values::IntValue<'ctx> {
         let i64_ty = self.backend.context.i64_type();
-        let callable_i64 = self.ensure_i64(callable);
         let new_fn = self.ensure_runtime_i64_fn("molt_callargs_new", 2);
-        let builder_val = self
+        let builder_bits = self
             .backend
             .builder
             .build_call(
                 new_fn,
                 &[
-                    i64_ty.const_int(arg_ids.len() as u64, false).into(),
-                    i64_ty.const_int(0, false).into(),
+                    i64_ty.const_int(args.len() as u64, false).into(),
+                    i64_ty.const_zero().into(),
                 ],
                 "callargs",
             )
             .unwrap()
             .try_as_basic_value()
-            .unwrap_basic();
+            .unwrap_basic()
+            .into_int_value();
         let push_fn = self.ensure_runtime_i64_fn("molt_callargs_push_pos", 2);
-        for &arg_id in arg_ids {
-            // The dynamic-call ABI (`molt_callargs_push_pos` -> `molt_call_bind`
-            // -> trampoline) carries every argument as a NaN-boxed `DynBox`; the
-            // callee trampoline then decodes each box into its parameter's raw
-            // representation (`unbox_dynbox_to_param_ty_with_builder`). Passing a
-            // raw scalar here (the old `ensure_i64`, a bitcast-level cast that
-            // does NOT NaN-box) made the trampoline decode a raw `I64`/`F64`
-            // payload as a boxed tag — e.g. a closure returning its arg, or a
-            // bare `sum`/`format` result, surfaced as a denormal float / `15.0`.
-            // `materialize_dynbox_operand` boxes per the value's representation
-            // plan, mirroring the direct-call arg path (`coerce_to_tir_type`).
-            let arg_i64 = self.materialize_dynbox_operand(arg_id);
+        for &arg in args {
             self.backend
                 .builder
-                .build_call(push_fn, &[builder_val.into(), arg_i64.into()], "push")
+                .build_call(push_fn, &[builder_bits.into(), arg.into()], "callargs_push")
                 .unwrap();
         }
+        consume(&mut *self, builder_bits)
+    }
+
+    /// Borrow a dynamic call's callable and positional arguments through one
+    /// custody. The dynamic-call ABI (`molt_call_func_fast{N}`,
+    /// `molt_callargs_push_pos` -> `molt_call_bind`) carries every argument as
+    /// a NaN-boxed `DynBox` word, which the callee trampoline decodes into its
+    /// parameter's raw representation (`unbox_dynbox_to_param_ty_with_builder`).
+    /// A raw scalar passed unboxed was decoded as a boxed payload (a closure
+    /// returning its argument, or a bare `sum`/`format` result, surfaced as a
+    /// denormal float or `15.0`), so each value is boxed once here, and a box
+    /// minted for it is released after the call returns.
+    fn borrow_dynamic_call_operands(
+        &mut self,
+        callable: ValueId,
+        args: &[ValueId],
+    ) -> (
+        BorrowedOperands<'ctx>,
+        inkwell::values::IntValue<'ctx>,
+        Vec<inkwell::values::IntValue<'ctx>>,
+    ) {
+        let mut operands = Vec::with_capacity(args.len() + 1);
+        operands.push(callable);
+        operands.extend_from_slice(args);
+        let mut custody = self.begin_borrowed_operands(&operands, "dynamic_call");
+        let callable_bits = self.borrowed_operand(&mut custody, callable);
+        let mut arg_bits = Vec::with_capacity(args.len());
+        for &arg in args {
+            arg_bits.push(self.borrowed_operand(&mut custody, arg));
+        }
+        (custody, callable_bits, arg_bits)
+    }
+
+    /// `molt_call_bind(callable, CallArgs(args))`.
+    fn bind_call_words(
+        &mut self,
+        callable: inkwell::values::IntValue<'ctx>,
+        args: &[inkwell::values::IntValue<'ctx>],
+    ) -> inkwell::values::IntValue<'ctx> {
         let bind_fn = self.ensure_runtime_i64_fn("molt_call_bind", 2);
+        self.with_callargs(args, |this, builder| {
+            this.backend
+                .builder
+                .build_call(bind_fn, &[callable.into(), builder.into()], "call_result")
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+                .into_int_value()
+        })
+    }
+
+    /// `molt_call_func_fast{N}` for at most three positional arguments (the
+    /// callee trampoline borrows them), else the CallArgs route.
+    fn call_func_words(
+        &mut self,
+        callable: inkwell::values::IntValue<'ctx>,
+        args: &[inkwell::values::IntValue<'ctx>],
+    ) -> inkwell::values::IntValue<'ctx> {
+        if args.len() > 3 {
+            return self.bind_call_words(callable, args);
+        }
+        let rt_name = format!("molt_call_func_fast{}", args.len());
+        let fast_fn = self.ensure_runtime_i64_fn(&rt_name, args.len() + 1);
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(args.len() + 1);
+        call_args.push(callable.into());
+        for &arg in args {
+            call_args.push(arg.into());
+        }
         self.backend
             .builder
+            .build_call(fast_fn, &call_args, "call_func")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value()
+    }
+
+    pub(super) fn emit_call_bind_runtime(
+        &mut self,
+        callable: ValueId,
+        arg_ids: &[ValueId],
+    ) -> BasicValueEnum<'ctx> {
+        let (custody, callable_bits, arg_bits) =
+            self.borrow_dynamic_call_operands(callable, arg_ids);
+        let result = self.bind_call_words(callable_bits, &arg_bits);
+        self.finish_borrowed_operands(custody, result, "dynamic_call_result", |_| {})
+            .into()
+    }
+
+    pub(super) fn emit_call_func_runtime(
+        &mut self,
+        callable: ValueId,
+        arg_ids: &[ValueId],
+    ) -> BasicValueEnum<'ctx> {
+        let (custody, callable_bits, arg_bits) =
+            self.borrow_dynamic_call_operands(callable, arg_ids);
+        let result = self.call_func_words(callable_bits, &arg_bits);
+        self.finish_borrowed_operands(custody, result, "dynamic_call_result", |_| {})
+            .into()
+    }
+
+    /// An ordinary source call (`call_func`, `call_guarded`, `call_method`)
+    /// that adopted its callable and its arguments:
+    /// `molt_call_func_owned(callable, args, nargs, 0)`. Every word belongs to
+    /// the runtime's owned lane, which ends a temporary bound method before its
+    /// function runs, moves the arguments into an adopting frame or releases
+    /// them after a borrowing callee, and releases the callable last. Nothing
+    /// is released here on success. Failed materialization skips entry and
+    /// releases the instruction's inputs through operation-local custody.
+    pub(super) fn emit_call_func_owned_runtime(&mut self, op: &TirOp) -> BasicValueEnum<'ctx> {
+        let mut custody = self.begin_call_operands(
+            &op.operands,
+            &op.operands[1..],
+            Some(op.operands[0]),
+            "owned_call",
+        );
+        let words: Vec<inkwell::values::IntValue<'ctx>> = op
+            .operands
+            .iter()
+            .map(|&operand| self.borrowed_operand(&mut custody, operand))
+            .collect();
+        let (args_ptr, nargs) = self.spill_call_words(&words[1..], "owned_call_args");
+        let owned_fn = self.ensure_runtime_i64_fn("molt_call_func_owned", 4);
+        let no_site = self.backend.context.i64_type().const_zero();
+        self.surrender_borrowed_owners(&custody, &op.operands, &[]);
+        let result = self
+            .backend
+            .builder
             .build_call(
-                bind_fn,
-                &[callable_i64.into(), builder_val.into()],
-                "call_result",
+                owned_fn,
+                &[
+                    words[0].into(),
+                    args_ptr.into(),
+                    nargs.into(),
+                    no_site.into(),
+                ],
+                "call_func_owned",
             )
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
-    }
-
-    pub(super) fn emit_call_func_runtime(
-        &self,
-        callable: BasicValueEnum<'ctx>,
-        arg_ids: &[ValueId],
-    ) -> BasicValueEnum<'ctx> {
-        let callable_i64 = self.ensure_i64(callable);
-        if arg_ids.len() <= 3 {
-            let rt_name = format!("molt_call_func_fast{}", arg_ids.len());
-            let fast_fn = self.ensure_runtime_i64_fn(&rt_name, arg_ids.len() + 1);
-            let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-                Vec::with_capacity(arg_ids.len() + 1);
-            args.push(callable_i64.into());
-            for &arg_id in arg_ids {
-                // `molt_call_func_fast{N}` is the boxed-domain dynamic-dispatch
-                // entry: it forwards each argument into the callee's trampoline,
-                // which decodes a NaN-boxed `DynBox` into the parameter's raw
-                // representation. A raw scalar passed here (the old `ensure_i64`)
-                // is decoded as a boxed payload by the trampoline — the closure
-                // call/return ABI carrier miscompile (#58/#37). Box per the
-                // value's representation plan, exactly like the bind path above
-                // and the direct-call path (`coerce_to_tir_type`).
-                args.push(self.materialize_dynbox_operand(arg_id).into());
-            }
-            return self
-                .backend
-                .builder
-                .build_call(fast_fn, &args, "call_func")
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-        }
-        self.emit_call_bind_runtime(callable, arg_ids)
+            .into_int_value();
+        self.finish_borrowed_operands(custody, result, "owned_call_result", |_| {})
+            .into()
     }
 
     pub(super) fn emit_call_func_or_bind_runtime(
         &mut self,
-        callable: BasicValueEnum<'ctx>,
+        callable: ValueId,
         arg_ids: &[ValueId],
     ) -> BasicValueEnum<'ctx> {
-        let callable_i64 = self.ensure_i64(callable);
+        let (custody, callable_bits, arg_bits) =
+            self.borrow_dynamic_call_operands(callable, arg_ids);
         let is_func_fn = self.ensure_runtime_i64_fn("molt_is_function_obj", 1);
         let is_func_bits = self
             .backend
             .builder
-            .build_call(is_func_fn, &[callable_i64.into()], "is_function_obj")
+            .build_call(is_func_fn, &[callable_bits.into()], "is_function_obj")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -292,26 +336,31 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.all_llvm_blocks.push(fast_bb);
         self.all_llvm_blocks.push(bind_bb);
         self.all_llvm_blocks.push(merge_bb);
+        let source_bb = self.backend.builder.get_insert_block().unwrap();
         self.backend
             .builder
             .build_conditional_branch(cond_i1, fast_bb, bind_bb)
             .unwrap();
+        self.record_llvm_edge(source_bb, fast_bb);
+        self.record_llvm_edge(source_bb, bind_bb);
 
         self.backend.builder.position_at_end(fast_bb);
-        let fast_result = self.emit_call_func_runtime(callable, arg_ids);
+        let fast_result = self.call_func_words(callable_bits, &arg_bits);
+        let fast_exit_bb = self.backend.builder.get_insert_block().unwrap();
         self.backend
             .builder
             .build_unconditional_branch(merge_bb)
             .unwrap();
-        let fast_exit_bb = self.backend.builder.get_insert_block().unwrap();
+        self.record_llvm_edge(fast_exit_bb, merge_bb);
 
         self.backend.builder.position_at_end(bind_bb);
-        let bind_result = self.emit_call_bind_runtime(callable, arg_ids);
+        let bind_result = self.bind_call_words(callable_bits, &arg_bits);
+        let bind_exit_bb = self.backend.builder.get_insert_block().unwrap();
         self.backend
             .builder
             .build_unconditional_branch(merge_bb)
             .unwrap();
-        let bind_exit_bb = self.backend.builder.get_insert_block().unwrap();
+        self.record_llvm_edge(bind_exit_bb, merge_bb);
 
         self.backend.builder.position_at_end(merge_bb);
         let phi = self
@@ -319,11 +368,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_phi(self.backend.context.i64_type(), "call_func_or_bind_phi")
             .unwrap();
-        phi.add_incoming(&[
-            (&fast_result.into_int_value(), fast_exit_bb),
-            (&bind_result.into_int_value(), bind_exit_bb),
-        ]);
-        phi.as_basic_value()
+        phi.add_incoming(&[(&fast_result, fast_exit_bb), (&bind_result, bind_exit_bb)]);
+        let result = phi.as_basic_value().into_int_value();
+        self.finish_borrowed_operands(custody, result, "dynamic_call_result", |_| {})
+            .into()
     }
 
     pub(super) fn next_call_site_bits(&mut self, lane: &str) -> inkwell::values::IntValue<'ctx> {
@@ -333,13 +381,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             lane,
         );
         self.call_site_counter += 1;
-        let raw: BasicValueEnum<'ctx> = self
-            .backend
-            .context
-            .i64_type()
-            .const_int(site_id as u64, true)
-            .into();
-        self.materialize_dynbox_bits(raw, &TirType::I64)
+        // Site ids fit the inline window by construction, so the boxed word is
+        // a compile-time constant that owns nothing.
+        self.inline_int_constant(site_id)
     }
 
     pub(super) fn source_call_site_bits(
@@ -352,13 +396,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or_else(|| panic!("{lane} requires source op index"));
         let site_id =
             molt_codegen_abi::stable_ic_site_id(self.func.name.as_str(), source_op_idx, lane);
-        let raw: BasicValueEnum<'ctx> = self
-            .backend
-            .context
-            .i64_type()
-            .const_int(site_id as u64, true)
-            .into();
-        self.materialize_dynbox_bits(raw, &TirType::I64)
+        self.inline_int_constant(site_id)
     }
 
     pub(super) fn generator_self_bits(&self) -> inkwell::values::IntValue<'ctx> {
@@ -373,85 +411,5 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .get_nth_param(idx as u32)
             .unwrap_or_else(|| self.backend.context.i64_type().const_zero().into());
         self.ensure_i64(value)
-    }
-
-    /// Map each `_poll` resume state id to the REAL TIR resume-continuation
-    /// block (an entry in `block_map`), NOT a synthetic block.
-    ///
-    /// The single source of truth for the state → resume-block mapping is the
-    /// entry block's `StateDispatch` terminator, which the SSA pass built from
-    /// `cfg.state_resume_edges`: each `(state_id, resume_bid, args)` case names
-    /// the real TIR block that the dispatch resumes into.  Lowering the dispatch
-    /// to those real blocks (whose phis the SSA pass placed) is what makes the
-    /// `_poll` state machine dominance-correct on LLVM — the old design created
-    /// fresh synthetic `state_resume_*` blocks and `position_at_end`-ed the
-    /// continuation into them, so the real TIR continuation block's phis were
-    /// missing the dispatch incoming (the "Instruction does not dominate all
-    /// uses!" class).
-    ///
-    /// The re-poll suspend ops (`state_transition` / `chan_*_yield`) carry a
-    /// *pending* state id whose resume target is the suspend op's OWN block (it
-    /// re-polls from its own position); those are also dispatch cases, so they
-    /// are covered by the same `StateDispatch` case list.
-    pub(super) fn initialize_state_resume_blocks(&mut self) {
-        let Some(entry) = self.func.blocks.get(&self.func.entry_block) else {
-            return;
-        };
-        if let Terminator::StateDispatch { cases, .. } = &entry.terminator {
-            // Clone the (state_id, block_id) pairs first to avoid borrowing
-            // `self.func` while mutating `self.state_resume_blocks`.
-            let pairs: Vec<(i64, BlockId)> =
-                cases.iter().map(|(state, bid, _)| (*state, *bid)).collect();
-            for (state_id, resume_bid) in pairs {
-                if let Some(&bb) = self.block_map.get(&resume_bid) {
-                    self.state_resume_blocks.insert(state_id, bb);
-                }
-            }
-        }
-    }
-
-    pub(super) fn raw_i64_operand(
-        &self,
-        operand_id: ValueId,
-        current_bb: BasicBlock<'ctx>,
-    ) -> inkwell::values::IntValue<'ctx> {
-        let value = self.resolve(operand_id);
-        let source_ty = self
-            .value_types
-            .get(&operand_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
-        self.coerce_to_tir_type(value, &source_ty, &TirType::I64, current_bb)
-            .into_int_value()
-    }
-
-    pub(super) fn resume_block_for_state(&self, state_id: i64) -> BasicBlock<'ctx> {
-        *self
-            .state_resume_blocks
-            .get(&state_id)
-            .unwrap_or_else(|| panic!("missing resume block for state {}", state_id))
-    }
-
-    /// Call a 2-argument runtime function that returns i64.
-    ///
-    /// The callee is declared on demand through the central runtime-import helper
-    /// when it is not already in the fixed table. On-demand declarations carry
-    /// only the globally valid runtime attributes; stronger facts such as
-    /// `willreturn` must be promoted into `runtime_imports/declarations.rs`.
-    pub(super) fn call_runtime_2(
-        &self,
-        name: &str,
-        lhs: BasicValueEnum<'ctx>,
-        rhs: BasicValueEnum<'ctx>,
-    ) -> BasicValueEnum<'ctx> {
-        let func = self.ensure_runtime_i64_fn(name, 2);
-        let lhs_i64 = self.ensure_i64(lhs);
-        let rhs_i64 = self.ensure_i64(rhs);
-        self.backend
-            .builder
-            .build_call(func, &[lhs_i64.into(), rhs_i64.into()], name)
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
     }
 }

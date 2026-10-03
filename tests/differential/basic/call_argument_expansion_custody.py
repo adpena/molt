@@ -692,3 +692,45 @@ except ValueError as error:
     print("binding-default-before-missing", str(error))
 else:
     raise AssertionError("missing parameter bypassed a later default lookup")
+
+
+class ReleaseProbe:
+    def __init__(self, label):
+        self.label = label
+
+    def __del__(self):
+        events.append(("drop", self.label))
+
+
+class RaisingKeyword(str):
+    __hash__ = str.__hash__
+
+    def __eq__(self, other):
+        events.append(("keyword-equal", str(self)))
+        raise ValueError("keyword equality")
+
+
+def keyword_callback_target(first, second):
+    events.append("wrong callee")
+
+
+def keyword_callback_failure():
+    keyword_callback_target(
+        ReleaseProbe("positional"),
+        **{RaisingKeyword("second"): ReleaseProbe("keyword")},
+    )
+
+
+# A raising keyword-equality callback aborts binding with its own exception,
+# never enters the callee, and releases every admitted argument exactly once
+# before the handler runs. The release order is not pinned here: CPython
+# copies `**` calls into the frame, so its containers hold the last references.
+events.clear()
+try:
+    keyword_callback_failure()
+except ValueError as error:
+    ordered = [event for event in events if event[0] != "drop"]
+    drops = sorted(event for event in events if event[0] == "drop")
+    print("binding-callback-failure", str(error), ordered, drops)
+else:
+    raise AssertionError("keyword equality exception was replaced or lost")

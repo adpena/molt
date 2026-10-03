@@ -13,6 +13,7 @@ from molt.cli import external_link_providers
 from molt.cli import link_fingerprints
 from molt.cli.app_export_contract import app_export_call_abi, build_app_export_contract
 from molt.cli.python_source_closure import LocalPythonSourceClosure
+from molt.cli.wasm_link_args import wasm_link_output_arguments
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkCyclicGroup,
     SourceExtensionLinkInput,
@@ -996,13 +997,64 @@ def test_relocatable_runtime_preflight_classifies_linker_crash(
 
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
 
-    error = wasm_link._preflight_relocatable_runtime(
-        "wasm-ld", runtime, type("TempDir", (), {"name": str(tmp_path)})()
-    )
+    error = wasm_link._preflight_relocatable_runtime("wasm-ld", runtime, tmp_path)
 
     assert error is not None
     assert "linking/reloc custom-section indices" in error
     assert "returncode=3221225477" in error
+
+
+@pytest.mark.parametrize("failure_stage", ["preflight", "link"])
+def test_relocatable_input_has_one_admission_and_retains_failure_timings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, failure_stage: str
+) -> None:
+    runtime = tmp_path / "runtime.wasm"
+    app = tmp_path / "app.wasm"
+    linked = tmp_path / "linked.wasm"
+    timings = tmp_path / "timings.json"
+    runtime_data = wasm_link._append_linking_function_symbols(
+        _build_exported_function_module("molt_exception_pending"),
+        [("molt_exception_pending", 0, wasm_link.FLAG_EXPLICIT_NAME)],
+    )
+    assert runtime_data is not None
+    runtime.write_bytes(runtime_data)
+    app_data = _build_minimal_module(b"")
+    app.write_bytes(app_data)
+    linked.write_bytes(b"previous published deployment")
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        preflight = "-r" in command
+        assert runtime not in [Path(item) for item in command]
+        return wasm_link.subprocess.CompletedProcess(
+            command,
+            9 if preflight and failure_stage == "preflight" else 0 if preflight else 7,
+            "",
+            "preflight sentinel" if preflight else "link sentinel",
+        )
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", run)
+    result = _run_wasm_ld_with_rust_facts(
+        "wasm-ld",
+        runtime,
+        app,
+        linked,
+        runtime_role="reloc",
+        phase_timings_file=timings,
+    )
+    assert result == (1 if failure_stage == "preflight" else 7)
+    assert sum("-r" in command for command in calls) == 1
+    linker_calls = [command for command in calls if command[0] == "wasm-ld"]
+    assert len(linker_calls) == (1 if failure_stage == "preflight" else 2)
+    assert runtime.read_bytes() == runtime_data
+    assert app.read_bytes() == app_data
+    assert linked.read_bytes() == b"previous published deployment"
+    recorded = json.loads(timings.read_text())
+    assert recorded["wasm_reloc_preflight_invocations"] == 1
+    assert recorded["wasm_reloc_preflight"] >= 0
+    assert ("wasm_link_total" in recorded) == (failure_stage == "link")
+    assert failure_stage + " sentinel" in capsys.readouterr().err
 
 
 def test_find_wasm_ld_uses_attested_toolchain_authority(
@@ -1228,6 +1280,74 @@ def _build_exported_runtime_module_many(export_names: list[str]) -> bytes:
     sections.append((10, bytes(code_payload)))
 
     return wasm_link._build_sections(sections)
+
+
+@pytest.mark.parametrize("relocatable", [False, True])
+def test_wasm_module_identity_survives_distinct_staging_paths(
+    tmp_path: Path, relocatable: bool
+) -> None:
+    """Exercise lld's name emission, including the output-name negative control."""
+    linker = wasm_link.wasm_toolchain.resolve_wasm_linker()
+    if linker is None:
+        pytest.skip("WASM linker is not available")
+    source = tmp_path / "input.o"
+    data = wasm_link._append_linking_function_symbols(
+        _build_exported_runtime_module("user_entry"),
+        [
+            (
+                "user_entry",
+                0,
+                wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME,
+            )
+        ],
+    )
+    assert data is not None
+    source.write_bytes(data)
+    flags = ["-r"] if relocatable else ["--no-entry", "--export=user_entry"]
+    stable_outputs: list[bytes] = []
+    implicit_outputs: list[bytes] = []
+    for attempt in ("first transaction", "second transaction"):
+        directory = tmp_path / attempt
+        directory.mkdir()
+        published = directory / "user program.wasm"
+        staged = directory / f"{attempt}.tmp"
+        for explicit_name, outputs in (
+            (False, implicit_outputs),
+            (True, stable_outputs),
+        ):
+            output_args = (
+                wasm_link_output_arguments(published, staged_output=staged)
+                if explicit_name
+                else ("-o", str(staged))
+            )
+            result = wasm_link._run_external_tool(
+                [str(linker.path), *flags, *output_args, str(source)],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, result.stderr
+            outputs.append(staged.read_bytes())
+        assert not published.exists(), "the linker must write only its staging output"
+    assert implicit_outputs[0] != implicit_outputs[1]
+    assert stable_outputs[0] == stable_outputs[1]
+    names = dict(
+        wasm_link._parse_custom_section(payload)
+        for section_id, payload in wasm_link._parse_sections(stable_outputs[0])
+        if section_id == 0
+    )["name"]
+    assert b"user_entry" in names, "function debug names must survive"
+    module_names = []
+    offset = 0
+    while offset < len(names):
+        subsection = names[offset]
+        size, offset = wasm_link._read_varuint(names, offset + 1)
+        end = offset + size
+        if subsection == 0:
+            name, consumed = wasm_link._read_string(names, offset)
+            assert consumed == end
+            module_names.append(name)
+        offset = end
+    assert module_names == ["user program.wasm"]
 
 
 def test_install_callable_table_layout_appends_final_active_override() -> None:
@@ -2575,6 +2695,152 @@ def test_canonicalize_standard_section_order_rejects_duplicate_start_sections() 
         wasm_link._canonicalize_standard_section_order(module)
 
 
+def _custom_section(name: str, body: bytes = b"") -> tuple[int, bytes]:
+    return (0, wasm_link._build_custom_section(name, body))
+
+
+def _function_export_section(*entries: tuple[str, int]) -> tuple[int, bytes]:
+    payload = bytearray(wasm_link._write_varuint(len(entries)))
+    for name, index in entries:
+        payload.extend(wasm_link._write_string(name))
+        payload.append(0)
+        payload.extend(wasm_link._write_varuint(index))
+    return (7, bytes(payload))
+
+
+def test_section_canonicalization_keeps_customs_after_their_predecessors() -> None:
+    lead = _custom_section("lead", b"\x00before-type")
+    between = _custom_section("between", b"after-type")
+    name = _custom_section("name", b"\x01function-names")
+    debug = _custom_section(".debug_info", b"dwarf")
+    module = wasm_link._build_sections(
+        [
+            lead,
+            (1, b"type"),
+            between,
+            (3, b"function"),
+            (10, b"code"),
+            (11, b"data"),
+            (9, b"elem"),
+            name,
+            debug,
+        ]
+    )
+
+    canonical = wasm_link._canonicalize_standard_section_order(module)
+
+    assert canonical is not None
+    # Only the element section moves; every custom keeps its bytes and still
+    # follows each standard section it followed, so `name` stays after data.
+    assert wasm_link._parse_sections(canonical) == [
+        lead,
+        (1, b"type"),
+        between,
+        (3, b"function"),
+        (9, b"elem"),
+        (10, b"code"),
+        (11, b"data"),
+        name,
+        debug,
+    ]
+    assert wasm_link._standard_section_order_error(canonical) is None
+    assert wasm_link._canonicalize_standard_section_order(canonical) is None
+
+
+def test_section_canonicalization_never_hoists_custom_over_predecessor() -> None:
+    after_code = _custom_section("after_code", b"code-relative")
+    module = wasm_link._build_sections(
+        [(1, b"type"), (10, b"code"), after_code, (9, b"elem"), (7, b"export")]
+    )
+
+    canonical = wasm_link._canonicalize_standard_section_order(module)
+
+    assert canonical is not None
+    assert wasm_link._parse_sections(canonical) == [
+        (1, b"type"),
+        (7, b"export"),
+        (9, b"elem"),
+        (10, b"code"),
+        after_code,
+    ]
+
+
+def test_section_canonicalization_leaves_ordered_customs_in_place() -> None:
+    # wasm-ld's shape: customs lead, sit between and trail ordered standards.
+    module = wasm_link._build_sections(
+        [
+            _custom_section("dylink.0", b"\x01"),
+            (1, b"type"),
+            (2, b"import"),
+            (3, b"function"),
+            _custom_section("molt.callable_table.layout", b"layout"),
+            (7, b"export"),
+            (10, b"code"),
+            (11, b"data"),
+            _custom_section("name", b"\x01names"),
+            _custom_section(".debug_info", b"dwarf"),
+            _custom_section("producers", b"\x00"),
+            _custom_section("target_features", b"\x00"),
+        ]
+    )
+
+    assert wasm_link._canonicalize_standard_section_order(module) is None
+
+
+def test_section_canonicalization_merges_duplicates_around_customs() -> None:
+    after_export = _custom_section("after_export", b"a")
+    after_code = _custom_section("after_code", b"b")
+    trailing = _custom_section("trailing", b"c")
+    type_section = (1, bytes([1, 0x60, 0, 0]))
+    module = wasm_link._build_sections(
+        [
+            type_section,
+            _function_export_section(("molt_main", 0)),
+            after_export,
+            (10, b"code"),
+            after_code,
+            _function_export_section(("molt_main", 2), ("PyInit__demo", 1)),
+            trailing,
+        ]
+    )
+
+    canonical = wasm_link._canonicalize_standard_section_order(module)
+
+    assert canonical is not None
+    # Strict parsing proves one export section; the first export of a name wins.
+    assert wasm_link._parse_sections(canonical) == [
+        type_section,
+        _function_export_section(("molt_main", 0), ("PyInit__demo", 1)),
+        after_export,
+        (10, b"code"),
+        after_code,
+        trailing,
+    ]
+    assert wasm_link._canonicalize_standard_section_order(canonical) is None
+
+
+@pytest.mark.parametrize("name", ["linking", "reloc.CODE"])
+def test_section_canonicalization_refuses_relocation_metadata(name: str) -> None:
+    metadata = _custom_section(name, b"\x02")
+    reordered = wasm_link._build_sections(
+        [(1, b"type"), (10, b"code"), (9, b"elem"), metadata]
+    )
+    ordered = wasm_link._build_sections(
+        [(1, b"type"), (9, b"elem"), (10, b"code"), metadata]
+    )
+
+    with pytest.raises(ValueError, match="relocation metadata"):
+        wasm_link._canonicalize_standard_section_order(reordered)
+    assert wasm_link._canonicalize_standard_section_order(ordered) is None
+
+
+def test_section_canonicalization_rejects_unknown_standard_sections() -> None:
+    module = wasm_link._build_sections([(10, b"code"), (1, b"type"), (14, b"?")])
+
+    with pytest.raises(ValueError, match="unknown standard section id 14"):
+        wasm_link._canonicalize_standard_section_order(module)
+
+
 def _build_linked_host_table_module(table_import_name: str) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = []
@@ -2810,7 +3076,11 @@ def test_validate_wasm_structural_falls_back_when_debug_strip_fails(
         validated_inputs.append(Path(cmd[-1]).read_bytes())
         return wasm_link.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "wasm-tools")
+    monkeypatch.setattr(
+        wasm_link._link_validation,
+        "run_pinned_tool",
+        lambda _name, args, *, run, **kwargs: run(["wasm-tools", *args], **kwargs),
+    )
     monkeypatch.setattr(
         wasm_link,
         "strip_wasm_publication_sections",
@@ -2826,7 +3096,12 @@ def test_validate_wasm_structural_fails_closed_without_validator(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: None)
+    from molt.tool_releases import ToolReleaseError
+
+    def unavailable(*_args, **_kwargs):
+        raise ToolReleaseError("managed validator unavailable")
+
+    monkeypatch.setattr(wasm_link._link_validation, "run_pinned_tool", unavailable)
 
     assert not wasm_link._validate_wasm_structural(
         wasm_link._build_sections([]),
@@ -2839,7 +3114,11 @@ def test_validate_wasm_structural_fails_closed_on_validator_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "wasm-tools")
+    monkeypatch.setattr(
+        wasm_link._link_validation,
+        "run_pinned_tool",
+        lambda _name, args, *, run, **kwargs: run(["wasm-tools", *args], **kwargs),
+    )
     monkeypatch.setattr(
         wasm_link, "strip_wasm_publication_sections", lambda data, **_kwargs: data
     )
@@ -4568,14 +4847,20 @@ def test_split_native_app_uses_unique_molt_main_restoration_alias(
     native_object = tmp_path / "native.molt.wasm"
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
-    native_object.write_bytes(b"\0asm\x01\0\0\0native")
+    native_object.write_bytes(_module_with_linking_symbols([]))
     commands: list[list[str]] = []
 
     def fake_run(cmd, **_kwargs):
         if cmd and cmd[0] == "wasm-ld" and "-r" not in cmd:
             commands.append(list(cmd))
         _write_wasm_ld_output(cmd, output_bytes)
-        return wasm_link.subprocess.CompletedProcess(cmd, 0, "", "")
+        output_arg = cmd[cmd.index("-o") + 1] if "-o" in cmd else None
+        inputs = [
+            str(Path(part).resolve())
+            for part in cmd[1:]
+            if not part.startswith("-") and Path(part).is_file() and part != output_arg
+        ]
+        return wasm_link.subprocess.CompletedProcess(cmd, 0, "\n".join(inputs), "")
 
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _path: True)
@@ -4721,6 +5006,12 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     )
     assert len(link_calls) == 2
     monolithic_cmd, split_app_cmd = link_calls
+    assert [arg for arg in monolithic_cmd if arg.startswith("--soname=")] == [
+        "--soname=output_linked.wasm"
+    ]
+    assert [arg for arg in split_app_cmd if arg.startswith("--soname=")] == [
+        "--soname=app.wasm"
+    ]
     assert any(Path(part).name == native_object.name for part in monolithic_cmd)
     assert any(Path(part).name == native_object.name for part in split_app_cmd)
     assert "--undefined=ndimage_edt" in monolithic_cmd
@@ -5052,12 +5343,26 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
                     allowlists.append(_parse_allowlist(Path(part.split("=", 1)[1])))
         _write_wasm_ld_output(cmd, output_bytes)
 
-        class Result:
-            returncode = 0
-            stderr = ""
-            stdout = ""
-
-        return Result()
+        output_arg = cmd[cmd.index("-o") + 1] if "-o" in cmd else None
+        inputs = [
+            str(Path(part).resolve())
+            for part in cmd[1:]
+            if not part.startswith("-") and Path(part).is_file() and part != output_arg
+        ]
+        selected = [
+            f"{path}(object.o)" if Path(path).suffix == ".rlib" else path
+            for path in inputs
+        ]
+        for part in cmd:
+            if part.startswith("--why-extract="):
+                rows = "reference\textracted\tsymbol\n"
+                rows += "".join(
+                    f"{native_object}\t{path}(object.o)\t__trunctfdf2\n"
+                    for path in inputs
+                    if Path(path).suffix == ".rlib"
+                )
+                Path(part.split("=", 1)[1]).write_text(rows, encoding="utf-8")
+        return wasm_link.subprocess.CompletedProcess(cmd, 0, "\n".join(selected), "")
 
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
@@ -6211,6 +6516,33 @@ def test_ensure_table_export_inserts_the_export_section_after_a_tag_section() ->
     assert "molt_table" in wasm_link._collect_exports(updated)
 
 
+def test_ensure_export_by_index_inserts_export_without_moving_customs() -> None:
+    module = _module_with_tag_section(export_section=None)
+
+    updated = wasm_link._ensure_export_by_index(
+        module, name="molt_main", kind=0, index=0
+    )
+
+    assert updated is not None
+    sections = wasm_link._parse_sections(updated)
+    assert [section_id for section_id, _payload in sections] == [
+        1,
+        3,
+        5,
+        13,
+        6,
+        7,
+        10,
+        0,
+    ]
+    assert [section for section in sections if section[0] != 7] == (
+        wasm_link._parse_sections(module)
+    )
+    assert wasm_link.parse_wasm_module_facts(updated).export_kinds == {
+        "molt_main": (0, 0)
+    }
+
+
 def test_insert_standard_section_refuses_a_duplicate_standard_section() -> None:
     sections = wasm_link._parse_sections(
         _module_with_tag_section(export_section=b"\x00")
@@ -6512,7 +6844,13 @@ def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
             ]
         )
     )
-    monkeypatch.setattr(wasm_link, "_find_tool", lambda _names: None)
+    monkeypatch.setattr(
+        wasm_link,
+        "run_pinned_tool",
+        lambda *_args, **_kwargs: pytest.fail(
+            "linking symbols must not invoke wasm-tools"
+        ),
+    )
 
     mangled = wasm_link._find_call_indirect_mangled(runtime)
     output_symbols = wasm_link._find_output_call_indirect_symbol(output)

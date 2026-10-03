@@ -39,7 +39,9 @@ Key characteristics of the current implementation:
 
 ### 1.1 Current State
 
-The direct WASM emitter produces correct but unoptimized code. Key observations:
+The direct WASM emitter uses shared representation and control-flow facts to
+plan local storage and emission. The dated measurements below describe their
+recorded source snapshots, not the current candidate's performance.
 
 **Strengths:**
 - Direct IR-to-WASM lowering avoids Cranelift's WASM-to-CLIF-to-WASM round-trip overhead.
@@ -48,9 +50,14 @@ The direct WASM emitter produces correct but unoptimized code. Key observations:
 - Inline caches (IC) are emitted with stable FNV-hashed site IDs.
 
 **Gaps:**
-- **No register allocation awareness**: Every IR variable becomes a WASM local; no attempt to minimize local count or reuse locals. WASM engines optimize this internally, but fewer locals reduce validation time and binary size.
+- **Local storage planning**: Exact shared-CFG liveness coalesces non-parameter
+  values in plain and jumpful frames, including exception and resume edges
+  (§1.6). ABI parameters keep their authored order. Artifact and engine costs
+  require measurements on the integrated candidate.
 - **No instruction combining**: Adjacent load/store pairs, redundant boxing/unboxing sequences, and constant folding opportunities are not exploited at the WASM level.
-- **No block structure optimization**: The dispatch-block model emits nested `if/else/end` trees for state remap tables rather than using `br_table` for large state machines.
+- **Dispatch structure**: Dense dispatch uses `br_table`; sparse remaps use the
+  state-dispatch planner. Further changes require observed state distributions
+  and engine measurements.
 - **No peephole optimization**: Patterns like `i64.const 0; i64.eq` (test for zero) could be simplified.
 - **Redundant type checks**: Tag checks for NaN-boxed values are emitted inline at every use site rather than being hoisted or eliminated when type information is available from the IR.
 
@@ -58,7 +65,7 @@ The direct WASM emitter produces correct but unoptimized code. Key observations:
 
 | Optimization | Impact | Effort | Priority |
 |---|---|---|---|
-| Local variable coalescing (liveness analysis) | DONE (ac215c48) — greedy linear-scan for __tmp/__v temporaries | Medium | P1 |
+| Local variable coalescing (liveness analysis) | Exact shared-CFG liveness plans every non-parameter value in plain and jumpful frames (§1.6); artifact impact not yet measured | Medium | P1 |
 | Box/unbox elimination when types are statically known | DONE (cd3f98df) — eq/ne skip unbox entirely, arithmetic uses trusted unbox saving 4 insns/op | High | P1 |
 | `br_table` for large state dispatch | 2-5x faster generator resume | DONE (c1ae684a) | P1 |
 | Constant folding at WASM emission time | DONE (cd3f1b5f) — forward data-flow, folds add/sub/mul/bitwise on fast_int constants | Low | P2 |
@@ -78,7 +85,7 @@ All of the following optimizations were completed in the 2026-03-20 session:
 
 | Optimization | Commit | Impact |
 |---|---|---|
-| Local variable coalescing | ac215c48 | Greedy linear-scan for `__tmp`/`__v` temporaries; 5-15% size reduction |
+| Local variable coalescing | ac215c48 | Greedy linear-scan for `__tmp`/`__v` temporaries; superseded by §1.6 because current SimpleIR no longer uses those spellings |
 | Constant folding at WASM emission | cd3f1b5f | Forward data-flow analysis, folds add/sub/mul/bitwise on `fast_int` constants; 3-5% size reduction |
 | Instruction combining | d468918f | Const propagation through box/unbox, reduces 5 insns to 2 for known-const unbox; 3-8% speed improvement |
 | `local.tee` introduction | fef9990c | 37 eliminated `LocalGet` instructions; ~1-2% instruction reduction |
@@ -94,6 +101,28 @@ All of the following optimizations were completed in the 2026-03-20 session:
 | Native exception handling groundwork | 4b7a52c5 | Tag section, try_table/catch/throw; enabled by default (MOLT_WASM_NATIVE_EH=0 to disable) |
 | SIMD stub rewriter support | 0eb06e6c | WASI stub rewriter handles SIMD instructions; enables +simd128 freestanding |
 | Box/unbox elimination | cd3f98df | eq/ne skip unbox; arithmetic uses trusted unbox saving 4 insns/op |
+
+### 1.6 Frame Local Storage
+
+The generic emitter plans WASM locals in `wasm/local_analysis/coalescing.rs`
+from the shared SimpleIR liveness solution in `molt-ir` (`tir/cfg_liveness.rs`).
+That solution covers structured, unstructured, exception (including a transfer
+back to its own block) and state-resume edges. Every value a function reads,
+except ABI parameters and the reserved `none` input, is eligible regardless of
+spelling. Two values share a local only when their occupied program positions
+are disjoint. An operation reads at one position and publishes results at the
+next, and a result occupies both because emitters may write it before reading
+every operand. Values observable before any operation occupy the function entry;
+dispatch frames seed only those values. Undefined entry reads receive boxed None
+from canonical read/definition facts, independently of identifier spelling.
+Call-site retention keeps a local alive
+across a call only while its value occupies that local across the call.
+
+Resumable state machines and frames containing counted-loop index operations
+keep one local per name, because the shared CFG does not model dispatch
+re-entry or the index-continue target. The earlier linear coalescer admitted
+only `__tmp`/`__v` spellings. Current frontend and TIR back-conversion output
+does not use those spellings, so frames kept one local per value name.
 
 ### 1.3 Missing Features
 

@@ -14,7 +14,7 @@ enum ScalarKind {
     Float,
 }
 
-fn numeric_scalar_kind_from_bits(obj_bits: u64) -> Option<ScalarKind> {
+fn numeric_scalar_kind_from_bits(py: &PyToken<'_>, obj_bits: u64) -> Option<ScalarKind> {
     let obj = obj_from_bits(obj_bits);
     if obj.is_float() {
         return Some(ScalarKind::Float);
@@ -25,18 +25,21 @@ fn numeric_scalar_kind_from_bits(obj_bits: u64) -> Option<ScalarKind> {
     if obj.is_int() {
         return Some(ScalarKind::Int);
     }
-    if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
-        match unsafe { object_type_id(ptr) } {
-            TYPE_ID_BIGINT => return Some(ScalarKind::Int),
-            TYPE_ID_FLOAT => return Some(ScalarKind::Float),
-            _ => {}
-        }
+    // Heap numeric storage also carries subclasses. Only canonical class
+    // identity admits this builtin-only resolver; payload kind is not proof.
+    let actual = type_of_bits(py, obj_bits);
+    let builtins = builtin_classes(py);
+    if actual == builtins.int {
+        return Some(ScalarKind::Int);
+    }
+    if actual == builtins.float {
+        return Some(ScalarKind::Float);
     }
     None
 }
 
-pub(crate) fn is_numeric_scalar_attr_receiver(obj_bits: u64) -> bool {
-    numeric_scalar_kind_from_bits(obj_bits).is_some()
+pub(crate) fn is_numeric_scalar_attr_receiver(py: &PyToken<'_>, obj_bits: u64) -> bool {
+    numeric_scalar_kind_from_bits(py, obj_bits).is_some()
 }
 
 fn scalar_class_bits(_py: &PyToken<'_>, kind: ScalarKind) -> u64 {
@@ -52,7 +55,7 @@ fn scalar_class_bits(_py: &PyToken<'_>, kind: ScalarKind) -> u64 {
 ///
 /// This is the method half of the single numeric scalar attribute authority. The
 /// receiver classifier in [`resolve_scalar_attr`] sends inline int/bool/float
-/// and heap bigint/NaN-float through this same binder, so `getattr`,
+/// and exact heap bigint/NaN-float through this same binder, so `getattr`,
 /// `getattr(_, default)`, `hasattr`, and direct `object.__getattribute__` can
 /// never disagree about which numeric methods a scalar exposes.
 fn resolve_scalar_method(
@@ -103,8 +106,9 @@ fn resolve_scalar_method(
 
 /// Resolve `attr_name` on a scalar receiver.
 ///
-/// Numeric scalars include inline int/bool/float plus heap bigint and heap
-/// NaN-float. This is shared by every numeric-scalar attribute path:
+/// Numeric scalars include inline int/bool/float plus exact heap bigint and
+/// NaN-float. Heap subclasses use logical-class lookup. This is shared by every
+/// numeric-scalar attribute path:
 /// `molt_get_attr_name`, `molt_get_attr_name_default`, `molt_has_attr_name`,
 /// `molt_get_attr_object`, `attr_lookup_ptr`, and `molt_object_getattribute`.
 pub(crate) fn resolve_scalar_attr(
@@ -112,18 +116,22 @@ pub(crate) fn resolve_scalar_attr(
     obj_bits: u64,
     attr_name: &str,
 ) -> Option<u64> {
-    if let Some(kind) = numeric_scalar_kind_from_bits(obj_bits) {
-        let class_bits = scalar_class_bits(_py, kind);
-        if attr_name == "__class__" {
-            inc_ref_bits(_py, class_bits);
-            return Some(class_bits);
-        }
-        return resolve_scalar_method(_py, obj_bits, kind, attr_name);
+    let class_bits = type_of_bits(_py, obj_bits);
+    let name = attr_name_bits_from_bytes(_py, attr_name.as_bytes())?;
+    let value = unsafe {
+        obj_from_bits(class_bits)
+            .as_ptr()
+            .and_then(|class| class_attr_lookup_raw_mro(_py, class, name))
+            .and_then(|descriptor| {
+                descriptor_bind(_py, descriptor, Some(class_bits), Some(obj_bits))
+            })
+    };
+    dec_ref_bits(_py, name);
+    if value.is_some() || exception_pending(_py) {
+        return value;
     }
-    if maybe_ptr_from_bits(obj_bits).is_none() && attr_name == "__class__" {
-        let class_bits = type_of_bits(_py, obj_bits);
-        inc_ref_bits(_py, class_bits);
-        return Some(class_bits);
+    if let Some(kind) = numeric_scalar_kind_from_bits(_py, obj_bits) {
+        return resolve_scalar_method(_py, obj_bits, kind, attr_name);
     }
     None
 }

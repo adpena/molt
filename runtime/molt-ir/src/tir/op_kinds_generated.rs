@@ -5,8 +5,8 @@
 // (docs/design/foundation/25_op_kind_registry.md). These tables back the
 // `kind_to_opcode` mapper (ssa.rs), the `CopyLowering` classifier
 // (alias_analysis.rs), the per-OpCode effect oracle (effects.rs), and the
-// operand-ownership tables (design 27 §2.1/§2.3, consumed by drop_insertion.rs's
-// `op_consumed_operand_root`). A drift between this file and op_kinds.toml is
+// operand-ownership tables (design 27 §2.1/§2.3, read by the ownership module's
+// `op_transferred_operands`). A drift between this file and op_kinds.toml is
 // caught by tests/test_gen_op_kinds.py; a new op kind that the frontend can emit
 // but that is absent here is caught by tools/audit_op_kinds.py --check.
 
@@ -484,6 +484,48 @@ pub struct SimpleIrOpShape {
 
 pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
     SimpleIrOpShape {
+        kind: "frame_context_set",
+        family: "execution_frame",
+        operands: 3,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "frame_home_store",
+        family: "execution_frame",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::NonNegative,
+    },
+    SimpleIrOpShape {
+        kind: "frame_home_cell",
+        family: "execution_frame",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::NonNegative,
+    },
+    SimpleIrOpShape {
+        kind: "frame_home_private_cell",
+        family: "execution_frame",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::NonNegative,
+    },
+    SimpleIrOpShape {
+        kind: "frame_home_load",
+        family: "execution_frame",
+        operands: 0,
+        value_rule: SimpleIrOpValueRule::NonNegative,
+    },
+    SimpleIrOpShape {
+        kind: "frame_home_take",
+        family: "execution_frame",
+        operands: 0,
+        value_rule: SimpleIrOpValueRule::NonNegative,
+    },
+    SimpleIrOpShape {
+        kind: "frame_home_clear",
+        family: "execution_frame",
+        operands: 0,
+        value_rule: SimpleIrOpValueRule::NonNegative,
+    },
+    SimpleIrOpShape {
         kind: "code_new",
         family: "code_metadata",
         operands: 9,
@@ -517,11 +559,18 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
 
 pub fn simpleir_op_shape(kind: &str) -> Option<&'static SimpleIrOpShape> {
     match kind {
-        "code_new" => Some(&SIMPLEIR_OP_SHAPES[0]),
-        "code_slot_set" => Some(&SIMPLEIR_OP_SHAPES[1]),
-        "code_slots_init" => Some(&SIMPLEIR_OP_SHAPES[2]),
-        "trace_enter_slot" => Some(&SIMPLEIR_OP_SHAPES[3]),
-        "bytearray_fill_range" => Some(&SIMPLEIR_OP_SHAPES[4]),
+        "frame_context_set" => Some(&SIMPLEIR_OP_SHAPES[0]),
+        "frame_home_store" => Some(&SIMPLEIR_OP_SHAPES[1]),
+        "frame_home_cell" => Some(&SIMPLEIR_OP_SHAPES[2]),
+        "frame_home_private_cell" => Some(&SIMPLEIR_OP_SHAPES[3]),
+        "frame_home_load" => Some(&SIMPLEIR_OP_SHAPES[4]),
+        "frame_home_take" => Some(&SIMPLEIR_OP_SHAPES[5]),
+        "frame_home_clear" => Some(&SIMPLEIR_OP_SHAPES[6]),
+        "code_new" => Some(&SIMPLEIR_OP_SHAPES[7]),
+        "code_slot_set" => Some(&SIMPLEIR_OP_SHAPES[8]),
+        "code_slots_init" => Some(&SIMPLEIR_OP_SHAPES[9]),
+        "trace_enter_slot" => Some(&SIMPLEIR_OP_SHAPES[10]),
+        "bytearray_fill_range" => Some(&SIMPLEIR_OP_SHAPES[11]),
         _ => None,
     }
 }
@@ -601,6 +650,7 @@ pub fn simpleir_integer_semantics_table(kind: &str) -> SimpleIrIntegerSemantics 
         | "builtin_int"
         | "int_from_obj"
         | "int_from_str_of_obj"
+        | "operator_index"
         | "sum"
         | "builtin_sum"
         | "range"
@@ -830,12 +880,18 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "DICT_POPITEM"
         | "DICT_SET"
         | "DICT_SETDEFAULT"
-        | "DICT_SPLIT_COUNT_INT_INC"
         | "DICT_STR_INT_INC"
         | "DICT_UPDATE"
         | "DICT_UPDATE_KWSTAR"
         | "DICT_UPDATE_MISSING"
         | "EXCEPTION_MATCH_BUILTIN"
+        | "FRAME_HOME_CELL"
+        | "FRAME_HOME_CLEAR"
+        | "FRAME_HOME_LOAD"
+        | "FRAME_HOME_PRIVATE_CELL"
+        | "FRAME_HOME_STORE"
+        | "FRAME_HOME_TAKE"
+        | "FRAME_LOCALS"
         | "GETATTR"
         | "GETATTR_GENERIC_OBJ"
         | "GETATTR_GENERIC_PTR"
@@ -888,6 +944,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "add"
         | "async_for_end"
         | "async_for_start"
+        | "binop_floor_div"
         | "bit_and"
         | "bit_not"
         | "bit_or"
@@ -932,10 +989,12 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "gpu_block_id"
         | "gpu_grid_dim"
         | "gpu_thread_id"
+        | "guarded_load"
         | "index_set"
         | "inplace_add"
         | "inplace_mul"
         | "inplace_sub"
+        | "is_pending"
         | "load"
         | "load_const"
         | "load_var"
@@ -964,11 +1023,15 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "stack_alloc"
         | "state_block_end"
         | "state_block_start"
+        | "state_set"
         | "store"
         | "store_var"
         | "string_eq"
         | "sub"
+        | "task_wait"
         | "type_guard"
+        | "unary_neg"
+        | "unary_pos"
         | "unbox"
         | "unbox_to_raw_int"
         | "warn_stderr"
@@ -1154,22 +1217,30 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         "callargs_expand_kwstar" | "callargs_push_kw" => Some(SimpleIrRuntimeRequirements(576)),
         "callargs_expand_star" => Some(SimpleIrRuntimeRequirements(608)),
         "alloc_task"
-        | "asyncgen_locals_register"
         | "block_on"
         | "call_async"
-        | "gen_locals_register"
         | "is_native_awaitable"
         | "state_label"
         | "state_switch"
         | "state_transition"
-        | "state_yield" => Some(SimpleIrRuntimeRequirements(1024)),
+        | "state_yield"
+        | "stateful_locals_register" => Some(SimpleIrRuntimeRequirements(1024)),
         "goto" | "jump" | "label" => Some(SimpleIrRuntimeRequirements(2048)),
         "file_close" | "file_flush" | "file_open" | "file_read" | "file_write" | "invoke_ffi" => {
             Some(SimpleIrRuntimeRequirements(4096))
         }
-        "frame_locals_set" | "line" | "trace_enter_slot" | "trace_exit" => {
-            Some(SimpleIrRuntimeRequirements(8192))
-        }
+        "frame_context_set"
+        | "frame_home_cell"
+        | "frame_home_clear"
+        | "frame_home_load"
+        | "frame_home_private_cell"
+        | "frame_home_store"
+        | "frame_home_take"
+        | "frame_locals"
+        | "frame_locals_set"
+        | "line"
+        | "trace_enter_slot"
+        | "trace_exit" => Some(SimpleIrRuntimeRequirements(8192)),
         "getframe" => Some(SimpleIrRuntimeRequirements(16384)),
         "async_work_poll" => Some(SimpleIrRuntimeRequirements(32772)),
         "import" | "import_from" | "import_name" | "module_import_star" => {
@@ -1299,7 +1370,6 @@ pub fn simpleir_kind_has_function_reference_s_value(kind: &str) -> bool {
 /// Independent of runtime-requirement provenance; never invent sibling names.
 pub const SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: &[&str] = &[
     "alloc_task",
-    "asyncgen_locals_register",
     "await",
     "call",
     "call_async",
@@ -1314,10 +1384,10 @@ pub const SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: &[&str] = &[
     "func_new",
     "func_new_builtin",
     "func_new_closure",
-    "gen_locals_register",
     "generator_send",
     "import_from",
     "import_name",
+    "stateful_locals_register",
     "super_call",
     "task_new",
     "yield_from",
@@ -1329,7 +1399,6 @@ pub fn simpleir_kind_references_defined_function(kind: &str) -> bool {
     matches!(
         kind,
         "alloc_task"
-            | "asyncgen_locals_register"
             | "await"
             | "call"
             | "call_async"
@@ -1344,14 +1413,23 @@ pub fn simpleir_kind_references_defined_function(kind: &str) -> bool {
             | "func_new"
             | "func_new_builtin"
             | "func_new_closure"
-            | "gen_locals_register"
             | "generator_send"
             | "import_from"
             | "import_name"
+            | "stateful_locals_register"
             | "super_call"
             | "task_new"
             | "yield_from"
     )
+}
+
+/// Backend-only runtime services must use their typed semantic operation.
+/// Generated from backend_service_symbol on the canonical kind row.
+pub fn simpleir_backend_service_kind(symbol: &str) -> Option<&'static str> {
+    match symbol {
+        "molt_frame_context_set" => Some("frame_context_set"),
+        _ => None,
+    }
 }
 
 /// Map a SimpleIR `kind` string to its first-class TIR `OpCode`, or
@@ -1368,11 +1446,11 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "inplace_sub" => Some(OpCode::InplaceSub),
         "inplace_mul" => Some(OpCode::InplaceMul),
         "div" => Some(OpCode::Div),
-        "floordiv" | "floor_div" => Some(OpCode::FloorDiv),
+        "floordiv" | "floor_div" | "binop_floor_div" => Some(OpCode::FloorDiv),
         "mod" => Some(OpCode::Mod),
         "pow" => Some(OpCode::Pow),
-        "neg" => Some(OpCode::Neg),
-        "pos" => Some(OpCode::Pos),
+        "neg" | "unary_neg" => Some(OpCode::Neg),
+        "pos" | "unary_pos" => Some(OpCode::Pos),
         "eq" | "string_eq" => Some(OpCode::Eq),
         "ne" => Some(OpCode::Ne),
         "lt" => Some(OpCode::Lt),
@@ -1403,6 +1481,7 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         | "get_attr_name"
         | "guarded_field_get"
         | "load"
+        | "guarded_load"
         | "load_attr" => Some(OpCode::LoadAttr),
         "set_attr"
         | "store_attr"
@@ -1451,6 +1530,7 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "state_transition" => Some(OpCode::StateTransition),
         "state_yield" => Some(OpCode::StateYield),
         "closure_load" => Some(OpCode::ClosureLoad),
+        "frame_context_set" => Some(OpCode::FrameContextSet),
         "closure_store" => Some(OpCode::ClosureStore),
         "alloc_task" => Some(OpCode::AllocTask),
         "yield" => Some(OpCode::Yield),
@@ -1484,6 +1564,9 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "module_del_global" => Some(OpCode::ModuleDelGlobal),
         "module_del_global_if_present" => Some(OpCode::ModuleDelGlobalIfPresent),
         "warn_stderr" => Some(OpCode::WarnStderr),
+        "state_set" => Some(OpCode::StateSet),
+        "is_pending" => Some(OpCode::IsPending),
+        "task_wait" => Some(OpCode::TaskWait),
         _ => None,
     }
 }
@@ -1567,8 +1650,12 @@ pub fn opcode_canonical_kind_table(opcode: OpCode) -> &'static str {
         OpCode::AllocTask => "alloc_task",
         OpCode::StateSwitch => "state_switch",
         OpCode::StateTransition => "state_transition",
+        OpCode::StateSet => "state_set",
+        OpCode::IsPending => "is_pending",
+        OpCode::TaskWait => "task_wait",
         OpCode::StateYield => "state_yield",
         OpCode::ClosureLoad => "closure_load",
+        OpCode::FrameContextSet => "frame_context_set",
         OpCode::ClosureStore => "closure_store",
         OpCode::Yield => "yield",
         OpCode::YieldFrom => "yield_from",
@@ -1684,8 +1771,12 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
+        OpCode::StateSet => None,
+        OpCode::IsPending => None,
+        OpCode::TaskWait => None,
         OpCode::StateYield => None,
         OpCode::ClosureLoad => None,
+        OpCode::FrameContextSet => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
         OpCode::YieldFrom => None,
@@ -1753,6 +1844,7 @@ pub fn simpleir_kind_preserves_original_kind_for_ssa(kind: &str) -> bool {
             | "get_attr_name"
             | "guarded_field_get"
             | "load"
+            | "guarded_load"
             | "load_attr"
             | "store_attr"
             | "set_attr_name"
@@ -1767,147 +1859,24 @@ pub fn simpleir_kind_preserves_original_kind_for_ssa(kind: &str) -> bool {
     )
 }
 
-/// EXACT-match arm of `copy_kind_mints_fresh_owned_ref`: kinds whose
-/// runtime mints a fresh +1 owned reference. The `vec_*` prefix rule is
-/// applied separately by the caller (see `fresh_value_prefixes`).
+/// Exact canonical kinds returning an independent owned reference; no allocation-freshness claim.
 #[inline]
-pub fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
+pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {
     matches!(
         kind,
-        "aiter"
-            | "ascii_from_obj"
-            | "classmethod_new"
-            | "code_new"
-            | "complex_from_obj"
-            | "contains"
-            | "class_def"
-            | "dataclass_new"
-            | "dataclass_new_values"
-            | "dict_from_obj"
-            | "dict_items"
-            | "dict_keys"
-            | "dict_new"
-            | "dict_values"
-            | "enumerate"
-            | "exception_new"
-            | "exception_new_builtin"
-            | "exception_new_builtin_empty"
-            | "exception_new_builtin_one"
-            | "exception_new_from_class"
-            | "exception_finally_pending_observer"
-            | "float_from_obj"
-            | "frozenset_new"
-            | "func_new"
-            | "func_new_closure"
-            | "get_attr_name_default"
-            | "get_attr_special_obj"
-            | "inplace_bit_and"
-            | "inplace_bit_or"
-            | "inplace_bit_xor"
-            | "inplace_div"
-            | "inplace_floordiv"
-            | "inplace_lshift"
-            | "inplace_matmul"
-            | "inplace_mod"
-            | "inplace_pow"
-            | "inplace_rshift"
-            | "int_from_obj"
-            | "int_from_str_of_obj"
-            | "iter"
-            | "list_fill_new"
-            | "list_from_range"
-            | "list_new"
-            | "list_pop"
-            | "matmul"
-            | "object_new"
-            | "property_new"
-            | "range_new"
-            | "repr_from_obj"
-            | "set_new"
-            | "slice"
-            | "slice_new"
-            | "staticmethod_new"
-            | "str_from_obj"
-            | "string_format"
-            | "string_join"
-            | "string_split_field_to_int"
-            | "tuple_from_list"
-            | "tuple_new"
-    )
-}
-
-/// EXACT-match arm of `copy_kind_mints_owned_alias_ref`: kinds whose
-/// result aliases operand 0's object bits but whose lowering mints a new
-/// +1 owned reference, so ownership treats the result as an independent
-/// droppable root.
-#[inline]
-pub fn copy_kind_mints_owned_alias_ref_table(kind: &str) -> bool {
-    matches!(kind, "binding_alias")
-}
-
-/// EXACT-match arm for exception CreationRef producers. These Copy-lifted
-/// kinds return the fresh exception object reference whose source ownership
-/// is released at the `raise` boundary after runtime exception state records
-/// its own references.
-#[inline]
-pub fn copy_kind_is_exception_creation_ref_table(kind: &str) -> bool {
-    matches!(
-        kind,
-        "exception_new"
-            | "exception_new_builtin"
-            | "exception_new_builtin_empty"
-            | "exception_new_builtin_one"
-            | "exception_new_from_class"
-    )
-}
-
-/// Prefix rules for `copy_kind_mints_fresh_owned_ref`: a kind starting
-/// with any of these mints a fresh owned reference (e.g. the `vec_*`
-/// vectorized-reduction family, each calling a dedicated `molt_vec_*`).
-pub const FRESH_VALUE_PREFIXES: &[&str] = &["vec_"];
-
-/// EXACT-match arm of `classify_copy_kind`'s inert bucket: kinds with a
-/// dedicated RC-inert backend lowering and no surviving heap reference to
-/// own (`line`/`trace_*`/`missing`/`nop`, the read-only repr/layout guards).
-#[inline]
-pub fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
-    matches!(
-        kind,
-        "guard_bool"
-            | "guard_dict_shape"
-            | "guard_float"
-            | "guard_int"
-            | "guard_layout"
-            | "guard_none"
-            | "guard_str"
-            | "line"
-            | "missing"
-            | "nop"
-            | "trace_enter_slot"
-            | "trace_exit"
-    )
-}
-
-/// EXACT-match arm of `classify_copy_kind`'s explicit transparent-alias
-/// bucket: known Copy-lifted runtime ops that intentionally keep the
-/// drop-insertion fail-closed behavior (not FreshValue, not InertMarker)
-/// while remaining distinct from `copy_kind_is_explicit_no_heap_move`.
-/// Membership here DOES NOT grant MemGVN/SROA no-heap-move privileges.
-#[inline]
-pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
-    matches!(
-        kind,
-        "alloc_class"
+        "abs"
+            | "aiter"
             | "anext"
-            | "asyncgen_locals_register"
+            | "ascii_from_obj"
             | "asyncgen_new"
-            | "bound_method_new"
             | "block_on"
+            | "bound_method_new"
             | "bridge_unavailable"
             | "buffer2d_get"
             | "buffer2d_matmul"
             | "buffer2d_new"
             | "buffer2d_set"
+            | "builtin_func"
             | "builtin_type"
             | "bytearray_count"
             | "bytearray_count_slice"
@@ -1936,13 +1905,16 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "bytes_split_max"
             | "bytes_startswith"
             | "bytes_startswith_slice"
+            | "call_async"
             | "callargs_expand_kwstar"
             | "callargs_expand_star"
             | "callargs_new"
             | "callargs_push_kw"
             | "callargs_push_pos"
+            | "cbor_parse"
             | "chr"
             | "class_apply_set_name"
+            | "class_def"
             | "class_layout_version"
             | "class_merge_layout"
             | "class_new"
@@ -1952,6 +1924,8 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "code_new"
             | "code_slot_set"
             | "code_slots_init"
+            | "complex_from_obj"
+            | "contains"
             | "context_closing"
             | "context_depth"
             | "context_enter"
@@ -1960,34 +1934,50 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "context_unwind"
             | "context_unwind_to"
             | "dataclass_get"
+            | "dataclass_new"
+            | "dataclass_new_values"
             | "dataclass_set"
             | "dataclass_set_class"
             | "dict_clear"
             | "dict_copy"
+            | "dict_from_obj"
             | "dict_get"
-            | "dict_inc"
+            | "dict_items"
+            | "dict_keys"
+            | "dict_new"
             | "dict_pop"
             | "dict_popitem"
-            | "dict_set"
             | "dict_setdefault"
             | "dict_setdefault_empty_list"
             | "dict_str_int_inc"
             | "dict_update"
             | "dict_update_kwstar"
-            | "dict_update_missing"
+            | "dict_values"
+            | "enumerate"
             | "env_get"
+            | "exception_active"
             | "exception_class"
             | "exception_clear"
             | "exception_context_set"
+            | "exception_current"
+            | "exception_enter_handler"
+            | "exception_finally_pending_observer"
             | "exception_kind"
             | "exception_last"
             | "exception_last_pending"
             | "exception_match_builtin"
             | "exception_message"
+            | "exception_new"
+            | "exception_new_builtin"
+            | "exception_new_builtin_empty"
+            | "exception_new_builtin_one"
+            | "exception_new_from_class"
             | "exception_pop"
             | "exception_push"
+            | "exception_resolve_captured"
             | "exception_set_cause"
             | "exception_set_last"
+            | "exception_set_value"
             | "exception_stack_clear"
             | "exception_stack_depth"
             | "exception_stack_enter"
@@ -2000,16 +1990,35 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "file_open"
             | "file_read"
             | "file_write"
+            | "float_from_obj"
+            | "frame_home_take"
+            | "frame_locals"
             | "frame_locals_set"
             | "frozenset_add"
+            | "frozenset_new"
             | "func_new"
             | "func_new_closure"
-            | "function_closure_bits"
-            | "gen_locals_register"
+            | "gen_close"
+            | "gen_send"
+            | "gen_throw"
             | "get_attr_name_default"
+            | "get_attr_special_obj"
+            | "getargv"
+            | "getframe"
             | "has_attr_name"
             | "id"
-            | "intarray_from_seq"
+            | "inplace_bit_and"
+            | "inplace_bit_or"
+            | "inplace_bit_xor"
+            | "inplace_div"
+            | "inplace_floordiv"
+            | "inplace_lshift"
+            | "inplace_matmul"
+            | "inplace_mod"
+            | "inplace_pow"
+            | "inplace_rshift"
+            | "int_from_obj"
+            | "int_from_str_of_obj"
             | "invert"
             | "is_bound_method"
             | "is_callable"
@@ -2017,39 +2026,55 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "is_native_awaitable"
             | "isinstance"
             | "issubclass"
+            | "iter"
+            | "json_parse"
             | "len"
             | "list_append"
             | "list_clear"
             | "list_copy"
             | "list_count"
             | "list_extend"
+            | "list_fill_new"
+            | "list_from_range"
             | "list_index"
             | "list_index_range"
             | "list_insert"
             | "list_int_new"
+            | "list_new"
+            | "list_pop"
             | "list_remove"
             | "list_reverse"
-            | "memoryview_new"
-            | "memoryview_tobytes"
+            | "matmul"
+            | "memoryview_cast"
             | "module_import_star"
             | "module_new"
+            | "msgpack_parse"
+            | "object_new"
+            | "object_set_class"
+            | "operator_index"
             | "ord"
             | "pow_mod"
-            | "print_newline"
             | "property_new"
+            | "range_new"
+            | "repr_from_obj"
             | "round"
             | "set_add"
             | "set_add_probe"
             | "set_difference_update"
             | "set_discard"
             | "set_intersection_update"
+            | "set_new"
             | "set_pop"
             | "set_remove"
             | "set_symdiff_update"
             | "set_update"
+            | "slice"
+            | "slice_new"
+            | "stateful_locals_register"
             | "staticmethod_new"
             | "statistics_mean_slice"
             | "statistics_stdev_slice"
+            | "str_from_obj"
             | "string_capitalize"
             | "string_count"
             | "string_count_slice"
@@ -2057,14 +2082,22 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "string_endswith_slice"
             | "string_find"
             | "string_find_slice"
+            | "string_format"
+            | "string_join"
             | "string_lower"
             | "string_lstrip"
             | "string_replace"
             | "string_rstrip"
             | "string_split"
             | "string_split_field"
+            | "string_split_field_end"
             | "string_split_field_eq"
+            | "string_split_field_is_ascii"
             | "string_split_field_len"
+            | "string_split_field_len_from_bounds"
+            | "string_split_field_ord_at_bounds"
+            | "string_split_field_start"
+            | "string_split_field_to_int"
             | "string_split_max"
             | "string_split_sep_dict_inc"
             | "string_split_validate"
@@ -2074,11 +2107,86 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "string_strip"
             | "string_upper"
             | "super_new"
-            | "taq_ingest_line"
+            | "sys_executable"
             | "trunc"
             | "tuple_count"
+            | "tuple_from_list"
             | "tuple_index"
+            | "tuple_new"
             | "type_of"
+            | "vec_max"
+            | "vec_min"
+            | "vec_prod"
+            | "vec_sum"
+    )
+}
+
+/// EXACT-match arm of `copy_kind_mints_owned_alias_ref`: kinds whose
+/// result aliases operand 0's object bits but whose lowering mints a new
+/// +1 owned reference, so ownership treats the result as an independent
+/// droppable root.
+#[inline]
+pub fn copy_kind_mints_owned_alias_ref_table(kind: &str) -> bool {
+    matches!(kind, "binding_alias")
+}
+
+/// EXACT-match arm for exception CreationRef producers. These Copy-lifted
+/// kinds return the fresh exception object reference whose source ownership
+/// is released at the `raise` boundary after runtime exception state records
+/// its own references.
+#[inline]
+pub fn copy_kind_is_exception_creation_ref_table(kind: &str) -> bool {
+    matches!(
+        kind,
+        "exception_new"
+            | "exception_new_builtin"
+            | "exception_new_builtin_empty"
+            | "exception_new_builtin_one"
+            | "exception_new_from_class"
+    )
+}
+
+/// EXACT-match arm of `classify_copy_kind`'s inert bucket: kinds with a
+/// dedicated RC-inert backend lowering and no surviving heap reference to
+/// own (`line`/`missing`/`nop`, the read-only repr/layout guards).
+#[inline]
+pub fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
+    matches!(
+        kind,
+        "guard_bool"
+            | "guard_dict_shape"
+            | "guard_float"
+            | "guard_int"
+            | "guard_layout"
+            | "guard_none"
+            | "guard_str"
+            | "line"
+            | "missing"
+            | "nop"
+    )
+}
+
+/// EXACT-match arm of `classify_copy_kind`'s explicit transparent-alias
+/// bucket: known Copy-lifted runtime ops that intentionally keep the
+/// drop-insertion fail-closed behavior (not OwnedValue, not InertMarker)
+/// while remaining distinct from `copy_kind_is_explicit_no_heap_move`.
+/// Membership here DOES NOT grant MemGVN/SROA no-heap-move privileges.
+#[inline]
+pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
+    matches!(
+        kind,
+        "alloc_class"
+            | "dict_set"
+            | "dict_update_missing"
+            | "frame_home_cell"
+            | "frame_home_clear"
+            | "frame_home_load"
+            | "frame_home_private_cell"
+            | "frame_home_store"
+            | "function_closure_bits"
+            | "print_newline"
+            | "trace_enter_slot"
+            | "trace_exit"
     )
 }
 
@@ -2097,6 +2205,19 @@ pub fn copy_kind_is_explicit_no_heap_move_table(kind: &str) -> bool {
             | "identity_alias"
             | "load_var"
             | "store_var"
+    )
+}
+
+/// EXACT-match arm of the frame binding views: Copy-lifted kinds whose
+/// result is a view of the binding a frame home holds, with no reference
+/// of its own, valid until the next write to its slot. A subset of the
+/// explicit transparent-alias bucket; `OwnershipRootFacts` joins views
+/// through block arguments and never releases one.
+#[inline]
+pub fn copy_kind_is_binding_view_table(kind: &str) -> bool {
+    matches!(
+        kind,
+        "frame_home_cell" | "frame_home_load" | "frame_home_private_cell" | "frame_home_store"
     )
 }
 
@@ -2174,8 +2295,12 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::AllocTask,
     OpCode::StateSwitch,
     OpCode::StateTransition,
+    OpCode::StateSet,
+    OpCode::IsPending,
+    OpCode::TaskWait,
     OpCode::StateYield,
     OpCode::ClosureLoad,
+    OpCode::FrameContextSet,
     OpCode::ClosureStore,
     OpCode::Yield,
     OpCode::YieldFrom,
@@ -2223,8 +2348,8 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
-        OpCode::CheckedAdd => false,
-        OpCode::CheckedMul => false,
+        OpCode::CheckedAdd => true,
+        OpCode::CheckedMul => true,
         OpCode::InplaceAdd => true,
         OpCode::InplaceSub => true,
         OpCode::InplaceMul => true,
@@ -2277,11 +2402,11 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
-        OpCode::BuildList => false,
-        OpCode::BuildDict => false,
-        OpCode::BuildTuple => false,
-        OpCode::BuildSet => false,
-        OpCode::BuildSlice => false,
+        OpCode::BuildList => true,
+        OpCode::BuildDict => true,
+        OpCode::BuildTuple => true,
+        OpCode::BuildSet => true,
+        OpCode::BuildSlice => true,
         OpCode::GetIter => true,
         OpCode::IterNext => true,
         OpCode::IterNextUnboxed => true,
@@ -2290,8 +2415,12 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => true,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => true,
+        OpCode::FrameContextSet => true,
         OpCode::ClosureStore => true,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -2339,8 +2468,8 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
-        OpCode::CheckedAdd => false,
-        OpCode::CheckedMul => false,
+        OpCode::CheckedAdd => true,
+        OpCode::CheckedMul => true,
         OpCode::InplaceAdd => true,
         OpCode::InplaceSub => true,
         OpCode::InplaceMul => true,
@@ -2406,8 +2535,12 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
+        OpCode::StateSet => true,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => true,
         OpCode::StateYield => true,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => true,
         OpCode::ClosureStore => true,
         OpCode::Yield => true,
         OpCode::YieldFrom => true,
@@ -2447,6 +2580,126 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
     }
 }
 
+/// Synchronous Python callback capability, including finalizers.
+/// Independent from global-memory access and deferred poll references.
+#[inline]
+pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
+    match opcode {
+        OpCode::Add => true,
+        OpCode::Sub => true,
+        OpCode::Mul => true,
+        OpCode::CheckedAdd => true,
+        OpCode::CheckedMul => true,
+        OpCode::InplaceAdd => true,
+        OpCode::InplaceSub => true,
+        OpCode::InplaceMul => true,
+        OpCode::Div => true,
+        OpCode::FloorDiv => true,
+        OpCode::Mod => true,
+        OpCode::Pow => true,
+        OpCode::Neg => true,
+        OpCode::Pos => true,
+        OpCode::Eq => true,
+        OpCode::Ne => true,
+        OpCode::Lt => true,
+        OpCode::Le => true,
+        OpCode::Gt => true,
+        OpCode::Ge => true,
+        OpCode::Is => false,
+        OpCode::IsNot => false,
+        OpCode::In => true,
+        OpCode::NotIn => true,
+        OpCode::BitAnd => true,
+        OpCode::BitOr => true,
+        OpCode::BitXor => true,
+        OpCode::BitNot => true,
+        OpCode::Shl => true,
+        OpCode::Shr => true,
+        OpCode::And => true,
+        OpCode::Or => true,
+        OpCode::Not => true,
+        OpCode::Bool => true,
+        OpCode::Alloc => false,
+        OpCode::StackAlloc => false,
+        OpCode::ObjectNewBound => true,
+        OpCode::Free => true,
+        OpCode::LoadAttr => true,
+        OpCode::StoreAttr => true,
+        OpCode::DelAttr => true,
+        OpCode::Index => true,
+        OpCode::StoreIndex => true,
+        OpCode::DelIndex => true,
+        OpCode::DeleteVar => true,
+        OpCode::Call => true,
+        OpCode::CallMethod => true,
+        OpCode::CallMethodIc => true,
+        OpCode::CallSuperMethodIc => true,
+        OpCode::CallBuiltin => true,
+        OpCode::OrdAt => true,
+        OpCode::BoxVal => false,
+        OpCode::UnboxVal => false,
+        OpCode::TypeGuard => false,
+        OpCode::IncRef => false,
+        OpCode::DecRef => true,
+        OpCode::DelBoundary => true,
+        OpCode::BuildList => false,
+        OpCode::BuildDict => true,
+        OpCode::BuildTuple => false,
+        OpCode::BuildSet => true,
+        OpCode::BuildSlice => false,
+        OpCode::GetIter => true,
+        OpCode::IterNext => true,
+        OpCode::IterNextUnboxed => true,
+        OpCode::UnpackSequence => true,
+        OpCode::ForIter => true,
+        OpCode::AllocTask => false,
+        OpCode::StateSwitch => false,
+        OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
+        OpCode::StateYield => false,
+        OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => true,
+        OpCode::ClosureStore => true,
+        OpCode::Yield => false,
+        OpCode::YieldFrom => true,
+        OpCode::Raise => true,
+        OpCode::CheckException => false,
+        OpCode::ExceptionPending => false,
+        OpCode::FunctionDefaultsVersion => false,
+        OpCode::TryStart => false,
+        OpCode::TryEnd => false,
+        OpCode::StateBlockStart => false,
+        OpCode::StateBlockEnd => false,
+        OpCode::ConstInt => false,
+        OpCode::ConstBigInt => false,
+        OpCode::ConstFloat => false,
+        OpCode::ConstStr => false,
+        OpCode::ConstBool => false,
+        OpCode::ConstNone => false,
+        OpCode::ConstBytes => false,
+        OpCode::Copy => true,
+        OpCode::Import => true,
+        OpCode::ImportFrom => true,
+        OpCode::ModuleCacheGet => true,
+        OpCode::ModuleCacheSet => true,
+        OpCode::ModuleCacheDel => true,
+        OpCode::ModuleGetAttr => true,
+        OpCode::ModuleImportFrom => true,
+        OpCode::ModuleGetGlobal => true,
+        OpCode::ModuleGetName => true,
+        OpCode::ModuleSetAttr => true,
+        OpCode::ModuleDelGlobal => true,
+        OpCode::ModuleDelGlobalIfPresent => true,
+        OpCode::WarnStderr => false,
+        OpCode::ScfIf => true,
+        OpCode::ScfFor => true,
+        OpCode::ScfWhile => true,
+        OpCode::ScfYield => false,
+    }
+}
+
 /// Effect facts for the LICM/GVN/alias/MemorySSA core. Generated from
 /// each opcode row's `purity`, `may_throw`, and heap-access facts so
 /// consumers never carry a second callback-effect classification table.
@@ -2456,6 +2709,7 @@ pub struct OpcodeEffects {
     pub effect_free: bool,
     pub nothrow: bool,
     pub may_access_arbitrary_heap: bool,
+    pub may_call_python: bool,
 }
 
 pub const OPCODE_EFFECTS_PURE: OpcodeEffects = OpcodeEffects {
@@ -2463,24 +2717,28 @@ pub const OPCODE_EFFECTS_PURE: OpcodeEffects = OpcodeEffects {
     effect_free: true,
     nothrow: true,
     may_access_arbitrary_heap: false,
+    may_call_python: false,
 };
 pub const OPCODE_EFFECTS_PURE_MAY_THROW: OpcodeEffects = OpcodeEffects {
     consistent: true,
     effect_free: true,
     nothrow: false,
     may_access_arbitrary_heap: false,
+    may_call_python: false,
 };
 pub const OPCODE_EFFECTS_IMPURE: OpcodeEffects = OpcodeEffects {
     consistent: false,
     effect_free: false,
     nothrow: false,
     may_access_arbitrary_heap: true,
+    may_call_python: true,
 };
 pub const OPCODE_EFFECTS_IMPURE_LOCAL: OpcodeEffects = OpcodeEffects {
     consistent: false,
     effect_free: false,
     nothrow: false,
     may_access_arbitrary_heap: false,
+    may_call_python: false,
 };
 
 /// Per-OpCode effect facts. EXHAUSTIVE over the enum — a new variant fails
@@ -2491,8 +2749,8 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::Add => OPCODE_EFFECTS_IMPURE,
         OpCode::Sub => OPCODE_EFFECTS_IMPURE,
         OpCode::Mul => OPCODE_EFFECTS_IMPURE,
-        OpCode::CheckedAdd => OPCODE_EFFECTS_IMPURE_LOCAL,
-        OpCode::CheckedMul => OPCODE_EFFECTS_IMPURE_LOCAL,
+        OpCode::CheckedAdd => OPCODE_EFFECTS_IMPURE,
+        OpCode::CheckedMul => OPCODE_EFFECTS_IMPURE,
         OpCode::InplaceAdd => OPCODE_EFFECTS_IMPURE,
         OpCode::InplaceSub => OPCODE_EFFECTS_IMPURE,
         OpCode::InplaceMul => OPCODE_EFFECTS_IMPURE,
@@ -2549,7 +2807,7 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::BuildDict => OPCODE_EFFECTS_IMPURE,
         OpCode::BuildTuple => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::BuildSet => OPCODE_EFFECTS_IMPURE,
-        OpCode::BuildSlice => OPCODE_EFFECTS_PURE,
+        OpCode::BuildSlice => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::GetIter => OPCODE_EFFECTS_IMPURE,
         OpCode::IterNext => OPCODE_EFFECTS_IMPURE,
         OpCode::IterNextUnboxed => OPCODE_EFFECTS_IMPURE,
@@ -2558,8 +2816,12 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::AllocTask => OPCODE_EFFECTS_IMPURE,
         OpCode::StateSwitch => OPCODE_EFFECTS_IMPURE,
         OpCode::StateTransition => OPCODE_EFFECTS_IMPURE,
+        OpCode::StateSet => OPCODE_EFFECTS_IMPURE,
+        OpCode::IsPending => OPCODE_EFFECTS_PURE,
+        OpCode::TaskWait => OPCODE_EFFECTS_IMPURE,
         OpCode::StateYield => OPCODE_EFFECTS_IMPURE,
         OpCode::ClosureLoad => OPCODE_EFFECTS_IMPURE,
+        OpCode::FrameContextSet => OPCODE_EFFECTS_IMPURE,
         OpCode::ClosureStore => OPCODE_EFFECTS_IMPURE,
         OpCode::Yield => OPCODE_EFFECTS_IMPURE,
         OpCode::YieldFrom => OPCODE_EFFECTS_IMPURE,
@@ -2581,7 +2843,7 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::Copy => OPCODE_EFFECTS_IMPURE,
         OpCode::Import => OPCODE_EFFECTS_IMPURE,
         OpCode::ImportFrom => OPCODE_EFFECTS_IMPURE,
-        OpCode::ModuleCacheGet => OPCODE_EFFECTS_IMPURE_LOCAL,
+        OpCode::ModuleCacheGet => OPCODE_EFFECTS_IMPURE,
         OpCode::ModuleCacheSet => OPCODE_EFFECTS_IMPURE,
         OpCode::ModuleCacheDel => OPCODE_EFFECTS_IMPURE,
         OpCode::ModuleGetAttr => OPCODE_EFFECTS_IMPURE,
@@ -2600,142 +2862,40 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
     // Impurity does not imply throwing. Project the same authority
     // used by exception consumers instead of inheriting a preset floor.
     effects.nothrow = !opcode_may_throw_table(opcode);
+    effects.may_call_python = opcode_may_call_python_table(opcode);
     effects
 }
 
-/// Call graph / CallFacts role for first-class opcodes.
-/// EXHAUSTIVE over OpCode; opcodes outside the role table are not calls.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CallOpcodeRole {
-    NotCall,
-    UserCall,
-    DynamicMethod,
-    RuntimeBuiltin,
-    CopyOriginalKind,
-}
-
+/// Audited callback-free preserved primitives; absence fails closed.
 #[inline]
-pub fn opcode_call_role_table(opcode: OpCode) -> CallOpcodeRole {
-    match opcode {
-        OpCode::Add => CallOpcodeRole::NotCall,
-        OpCode::Sub => CallOpcodeRole::NotCall,
-        OpCode::Mul => CallOpcodeRole::NotCall,
-        OpCode::CheckedAdd => CallOpcodeRole::NotCall,
-        OpCode::CheckedMul => CallOpcodeRole::NotCall,
-        OpCode::InplaceAdd => CallOpcodeRole::NotCall,
-        OpCode::InplaceSub => CallOpcodeRole::NotCall,
-        OpCode::InplaceMul => CallOpcodeRole::NotCall,
-        OpCode::Div => CallOpcodeRole::NotCall,
-        OpCode::FloorDiv => CallOpcodeRole::NotCall,
-        OpCode::Mod => CallOpcodeRole::NotCall,
-        OpCode::Pow => CallOpcodeRole::NotCall,
-        OpCode::Neg => CallOpcodeRole::NotCall,
-        OpCode::Pos => CallOpcodeRole::NotCall,
-        OpCode::Eq => CallOpcodeRole::NotCall,
-        OpCode::Ne => CallOpcodeRole::NotCall,
-        OpCode::Lt => CallOpcodeRole::NotCall,
-        OpCode::Le => CallOpcodeRole::NotCall,
-        OpCode::Gt => CallOpcodeRole::NotCall,
-        OpCode::Ge => CallOpcodeRole::NotCall,
-        OpCode::Is => CallOpcodeRole::NotCall,
-        OpCode::IsNot => CallOpcodeRole::NotCall,
-        OpCode::In => CallOpcodeRole::NotCall,
-        OpCode::NotIn => CallOpcodeRole::NotCall,
-        OpCode::BitAnd => CallOpcodeRole::NotCall,
-        OpCode::BitOr => CallOpcodeRole::NotCall,
-        OpCode::BitXor => CallOpcodeRole::NotCall,
-        OpCode::BitNot => CallOpcodeRole::NotCall,
-        OpCode::Shl => CallOpcodeRole::NotCall,
-        OpCode::Shr => CallOpcodeRole::NotCall,
-        OpCode::And => CallOpcodeRole::NotCall,
-        OpCode::Or => CallOpcodeRole::NotCall,
-        OpCode::Not => CallOpcodeRole::NotCall,
-        OpCode::Bool => CallOpcodeRole::NotCall,
-        OpCode::Alloc => CallOpcodeRole::NotCall,
-        OpCode::StackAlloc => CallOpcodeRole::NotCall,
-        OpCode::ObjectNewBound => CallOpcodeRole::NotCall,
-        OpCode::Free => CallOpcodeRole::NotCall,
-        OpCode::LoadAttr => CallOpcodeRole::NotCall,
-        OpCode::StoreAttr => CallOpcodeRole::NotCall,
-        OpCode::DelAttr => CallOpcodeRole::NotCall,
-        OpCode::Index => CallOpcodeRole::NotCall,
-        OpCode::StoreIndex => CallOpcodeRole::NotCall,
-        OpCode::DelIndex => CallOpcodeRole::NotCall,
-        OpCode::DeleteVar => CallOpcodeRole::NotCall,
-        OpCode::Call => CallOpcodeRole::UserCall,
-        OpCode::CallMethod => CallOpcodeRole::DynamicMethod,
-        OpCode::CallMethodIc => CallOpcodeRole::DynamicMethod,
-        OpCode::CallSuperMethodIc => CallOpcodeRole::DynamicMethod,
-        OpCode::CallBuiltin => CallOpcodeRole::RuntimeBuiltin,
-        OpCode::OrdAt => CallOpcodeRole::NotCall,
-        OpCode::BoxVal => CallOpcodeRole::NotCall,
-        OpCode::UnboxVal => CallOpcodeRole::NotCall,
-        OpCode::TypeGuard => CallOpcodeRole::NotCall,
-        OpCode::IncRef => CallOpcodeRole::NotCall,
-        OpCode::DecRef => CallOpcodeRole::NotCall,
-        OpCode::DelBoundary => CallOpcodeRole::NotCall,
-        OpCode::BuildList => CallOpcodeRole::NotCall,
-        OpCode::BuildDict => CallOpcodeRole::NotCall,
-        OpCode::BuildTuple => CallOpcodeRole::NotCall,
-        OpCode::BuildSet => CallOpcodeRole::NotCall,
-        OpCode::BuildSlice => CallOpcodeRole::NotCall,
-        OpCode::GetIter => CallOpcodeRole::NotCall,
-        OpCode::IterNext => CallOpcodeRole::NotCall,
-        OpCode::IterNextUnboxed => CallOpcodeRole::NotCall,
-        OpCode::UnpackSequence => CallOpcodeRole::NotCall,
-        OpCode::ForIter => CallOpcodeRole::NotCall,
-        OpCode::AllocTask => CallOpcodeRole::NotCall,
-        OpCode::StateSwitch => CallOpcodeRole::NotCall,
-        OpCode::StateTransition => CallOpcodeRole::NotCall,
-        OpCode::StateYield => CallOpcodeRole::NotCall,
-        OpCode::ClosureLoad => CallOpcodeRole::NotCall,
-        OpCode::ClosureStore => CallOpcodeRole::NotCall,
-        OpCode::Yield => CallOpcodeRole::NotCall,
-        OpCode::YieldFrom => CallOpcodeRole::NotCall,
-        OpCode::Raise => CallOpcodeRole::NotCall,
-        OpCode::CheckException => CallOpcodeRole::NotCall,
-        OpCode::ExceptionPending => CallOpcodeRole::NotCall,
-        OpCode::FunctionDefaultsVersion => CallOpcodeRole::NotCall,
-        OpCode::TryStart => CallOpcodeRole::NotCall,
-        OpCode::TryEnd => CallOpcodeRole::NotCall,
-        OpCode::StateBlockStart => CallOpcodeRole::NotCall,
-        OpCode::StateBlockEnd => CallOpcodeRole::NotCall,
-        OpCode::ConstInt => CallOpcodeRole::NotCall,
-        OpCode::ConstBigInt => CallOpcodeRole::NotCall,
-        OpCode::ConstFloat => CallOpcodeRole::NotCall,
-        OpCode::ConstStr => CallOpcodeRole::NotCall,
-        OpCode::ConstBool => CallOpcodeRole::NotCall,
-        OpCode::ConstNone => CallOpcodeRole::NotCall,
-        OpCode::ConstBytes => CallOpcodeRole::NotCall,
-        OpCode::Copy => CallOpcodeRole::CopyOriginalKind,
-        OpCode::Import => CallOpcodeRole::NotCall,
-        OpCode::ImportFrom => CallOpcodeRole::NotCall,
-        OpCode::ModuleCacheGet => CallOpcodeRole::NotCall,
-        OpCode::ModuleCacheSet => CallOpcodeRole::NotCall,
-        OpCode::ModuleCacheDel => CallOpcodeRole::NotCall,
-        OpCode::ModuleGetAttr => CallOpcodeRole::NotCall,
-        OpCode::ModuleImportFrom => CallOpcodeRole::NotCall,
-        OpCode::ModuleGetGlobal => CallOpcodeRole::NotCall,
-        OpCode::ModuleGetName => CallOpcodeRole::NotCall,
-        OpCode::ModuleSetAttr => CallOpcodeRole::NotCall,
-        OpCode::ModuleDelGlobal => CallOpcodeRole::NotCall,
-        OpCode::ModuleDelGlobalIfPresent => CallOpcodeRole::NotCall,
-        OpCode::WarnStderr => CallOpcodeRole::NotCall,
-        OpCode::ScfIf => CallOpcodeRole::NotCall,
-        OpCode::ScfFor => CallOpcodeRole::NotCall,
-        OpCode::ScfWhile => CallOpcodeRole::NotCall,
-        OpCode::ScfYield => CallOpcodeRole::NotCall,
-    }
-}
-
-/// SimpleIR kind spellings that make a Copy `_original_kind` a user-call edge.
-/// Generated from `call_graph_user_call_kinds` so call_graph.rs has no
-/// private call-kind string set beside the mapper table.
-#[inline]
-pub fn simpleir_kind_is_call_graph_user_call(kind: &str) -> bool {
+pub fn copy_kind_is_callback_free_table(kind: &str) -> bool {
     matches!(
         kind,
-        "call"
+        "call_async"
+            | "guard_bool"
+            | "guard_dict_shape"
+            | "guard_float"
+            | "guard_int"
+            | "guard_layout"
+            | "guard_none"
+            | "guard_str"
+            | "guard_tag"
+            | "guard_type"
+            | "line"
+            | "missing"
+            | "nop"
+            | "print_newline"
+    )
+}
+
+/// Copy spellings requiring a call-return async-work observation.
+/// This is a polling protocol, not call graph membership.
+#[inline]
+pub fn simpleir_kind_requires_async_work_poll_after(kind: &str) -> bool {
+    matches!(
+        kind,
+        "builtin_func"
+            | "call"
             | "call_func"
             | "call_internal"
             | "call_indirect"
@@ -2775,7 +2935,7 @@ pub fn simpleir_kind_requires_luau_ordered_mapping(kind: &str) -> bool {
 
 /// Whether successful completion of this first-class opcode is a Python
 /// asynchronous-work/eval-breaker observation point. Preserved Copy call
-/// spellings use `simpleir_kind_is_call_graph_user_call`. EXHAUSTIVE over
+/// spellings use `simpleir_kind_requires_async_work_poll_after`. EXHAUSTIVE over
 /// OpCode so native and wasm cannot grow private call-return poll sets.
 #[inline]
 pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
@@ -2850,8 +3010,12 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -2968,8 +3132,12 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::AllocTask => Some(1),
         OpCode::StateSwitch => Some(0),
         OpCode::StateTransition => Some(1),
+        OpCode::StateSet => Some(0),
+        OpCode::IsPending => Some(1),
+        OpCode::TaskWait => Some(0),
         OpCode::StateYield => Some(0),
         OpCode::ClosureLoad => Some(1),
+        OpCode::FrameContextSet => Some(0),
         OpCode::ClosureStore => Some(0),
         OpCode::Yield => Some(0),
         OpCode::YieldFrom => Some(0),
@@ -3196,8 +3364,12 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
+        OpCode::StateSet => None,
+        OpCode::IsPending => None,
+        OpCode::TaskWait => None,
         OpCode::StateYield => None,
         OpCode::ClosureLoad => None,
+        OpCode::FrameContextSet => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
         OpCode::YieldFrom => None,
@@ -3312,8 +3484,12 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::AllocTask => FuzzTirAttrPayloadRule::None,
         OpCode::StateSwitch => FuzzTirAttrPayloadRule::None,
         OpCode::StateTransition => FuzzTirAttrPayloadRule::None,
+        OpCode::StateSet => FuzzTirAttrPayloadRule::None,
+        OpCode::IsPending => FuzzTirAttrPayloadRule::None,
+        OpCode::TaskWait => FuzzTirAttrPayloadRule::None,
         OpCode::StateYield => FuzzTirAttrPayloadRule::None,
         OpCode::ClosureLoad => FuzzTirAttrPayloadRule::None,
+        OpCode::FrameContextSet => FuzzTirAttrPayloadRule::None,
         OpCode::ClosureStore => FuzzTirAttrPayloadRule::None,
         OpCode::Yield => FuzzTirAttrPayloadRule::None,
         OpCode::YieldFrom => FuzzTirAttrPayloadRule::None,
@@ -3435,8 +3611,12 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
+        OpCode::StateSet => None,
+        OpCode::IsPending => None,
+        OpCode::TaskWait => None,
         OpCode::StateYield => None,
         OpCode::ClosureLoad => None,
+        OpCode::FrameContextSet => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
         OpCode::YieldFrom => None,
@@ -3552,8 +3732,10 @@ pub fn opcode_primitive_effects_table(
     match (opcode, operands.len(), left, right) {
         (
             OpCode::Add
+            | OpCode::CheckedAdd
             | OpCode::Sub
             | OpCode::Mul
+            | OpCode::CheckedMul
             | OpCode::InplaceAdd
             | OpCode::InplaceSub
             | OpCode::InplaceMul,
@@ -3563,8 +3745,10 @@ pub fn opcode_primitive_effects_table(
         ) => Some(OPCODE_EFFECTS_PURE),
         (
             OpCode::Add
+            | OpCode::CheckedAdd
             | OpCode::Sub
             | OpCode::Mul
+            | OpCode::CheckedMul
             | OpCode::InplaceAdd
             | OpCode::InplaceSub
             | OpCode::InplaceMul,
@@ -3574,8 +3758,10 @@ pub fn opcode_primitive_effects_table(
         ) => Some(OPCODE_EFFECTS_PURE),
         (
             OpCode::Add
+            | OpCode::CheckedAdd
             | OpCode::Sub
             | OpCode::Mul
+            | OpCode::CheckedMul
             | OpCode::InplaceAdd
             | OpCode::InplaceSub
             | OpCode::InplaceMul,
@@ -3585,8 +3771,10 @@ pub fn opcode_primitive_effects_table(
         ) => Some(OPCODE_EFFECTS_PURE),
         (
             OpCode::Add
+            | OpCode::CheckedAdd
             | OpCode::Sub
             | OpCode::Mul
+            | OpCode::CheckedMul
             | OpCode::InplaceAdd
             | OpCode::InplaceSub
             | OpCode::InplaceMul,
@@ -3596,8 +3784,10 @@ pub fn opcode_primitive_effects_table(
         ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
         (
             OpCode::Add
+            | OpCode::CheckedAdd
             | OpCode::Sub
             | OpCode::Mul
+            | OpCode::CheckedMul
             | OpCode::InplaceAdd
             | OpCode::InplaceSub
             | OpCode::InplaceMul,
@@ -3605,20 +3795,23 @@ pub fn opcode_primitive_effects_table(
             TirType::F64,
             TirType::I64 | TirType::BigInt,
         ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
-        (OpCode::Add | OpCode::InplaceAdd, 2, TirType::Str, TirType::Str) => {
-            Some(OPCODE_EFFECTS_PURE_MAY_THROW)
-        }
-        (OpCode::Add | OpCode::InplaceAdd, 2, TirType::Bytes, TirType::Bytes) => {
+        (OpCode::Add | OpCode::CheckedAdd | OpCode::InplaceAdd, 2, TirType::Str, TirType::Str) => {
             Some(OPCODE_EFFECTS_PURE_MAY_THROW)
         }
         (
-            OpCode::Mul | OpCode::InplaceMul,
+            OpCode::Add | OpCode::CheckedAdd | OpCode::InplaceAdd,
+            2,
+            TirType::Bytes,
+            TirType::Bytes,
+        ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
+        (
+            OpCode::Mul | OpCode::CheckedMul | OpCode::InplaceMul,
             2,
             TirType::Str | TirType::Bytes,
             TirType::I64 | TirType::BigInt | TirType::Bool,
         ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
         (
-            OpCode::Mul | OpCode::InplaceMul,
+            OpCode::Mul | OpCode::CheckedMul | OpCode::InplaceMul,
             2,
             TirType::I64 | TirType::BigInt | TirType::Bool,
             TirType::Str | TirType::Bytes,
@@ -3654,6 +3847,8 @@ pub fn opcode_primitive_effects_table(
             | OpCode::BitNot
             | OpCode::BitOr
             | OpCode::BitXor
+            | OpCode::CheckedAdd
+            | OpCode::CheckedMul
             | OpCode::Div
             | OpCode::FloorDiv
             | OpCode::InplaceAdd
@@ -3750,8 +3945,12 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::AllocTask => true,
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
+        OpCode::StateSet => count == 0,
+        OpCode::IsPending => count == 1,
+        OpCode::TaskWait => count == 1,
         OpCode::StateYield => true,
         OpCode::ClosureLoad => true,
+        OpCode::FrameContextSet => count == 3,
         OpCode::ClosureStore => true,
         OpCode::Yield => true,
         OpCode::YieldFrom => true,
@@ -3929,8 +4128,12 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::AllocTask => &[],
         OpCode::StateSwitch => &[],
         OpCode::StateTransition => &[],
+        OpCode::StateSet => &[],
+        OpCode::IsPending => &[Some(OperandIndependentResultType::Bool)],
+        OpCode::TaskWait => &[],
         OpCode::StateYield => &[],
         OpCode::ClosureLoad => &[],
+        OpCode::FrameContextSet => &[],
         OpCode::ClosureStore => &[],
         OpCode::Yield => &[],
         OpCode::YieldFrom => &[],
@@ -3986,7 +4189,6 @@ pub fn opcode_operand_independent_result_tir_type(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeRefineAttrResultTypeRule {
     None,
-    CallBuiltinReturnType,
     CallReturnType,
     CopyOriginalKind,
     ObjectTypeHint,
@@ -4049,7 +4251,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::CallMethod => TypeRefineAttrResultTypeRule::CallReturnType,
         OpCode::CallMethodIc => TypeRefineAttrResultTypeRule::CallReturnType,
         OpCode::CallSuperMethodIc => TypeRefineAttrResultTypeRule::CallReturnType,
-        OpCode::CallBuiltin => TypeRefineAttrResultTypeRule::CallBuiltinReturnType,
+        OpCode::CallBuiltin => TypeRefineAttrResultTypeRule::None,
         OpCode::OrdAt => TypeRefineAttrResultTypeRule::None,
         OpCode::BoxVal => TypeRefineAttrResultTypeRule::None,
         OpCode::UnboxVal => TypeRefineAttrResultTypeRule::None,
@@ -4070,8 +4272,12 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::AllocTask => TypeRefineAttrResultTypeRule::None,
         OpCode::StateSwitch => TypeRefineAttrResultTypeRule::None,
         OpCode::StateTransition => TypeRefineAttrResultTypeRule::None,
+        OpCode::StateSet => TypeRefineAttrResultTypeRule::None,
+        OpCode::IsPending => TypeRefineAttrResultTypeRule::None,
+        OpCode::TaskWait => TypeRefineAttrResultTypeRule::None,
         OpCode::StateYield => TypeRefineAttrResultTypeRule::None,
         OpCode::ClosureLoad => TypeRefineAttrResultTypeRule::None,
+        OpCode::FrameContextSet => TypeRefineAttrResultTypeRule::None,
         OpCode::ClosureStore => TypeRefineAttrResultTypeRule::None,
         OpCode::Yield => TypeRefineAttrResultTypeRule::None,
         OpCode::YieldFrom => TypeRefineAttrResultTypeRule::None,
@@ -4211,8 +4417,12 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::AllocTask => TypeRefineOperandTypeRule::None,
         OpCode::StateSwitch => TypeRefineOperandTypeRule::None,
         OpCode::StateTransition => TypeRefineOperandTypeRule::None,
+        OpCode::StateSet => TypeRefineOperandTypeRule::None,
+        OpCode::IsPending => TypeRefineOperandTypeRule::None,
+        OpCode::TaskWait => TypeRefineOperandTypeRule::None,
         OpCode::StateYield => TypeRefineOperandTypeRule::None,
         OpCode::ClosureLoad => TypeRefineOperandTypeRule::None,
+        OpCode::FrameContextSet => TypeRefineOperandTypeRule::None,
         OpCode::ClosureStore => TypeRefineOperandTypeRule::None,
         OpCode::Yield => TypeRefineOperandTypeRule::None,
         OpCode::YieldFrom => TypeRefineOperandTypeRule::None,
@@ -4340,8 +4550,12 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::AllocTask => SccpConstantSeedRule::None,
         OpCode::StateSwitch => SccpConstantSeedRule::None,
         OpCode::StateTransition => SccpConstantSeedRule::None,
+        OpCode::StateSet => SccpConstantSeedRule::None,
+        OpCode::IsPending => SccpConstantSeedRule::None,
+        OpCode::TaskWait => SccpConstantSeedRule::None,
         OpCode::StateYield => SccpConstantSeedRule::None,
         OpCode::ClosureLoad => SccpConstantSeedRule::None,
+        OpCode::FrameContextSet => SccpConstantSeedRule::None,
         OpCode::ClosureStore => SccpConstantSeedRule::None,
         OpCode::Yield => SccpConstantSeedRule::None,
         OpCode::YieldFrom => SccpConstantSeedRule::None,
@@ -4481,8 +4695,12 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::AllocTask => SccpConstantEvalRule::None,
         OpCode::StateSwitch => SccpConstantEvalRule::None,
         OpCode::StateTransition => SccpConstantEvalRule::None,
+        OpCode::StateSet => SccpConstantEvalRule::None,
+        OpCode::IsPending => SccpConstantEvalRule::None,
+        OpCode::TaskWait => SccpConstantEvalRule::None,
         OpCode::StateYield => SccpConstantEvalRule::None,
         OpCode::ClosureLoad => SccpConstantEvalRule::None,
+        OpCode::FrameContextSet => SccpConstantEvalRule::None,
         OpCode::ClosureStore => SccpConstantEvalRule::None,
         OpCode::Yield => SccpConstantEvalRule::None,
         OpCode::YieldFrom => SccpConstantEvalRule::None,
@@ -4616,8 +4834,12 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::AllocTask => ValueRangeTransferRule::None,
         OpCode::StateSwitch => ValueRangeTransferRule::None,
         OpCode::StateTransition => ValueRangeTransferRule::None,
+        OpCode::StateSet => ValueRangeTransferRule::None,
+        OpCode::IsPending => ValueRangeTransferRule::None,
+        OpCode::TaskWait => ValueRangeTransferRule::None,
         OpCode::StateYield => ValueRangeTransferRule::None,
         OpCode::ClosureLoad => ValueRangeTransferRule::None,
+        OpCode::FrameContextSet => ValueRangeTransferRule::None,
         OpCode::ClosureStore => ValueRangeTransferRule::None,
         OpCode::Yield => ValueRangeTransferRule::None,
         OpCode::YieldFrom => ValueRangeTransferRule::None,
@@ -4748,8 +4970,12 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::AllocTask => ValueRangeConstFoldRule::None,
         OpCode::StateSwitch => ValueRangeConstFoldRule::None,
         OpCode::StateTransition => ValueRangeConstFoldRule::None,
+        OpCode::StateSet => ValueRangeConstFoldRule::None,
+        OpCode::IsPending => ValueRangeConstFoldRule::None,
+        OpCode::TaskWait => ValueRangeConstFoldRule::None,
         OpCode::StateYield => ValueRangeConstFoldRule::None,
         OpCode::ClosureLoad => ValueRangeConstFoldRule::None,
+        OpCode::FrameContextSet => ValueRangeConstFoldRule::None,
         OpCode::ClosureStore => ValueRangeConstFoldRule::None,
         OpCode::Yield => ValueRangeConstFoldRule::None,
         OpCode::YieldFrom => ValueRangeConstFoldRule::None,
@@ -4874,8 +5100,12 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::AllocTask => ValueRangeCondNarrowRule::None,
         OpCode::StateSwitch => ValueRangeCondNarrowRule::None,
         OpCode::StateTransition => ValueRangeCondNarrowRule::None,
+        OpCode::StateSet => ValueRangeCondNarrowRule::None,
+        OpCode::IsPending => ValueRangeCondNarrowRule::None,
+        OpCode::TaskWait => ValueRangeCondNarrowRule::None,
         OpCode::StateYield => ValueRangeCondNarrowRule::None,
         OpCode::ClosureLoad => ValueRangeCondNarrowRule::None,
+        OpCode::FrameContextSet => ValueRangeCondNarrowRule::None,
         OpCode::ClosureStore => ValueRangeCondNarrowRule::None,
         OpCode::Yield => ValueRangeCondNarrowRule::None,
         OpCode::YieldFrom => ValueRangeCondNarrowRule::None,
@@ -4983,7 +5213,7 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::CallMethod => ValueRangeContainerLengthRule::None,
         OpCode::CallMethodIc => ValueRangeContainerLengthRule::None,
         OpCode::CallSuperMethodIc => ValueRangeContainerLengthRule::None,
-        OpCode::CallBuiltin => ValueRangeContainerLengthRule::LenCall,
+        OpCode::CallBuiltin => ValueRangeContainerLengthRule::None,
         OpCode::OrdAt => ValueRangeContainerLengthRule::None,
         OpCode::BoxVal => ValueRangeContainerLengthRule::None,
         OpCode::UnboxVal => ValueRangeContainerLengthRule::None,
@@ -5004,8 +5234,12 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::AllocTask => ValueRangeContainerLengthRule::None,
         OpCode::StateSwitch => ValueRangeContainerLengthRule::None,
         OpCode::StateTransition => ValueRangeContainerLengthRule::None,
+        OpCode::StateSet => ValueRangeContainerLengthRule::None,
+        OpCode::IsPending => ValueRangeContainerLengthRule::None,
+        OpCode::TaskWait => ValueRangeContainerLengthRule::None,
         OpCode::StateYield => ValueRangeContainerLengthRule::None,
         OpCode::ClosureLoad => ValueRangeContainerLengthRule::None,
+        OpCode::FrameContextSet => ValueRangeContainerLengthRule::None,
         OpCode::ClosureStore => ValueRangeContainerLengthRule::None,
         OpCode::Yield => ValueRangeContainerLengthRule::None,
         OpCode::YieldFrom => ValueRangeContainerLengthRule::None,
@@ -5131,8 +5365,12 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::AllocTask => RangeDevirtRole::None,
         OpCode::StateSwitch => RangeDevirtRole::None,
         OpCode::StateTransition => RangeDevirtRole::None,
+        OpCode::StateSet => RangeDevirtRole::None,
+        OpCode::IsPending => RangeDevirtRole::None,
+        OpCode::TaskWait => RangeDevirtRole::None,
         OpCode::StateYield => RangeDevirtRole::None,
         OpCode::ClosureLoad => RangeDevirtRole::None,
+        OpCode::FrameContextSet => RangeDevirtRole::None,
         OpCode::ClosureStore => RangeDevirtRole::None,
         OpCode::Yield => RangeDevirtRole::None,
         OpCode::YieldFrom => RangeDevirtRole::None,
@@ -5562,12 +5800,32 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
         },
+        OpCode::StateSet => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::IsPending => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::TaskWait => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
         OpCode::StateYield => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
         },
         OpCode::ClosureLoad => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::FrameContextSet => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
@@ -5842,8 +6100,12 @@ pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {
         OpCode::AllocTask => LirVerifyRule::None,
         OpCode::StateSwitch => LirVerifyRule::None,
         OpCode::StateTransition => LirVerifyRule::None,
+        OpCode::StateSet => LirVerifyRule::None,
+        OpCode::IsPending => LirVerifyRule::None,
+        OpCode::TaskWait => LirVerifyRule::None,
         OpCode::StateYield => LirVerifyRule::None,
         OpCode::ClosureLoad => LirVerifyRule::None,
+        OpCode::FrameContextSet => LirVerifyRule::None,
         OpCode::ClosureStore => LirVerifyRule::None,
         OpCode::Yield => LirVerifyRule::None,
         OpCode::YieldFrom => LirVerifyRule::None,
@@ -5971,8 +6233,12 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::AllocTask => ReprRawI64FullDeoptSeedRule::None,
         OpCode::StateSwitch => ReprRawI64FullDeoptSeedRule::None,
         OpCode::StateTransition => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::StateSet => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::IsPending => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::TaskWait => ReprRawI64FullDeoptSeedRule::None,
         OpCode::StateYield => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ClosureLoad => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::FrameContextSet => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ClosureStore => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Yield => ReprRawI64FullDeoptSeedRule::None,
         OpCode::YieldFrom => ReprRawI64FullDeoptSeedRule::None,
@@ -6104,8 +6370,12 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::AllocTask => ReprProjectableBoolResultRule::None,
         OpCode::StateSwitch => ReprProjectableBoolResultRule::None,
         OpCode::StateTransition => ReprProjectableBoolResultRule::None,
+        OpCode::StateSet => ReprProjectableBoolResultRule::None,
+        OpCode::IsPending => ReprProjectableBoolResultRule::Always,
+        OpCode::TaskWait => ReprProjectableBoolResultRule::None,
         OpCode::StateYield => ReprProjectableBoolResultRule::None,
         OpCode::ClosureLoad => ReprProjectableBoolResultRule::None,
+        OpCode::FrameContextSet => ReprProjectableBoolResultRule::None,
         OpCode::ClosureStore => ReprProjectableBoolResultRule::None,
         OpCode::Yield => ReprProjectableBoolResultRule::None,
         OpCode::YieldFrom => ReprProjectableBoolResultRule::None,
@@ -6235,8 +6505,12 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::AllocTask => ReprProjectableFloatResultRule::None,
         OpCode::StateSwitch => ReprProjectableFloatResultRule::None,
         OpCode::StateTransition => ReprProjectableFloatResultRule::None,
+        OpCode::StateSet => ReprProjectableFloatResultRule::None,
+        OpCode::IsPending => ReprProjectableFloatResultRule::None,
+        OpCode::TaskWait => ReprProjectableFloatResultRule::None,
         OpCode::StateYield => ReprProjectableFloatResultRule::None,
         OpCode::ClosureLoad => ReprProjectableFloatResultRule::None,
+        OpCode::FrameContextSet => ReprProjectableFloatResultRule::None,
         OpCode::ClosureStore => ReprProjectableFloatResultRule::None,
         OpCode::Yield => ReprProjectableFloatResultRule::None,
         OpCode::YieldFrom => ReprProjectableFloatResultRule::None,
@@ -6389,8 +6663,12 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::AllocTask => CountedLoopComparisonRole::None,
         OpCode::StateSwitch => CountedLoopComparisonRole::None,
         OpCode::StateTransition => CountedLoopComparisonRole::None,
+        OpCode::StateSet => CountedLoopComparisonRole::None,
+        OpCode::IsPending => CountedLoopComparisonRole::None,
+        OpCode::TaskWait => CountedLoopComparisonRole::None,
         OpCode::StateYield => CountedLoopComparisonRole::None,
         OpCode::ClosureLoad => CountedLoopComparisonRole::None,
+        OpCode::FrameContextSet => CountedLoopComparisonRole::None,
         OpCode::ClosureStore => CountedLoopComparisonRole::None,
         OpCode::Yield => CountedLoopComparisonRole::None,
         OpCode::YieldFrom => CountedLoopComparisonRole::None,
@@ -6505,8 +6783,12 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
+        OpCode::StateSet => None,
+        OpCode::IsPending => None,
+        OpCode::TaskWait => None,
         OpCode::StateYield => None,
         OpCode::ClosureLoad => None,
+        OpCode::FrameContextSet => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
         OpCode::YieldFrom => None,
@@ -6641,8 +6923,12 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::AllocTask => GvnNumberingRole::Never,
         OpCode::StateSwitch => GvnNumberingRole::Never,
         OpCode::StateTransition => GvnNumberingRole::Never,
+        OpCode::StateSet => GvnNumberingRole::Never,
+        OpCode::IsPending => GvnNumberingRole::Never,
+        OpCode::TaskWait => GvnNumberingRole::Never,
         OpCode::StateYield => GvnNumberingRole::Never,
         OpCode::ClosureLoad => GvnNumberingRole::Never,
+        OpCode::FrameContextSet => GvnNumberingRole::Never,
         OpCode::ClosureStore => GvnNumberingRole::Never,
         OpCode::Yield => GvnNumberingRole::Never,
         OpCode::YieldFrom => GvnNumberingRole::Never,
@@ -6790,8 +7076,12 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
+        OpCode::StateSet => None,
+        OpCode::IsPending => None,
+        OpCode::TaskWait => None,
         OpCode::StateYield => None,
         OpCode::ClosureLoad => None,
+        OpCode::FrameContextSet => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
         OpCode::YieldFrom => None,
@@ -6929,8 +7219,12 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -6980,8 +7274,8 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
-        OpCode::CheckedAdd => true,
-        OpCode::CheckedMul => true,
+        OpCode::CheckedAdd => false,
+        OpCode::CheckedMul => false,
         OpCode::InplaceAdd => false,
         OpCode::InplaceSub => false,
         OpCode::InplaceMul => false,
@@ -7047,8 +7341,12 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -7163,8 +7461,12 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => true,
         OpCode::ClosureLoad => true,
+        OpCode::FrameContextSet => true,
         OpCode::ClosureStore => true,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -7280,8 +7582,12 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => true,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -7397,8 +7703,12 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -7514,8 +7824,12 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -7665,8 +7979,12 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::AllocTask => RefcountBalanceRole::NotRefcountBalance,
         OpCode::StateSwitch => RefcountBalanceRole::NotRefcountBalance,
         OpCode::StateTransition => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::StateSet => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::IsPending => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::TaskWait => RefcountBalanceRole::NotRefcountBalance,
         OpCode::StateYield => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ClosureLoad => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::FrameContextSet => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ClosureStore => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Yield => RefcountBalanceRole::NotRefcountBalance,
         OpCode::YieldFrom => RefcountBalanceRole::NotRefcountBalance,
@@ -7783,128 +8101,15 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => true,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
-        OpCode::Raise => false,
-        OpCode::CheckException => false,
-        OpCode::ExceptionPending => false,
-        OpCode::FunctionDefaultsVersion => false,
-        OpCode::TryStart => false,
-        OpCode::TryEnd => false,
-        OpCode::StateBlockStart => false,
-        OpCode::StateBlockEnd => false,
-        OpCode::ConstInt => false,
-        OpCode::ConstBigInt => false,
-        OpCode::ConstFloat => false,
-        OpCode::ConstStr => false,
-        OpCode::ConstBool => false,
-        OpCode::ConstNone => false,
-        OpCode::ConstBytes => false,
-        OpCode::Copy => false,
-        OpCode::Import => false,
-        OpCode::ImportFrom => false,
-        OpCode::ModuleCacheGet => false,
-        OpCode::ModuleCacheSet => false,
-        OpCode::ModuleCacheDel => false,
-        OpCode::ModuleGetAttr => false,
-        OpCode::ModuleImportFrom => false,
-        OpCode::ModuleGetGlobal => false,
-        OpCode::ModuleGetName => false,
-        OpCode::ModuleSetAttr => false,
-        OpCode::ModuleDelGlobal => false,
-        OpCode::ModuleDelGlobalIfPresent => false,
-        OpCode::WarnStderr => false,
-        OpCode::ScfIf => false,
-        OpCode::ScfFor => false,
-        OpCode::ScfWhile => false,
-        OpCode::ScfYield => false,
-    }
-}
-
-/// Whether an opcode suspends execution and requires drop_insertion.rs
-/// to retain live owned values into the coroutine frame. DISTINCT from
-/// broader state-machine/fusion facts. EXHAUSTIVE over OpCode.
-#[inline]
-pub fn opcode_is_drop_insertion_suspension_point_table(opcode: OpCode) -> bool {
-    match opcode {
-        OpCode::Add => false,
-        OpCode::Sub => false,
-        OpCode::Mul => false,
-        OpCode::CheckedAdd => false,
-        OpCode::CheckedMul => false,
-        OpCode::InplaceAdd => false,
-        OpCode::InplaceSub => false,
-        OpCode::InplaceMul => false,
-        OpCode::Div => false,
-        OpCode::FloorDiv => false,
-        OpCode::Mod => false,
-        OpCode::Pow => false,
-        OpCode::Neg => false,
-        OpCode::Pos => false,
-        OpCode::Eq => false,
-        OpCode::Ne => false,
-        OpCode::Lt => false,
-        OpCode::Le => false,
-        OpCode::Gt => false,
-        OpCode::Ge => false,
-        OpCode::Is => false,
-        OpCode::IsNot => false,
-        OpCode::In => false,
-        OpCode::NotIn => false,
-        OpCode::BitAnd => false,
-        OpCode::BitOr => false,
-        OpCode::BitXor => false,
-        OpCode::BitNot => false,
-        OpCode::Shl => false,
-        OpCode::Shr => false,
-        OpCode::And => false,
-        OpCode::Or => false,
-        OpCode::Not => false,
-        OpCode::Bool => false,
-        OpCode::Alloc => false,
-        OpCode::StackAlloc => false,
-        OpCode::ObjectNewBound => false,
-        OpCode::Free => false,
-        OpCode::LoadAttr => false,
-        OpCode::StoreAttr => false,
-        OpCode::DelAttr => false,
-        OpCode::Index => false,
-        OpCode::StoreIndex => false,
-        OpCode::DelIndex => false,
-        OpCode::DeleteVar => false,
-        OpCode::Call => false,
-        OpCode::CallMethod => false,
-        OpCode::CallMethodIc => false,
-        OpCode::CallSuperMethodIc => false,
-        OpCode::CallBuiltin => false,
-        OpCode::OrdAt => false,
-        OpCode::BoxVal => false,
-        OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
-        OpCode::IncRef => false,
-        OpCode::DecRef => false,
-        OpCode::DelBoundary => false,
-        OpCode::BuildList => false,
-        OpCode::BuildDict => false,
-        OpCode::BuildTuple => false,
-        OpCode::BuildSet => false,
-        OpCode::BuildSlice => false,
-        OpCode::GetIter => false,
-        OpCode::IterNext => false,
-        OpCode::IterNextUnboxed => false,
-        OpCode::UnpackSequence => false,
-        OpCode::ForIter => false,
-        OpCode::AllocTask => false,
-        OpCode::StateSwitch => false,
-        OpCode::StateTransition => false,
-        OpCode::StateYield => true,
-        OpCode::ClosureLoad => false,
-        OpCode::ClosureStore => false,
-        OpCode::Yield => true,
-        OpCode::YieldFrom => true,
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
@@ -8017,8 +8222,12 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -8156,8 +8365,12 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::AllocTask => GeneratorFusionPollRole::Reject,
         OpCode::StateSwitch => GeneratorFusionPollRole::Neutral,
         OpCode::StateTransition => GeneratorFusionPollRole::Reject,
+        OpCode::StateSet => GeneratorFusionPollRole::Neutral,
+        OpCode::IsPending => GeneratorFusionPollRole::Neutral,
+        OpCode::TaskWait => GeneratorFusionPollRole::Neutral,
         OpCode::StateYield => GeneratorFusionPollRole::RequiredYield,
         OpCode::ClosureLoad => GeneratorFusionPollRole::Neutral,
+        OpCode::FrameContextSet => GeneratorFusionPollRole::Neutral,
         OpCode::ClosureStore => GeneratorFusionPollRole::Neutral,
         OpCode::Yield => GeneratorFusionPollRole::Reject,
         OpCode::YieldFrom => GeneratorFusionPollRole::Reject,
@@ -8283,8 +8496,12 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::AllocTask => GeneratorFusionIterUseRole::None,
         OpCode::StateSwitch => GeneratorFusionIterUseRole::None,
         OpCode::StateTransition => GeneratorFusionIterUseRole::None,
+        OpCode::StateSet => GeneratorFusionIterUseRole::None,
+        OpCode::IsPending => GeneratorFusionIterUseRole::None,
+        OpCode::TaskWait => GeneratorFusionIterUseRole::None,
         OpCode::StateYield => GeneratorFusionIterUseRole::None,
         OpCode::ClosureLoad => GeneratorFusionIterUseRole::None,
+        OpCode::FrameContextSet => GeneratorFusionIterUseRole::None,
         OpCode::ClosureStore => GeneratorFusionIterUseRole::None,
         OpCode::Yield => GeneratorFusionIterUseRole::None,
         OpCode::YieldFrom => GeneratorFusionIterUseRole::None,
@@ -8402,8 +8619,12 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => true,
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => true,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => true,
         OpCode::YieldFrom => true,
@@ -8553,8 +8774,12 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::AllocTask => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StateSwitch => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StateTransition => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::StateSet => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::IsPending => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::TaskWait => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StateYield => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ClosureLoad => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::FrameContextSet => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ClosureStore => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::Yield => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::YieldFrom => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -8686,8 +8911,12 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::AllocTask => ModuleSlotAccessRole::None,
         OpCode::StateSwitch => ModuleSlotAccessRole::None,
         OpCode::StateTransition => ModuleSlotAccessRole::None,
+        OpCode::StateSet => ModuleSlotAccessRole::None,
+        OpCode::IsPending => ModuleSlotAccessRole::None,
+        OpCode::TaskWait => ModuleSlotAccessRole::None,
         OpCode::StateYield => ModuleSlotAccessRole::None,
         OpCode::ClosureLoad => ModuleSlotAccessRole::None,
+        OpCode::FrameContextSet => ModuleSlotAccessRole::None,
         OpCode::ClosureStore => ModuleSlotAccessRole::None,
         OpCode::Yield => ModuleSlotAccessRole::None,
         OpCode::YieldFrom => ModuleSlotAccessRole::None,
@@ -8813,8 +9042,12 @@ pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocat
         OpCode::AllocTask => BoxedAllocationLayoutRule::None,
         OpCode::StateSwitch => BoxedAllocationLayoutRule::None,
         OpCode::StateTransition => BoxedAllocationLayoutRule::None,
+        OpCode::StateSet => BoxedAllocationLayoutRule::None,
+        OpCode::IsPending => BoxedAllocationLayoutRule::None,
+        OpCode::TaskWait => BoxedAllocationLayoutRule::None,
         OpCode::StateYield => BoxedAllocationLayoutRule::None,
         OpCode::ClosureLoad => BoxedAllocationLayoutRule::None,
+        OpCode::FrameContextSet => BoxedAllocationLayoutRule::None,
         OpCode::ClosureStore => BoxedAllocationLayoutRule::None,
         OpCode::Yield => BoxedAllocationLayoutRule::None,
         OpCode::YieldFrom => BoxedAllocationLayoutRule::None,
@@ -8941,8 +9174,12 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::AllocTask => TirVerifyAttrRule::None,
         OpCode::StateSwitch => TirVerifyAttrRule::None,
         OpCode::StateTransition => TirVerifyAttrRule::None,
+        OpCode::StateSet => TirVerifyAttrRule::None,
+        OpCode::IsPending => TirVerifyAttrRule::None,
+        OpCode::TaskWait => TirVerifyAttrRule::None,
         OpCode::StateYield => TirVerifyAttrRule::None,
         OpCode::ClosureLoad => TirVerifyAttrRule::None,
+        OpCode::FrameContextSet => TirVerifyAttrRule::None,
         OpCode::ClosureStore => TirVerifyAttrRule::None,
         OpCode::Yield => TirVerifyAttrRule::None,
         OpCode::YieldFrom => TirVerifyAttrRule::None,
@@ -9070,8 +9307,12 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::AllocTask => StrengthReductionRule::None,
         OpCode::StateSwitch => StrengthReductionRule::None,
         OpCode::StateTransition => StrengthReductionRule::None,
+        OpCode::StateSet => StrengthReductionRule::None,
+        OpCode::IsPending => StrengthReductionRule::None,
+        OpCode::TaskWait => StrengthReductionRule::None,
         OpCode::StateYield => StrengthReductionRule::None,
         OpCode::ClosureLoad => StrengthReductionRule::None,
+        OpCode::FrameContextSet => StrengthReductionRule::None,
         OpCode::ClosureStore => StrengthReductionRule::None,
         OpCode::Yield => StrengthReductionRule::None,
         OpCode::YieldFrom => StrengthReductionRule::None,
@@ -9198,8 +9439,12 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::AllocTask => ScevExprRule::None,
         OpCode::StateSwitch => ScevExprRule::None,
         OpCode::StateTransition => ScevExprRule::None,
+        OpCode::StateSet => ScevExprRule::None,
+        OpCode::IsPending => ScevExprRule::None,
+        OpCode::TaskWait => ScevExprRule::None,
         OpCode::StateYield => ScevExprRule::None,
         OpCode::ClosureLoad => ScevExprRule::None,
+        OpCode::FrameContextSet => ScevExprRule::None,
         OpCode::ClosureStore => ScevExprRule::None,
         OpCode::Yield => ScevExprRule::None,
         OpCode::YieldFrom => ScevExprRule::None,
@@ -9318,8 +9563,12 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -9437,8 +9686,12 @@ pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -9557,8 +9810,12 @@ pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -9675,8 +9932,12 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -9792,8 +10053,12 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -9909,8 +10174,12 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -10028,8 +10297,12 @@ pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -10145,8 +10418,12 @@ pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -10265,8 +10542,12 @@ pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool 
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -10384,8 +10665,12 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -10501,8 +10786,12 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -10618,8 +10907,12 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -10735,8 +11028,12 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -10859,8 +11156,12 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::AllocTask => ExceptionRegionNestingRole::None,
         OpCode::StateSwitch => ExceptionRegionNestingRole::None,
         OpCode::StateTransition => ExceptionRegionNestingRole::None,
+        OpCode::StateSet => ExceptionRegionNestingRole::None,
+        OpCode::IsPending => ExceptionRegionNestingRole::None,
+        OpCode::TaskWait => ExceptionRegionNestingRole::None,
         OpCode::StateYield => ExceptionRegionNestingRole::None,
         OpCode::ClosureLoad => ExceptionRegionNestingRole::None,
+        OpCode::FrameContextSet => ExceptionRegionNestingRole::None,
         OpCode::ClosureStore => ExceptionRegionNestingRole::None,
         OpCode::Yield => ExceptionRegionNestingRole::None,
         OpCode::YieldFrom => ExceptionRegionNestingRole::None,
@@ -10983,8 +11284,12 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::AllocTask => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::StateSwitch => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::StateTransition => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::StateSet => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::IsPending => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::TaskWait => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::StateYield => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ClosureLoad => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::FrameContextSet => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ClosureStore => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Yield => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::YieldFrom => AliasTransparentAliasRole::NotTransparentAlias,
@@ -11112,8 +11417,12 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::AllocTask => AliasMemoryRegionClass::GenericHeap,
         OpCode::StateSwitch => AliasMemoryRegionClass::GenericHeap,
         OpCode::StateTransition => AliasMemoryRegionClass::GenericHeap,
+        OpCode::StateSet => AliasMemoryRegionClass::GenericHeap,
+        OpCode::IsPending => AliasMemoryRegionClass::GenericHeap,
+        OpCode::TaskWait => AliasMemoryRegionClass::GenericHeap,
         OpCode::StateYield => AliasMemoryRegionClass::GenericHeap,
         OpCode::ClosureLoad => AliasMemoryRegionClass::GenericHeap,
+        OpCode::FrameContextSet => AliasMemoryRegionClass::GenericHeap,
         OpCode::ClosureStore => AliasMemoryRegionClass::GenericHeap,
         OpCode::Yield => AliasMemoryRegionClass::GenericHeap,
         OpCode::YieldFrom => AliasMemoryRegionClass::GenericHeap,
@@ -11240,8 +11549,12 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::AllocTask => AliasSlotObservation::DirectObserver,
         OpCode::StateSwitch => AliasSlotObservation::ConservativeObserver,
         OpCode::StateTransition => AliasSlotObservation::ConservativeObserver,
+        OpCode::StateSet => AliasSlotObservation::ConservativeObserver,
+        OpCode::IsPending => AliasSlotObservation::ConservativeObserver,
+        OpCode::TaskWait => AliasSlotObservation::ConservativeObserver,
         OpCode::StateYield => AliasSlotObservation::ConservativeObserver,
         OpCode::ClosureLoad => AliasSlotObservation::ConservativeObserver,
+        OpCode::FrameContextSet => AliasSlotObservation::ConservativeObserver,
         OpCode::ClosureStore => AliasSlotObservation::ConservativeObserver,
         OpCode::Yield => AliasSlotObservation::DirectObserver,
         OpCode::YieldFrom => AliasSlotObservation::DirectObserver,
@@ -11439,8 +11752,12 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
         OpCode::AllocTask => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::StateSwitch => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::StateTransition => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::StateSet => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::IsPending => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::TaskWait => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::StateYield => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ClosureLoad => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::FrameContextSet => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ClosureStore => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::Yield => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::YieldFrom => PASS_DELTA_OPCODE_FACTS_NONE,
@@ -11583,8 +11900,12 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
+        OpCode::StateSet => None,
+        OpCode::IsPending => None,
+        OpCode::TaskWait => None,
         OpCode::StateYield => None,
         OpCode::ClosureLoad => None,
+        OpCode::FrameContextSet => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
         OpCode::YieldFrom => None,
@@ -11711,8 +12032,12 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
+        OpCode::StateSet => None,
+        OpCode::IsPending => None,
+        OpCode::TaskWait => None,
         OpCode::StateYield => None,
         OpCode::ClosureLoad => None,
+        OpCode::FrameContextSet => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
         OpCode::YieldFrom => None,
@@ -11827,8 +12152,12 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
         OpCode::StateTransition => None,
+        OpCode::StateSet => None,
+        OpCode::IsPending => None,
+        OpCode::TaskWait => None,
         OpCode::StateYield => None,
         OpCode::ClosureLoad => None,
+        OpCode::FrameContextSet => None,
         OpCode::ClosureStore => None,
         OpCode::Yield => None,
         OpCode::YieldFrom => None,
@@ -12235,8 +12564,12 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::AllocTask => &[],
         OpCode::StateSwitch => &[],
         OpCode::StateTransition => &[],
+        OpCode::StateSet => &[],
+        OpCode::IsPending => &[],
+        OpCode::TaskWait => &[],
         OpCode::StateYield => &[],
         OpCode::ClosureLoad => &[],
+        OpCode::FrameContextSet => &[],
         OpCode::ClosureStore => &[],
         OpCode::Yield => &[],
         OpCode::YieldFrom => &[],
@@ -12279,32 +12612,14 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
 /// Operand-ownership leaf (design 27 §2.1): does an op release this
 /// operand internally (`Consumed` — the holder must NOT also drop it, a
 /// double-free otherwise) or merely borrow it (`Borrowed` — the holder
-/// keeps its obligation and drops at the value's true last use)? molt's
-/// `callee borrows all args` ABI (design 20 §1.2) makes `Borrowed` the
-/// universal default; `Consumed` is the CallArgs-builder / move-into class.
+/// keeps its obligation and drops at the value's true last use)? `Borrowed`
+/// is the opcode default (design 20 §1.2); `Consumed` is the CallArgs-builder
+/// / move-into class. A source call's typed per-operand custody
+/// (`TirOp::operand_custody`) adds adopted operands per call site.
 /// The result-side lattice (Owned/Borrowed/Raw/MaybeUninit) is the
 /// classifier_* tables — a SEPARATE axis from this operand-side leaf.
 ///
-/// The variant set models molt's FULL operand-ownership domain so the
-/// design-27 ownership-boundary lattice (#58) and the next consumer
-/// migrations are TABLE edits, not enum surgery. `Borrowed`/`Consumed`
-/// seed the per-OpCode + per-spelling tables; `InteriorBorrowKeepAlive`
-/// seeds the per-position borrow-of column (ladder #73);
-/// `ContainerAbsorb` marks borrowed operands retained by container/storage
-/// mutation; `Transferred`
-/// seeds the per-TERMINATOR table (design 27 §2.4 transfer sites — ladder
-/// #72). Every variant below is constructed by a generated table today:
-///   * `Transferred` — ownership moves OUT of the function/block: a
-///     `Return` value or a branch-arg passed into a successor block arg.
-///     LIVE: constructed by `terminator_operand_ownership_table` and read
-///     by drop_insertion's `terminator_uses_root` / `terminator_branch_args`.
-///   * `InteriorBorrowKeepAlive` — the round-6 interior-borrow keepalive:
-///     the operand must stay live because the result holds an INTERIOR
-///     reference into it (drop deferred to the interior ref's last use).
-///     LIVE: constructed by `opcode_operand_ownership_table` for the
-///     `LoadAttr`/`Index` source position and read by
-///     `opcode_borrows_source_operand` / `op_borrow_source` to build the
-///     `BorrowProvenance` relation (the `Counter._handle` UAF fix).
+/// `Transferred` describes return and successor-argument ownership.
 ///   * `ContainerAbsorb` — an existing-container/store mutation retains
 ///     this operand while the caller still owns the producer temp ref. This
 ///     gives DropInsertion a shared release boundary for absorbed temps
@@ -12322,29 +12637,18 @@ pub enum OperandOwnership {
     Borrowed,
     Consumed,
     Transferred,
-    InteriorBorrowKeepAlive,
     ContainerAbsorb,
     ConditionalValidOnlyOnEdge,
     NoOperand,
 }
 
-// Parse/render path for the operand-ownership vocabulary. `Transferred`
-// is LIVE through `terminator_operand_ownership_table` (ladder #72) and
-// `InteriorBorrowKeepAlive` through `opcode_operand_ownership_table` /
-// `opcode_borrows_source_operand` (ladder #73); `from_str` remains the
-// toml-ingest path the LAST migration (the `conditional_valid_only_on_edge`
-// row, #74) reads and is not yet wired to a runtime caller, so
-// `from_str`/`as_str`/`ALL` keep allow(dead_code) — SCOPED to this
-// forward-compat parse API, never the enum (every variant is constructed)
-// nor the file. `ALL` + the round-trip test keep every variant constructed
-// and live today.
+// Parse/render path for the generated operand-ownership vocabulary.
 #[allow(dead_code)]
 impl OperandOwnership {
-    pub const ALL: [OperandOwnership; 7] = [
+    pub const ALL: [OperandOwnership; 6] = [
         OperandOwnership::Borrowed,
         OperandOwnership::Consumed,
         OperandOwnership::Transferred,
-        OperandOwnership::InteriorBorrowKeepAlive,
         OperandOwnership::ContainerAbsorb,
         OperandOwnership::ConditionalValidOnlyOnEdge,
         OperandOwnership::NoOperand,
@@ -12354,7 +12658,6 @@ impl OperandOwnership {
             OperandOwnership::Borrowed => "borrowed",
             OperandOwnership::Consumed => "consumed",
             OperandOwnership::Transferred => "transferred",
-            OperandOwnership::InteriorBorrowKeepAlive => "interior_borrow_keepalive",
             OperandOwnership::ContainerAbsorb => "container_absorb",
             OperandOwnership::ConditionalValidOnlyOnEdge => "conditional_valid_only_on_edge",
             OperandOwnership::NoOperand => "no_operand_ownership",
@@ -12365,7 +12668,6 @@ impl OperandOwnership {
             "borrowed" => Some(OperandOwnership::Borrowed),
             "consumed" => Some(OperandOwnership::Consumed),
             "transferred" => Some(OperandOwnership::Transferred),
-            "interior_borrow_keepalive" => Some(OperandOwnership::InteriorBorrowKeepAlive),
             "container_absorb" => Some(OperandOwnership::ContainerAbsorb),
             "conditional_valid_only_on_edge" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),
             "no_operand_ownership" => Some(OperandOwnership::NoOperand),
@@ -12437,13 +12739,10 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::StackAlloc => OperandOwnership::Borrowed,
         OpCode::ObjectNewBound => OperandOwnership::Borrowed,
         OpCode::Free => OperandOwnership::Borrowed,
-        OpCode::LoadAttr => OperandOwnership::InteriorBorrowKeepAlive,
+        OpCode::LoadAttr => OperandOwnership::Borrowed,
         OpCode::StoreAttr => OperandOwnership::Borrowed,
         OpCode::DelAttr => OperandOwnership::Borrowed,
-        OpCode::Index => match operand_idx {
-            0 => OperandOwnership::InteriorBorrowKeepAlive,
-            _ => OperandOwnership::Borrowed,
-        },
+        OpCode::Index => OperandOwnership::Borrowed,
         OpCode::StoreIndex => match operand_idx {
             0 => OperandOwnership::Borrowed,
             1 => OperandOwnership::Borrowed,
@@ -12476,8 +12775,12 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::AllocTask => OperandOwnership::Borrowed,
         OpCode::StateSwitch => OperandOwnership::Borrowed,
         OpCode::StateTransition => OperandOwnership::Borrowed,
+        OpCode::StateSet => OperandOwnership::Borrowed,
+        OpCode::IsPending => OperandOwnership::Borrowed,
+        OpCode::TaskWait => OperandOwnership::Borrowed,
         OpCode::StateYield => OperandOwnership::Borrowed,
         OpCode::ClosureLoad => OperandOwnership::Borrowed,
+        OpCode::FrameContextSet => OperandOwnership::Borrowed,
         OpCode::ClosureStore => OperandOwnership::Borrowed,
         OpCode::Yield => OperandOwnership::Borrowed,
         OpCode::YieldFrom => OperandOwnership::Borrowed,
@@ -12521,29 +12824,6 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
     }
 }
 
-/// The operand index whose backing store this op's result interior-borrows
-/// (design 27 §1.5 borrow-of edge): the operand position classified
-/// `OperandOwnership::InteriorBorrowKeepAlive`, or `None` if the op's result
-/// borrows into no operand. Derived from the per-OpCode `operand_ownership`
-/// row — the SINGLE declarative authority `op_borrow_source`
-/// (alias_analysis.rs) reads to build the `BorrowProvenance` keepalive
-/// relation, REPLACING the hand-coded
-/// `LoadAttr | Index` match (the round-6 `Counter._handle` UAF fix). The
-/// source object's drop is deferred to the borrow result's last use, so a
-/// finalizer that owns the backing store cannot run while the borrow lives.
-/// EXHAUSTIVE over the enum — a new interior-borrowing op is classified by a
-/// table edit, not a pass edit. At most one interior-borrow operand exists in
-/// molt's lowering today (the container/object at position 0); the first such
-/// position is returned.
-#[inline]
-pub fn opcode_borrows_source_operand(opcode: OpCode) -> Option<usize> {
-    match opcode {
-        OpCode::LoadAttr => Some(0),
-        OpCode::Index => Some(0),
-        _ => None,
-    }
-}
-
 /// The operand index retained by an existing container/store mutation.
 /// The op still borrows the operand for ABI/drop purposes; this fact only
 /// records that the container now owns its own reference, so a
@@ -12560,16 +12840,56 @@ pub fn opcode_container_absorbed_operand(opcode: OpCode) -> Option<usize> {
 
 /// Per-SPELLING consume override (design 27 §2.3): for a `Copy`-lifted op
 /// carrying `_original_kind = kind`, the 0-based index of the operand the
-/// op CONSUMES (frees internally), or `None` if it consumes none. `arity`
-/// is the op's operand count, used to resolve a `"last"` selector. The
-/// drop pass treats a value whose last use is the consumed-operand
-/// position exactly like a `Return` transfer — no trailing `DecRef`.
-/// Replaces the hand-coded `op_consumed_operand_root` match.
+/// op CONSUMES (frees internally, or moves into storage it owns, as a
+/// frame home store does), or `None` if it consumes none. `arity` is the
+/// op's operand count, used to resolve a `"last"` selector. The drop pass
+/// hands the op the value's own reference when nothing reads the value
+/// afterwards, ending a Python binding that held it, and a retained one
+/// otherwise; no trailing `DecRef` releases what the op took.
+/// Read by the ownership module's `op_transferred_operands`.
 #[inline]
 pub fn kind_consumed_operand_table(kind: &str, arity: usize) -> Option<usize> {
     match kind {
         "call_bind" => arity.checked_sub(1),
         "call_indirect" => arity.checked_sub(1),
+        "frame_home_store" => Some(0),
+        "frame_home_cell" => Some(0),
+        "frame_home_private_cell" => Some(0),
+        _ => None,
+    }
+}
+
+/// Per-SPELLING source call instruction (design 20 §1.6): the first operand
+/// position that a source Python call spelled `kind` may adopt through typed
+/// `argument_custody`, or `None` when the spelling adopts nothing. An earlier
+/// operand (a `super()` class) always stays borrowed.
+#[inline]
+pub fn kind_source_call_first_adopted_operand(kind: &str) -> Option<usize> {
+    match kind {
+        "call" => Some(0),
+        "call_internal" => Some(0),
+        "call_guarded" => Some(0),
+        "call_func" => Some(0),
+        "call_method" => Some(0),
+        "call_method_ic" => Some(0),
+        "call_super_method_ic" => Some(1),
+        "call_bind" => Some(0),
+        "call_indirect" => Some(0),
+        _ => None,
+    }
+}
+
+/// Per-SPELLING source call instruction (design 20 §1.6): the operand holding
+/// the callable. An ordinary call adopts it and an expanded call borrows it,
+/// so its custody follows the call form rather than the arguments'.
+#[inline]
+pub fn kind_source_call_callable_operand(kind: &str) -> Option<usize> {
+    match kind {
+        "call_guarded" => Some(0),
+        "call_func" => Some(0),
+        "call_method" => Some(0),
+        "call_bind" => Some(0),
+        "call_indirect" => Some(0),
         _ => None,
     }
 }
@@ -12657,7 +12977,7 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::BuildDict => true,
         OpCode::BuildTuple => true,
         OpCode::BuildSet => true,
-        OpCode::BuildSlice => false,
+        OpCode::BuildSlice => true,
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
@@ -12666,8 +12986,12 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
         OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
         OpCode::StateYield => false,
         OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
         OpCode::ClosureStore => false,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
@@ -12736,7 +13060,13 @@ pub fn kind_result_mints_owned_selected_operand_table(kind: &str) -> bool {
 pub fn kind_result_absorbs_operand_ownership_table(kind: &str) -> bool {
     matches!(
         kind,
-        "class_def" | "dict_new" | "frozenset_new" | "list_new" | "set_new" | "tuple_new"
+        "class_def"
+            | "dict_new"
+            | "frozenset_new"
+            | "list_new"
+            | "set_new"
+            | "slice_new"
+            | "tuple_new"
     )
 }
 
@@ -12840,8 +13170,12 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::AllocTask => ResultValidity::AlwaysValid,
         OpCode::StateSwitch => ResultValidity::AlwaysValid,
         OpCode::StateTransition => ResultValidity::AlwaysValid,
+        OpCode::StateSet => ResultValidity::AlwaysValid,
+        OpCode::IsPending => ResultValidity::AlwaysValid,
+        OpCode::TaskWait => ResultValidity::AlwaysValid,
         OpCode::StateYield => ResultValidity::AlwaysValid,
         OpCode::ClosureLoad => ResultValidity::AlwaysValid,
+        OpCode::FrameContextSet => ResultValidity::AlwaysValid,
         OpCode::ClosureStore => ResultValidity::AlwaysValid,
         OpCode::Yield => ResultValidity::AlwaysValid,
         OpCode::YieldFrom => ResultValidity::AlwaysValid,
@@ -12981,8 +13315,12 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::AllocTask => ExplicitReleaseOperands::None,
         OpCode::StateSwitch => ExplicitReleaseOperands::None,
         OpCode::StateTransition => ExplicitReleaseOperands::None,
+        OpCode::StateSet => ExplicitReleaseOperands::None,
+        OpCode::IsPending => ExplicitReleaseOperands::None,
+        OpCode::TaskWait => ExplicitReleaseOperands::None,
         OpCode::StateYield => ExplicitReleaseOperands::None,
         OpCode::ClosureLoad => ExplicitReleaseOperands::None,
+        OpCode::FrameContextSet => ExplicitReleaseOperands::None,
         OpCode::ClosureStore => ExplicitReleaseOperands::None,
         OpCode::Yield => ExplicitReleaseOperands::None,
         OpCode::YieldFrom => ExplicitReleaseOperands::None,

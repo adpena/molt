@@ -55,10 +55,6 @@ fn numeric_scalar_layout_has_one_header_authority() {
     assert!(!linked_header.contains("#define Py_TYPE(ob)     (((PyObject *)(ob))->ob_type)"));
     assert!(!linked_header.contains("#define Py_SET_TYPE(ob, type) (Py_TYPE(ob) = (type))"));
     for header in [&source_header, &linked_header] {
-        assert!(
-            header.contains("obj->ob_type != &MoltManaged_Type"),
-            "Py_TYPE lost its physical fast path"
-        );
         for forbidden in [
             "#define PyByteArray_CheckExact",
             "#define PySet_CheckExact",

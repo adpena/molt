@@ -7,9 +7,8 @@ pub(in crate::native_backend::simple_backend) struct NativeBackendIrAnalysis {
     pub(in crate::native_backend::simple_backend) closure_functions: BTreeSet<String>,
     pub(in crate::native_backend::simple_backend) task_kinds: BTreeMap<String, TrampolineKind>,
     pub(in crate::native_backend::simple_backend) task_closure_sizes: BTreeMap<String, i64>,
-    /// Functions that contain no user-level calls (call, call_guarded,
-    /// call_func, call_internal, call_indirect, call_bind, invoke_ffi).
-    /// These can skip the recursion guard on direct calls.
+    /// Final bodies with no synchronous Python callback site, including
+    /// protocol dispatch and lifetime releases. These can skip direct-call guards.
     pub(in crate::native_backend::simple_backend) leaf_functions: BTreeSet<String>,
 }
 
@@ -19,6 +18,10 @@ pub struct NativeFunctionLinkageAbi {
     /// Target-neutral source ABI frozen from the owning FunctionIR before
     /// partitioning. Consumer declarations must match it exactly.
     pub source_signature: crate::ir::ExternFunctionSignature,
+    /// Entry parameter custody frozen with the source signature (design 20
+    /// §1.6). A consumer declaration must carry it exactly, so a caller in one
+    /// object adopts precisely what the entry in another takes over.
+    pub parameter_custody: Vec<crate::ir::ParameterCustody>,
     /// Exact machine-carrier types frozen before the function set is split
     /// into independently compiled objects.
     pub param_types: Vec<crate::tir::types::TirType>,
@@ -36,8 +39,7 @@ pub struct NativeBackendModuleContext {
     pub(in crate::native_backend::simple_backend) closure_functions: BTreeSet<String>,
     pub(in crate::native_backend::simple_backend) task_kinds: BTreeMap<String, TrampolineKind>,
     pub(in crate::native_backend::simple_backend) task_closure_sizes: BTreeMap<String, i64>,
-    pub(in crate::native_backend::simple_backend) leaf_functions: BTreeSet<String>,
-    /// Whole-program linkage ABI authority shared by every batch worker.
+    /// Captured whole-program linkage ABI, dependency-projected into each job.
     /// Provider definitions and consumer declarations must read the same row;
     /// neither may reconstruct a machine signature from its local body subset.
     pub(in crate::native_backend::simple_backend) function_linkage_abis:
@@ -46,6 +48,87 @@ pub struct NativeBackendModuleContext {
 
 #[cfg(feature = "native-backend")]
 impl NativeBackendModuleContext {
+    /// Exact names whose context rows this object can consume. The generated
+    /// defined-function edges include indirect/name-taking and task references;
+    /// callable metadata contributes runtime callable constructors as well.
+    /// No sibling symbol is inferred from a spelling convention.
+    pub fn object_dependencies(functions: &[FunctionIR]) -> BTreeSet<String> {
+        let mut names: BTreeSet<String> = functions.iter().map(|f| f.name.clone()).collect();
+        for function in functions {
+            for op in &function.ops {
+                if crate::tir::op_kinds_generated::simpleir_kind_references_defined_function(
+                    &op.kind,
+                ) && let Some(name) = op.s_value.as_ref()
+                {
+                    names.insert(name.clone());
+                }
+            }
+        }
+        names.extend(
+            molt_tir::trampolines::CallableMetadata::from_functions(functions)
+                .escaped_callable_targets,
+        );
+        names
+    }
+
+    /// Produce the context actually transported to, hashed for, and consumed by
+    /// one native object job. Unrelated whole-program rows never reach codegen.
+    /// Every field is explicitly destructured so adding context state requires
+    /// deciding its projection here rather than silently omitting a new input.
+    pub fn project_object_dependencies(&self, names: &BTreeSet<String>) -> Self {
+        let Self {
+            partition_sources,
+            function_arities,
+            function_has_ret,
+            closure_functions,
+            task_kinds,
+            task_closure_sizes,
+            function_linkage_abis,
+        } = self;
+        let mut origins = BTreeMap::new();
+        for name in names {
+            let mut current = name.as_str();
+            let mut chain = BTreeSet::new();
+            while let Some(origin) = partition_sources.get(current) {
+                assert!(
+                    chain.insert(current),
+                    "cyclic native partition source for {name}"
+                );
+                origins.insert(current.to_string(), origin.clone());
+                current = origin;
+            }
+        }
+        Self {
+            partition_sources: origins,
+            function_arities: function_arities
+                .iter()
+                .filter(|(name, _)| names.contains(*name))
+                .map(|(name, row)| (name.clone(), *row))
+                .collect(),
+            function_has_ret: function_has_ret
+                .iter()
+                .filter(|(name, _)| names.contains(*name))
+                .map(|(name, row)| (name.clone(), *row))
+                .collect(),
+            closure_functions: closure_functions.intersection(names).cloned().collect(),
+            task_kinds: task_kinds
+                .iter()
+                .filter(|(name, _)| names.contains(*name))
+                .map(|(name, row)| (name.clone(), *row))
+                .collect(),
+            task_closure_sizes: task_closure_sizes
+                .iter()
+                .filter(|(name, _)| names.contains(*name))
+                .map(|(name, row)| (name.clone(), *row))
+                .collect(),
+            function_linkage_abis: function_linkage_abis
+                .iter()
+                .filter(|(name, _)| names.contains(*name))
+                .map(|(name, row)| (name.clone(), row.clone()))
+                .collect(),
+        }
+    }
+
     pub fn original_function_name<'a>(&'a self, name: &'a str) -> &'a str {
         original_partition_source(name, &self.partition_sources)
     }
@@ -90,6 +173,12 @@ impl NativeBackendModuleContext {
                     function.name, signature, linkage_abi.source_signature
                 ));
             }
+            if function.parameter_custody != linkage_abi.parameter_custody {
+                return Err(format!(
+                    "function `{}` parameter custody {:?} disagrees with frozen native linkage custody {:?}",
+                    function.name, function.parameter_custody, linkage_abi.parameter_custody
+                ));
+            }
         }
         Ok(())
     }
@@ -118,10 +207,9 @@ impl NativeBackendModuleContext {
                 function.name
             );
         }
-        // Lower each owned body exactly once. The same transient TIR snapshot
-        // authors both the call-graph leaf facts and the exact machine ABI;
-        // rebuilding it for each analysis doubled mandatory O(IR) work and
-        // allocations on every native compilation.
+        // Freeze the source machine ABI before partitioning. These bodies have
+        // not completed worker lifetime finalization and cannot certify leaves.
+        // Final callback effects are derived only by the codegen worker.
         let tir_functions: Vec<crate::tir::TirFunction> = functions
             .iter()
             .filter(|function| !function.is_extern)
@@ -143,19 +231,13 @@ impl NativeBackendModuleContext {
                     function.name.clone(),
                     NativeFunctionLinkageAbi {
                         source_signature,
+                        parameter_custody: function.parameter_custody.clone(),
                         param_types,
                         return_type,
                     },
                 )
             })
             .collect();
-        let leaf_functions = compute_leaf_functions_from_tir(tir_functions);
-        if !leaf_functions.is_empty() {
-            eprintln!(
-                "MOLT_BACKEND: leaf functions (skip recursion guard): {} detected",
-                leaf_functions.len()
-            );
-        }
         let context = Self {
             partition_sources,
             function_arities: functions
@@ -171,7 +253,6 @@ impl NativeBackendModuleContext {
                 .collect(),
             task_kinds: source_callables.task_kinds,
             task_closure_sizes: source_callables.task_closure_sizes,
-            leaf_functions,
             function_linkage_abis,
         };
         if let Some(started) = started {
@@ -196,11 +277,11 @@ impl NativeBackendModuleContext {
 ///
 /// Source callable facts arrive from pipeline custody. Final bodies contribute
 /// constructor/escape facts only; lowered marker operands cannot re-author
-/// source task facts. `compute_leaves` controls the final TIR call-graph lift.
+/// source task facts. Callback/leaf facts always come from these final bodies;
+/// pre-pipeline shared context never supplies or overrides them.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
     ir: &SimpleIR,
-    compute_leaves: bool,
     mut callable_metadata: molt_tir::trampolines::CallableMetadata,
 ) -> NativeBackendIrAnalysis {
     let functions = &ir.functions;
@@ -229,18 +310,13 @@ pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
     // carried), and it conservatively treats dynamic dispatch (`CallMethod`) and
     // indirect/opaque calls as recursion-capable  never marking a function that
     // retains a call as a leaf. See `tir::call_graph` and `tir::module_phase`.
-    let leaf_functions = if compute_leaves {
-        let leaves = compute_leaf_functions_via_call_graph(functions);
-        if !leaves.is_empty() {
-            eprintln!(
-                "MOLT_BACKEND: leaf functions (skip recursion guard): {} detected",
-                leaves.len()
-            );
-        }
-        leaves
-    } else {
-        BTreeSet::new()
-    };
+    let leaf_functions = compute_leaf_functions_via_call_graph(functions);
+    if !leaf_functions.is_empty() {
+        eprintln!(
+            "MOLT_BACKEND: final-body leaf functions (skip recursion guard): {} detected",
+            leaf_functions.len()
+        );
+    }
 
     NativeBackendIrAnalysis {
         defined_functions,
@@ -262,7 +338,7 @@ pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
 ///
 /// `run_module_pipeline` runs the **E1 inliner** (a body transform) and already
 /// ran earlier in `compile`  the `FunctionIR`s analyzed HERE are the
-/// post-inline, post-`split_megafunctions` program. The leaf set gates the
+/// post-inline, post-lifetime-finalization, post-`split_megafunctions` program. The leaf set gates the
 /// recursion-guard skip at call sites in the *emitted* code, so it must
 /// describe exactly this final function set (megafunction chunk functions
 /// included), which the pre-split `ModuleAnalysis` cannot. Re-running the full
@@ -290,9 +366,23 @@ pub(in crate::native_backend::simple_backend) fn compute_leaf_functions_via_call
 fn compute_leaf_functions_from_tir(
     tir_functions: Vec<crate::tir::TirFunction>,
 ) -> BTreeSet<String> {
+    // A TIR callback graph cannot see releases later minted by legacy native
+    // value tracking. Only the full lifetime-finalization fact disables that
+    // competing authority (including line/branch/return cleanup). The narrower
+    // exception-region marker does not qualify. Unfinalized bodies keep guards.
     let module = crate::tir::TirModule {
         name: "native_leaf_analysis".to_string(),
-        functions: tir_functions,
+        functions: tir_functions
+            .into_iter()
+            .filter(|function| {
+                matches!(
+                    function
+                        .attrs
+                        .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+                    Some(crate::tir::ops::AttrValue::Bool(true)),
+                )
+            })
+            .collect(),
     };
     crate::tir::CallGraph::build(&module).leaf_functions()
 }
@@ -336,28 +426,62 @@ pub(in crate::native_backend::simple_backend) fn merge_function_has_ret(
     merged
 }
 
-/// Union the whole-program `closure_functions` set (carried in the module
-/// context across batches) with the CURRENT batch's local scan.
-///
-/// SOUNDNESS  why this must be a union, not a replace (the bug class fixed in
-/// design-20 finding #3C activation): `closure_functions` decides whether a
-/// `call_guarded`/`call`/`call_internal` site extracts the closure env from the
-/// callee function object and prepends it as arg 0 (`function_compiler.rs`
-/// "extract env from function object"). It is keyed by the names that appear in
-/// `func_new_closure(name)` ops. The module context is built ONCE per
-/// compilation unit  for the stdlib cache it is built from the stdlib
-/// functions ONLY (`main.rs` `stdlib_module_context`), so it does NOT contain a
-/// user program's closures. When a batch that DEFINES a user closure is
-/// compiled with that (stdlib) module context set, REPLACING the local scan
-/// dropped the user closure from the set  the call site skipped env extraction
-///  the callee received a garbage/zero closure  `'object' object is not
-/// subscriptable` when it indexed its cell tuple. The local scan ALWAYS knows
-/// the closures defined in this batch; the module context adds cross-batch
-/// knowledge. Both are required, exactly like `merge_function_arities` /
-/// `merge_function_has_ret` already do for their maps. (This asymmetry was
-/// latent until RC drop insertion shifted function sizes enough to change which
-/// batch the user code landed in; the bug is the replace semantics, not the
-/// drops.)
+/// The entry custody of every function a `func_new` can name, each from its
+/// own parameter declaration: the whole-program linkage rows, then
+/// `functions`, bodies and extern declarations alike. Nothing is inferred for
+/// a function without a declaration; lowering a `func_new` that names one
+/// fails.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::simple_backend) fn merge_function_entry_custody(
+    module_context: Option<&NativeBackendModuleContext>,
+    functions: &[FunctionIR],
+) -> BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration> {
+    fn declare(
+        signature: &crate::ir::ExternFunctionSignature,
+        custody: &[crate::ir::ParameterCustody],
+    ) -> molt_codegen_abi::EntryCustodyDeclaration {
+        let transferred: Vec<bool> = custody
+            .iter()
+            .map(|custody| matches!(custody, crate::ir::ParameterCustody::Transferred))
+            .collect();
+        molt_codegen_abi::EntryCustodyDeclaration::declare(
+            signature.has_closure,
+            signature.arity,
+            &transferred,
+        )
+    }
+    let mut merged: BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration> = module_context
+        .map(|context| {
+            context
+                .function_linkage_abis
+                .iter()
+                .map(|(name, row)| {
+                    (
+                        name.clone(),
+                        declare(&row.source_signature, &row.parameter_custody),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for function in functions {
+        let signature = function
+            .function_signature()
+            .unwrap_or_else(|error| panic!("invalid native function declaration: {error}"));
+        merged.insert(
+            function.name.clone(),
+            declare(&signature, &function.parameter_custody),
+        );
+    }
+    merged
+}
+
+/// Union the job's projected source closure facts with its final local scan.
+/// NativeBackendModuleContext is captured before user/stdlib separation, then
+/// each object retains its exact dependency rows. Local transformations may
+/// add definitions or remove constructors, so neither source custody nor final
+/// local facts can replace the other. Calls and function-object constructors
+/// consume the same retained target identity across batch boundaries.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) fn merge_closure_functions(
     module_context: Option<&NativeBackendModuleContext>,
@@ -407,29 +531,6 @@ pub(in crate::native_backend::simple_backend) fn merge_task_closure_sizes(
         local_task_closure_sizes,
         "callable closure size",
     );
-    merged
-}
-
-/// Union the whole-program leaf-function set (functions with no user-level
-/// calls, eligible to skip the recursion guard on direct calls) with the
-/// current batch's local scan.
-///
-/// Leaf-ness is an intrinsic per-function property (does the body contain a
-/// call?), so the two sets agree on any shared name; the union simply ensures a
-/// function defined only in THIS batch is not lost when a module context built
-/// from a different function set (e.g. the stdlib cache) is active. Missing a
-/// genuine leaf from the set is only a perf regression (an unnecessary recursion
-/// guard), never a miscompile  but the union keeps the fast path firing for the
-/// current batch's own leaves, matching the other merged metadata.
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::simple_backend) fn merge_leaf_functions(
-    module_context: Option<&NativeBackendModuleContext>,
-    local_leaf_functions: BTreeSet<String>,
-) -> BTreeSet<String> {
-    let mut merged = module_context
-        .map(|context| context.leaf_functions.clone())
-        .unwrap_or_default();
-    merged.extend(local_leaf_functions);
     merged
 }
 

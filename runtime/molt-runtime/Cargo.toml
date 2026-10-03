@@ -114,7 +114,9 @@ stdlib_crypto_legacy = [
 stdlib_compression = ["dep:bzip2", "dep:flate2", "dep:xz2", "dep:molt-runtime-compression"]
 stdlib_serialization = ["dep:rmpv", "dep:serde_cbor"]
 stdlib_archive = ["dep:zip", "stdlib_serial"]
-stdlib_ast = ["dep:rustpython-parser"]
+# Gates the Python ast APIs. The parser also owns traceback expression ranges
+# for every profile; diagnostics must not substitute punctuation heuristics.
+stdlib_ast = []
 stdlib_fs_extra = ["dep:glob", "dep:tempfile"]
 # Granular domain feature gates for resolve_symbol: when disabled, the
 # linker can strip the implementation code for unused domains.
@@ -248,7 +250,7 @@ rmpv = { version = "1.3", optional = true }
 serde_cbor = { version = "0.11", optional = true }
 
 # Parsing
-rustpython-parser = { version = "0.4", default-features = false, features = ["location", "num-bigint"], optional = true }
+rustpython-parser = { version = "0.4", default-features = false, features = ["location", "num-bigint"] }
 
 # Glob/tempfile
 glob = { version = "0.3", optional = true }
@@ -273,6 +275,7 @@ os_pipe = "1.2"
 libloading = { version = "0.8", optional = true }
 
 [dev-dependencies]
+molt-cpython-abi-test-support = { path = "../molt-cpython-abi-test-support" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", features = ["runtime-test-support"] }
 cc = "1"
@@ -286,6 +289,7 @@ getrandom_legacy = { package = "getrandom", version = "0.2", features = ["js"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",

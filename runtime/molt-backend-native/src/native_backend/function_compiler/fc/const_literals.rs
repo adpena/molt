@@ -1,6 +1,7 @@
 use super::super::*;
 use super::OpFlow;
 use crate::tir::simple_def_use::simple_ir_out_result;
+use molt_ir::literal_payload::required_simple_literal_bytes;
 
 /// Single-source kind authority for [`handle_const_literal_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Integer aliases use the same generated
@@ -39,21 +40,6 @@ pub(in crate::native_backend::function_compiler) fn native_int_literal_fits_inli
     val: i64,
 ) -> bool {
     molt_codegen_abi::fits_inline_int(val)
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn require_const_str_payload(op: &OpIR) -> &[u8] {
-    op.bytes.as_deref().unwrap_or_else(|| {
-        op.s_value
-            .as_deref()
-            .unwrap_or_else(|| {
-                panic!(
-                    "const_str missing bytes or string payload for output `{}`",
-                    op.out.as_deref().unwrap_or("<missing>")
-                )
-            })
-            .as_bytes()
-    })
 }
 
 #[cfg(feature = "native-backend")]
@@ -293,7 +279,7 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
     for op in &func_ir.ops {
         match literal_kind(&op.kind) {
             "const_str" => {
-                let bytes = require_const_str_payload(op).to_vec();
+                let bytes = required_simple_literal_bytes(op).to_vec();
                 let out_name = match simple_ir_out_result(op) {
                     Some(n) => n.to_string(),
                     None => continue,
@@ -303,7 +289,7 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
                 }
             }
             "const_bytes" => {
-                let bytes = op.bytes.as_ref().expect("Bytes not found").clone();
+                let bytes = required_simple_literal_bytes(op).to_vec();
                 let out_name = match simple_ir_out_result(op) {
                     Some(n) => n.to_string(),
                     None => continue,
@@ -313,12 +299,7 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
                 }
             }
             "const_bigint" => {
-                let bytes = op
-                    .s_value
-                    .as_ref()
-                    .expect("BigInt string not found")
-                    .as_bytes()
-                    .to_vec();
+                let bytes = required_simple_literal_bytes(op).to_vec();
                 let out_name = match simple_ir_out_result(op) {
                     Some(n) => n.to_string(),
                     None => continue,
@@ -360,7 +341,7 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
     let mut str_output_slots = BTreeMap::new();
     for op in &func_ir.ops {
         if op.kind == "const_str" {
-            let bytes = require_const_str_payload(op);
+            let bytes = required_simple_literal_bytes(op);
             if let Some(ref out) = op.out
                 && let Some(&slot) = const_str_slots.get(bytes)
             {
@@ -493,11 +474,10 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             }
         }
         "const_bigint" => {
-            let s = op.s_value.as_ref().expect("BigInt string not found");
+            let bytes = required_simple_literal_bytes(op);
             let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
-            let bytes = s.as_bytes();
             let slot = hoists
                 .const_bigint_slots
                 .get(bytes)
@@ -564,7 +544,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             }
         }
         "const_str" => {
-            let bytes = require_const_str_payload(op);
+            let bytes = required_simple_literal_bytes(op);
             let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
@@ -577,7 +557,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             def_var_named(builder, vars, out_name, boxed);
         }
         "const_bytes" => {
-            let bytes = op.bytes.as_ref().expect("Bytes not found");
+            let bytes = required_simple_literal_bytes(op);
             let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };

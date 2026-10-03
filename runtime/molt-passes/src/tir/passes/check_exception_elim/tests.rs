@@ -114,6 +114,38 @@ fn make_func_with_block(ops: Vec<TirOp>) -> TirFunction {
     }
 }
 
+#[test]
+fn aggregate_allocation_and_callback_failures_keep_their_exception_checks() {
+    for opcode in [
+        OpCode::BuildList,
+        OpCode::BuildTuple,
+        OpCode::BuildDict,
+        OpCode::BuildSet,
+        OpCode::BuildSlice,
+    ] {
+        let mut function = make_func_with_block(vec![
+            make_check_exception(),
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: vec![],
+                results: vec![ValueId(0)],
+                attrs: AttrDict::new(),
+                source_span: None,
+            },
+            make_check_exception(),
+        ]);
+        run(&mut function);
+        let ops = &function.blocks[&function.entry_block].ops;
+        let allocation = ops.iter().position(|op| op.opcode == opcode).unwrap();
+        assert_eq!(
+            ops[allocation + 1].opcode,
+            OpCode::CheckException,
+            "{opcode:?} can fail even with no elements"
+        );
+    }
+}
+
 fn make_two_block_func(entry_ops: Vec<TirOp>, successor_ops: Vec<TirOp>) -> TirFunction {
     let entry_id = BlockId(0);
     let successor_id = BlockId(1);

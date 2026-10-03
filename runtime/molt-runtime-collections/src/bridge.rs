@@ -137,11 +137,6 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_collections_string_data(
-        ptr: *mut u8,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
     fn __molt_collections_attr_name_bits_from_bytes(
         name_ptr: *const u8,
         name_len: usize,
@@ -176,20 +171,6 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     } else {
         None
     }
-}
-
-/// # Safety
-///
-/// `ptr` must refer to a live Molt string object for the duration of the
-/// returned borrow.
-pub unsafe fn string_data(ptr: *mut u8) -> Option<&'static [u8]> {
-    let mut out_ptr: *const u8 = std::ptr::null();
-    let mut out_len: usize = 0;
-    let ok = unsafe { __molt_collections_string_data(ptr, &mut out_ptr, &mut out_len) };
-    if ok == 0 || out_ptr.is_null() {
-        return None;
-    }
-    Some(unsafe { std::slice::from_raw_parts(out_ptr, out_len) })
 }
 
 pub fn attr_name_bits_from_bytes(_py: &CoreGilToken, name: &[u8]) -> Option<u64> {
@@ -390,22 +371,15 @@ pub unsafe fn dict_order_clone(_py: &CoreGilToken, ptr: *mut u8) -> Vec<u64> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_collections_obj_eq(lhs_bits: u64, rhs_bits: u64) -> i32;
+    fn __molt_collections_compare_eq(lhs_bits: u64, rhs_bits: u64) -> i32;
 }
 
-pub fn obj_eq(_py: &CoreGilToken, lhs: MoltObject, rhs: MoltObject) -> bool {
-    unsafe { __molt_collections_obj_eq(lhs.bits(), rhs.bits()) != 0 }
-}
-
-unsafe extern "C" {
-    fn __molt_collections_ensure_key_hashable(key_bits: u64, ctx_code: u64) -> i32;
-}
-
-/// Returns true if `key` is hashable; false (with a pending CPython-identical
-/// TypeError) otherwise. `ctx_code`: 0 = bare (element-counting paths), 2 = dict
-/// key (direct key access / mapping pairs; gets the 3.14 context message).
-pub fn ensure_key_hashable(_py: &CoreGilToken, key_bits: u64, ctx_code: u64) -> bool {
-    unsafe { __molt_collections_ensure_key_hashable(key_bits, ctx_code) != 0 }
+pub fn compare_eq(_py: &CoreGilToken, lhs: MoltObject, rhs: MoltObject) -> Result<bool, ()> {
+    match unsafe { __molt_collections_compare_eq(lhs.bits(), rhs.bits()) } {
+        1 => Ok(true),
+        0 => Ok(false),
+        _ => Err(()),
+    }
 }
 
 // ---------------------------------------------------------------------------

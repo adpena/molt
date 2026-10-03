@@ -12,16 +12,104 @@ use super::ops::{
     as_float_extended, call_binary_dunder, call_inplace_dunder, concat_bytes_like,
     fill_repeated_bytes, float_result_bits, is_float_extended,
 };
+use super::ops_sys::runtime_target_at_least;
+use crate::builtins::numbers::{ComplexArith, complex_arith, complex_operand};
 
+pub(crate) mod native_slots;
 mod percent_format;
 
 use percent_format::string_percent_format_impl;
 
+/// `lhs <op> rhs` for a complex and a complex, float or int operand, computed
+/// as complex arithmetic computes it for the target Python; `None` for any
+/// other operand, which the binary-operator protocol dispatches.
+fn complex_binary_payload(
+    _py: &PyToken<'_>,
+    op: ComplexArith,
+    lhs: MoltObject,
+    rhs: MoltObject,
+) -> Option<u64> {
+    let (lhs, rhs) = match (complex_operand(_py, lhs), complex_operand(_py, rhs)) {
+        (Ok(Some(lhs)), Ok(Some(rhs))) => (lhs, rhs),
+        (Err(()), _) | (_, Err(())) => {
+            return Some(raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "int too large to convert to float",
+            ));
+        }
+        _ => return None,
+    };
+    Some(
+        match complex_arith(op, lhs, rhs, runtime_target_at_least(_py, 3, 14)) {
+            Some(value) => complex_bits(_py, value.re, value.im),
+            None => raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero"),
+        },
+    )
+}
+
+/// Physical numeric fast paths are valid only before subtype slot dispatch.
+fn builtin_operand(py: &PyToken<'_>, obj: MoltObject) -> bool {
+    obj.as_ptr()
+        .is_none_or(|ptr| unsafe { crate::object::iterable::builtin_receiver(py, ptr) })
+}
+
+/// Float storage alone cannot admit a numeric fast path before subtype
+/// dispatch. Both numeric operands enter the existing reflected-method
+/// authority; inherited float descriptors normalize payloads and re-enter only
+/// exact-builtin arithmetic. A declined override never silently becomes a
+/// payload operation, and no user method is called a second time.
+pub(super) fn float_subtype_binary_result(
+    py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    method: &[u8],
+    reflected: &[u8],
+    symbol: &str,
+) -> Option<u64> {
+    if builtin_operand(py, lhs) && builtin_operand(py, rhs) {
+        return None;
+    }
+    let left_float = is_float_extended(lhs);
+    let right_float = is_float_extended(rhs);
+    let integer = |value: MoltObject| {
+        crate::builtins::numbers::index_bigint_integral_bits(value.bits()).is_some()
+    };
+    if !(left_float || right_float)
+        || !(left_float || integer(lhs))
+        || !(right_float || integer(rhs))
+    {
+        return None;
+    }
+    let Some(method) = attr_name_bits_from_bytes(py, method) else {
+        return Some(MoltObject::none().bits());
+    };
+    let Some(reflected) = attr_name_bits_from_bytes(py, reflected) else {
+        dec_ref_bits(py, method);
+        return Some(MoltObject::none().bits());
+    };
+    let result = unsafe { call_binary_dunder(py, lhs.bits(), rhs.bits(), method, reflected) };
+    dec_ref_bits(py, reflected);
+    dec_ref_bits(py, method);
+    Some(result.unwrap_or_else(|| binary_type_error(py, lhs, rhs, symbol)))
+}
+
+fn complex_binary(
+    py: &PyToken<'_>,
+    op: ComplexArith,
+    lhs: MoltObject,
+    rhs: MoltObject,
+) -> Option<u64> {
+    if !builtin_operand(py, lhs) || !builtin_operand(py, rhs) {
+        return None;
+    }
+    complex_binary_payload(py, op, lhs, rhs)
+}
 fn is_number_for_concat(obj: MoltObject) -> bool {
     if is_float_extended(obj) {
         return true;
     }
-    if to_i64(obj).is_some() {
+    if index_i64_integral_bits(obj.bits()).is_some() {
         return true;
     }
     if bigint_ptr_from_bits(obj.bits()).is_some() {
@@ -44,7 +132,11 @@ pub extern "C" fn molt_str_concat(lhs_bits: u64, rhs_bits: u64) -> u64 {
         let rhs = obj_from_bits(rhs_bits);
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
             unsafe {
-                if object_type_id(lp) == TYPE_ID_STRING && object_type_id(rp) == TYPE_ID_STRING {
+                if object_type_id(lp) == TYPE_ID_STRING
+                    && object_type_id(rp) == TYPE_ID_STRING
+                    && crate::object::iterable::builtin_receiver(_py, lp)
+                    && crate::object::iterable::builtin_receiver(_py, rp)
+                {
                     let l_len = string_len(lp);
                     let r_len = string_len(rp);
                     let l_bytes = std::slice::from_raw_parts(string_bytes(lp), l_len);
@@ -69,6 +161,11 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
         // of checking every arithmetic op is unnecessary.
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        if let Some(result) = float_subtype_binary_result(
+            _py, lhs, rhs, b"__add__", b"__radd__", "+",
+        ) {
+            return result;
+        }
         // BigInt fast path — hoisted above inline int/float checks because
         // BigInt operands fail every is_int/is_float/to_i64 check before
         // reaching the pointer dispatch, wasting ~8 branch mispredictions
@@ -87,57 +184,38 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                 return bigint_bits(_py, res);
             }
         }
-        // Guard: skip int fast path if either operand is a float, because
-        // to_i64 coerces exact-integer floats (e.g. 2.0 -> 2).
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        // Integer-only projections exclude every float storage representation.
+        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             let res = li as i128 + ri as i128;
             return int_bits_from_i128(_py, res);
         }
         // Float fast path — second most common after int, moved before
         // as_ptr / bigint checks to avoid unnecessary pointer dereferences.
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return float_result_bits(_py, lf + rf);
+        match float_pair_from_obj(_py, lhs, rhs) {
+            Ok(Some((lf, rf))) => {
+                return float_result_bits(_py, lf + rf);
+            }
+            Err(()) => return MoltObject::none().bits(),
+            Ok(None) => {}
         }
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
             unsafe {
                 let ltype = object_type_id(lp);
                 let rtype = object_type_id(rp);
                 // BigInt+BigInt already handled above (hoisted fast path).
-                if ltype == TYPE_ID_STRING && rtype == TYPE_ID_STRING {
-                    let l_len = string_len(lp);
-                    let r_len = string_len(rp);
-                    let l_bytes = std::slice::from_raw_parts(string_bytes(lp), l_len);
-                    let r_bytes = std::slice::from_raw_parts(string_bytes(rp), r_len);
-                    if let Some(bits) = concat_bytes_like(_py, l_bytes, r_bytes, TYPE_ID_STRING) {
-                        return bits;
-                    }
-                    return MoltObject::none().bits();
+                if ltype == rtype
+                    && matches!(ltype, TYPE_ID_STRING | TYPE_ID_BYTES | TYPE_ID_BYTEARRAY)
+                    && builtin_operand(_py, lhs)
+                    && builtin_operand(_py, rhs)
+                {
+                    return native_slots::sequence_add(_py, a, b);
                 }
-                if ltype == TYPE_ID_BYTES && rtype == TYPE_ID_BYTES {
-                    let l_len = bytes_len(lp);
-                    let r_len = bytes_len(rp);
-                    let l_bytes = std::slice::from_raw_parts(bytes_data(lp), l_len);
-                    let r_bytes = std::slice::from_raw_parts(bytes_data(rp), r_len);
-                    if let Some(bits) = concat_bytes_like(_py, l_bytes, r_bytes, TYPE_ID_BYTES) {
-                        return bits;
-                    }
-                    return MoltObject::none().bits();
-                }
-                if ltype == TYPE_ID_BYTEARRAY && rtype == TYPE_ID_BYTEARRAY {
-                    let l_len = bytes_len(lp);
-                    let r_len = bytes_len(rp);
-                    let l_bytes = std::slice::from_raw_parts(bytes_data(lp), l_len);
-                    let r_bytes = std::slice::from_raw_parts(bytes_data(rp), r_len);
-                    if let Some(bits) = concat_bytes_like(_py, l_bytes, r_bytes, TYPE_ID_BYTEARRAY)
-                    {
-                        return bits;
-                    }
-                    return MoltObject::none().bits();
-                }
-                if ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST {
+                if ltype == TYPE_ID_LIST
+                    && rtype == TYPE_ID_LIST
+                    && crate::object::iterable::builtin_receiver(_py, lp)
+                    && crate::object::iterable::builtin_receiver(_py, rp)
+                {
                     let Some(combined) = crate::object::seq_access::snapshot_concat(
                         _py,
                         lp,
@@ -152,25 +230,16 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                     }
                     return MoltObject::from_ptr(ptr).bits();
                 }
-                if ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE {
-                    let l_len = tuple_len(lp);
-                    let r_len = tuple_len(rp);
-                    let mut combined = Vec::with_capacity(l_len + r_len);
-                    crate::object::seq_access::with_immutable_tuple_slice(lp, |items| {
-                        combined.extend_from_slice(items)
-                    });
-                    crate::object::seq_access::with_immutable_tuple_slice(rp, |items| {
-                        combined.extend_from_slice(items)
-                    });
-                    let ptr = alloc_tuple(_py, &combined);
-                    if ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(ptr).bits();
+                if ltype == TYPE_ID_TUPLE
+                    && rtype == TYPE_ID_TUPLE
+                    && builtin_operand(_py, lhs)
+                    && builtin_operand(_py, rhs)
+                {
+                    return native_slots::sequence_add(_py, a, b);
                 }
                 // Mixed BigInt + inline int: promote inline to BigInt ref-add
                 if ltype == TYPE_ID_BIGINT
-                    && let Some(ri) = to_i64(rhs)
+                    && let Some(ri) = index_i64_integral_bits(rhs.bits())
                 {
                     let l_ref = bigint_ref(lp);
                     let res: BigInt = l_ref + BigInt::from(ri);
@@ -180,7 +249,7 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                     return bigint_bits(_py, res);
                 }
                 if rtype == TYPE_ID_BIGINT
-                    && let Some(li) = to_i64(lhs)
+                    && let Some(li) = index_i64_integral_bits(lhs.bits())
                 {
                     let r_ref = bigint_ref(rp);
                     let res: BigInt = BigInt::from(li) + r_ref;
@@ -191,30 +260,17 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                 }
             }
         }
-        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
             let res = l_big + r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
             }
             return bigint_bits(_py, res);
         }
-        if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
-            match (
-                complex_from_obj_strict(_py, lhs),
-                complex_from_obj_strict(_py, rhs),
-            ) {
-                (Ok(Some(lc)), Ok(Some(rc))) => {
-                    return complex_bits(_py, lc.re + rc.re, lc.im + rc.im);
-                }
-                (Err(_), _) | (_, Err(_)) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "int too large to convert to float",
-                    );
-                }
-                _ => {}
-            }
+        if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+            && let Some(bits) = complex_binary(_py, ComplexArith::Add, lhs, rhs)
+        {
+            return bits;
         }
         unsafe {
             let add_name_bits =
@@ -248,7 +304,8 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 let ltype = object_type_id(ptr);
-                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_LIST_BOOL || ltype == TYPE_ID_LIST_INT
+                if matches!(ltype, TYPE_ID_LIST | TYPE_ID_LIST_BOOL | TYPE_ID_LIST_INT)
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
                 {
                     let _ = molt_list_extend(a, b);
                     if exception_pending(_py) {
@@ -257,7 +314,7 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                     inc_ref_bits(_py, a);
                     return a;
                 }
-                if ltype == TYPE_ID_STRING {
+                if ltype == TYPE_ID_STRING && crate::object::iterable::builtin_receiver(_py, ptr) {
                     // In-place string concat: O(n) amortised when refcount == 1.
                     let header = &mut *header_from_obj_ptr(ptr);
                     if header.is_uniquely_owned()
@@ -266,26 +323,35 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                         let rhs_obj = obj_from_bits(b);
                         if let Some(r_ptr) = rhs_obj.as_ptr()
                             && object_type_id(r_ptr) == TYPE_ID_STRING
+                            && crate::object::iterable::builtin_receiver(_py, r_ptr)
                         {
                             let l_len = string_len(ptr);
                             let r_len = string_len(r_ptr);
                             if let Some(content_len) = l_len.checked_add(r_len) {
-                                let needed = std::mem::size_of::<MoltHeader>()
-                                    + std::mem::size_of::<usize>()
-                                    + content_len;
+                                let Some(needed) =
+                                    super::layout::InlineBytesStorage::object_size(content_len)
+                                else {
+                                    record_memory_error_without_allocation(_py);
+                                    return MoltObject::none().bits();
+                                };
                                 let total_sz = super::total_size_from_header(header, ptr);
                                 if total_sz >= needed {
                                     // Fast: spare capacity — append in place, zero alloc
                                     let l_data = string_bytes(ptr) as *mut u8;
                                     let r_data = string_bytes(r_ptr);
                                     std::ptr::copy_nonoverlapping(r_data, l_data.add(l_len), r_len);
-                                    *(ptr as *mut usize) = l_len + r_len;
+                                    super::layout::InlineBytesStorage::set_len(ptr, content_len);
                                     super::object_set_state(ptr, 0); // invalidate hash
                                     inc_ref_bits(_py, a);
                                     return a;
                                 }
                                 // Slow: allocate 2x, amortised growth
-                                let new_cap = std::cmp::max(total_sz * 2, needed + 64);
+                                let new_cap = total_sz
+                                    .checked_mul(2)
+                                    .and_then(|doubled| {
+                                        needed.checked_add(64).map(|padded| doubled.max(padded))
+                                    })
+                                    .unwrap_or(needed);
                                 let new_ptr = alloc_object(_py, new_cap, TYPE_ID_STRING);
                                 if !new_ptr.is_null() {
                                     let l_data = string_bytes(ptr);
@@ -293,7 +359,10 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                                     let n_data = string_bytes(new_ptr) as *mut u8;
                                     std::ptr::copy_nonoverlapping(l_data, n_data, l_len);
                                     std::ptr::copy_nonoverlapping(r_data, n_data.add(l_len), r_len);
-                                    *(new_ptr as *mut usize) = l_len + r_len;
+                                    super::layout::InlineBytesStorage::set_len(
+                                        new_ptr,
+                                        content_len,
+                                    );
                                     // Caller dec-refs old LHS after storing result.
                                     return MoltObject::from_ptr(new_ptr).bits();
                                 }
@@ -302,7 +371,8 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                     }
                     // Fall through to regular add (concat)
                 }
-                if ltype == TYPE_ID_BYTEARRAY {
+                if ltype == TYPE_ID_BYTEARRAY && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     if bytearray_concat_in_place(_py, ptr, b) {
                         inc_ref_bits(_py, a);
                         return a;
@@ -339,6 +409,11 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        if let Some(result) = float_subtype_binary_result(
+            _py, lhs, rhs, b"__sub__", b"__rsub__", "-",
+        ) {
+            return result;
+        }
         // BigInt fast path — hoisted above inline int/float checks to avoid
         // wasted branch mispredictions when both operands are heap BigInts.
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
@@ -354,51 +429,46 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
                 return bigint_bits(_py, res);
             }
         }
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             let res = li as i128 - ri as i128;
             return int_bits_from_i128(_py, res);
         }
         // Float fast path — moved before bigint/as_ptr checks.
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return float_result_bits(_py, lf - rf);
+        match float_pair_from_obj(_py, lhs, rhs) {
+            Ok(Some((lf, rf))) => {
+                return float_result_bits(_py, lf - rf);
+            }
+            Err(()) => return MoltObject::none().bits(),
+            Ok(None) => {}
         }
-        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
             let res = l_big - r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
             }
             return bigint_bits(_py, res);
         }
-        if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
-            match (
-                complex_from_obj_strict(_py, lhs),
-                complex_from_obj_strict(_py, rhs),
-            ) {
-                (Ok(Some(lc)), Ok(Some(rc))) => {
-                    return complex_bits(_py, lc.re - rc.re, lc.im - rc.im);
-                }
-                (Err(_), _) | (_, Err(_)) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "int too large to convert to float",
-                    );
-                }
-                _ => {}
-            }
+        if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+            && let Some(bits) = complex_binary(_py, ComplexArith::Sub, lhs, rhs)
+        {
+            return bits;
         }
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
             unsafe {
                 let ltype = object_type_id(lp);
                 let rtype = object_type_id(rp);
-                if is_set_like_type(ltype) && is_set_like_type(rtype) {
+                if is_set_like_type(ltype)
+                    && is_set_like_type(rtype)
+                    && builtin_operand(_py, lhs)
+                    && builtin_operand(_py, rhs)
+                {
                     return set_like_difference(_py, lp, rp, ltype);
                 }
                 if (is_set_like_type(ltype) || is_set_view_type(ltype))
                     && (is_set_like_type(rtype) || is_set_view_type(rtype))
+                    && builtin_operand(_py, lhs)
+                    && builtin_operand(_py, rhs)
                 {
                     let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
                         (lp, None)
@@ -460,20 +530,27 @@ pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
-        // Guard: skip int fast path if either operand is a float, because
-        // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        // Integer-only projections exclude every float storage representation.
+        if builtin_operand(_py, lhs)
+            && builtin_operand(_py, rhs)
+            && let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             return int_bits_from_i128(_py, li as i128 - ri as i128);
         }
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return float_result_bits(_py, lf - rf);
+        if builtin_operand(_py, lhs) && builtin_operand(_py, rhs) {
+            match float_pair_from_obj(_py, lhs, rhs) {
+                Ok(Some((lf, rf))) => {
+                    return float_result_bits(_py, lf - rf);
+                }
+                Err(()) => return MoltObject::none().bits(),
+                Ok(None) => {}
+            }
         }
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_SET {
+                if object_type_id(ptr) == TYPE_ID_SET
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     let rhs = obj_from_bits(b);
                     let ok = rhs
                         .as_ptr()
@@ -501,12 +578,119 @@ pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
     })
 }
 
+/// The sequence-repeat index protocol and target Py_ssize_t boundary.
+/// This also admits negative counts before the caller clamps them to empty.
+
+/// Exact builtin sequences have sequence-repeat slots, not numeric multiply
+/// slots. Defer their repetition until the other operand's numeric method.
+fn exact_repeat_sequence(py: &PyToken<'_>, value: MoltObject) -> Option<*mut u8> {
+    let ptr = value.as_ptr()?;
+    unsafe {
+        let builtins = builtin_classes(py);
+        let builtin = match object_type_id(ptr) {
+            TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => builtins.list,
+            TYPE_ID_TUPLE => builtins.tuple,
+            TYPE_ID_STRING => builtins.str,
+            TYPE_ID_BYTES => builtins.bytes,
+            TYPE_ID_BYTEARRAY => builtins.bytearray,
+            _ => return None,
+        };
+        let class = object_class_bits(ptr);
+        (class == 0 || class == builtin).then_some(ptr)
+    }
+}
+
+fn sequence_other_numeric_method(
+    py: &PyToken<'_>,
+    other: u64,
+    sequence: u64,
+    reflected: bool,
+) -> Option<u64> {
+    let value = obj_from_bits(other);
+    if value.is_int()
+        || value.is_bool()
+        || bigint_ptr_from_bits(other).is_some_and(|ptr| unsafe {
+            let class = object_class_bits(ptr);
+            class == 0 || class == builtin_classes(py).int
+        })
+        || exact_repeat_sequence(py, value).is_some()
+    {
+        return None;
+    }
+    unsafe {
+        let name = if reflected {
+            intern_static_name(py, &runtime_state(py).interned.rmul_name, b"__rmul__")
+        } else {
+            intern_static_name(py, &runtime_state(py).interned.mul_name, b"__mul__")
+        };
+        let raw = obj_from_bits(type_of_bits(py, other))
+            .as_ptr()
+            .and_then(|class| class_attr_lookup_raw_mro(py, class, name));
+        if exception_pending(py) {
+            return Some(MoltObject::none().bits());
+        }
+        if native_slots::is_sequence_slot(raw) {
+            return None;
+        }
+        match super::ops::call_current_binary_dunder(py, other, sequence, name) {
+            super::ops::BinaryDunderOutcome::Value(bits) => Some(bits),
+            super::ops::BinaryDunderOutcome::Error => Some(MoltObject::none().bits()),
+            super::ops::BinaryDunderOutcome::NotImplemented
+            | super::ops::BinaryDunderOutcome::Missing => None,
+        }
+    }
+}
+
+pub(crate) fn sequence_repeat_count(py: &PyToken<'_>, bits: u64) -> Option<i64> {
+    if exception_pending(py) {
+        return None;
+    }
+    if let Some(value) = index_i64_integral_bits(bits) {
+        return match isize::try_from(value) {
+            Ok(value) => Some(value as i64),
+            Err(_) => raise_exception(
+                py,
+                "OverflowError",
+                "cannot fit 'int' into an index-sized integer",
+            ),
+        };
+    }
+    let name = type_name(py, obj_from_bits(bits));
+    let message = format!("can't multiply sequence by non-int of type '{name}'");
+    let value = index_bigint_from_obj(py, bits, &message)?;
+    value.to_isize().map(|value| value as i64).or_else(|| {
+        raise_exception(
+            py,
+            "OverflowError",
+            "cannot fit 'int' into an index-sized integer",
+        )
+    })
+}
+
 pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Option<u64> {
     unsafe {
         let type_id = object_type_id(ptr);
         if count <= 0 {
+            if type_id == TYPE_ID_LIST_INT {
+                return crate::object::builders::alloc_list_int_from_raw_slice(_py, &[])
+                    .ok()
+                    .map(|out| MoltObject::from_ptr(out).bits());
+            }
+            if type_id == TYPE_ID_LIST && crate::object::seq_access::len(ptr) == 1 {
+                let mut fill = 0;
+                if crate::object::seq_access::read_item_owned(ptr, 0, &mut fill) == 0 {
+                    return None;
+                }
+                let inline = crate::object::layout::InlineListInt::from_bits(fill).is_some();
+                dec_ref_bits(_py, fill);
+                if inline {
+                    return crate::object::builders::alloc_list_int_from_fill(_py, 0, fill)
+                        .ok()
+                        .map(|out| MoltObject::from_ptr(out).bits());
+                }
+            }
             let out_ptr = match type_id {
-                TYPE_ID_LIST | TYPE_ID_LIST_BOOL | TYPE_ID_LIST_INT => alloc_list(_py, &[]),
+                TYPE_ID_LIST | TYPE_ID_LIST_BOOL => alloc_list(_py, &[]),
                 TYPE_ID_TUPLE => alloc_tuple(_py, &[]),
                 TYPE_ID_STRING => alloc_string(_py, &[]),
                 TYPE_ID_BYTES => alloc_bytes(_py, &[]),
@@ -518,13 +702,28 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
             }
             return Some(MoltObject::from_ptr(out_ptr).bits());
         }
-        if count == 1 && type_id == TYPE_ID_TUPLE {
+        if count == 1
+            && type_id == TYPE_ID_TUPLE
+            && crate::object::iterable::builtin_receiver(_py, ptr)
+        {
             let bits = MoltObject::from_ptr(ptr).bits();
             inc_ref_bits(_py, bits);
             return Some(bits);
         }
 
-        let times = count as usize;
+        let times = match usize::try_from(count)
+            .ok()
+            .filter(|&count| count <= isize::MAX as usize)
+        {
+            Some(times) => times,
+            None => {
+                return raise_exception(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            }
+        };
         match type_id {
             TYPE_ID_LIST => {
                 let elems = crate::object::seq_access::snapshot(
@@ -562,42 +761,33 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     // Uses flat i64 backing store (no NaN-boxing per element),
                     // enabling direct memory loads in the native backend's inline
                     // getitem/setitem paths.
-                    if let Some(int_val) = val_obj.as_int() {
-                        return match crate::object::builders::alloc_list_int_filled(
-                            _py, total, int_val,
+                    if crate::object::layout::InlineListInt::from_bits(val).is_some() {
+                        return match crate::object::builders::alloc_list_int_from_fill(
+                            _py, total, val,
                         ) {
                             Ok(out_ptr) => Some(MoltObject::from_ptr(out_ptr).bits()),
                             Err(_) => None,
                         };
                     }
 
-                    // Single-element repeat: vec![val; total] compiles to
-                    // memset-like fill — O(n) memory writes, zero per-element
-                    // function calls.
-                    let combined = vec![val; total];
-                    // Use _owned variant: we handle refcounting ourselves in
-                    // batch instead of N individual inc_ref_bits calls.
-                    let out_ptr = alloc_list_with_capacity_owned(_py, &combined, total);
+                    // The canonical fill allocator retains each repeated owner.
+                    let out_ptr = crate::object::builders::alloc_list_filled(_py, total, val_obj);
                     if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                    }
-                    // Batch refcount: one atomic add instead of `total` adds.
-                    // For non-pointer values (bools, ints, floats, None),
-                    // is_heap_ref is false so we skip entirely — zero atomics.
-                    if crate::object::refcount_opt::is_heap_ref(val) {
-                        let obj_ptr = MoltObject::from_bits(val).as_ptr().unwrap();
-                        let header = header_from_obj_ptr(obj_ptr);
-                        let flags = (*header).load_synchronized_flags();
-                        (*header).retain_owned_mirrored(
-                            val,
-                            total,
-                            "list repeat batch retain",
-                            flags,
-                        );
+                        if !exception_pending(_py) {
+                            crate::record_memory_error_without_allocation(_py);
+                        }
+                        return None;
                     }
                     Some(MoltObject::from_ptr(out_ptr).bits())
                 } else {
-                    let mut combined = Vec::with_capacity(total);
+                    let mut combined = Vec::new();
+                    if combined.try_reserve_exact(total).is_err() {
+                        return raise_exception(
+                            _py,
+                            "MemoryError",
+                            "sequence repeat allocation failed",
+                        );
+                    }
                     for _ in 0..times {
                         combined.extend_from_slice(&elems);
                     }
@@ -636,7 +826,15 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                 };
                 if elems.len() == 1 {
                     let val = elems[0];
-                    let combined = vec![val; total];
+                    let mut combined = Vec::new();
+                    if combined.try_reserve_exact(total).is_err() {
+                        return raise_exception(
+                            _py,
+                            "MemoryError",
+                            "sequence repeat allocation failed",
+                        );
+                    }
+                    combined.resize(total, val);
                     let out_ptr = crate::object::builders::alloc_tuple_owned(_py, &combined);
                     if out_ptr.is_null() {
                         return raise_exception::<_>(_py, "MemoryError", "out of memory");
@@ -654,7 +852,14 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     }
                     Some(MoltObject::from_ptr(out_ptr).bits())
                 } else {
-                    let mut combined = Vec::with_capacity(total);
+                    let mut combined = Vec::new();
+                    if combined.try_reserve_exact(total).is_err() {
+                        return raise_exception(
+                            _py,
+                            "MemoryError",
+                            "sequence repeat allocation failed",
+                        );
+                    }
                     for _ in 0..times {
                         combined.extend_from_slice(elems);
                     }
@@ -676,7 +881,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                 if out_ptr.is_null() {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
-                let data_ptr = out_ptr.add(std::mem::size_of::<usize>());
+                let data_ptr = super::layout::InlineBytesStorage::data(out_ptr);
                 let out_slice = std::slice::from_raw_parts_mut(data_ptr, total);
                 fill_repeated_bytes(out_slice, bytes);
                 Some(MoltObject::from_ptr(out_ptr).bits())
@@ -692,7 +897,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                 if out_ptr.is_null() {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
-                let data_ptr = out_ptr.add(std::mem::size_of::<usize>());
+                let data_ptr = super::layout::InlineBytesStorage::data(out_ptr);
                 let out_slice = std::slice::from_raw_parts_mut(data_ptr, total);
                 fill_repeated_bytes(out_slice, bytes);
                 Some(MoltObject::from_ptr(out_ptr).bits())
@@ -704,7 +909,14 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     Some(total) => total,
                     None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
                 };
-                let mut out = Vec::with_capacity(total);
+                let mut out = Vec::new();
+                if out.try_reserve_exact(total).is_err() {
+                    return raise_exception(
+                        _py,
+                        "MemoryError",
+                        "sequence repeat allocation failed",
+                    );
+                }
                 for _ in 0..times {
                     out.extend_from_slice(bytes);
                 }
@@ -779,6 +991,32 @@ unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64)
     }
 }
 
+/// Mutate a sequence after count conversion and numeric dispatch have completed.
+/// Read the current physical layout: an index callback may have promoted a list.
+/// Successful publication retains the same receiver once for the owned result.
+pub(crate) fn repeat_sequence_in_place(py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Option<u64> {
+    unsafe {
+        let ok = match object_type_id(ptr) {
+            TYPE_ID_LIST => list_repeat_in_place(py, ptr, count),
+            TYPE_ID_LIST_BOOL | TYPE_ID_LIST_INT => {
+                crate::object::ops_list::promote_specialized_list_to_list(py, ptr);
+                if exception_pending(py) {
+                    return None;
+                }
+                list_repeat_in_place(py, ptr, count)
+            }
+            TYPE_ID_BYTEARRAY => bytearray_repeat_in_place(py, ptr, count),
+            _ => return None,
+        };
+        if !ok || exception_pending(py) {
+            return None;
+        }
+        let result = MoltObject::from_ptr(ptr).bits();
+        inc_ref_bits(py, result);
+        Some(result)
+    }
+}
+
 unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits: u64) -> bool {
     unsafe {
         let other = obj_from_bits(other_bits);
@@ -825,45 +1063,38 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
-        // Guard: skip int fast path if either operand is a float, because
-        // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        // Integer-only projections exclude every float storage representation.
+        if builtin_operand(_py, lhs)
+            && builtin_operand(_py, rhs)
+            && let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             return int_bits_from_i128(_py, li as i128 * ri as i128);
         }
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return float_result_bits(_py, lf * rf);
+        if builtin_operand(_py, lhs) && builtin_operand(_py, rhs) {
+            match float_pair_from_obj(_py, lhs, rhs) {
+                Ok(Some((lf, rf))) => {
+                    return float_result_bits(_py, lf * rf);
+                }
+                Err(()) => return MoltObject::none().bits(),
+                Ok(None) => {}
+            }
         }
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 let ltype = object_type_id(ptr);
-                if ltype == TYPE_ID_LIST
-                    || ltype == TYPE_ID_LIST_BOOL
-                    || ltype == TYPE_ID_LIST_INT
-                    || ltype == TYPE_ID_BYTEARRAY
+                if (matches!(ltype, TYPE_ID_LIST | TYPE_ID_LIST_BOOL | TYPE_ID_LIST_INT)
+                    && crate::object::iterable::builtin_receiver(_py, ptr))
+                    || (ltype == TYPE_ID_BYTEARRAY
+                        && crate::object::iterable::builtin_receiver(_py, ptr))
                 {
-                    let rhs_type = type_name(_py, obj_from_bits(b));
-                    let msg = format!("can't multiply sequence by non-int of type '{rhs_type}'");
-                    let count = index_i64_from_obj(_py, b, &msg);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
+                    if let Some(result) = sequence_other_numeric_method(_py, b, a, true) {
+                        return result;
                     }
-                    let ok = if ltype == TYPE_ID_LIST {
-                        list_repeat_in_place(_py, ptr, count)
-                    } else if ltype == TYPE_ID_LIST_BOOL || ltype == TYPE_ID_LIST_INT {
-                        // Promote specialized list to regular list, then repeat in-place.
-                        crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
-                        list_repeat_in_place(_py, ptr, count)
-                    } else {
-                        bytearray_repeat_in_place(_py, ptr, count)
+                    let Some(count) = sequence_repeat_count(_py, b) else {
+                        return MoltObject::none().bits();
                     };
-                    if !ok || exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    inc_ref_bits(_py, a);
-                    return a;
+                    return repeat_sequence_in_place(_py, ptr, count)
+                        .unwrap_or_else(|| MoltObject::none().bits());
                 }
             }
         }
@@ -887,6 +1118,11 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        if let Some(result) = float_subtype_binary_result(
+            _py, lhs, rhs, b"__mul__", b"__rmul__", "*",
+        ) {
+            return result;
+        }
         // BigInt fast path — hoisted to avoid wasted to_i64/is_float checks
         // when both operands are heap BigInts.
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
@@ -902,55 +1138,47 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
                 return bigint_bits(_py, res);
             }
         }
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             let res = li as i128 * ri as i128;
             return int_bits_from_i128(_py, res);
         }
         // Float fast path — moved before repeat_sequence/bigint checks.
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return float_result_bits(_py, lf * rf);
+        match float_pair_from_obj(_py, lhs, rhs) {
+            Ok(Some((lf, rf))) => {
+                return float_result_bits(_py, lf * rf);
+            }
+            Err(()) => return MoltObject::none().bits(),
+            Ok(None) => {}
         }
-        if let Some(count) = to_i64(lhs)
-            && let Some(ptr) = rhs.as_ptr()
-            && let Some(bits) = repeat_sequence(_py, ptr, count)
-        {
-            return bits;
+        // Python tries numeric multiplication before falling back to the
+        // sequence's index protocol. A callback may mutate the sequence, so
+        // retain no storage view across either protocol invocation.
+        let sequence = exact_repeat_sequence(_py, lhs)
+            .map(|ptr| (ptr, a, b, true))
+            .or_else(|| exact_repeat_sequence(_py, rhs).map(|ptr| (ptr, b, a, false)));
+        if let Some((ptr, sequence_bits, other, reflected)) = sequence {
+            if let Some(result) =
+                sequence_other_numeric_method(_py, other, sequence_bits, reflected)
+            {
+                return result;
+            }
+            let Some(count) = sequence_repeat_count(_py, other) else {
+                return MoltObject::none().bits();
+            };
+            return repeat_sequence(_py, ptr, count).unwrap_or_else(|| MoltObject::none().bits());
         }
-        if let Some(count) = to_i64(rhs)
-            && let Some(ptr) = lhs.as_ptr()
-            && let Some(bits) = repeat_sequence(_py, ptr, count)
-        {
-            return bits;
-        }
-        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
             let res = l_big * r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
             }
             return bigint_bits(_py, res);
         }
-        if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
-            match (
-                complex_from_obj_strict(_py, lhs),
-                complex_from_obj_strict(_py, rhs),
-            ) {
-                (Ok(Some(lc)), Ok(Some(rc))) => {
-                    let re = lc.re * rc.re - lc.im * rc.im;
-                    let im = lc.im * rc.re + lc.re * rc.im;
-                    return complex_bits(_py, re, im);
-                }
-                (Err(_), _) | (_, Err(_)) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "int too large to convert to float",
-                    );
-                }
-                _ => {}
-            }
+        if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+            && let Some(bits) = complex_binary(_py, ComplexArith::Mul, lhs, rhs)
+        {
+            return bits;
         }
         unsafe {
             let mul_name_bits =
@@ -1063,47 +1291,34 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        if let Some(result) = float_subtype_binary_result(
+            _py, lhs, rhs, b"__truediv__", b"__rtruediv__", err_op,
+        ) {
+            return result;
+        }
         // Python true division: int / int always returns float
-        // Guard: skip int fast path if either operand is a float, because
-        // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        // Integer-only projections exclude every float storage representation.
+        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             if ri == 0 {
                 return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
             }
             return float_result_bits(_py, li as f64 / ri as f64);
         }
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            if rf == 0.0 {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+        match float_pair_from_obj(_py, lhs, rhs) {
+            Ok(Some((lf, rf))) => {
+                if rf == 0.0 {
+                    return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+                }
+                return float_result_bits(_py, lf / rf);
             }
-            return float_result_bits(_py, lf / rf);
+            Err(()) => return MoltObject::none().bits(),
+            Ok(None) => {}
         }
-        if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
-            match (
-                complex_from_obj_strict(_py, lhs),
-                complex_from_obj_strict(_py, rhs),
-            ) {
-                (Ok(Some(lc)), Ok(Some(rc))) => {
-                    let denom = rc.re * rc.re + rc.im * rc.im;
-                    if denom == 0.0 {
-                        return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
-                    }
-                    let re = (lc.re * rc.re + lc.im * rc.im) / denom;
-                    let im = (lc.im * rc.re - lc.re * rc.im) / denom;
-                    return complex_bits(_py, re, im);
-                }
-                (Err(_), _) | (_, Err(_)) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "int too large to convert to float",
-                    );
-                }
-                _ => {}
-            }
+        if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+            && let Some(bits) = complex_binary(_py, ComplexArith::TrueDiv, lhs, rhs)
+        {
+            return bits;
         }
         // Integer true division where at least one operand is a BigInt that does
         // not fit i64 (the `to_i64` fast path above could not handle it). Python
@@ -1113,7 +1328,7 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         // dispatch. Floats and complexes are already handled above, so `to_bigint`
         // here only matches genuine integers.
         if (bigint_ptr_from_bits(a).is_some() || bigint_ptr_from_bits(b).is_some())
-            && let (Some(la), Some(lb)) = (to_bigint(lhs), to_bigint(rhs))
+            && let (Some(la), Some(lb)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()))
         {
             if lb.is_zero() {
                 return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
@@ -1178,8 +1393,12 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        let either_float = lhs.is_float() || rhs.is_float();
-        if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        if let Some(result) = float_subtype_binary_result(
+            _py, lhs, rhs, b"__floordiv__", b"__rfloordiv__", err_op,
+        ) {
+            return result;
+        }
+        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits())) {
             if ri == 0 {
                 return raise_exception::<_>(
                     _py,
@@ -1200,7 +1419,7 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 return int_bits_from_i64(_py, res);
             }
         }
-        if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
             if r_big.is_zero() {
                 return raise_exception::<_>(
                     _py,
@@ -1214,15 +1433,19 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             }
             return bigint_bits(_py, res);
         }
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            if rf == 0.0 {
-                return raise_exception::<_>(
-                    _py,
-                    "ZeroDivisionError",
-                    "float floor division by zero",
-                );
+        match float_pair_from_obj(_py, lhs, rhs) {
+            Ok(Some((lf, rf))) => {
+                if rf == 0.0 {
+                    return raise_exception::<_>(
+                        _py,
+                        "ZeroDivisionError",
+                        "float floor division by zero",
+                    );
+                }
+                return float_result_bits(_py, (lf / rf).floor());
             }
-            return float_result_bits(_py, (lf / rf).floor());
+            Err(()) => return MoltObject::none().bits(),
+            Ok(None) => {}
         }
         unsafe {
             let div_name_bits = intern_static_name(
@@ -1272,10 +1495,13 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        if let Some(result) = float_subtype_binary_result(
+            _py, lhs, rhs, b"__mod__", b"__rmod__", err_op,
+        ) {
+            return result;
+        }
         // Int fast path first — much more common than string % formatting.
-        // Skip if either operand is a float so that e.g. 7 % 2.0 returns 1.0 (float).
-        let either_float = lhs.is_float() || rhs.is_float();
-        if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits())) {
             if ri == 0 {
                 return raise_exception::<_>(
                     _py,
@@ -1300,20 +1526,14 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         // String % formatting — moved after int fast path.
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_STRING {
-                    let text = string_obj_to_owned(lhs).unwrap_or_default();
-                    let Some(rendered) = string_percent_format_impl(_py, &text, b) else {
-                        return MoltObject::none().bits();
-                    };
-                    let out_ptr = alloc_string(_py, rendered.as_bytes());
-                    if out_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(out_ptr).bits();
+                if object_type_id(ptr) == TYPE_ID_STRING
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
+                    return native_slots::string_mod_slot(a, b);
                 }
             }
         }
-        if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
             if r_big.is_zero() {
                 return raise_exception::<_>(
                     _py,
@@ -1327,15 +1547,19 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             }
             return bigint_bits(_py, res);
         }
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            if rf == 0.0 {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "float modulo");
+        match float_pair_from_obj(_py, lhs, rhs) {
+            Ok(Some((lf, rf))) => {
+                if rf == 0.0 {
+                    return raise_exception::<_>(_py, "ZeroDivisionError", "float modulo");
+                }
+                let mut rem = lf % rf;
+                if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
+                    rem += rf;
+                }
+                return float_result_bits(_py, rem);
             }
-            let mut rem = lf % rf;
-            if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
-                rem += rf;
-            }
-            return float_result_bits(_py, rem);
+            Err(()) => return MoltObject::none().bits(),
+            Ok(None) => {}
         }
         unsafe {
             let mod_name_bits =
@@ -1386,6 +1610,27 @@ fn complex_pow(base: ComplexParts, exp: ComplexParts) -> Result<ComplexParts, ()
     })
 }
 
+fn complex_power_payload(py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> Option<u64> {
+    match (
+        complex_from_obj_strict(py, lhs),
+        complex_from_obj_strict(py, rhs),
+    ) {
+        (Ok(Some(base)), Ok(Some(exp))) => Some(match complex_pow(base, exp) {
+            Ok(out) => complex_bits(py, out.re, out.im),
+            Err(()) => raise_exception(
+                py,
+                "ZeroDivisionError",
+                "zero to a negative or complex power",
+            ),
+        }),
+        (Err(_), _) | (_, Err(_)) => Some(raise_exception(
+            py,
+            "OverflowError",
+            "int too large to convert to float",
+        )),
+        _ => None,
+    }
+}
 fn pow_i64_checked(base: i64, exp: i64) -> Option<i64> {
     if exp < 0 {
         return None;
@@ -1499,36 +1744,20 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
-            match (
-                complex_from_obj_strict(_py, lhs),
-                complex_from_obj_strict(_py, rhs),
-            ) {
-                (Ok(Some(base)), Ok(Some(exp))) => {
-                    return match complex_pow(base, exp) {
-                        Ok(out) => complex_bits(_py, out.re, out.im),
-                        Err(()) => raise_exception::<_>(
-                            _py,
-                            "ZeroDivisionError",
-                            "zero to a negative or complex power",
-                        ),
-                    };
-                }
-                (Err(_), _) | (_, Err(_)) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "int too large to convert to float",
-                    );
-                }
-                _ => {}
-            }
+        if let Some(result) = float_subtype_binary_result(
+            _py, lhs, rhs, b"__pow__", b"__rpow__", err_op,
+        ) {
+            return result;
         }
-        // Guard: skip int fast path if either operand is a float, because
-        // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+            && builtin_operand(_py, lhs)
+            && builtin_operand(_py, rhs)
+            && let Some(result) = complex_power_payload(_py, lhs, rhs)
+        {
+            return result;
+        }
+        // Integer-only projections exclude every float storage representation.
+        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             if ri >= 0 {
                 if let Some(res) = pow_i64_checked(li, ri) {
@@ -1555,9 +1784,7 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             }
             return float_result_bits(_py, out);
         }
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs))
+        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()))
         {
             if let Some(exp) = r_big.to_u64() {
                 let res = l_big.pow(exp as u32);
@@ -1632,18 +1859,15 @@ pub extern "C" fn molt_inplace_pow(a: u64, b: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        // Public pow and the arithmetic primitive share the same None versus
+        // modular boundary; no Python facade owns a second dispatch rule.
+        if obj_from_bits(m).is_none() {
+            return pow_impl(_py, a, b, "**");
+        }
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let mod_obj = obj_from_bits(m);
-        // CPython rejects float arguments for 3-arg pow regardless of value.
-        if lhs.is_float() || rhs.is_float() || mod_obj.is_float() {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "pow() 3rd argument not allowed unless all arguments are integers",
-            );
-        }
-        if let (Some(li), Some(ri), Some(mi)) = (to_i64(lhs), to_i64(rhs), to_i64(mod_obj)) {
+        if let (Some(li), Some(ri), Some(mi)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()), index_i64_integral_bits(mod_obj.bits())) {
             let (base, exp, modulus) = (li as i128, ri, mi as i128);
             if modulus == 0 {
                 return raise_exception::<_>(_py, "ValueError", "pow() 3rd argument cannot be 0");
@@ -1666,7 +1890,7 @@ pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
             return int_bits_from_i128(_py, result);
         }
         if let (Some(base), Some(exp), Some(modulus)) =
-            (to_bigint(lhs), to_bigint(rhs), to_bigint(mod_obj))
+            (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(mod_obj.bits()))
         {
             if modulus.is_zero() {
                 return raise_exception::<_>(_py, "ValueError", "pow() 3rd argument cannot be 0");
@@ -1779,8 +2003,7 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
                 }
             }
         }
-        if !val.is_float()
-            && let Some(i) = to_i64(val)
+        if let Some(i) = index_i64_integral_bits(val.bits())
         {
             if !has_ndigits {
                 // Full-range boxing — `from_int` truncates a fit-i64 BigInt
@@ -1791,7 +2014,7 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
             if ndigits_obj.is_none() {
                 return int_bits_from_i64(_py, i);
             }
-            let Some(ndigits) = to_i64(ndigits_obj) else {
+            let Some(ndigits) = index_i64_integral_bits(ndigits_obj.bits()) else {
                 return raise_exception::<_>(_py, "TypeError", "round() ndigits must be int");
             };
             if ndigits >= 0 {
@@ -1863,7 +2086,7 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
                 }
                 return bigint_bits(_py, big);
             }
-            let Some(ndigits) = to_i64(ndigits_obj) else {
+            let Some(ndigits) = index_i64_integral_bits(ndigits_obj.bits()) else {
                 return raise_exception::<_>(_py, "TypeError", "round() ndigits must be int");
             };
             let rounded = round_float_ndigits(f, ndigits);
@@ -1885,7 +2108,7 @@ pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
             inc_ref_bits(_py, val_bits);
             return val_bits;
         }
-        if let Some(i) = to_i64(val) {
+        if let Some(i) = index_i64_integral_bits(val.bits()) {
             // Full-range boxing — never inline-only `from_int`, which would
             // silently truncate exact-integer floats or i64 magnitudes
             // >= 2**46 (mod 2**47).
@@ -1929,8 +2152,8 @@ pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
 
 mod set_like;
 pub(super) use set_like::{
-    set_from_iter_bits, set_like_copy_bits, set_like_difference, set_like_intersection,
-    set_like_ptr_from_bits, set_like_result_type_id, set_like_symdiff, set_like_union,
+    set_like_copy_bits, set_like_difference, set_like_intersection, set_like_ptr_from_bits,
+    set_like_result_type_id, set_like_symdiff, set_like_union,
 };
 pub(super) fn binary_type_error(
     _py: &PyToken<'_>,
@@ -1973,69 +2196,95 @@ fn is_union_operand(_py: &PyToken<'_>, obj: MoltObject) -> bool {
     }
 }
 
-fn append_union_arg(_py: &PyToken<'_>, args: &mut Vec<u64>, candidate: u64) {
-    for &existing in args.iter() {
-        if obj_eq(_py, obj_from_bits(existing), obj_from_bits(candidate)) {
-            return;
-        }
-    }
-    args.push(candidate);
-}
+fn build_union_type(py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> u64 {
+    use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
+    use crate::object::seq_access::pin_tuple;
 
-fn collect_union_args(_py: &PyToken<'_>, bits: u64, args: &mut Vec<u64>) {
-    let obj = obj_from_bits(bits);
-    if obj.is_none() {
-        append_union_arg(_py, args, builtin_classes(_py).none_type);
-        return;
-    }
-    if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            if object_type_id(ptr) == TYPE_ID_UNION {
-                let args_bits = union_type_args_bits(ptr);
-                let args_obj = obj_from_bits(args_bits);
-                if let Some(args_ptr) = args_obj.as_ptr()
-                    && object_type_id(args_ptr) == TYPE_ID_TUPLE
+    // Published union tuples are immutable. Retain their storage through all
+    // alias callbacks without allocating snapshots or pinning every argument.
+    let normalize = |obj: MoltObject| {
+        if obj.is_none() {
+            builtin_classes(py).none_type
+        } else {
+            obj.bits()
+        }
+    };
+    let left = normalize(lhs);
+    let right = normalize(rhs);
+    let arguments = |bits| unsafe {
+        let ptr = obj_from_bits(bits).as_ptr()?;
+        if object_type_id(ptr) != TYPE_ID_UNION {
+            return None;
+        }
+        pin_tuple(py, obj_from_bits(union_type_args_bits(ptr)).as_ptr()?)
+    };
+    let left_owner = arguments(left);
+    let right_owner = arguments(right);
+    let left_args = left_owner.as_deref().unwrap_or(std::slice::from_ref(&left));
+    let right_args = right_owner
+        .as_deref()
+        .unwrap_or(std::slice::from_ref(&right));
+    let Some(capacity) = left_args.len().checked_add(right_args.len()) else {
+        return raise_exception(py, "MemoryError", "union argument size overflow");
+    };
+    let mut merged: Option<crate::object::backing::TrackedVecOwner<u64>> = None;
+    for &candidate in right_args {
+        let mut duplicate = false;
+        for &existing in left_args {
+            if existing == candidate {
+                duplicate = true;
+                break;
+            }
+            // CPython's union merge uses identity for types and rich equality
+            // only for two GenericAlias operands; metaclass __eq__ is irrelevant.
+            let both_aliases = [existing, candidate].into_iter().all(|bits| {
+                obj_from_bits(bits)
+                    .as_ptr()
+                    .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_GENERIC_ALIAS })
+            });
+            if both_aliases {
+                match compare_object_eq_bool(py, obj_from_bits(existing), obj_from_bits(candidate))
                 {
-                    let Some(elems) = crate::object::seq_access::snapshot(
-                        _py,
-                        args_ptr,
-                        "union argument snapshot allocation failed",
-                    ) else {
-                        return;
-                    };
-                    for &elem_bits in elems.iter() {
-                        append_union_arg(_py, args, elem_bits);
+                    CompareBoolOutcome::True => {
+                        duplicate = true;
+                        break;
                     }
-                    return;
+                    CompareBoolOutcome::False => {}
+                    CompareBoolOutcome::Error | CompareBoolOutcome::NotComparable => {
+                        return MoltObject::none().bits();
+                    }
                 }
-                append_union_arg(_py, args, args_bits);
-                return;
             }
         }
+        if duplicate {
+            continue;
+        }
+        if merged.is_none() {
+            let Some(ptr) = crate::object::backing::tracked_vec_box_from_slice(left_args, capacity)
+            else {
+                return raise_exception(py, "MemoryError", "union argument allocation failed");
+            };
+            merged = Some(unsafe { crate::object::backing::tracked_vec_box_from_raw(ptr) });
+        }
+        merged
+            .as_mut()
+            .expect("initialized union arguments")
+            .push(candidate);
     }
-    append_union_arg(_py, args, bits);
-}
-
-fn build_union_type(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> u64 {
-    let mut args = Vec::new();
-    collect_union_args(_py, lhs.bits(), &mut args);
-    collect_union_args(_py, rhs.bits(), &mut args);
-    if args.len() == 1 {
-        let bits = args[0];
-        inc_ref_bits(_py, bits);
-        return bits;
-    }
-    let tuple_ptr = alloc_tuple(_py, args.as_slice());
+    let Some(merged) = merged else {
+        inc_ref_bits(py, left);
+        return left;
+    };
+    let tuple_ptr = alloc_tuple(py, merged.as_slice());
     if tuple_ptr.is_null() {
         return MoltObject::none().bits();
     }
     let args_bits = MoltObject::from_ptr(tuple_ptr).bits();
-    let union_ptr = alloc_union_type(_py, args_bits);
+    let union_ptr = alloc_union_type(py, args_bits);
+    dec_ref_bits(py, args_bits);
     if union_ptr.is_null() {
-        dec_ref_bits(_py, args_bits);
         return MoltObject::none().bits();
     }
-    dec_ref_bits(_py, args_bits);
     MoltObject::from_ptr(union_ptr).bits()
 }
 
@@ -2044,11 +2293,8 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        // Guard: skip int fast path if either operand is a float, because
-        // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        // Integer-only projections exclude every float storage representation.
+        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             if lhs.is_bool() && rhs.is_bool() {
                 return MoltObject::from_bool((li != 0) | (ri != 0)).bits();
@@ -2059,7 +2305,7 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
             }
             return bigint_bits(_py, BigInt::from(li) | BigInt::from(ri));
         }
-        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
             let res = l_big | r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
@@ -2073,11 +2319,17 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
             unsafe {
                 let ltype = object_type_id(lp);
                 let rtype = object_type_id(rp);
-                if is_set_like_type(ltype) && is_set_like_type(rtype) {
+                if is_set_like_type(ltype)
+                    && is_set_like_type(rtype)
+                    && builtin_operand(_py, lhs)
+                    && builtin_operand(_py, rhs)
+                {
                     return set_like_union(_py, lp, rp, set_like_result_type_id(ltype));
                 }
                 if (is_set_like_type(ltype) || is_set_view_type(ltype))
                     && (is_set_like_type(rtype) || is_set_view_type(rtype))
+                    && builtin_operand(_py, lhs)
+                    && builtin_operand(_py, rhs)
                 {
                     let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
                         (lp, None)
@@ -2165,7 +2417,9 @@ pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
         let lhs = obj_from_bits(a);
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_SET {
+                if object_type_id(ptr) == TYPE_ID_SET
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     let rhs = obj_from_bits(b);
                     let ok = rhs
                         .as_ptr()
@@ -2220,11 +2474,8 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        // Guard: skip int fast path if either operand is a float, because
-        // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        // Integer-only projections exclude every float storage representation.
+        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             if lhs.is_bool() && rhs.is_bool() {
                 return MoltObject::from_bool((li != 0) & (ri != 0)).bits();
@@ -2235,7 +2486,7 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
             }
             return bigint_bits(_py, BigInt::from(li) & BigInt::from(ri));
         }
-        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
             let res = l_big & r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
@@ -2246,11 +2497,17 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
             unsafe {
                 let ltype = object_type_id(lp);
                 let rtype = object_type_id(rp);
-                if is_set_like_type(ltype) && is_set_like_type(rtype) {
+                if is_set_like_type(ltype)
+                    && is_set_like_type(rtype)
+                    && builtin_operand(_py, lhs)
+                    && builtin_operand(_py, rhs)
+                {
                     return set_like_intersection(_py, lp, rp, set_like_result_type_id(ltype));
                 }
                 if (is_set_like_type(ltype) || is_set_view_type(ltype))
                     && (is_set_like_type(rtype) || is_set_view_type(rtype))
+                    && builtin_operand(_py, lhs)
+                    && builtin_operand(_py, rhs)
                 {
                     let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
                         (lp, None)
@@ -2312,7 +2569,9 @@ pub extern "C" fn molt_inplace_bit_and(a: u64, b: u64) -> u64 {
         let lhs = obj_from_bits(a);
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_SET {
+                if object_type_id(ptr) == TYPE_ID_SET
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     let rhs = obj_from_bits(b);
                     let ok = rhs
                         .as_ptr()
@@ -2345,11 +2604,8 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        // Guard: skip int fast path if either operand is a float, because
-        // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float()
-            && !rhs.is_float()
-            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        // Integer-only projections exclude every float storage representation.
+        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             if lhs.is_bool() && rhs.is_bool() {
                 return MoltObject::from_bool((li != 0) ^ (ri != 0)).bits();
@@ -2360,7 +2616,7 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
             }
             return bigint_bits(_py, BigInt::from(li) ^ BigInt::from(ri));
         }
-        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
             let res = l_big ^ r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
@@ -2371,11 +2627,17 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
             unsafe {
                 let ltype = object_type_id(lp);
                 let rtype = object_type_id(rp);
-                if is_set_like_type(ltype) && is_set_like_type(rtype) {
+                if is_set_like_type(ltype)
+                    && is_set_like_type(rtype)
+                    && builtin_operand(_py, lhs)
+                    && builtin_operand(_py, rhs)
+                {
                     return set_like_symdiff(_py, lp, rp, set_like_result_type_id(ltype));
                 }
                 if (is_set_like_type(ltype) || is_set_view_type(ltype))
                     && (is_set_like_type(rtype) || is_set_view_type(rtype))
+                    && builtin_operand(_py, lhs)
+                    && builtin_operand(_py, rhs)
                 {
                     let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
                         (lp, None)
@@ -2452,11 +2714,11 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
                 return MoltObject::none().bits();
             }
         }
-        if let Some(i) = to_i64(obj) {
+        if let Some(i) = index_i64_integral_bits(obj.bits()) {
             let res = -(i as i128) - 1;
             return int_bits_from_i128(_py, res);
         }
-        if let Some(big) = to_bigint(obj) {
+        if let Some(big) = crate::builtins::numbers::index_bigint_integral_bits(obj.bits()) {
             let res = -big - BigInt::from(1);
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
@@ -2481,40 +2743,42 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
     })
 }
 
+/// Resolve a subtype's unary protocol before any physical numeric projection.
+/// A missing inherited slot still permits the base numeric payload operation.
+pub(super) fn unary_subtype_result(py: &PyToken<'_>, value: MoltObject, name: &[u8]) -> Option<u64> {
+    if builtin_operand(py, value) {
+        return None;
+    }
+    if let Some(method) =
+        unsafe { crate::builtins::attr::lookup_special_method(py, value.bits(), name) }
+    {
+        let result = unsafe { call_callable0(py, method) };
+        dec_ref_bits(py, method);
+        return Some(result);
+    }
+    exception_pending(py).then(|| MoltObject::none().bits())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_neg(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
-        if let Some(i) = to_i64(obj) {
-            let res = -(i as i128);
-            return int_bits_from_i128(_py, res);
+        if let Some(result) = unary_subtype_result(_py, obj, b"__neg__") {
+            return result;
         }
-        if let Some(big) = to_bigint(obj) {
-            let res = -big;
-            if let Some(i) = bigint_to_inline(&res) {
-                return MoltObject::from_int(i).bits();
-            }
-            return bigint_bits(_py, res);
-        }
-        if let Some(f) = to_f64(obj) {
+        // Float identity and signed zero survive integral-carrier recovery.
+        if let Some(f) = as_float_extended(obj) {
             return float_result_bits(_py, -f);
+        }
+        if let Some(i) = index_i64_integral_bits(obj.bits()) {
+            return int_bits_from_i128(_py, -(i as i128));
+        }
+        if let Some(big) = crate::builtins::numbers::index_bigint_integral_bits(obj.bits()) {
+            return int_bits_from_bigint(_py, -big);
         }
         if let Some(ptr) = complex_ptr_from_bits(val) {
             let value = unsafe { *complex_ref(ptr) };
             return complex_bits(_py, -value.re, -value.im);
-        }
-        if let Some(ptr) = maybe_ptr_from_bits(val)
-            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__neg__")
-        {
-            unsafe {
-                let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
-                dec_ref_bits(_py, name_bits);
-                if let Some(call_bits) = call_bits {
-                    let res_bits = call_callable0(_py, call_bits);
-                    dec_ref_bits(_py, call_bits);
-                    return res_bits;
-                }
-            }
         }
         let type_name = class_name_for_error(type_of_bits(_py, val));
         let msg = format!("bad operand type for unary -: '{type_name}'");
@@ -2526,36 +2790,21 @@ pub extern "C" fn molt_neg(val: u64) -> u64 {
 pub extern "C" fn molt_pos(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
-        if let Some(i) = to_i64(obj) {
-            // Full-range boxing — `from_int` would silently truncate a fit-i64
-            // BigInt or exact-integer float with magnitude >= 2**46.
+        if let Some(result) = unary_subtype_result(_py, obj, b"__pos__") {
+            return result;
+        }
+        if let Some(f) = as_float_extended(obj) {
+            return float_result_bits(_py, f);
+        }
+        if let Some(i) = index_i64_integral_bits(obj.bits()) {
             return int_bits_from_i64(_py, i);
         }
-        if let Some(big) = to_bigint(obj) {
-            if let Some(i) = bigint_to_inline(&big) {
-                return MoltObject::from_int(i).bits();
-            }
-            return bigint_bits(_py, big);
-        }
-        if let Some(f) = to_f64(obj) {
-            return float_result_bits(_py, f);
+        if let Some(big) = crate::builtins::numbers::index_bigint_integral_bits(obj.bits()) {
+            return int_bits_from_bigint(_py, big);
         }
         if let Some(ptr) = complex_ptr_from_bits(val) {
             let value = unsafe { *complex_ref(ptr) };
             return complex_bits(_py, value.re, value.im);
-        }
-        if let Some(ptr) = maybe_ptr_from_bits(val)
-            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__pos__")
-        {
-            unsafe {
-                let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, name_bits);
-                dec_ref_bits(_py, name_bits);
-                if let Some(call_bits) = call_bits {
-                    let res_bits = call_callable0(_py, call_bits);
-                    dec_ref_bits(_py, call_bits);
-                    return res_bits;
-                }
-            }
         }
         let type_name = class_name_for_error(type_of_bits(_py, val));
         let msg = format!("bad operand type for unary +: '{type_name}'");
@@ -2569,7 +2818,9 @@ pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
         let lhs = obj_from_bits(a);
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_SET {
+                if object_type_id(ptr) == TYPE_ID_SET
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     let rhs = obj_from_bits(b);
                     let ok = rhs
                         .as_ptr()
@@ -2888,7 +3139,6 @@ pub extern "C" fn molt_inplace_rshift(a: u64, b: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::builtins::exceptions::molt_exception_message;
     use crate::*;
     use num_bigint::BigInt;
 
@@ -2903,12 +3153,12 @@ mod tests {
     fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> (String, String) {
         let exc_bits = crate::molt_exception_last();
         let kind_bits = crate::molt_exception_kind(exc_bits);
-        let msg_bits = molt_exception_message(exc_bits);
+        let msg = crate::builtins::exceptions::format_exception_message(
+            _py,
+            obj_from_bits(exc_bits).as_ptr().expect("pending exception"),
+        );
         let kind =
             string_obj_to_owned(obj_from_bits(kind_bits)).expect("exception kind must be string");
-        let msg =
-            string_obj_to_owned(obj_from_bits(msg_bits)).expect("exception message must be string");
-        dec_ref_bits(_py, msg_bits);
         dec_ref_bits(_py, kind_bits);
         dec_ref_bits(_py, exc_bits);
         let _ = crate::molt_exception_clear();

@@ -199,6 +199,7 @@ fn field_store_modes_do_not_bypass_receiver_and_backing_guards() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         let clif = compile_function_to_clif(vec![function], "field_backing_guards");
@@ -238,6 +239,7 @@ fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         let clif = compile_function_to_clif(vec![function], "field_read_admission");
@@ -294,6 +296,7 @@ fn native_guarded_object_helpers_receive_the_tagged_receiver() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         let clif = compile_function_to_clif(vec![function], "tagged_guarded_receiver");

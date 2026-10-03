@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import shlex
@@ -14,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterator, Mapping, Sequence, TypeVar, cast
 
-from molt import process_guard
+from molt.cli.runtime_build_python import BuildPythonAdmission
 from molt.cli.cargo_source_closure import _cargo_crate_source_closure
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
 from molt.cli.runtime_source_closure import runtime_source_paths
@@ -25,24 +24,23 @@ from molt.cli.runtime_identity_schema import (
     RuntimeToolchainContentManifest,
     require_native_runtime_staticlib_identity as require_native_runtime_staticlib_identity,
     runtime_build_fingerprint as runtime_build_fingerprint,
-    _BUILD_PYTHON_SCHEMA,
     _FAMILY_SCHEMA,
     _digest,
     _freeze_json,
-    _thaw_json,
     _runtime_toolchain_build_python,
 )
 from molt.dx import _memory_bounded_worker_count
 from molt.file_hashing import content_change_time_ns
-from molt.exact_json import ExactJsonError, loads_exact
+from molt.file_publication import metadata_is_link_like
 from molt.python_environment_identity import (
     python_capture_authority_paths,
-    python_identity_probe_arguments,
 )
 from molt.toolchain_identity import (
+    StableRegularFileChangedError,
+    StableRegularFileError,
+    open_stable_regular_file,
     probe_executable,
     resolve_executable,
-    stable_executable_probe,
     stable_regular_file_identity,
 )
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
@@ -51,8 +49,8 @@ _TREE_HASH_BUFFER_BYTES = 1024 * 1024
 _TREE_HASH_BYTES_PER_WORKER = 2 * 1024 * 1024
 _TREE_HASH_MEMORY_HEADROOM_BYTES = 256 * 1024 * 1024
 _TREE_HASH_MAX_WORKERS = 32
+_TREE_HASH_BATCH_SIZE = 32
 _TREE_HASH_LOCAL = threading.local()
-_RUNTIME_BUILD_PYTHON_HASH_WORKERS = 4
 
 
 _RUNTIME_BUILD_TOOLING_RELPATHS = (
@@ -73,6 +71,7 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/cli/compiler_metadata.py",
     "src/molt/cli/config_resolution.py",
     "src/molt/cli/diagnostic_text.py",
+    "src/molt/cli/installed_runtime.py",
     "src/molt/cli/json_cache.py",
     "src/molt/cli/llvm_wasi_tools.py",
     "src/molt/cli/models.py",
@@ -82,11 +81,17 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/cli/project_roots.py",
     "src/molt/cli/runtime_artifact_selection.py",
     "src/molt/cli/runtime_build_identity.py",
+    "src/molt/cli/runtime_build_python.py",
+    "src/molt/process_guard.py",
+    "tools/command_execution.py",
+    "tools/import_file.py",
     "src/molt/cli/runtime_identity_schema.py",
     "src/molt/cli/runtime_cargo_plan.py",
     "src/molt/cli/runtime_features.py",
     "src/molt/cli/runtime_fingerprints.py",
     "src/molt/cli/runtime_native_build.py",
+    "src/molt/cli/runtime_native_codegen.py",
+    "src/molt/cli/runtime_native_generation.py",
     "src/molt/cli/runtime_paths.py",
     "src/molt/cli/runtime_source_closure.py",
     "src/molt/cli/runtime_wasm_build.py",
@@ -114,20 +119,6 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/wasm_linking_symbols.py",
     "src/molt/wasi_sysroot.py",
 )
-
-
-def _is_path_alias(path: Path) -> bool:
-    if path.is_symlink():
-        return True
-    is_junction = getattr(path, "is_junction", None)
-    return bool(is_junction is not None and is_junction())
-
-
-def _stat_is_path_alias(value: os.stat_result) -> bool:
-    reparse_point = getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return stat_module.S_ISLNK(value.st_mode) or bool(
-        reparse_point and getattr(value, "st_file_attributes", 0) & reparse_point
-    )
 
 
 def _runtime_tree_candidates(
@@ -159,7 +150,7 @@ def _runtime_tree_candidates(
                     f"runtime input enumeration failed for {logical_root!r}: "
                     f"{candidate}: {exc}"
                 ) from exc
-            if _stat_is_path_alias(candidate_stat):
+            if metadata_is_link_like(candidate_stat):
                 raise ValueError(
                     f"runtime input path alias escaped logical root "
                     f"{logical_root!r}: {candidate}"
@@ -257,12 +248,12 @@ def _runtime_input_changed(file: _TreeInputFile) -> ValueError:
 
 def _snapshot_tree_input_file(candidate: _TreeInputCandidate) -> _TreeInputFile:
     try:
-        if _is_path_alias(candidate.path):
+        current = candidate.path.lstat()
+        if metadata_is_link_like(current):
             raise ValueError(
                 f"runtime input path alias is forbidden for "
                 f"{candidate.label!r}: {candidate.path}"
             )
-        current = candidate.path.stat()
         if not stat_module.S_ISREG(current.st_mode):
             raise ValueError(
                 f"runtime input is no longer a regular file for "
@@ -284,10 +275,6 @@ def _snapshot_tree_input_file(candidate: _TreeInputCandidate) -> _TreeInputFile:
 
 def _hash_tree_input_file(file: _TreeInputFile) -> str:
     try:
-        if _is_path_alias(file.path):
-            raise ValueError(
-                f"runtime input path alias is forbidden for {file.label!r}: {file.path}"
-            )
         expected_handle_signature = (
             file.stat_signature[0],
             file.stat_signature[1],
@@ -295,28 +282,27 @@ def _hash_tree_input_file(file: _TreeInputFile) -> str:
             file.stat_signature[4],
             file.stat_signature[5],
         )
-        with file.path.open("rb", buffering=0) as handle:
+        # Source, sysroot and archive captures share the same no-follow handle
+        # transaction. The tree snapshot additionally fences the interval from
+        # enumeration to this read; ChangeTime detects restored-mtime writes.
+        with open_stable_regular_file(
+            file.path, label=f"runtime input {file.label!r}"
+        ) as opened:
             if (
-                _tree_input_handle_signature(os.fstat(handle.fileno()))
-                != expected_handle_signature
+                _tree_input_handle_signature(opened.stat) != expected_handle_signature
+                or opened.content_change_time_ns != file.stat_signature[3]
             ):
                 raise _runtime_input_changed(file)
-            digest = _sha256_open_file(handle)
-            if (
-                _tree_input_handle_signature(os.fstat(handle.fileno()))
-                != expected_handle_signature
-            ):
-                raise _runtime_input_changed(file)
-        if _is_path_alias(file.path):
-            raise ValueError(
-                f"runtime input path alias is forbidden for {file.label!r}: {file.path}"
-            )
-        if (
-            _tree_input_stat_signature(file.path, file.path.stat())
-            != file.stat_signature
-        ):
-            raise _runtime_input_changed(file)
+            digest = _sha256_open_file(opened.stream)
         return digest
+    except StableRegularFileChangedError as exc:
+        raise _runtime_input_changed(file) from exc
+    except StableRegularFileError as exc:
+        if isinstance(exc.__cause__, OSError):
+            raise OSError(
+                f"runtime input hashing failed for {file.label!r}: {file.path}: {exc}"
+            ) from exc
+        raise
     except (OSError, ValueError) as exc:
         if isinstance(exc, ValueError):
             raise
@@ -335,26 +321,39 @@ def _bounded_parallel_map(
     *,
     workers: int,
 ) -> tuple[_ParallelOutput, ...]:
+    """Keep ordered results and bounded batches without one future per file."""
     if not inputs:
         return ()
     if workers == 1:
         return tuple(operation(item) for item in inputs)
 
     results: list[_ParallelOutput | None] = [None] * len(inputs)
-    iterator = iter(enumerate(inputs))
     max_pending = workers * 2
+    # Keep small closures parallel and leave a second batch per worker when
+    # possible, while amortizing dispatch for the large source/sysroot trees.
+    batch_size = min(
+        _TREE_HASH_BATCH_SIZE, (len(inputs) + max_pending - 1) // max_pending
+    )
+    iterator = iter(range(0, len(inputs), batch_size))
+
+    def run_batch(start: int) -> tuple[_ParallelOutput, ...]:
+        return tuple(
+            operation(inputs[index])
+            for index in range(start, min(start + batch_size, len(inputs)))
+        )
+
     with ThreadPoolExecutor(
         max_workers=workers,
         thread_name_prefix="molt-runtime-identity",
     ) as executor:
-        pending: dict[Future[_ParallelOutput], int] = {}
+        pending: dict[Future[tuple[_ParallelOutput, ...]], int] = {}
 
         def submit_one() -> bool:
             try:
-                index, item = next(iterator)
+                start = next(iterator)
             except StopIteration:
                 return False
-            pending[executor.submit(operation, item)] = index
+            pending[executor.submit(run_batch, start)] = start
             return True
 
         for _ in range(max_pending):
@@ -363,9 +362,10 @@ def _bounded_parallel_map(
         while pending:
             completed, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in completed:
-                index = pending.pop(future)
+                start = pending.pop(future)
                 try:
-                    results[index] = future.result()
+                    batch = future.result()
+                    results[start : start + len(batch)] = batch
                 except BaseException:
                     for remaining in pending:
                         remaining.cancel()
@@ -394,6 +394,131 @@ def _hash_tree_input_files(files: Sequence[_TreeInputFile]) -> dict[str, str]:
     return {file.label: digest for file, digest in zip(files, digests, strict=True)}
 
 
+@dataclass(frozen=True)
+class RuntimeTreeIndex:
+    """One uncached hash pass over logical roots, projecting exact tree identities.
+
+    ``_tree_identity`` is ``capture(roots).identity(roots)``. A caller comparing
+    several receipts with one source tree captures the union of their roots once
+    and projects each receipt's summary without hashing shared files again.
+    """
+
+    root_paths: dict[str, Path]
+    missing: frozenset[str]
+    root_files: dict[str, tuple[str, ...]]
+    sizes: dict[str, int]
+    digests: dict[str, str]
+
+    @classmethod
+    def capture(cls, roots: Sequence[tuple[str, Path]]) -> RuntimeTreeIndex:
+        root_labels: dict[str, Path] = {}
+        files: dict[str, _TreeInputCandidate] = {}
+        root_files: dict[str, tuple[str, ...]] = {}
+        missing: set[str] = set()
+        for logical_root, raw_path in roots:
+            try:
+                raw_stat = raw_path.lstat()
+            except FileNotFoundError:
+                raw_stat = None
+            if raw_stat is not None and metadata_is_link_like(raw_stat):
+                raise ValueError(
+                    f"runtime input root alias is forbidden for {logical_root!r}: {raw_path}"
+                )
+            path = raw_path.resolve(strict=False)
+            prior_root = root_labels.get(logical_root)
+            if prior_root is not None and prior_root != path:
+                raise ValueError(
+                    f"runtime input root label collision {logical_root!r}: "
+                    f"{prior_root} vs {path}"
+                )
+            root_labels[logical_root] = path
+            if logical_root in root_files or logical_root in missing:
+                continue
+            candidates: list[tuple[str, Path]] = []
+            try:
+                root_stat = path.lstat()
+            except FileNotFoundError:
+                missing.add(logical_root)
+                continue
+            if stat_module.S_ISREG(root_stat.st_mode):
+                candidates.append((logical_root, path))
+            elif stat_module.S_ISDIR(root_stat.st_mode):
+                candidates.extend(
+                    _runtime_tree_candidates(path, logical_root=logical_root)
+                )
+            else:
+                raise ValueError(
+                    f"runtime input root is not a regular file or directory: "
+                    f"{logical_root!r}: {path}"
+                )
+            for label, candidate in candidates:
+                prior = files.get(label)
+                if prior is not None and prior.path != candidate:
+                    raise ValueError(
+                        f"runtime input file label collision {label!r}: "
+                        f"{prior.path} vs {candidate}"
+                    )
+                files[label] = _TreeInputCandidate(
+                    label=label,
+                    path=candidate,
+                )
+            root_files[logical_root] = tuple(label for label, _path in candidates)
+        ordered_files = _snapshot_tree_input_files(
+            tuple(files[label] for label in sorted(files))
+        )
+        return cls(
+            root_paths=root_labels,
+            missing=frozenset(missing),
+            root_files=root_files,
+            sizes={file.label: file.size for file in ordered_files},
+            digests=_hash_tree_input_files(ordered_files),
+        )
+
+    def identity(
+        self, roots: Sequence[tuple[str, Path]], *, require_all: bool
+    ) -> dict[str, object]:
+        """Project the exact ``_tree_identity`` summary of captured ``roots``."""
+        root_labels: set[str] = set()
+        labels: set[str] = set()
+        missing: list[str] = []
+        for logical_root, raw_path in roots:
+            if self.root_paths.get(logical_root) != raw_path.resolve(strict=False):
+                raise ValueError(
+                    f"runtime input root {logical_root!r} is not in this tree index"
+                )
+            root_labels.add(logical_root)
+            if logical_root in self.missing:
+                missing.append(logical_root)
+            else:
+                labels.update(self.root_files[logical_root])
+        if require_all and missing:
+            raise ValueError(
+                "required runtime inputs are missing: " + ", ".join(missing)
+            )
+        hasher = hashlib.sha256()
+        total_size = 0
+        for label in sorted(labels):
+            size = self.sizes[label]
+            total_size += size
+            hasher.update(label.encode())
+            hasher.update(b"\0")
+            hasher.update(str(size).encode())
+            hasher.update(b"\0")
+            hasher.update(self.digests[label].encode())
+            hasher.update(b"\0")
+        for label in sorted(missing):
+            hasher.update(b"missing\0")
+            hasher.update(label.encode())
+            hasher.update(b"\0")
+        return {
+            "digest": hasher.hexdigest(),
+            "file_count": len(labels),
+            "total_size": total_size,
+            "roots": sorted(root_labels),
+            "missing": sorted(missing),
+        }
+
+
 def _tree_identity(
     roots: Sequence[tuple[str, Path]],
     *,
@@ -401,75 +526,70 @@ def _tree_identity(
 ) -> dict[str, object]:
     """Hash an uncached logical-label closure with exact mutation checks."""
 
-    root_labels: dict[str, Path] = {}
-    files: dict[str, _TreeInputCandidate] = {}
-    missing: list[str] = []
-    for logical_root, raw_path in roots:
-        if _is_path_alias(raw_path):
-            raise ValueError(
-                f"runtime input root alias is forbidden for {logical_root!r}: {raw_path}"
-            )
-        path = raw_path.resolve(strict=False)
-        prior_root = root_labels.get(logical_root)
-        if prior_root is not None and prior_root != path:
-            raise ValueError(
-                f"runtime input root label collision {logical_root!r}: "
-                f"{prior_root} vs {path}"
-            )
-        root_labels[logical_root] = path
-        candidates: list[tuple[str, Path]] = []
+    return RuntimeTreeIndex.capture(roots).identity(roots, require_all=require_all)
+
+
+def runtime_source_roots(
+    project_root: Path, runtime_features: Sequence[str]
+) -> list[tuple[str, Path]]:
+    """Logical runtime source roots recorded as ``compile.sources``."""
+    root = project_root.resolve(strict=False)
+    source_roots: list[tuple[str, Path]] = []
+    for path in runtime_source_paths(root, tuple(runtime_features)):
+        resolved = path.resolve(strict=False)
         try:
-            root_stat = path.lstat()
-        except FileNotFoundError:
-            missing.append(logical_root)
-            continue
-        if stat_module.S_ISREG(root_stat.st_mode):
-            candidates.append((logical_root, path))
-        elif stat_module.S_ISDIR(root_stat.st_mode):
-            candidates.extend(_runtime_tree_candidates(path, logical_root=logical_root))
-        else:
+            label = "source/" + resolved.relative_to(root).as_posix()
+        except ValueError as exc:
             raise ValueError(
-                f"runtime input root is not a regular file or directory: "
-                f"{logical_root!r}: {path}"
-            )
-        for label, candidate in candidates:
-            prior = files.get(label)
-            if prior is not None and prior.path != candidate:
-                raise ValueError(
-                    f"runtime input file label collision {label!r}: "
-                    f"{prior.path} vs {candidate}"
-                )
-            files[label] = _TreeInputCandidate(
-                label=label,
-                path=candidate,
-            )
-    if require_all and missing:
-        raise ValueError("required runtime inputs are missing: " + ", ".join(missing))
-    ordered_files = _snapshot_tree_input_files(
-        tuple(files[label] for label in sorted(files))
+                f"runtime source escaped project root: {resolved}"
+            ) from exc
+        source_roots.append((label, resolved))
+    return source_roots
+
+
+def runtime_identity_source_facts(
+    identity: RuntimeBuildIdentity,
+) -> tuple[tuple[str, ...], Mapping[str, object]]:
+    """The feature set and recorded source tree of one runtime build identity."""
+    family = cast(Mapping[str, object], identity.payload["family"])
+    compilation = cast(Mapping[str, object], family["compile"])
+    configuration = cast(Mapping[str, object], compilation["common_config"])
+    return (
+        tuple(cast(Sequence[str], configuration["runtime_features"])),
+        cast(Mapping[str, object], compilation["sources"]),
     )
-    digests = _hash_tree_input_files(ordered_files)
-    hasher = hashlib.sha256()
-    total_size = 0
-    for file in ordered_files:
-        total_size += file.size
-        hasher.update(file.label.encode())
-        hasher.update(b"\0")
-        hasher.update(str(file.size).encode())
-        hasher.update(b"\0")
-        hasher.update(digests[file.label].encode())
-        hasher.update(b"\0")
-    for label in sorted(missing):
-        hasher.update(b"missing\0")
-        hasher.update(label.encode())
-        hasher.update(b"\0")
-    return {
-        "digest": hasher.hexdigest(),
-        "file_count": len(files),
-        "total_size": total_size,
-        "roots": sorted(root_labels),
-        "missing": sorted(missing),
-    }
+
+
+def verify_runtime_source_trees(
+    project_root: Path,
+    facts: Sequence[tuple[Sequence[str], Mapping[str, object]]],
+) -> None:
+    """Require recorded runtime source trees to be ``project_root``'s.
+
+    The union of every receipt's source roots is hashed once; each receipt's
+    summary is then projected exactly as ``_tree_identity`` computes it.
+    """
+    requests = [
+        (tuple(features), runtime_source_roots(project_root, features), recorded)
+        for features, recorded in facts
+    ]
+    index = RuntimeTreeIndex.capture(
+        list(dict.fromkeys(root for _features, roots, _r in requests for root in roots))
+    )
+    for features, roots, recorded in requests:
+        if _digest(index.identity(roots, require_all=False)) != _digest(recorded):
+            raise ValueError(
+                "runtime build identity sources differ from the release source "
+                f"(features: {', '.join(features) or 'none'})"
+            )
+
+
+def verify_runtime_source_identities(
+    project_root: Path, identities: Sequence[RuntimeBuildIdentity]
+) -> None:
+    verify_runtime_source_trees(
+        project_root, [runtime_identity_source_facts(item) for item in identities]
+    )
 
 
 def _command_path(command: str, env: Mapping[str, str]) -> Path | None:
@@ -501,70 +621,13 @@ def _executable_identity(
     }
 
 
-def _python_identity(env: Mapping[str, str]) -> dict[str, object]:
-    command = (
-        env.get("MOLT_BUILD_PYTHON", "").strip()
-        or env.get("PYTHON", "").strip()
-        or ("python" if os.name == "nt" else "python3")
-    )
-    path = _command_path(command, env)
-    if path is None:
-        raise ValueError("runtime build Python is unresolved")
-    # Build and environment provisioning consume the same isolated capture.
-    with stable_executable_probe(path, label="runtime build Python") as (
-        entrypoint,
-        executable,
-    ):
-        completed = process_guard.run_completed_command(
-            [
-                os.fspath(entrypoint),
-                *python_identity_probe_arguments(
-                    (
-                        "--capture-runtime",
-                        "--hash-workers",
-                        str(_RUNTIME_BUILD_PYTHON_HASH_WORKERS),
-                    ),
-                    no_site=True,
-                ),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env=dict(env),
-            timeout=30,
-            memory_guard_prefix=None,
-        )
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
-        raise ValueError(
-            "runtime build Python identity probe failed"
-            + (f": {detail}" if detail else "")
-        )
-    try:
-        from molt.python_runtime_identity import validate_python_runtime_identity
-
-        runtime = validate_python_runtime_identity(loads_exact(completed.stdout))
-    except (json.JSONDecodeError, ExactJsonError) as exc:
-        raise ValueError(
-            "runtime build Python identity probe emitted invalid JSON"
-        ) from exc
-    material = {
-        "schema": _BUILD_PYTHON_SCHEMA,
-        "logical_name": "build_python",
-        "selected_executable": {
-            "entrypoint": entrypoint.name.casefold()
-            if os.name == "nt"
-            else entrypoint.name,
-            "content_filename": executable.path.name.casefold()
-            if os.name == "nt"
-            else executable.path.name,
-            "size": executable.size,
-            "sha256": executable.sha256,
-        },
-        "runtime": runtime,
-    }
-    return {**material, "identity_sha256": _digest(material)}
+def _python_identity(
+    env: Mapping[str, str], *, admission: BuildPythonAdmission | None = None
+) -> dict[str, object]:
+    if admission is not None:
+        return admission.capture(env)
+    with BuildPythonAdmission() as owned:
+        return owned.capture(env)
 
 
 def _archive_identity(logical_name: str, path: Path | None) -> dict[str, object]:
@@ -900,53 +963,40 @@ def runtime_build_tooling_paths(project_root: Path) -> tuple[Path, ...]:
     return tuple(sorted(paths))
 
 
-def runtime_build_tooling_authority(project_root: Path) -> dict[str, object]:
-    """Hash only the runtime planner, receipt, and publication authority."""
+def _capture_runtime_build_trees(
+    project_root: Path, source_roots: Sequence[tuple[str, Path]]
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Capture source and publication trees together for one live resolution.
+
+    Their logical labels and receipt roles stay separate. Each resolver call
+    owns a fresh index, including post-build and final-link recaptures.
+    """
 
     root = project_root.resolve(strict=False)
-    tree = _tree_identity(
-        tuple(
-            ("runtime-tooling/" + path.relative_to(root).as_posix(), path)
-            for path in runtime_build_tooling_paths(root)
-        ),
-        require_all=True,
+    tooling_roots = tuple(
+        ("runtime-tooling/" + path.relative_to(root).as_posix(), path)
+        for path in runtime_build_tooling_paths(root)
     )
-    return {
+    index = RuntimeTreeIndex.capture((*source_roots, *tooling_roots))
+    publication_authority = {
         "schema": "molt.runtime-build-tooling-authority.v2",
-        **tree,
+        **index.identity(tooling_roots, require_all=True),
     }
+    return index.identity(source_roots, require_all=False), publication_authority
 
 
-def _rust_toolchain_resources(*, cargo_plan: RuntimeCargoPlan) -> dict[str, object]:
-    return {
-        "host_triple": cargo_plan.host_target,
-        "selected_target": cargo_plan.target,
-        "content": cargo_plan.rust_resources.content_identity(),
-    }
-
-
-def _capture_plan_toolchain(cargo_plan: RuntimeCargoPlan) -> dict[str, object]:
-    cargo_plan.verify()
-    tools: dict[str, object] = {}
-    wrappers: dict[str, object] = {}
-    for item in cargo_plan.executable_custody:
-        group, role = item.label.split("/", 1)
-        destination = tools if group == "tool" else wrappers
-        destination[role] = {
-            "logical_name": role if group == "tool" else role.casefold(),
-            **item.content_record(),
-        }
-    tools["build_python"] = _python_identity(cargo_plan.environment)
-    result = {
-        "tools": tools,
-        "wrappers": wrappers,
-        "cargo_configuration": cargo_plan.configuration_identity(),
-        "effective_target": cargo_plan.target,
-        "rust_resources": _rust_toolchain_resources(cargo_plan=cargo_plan),
-        "sysroots": {},
-        "archives": [],
-    }
-    _verify_plan_toolchain_content(cargo_plan, result)
+def _capture_plan_toolchain(
+    cargo_plan: RuntimeCargoPlan,
+    *,
+    build_python_admission: BuildPythonAdmission | None = None,
+) -> dict[str, object]:
+    # Runtime generators execute Python; Cargo-only consumers do not. Capture
+    # that extra first, then close shared Cargo custody after its admission.
+    build_python = _python_identity(
+        cargo_plan.environment, admission=build_python_admission
+    )
+    result = cargo_plan.toolchain_identity()
+    cast(dict[str, object], result["tools"])["build_python"] = build_python
     return result
 
 
@@ -954,7 +1004,6 @@ def _verify_plan_toolchain_content(
     plan: RuntimeCargoPlan, content: Mapping[str, object]
 ) -> None:
     """Reconcile newly captured tools/resources with their live execution plan."""
-    plan.verify()
     tools = cast(Mapping[str, object], content["tools"])
     wrappers = cast(Mapping[str, object], content["wrappers"])
     if set(tools) - {"build_python", "wasm_linker"} != set(plan.tools) or set(
@@ -979,7 +1028,7 @@ def _verify_plan_toolchain_content(
         or _freeze_json(content["cargo_configuration"])
         != _freeze_json(plan.configuration_identity())
         or _freeze_json(content["rust_resources"])
-        != _freeze_json(_rust_toolchain_resources(cargo_plan=plan))
+        != _freeze_json(plan.rust_resource_identity())
     ):
         raise ValueError(
             "runtime toolchain manifest configuration/resources differ from Cargo plan"
@@ -1021,7 +1070,6 @@ def _plan_for_capture(
         raise ValueError(
             "runtime Cargo environment differs from the resolved execution plan"
         )
-    cargo_plan.verify()
     return cargo_plan
 
 
@@ -1033,6 +1081,7 @@ def _wasm_compile_toolchain_content(
     wasi_sysroot: Path,
     include_cxx: bool = True,
     cargo_plan: RuntimeCargoPlan | None = None,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> dict[str, object]:
     plan = cargo_plan or resolve_runtime_cargo_plan(
         project_root,
@@ -1045,7 +1094,9 @@ def _wasm_compile_toolchain_content(
     layout = resolve_wasi_sysroot_layout(wasi_sysroot)
     if layout is None:
         raise ValueError(f"runtime WASI sysroot layout is unresolved: {wasi_sysroot}")
-    content = _capture_plan_toolchain(plan)
+    content = _capture_plan_toolchain(
+        plan, build_python_admission=build_python_admission
+    )
     tools = cast(Mapping[str, object], content["tools"])
     required = {"cc", "ar", "ranlib"} | ({"cxx"} if include_cxx else set())
     if not required.issubset(tools):
@@ -1071,8 +1122,10 @@ def _wasm_runtime_toolchain_content(
     wasi_libc_archive: Path,
     rust_builtins_archive: Path,
     cargo_plan: RuntimeCargoPlan | None = None,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> dict[str, object]:
     content = _wasm_compile_toolchain_content(
+        build_python_admission=build_python_admission,
         project_root=project_root,
         env=env,
         target_triple=target_triple,
@@ -1104,12 +1157,14 @@ def provision_wasm_runtime_toolchain_content_manifest(
     wasi_libc_archive: Path,
     rust_builtins_archive: Path,
     cargo_plan: RuntimeCargoPlan | None = None,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeToolchainContentManifest:
     """Produce the immutable content manifest consumed by normal identity reads."""
 
     payload = {
         "target_triple": target_triple,
         "toolchain": _wasm_runtime_toolchain_content(
+            build_python_admission=build_python_admission,
             project_root=project_root,
             env=env,
             target_triple=target_triple,
@@ -1122,7 +1177,7 @@ def provision_wasm_runtime_toolchain_content_manifest(
             rust_builtins_archive=rust_builtins_archive,
         ),
     }
-    return RuntimeToolchainContentManifest(digest=_digest(payload), payload=payload)
+    return RuntimeToolchainContentManifest.from_payload(payload)
 
 
 def provision_wasm_cpython_abi_toolchain_content_manifest(
@@ -1132,12 +1187,14 @@ def provision_wasm_cpython_abi_toolchain_content_manifest(
     target_triple: str,
     wasi_sysroot: Path,
     cargo_plan: RuntimeCargoPlan | None = None,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeToolchainContentManifest:
     """Capture the complete compiler inputs for the standalone ABI staticlib."""
 
     payload = {
         "target_triple": target_triple,
         "toolchain": _wasm_compile_toolchain_content(
+            build_python_admission=build_python_admission,
             project_root=project_root,
             env=env,
             target_triple=target_triple,
@@ -1146,7 +1203,7 @@ def provision_wasm_cpython_abi_toolchain_content_manifest(
             include_cxx=False,
         ),
     }
-    return RuntimeToolchainContentManifest(digest=_digest(payload), payload=payload)
+    return RuntimeToolchainContentManifest.from_payload(payload)
 
 
 def provision_native_runtime_toolchain_content_manifest(
@@ -1156,6 +1213,7 @@ def provision_native_runtime_toolchain_content_manifest(
     target_triple: str | None,
     cargo_command: Sequence[str],
     cargo_plan: RuntimeCargoPlan | None = None,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeToolchainContentManifest:
     plan = _plan_for_capture(
         project_root,
@@ -1166,9 +1224,11 @@ def provision_native_runtime_toolchain_content_manifest(
     )
     payload = {
         "target_triple": target_triple or "native",
-        "toolchain": _capture_plan_toolchain(plan),
+        "toolchain": _capture_plan_toolchain(
+            plan, build_python_admission=build_python_admission
+        ),
     }
-    return RuntimeToolchainContentManifest(digest=_digest(payload), payload=payload)
+    return RuntimeToolchainContentManifest.from_payload(payload)
 
 
 def resolve_native_runtime_build_identity(
@@ -1180,8 +1240,8 @@ def resolve_native_runtime_build_identity(
     runtime_features: tuple[str, ...],
     cargo_command: Sequence[str],
     artifact_selection: RuntimeArtifactSelection,
-    publication_authority: Mapping[str, object],
     cargo_plan: RuntimeCargoPlan | None = None,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeBuildIdentity:
     """Resolve one exact native staticlib identity through the shared family model."""
 
@@ -1199,18 +1259,10 @@ def resolve_native_runtime_build_identity(
     flag_projection = _RuntimeFlagProjection.capture(
         (*plan.logical_paths, ("source", root)), cargo_plan=plan
     )
-    source_roots: list[tuple[str, Path]] = []
-    for path in runtime_source_paths(root, runtime_features):
-        resolved = path.resolve(strict=False)
-        try:
-            label = "source/" + resolved.relative_to(root).as_posix()
-        except ValueError as exc:
-            raise ValueError(
-                f"runtime source escaped project root: {resolved}"
-            ) from exc
-        source_roots.append((label, resolved))
-    sources = _tree_identity(source_roots, require_all=False)
+    source_roots = runtime_source_roots(root, runtime_features)
+    sources, publication_authority = _capture_runtime_build_trees(root, source_roots)
     toolchain_manifest = provision_native_runtime_toolchain_content_manifest(
+        build_python_admission=build_python_admission,
         project_root=root,
         env=env,
         cargo_plan=plan,
@@ -1219,7 +1271,6 @@ def resolve_native_runtime_build_identity(
     )
     if not cargo_command:
         raise ValueError("native runtime Cargo command is empty")
-    _verify_plan_toolchain_manifest(plan, toolchain_manifest)
     build_python_identity = _runtime_toolchain_build_python(toolchain_manifest)
     compile_command, final_link_arguments = plan.partition_command()
     command = flag_projection.rustflags(compile_command)
@@ -1273,7 +1324,7 @@ def _resolve_runtime_build_family_identities(
     publication_authority: Mapping[str, object],
     members: Sequence[RuntimeBuildMemberPlan],
 ) -> tuple[RuntimeBuildIdentity, ...]:
-    manifest = RuntimeToolchainContentManifest.from_dict(toolchain_manifest.to_dict())
+    manifest = RuntimeToolchainContentManifest.from_dict(toolchain_manifest)
     if manifest.payload.get("target_triple") != target_triple:
         raise ValueError("runtime toolchain manifest target is invalid")
     toolchain = manifest.payload.get("toolchain")
@@ -1294,26 +1345,30 @@ def _resolve_runtime_build_family_identities(
             "publication_transform": plan.publication_transform,
             "preserve_debug": plan.preserve_debug,
         }
-    publication_payload = _thaw_json(_freeze_json(publication_authority))
-    if not isinstance(publication_payload, dict):
+    publication_payload = _freeze_json(publication_authority)
+    if not isinstance(publication_payload, Mapping):
         raise ValueError("runtime publication authority is invalid")
-    compile_payload = {
-        "sources": _thaw_json(sources),
-        "toolchain": _thaw_json(toolchain),
-        "common_config": _thaw_json(common_config),
-    }
+    compile_payload = _freeze_json(
+        {
+            "sources": sources,
+            "toolchain": toolchain,
+            "common_config": common_config,
+        }
+    )
     compile_digest = _digest(compile_payload)
-    family = {
-        "schema": _FAMILY_SCHEMA,
-        "compile_digest": compile_digest,
-        "compile": compile_payload,
-        "publication_authority": publication_payload,
-        "members": member_payloads,
-    }
+    family = _freeze_json(
+        {
+            "schema": _FAMILY_SCHEMA,
+            "compile_digest": compile_digest,
+            "compile": compile_payload,
+            "publication_authority": publication_payload,
+            "members": member_payloads,
+        }
+    )
     family_digest = _digest(family)
 
     def identity(kind: str) -> RuntimeBuildIdentity:
-        payload = {"family": family, "member_kind": kind}
+        payload = _freeze_json({"family": family, "member_kind": kind})
         return RuntimeBuildIdentity(
             _digest(payload),
             compile_digest,
@@ -1333,9 +1388,9 @@ def resolve_wasm_cpython_abi_build_identity(
     rustflags: str,
     cargo_command: Sequence[str],
     artifact_selection: RuntimeArtifactSelection,
-    publication_authority: Mapping[str, object],
     wasi_sysroot: Path,
     cargo_plan: RuntimeCargoPlan | None = None,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeBuildIdentity:
     """Resolve the exact standalone CPython-ABI WASM staticlib identity."""
 
@@ -1371,8 +1426,9 @@ def resolve_wasm_cpython_abi_build_identity(
                 f"CPython ABI source escaped project root: {resolved}"
             ) from exc
         source_roots.append((label, resolved))
-    sources = _tree_identity(source_roots, require_all=False)
+    sources, publication_authority = _capture_runtime_build_trees(root, source_roots)
     toolchain_manifest = provision_wasm_cpython_abi_toolchain_content_manifest(
+        build_python_admission=build_python_admission,
         project_root=root,
         env=env,
         cargo_plan=plan,
@@ -1437,7 +1493,6 @@ def resolve_wasm_runtime_build_family_identities(
     base_rustflags: str,
     cargo_command: Sequence[str],
     producer_artifact_selection: RuntimeArtifactSelection,
-    publication_authority: Mapping[str, object],
     members: Sequence[RuntimeBuildMemberPlan],
     wasi_sysroot: Path,
     wasm_linker: Path,
@@ -1446,6 +1501,7 @@ def resolve_wasm_runtime_build_family_identities(
     wasi_libc_archive: Path,
     rust_builtins_archive: Path,
     cargo_plan: RuntimeCargoPlan | None = None,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[RuntimeBuildIdentity, ...]:
     root = project_root.resolve(strict=False)
     plan = _plan_for_capture(
@@ -1457,18 +1513,10 @@ def resolve_wasm_runtime_build_family_identities(
     )
     env = plan.environment
     cargo_command = plan.command
-    source_roots: list[tuple[str, Path]] = []
-    for path in runtime_source_paths(root, runtime_features):
-        resolved = path.resolve(strict=False)
-        try:
-            label = "source/" + resolved.relative_to(root).as_posix()
-        except ValueError as exc:
-            raise ValueError(
-                f"runtime source escaped project root: {resolved}"
-            ) from exc
-        source_roots.append((label, resolved))
-    sources = _tree_identity(source_roots, require_all=False)
+    source_roots = runtime_source_roots(root, runtime_features)
+    sources, publication_authority = _capture_runtime_build_trees(root, source_roots)
     toolchain_manifest = provision_wasm_runtime_toolchain_content_manifest(
+        build_python_admission=build_python_admission,
         project_root=root,
         env=env,
         cargo_plan=plan,

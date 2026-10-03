@@ -483,3 +483,331 @@ def test_llvm_preserved_handler_drift_is_dangerous() -> None:
         "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/direct_ops.rs:"
         "lower_preserved_direct_op:floordiv:arm-not-in-HANDLED_KINDS"
     ]
+
+
+@pytest.fixture(scope="module")
+def d10_audit_result():
+    return AUDIT.run_audit()
+
+
+def test_frontend_dormancy_retains_typed_activation_operations(
+    d10_audit_result,
+) -> None:
+    res = d10_audit_result
+    for kind in ("is_pending", "state_set", "task_wait"):
+        row = res.rows[kind]
+        assert row.mapper_maps
+        assert not row.frontend_emits
+        # D5 observes the frontend only. A typed pass producer is neither an
+        # exemption nor evidence that the frontend emitted this spelling.
+        assert kind in res.dangerous()["mapped_never_emitted"]
+
+
+@pytest.mark.parametrize(
+    "category, kind, updates, expected_guidance",
+    [
+        (
+            "mapped_never_emitted",
+            "state_set",
+            {},
+            "This category does not prove dead operations or missing mappings",
+        ),
+        (
+            "ownedvalue_never_emitted",
+            "vec_sum",
+            {"frontend_emits": False},
+            "Frontend absence does not prove an unused ownership row",
+        ),
+        (
+            "owned_result_transparent_alias",
+            "abs",
+            {"classifier_class": "TransparentAlias"},
+            "This count is not a count of proven leaks",
+        ),
+    ],
+)
+def test_finding_guidance_preserves_categories_baseline_and_verdict(
+    d10_audit_result,
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    category: str,
+    kind: str,
+    updates: dict,
+    expected_guidance: str,
+) -> None:
+    res = replace(
+        d10_audit_result,
+        rows={kind: replace(d10_audit_result.rows[kind], **updates)},
+    )
+    before = AUDIT.to_baseline(res)
+    assert {key: rows for key, rows in before["dangerous"].items() if rows} == {
+        category: [kind]
+    }
+    AUDIT.print_report(res)
+    report = capsys.readouterr()
+    assert f"-- {category} (1) --" in report.out
+    assert expected_guidance in report.out
+    assert report.err == ""
+    assert AUDIT.to_baseline(res) == before
+
+    empty = replace(res, rows={})
+    empty_baseline = AUDIT.to_baseline(empty)
+    baseline_path = tmp_path / "baseline.json"
+    monkeypatch.setattr(AUDIT, "BASELINE_PATH", baseline_path)
+    for label, current, baseline, expected_rc in (
+        ("exact", res, before, 0),
+        ("NEW", res, empty_baseline, 1),
+        ("STALE", empty, before, 1),
+    ):
+        baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+        baseline_bytes = baseline_path.read_bytes()
+        current_before = AUDIT.to_baseline(current)
+        assert AUDIT.check_against_baseline(current) == expected_rc
+        output = capsys.readouterr()
+        assert baseline_path.read_bytes() == baseline_bytes
+        assert AUDIT.to_baseline(current) == current_before
+        if expected_rc:
+            assert f"{label} dangerous-cell" in output.err
+            assert f"'{category}'" in output.err
+            assert kind in output.err
+            assert expected_guidance in output.err
+            assert "Add a mapper arm" not in output.err
+            assert "and leaks its result" not in output.err
+        else:
+            assert output.err == ""
+            assert "baseline is exact" in output.out
+
+
+def test_d10_owned_results_are_classified_by_their_return_contract(
+    d10_audit_result,
+) -> None:
+    """An owned heap result needs independent custody, even when the boxed
+    ABI carrier matches operand 0. These fused split/count kernels return a
+    fresh tuple and are classified by that contract. D10 alone does not prove
+    that every other owned boxed return has a heap representation."""
+    res = d10_audit_result
+    owned = res.owned_result_runtime_kinds
+    for kind in (
+        "string_split_ws_dict_inc",
+        "string_split_sep_dict_inc",
+        "dict_str_int_inc",
+        "operator_index",
+    ):
+        assert kind in owned
+        assert res.rows[kind].produces_result
+        assert res.rows[kind].classifier_class == "OwnedValue"
+        assert kind not in res.dangerous()["owned_result_transparent_alias"]
+    row = res.rows["string_split_ws_dict_inc"]
+    leaking = replace(
+        res,
+        rows={
+            **res.rows,
+            "string_split_ws_dict_inc": replace(
+                row, classifier_class="TransparentAlias"
+            ),
+        },
+    )
+    assert (
+        "string_split_ws_dict_inc"
+        in leaking.dangerous()["owned_result_transparent_alias"]
+    )
+    # A declared borrowed return is not an owned result.
+    assert "dict_set" not in owned
+
+
+def test_d10_runtime_services_need_an_actual_copy_operation(d10_audit_result) -> None:
+    res = d10_audit_result
+    kind = "platform_system"
+    row = res.rows[kind]
+    assert row.produces_result and row.llvm_runtime_fallback_eligible
+    assert kind in res.owned_result_runtime_kinds
+    assert row.classifier_class == "TransparentAlias"
+    assert not row.frontend_emits
+    assert not row.mapper_maps
+    assert not row.native_routing_slice
+    assert not row.llvm_dedicated_arm
+    assert kind not in res.dangerous()["owned_result_transparent_alias"]
+
+    # An advisory text match does not turn a runtime callable into an operation.
+    advisory = replace(res, rows={kind: replace(row, native_arm=True, wasm_arm=True)})
+    assert advisory.dangerous()["owned_result_transparent_alias"] == []
+
+    # Each executable source of operation vocabulary independently establishes
+    # scope. A newly emitted, unclassified Copy must be caught before a backend
+    # grows a dedicated route; internal preserved routes are also in scope.
+    for route in (
+        "frontend_emits",
+        "native_routing_slice",
+        "llvm_dedicated_arm",
+    ):
+        broken = replace(res, rows={kind: replace(row, **{route: True})})
+        assert broken.dangerous()["owned_result_transparent_alias"] == [kind], route
+
+    emitted = replace(row, frontend_emits=True)
+    nonresult = replace(res, rows={kind: replace(emitted, produces_result=False)})
+    assert nonresult.dangerous()["owned_result_transparent_alias"] == []
+    borrowed = replace(
+        res,
+        rows={kind: emitted},
+        owned_result_runtime_kinds=res.owned_result_runtime_kinds - {kind},
+    )
+    assert borrowed.dangerous()["owned_result_transparent_alias"] == []
+    no_heap_move = replace(
+        res, rows={kind: emitted}, no_heap_move=res.no_heap_move | {kind}
+    )
+    assert no_heap_move.dangerous()["owned_result_transparent_alias"] == []
+
+
+@pytest.mark.parametrize("kind", ["vec_sum", "vec_prod", "vec_min", "vec_max"])
+def test_d10_preserved_internal_results_keep_their_ownership_gate(
+    d10_audit_result,
+    kind: str,
+) -> None:
+    res = d10_audit_result
+    row = res.rows[kind]
+    assert row.llvm_runtime_fallback_eligible
+    assert not row.llvm_dedicated_arm
+    assert row.native_routing_slice
+    assert row.produces_result
+    assert not row.mapper_maps
+    assert kind in res.owned_result_runtime_kinds
+    assert row.classifier_class == "OwnedValue"
+    assert kind not in res.dangerous()["owned_result_transparent_alias"]
+    # Removing frontend visibility must not hide an internally preserved
+    # reduction: its native route and normalized boxed contract still own it.
+    broken = replace(
+        res,
+        rows={
+            kind: replace(
+                row, frontend_emits=False, classifier_class="TransparentAlias"
+            )
+        },
+    )
+    assert broken.dangerous()["owned_result_transparent_alias"] == [kind]
+
+
+def test_d10_copy_scope_uses_the_canonical_mapper(d10_audit_result) -> None:
+    res = d10_audit_result
+    registry = {
+        "kind": [
+            {
+                "canonical": "internal_copy",
+                "aliases": ["internal_copy_alias"],
+                "mapper_opcode": "Copy",
+            },
+            {"canonical": "internal_add", "aliases": [], "mapper_opcode": "Add"},
+        ]
+    }
+    mapped = AUDIT.mapper_kinds_from_registry(registry)
+    copies = AUDIT.mapper_kinds_from_registry(registry, opcode="Copy")
+    assert mapped == {"internal_copy", "internal_copy_alias", "internal_add"}
+    assert copies == {"internal_copy", "internal_copy_alias"}
+    service = res.rows["platform_system"]
+    rows = {
+        kind: replace(service, kind=kind, frontend_emits=True, mapper_maps=True)
+        for kind in mapped
+    }
+    broken = replace(
+        res,
+        rows=rows,
+        mapper_kinds=mapped,
+        copy_mapper_kinds=copies,
+        owned_result_runtime_kinds=mapped,
+    )
+    assert broken.dangerous()["owned_result_transparent_alias"] == sorted(copies)
+    assert "copy" in res.copy_mapper_kinds
+    assert "add" not in res.copy_mapper_kinds
+
+
+def test_d9_single_kind_handler_can_match_representation_without_kind_dispatch(
+    tmp_path,
+):
+    path = tmp_path / "single.rs"
+    path.write_text(
+        "fn handle(op: &OpIR) { match op.args.as_deref() { Some(args) => (), None => () } }",
+        encoding="utf-8",
+    )
+    assert AUDIT.extract_native_handler_arm_kinds(path, "handle", {"index"}) == {
+        "index"
+    }
+    with pytest.raises(AUDIT.RustMatchParseError):
+        AUDIT.extract_native_handler_arm_kinds(path, "handle", {"index", "store_index"})
+
+
+def test_d9_single_kind_handler_cannot_infer_an_opaque_wire_kind_domain(tmp_path):
+    path = tmp_path / "single.rs"
+    path.write_text(
+        "fn handle(op: &OpIR) { if opaque(op.kind.as_str()) { invoke(op); } }",
+        encoding="utf-8",
+    )
+    with pytest.raises(AUDIT.RustMatchParseError):
+        AUDIT.extract_native_handler_arm_kinds(path, "handle", {"index"})
+
+
+def test_d10_projects_full_runtime_return_authority_and_actual_aliases(
+    d10_audit_result,
+):
+    from wasm_abi_gen.manifest import load_manifest, runtime_operation_return_specs
+
+    contracts = runtime_operation_return_specs(load_manifest())
+    for kind in (
+        "abs",
+        "json_parse",
+        "msgpack_parse",
+        "cbor_parse",
+        "gen_send",
+        "gen_throw",
+        "gen_close",
+        "asyncgen_new",
+        "builtin_type",
+        "exception_push",
+        "exception_pop",
+        "type_of",
+        "class_layout_version",
+        "class_set_layout_version",
+        "list_int_new",
+    ):
+        assert contracts[kind] == "owned_object", kind
+        row = d10_audit_result.rows[kind]
+        assert row.classifier_class == "OwnedValue", kind
+        broken = replace(
+            d10_audit_result,
+            rows={kind: replace(row, classifier_class="TransparentAlias")},
+        )
+        assert broken.dangerous()["owned_result_transparent_alias"] == [kind]
+    for kind in (
+        "dict_set",
+        "dict_update_missing",
+        "frame_home_load",
+        "function_closure_bits",
+        "guard_tag",
+        "guard_type",
+        "const_ellipsis",
+        "const_not_implemented",
+        "trace_enter_slot",
+        "trace_exit",
+        "trace_set_line",
+        "frame_invocation_exit",
+    ):
+        assert contracts[kind] == "borrowed_object", kind
+        assert kind not in d10_audit_result.owned_result_runtime_kinds
+    assert contracts["alloc_class"] == "unpublished_object"
+    assert contracts["int_as_i64"] == "raw_bits"
+    assert contracts["print_newline"] == "void"
+    assert d10_audit_result.dangerous()["owned_result_transparent_alias"] == []
+
+
+def test_runtime_return_projection_rejects_conflicting_operation_selectors():
+    from wasm_abi_gen.manifest import (
+        WasmAbiManifestError,
+        load_manifest,
+        runtime_operation_return_specs,
+    )
+
+    data = load_manifest()
+    data["const_op_policy"].append({"kind": "abs", "materializer_import": "ellipsis"})
+    with pytest.raises(
+        WasmAbiManifestError, match="conflicting runtime return contracts"
+    ):
+        runtime_operation_return_specs(data)

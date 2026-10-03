@@ -47,6 +47,11 @@ def _resolve_wasm_cargo_profile_cached(
     return cargo_profile
 
 
+def runtime_wasm_simd_policy(*, freestanding: bool) -> bool:
+    """Hosted WASM runtimes use SIMD128; freestanding runtimes stay scalar."""
+    return not freestanding
+
+
 def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
     """Map cargo profile for WASM targets.
 

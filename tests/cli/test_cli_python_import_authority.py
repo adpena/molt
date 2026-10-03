@@ -125,6 +125,76 @@ def test_loader_package_precedes_mismatched_source_spec() -> None:
     assert resolution.requires_runtime
 
 
+def test_star_import_invalidates_metadata_after_resolving_its_own_request() -> None:
+    tree, context, flow = _contexts_for(
+        "from importlib.machinery import ModuleSpec\n"
+        "from .owner import *\n"
+        "from .child import value\n"
+    )
+    owner, child = tree.body[-2:]
+    incoming = flow.states_for(owner)
+    assert (
+        resolve_relative_import("owner", 1, context.with_state(incoming[0])).module
+        == "pkg.owner"
+    )
+    states = flow.states_for(child)
+    assert len(states) == 1
+    assert (
+        states[0].package.kind
+        == states[0].spec_parent.kind
+        == states[0].name.kind
+        == "unknown"
+    )
+    assert states[0].has_path is None
+    resolution = resolve_relative_import("child", 1, context.with_state(states[0]))
+    assert resolution.module is None and resolution.error == "unknown_package"
+
+
+@pytest.mark.parametrize(
+    "form", ["import owner as {name}", "from owner import value as {name}"]
+)
+@pytest.mark.parametrize("name", ["__package__", "__spec__", "__name__", "__path__"])
+def test_import_aliases_update_the_shared_metadata_state(form: str, name: str) -> None:
+    tree, _, flow = _contexts_for(
+        form.format(name=name) + "\nfrom .child import value\n"
+    )
+    state = flow.states_for(tree.body[-1])[0]
+    if name == "__path__":
+        assert state.has_path is True
+    else:
+        field = {
+            "__package__": "package",
+            "__spec__": "spec_parent",
+            "__name__": "name",
+        }[name]
+        assert getattr(state, field).kind == "unknown"
+
+
+@pytest.mark.parametrize("global_binding", [False, True])
+def test_class_import_alias_obeys_its_binding_scope(global_binding: bool) -> None:
+    declaration = "    global __package__\n" if global_binding else ""
+    tree, _, flow = _contexts_for(
+        "class Holder:\n" + declaration + "    import owner as __package__\n"
+        "from .child import value\n"
+    )
+    state = flow.states_for(tree.body[-1])[0]
+    assert state.package.kind == ("unknown" if global_binding else "known")
+
+
+def test_import_failure_preserves_partially_bound_metadata_for_handlers() -> None:
+    tree, _, flow = _contexts_for(
+        "try:\n"
+        "    from owner import first as __package__, second as __path__\n"
+        "except ImportError:\n"
+        "    from .child import value\n"
+    )
+    request = tree.body[0].handlers[0].body[0]
+    assert any(
+        state.package.kind == "unknown" and state.has_path is False
+        for state in flow.states_for(request)
+    )
+
+
 def test_package_none_falls_back_to_valid_module_spec_parent() -> None:
     source = (
         "from importlib.machinery import ModuleSpec\n"
@@ -790,21 +860,63 @@ def test_deferred_explicit_package_store_keeps_successful_graph_root() -> None:
 
 
 def test_modulespec_signature_and_parent_are_cpython_valid() -> None:
-    assert parse_module_spec_parent(
-        ast.parse("ModuleSpec('a.b.entry', None)", mode="eval").body,
-        {"ModuleSpec"},
-    ) == StaticMetadataValue.known("a.b")
-    assert parse_module_spec_parent(
-        ast.parse("ModuleSpec('a.b', None, is_package=True)", mode="eval").body,
-        {"ModuleSpec"},
-    ) == StaticMetadataValue.known("a.b")
-    assert (
-        parse_module_spec_parent(
-            ast.parse("ModuleSpec('a.b', None, None, True)", mode="eval").body,
-            {"ModuleSpec"},
-        )
-        == INVALID_VALUE
+    from molt.compiler_analysis.python_binding_flow import (
+        analyze_python_source_bindings,
     )
+
+    for expression, expected in [
+        ("ModuleSpec('a.b.entry', None)", StaticMetadataValue.known("a.b")),
+        ("ModuleSpec('a.b', None, is_package=True)", StaticMetadataValue.known("a.b")),
+        ("ModuleSpec('a.b', None, None, True)", INVALID_VALUE),
+    ]:
+        source = "from importlib.machinery import ModuleSpec\n" + expression + "\n"
+        node = ast.parse(source).body[-1].value
+        index = analyze_python_source_bindings(source)
+        assert parse_module_spec_parent(node, index.call_fact(node)) == expected
+        assert parse_module_spec_parent(node).kind == "unknown"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "ModuleSpec = dict\nclass Holder:\n    from importlib.machinery import ModuleSpec\n",
+        "from importlib.machinery import ModuleSpec\nModuleSpec = dict\n",
+    ],
+)
+def test_modulespec_name_never_overrides_canonical_callee_identity(
+    binding: str,
+) -> None:
+    tree, context, flow = _contexts_for(
+        "__package__ = None\n__spec__ = None\n"
+        + binding
+        + "__spec__ = ModuleSpec(name='foreign.leaf', loader=None)\n"
+        + "from .child import value\n"
+    )
+    states = flow.states_for(tree.body[-1])
+    assert states
+    assert all(
+        resolve_relative_import("child", 1, context.with_state(state)).module is None
+        for state in states
+    )
+
+
+@pytest.mark.parametrize(
+    "binding, callee",
+    [
+        ("from importlib.machinery import ModuleSpec as Factory", "Factory"),
+        ("import importlib.machinery as machinery", "machinery.ModuleSpec"),
+    ],
+)
+def test_modulespec_parent_proof_follows_identity_through_aliases(binding, callee):
+    tree, context, flow = _contexts_for(
+        binding
+        + "\n__package__ = None\n"
+        + f"__spec__ = {callee}('foreign.leaf', None)\nfrom .child import value\n"
+    )
+    assert {
+        resolve_relative_import("child", 1, context.with_state(state)).module
+        for state in flow.states_for(tree.body[-1])
+    } == {"foreign.child"}
 
 
 def test_import_module_explicit_package_never_uses_current_fallback() -> None:
@@ -862,6 +974,142 @@ def test_dunder_globals_dict_unpack_respects_order_and_unknown_overwrite() -> No
     assert state.package.kind == "unknown"
 
 
+@pytest.mark.parametrize(
+    "preamble,callee,arguments,expected",
+    [
+        ("", "__import__", "", set()),
+        (
+            "from builtins import __import__ as load\n",
+            "load",
+            "unknown=1",
+            {"builtins", "builtins.__import__"},
+        ),
+        (
+            "import importlib\n",
+            "importlib.import_module",
+            "'unbundled.binding_target', name='duplicate'",
+            {"importlib"},
+        ),
+        (
+            "from importlib import import_module as load\n",
+            "load",
+            "'unbundled.binding_target', None, None",
+            {"importlib", "importlib.import_module"},
+        ),
+        (
+            "import importlib.util\n",
+            "importlib.util.find_spec",
+            "'unbundled.binding_target', unexpected=1",
+            {"importlib.util"},
+        ),
+    ],
+)
+def test_invalid_import_call_binding_is_left_for_runtime(
+    tmp_path: Path,
+    preamble: str,
+    callee: str,
+    expected: set[str],
+    arguments: str,
+) -> None:
+    source = preamble + (
+        f"try:\n    {callee}({arguments})\nexcept TypeError:\n    pass\n"
+    )
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    assert set(module_import_scanner._collect_imports(ast.parse(source))) == expected
+    assert (
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(False, True, True),
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "preamble,callee",
+    [("", "__import__"), ("import importlib\n", "importlib.import_module")],
+)
+def test_invalid_import_call_still_collects_argument_imports(
+    tmp_path: Path, preamble: str, callee: str
+) -> None:
+    source = preamble + (
+        "try:\n"
+        f"    {callee}(__import__('argument_dependency'), unexpected=True)\n"
+        "except TypeError:\n    pass\n"
+    )
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    assert "argument_dependency" in module_import_scanner._collect_imports(
+        ast.parse(source)
+    )
+    assert "argument_dependency" in local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(False, True, True),
+    )
+
+
+@pytest.mark.parametrize(
+    "preamble,callee",
+    [("", "__import__"), ("import importlib\n", "importlib.import_module")],
+)
+@pytest.mark.parametrize("arguments", ["*args", "'target', **kwargs"])
+def test_unknown_import_argument_expansion_stays_fail_closed(
+    tmp_path: Path, preamble: str, callee: str, arguments: str
+) -> None:
+    source = preamble + (
+        f"def deferred(args, kwargs):\n    return {callee}({arguments})\n"
+    )
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    with pytest.raises(
+        ValueError, match="argument expansion requires runtime import custody"
+    ):
+        module_import_scanner._collect_imports(ast.parse(source))
+    with pytest.raises(ValueError, match="argument expansion requires a manifest"):
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(False, True, True),
+        )
+    assert "manifest_target" in local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(False, True, True),
+        expected_nonliteral_dynamic_imports=1,
+        nonliteral_dynamic_import_targets=("manifest_target",),
+    )
+
+
+@pytest.mark.parametrize("kind", ["dunder_import", "import_module"])
+@pytest.mark.parametrize(
+    "arguments",
+    ["*args, unexpected=1", "*args, 'first', name='duplicate'"],
+)
+def test_import_expansion_does_not_hide_proven_binding_failure(
+    kind: python_imports.ImportOperationKind, arguments: str
+) -> None:
+    call = cast(ast.Call, ast.parse(f"load({arguments})", mode="eval").body)
+    assert python_imports.bind_static_import_call_arguments(call, kind) is None
+
+
+@pytest.mark.parametrize("kind", ["dunder_import", "import_module"])
+def test_import_expansion_retains_only_fixed_parameter_positions(
+    kind: python_imports.ImportOperationKind,
+) -> None:
+    keyword = "package" if kind == "import_module" else "level"
+    call = cast(
+        ast.Call,
+        ast.parse(f"load(*args, 'later', {keyword}=1)", mode="eval").body,
+    )
+    binding = python_imports.bind_static_import_call_arguments(call, kind)
+    assert binding is not None and binding.requires_runtime_binding
+    assert binding.name is None
+    assert getattr(binding, keyword) is call.keywords[0].value
+
+
 def test_absolute_import_module_ignores_dynamic_package(tmp_path: Path) -> None:
     source = (
         "from importlib import import_module\nimport_module('pkg.child', object())\n"
@@ -908,15 +1156,10 @@ def test_expression_effect_projection_uses_generated_capability_lattice() -> Non
     assert not python_effects.expression_preserves_import_state(opaque_call)
     assert python_effects.expression_may_execute_python(opaque_call)
 
+    # A spelling-only expression query cannot inherit ModuleSpec purity.
     module_spec = ast.parse("ModuleSpec('pkg.mod', None)", mode="eval").body
-    assert python_effects.expression_preserves_import_state(
-        module_spec,
-        proven_pure_calls={"ModuleSpec"},
-    )
-    assert not python_effects.expression_may_execute_python(
-        module_spec,
-        proven_pure_calls={"ModuleSpec"},
-    )
+    assert not python_effects.expression_preserves_import_state(module_spec)
+    assert python_effects.expression_may_execute_python(module_spec)
 
     descriptor_read = ast.parse("owner.value", mode="eval").body
     assert not python_effects.expression_preserves_import_state(descriptor_read)

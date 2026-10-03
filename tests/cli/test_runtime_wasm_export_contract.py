@@ -12,6 +12,19 @@ from molt.wasm_artifact import (
 )
 
 
+def _typed_exports(path: Path, expected: dict[str, str]) -> set[str]:
+    from molt.toolchain_identity import stable_regular_file_identity
+    from molt.wasm_artifact import read_wasm_runtime_facts
+
+    direct = _runtime_wasm_typed_export_names(path, expected)
+    facts = read_wasm_runtime_facts(
+        stable_regular_file_identity(path, label="export fixture"),
+        relocatable=False,
+    )
+    assert _runtime_wasm_typed_export_names(path, expected, facts=facts) == direct
+    return direct
+
+
 def _u32(value: int) -> bytes:
     encoded = bytearray()
     while True:
@@ -47,7 +60,7 @@ def test_data_export_requires_nonzero_canonical_u32_address_in_memory(
     expected = {"PyLong_Type": "data"}
 
     path.write_bytes(_data_export_wasm(immediate=b"\x10", names=("PyLong_Type",)))
-    assert _runtime_wasm_typed_export_names(path, expected) == {"PyLong_Type"}
+    assert _typed_exports(path, expected) == {"PyLong_Type"}
 
     for invalid in (
         b"\x00",  # NULL
@@ -56,7 +69,7 @@ def test_data_export_requires_nonzero_canonical_u32_address_in_memory(
         b"\x7f",  # -1 interpreted as u32 and therefore outside memory
     ):
         path.write_bytes(_data_export_wasm(immediate=invalid, names=("PyLong_Type",)))
-        assert _runtime_wasm_typed_export_names(path, expected) == set()
+        assert _typed_exports(path, expected) == set()
 
 
 def test_data_export_alias_collision_fails_closed(tmp_path: Path) -> None:
@@ -66,10 +79,7 @@ def test_data_export_alias_collision_fails_closed(tmp_path: Path) -> None:
     )
 
     assert (
-        _runtime_wasm_typed_export_names(
-            path, {"PyLong_Type": "data", "PyFloat_Type": "data"}
-        )
-        == set()
+        _typed_exports(path, {"PyLong_Type": "data", "PyFloat_Type": "data"}) == set()
     )
 
 
@@ -83,14 +93,14 @@ def test_cpython_function_export_must_match_generated_c_abi_signature(
             "PyLong_FromLong", params=b"\x01\x7f", results=b"\x01\x7f"
         )
     )
-    assert _runtime_wasm_typed_export_names(path, expected) == {"PyLong_FromLong"}
+    assert _typed_exports(path, expected) == {"PyLong_FromLong"}
 
     path.write_bytes(
         _function_export_wasm(
             "PyLong_FromLong", params=b"\x01\x7e", results=b"\x01\x7f"
         )
     )
-    assert _runtime_wasm_typed_export_names(path, expected) == set()
+    assert _typed_exports(path, expected) == set()
 
 
 def test_direct_runtime_export_uses_generated_reverse_import_signature(
@@ -106,7 +116,7 @@ def test_direct_runtime_export_uses_generated_reverse_import_signature(
         )
     )
 
-    assert _runtime_wasm_typed_export_names(path, expected) == {"molt_fast_list_append"}
+    assert _typed_exports(path, expected) == {"molt_fast_list_append"}
 
 
 def test_split_runtime_export_uses_generated_canonical_import_signature(
@@ -122,7 +132,7 @@ def test_split_runtime_export_uses_generated_canonical_import_signature(
         )
     )
 
-    assert _runtime_wasm_typed_export_names(path, expected) == {"molt_PyLong_FromLong"}
+    assert _typed_exports(path, expected) == {"molt_PyLong_FromLong"}
 
 
 def test_unknown_runtime_export_signature_fails_closed(tmp_path: Path) -> None:
@@ -135,12 +145,7 @@ def test_unknown_runtime_export_signature_fails_closed(tmp_path: Path) -> None:
         )
     )
 
-    assert (
-        _runtime_wasm_typed_export_names(
-            path, {"molt_unknown_runtime_export": "function"}
-        )
-        == set()
-    )
+    assert _typed_exports(path, {"molt_unknown_runtime_export": "function"}) == set()
 
 
 def test_direct_runtime_export_signature_mismatch_fails_closed(tmp_path: Path) -> None:
@@ -153,10 +158,7 @@ def test_direct_runtime_export_signature_mismatch_fails_closed(tmp_path: Path) -
         )
     )
 
-    assert (
-        _runtime_wasm_typed_export_names(path, {"molt_fast_list_append": "function"})
-        == set()
-    )
+    assert _typed_exports(path, {"molt_fast_list_append": "function"}) == set()
 
 
 def test_publication_transform_has_one_bounded_buffered_pass(tmp_path: Path) -> None:

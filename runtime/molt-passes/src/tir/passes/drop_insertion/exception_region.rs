@@ -11,6 +11,9 @@ use crate::tir::values::{TirValue, ValueId};
 
 use super::arcs::{ArcDescriptor, retarget_arc, terminator_arcs};
 use super::audit::emit_drop_inner_stage_audit;
+use super::availability::{
+    definition_available_before_position, definition_available_on_edge, value_definitions,
+};
 use super::remap::{
     remap_op_operands, remap_terminator_values, remap_uses_dominated_by_split_continuation,
 };
@@ -20,49 +23,6 @@ use super::util::make_op;
 pub(super) struct ExceptionRegionDropInsertion {
     pub(super) dec_refs_added: usize,
     pub(super) cfg_changed: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ValueDefinition {
-    block: BlockId,
-    op_index: Option<usize>,
-}
-
-fn value_definitions(func: &TirFunction) -> HashMap<ValueId, ValueDefinition> {
-    let mut defs: HashMap<ValueId, ValueDefinition> = HashMap::new();
-    for (&bid, block) in &func.blocks {
-        for arg in &block.args {
-            defs.insert(
-                arg.id,
-                ValueDefinition {
-                    block: bid,
-                    op_index: None,
-                },
-            );
-        }
-        for (op_index, op) in block.ops.iter().enumerate() {
-            for &result in &op.results {
-                defs.insert(
-                    result,
-                    ValueDefinition {
-                        block: bid,
-                        op_index: Some(op_index),
-                    },
-                );
-            }
-        }
-    }
-    defs
-}
-
-pub(super) fn explicit_release_values(op: &TirOp) -> Vec<ValueId> {
-    if op.opcode == OpCode::DecRef {
-        return op.operands.to_vec();
-    }
-    if op.opcode == OpCode::DeleteVar {
-        return op.operands.get(1).copied().into_iter().collect();
-    }
-    Vec::new()
 }
 
 pub(super) fn insert_exception_creation_drops_at_raise(func: &mut TirFunction) -> usize {
@@ -101,27 +61,6 @@ pub(super) fn insert_exception_creation_drops_at_raise(func: &mut TirFunction) -
     inserted
 }
 
-fn definition_available_before_position(
-    def: ValueDefinition,
-    position: crate::tir::exception_regions::ExceptionOpPosition,
-    idoms: &HashMap<BlockId, Option<BlockId>>,
-) -> bool {
-    if def.block == position.block {
-        return def
-            .op_index
-            .is_none_or(|op_index| op_index < position.op_index);
-    }
-    crate::tir::dominators::dominates(def.block, position.block, idoms)
-}
-
-fn definition_available_on_edge(
-    def: ValueDefinition,
-    pred: BlockId,
-    idoms: &HashMap<BlockId, Option<BlockId>>,
-) -> bool {
-    def.block == pred || crate::tir::dominators::dominates(def.block, pred, idoms)
-}
-
 pub(super) fn insert_exception_region_match_drops(
     func: &mut TirFunction,
     am: &mut AnalysisManager,
@@ -158,11 +97,7 @@ pub(super) fn insert_exception_region_match_drops(
         func,
         crate::tir::dominators::CfgEdgePolicy::Full,
     );
-    let idoms = crate::tir::dominators::compute_idoms_with(
-        func,
-        &pred_map_term,
-        crate::tir::dominators::CfgEdgePolicy::Full,
-    );
+    let dominance = crate::tir::dominators::ProgramPointDominance::compute(func);
     let defs = value_definitions(func);
     let mut result = ExceptionRegionDropInsertion::default();
     emit_drop_inner_stage_audit(
@@ -171,7 +106,7 @@ pub(super) fn insert_exception_region_match_drops(
         None,
         None,
         Some(defs.len()),
-        Some(idoms.len()),
+        Some(func.blocks.len()),
         audit_start.elapsed().as_millis(),
     );
 
@@ -262,7 +197,7 @@ pub(super) fn insert_exception_region_match_drops(
                 continue;
             };
             if fact.entry_predecessors.is_empty() {
-                if definition_available_before_position(def, position, &idoms) {
+                if definition_available_before_position(def, position, &dominance) {
                     direct_values.insert(fact.value);
                 }
                 continue;
@@ -279,7 +214,7 @@ pub(super) fn insert_exception_region_match_drops(
                 let def = *defs.get(&value)?;
                 (!all_incoming_preds.is_empty()
                     && preds.is_superset(&all_incoming_preds)
-                    && definition_available_before_position(def, position, &idoms))
+                    && definition_available_before_position(def, position, &dominance))
                 .then_some(value)
             })
             .collect();
@@ -331,7 +266,7 @@ pub(super) fn insert_exception_region_match_drops(
                 let Some(&def) = defs.get(value) else {
                     continue;
                 };
-                if definition_available_on_edge(def, *pred, &idoms) {
+                if definition_available_on_edge(def, *pred, &dominance) {
                     edge_specific.push(*value);
                 }
             }

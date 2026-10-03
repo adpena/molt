@@ -155,7 +155,6 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
         backend_cache_setup,
         backend_compile,
         backend_output_pipeline,
-        link_pipeline,
         module_graph,
         module_stdlib_policy,
         runtime_build,
@@ -186,10 +185,10 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
         backend_compile._prepare_backend_setup,
         backend_compile._prepare_backend_runtime_context,
         backend_output_pipeline._emit_backend_pipeline_outputs,
-        link_pipeline._prepare_native_link,
         runtime_build._initialize_runtime_artifact_state,
         runtime_native_build._maybe_start_native_runtime_lib_ready_async,
         runtime_native_build._ensure_runtime_lib_ready,
+        runtime_native_build._ensure_native_runtime_lib_ready_for_codegen,
         runtime_native_build._ensure_native_runtime_lib_ready_before_link,
         runtime_native_build._ensure_runtime_lib,
         runtime_wasm_pair_build._ensure_runtime_wasm_both,
@@ -198,6 +197,16 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
     for func in lower_artifact_functions:
         default = inspect.signature(func).parameters["stdlib_profile"].default
         assert default == DEFAULT_RUNTIME_STDLIB_PROFILE, func.__name__
+
+
+def test_native_provider_inventory_does_not_pull_python_io_dependencies() -> None:
+    from molt.cli import module_stdlib_policy
+
+    for profile in ("auto", "micro", "edge", "standard", "server", "full"):
+        names = module_stdlib_policy._core_stdlib_module_names_for_profile(profile)
+        assert "_io" in names
+        assert not {"io", "os", "typing"}.intersection(names)
+        assert len(names) == len(set(names))
 
 
 def test_build_reexports_resolved_env_before_module_graph(monkeypatch) -> None:

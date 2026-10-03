@@ -45,6 +45,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
     loop_stack: &[LoopFrame],
     scalar_fast_paths_enabled: bool,
     nbc: &crate::NanBoxConsts,
+    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) -> OpFlow {
     match op.kind.as_str() {
         "add" => handle_add_op(
@@ -93,35 +95,11 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             scalar_fast_paths_enabled,
             nbc,
         ),
-        // ── vec_* reduction family ──────────────────────────────
-        // sum/prod/min/max over int and float sequences, plus the
-        // _trusted / _range / _range_iter variants. Extracted to
-        // fc::vec_reductions (M1 phase 1) so the handler is its own
-        // codegen unit lifted out of this monolith.
-        "vec_sum_int"
-        | "vec_sum_int_trusted"
-        | "vec_sum_int_range"
-        | "vec_sum_int_range_trusted"
-        | "vec_sum_int_range_iter"
-        | "vec_sum_int_range_iter_trusted"
-        | "vec_sum_float"
-        | "vec_sum_float_trusted"
-        | "vec_sum_float_range"
-        | "vec_sum_float_range_trusted"
-        | "vec_sum_float_range_iter"
-        | "vec_sum_float_range_iter_trusted"
-        | "vec_prod_int"
-        | "vec_prod_int_trusted"
-        | "vec_prod_int_range"
-        | "vec_prod_int_range_trusted"
-        | "vec_min_int"
-        | "vec_min_int_trusted"
-        | "vec_min_int_range"
-        | "vec_min_int_range_trusted"
-        | "vec_max_int"
-        | "vec_max_int_trusted"
-        | "vec_max_int_range"
-        | "vec_max_int_range_trusted" => {
+        // ── fused-loop reductions ───────────────────────────────
+        // sum/prod/min/max, each `(it, acc, target)` through its exact
+        // runtime kernel. Extracted to fc::vec_reductions (M1 phase 1) so the
+        // handler is its own codegen unit lifted out of this monolith.
+        "vec_sum" | "vec_prod" | "vec_min" | "vec_max" => {
             fc::vec_reductions::handle_vec_reduction(
                 op,
                 &mut *module,
@@ -132,6 +110,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 vars,
                 representation_plan,
                 nbc,
+                block_tracked_obj,
+                block_tracked_ptr,
             );
             OpFlow::Proceed
         }

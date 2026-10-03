@@ -1,3 +1,8 @@
+use super::purity::{SimpleIrScalarPurityFacts, simple_ir_op_is_provably_nonthrowing_with_facts};
+use crate::tir::op_kinds_generated::{
+    SimpleIrVarFieldRole, kind_source_call_first_adopted_operand, kind_to_opcode_table,
+    opcode_is_side_effecting_table, simpleir_kind_is_exception_check, simpleir_var_field_role_table,
+};
 use crate::{FunctionIR, OpIR};
 
 /// Eliminate redundant `guard_tag` ops on typed float/int variables.
@@ -34,6 +39,32 @@ fn fuse_count_value_reads(ops: &[OpIR], name: &str) -> usize {
     n
 }
 
+/// The adoption of a fused source call. A source call's arguments move into
+/// the callee, and CPython's method-form `LOAD_ATTR` and `CALL` move the
+/// receiver with them. So the fused call adopts every operand from its
+/// generated first adopted position on. A call that is not a source
+/// instruction carries no custody, and its fused form stays borrowed.
+fn fused_argument_custody(
+    source: &OpIR,
+    fused_kind: &str,
+    arity: usize,
+) -> Option<Vec<molt_ir::ParameterCustody>> {
+    source.argument_custody.as_ref()?;
+    let first_adopted = kind_source_call_first_adopted_operand(fused_kind)
+        .expect("a fused method call is a generated source call kind");
+    Some(
+        (0..arity)
+            .map(|position| {
+                if position < first_adopted {
+                    molt_ir::ParameterCustody::Borrowed
+                } else {
+                    molt_ir::ParameterCustody::Transferred
+                }
+            })
+            .collect(),
+    )
+}
+
 /// Fuse the `obj.method(args...)` dispatch idiom into a single `call_method_ic`
 /// op (the CPython `LOAD_METHOD`/`CALL_METHOD` optimisation).
 ///
@@ -63,13 +94,26 @@ fn fuse_count_value_reads(ops: &[OpIR], name: &str) -> usize {
 ///   * `CA` (the callargs) is referenced ONLY by its `callargs_push_pos` chain
 ///     and this `call_bind` — no `callargs_push_kw`, no escape.
 ///   * Every `callargs_push_pos` for `CA` lies between `callargs_new` and
-///     `call_bind` with no intervening control-flow boundary (label/jump/br_if/
-///     loop_*/ret/raise), so positional order is preserved.
+///     `call_bind`, so positional order is preserved.
+///   * The fused op looks the method up at the call, while the source looks
+///     it up before evaluating the arguments. Every other operation between
+///     the getattr and `call_bind` must therefore be inert: no control-flow
+///     boundary (label/jump/br_if/loop_*/ret/raise), no local store (it
+///     releases the binding it replaces), provably nonthrowing (the SimpleIR
+///     purity oracle) and free of side effects (the generated opcode effect
+///     table). Otherwise the site keeps its original lookup. The frontend
+///     creates `CA` at its first push, so argument evaluation sits between
+///     the getattr and `callargs_new`.
 ///   * The `get_attr_generic_ptr` has a single recv arg and an `s_value` method
 ///     name (it is a method getattr, not a field/dunder access shape).
 ///
 /// The runtime op reproduces getattr+call semantics including all descriptor /
 /// instance-shadow / `__getattribute__` fallbacks, so behaviour is preserved.
+///
+/// Fusion is a source transform. Every lane runs it before the TIR lift,
+/// and a fused source call adopts its receiver and arguments
+/// ([`fused_argument_custody`]). A body whose RC is already placed is left
+/// as placed.
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
@@ -85,6 +129,16 @@ pub fn fuse_method_dispatch(func_ir: &mut FunctionIR) {
 /// poisoned-env-lock / flaky-fusion-test class).
 pub(super) fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: bool) {
     if disabled {
+        return;
+    }
+    // Fusion rewrites source calls before RC placement. A body whose RC is
+    // already placed keeps the calls its releases balance, as the splitter
+    // refuses one.
+    if func_ir
+        .ops
+        .iter()
+        .any(super::megafunction_split::is_drop_fact_marker_op)
+    {
         return;
     }
     let len = func_ir.ops.len();
@@ -114,6 +168,30 @@ pub(super) fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: boo
                 | "raise"
         )
     }
+
+    /// An operation a method lookup may move across: it cannot branch, raise,
+    /// run Python code or write state the lookup could observe. Judged by the
+    /// SimpleIR purity oracle, the generated opcode effect table and the
+    /// generated variable-role table: a local store releases the binding it
+    /// replaces, and that release can run a finalizer. A kind with no opcode
+    /// row is never inert.
+    fn fusion_window_op_is_inert(facts: &SimpleIrScalarPurityFacts<'_>, op: &OpIR) -> bool {
+        if is_control_boundary(op.kind.as_str())
+            || simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Definition
+            || !simple_ir_op_is_provably_nonthrowing_with_facts(Some(facts), op)
+        {
+            return false;
+        }
+        // Every other window operation is nonthrowing, so an exception check
+        // can only observe the moved lookup's own error, which the fused call
+        // raises instead.
+        simpleir_kind_is_exception_check(&op.kind)
+            || kind_to_opcode_table(&op.kind)
+                .is_some_and(|opcode| !opcode_is_side_effecting_table(opcode))
+    }
+
+    // Literal scalar facts only: no representation plan exists at this stage.
+    let facts = SimpleIrScalarPurityFacts::for_function(func_ir, None);
 
     // Map each value name to the op index that defines it (its `out`).
     let mut def_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -169,6 +247,15 @@ pub(super) fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: boo
         if func_ir.ops[callargs_new_idx].kind != "callargs_new" {
             continue;
         }
+        // Only an ordinary call fuses. An expanded call keeps its callable and
+        // its input containers through the invocation instead.
+        if func_ir.ops[callargs_new_idx]
+            .call_argument_form()
+            .expect("validated callargs_new call form")
+            != molt_ir::CallArgumentForm::Stack
+        {
+            continue;
+        }
         if callargs_new_idx >= idx || getattr_idx >= idx {
             continue;
         }
@@ -218,9 +305,16 @@ pub(super) fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: boo
         if !ok || callargs_extra_use {
             continue;
         }
-        // No control-flow boundary may sit between callargs_new and call_bind,
-        // or positional ordering could differ at runtime.
-        if (callargs_new_idx + 1..idx).any(|k| is_control_boundary(func_ir.ops[k].kind.as_str())) {
+        // The fused op looks the method up at the call; the source looks it up
+        // before the arguments. Every operation in between must be inert, or
+        // the site keeps its original lookup.
+        let window_start = getattr_idx.min(callargs_new_idx);
+        if !(window_start + 1..idx).all(|k| {
+            k == getattr_idx
+                || k == callargs_new_idx
+                || push_indices.contains(&k)
+                || fusion_window_op_is_inert(&facts, &func_ir.ops[k])
+        }) {
             continue;
         }
         // The fast path family covers 0..=4 positional args; higher arity keeps
@@ -238,6 +332,8 @@ pub(super) fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: boo
             ..Default::default()
         };
         fused.out = func_ir.ops[idx].out.clone();
+        fused.argument_custody =
+            fused_argument_custody(&func_ir.ops[idx], &fused.kind, fused_args.len());
         fused.args = Some(fused_args);
         fused.s_value = Some(method_name);
         fused.inherit_source_site_from(&func_ir.ops[idx]);
@@ -318,6 +414,13 @@ pub(super) fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: boo
         if remove[callargs_new_idx] || func_ir.ops[callargs_new_idx].kind != "callargs_new" {
             continue;
         }
+        if func_ir.ops[callargs_new_idx]
+            .call_argument_form()
+            .expect("validated callargs_new call form")
+            != molt_ir::CallArgumentForm::Stack
+        {
+            continue;
+        }
         if super_idx >= idx || getattr_idx >= idx || callargs_new_idx >= idx {
             continue;
         }
@@ -365,7 +468,13 @@ pub(super) fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: boo
         if bail || arg_names.len() > 4 {
             continue;
         }
-        if (callargs_new_idx + 1..idx).any(|k| is_control_boundary(func_ir.ops[k].kind.as_str())) {
+        let window_start = super_idx.min(getattr_idx).min(callargs_new_idx);
+        if !(window_start + 1..idx).all(|k| {
+            k == getattr_idx
+                || k == callargs_new_idx
+                || push_indices.contains(&k)
+                || fusion_window_op_is_inert(&facts, &func_ir.ops[k])
+        }) {
             continue;
         }
 
@@ -379,6 +488,8 @@ pub(super) fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: boo
             ..Default::default()
         };
         fused.out = func_ir.ops[idx].out.clone();
+        fused.argument_custody =
+            fused_argument_custody(&func_ir.ops[idx], &fused.kind, fused_args.len());
         fused.args = Some(fused_args);
         fused.s_value = Some(method_name);
         fused.inherit_source_site_from(&func_ir.ops[idx]);

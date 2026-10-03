@@ -172,6 +172,94 @@ def test_plain_local_alias_assignment_emits_owned_binding_alias() -> None:
     assert any(op["kind"] == "binding_alias" for op in lowered_ops)
 
 
+def _rebinding_store(ops: list[MoltOp], slot: int) -> int:
+    """The first store to `slot`'s home after the prologue's parameter store:
+    the write that releases the binding it displaces."""
+    stores = [
+        i
+        for i, op in enumerate(ops)
+        if op.kind == "FRAME_HOME_STORE" and op.metadata["slot"] == slot
+    ]
+    return stores[1]
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "(value, (value := replacement))",
+        "consume(value, (value := replacement))",
+        "value + (value := replacement)",
+    ],
+)
+def test_expression_capture_precedes_binding_release(expression: str) -> None:
+    ops = _raw_ops(f"def f(value, replacement, consume):\n    return {expression}\n")
+    capture = next(i for i, op in enumerate(ops) if op.kind == "BINDING_ALIAS")
+    # `value` is the first code slot; its home releases the displaced binding.
+    release = _rebinding_store(ops, 0)
+    assert capture < release
+    assert any(
+        op.kind not in {"FRAME_HOME_STORE", "STORE_VAR"}
+        and any(
+            isinstance(arg, MoltValue) and arg.name == ops[capture].result.name
+            for arg in op.args
+        )
+        for op in ops[release + 1 :]
+    ), "the consumer must use the independently captured value"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["value", "value if condition else replacement", "value or replacement"],
+)
+def test_return_capture_precedes_finally_rebind(expression: str) -> None:
+    ops = _raw_ops(
+        "def f(value, replacement, condition):\n"
+        "    try:\n"
+        f"        return {expression}\n"
+        "    finally:\n"
+        "        value = replacement\n"
+    )
+    returned = next(op for op in ops if op.kind == "ret" and op.args)
+    result = returned.args[0]
+    capture = next(
+        i
+        for i, op in enumerate(ops)
+        if op.kind == "BINDING_ALIAS" and op.result.name == result.name
+    )
+    assert capture < _rebinding_store(ops, 0)
+
+
+def test_ordinary_expression_reads_do_not_acquire_blanket_owners() -> None:
+    ops = _raw_ops("def f(value, other):\n    return (value, other)\n")
+    assert not any(op.kind == "BINDING_ALIAS" for op in ops)
+
+
+def test_assignment_expression_result_has_an_independent_owner() -> None:
+    ops = _raw_ops("def f(make):\n    return ((value := make()), (value := make()))\n")
+    captures = [op for op in ops if op.kind == "BINDING_ALIAS"]
+    assert len(captures) == 2
+    returned = next(op for op in ops if op.kind == "ret" and op.args)
+    aggregate = next(op for op in ops if op.result.name == returned.args[0].name)
+    assert aggregate.kind == "TUPLE_NEW"
+    assert [arg.name for arg in aggregate.args] == [op.result.name for op in captures]
+    assert ops.index(captures[0]) < next(
+        i
+        for i, op in enumerate(ops)
+        if op.kind == "STORE_VAR"
+        and op.metadata.get("var") == "value"
+        and op.args[0].name == captures[0].args[0].name
+    )
+
+
+def test_lambda_return_captures_a_borrowed_parameter() -> None:
+    ops = _raw_ops("f = lambda value: value\n")
+    returned = next(op for op in ops if op.kind == "ret" and op.args)
+    assert any(
+        op.kind == "BINDING_ALIAS" and op.result.name == returned.args[0].name
+        for op in ops
+    )
+
+
 def test_class_control_flow_type_alias_publishes_through_class_namespace() -> None:
     ops = _raw_ops(
         "class AliasOwner:\n"

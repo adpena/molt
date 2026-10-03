@@ -36,6 +36,7 @@ impl WasmBackend {
             task_closure_sizes,
             default_trampoline_spec,
             function_abi_returns_value,
+            function_entry_custody,
         } = analysis;
 
         emit_static_type_section(&mut self.types);
@@ -103,6 +104,7 @@ impl WasmBackend {
             call_site_abi: callable_table.call_site_abi(
                 &escaped_callable_targets,
                 host_surface.call_func_spill_offset,
+                &function_entry_custody,
             ),
             import_ids: &import_ids,
             native_callable_imports: &native_callable_imports,

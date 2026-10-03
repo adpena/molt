@@ -7,7 +7,7 @@
 //!
 //! ABI: NaN-boxed u64 in/out.
 
-use crate::builtins::numbers::{int_bits_from_i64, to_f64, to_i64};
+use crate::builtins::numbers::int_bits_from_i64;
 use crate::object::builders::{alloc_string, alloc_tuple};
 use crate::{
     MoltObject, PyToken, bits_from_ptr, call_callable3, is_truthy, obj_from_bits, raise_exception,
@@ -49,90 +49,152 @@ pub extern "C" fn molt_threading_next_token() -> u64 {
 
 // ── Timeout validation ──────────────────────────────────────────────────────
 
-/// Validates and normalizes a timeout parameter.
-/// `mode_bits`: 0 = Lock mode, 1 = Event/Condition/Join mode.
-/// `blocking_bits`: whether the operation is blocking (for Lock mode).
-/// `timeout_bits`: the raw timeout value.
-/// Returns: normalized timeout as float bits, or None bits if no timeout.
+/// Semantic policy at the wait boundary, before platform timeout conversion.
+#[derive(Clone, Copy)]
+pub(crate) enum ThreadTimeoutPolicy {
+    /// _thread.Lock/RLock convert first, then validate blocking and -1.
+    Lock { blocking: bool },
+    /// Condition (and pending Future) compare with zero before lock conversion.
+    Condition,
+    /// Thread.join clamps negative values with max(timeout, 0), then converts.
+    Join,
+}
+
+// CPython Include/pythread.h: Windows reserves DWORD::MAX for INFINITE;
+// POSIX timed locks use signed nanoseconds. These are guest target facts,
+// not properties of the host running the compiler or Python frontend.
+#[cfg(target_os = "windows")]
+const THREAD_TIMEOUT_MAX_MICROS: i64 = (u32::MAX as i64 - 1) * 1_000;
+#[cfg(not(target_os = "windows"))]
+const THREAD_TIMEOUT_MAX_MICROS: i64 = i64::MAX / 1_000;
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_threading_validate_timeout(
-    timeout_bits: u64,
-    mode_bits: u64,
-    blocking_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        let timeout_obj = obj_from_bits(timeout_bits);
-        let mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(0);
-        let blocking = is_truthy(py, obj_from_bits(blocking_bits));
+pub extern "C" fn molt_thread_timeout_max() -> u64 {
+    MoltObject::from_float((THREAD_TIMEOUT_MAX_MICROS / 1_000_000) as f64).bits()
+}
 
-        // None means no timeout
-        if timeout_obj.is_none() {
-            if mode == 0 {
-                return raise_exception::<u64>(
-                    py,
-                    "TypeError",
-                    "'NoneType' object cannot be interpreted as an integer or float",
-                );
-            }
-            return MoltObject::none().bits();
+fn timeout_nanoseconds(py: &PyToken<'_>, bits: u64) -> Result<i64, u64> {
+    use num_traits::ToPrimitive;
+    let object = obj_from_bits(bits);
+    let float = crate::as_float_extended(object);
+    if let Some(seconds) = float {
+        if seconds.is_nan() {
+            return Err(raise_exception::<u64>(
+                py,
+                "ValueError",
+                "Invalid value NaN (not a number)",
+            ));
         }
-
-        // Try to convert to float
-        let timeout_val = match to_f64(timeout_obj) {
-            Some(v) => v,
-            None => {
-                let tname = type_name(py, timeout_obj);
-                let msg = format!(
-                    "'{}' object cannot be interpreted as an integer or float",
-                    tname
-                );
-                return raise_exception::<u64>(py, "TypeError", &msg);
-            }
+        // Timeout rounding is away from zero, preserving positive sub-nanosecond
+        // waits. Check the signed time range before any integer cast.
+        let nanos = if seconds >= 0.0 {
+            (seconds * 1_000_000_000.0).ceil()
+        } else {
+            (seconds * 1_000_000_000.0).floor()
         };
-
-        const TIMEOUT_MAX: f64 = 9223372036.0;
-
-        match mode {
-            0 => {
-                // Lock mode
-                if !blocking && timeout_val != -1.0 {
-                    return raise_exception::<u64>(
-                        py,
-                        "ValueError",
-                        "can't specify a timeout for a non-blocking call",
-                    );
-                }
-                if blocking && timeout_val < 0.0 && timeout_val != -1.0 {
-                    return raise_exception::<u64>(
-                        py,
-                        "ValueError",
-                        "timeout value must be a non-negative number",
-                    );
-                }
-                if blocking && timeout_val != -1.0 && timeout_val > TIMEOUT_MAX {
-                    return raise_exception::<u64>(
-                        py,
-                        "OverflowError",
-                        "timestamp out of range for platform time_t",
-                    );
-                }
-                MoltObject::from_float(timeout_val).bits()
-            }
-            1 => {
-                // Event/Condition/Join mode
-                let clamped = if timeout_val < 0.0 { 0.0 } else { timeout_val };
-                if clamped > TIMEOUT_MAX {
-                    return raise_exception::<u64>(
-                        py,
-                        "OverflowError",
-                        "timestamp out of range for platform time_t",
-                    );
-                }
-                MoltObject::from_float(clamped).bits()
-            }
-            _ => MoltObject::none().bits(),
+        if !nanos.is_finite() || nanos >= i64::MAX as f64 || nanos < i64::MIN as f64 {
+            return Err(raise_exception::<u64>(
+                py,
+                "OverflowError",
+                "timestamp out of range for platform time_t",
+            ));
         }
-    })
+        return Ok(nanos as i64);
+    }
+    // PyTime accepts actual floats or __index__, never the broader float()
+    // protocol (which accepts strings and __float__-only objects).
+    let message = format!(
+        "'{}' object cannot be interpreted as an integer",
+        type_name(py, object)
+    );
+    let Some(seconds) = crate::builtins::numbers::index_bigint_from_obj(py, bits, &message) else {
+        return Err(MoltObject::none().bits());
+    };
+    match seconds
+        .to_i64()
+        .and_then(|value| value.checked_mul(1_000_000_000))
+    {
+        Some(value) => Ok(value),
+        None => Err(raise_exception::<u64>(
+            py,
+            "OverflowError",
+            "timestamp too large to convert to C _PyTime_t",
+        )),
+    }
+}
+
+fn positive_timeout_duration(py: &PyToken<'_>, nanos: i64) -> Result<std::time::Duration, u64> {
+    debug_assert!(nanos >= 0);
+    // The timed-lock API consumes microseconds rounded up. Validate this
+    // exact projection, including the fractional interval above TIMEOUT_MAX.
+    let micros = nanos / 1_000 + i64::from(nanos % 1_000 != 0);
+    if micros > THREAD_TIMEOUT_MAX_MICROS {
+        return Err(raise_exception::<u64>(
+            py,
+            "OverflowError",
+            "timeout value is too large",
+        ));
+    }
+    Ok(std::time::Duration::from_nanos(nanos as u64))
+}
+
+fn timeout_comparison(py: &PyToken<'_>, left: u64, right: u64) -> Result<bool, u64> {
+    let compared = crate::molt_gt(left, right);
+    if crate::exception_pending(py) {
+        crate::dec_ref_bits(py, compared);
+        return Err(MoltObject::none().bits());
+    }
+    let result = is_truthy(py, obj_from_bits(compared));
+    crate::dec_ref_bits(py, compared);
+    if crate::exception_pending(py) {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(result)
+    }
+}
+
+pub(crate) fn parse_thread_timeout(
+    py: &PyToken<'_>,
+    bits: u64,
+    policy: ThreadTimeoutPolicy,
+) -> Result<Option<std::time::Duration>, u64> {
+    let blocking = match policy {
+        ThreadTimeoutPolicy::Lock { blocking } => blocking,
+        ThreadTimeoutPolicy::Condition | ThreadTimeoutPolicy::Join => {
+            if obj_from_bits(bits).is_none() {
+                return Ok(None);
+            }
+            let zero = MoltObject::from_int(0).bits();
+            let immediate = match policy {
+                ThreadTimeoutPolicy::Condition => !timeout_comparison(py, bits, zero)?,
+                ThreadTimeoutPolicy::Join => timeout_comparison(py, zero, bits)?,
+                ThreadTimeoutPolicy::Lock { .. } => unreachable!(),
+            };
+            if immediate {
+                return Ok(Some(std::time::Duration::ZERO));
+            }
+            true
+        }
+    };
+    let nanos = timeout_nanoseconds(py, bits)?;
+    if !blocking && nanos != -1_000_000_000 {
+        return Err(raise_exception::<u64>(
+            py,
+            "ValueError",
+            "can't specify a timeout for a non-blocking call",
+        ));
+    }
+    if nanos < 0 && nanos != -1_000_000_000 {
+        return Err(raise_exception::<u64>(
+            py,
+            "ValueError",
+            "timeout value must be positive",
+        ));
+    }
+    if nanos == -1_000_000_000 {
+        return Ok(None);
+    }
+    positive_timeout_duration(py, nanos).map(Some)
 }
 
 /// Invokes trace and profile hooks stored as NaN-boxed callables.
@@ -277,4 +339,104 @@ pub extern "C" fn molt_threading_event_is_set(event_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_threading_event_wait(event_bits: u64) -> u64 {
     unsafe { crate::molt_event_wait(event_bits, MoltObject::none().bits()) }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn assert_error(py: &PyToken<'_>, bits: u64, policy: ThreadTimeoutPolicy, name: &str) {
+        assert!(parse_thread_timeout(py, bits, policy).is_err());
+        let pending = crate::molt_exception_last_pending();
+        let ptr = obj_from_bits(pending).as_ptr().expect("pending exception");
+        let class = crate::builtins::exceptions::exception_type_bits_from_name(py, name);
+        assert_eq!(unsafe { crate::object_class_bits(ptr) }, class);
+        crate::clear_exception(py);
+        crate::dec_ref_bits(py, pending);
+    }
+
+    #[test]
+    fn lock_condition_and_join_keep_distinct_timeout_policies() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let lock = ThreadTimeoutPolicy::Lock { blocking: true };
+            let condition = ThreadTimeoutPolicy::Condition;
+            for value in [f64::NAN, f64::NEG_INFINITY, -2.0] {
+                let bits = crate::float_result_bits(py, value);
+                assert_eq!(
+                    parse_thread_timeout(py, bits, condition).unwrap(),
+                    Some(Duration::ZERO)
+                );
+                assert_error(
+                    py,
+                    bits,
+                    lock,
+                    if value.is_infinite() {
+                        "OverflowError"
+                    } else {
+                        "ValueError"
+                    },
+                );
+                crate::dec_ref_bits(py, bits);
+            }
+            let nan = crate::float_result_bits(py, f64::NAN);
+            assert_error(py, nan, ThreadTimeoutPolicy::Join, "ValueError");
+            crate::dec_ref_bits(py, nan);
+            for value in [f64::INFINITY, 1e300] {
+                let bits = crate::float_result_bits(py, value);
+                assert_error(py, bits, condition, "OverflowError");
+                assert_error(py, bits, lock, "OverflowError");
+                crate::dec_ref_bits(py, bits);
+            }
+            let none = MoltObject::none().bits();
+            assert_eq!(parse_thread_timeout(py, none, condition).unwrap(), None);
+            assert_error(py, none, lock, "TypeError");
+            let negative_one = MoltObject::from_int(-1).bits();
+            assert_eq!(parse_thread_timeout(py, negative_one, lock).unwrap(), None);
+            assert_eq!(
+                parse_thread_timeout(py, negative_one, condition).unwrap(),
+                Some(Duration::ZERO)
+            );
+            let tiny = MoltObject::from_float(1e-12).bits();
+            assert_eq!(
+                parse_thread_timeout(py, tiny, lock).unwrap(),
+                Some(Duration::from_nanos(1))
+            );
+            assert_error(
+                py,
+                MoltObject::from_int(0).bits(),
+                ThreadTimeoutPolicy::Lock { blocking: false },
+                "ValueError",
+            );
+        });
+    }
+
+    #[test]
+    fn platform_limit_and_integer_time_overflow_are_checked_before_duration_creation() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let limit_nanos = THREAD_TIMEOUT_MAX_MICROS * 1_000;
+            assert_eq!(
+                positive_timeout_duration(py, limit_nanos)
+                    .unwrap()
+                    .as_nanos(),
+                limit_nanos as u128
+            );
+            assert!(positive_timeout_duration(py, limit_nanos + 1).is_err());
+            crate::clear_exception(py);
+            let over_seconds = MoltObject::from_int(i64::MAX / 1_000_000_000 + 1).bits();
+            assert_error(
+                py,
+                over_seconds,
+                ThreadTimeoutPolicy::Lock { blocking: true },
+                "OverflowError",
+            );
+            let max_seconds = crate::to_f64(obj_from_bits(molt_thread_timeout_max())).unwrap();
+            #[cfg(target_os = "windows")]
+            assert_eq!(max_seconds, 4_294_967.0);
+            #[cfg(not(target_os = "windows"))]
+            assert_eq!(max_seconds, 9_223_372_036.0);
+        });
+    }
 }

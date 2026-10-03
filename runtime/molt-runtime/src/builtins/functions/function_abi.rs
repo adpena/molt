@@ -7,8 +7,7 @@ use super::wasm_callables_generated as wasm_callables;
 use super::*;
 use crate::ClassEdgeOwnership;
 use crate::object::layout::function_call_abi;
-use crate::object::{object_init_class_edge_unpublished, object_replace_class_edge};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use crate::object::object_init_class_edge_unpublished;
 
 #[derive(Copy, Clone)]
 struct NativeCallableTarget(*const ());
@@ -354,8 +353,37 @@ pub(crate) fn alloc_runtime_function_obj(
     ptr
 }
 
+/// Complete a compiled function object's creation with the entry custody its
+/// code generator derived from the function's own parameter declaration
+/// (`molt_codegen_abi::EntryCustodyDeclaration`): 0 borrows every argument,
+/// `ENTRY_CUSTODY_ADOPTS` adopts every Python parameter. Any other word, or an
+/// adopting entry the function cannot honor, is a code generation defect: the
+/// new function is released and `SystemError` raised.
+unsafe fn finish_compiled_function(py: &PyToken<'_>, ptr: *mut u8, entry_custody: u64) -> u64 {
+    let custody = match entry_custody {
+        0 => Ok(crate::object::layout::EntryCustody::Borrowing),
+        molt_codegen_abi::ENTRY_CUSTODY_ADOPTS => Ok(crate::object::layout::EntryCustody::Adopting),
+        _ => Err("compiled function entry custody must be 0 (borrowing) or 1 (adopting)"),
+    };
+    let bits = MoltObject::from_ptr(ptr).bits();
+    match custody.and_then(|custody| unsafe {
+        crate::object::layout::function_publish_entry_custody(ptr, custody)
+    }) {
+        Ok(()) => bits,
+        Err(message) => {
+            dec_ref_bits(py, bits);
+            raise_exception::<_>(py, "SystemError", message)
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
+pub extern "C" fn molt_func_new(
+    fn_ptr: u64,
+    trampoline_ptr: u64,
+    arity: u64,
+    entry_custody: u64,
+) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let fn_key = canonicalize_runtime_callable_key(fn_ptr);
         let trace = matches!(
@@ -364,7 +392,7 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
         );
         if trace {
             eprintln!(
-                "molt func new: fn_ptr={fn_ptr} fn_key={fn_key} tramp_ptr={trampoline_ptr} arity={arity}"
+                "molt func new: fn_ptr={fn_ptr} fn_key={fn_key} tramp_ptr={trampoline_ptr} arity={arity} entry_custody={entry_custody}"
             );
         }
         let ptr = alloc_function_obj(_py, fn_key, arity);
@@ -373,8 +401,8 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
         } else {
             unsafe {
                 init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, true);
+                finish_compiled_function(_py, ptr, entry_custody)
             }
-            MoltObject::from_ptr(ptr).bits()
         }
     })
 }
@@ -441,76 +469,51 @@ fn molt_func_new_builtin_raw_impl(
     bits
 }
 
-pub(crate) fn python_builtin_function_bits(
-    _py: &crate::PyToken<'_>,
-    python_name: &str,
-) -> Option<u64> {
-    let info = wasm_callables::python_builtin_function_info(python_name)?;
-    let slots = python_builtin_function_slots(_py);
-    let slot = slots.get(info.index)?;
-    let cached_bits = slot.load(AtomicOrdering::Acquire);
-    if cached_bits != 0 {
-        inc_ref_bits(_py, cached_bits);
-        return Some(cached_bits);
+/// Resolve a public builtin name from the executing/canonical builtins
+/// namespace. Provider declarations construct objects only during publication;
+/// deletion or replacement of a public alias never triggers materialization.
+pub(crate) fn lookup_builtin_name(py: &crate::PyToken<'_>, python_name: &str) -> Option<u64> {
+    let namespace = crate::builtins::frames::frame_effective_builtins_bits(py, 0);
+    if exception_pending(py) {
+        return None;
     }
-    let bits = alloc_python_builtin_function_bits(_py, info)?;
-    match slot.compare_exchange(0, bits, AtomicOrdering::AcqRel, AtomicOrdering::Acquire) {
-        Ok(_) => {
-            inc_ref_bits(_py, bits);
-            Some(bits)
-        }
-        Err(existing_bits) => {
-            dec_ref_bits(_py, bits);
-            if existing_bits == 0 {
-                return None;
-            }
-            inc_ref_bits(_py, existing_bits);
-            Some(existing_bits)
-        }
-    }
+    // A custom mapping callback may replace the interpreter publication. Keep
+    // the selected namespace alive through lookup and result acquisition.
+    inc_ref_bits(py, namespace);
+    let owner = obj_from_bits(namespace)
+        .as_ptr()
+        .map(crate::PtrDropGuard::new);
+    let name = attr_name_bits_from_bytes(py, python_name.as_bytes())?;
+    let value = crate::builtins::modules::lookup_builtin_global(py, name, namespace);
+    dec_ref_bits(py, name);
+    drop(owner);
+    value.ok().flatten()
 }
 
-pub(crate) fn python_builtin_functions_clear_runtime_state(
-    _py: &crate::PyToken<'_>,
-    state: &crate::state::RuntimeState,
-) -> bool {
-    if let Some(slots) = state.python_builtin_function_slots.get() {
-        let slot_refs: Vec<&AtomicU64> = slots.iter().collect();
-        crate::state::cache::clear_atomic_slots(_py, &slot_refs)
-    } else {
-        false
-    }
-}
-
-fn python_builtin_function_slots(_py: &crate::PyToken<'_>) -> &'static [AtomicU64] {
-    crate::runtime_state(_py)
-        .python_builtin_function_slots
-        .get_or_init(|| {
-            (0..wasm_callables::PYTHON_BUILTIN_FUNCTION_COUNT)
-                .map(|_| AtomicU64::new(0))
-                .collect()
-        })
-        .as_slice()
-}
-
-fn alloc_python_builtin_function_bits(
+/// The exact provider module owns the published callable and its immutable
+/// receiver edge. This allocator is consumed only by namespace publication.
+pub(crate) fn alloc_python_builtin_function_bits(
     _py: &crate::PyToken<'_>,
     info: wasm_callables::PythonBuiltinFunctionInfo,
+    module_bits: u64,
 ) -> Option<u64> {
     let fn_ptr = crate::intrinsics::registry::try_app_resolve_symbol(info.runtime_name)?;
     let ptr = alloc_runtime_function_obj(_py, fn_ptr, info.arity);
     if ptr.is_null() {
         return None;
     }
-    unsafe {
-        let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-        if !object_init_class_edge_unpublished(_py, ptr, builtin_bits, ClassEdgeOwnership::Owned) {
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return None;
-        }
-    }
     let bits = MoltObject::from_ptr(ptr).bits();
     if !init_python_builtin_function_metadata(_py, bits, info) {
+        dec_ref_bits(_py, bits);
+        return None;
+    }
+    let spec = super::native_callable::NativeCallableSpec {
+        name: Some(info.python_name),
+        text_signature: info.text_signature,
+        self_bits: Some(module_bits),
+        ..super::native_callable::NativeCallableSpec::uncached_function()
+    };
+    if !unsafe { super::native_callable::configure_native_callable(_py, ptr, spec) } {
         dec_ref_bits(_py, bits);
         return None;
     }
@@ -737,24 +740,41 @@ pub extern "C" fn molt_func_new_builtin_named(
     arity: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         let trace = matches!(
             std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
             Some("1")
         );
-        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
-            if let Some(func_bits) = python_builtin_function_bits(_py, &name) {
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "builtin name must be str");
+        };
+        // The frontend distinguishes a public declaration name from an
+        // explicit executable runtime symbol. Only the former resolves the
+        // active namespace; raw targets cannot refill a missing public alias.
+        if wasm_callables::python_builtin_function_info(&name).is_some() {
+            if let Some(func_bits) = lookup_builtin_name(_py, &name) {
                 if trace {
                     eprintln!("molt builtin_func named: resolved python builtin {}", name);
                 }
                 return func_bits;
             }
-            if let Some(func_bits) =
-                crate::intrinsics::registry::try_resolve_intrinsic_func(_py, &name, false)
-            {
-                if trace {
-                    eprintln!("molt builtin_func named: resolved intrinsic {}", name);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return raise_exception(_py, "NameError", &format!("name '{name}' is not defined"));
+        }
+        {
+            match crate::intrinsics::registry::try_resolve_intrinsic_func(_py, &name, false) {
+                Ok(Some(func_bits)) => {
+                    if trace {
+                        eprintln!("molt builtin_func named: resolved intrinsic {}", name);
+                    }
+                    return func_bits;
                 }
-                return func_bits;
+                Ok(None) => {}
+                Err(()) => return MoltObject::none().bits(),
             }
         }
         if trace {
@@ -772,6 +792,7 @@ pub extern "C" fn molt_func_new_closure(
     trampoline_ptr: u64,
     arity: u64,
     closure_bits: u64,
+    entry_custody: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let fn_key = canonicalize_runtime_callable_key(fn_ptr);
@@ -781,7 +802,7 @@ pub extern "C" fn molt_func_new_closure(
         );
         if trace {
             eprintln!(
-                "molt func new closure: fn_ptr={fn_ptr} tramp_ptr={trampoline_ptr} arity={arity} closure_bits={closure_bits}"
+                "molt func new closure: fn_ptr={fn_ptr} tramp_ptr={trampoline_ptr} arity={arity} closure_bits={closure_bits} entry_custody={entry_custody}"
             );
         }
         let call_abi = if closure_bits != 0 && !obj_from_bits(closure_bits).is_none() {
@@ -811,8 +832,8 @@ pub extern "C" fn molt_func_new_closure(
         unsafe {
             function_set_closure_bits(_py, ptr, closure_bits, call_abi);
             init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, true);
+            finish_compiled_function(_py, ptr, entry_custody)
         }
-        MoltObject::from_ptr(ptr).bits()
     })
 }
 
@@ -968,6 +989,10 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
         if closure_to_store != 0 {
             function_set_closure_bits(_py, func_ptr, closure_to_store, callable_identity.call_abi);
         }
+        // The new function runs the code's compiled entry, so it adopts exactly
+        // as that entry was compiled; the code pairing below verifies it.
+        crate::object::layout::function_publish_entry_custody(func_ptr, callable_identity.custody)
+            .expect("an unpaired reconstructible function publishes its entry custody");
         if !function_set_code_bits(_py, func_ptr, args[0]) {
             dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
             return MoltObject::none().bits();
@@ -1026,20 +1051,37 @@ pub(crate) fn function_set_builtin_class(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "expected function");
         }
-        let builtins = builtin_classes(_py);
-        let class_bits = if has_defining_class {
-            builtins.builtin_method
+        let globals = function_globals_bits(func_ptr);
+        let module = if globals == 0 || obj_from_bits(globals).is_none() {
+            None
         } else {
-            builtins.builtin_function_or_method
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            let modules = cache.lock().unwrap();
+            modules
+                .values()
+                .copied()
+                .find(|bits| {
+                    obj_from_bits(*bits).as_ptr().is_some_and(|module| {
+                        object_type_id(module) == TYPE_ID_MODULE
+                            && module_dict_bits(module) == globals
+                    })
+                })
+                .inspect(|bits| inc_ref_bits(_py, *bits))
         };
-        if object_class_bits(func_ptr) != class_bits
-            && !object_replace_class_edge(_py, func_ptr, class_bits, ClassEdgeOwnership::Owned)
-        {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "function class metadata is immutable after publication",
-            );
+        let _module_owner = module
+            .and_then(|bits| obj_from_bits(bits).as_ptr())
+            .map(crate::PtrDropGuard::new);
+        let spec = super::native_callable::NativeCallableSpec {
+            kind: if has_defining_class {
+                super::native_callable::NativeCallableKind::CMethod
+            } else {
+                super::native_callable::NativeCallableKind::Function
+            },
+            self_bits: module,
+            ..super::native_callable::NativeCallableSpec::uncached_function()
+        };
+        if !super::native_callable::configure_native_callable(_py, func_ptr, spec) {
+            return MoltObject::none().bits();
         }
     }
     MoltObject::none().bits()
@@ -1617,91 +1659,100 @@ pub extern "C" fn molt_code_new(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let debug_bound = crate::builtins::attributes::debug_bound_method_enabled();
-        let func_obj = obj_from_bits(func_bits);
-        let Some(func_ptr) = func_obj.as_ptr() else {
+    crate::with_gil_entry_nopanic!(_py, { bound_method_new(_py, func_bits, self_bits, true) })
+}
+
+pub(crate) fn bound_method_new(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    self_bits: u64,
+    native_binding: bool,
+) -> u64 {
+    let debug_bound = crate::builtins::attributes::debug_bound_method_enabled();
+    let func_obj = obj_from_bits(func_bits);
+    let Some(func_ptr) = func_obj.as_ptr() else {
+        if debug_bound {
+            let self_obj = obj_from_bits(self_bits);
+            let self_label = self_obj
+                .as_ptr()
+                .map(|_| type_name(_py, self_obj).into_owned())
+                .unwrap_or_else(|| format!("immediate:{:#x}", self_bits));
+            let self_type_id = self_obj
+                .as_ptr()
+                .map(|ptr| unsafe { object_type_id(ptr) })
+                .unwrap_or(0);
+            eprintln!(
+                "molt_bound_method_new: non-object func_bits={:#x} self={} self_type_id={}",
+                func_bits, self_label, self_type_id
+            );
+            if let Some(name) = crate::builtins::attr::debug_last_attr_name() {
+                eprintln!("molt_bound_method_new last_attr={}", name);
+            }
+        }
+        return raise_exception::<_>(_py, "TypeError", "bound method expects function object");
+    };
+    unsafe {
+        // If func_bits is already a BOUND_METHOD, unwrap to its inner function
+        // so we don't fail the TYPE_ID_FUNCTION check below. This happens when
+        // inline int/float/bool attribute fallback passes a bound method through
+        // the builtin_class_method_bits path.
+        if object_type_id(func_ptr) == TYPE_ID_BOUND_METHOD {
+            let inner_func_bits = bound_method_func_bits(func_ptr);
+            return bound_method_new(_py, inner_func_bits, self_bits, native_binding);
+        }
+        if !is_callable_impl(_py, func_bits) {
             if debug_bound {
-                let self_obj = obj_from_bits(self_bits);
-                let self_label = self_obj
+                let type_label = type_name(_py, func_obj).into_owned();
+                let self_label = obj_from_bits(self_bits)
                     .as_ptr()
-                    .map(|_| type_name(_py, self_obj).into_owned())
+                    .map(|_| type_name(_py, obj_from_bits(self_bits)).into_owned())
                     .unwrap_or_else(|| format!("immediate:{:#x}", self_bits));
-                let self_type_id = self_obj
-                    .as_ptr()
-                    .map(|ptr| unsafe { object_type_id(ptr) })
-                    .unwrap_or(0);
                 eprintln!(
-                    "molt_bound_method_new: non-object func_bits={:#x} self={} self_type_id={}",
-                    func_bits, self_label, self_type_id
+                    "molt_bound_method_new: expected callable got type_id={} type={} self={}",
+                    object_type_id(func_ptr),
+                    type_label,
+                    self_label
                 );
-                if let Some(name) = crate::builtins::attr::debug_last_attr_name() {
-                    eprintln!("molt_bound_method_new last_attr={}", name);
-                }
             }
-            return raise_exception::<_>(_py, "TypeError", "bound method expects function object");
+            return raise_exception::<_>(_py, "TypeError", "bound method expects callable object");
+        }
+    }
+    let ptr = alloc_bound_method_obj(_py, func_bits, self_bits);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        let method_bits = {
+            let func_class_bits = unsafe { object_class_bits(func_ptr) };
+            if native_binding
+                && let Some(kind) =
+                    crate::builtins::functions::native_callable::NativeCallableKind::from_class(
+                        _py,
+                        func_class_bits,
+                    )
+            {
+                kind.bound_class(_py)
+            } else {
+                crate::builtins::types::method_class(_py)
+            }
         };
-        unsafe {
-            // If func_bits is already a BOUND_METHOD, unwrap to its inner function
-            // so we don't fail the TYPE_ID_FUNCTION check below. This happens when
-            // inline int/float/bool attribute fallback passes a bound method through
-            // the builtin_class_method_bits path.
-            if object_type_id(func_ptr) == TYPE_ID_BOUND_METHOD {
-                let inner_func_bits = bound_method_func_bits(func_ptr);
-                return molt_bound_method_new(inner_func_bits, self_bits);
-            }
-            if !is_callable_impl(_py, func_bits) {
-                if debug_bound {
-                    let type_label = type_name(_py, func_obj).into_owned();
-                    let self_label = obj_from_bits(self_bits)
-                        .as_ptr()
-                        .map(|_| type_name(_py, obj_from_bits(self_bits)).into_owned())
-                        .unwrap_or_else(|| format!("immediate:{:#x}", self_bits));
-                    eprintln!(
-                        "molt_bound_method_new: expected callable got type_id={} type={} self={}",
-                        object_type_id(func_ptr),
-                        type_label,
-                        self_label
-                    );
+        if method_bits != 0 {
+            unsafe {
+                let old_bits = object_class_bits(ptr);
+                if old_bits != method_bits
+                    && !object_init_class_edge_unpublished(
+                        _py,
+                        ptr,
+                        method_bits,
+                        ClassEdgeOwnership::Owned,
+                    )
+                {
+                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                    return MoltObject::none().bits();
                 }
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "bound method expects callable object",
-                );
             }
         }
-        let ptr = alloc_bound_method_obj(_py, func_bits, self_bits);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            let method_bits = {
-                let func_class_bits = unsafe { object_class_bits(func_ptr) };
-                if builtin_classes(_py).is_builtin_callable_class(func_class_bits) {
-                    func_class_bits
-                } else {
-                    crate::builtins::types::method_class(_py)
-                }
-            };
-            if method_bits != 0 {
-                unsafe {
-                    let old_bits = object_class_bits(ptr);
-                    if old_bits != method_bits
-                        && !object_init_class_edge_unpublished(
-                            _py,
-                            ptr,
-                            method_bits,
-                            ClassEdgeOwnership::Owned,
-                        )
-                    {
-                        dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                        return MoltObject::none().bits();
-                    }
-                }
-            }
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
+        MoltObject::from_ptr(ptr).bits()
+    }
 }
 
 /// # Safety
@@ -1744,21 +1795,7 @@ pub unsafe extern "C" fn molt_closure_store(self_ptr_bits: u64, offset: u64, bit
             let Some(offset) = usize::try_from(offset).ok() else {
                 return MoltObject::none().bits();
             };
-            let slot = self_ptr.add(offset) as *mut u64;
-            let old_bits = *slot;
-            if obj_from_bits(bits).as_ptr().is_some() {
-                crate::object::object_mark_has_ptrs(_py, self_ptr);
-            }
-            if old_bits == bits {
-                return MoltObject::none().bits();
-            }
-            // The incoming value may alias the displaced owner. Retain before
-            // publishing, then release only after reentrant Python can observe
-            // the new slot. Never rewrite the slot after a callback: it may
-            // have legitimately replaced this binding again.
-            inc_ref_bits(_py, bits);
-            *slot = bits;
-            dec_ref_bits(_py, old_bits);
+            crate::object::payload_refs::store_borrowed(_py, self_ptr, offset, bits);
             MoltObject::none().bits()
         })
     }

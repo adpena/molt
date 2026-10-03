@@ -516,6 +516,7 @@ fn run_isolate_thread(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod bootstrap_failure_tests {
     use super::*;
+    use crate::{builtin_classes, runtime_state};
     use std::ffi::c_void;
     use std::os::raw::c_int;
 
@@ -673,6 +674,69 @@ mod bootstrap_failure_tests {
             initializations.load(AtomicOrdering::SeqCst),
             payloads.load(AtomicOrdering::SeqCst),
         )
+    }
+
+    #[test]
+    fn isolate_object_and_type_metadata_use_runtime_declarations() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let handle = Arc::new(MoltThreadHandle::new());
+        let worker_handle = Arc::clone(&handle);
+        std::thread::spawn(move || {
+            run_isolate_thread(
+                worker_handle,
+                || MoltObject::none().bits(),
+                || {
+                    crate::with_gil_entry_nopanic!(py, {
+                        let roots = builtin_classes(py);
+                        assert!(!crate::state::runtime_state::owns_process_cpython_state(
+                            runtime_state(py)
+                        ));
+                        let mut owners = Vec::new();
+                        let mut attribute = |value, name: &[u8]| {
+                            let key = attr_name_bits_from_bytes(py, name).unwrap();
+                            let result = crate::molt_get_attr_name(value, key);
+                            dec_ref_bits(py, key);
+                            assert!(!exception_pending(py), "isolate metadata lookup failed");
+                            owners.push(result);
+                            result
+                        };
+                        assert_eq!(
+                            attribute(MoltObject::from_int(7).bits(), b"__class__"),
+                            roots.int
+                        );
+                        assert_eq!(
+                            string_obj_to_owned(obj_from_bits(attribute(roots.int, b"__name__")))
+                                .as_deref(),
+                            Some("int")
+                        );
+                        let mro = attribute(roots.int, b"__mro__");
+                        assert_eq!(crate::molt_len(mro), MoltObject::from_int(2).bits());
+                        let namespace = attribute(roots.type_obj, b"__dict__");
+                        let get = attribute(namespace, b"get");
+                        let key = attr_name_bits_from_bytes(py, b"__name__").unwrap();
+                        let descriptor = unsafe { crate::call_callable1(py, get, key) };
+                        assert!(!exception_pending(py));
+                        let pointer = obj_from_bits(descriptor).as_ptr().unwrap();
+                        assert_eq!(
+                            unsafe { object_type_id(pointer) },
+                            crate::TYPE_ID_NATIVE_DESCRIPTOR
+                        );
+                        assert_eq!(
+                            unsafe { crate::object::layout::native_descriptor_flavor(pointer) },
+                            Some(crate::object::layout::NativeDescriptorFlavor::RootMetadata)
+                        );
+                        dec_ref_bits(py, descriptor);
+                        dec_ref_bits(py, key);
+                        for owner in owners {
+                            dec_ref_bits(py, owner);
+                        }
+                    });
+                },
+            );
+        })
+        .join()
+        .expect("isolate metadata consumer must complete");
+        assert!(handle.done.load(AtomicOrdering::Acquire));
     }
 
     #[test]
@@ -1151,13 +1215,13 @@ pub unsafe extern "C" fn molt_thread_join(handle_bits: u64, timeout_bits: u64) -
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
-        let timeout = if obj_from_bits(timeout_bits).is_none() {
-            None
-        } else {
-            match crate::to_f64(obj_from_bits(timeout_bits)) {
-                Some(val) if val > 0.0 => Some(Duration::from_secs_f64(val)),
-                _ => Some(Duration::from_secs(0)),
-            }
+        let timeout = match crate::builtins::threading_helpers::parse_thread_timeout(
+            _py,
+            timeout_bits,
+            crate::builtins::threading_helpers::ThreadTimeoutPolicy::Join,
+        ) {
+            Ok(timeout) => timeout,
+            Err(bits) => return bits,
         };
         let _release = crate::concurrency::GilReleaseGuard::suspend();
         if handle.wait(timeout) {

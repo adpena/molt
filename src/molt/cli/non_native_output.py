@@ -96,6 +96,7 @@ from molt.native_callable_abi import (
 )
 from molt.toolchain_identity import stable_regular_file_identity
 from molt.wasm_artifact import (
+    WasmExportSignature,
     _collect_wasm_module_import_names,
     _wasm_export_function_signatures,
     _wasm_import_minima,
@@ -258,7 +259,7 @@ class _RuntimeImportAbiManifest(TypedDict):
     canonical_names: dict[str, str]
     export_names: dict[str, str]
     signatures: dict[str, dict[str, object]]
-    runtime_export_signatures: dict[str, dict[str, object]]
+    runtime_export_signatures: dict[str, WasmExportSignature]
     result_kinds: dict[str, str]
 
 
@@ -302,7 +303,7 @@ def _write_external_static_packages_bundle(
 
 def _runtime_export_signatures_for_imports(
     runtime_wasm: Path, import_names: set[str]
-) -> dict[str, dict[str, object]]:
+) -> dict[str, WasmExportSignature]:
     import_to_export = {}
     for import_name in import_names:
         export_name = _runtime_export_name_for_import_from_manifest(import_name)
@@ -1050,6 +1051,15 @@ def _prepare_non_native_build_result_in_generation(
                     json_output,
                     command="build",
                 )
+            # Provenance authorizes these exact runtime members at execution;
+            # it does not change the link when their admitted bytes are equal.
+            # Keep it separate from the command's code-generating arguments.
+            runtime_admission_args = [
+                "--runtime-generation",
+                str(runtime_wasm_generation),
+                "--runtime-expected-identity",
+                str(runtime_wasm_expected_identity),
+            ]
             link_cmd = [
                 sys.executable,
                 str(tool),
@@ -1057,10 +1067,6 @@ def _prepare_non_native_build_result_in_generation(
                 str(runtime_reloc_wasm),
                 "--runtime-shared",
                 str(runtime_wasm),
-                "--runtime-generation",
-                str(runtime_wasm_generation),
-                "--runtime-expected-identity",
-                str(runtime_wasm_expected_identity),
                 "--input",
                 str(output_wasm),
                 "--output",
@@ -1192,11 +1198,7 @@ def _prepare_non_native_build_result_in_generation(
                 inputs=[
                     output_wasm,
                     runtime_reloc_wasm,
-                    *(
-                        (runtime_wasm,)
-                        if _split_runtime and runtime_wasm is not None
-                        else ()
-                    ),
+                    runtime_wasm,
                     *browser_deploy_sources,
                     *external_native_fingerprint_inputs,
                     *package_payload_inputs,
@@ -1262,14 +1264,16 @@ def _prepare_non_native_build_result_in_generation(
                 receipt_path=link_fingerprint_path,
             )
             if link_skipped:
-                link_process = subprocess.CompletedProcess(link_cmd, 0, "", "")
+                link_process = subprocess.CompletedProcess(
+                    [*link_cmd, *runtime_admission_args], 0, "", ""
+                )
                 artifacts.update(deployment_plan.artifacts())
                 if _split_runtime:
                     bundle_root = deployment_plan.root
             else:
                 native_link_plan_path: Path | None = None
                 link_timings_path: Path | None = None
-                link_run_cmd = list(link_cmd)
+                link_run_cmd = [*link_cmd, *runtime_admission_args]
                 # The link is its own top-level build phase: without this
                 # marker its whole wall time (wasm-ld, post-link passes,
                 # wasm-opt, split-runtime processing) was charged to the last

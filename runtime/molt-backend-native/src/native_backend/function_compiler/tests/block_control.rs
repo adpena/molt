@@ -11,11 +11,8 @@ fn block_transport_plan_emits_typed_args_and_rebinds_values() {
     let float_var = builder.declare_var(types::F64);
     let entry = builder.create_block();
     let target = builder.create_block();
-    let plan = BlockTransportPlan::for_test(
-        vec!["float".into(), "word".into()],
-        vec![float_var, word_var],
-        vec![types::F64, types::I64],
-    );
+    let plan =
+        BlockTransportPlan::for_test(vec![float_var, word_var], vec![types::F64, types::I64]);
     plan.append_block_params(&mut builder, target);
 
     switch_to_block_materialized(&mut builder, entry);
@@ -28,7 +25,7 @@ fn block_transport_plan_emits_typed_args_and_rebinds_values() {
     builder.seal_block(entry);
 
     switch_to_block_materialized(&mut builder, target);
-    plan.bind_block_params(&mut builder, target);
+    plan.bind_block_params(&mut builder, target, &empty_ssa_values());
 
     assert_eq!(builder.use_var(float_var), builder.block_params(target)[0]);
     assert_eq!(builder.use_var(word_var), builder.block_params(target)[1]);
@@ -50,7 +47,13 @@ fn materialize_label_block_defines_unreached_forward_label() {
     builder.seal_block(entry);
 
     let mut is_block_filled = true;
-    materialize_label_block(&mut builder, detached_label, &mut is_block_filled, None);
+    materialize_label_block(
+        &mut builder,
+        detached_label,
+        &mut is_block_filled,
+        None,
+        &empty_ssa_values(),
+    );
 
     assert!(
         builder.func.layout.is_block_inserted(detached_label),
@@ -74,7 +77,13 @@ fn materialize_label_block_does_not_self_jump_current_resume_block() {
     switch_to_block_materialized(&mut builder, resume_block);
 
     let mut is_block_filled = false;
-    materialize_label_block(&mut builder, resume_block, &mut is_block_filled, None);
+    materialize_label_block(
+        &mut builder,
+        resume_block,
+        &mut is_block_filled,
+        None,
+        &empty_ssa_values(),
+    );
 
     assert_eq!(builder.current_block(), Some(resume_block));
     assert!(
@@ -88,3 +97,56 @@ fn materialize_label_block_does_not_self_jump_current_resume_block() {
 }
 
 // â”€â”€ scan_loop_int_sum_reduction tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+fn empty_ssa_values() -> NativeSsaValues {
+    NativeSsaValues::for_test(
+        &[],
+        &[],
+        &crate::tir::cfg_liveness::SimpleNameTable::default(),
+    )
+}
+
+#[test]
+fn unique_dominating_definition_still_requires_earlier_emission() {
+    let mut initializer = OpIR::default();
+    initializer.kind = "const".into();
+    initializer.out = Some("immutable".into());
+    let ops = vec![
+        OpIR {
+            kind: "jump".into(),
+            value: Some(9),
+            ..Default::default()
+        },
+        OpIR {
+            kind: "label".into(),
+            value: Some(7),
+            ..Default::default()
+        },
+        OpIR {
+            kind: "ret".into(),
+            args: Some(vec!["immutable".into()]),
+            ..Default::default()
+        },
+        OpIR {
+            kind: "label".into(),
+            value: Some(9),
+            ..Default::default()
+        },
+        initializer,
+        OpIR {
+            kind: "jump".into(),
+            value: Some(7),
+            ..Default::default()
+        },
+    ];
+    let names = crate::tir::cfg_liveness::analyze_simple_cfg_liveness(&ops).names;
+    let values = NativeSsaValues::for_test(&[], &ops, &names);
+    assert!(!values.can_bind_directly(
+        names.id("immutable").unwrap(),
+        crate::tir::dominators::SimpleProgramPoint::Before(1)
+    ));
+    assert!(values.can_bind_directly(
+        names.id("immutable").unwrap(),
+        crate::tir::dominators::SimpleProgramPoint::Before(5)
+    ));
+}

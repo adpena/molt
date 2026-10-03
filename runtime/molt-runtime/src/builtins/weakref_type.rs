@@ -8,11 +8,11 @@ use molt_obj_model::MoltObject;
 
 use crate::builtins::attributes::attr_lookup_ptr;
 use crate::builtins::classes::builtin_classes;
-use crate::builtins::type_ops::{issubclass_bits, type_of_bits};
+use crate::builtins::type_ops::type_of_bits;
 use crate::call::class_init::alloc_instance_for_class;
 use crate::{
-    TYPE_ID_STRING, TYPE_ID_TYPE, TYPE_ID_WEAKREF, alloc_string, attr_name_bits_from_bytes,
-    dec_ref_bits, exception_pending, inc_ref_bits, int_bits_from_i64, molt_weakref_find_nocallback,
+    TYPE_ID_STRING, TYPE_ID_WEAKREF, alloc_string, attr_name_bits_from_bytes, dec_ref_bits,
+    exception_pending, inc_ref_bits, int_bits_from_i64, molt_weakref_find_nocallback,
     molt_weakref_register, obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
     type_name,
 };
@@ -54,22 +54,59 @@ pub extern "C" fn molt_weakref_reference_type() -> u64 {
     })
 }
 
+pub(crate) extern "C" fn weakref_new_method(args: u64, kwargs: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(call) =
+            crate::builtins::native_arguments::NativeArguments::read(py, "__new__", args, kwargs)
+        else {
+            return MoltObject::none().bits();
+        };
+        let Some((class, _)) = crate::builtins::type_ops::native_constructor_receiver(
+            py,
+            builtin_classes(py).reference_type,
+            call.positional.first().copied(),
+            "weakref.ReferenceType",
+        ) else {
+            return MoltObject::none().bits();
+        };
+        let values = call.values();
+        if values.is_empty() || values.len() > 2 {
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                &format!(
+                    "__new__ expected at {} {} argument{}, got {}",
+                    if values.is_empty() { "least" } else { "most" },
+                    if values.is_empty() { 1 } else { 2 },
+                    if values.is_empty() { "" } else { "s" },
+                    values.len(),
+                ),
+            );
+        }
+        // weakref.__new__ ignores kwargs; the published __init__ rejects them.
+        molt_weakref_new(
+            class,
+            values[0],
+            values
+                .get(1)
+                .copied()
+                .unwrap_or_else(|| MoltObject::none().bits()),
+        )
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_new(class_bits: u64, target_bits: u64, callback_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let builtins = builtin_classes(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "weakref.__new__ expects type");
+        let Some((_, class_ptr)) = crate::builtins::type_ops::native_constructor_receiver(
+            _py,
+            builtins.reference_type,
+            Some(class_bits),
+            "weakref.ReferenceType",
+        ) else {
+            return MoltObject::none().bits();
         };
-        if unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE
-            || !issubclass_bits(class_bits, builtins.reference_type)
-        {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "weakref.__new__(type): type is not a subtype of ReferenceType",
-            );
-        }
         if class_bits == builtins.reference_type && obj_from_bits(callback_bits).is_none() {
             let cached = molt_weakref_find_nocallback(target_bits);
             if !obj_from_bits(cached).is_none() || exception_pending(_py) {

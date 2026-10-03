@@ -155,6 +155,10 @@ stdlib:
     tests:
       - tests/differential/stdlib/asyncio_api_surface_core.py
       - tests/differential/stdlib/asyncio_api_surface_modules.py
+      - tests/differential/stdlib/asyncio_idle_wait_deadlines.py
+      - tests/differential/stdlib/asyncio_idle_wait_signal_wakeup.py
+      - tests/differential/stdlib/asyncio_idle_wait_threadsafe_wakeups.py
+      - tests/differential/stdlib/asyncio_signal_handler_semantics.py
       - tests/differential/stdlib/asyncio_streams_echo_basic.py
       - tests/differential/stdlib/asyncio_streams_echo_multi_backpressure.py
   builtins:
@@ -471,7 +475,9 @@ stdlib:
   signal:
     tests:
       - tests/differential/stdlib/signal_basic.py
+      - tests/differential/stdlib/signal_dispatch_safepoints.py
       - tests/differential/stdlib/signal_keyboardinterrupt.py
+      - tests/differential/stdlib/signal_keyboardinterrupt_subclass_exit.py
   socket:
     tests:
       - tests/differential/stdlib/socket_getaddrinfo.py

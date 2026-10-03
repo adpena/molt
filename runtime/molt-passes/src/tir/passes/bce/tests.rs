@@ -41,12 +41,12 @@ fn make_const_int(result: ValueId, value: i64) -> TirOp {
     }
 }
 
-fn make_call_builtin(name: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+fn make_len_primitive(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     let mut attrs = AttrDict::new();
-    attrs.insert("name".into(), AttrValue::Str(name.into()));
+    attrs.insert("_original_kind".into(), AttrValue::Str("len".into()));
     TirOp {
         dialect: Dialect::Molt,
-        opcode: OpCode::CallBuiltin,
+        opcode: OpCode::Copy,
         operands,
         results,
         attrs,
@@ -905,7 +905,7 @@ fn while_lt_len_container_index_marked_safe() {
             make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
             make_const_int(n, 100),
             make_op(OpCode::Mul, vec![list_1, n], vec![lst]),
-            make_call_builtin("len", vec![lst], vec![len_val]),
+            make_len_primitive(vec![lst], vec![len_val]),
             make_const_int(const_1, 1),
             make_const_int(i_start, 0),
         ];
@@ -961,18 +961,32 @@ fn while_lt_len_container_index_marked_safe() {
     );
     func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
 
-    let stats = run_bce(&mut func);
-    let index_op = func.blocks[&body_id]
-        .ops
-        .iter()
-        .find(|o| o.opcode == OpCode::Index)
-        .expect("Index op must be present");
-    assert_eq!(
-        index_op.attrs.get("bce_safe"),
-        Some(&AttrValue::Bool(true)),
-        "Index in while(i<len(lst)) must be bce_safe (symbolic-len proof)"
-    );
-    assert!(stats.values_changed >= 1);
+    for primitive in [true, false] {
+        let mut candidate = func.clone();
+        if !primitive {
+            let lookup = candidate
+                .blocks
+                .get_mut(&entry_block)
+                .unwrap()
+                .ops
+                .iter_mut()
+                .find(|op| op.results == vec![len_val])
+                .unwrap();
+            lookup.opcode = OpCode::CallBuiltin;
+            lookup.attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
+        }
+        let stats = run_bce(&mut candidate);
+        let index = candidate.blocks[&body_id]
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Index)
+            .unwrap();
+        assert_eq!(
+            index.attrs.get("bce_safe") == Some(&AttrValue::Bool(true)),
+            primitive
+        );
+        assert_eq!(stats.values_changed > 0, primitive);
+    }
 }
 
 #[test]
@@ -1008,7 +1022,7 @@ fn full_deopt_symbolic_len_index_not_marked_safe() {
             make_const_int(true_val, 1),
             make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
             make_op(OpCode::Mul, vec![list_1, n], vec![lst]),
-            make_call_builtin("len", vec![lst], vec![len_val]),
+            make_len_primitive(vec![lst], vec![len_val]),
             make_const_int(const_1, 1),
             make_const_int(i_start, 0),
         ];

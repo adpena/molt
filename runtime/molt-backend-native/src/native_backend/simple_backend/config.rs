@@ -261,7 +261,47 @@ impl SimpleBackend {
             declared_func_arities: BTreeMap::new(),
             defined_func_names: std::collections::BTreeSet::new(),
             deferred_defines: Vec::new(),
+            function_entry_custody: BTreeMap::new(),
         }
+    }
+
+    /// Effective target inputs from the same ISA constructor used by codegen.
+    /// Host SIMD also drives TIR independently of the selected target ISA.
+    pub fn object_codegen_identity(target: Option<&str>) -> serde_json::Value {
+        let backend = Self::new_with_target(target);
+        let isa = backend.module.isa();
+        let flags: BTreeMap<String, String> = isa
+            .flags()
+            .iter()
+            .map(|value| (value.name.to_string(), value.value_string()))
+            .collect();
+        let isa_flags: BTreeMap<String, String> = isa
+            .isa_flags()
+            .into_iter()
+            .map(|value| (value.name.to_string(), value.value_string()))
+            .collect();
+        let simd = crate::tir::target_info::SimdCaps::detect_host();
+        let identity = serde_json::json!({
+            "target": isa.triple().to_string(),
+            "shared_flags": flags,
+            "isa_flags": isa_flags,
+            "tir_host_simd": [simd.avx, simd.avx2, simd.avx512f],
+            "backend": env_setting("MOLT_BACKEND"),
+        });
+        #[cfg(feature = "llvm")]
+        let identity = {
+            let mut identity = identity;
+            // LLVM's current target-machine owner explicitly uses these host
+            // inputs, even when a request also carries a target triple.
+            use inkwell::targets::TargetMachine;
+            identity["llvm_host"] = serde_json::json!({
+                "triple": TargetMachine::get_default_triple().as_str().to_str().unwrap(),
+                "cpu": TargetMachine::get_host_cpu_name().to_str().unwrap(),
+                "features": TargetMachine::get_host_cpu_features().to_str().unwrap(),
+            });
+            identity
+        };
+        identity
     }
 
     pub fn prepare_module_context(functions: &mut Vec<FunctionIR>) -> NativeBackendModuleContext {

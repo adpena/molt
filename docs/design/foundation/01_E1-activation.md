@@ -153,7 +153,7 @@ The three structural invariants hold by construction:
 
 1. **SSA**: Every splice is followed by `verify_function` in tests; the merged body is fully type-refined before it leaves `run_inliner` (`inliner.rs:1169-1172`). A splice that produced invalid SSA panics — no silent corruption.
 
-2. **REFCOUNT**: The `+0 borrowed` calling convention is preserved verbatim; the `call_site_has_arg_incref` guard (lines 337-348) refuses any site where the caller does `IncRef(arg)` in the ≤2 ops before the `Call`, conservatively correct.
+2. **REFCOUNT**: The call's reference contract is preserved: each parameter's declared custody, the callee's frame clear at every exit, and one owned result (design 20 §1.6). The splice binds each parameter the activation owns through an owned `binding_alias`, ends every exit with the frame clear DropInsertion plans for the callee's own `Return`, and captures a returned frame binding first (`inliner/activation.rs`). The `call_site_has_arg_incref` guard refuses any site where the caller does `IncRef(arg)` in the ≤2 ops before the `Call`.
 
 3. **LOOP METADATA**: All five loop maps (`label_id_map`, `loop_roles`, `loop_pairs`, `loop_break_kinds`, `loop_cond_blocks`) are transferred with remapped keys (`inliner.rs:542`).
 

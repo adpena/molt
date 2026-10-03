@@ -30,6 +30,8 @@ from molt.file_hashing import _sha256_file
 from molt.file_deletion import unlink_file
 from molt.exact_json import canonical_json_bytes, encode_exact, loads_exact
 from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    open_stable_regular_file,
     stable_regular_file_version,
     verify_stable_regular_file_identity,
 )
@@ -205,17 +207,28 @@ def staged_copy_file(
     *,
     prepare: Callable[[Path], None] | None = None,
     expected_sha256: str | None = None,
+    observed: StableRegularFileIdentity | None = None,
 ) -> Iterator[Path]:
     """Own a verified private copy until its caller publishes or abandons it."""
 
     tmp_path = staged_output_path(dst, purpose="copy")
     try:
-        shutil.copyfile(src, tmp_path)
+        if observed is None:
+            shutil.copyfile(src, tmp_path)
+        else:
+            with open_stable_regular_file(
+                src, label="staged copy source", observed=observed
+            ) as opened:
+                with tmp_path.open("xb") as destination:
+                    shutil.copyfileobj(opened.stream, destination, length=1024 * 1024)
         if prepare is not None:
             prepare(tmp_path)
         if expected_sha256 is not None and _sha256_file(tmp_path) != expected_sha256:
             raise ValueError(f"source changed while staging verified copy: {src}")
-        shutil.copymode(src, tmp_path)
+        if observed is None:
+            shutil.copymode(src, tmp_path)
+        else:
+            tmp_path.chmod(stat.S_IMODE(opened.stat.st_mode))
         yield tmp_path
     finally:
         discard_staged_output(tmp_path)

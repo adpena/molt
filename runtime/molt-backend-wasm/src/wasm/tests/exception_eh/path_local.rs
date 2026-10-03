@@ -76,10 +76,20 @@ fn dispatch_keeps_handler_checks_and_runtime_frames_for_every_eh_request() {
         assert!(calls.contains(&imports["exception_pop"]));
         let operators = wasm_operator_debug_for_export(&wasm, PROBE);
         assert!(
-            !operators
-                .iter()
-                .any(|op| op.starts_with("Throw") || op.starts_with("TryTable")),
+            !operators.iter().any(|op| op.starts_with("Throw {")),
             "{operators:?}"
+        );
+        assert_eq!(
+            operators
+                .iter()
+                .filter(|op| op.starts_with("TryTable"))
+                .count(),
+            if native_eh_enabled && !reloc_enabled {
+                2
+            } else {
+                0
+            },
+            "dispatch uses only the Python/foreign ABI boundaries, never authored-handler EH: {operators:?}"
         );
     }
 }
