@@ -734,6 +734,11 @@ class PythonBindingTelemetry:
     structural_diff_node_visits: int
     structural_diff_shared_subtrees_skipped: int
     join_parent_inputs: int = 0
+    # Internal-node contributor counts before/after exact storage+epoch pruning.
+    # All-shared subtree shortcuts keep equal input/output counts: no expansion.
+    join_node_contributor_inputs: int = 0
+    join_node_contributor_outputs: int = 0
+    join_node_duplicate_contributors: int = 0
     join_max_parents: int = 0
     join_two_way_slots: int = 0
     join_wide_slots: int = 0
