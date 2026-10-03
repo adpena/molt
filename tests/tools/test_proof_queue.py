@@ -92,6 +92,11 @@ from tools.proof_queue_pkg import (
 )
 from tools.proof_queue_pkg import evidence as evidence_module
 from tests.wasm_object_fixtures import wasm_exporting_i64_unary_symbol
+from tests.cli.test_source_extension_producer import (
+    _fixture_meson_targets,
+    _fixture_source_plan,
+    _write_target_metadata,
+)
 
 
 def _extension_set(package: str, name: str, stack=None):
@@ -14424,6 +14429,37 @@ def _write_current_scientific_seal(
     stack = resolve_scientific_stack()
     current_abi = _default_molt_c_api_version(state.ROOT)
     current_abi_tag = f"molt_abi{current_abi.split('.', 1)[0]}"
+    modules = tuple(extension.module for extension in extension_set.extensions)
+    target_metadata = _write_target_metadata(root)
+    meson_targets = _fixture_meson_targets(modules)
+    exclusions = sorted(
+        {
+            library
+            for extension in extension_set.extensions
+            for library in extension.exclude_linked_static_libraries
+        }
+    )
+    meson_targets.extend(
+        {
+            "id": library,
+            "name": library,
+            "type": "static library",
+            "filename": [f"lib{library}.a"],
+        }
+        for library in exclusions
+    )
+    meson_metadata_root = root / "provenance/metadata/meson"
+    meson_metadata_root.mkdir(parents=True, exist_ok=True)
+    intro_targets = meson_metadata_root / "intro-targets.json"
+    compile_commands = meson_metadata_root / "compile-commands.json"
+    intro_dependencies = meson_metadata_root / "intro-dependencies.json"
+    intro_installed = meson_metadata_root / "intro-installed.json"
+    intro_targets.write_text(
+        json.dumps(meson_targets, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    compile_commands.write_bytes(b"[]\n")
+    intro_dependencies.write_bytes(b"[]\n")
+    intro_installed.write_bytes(b"{}\n")
     set_extensions: list[dict[str, object]] = []
     for extension in extension_set.extensions:
         artifact_name = f"{extension.target}.molt.wasm"
@@ -14455,14 +14491,17 @@ def _write_current_scientific_seal(
                 {
                     "source": source_reference,
                     "object": "0.o",
+                    "producer_unit": {
+                        "target_id": extension.module,
+                        "object": f"{extension.module}.so.p/0.o",
+                    },
                     "language": "c",
                     "source_sha256": source_sha256,
                     "object_sha256": "2" * 64,
                     "defined_symbols": [init_symbol],
                     "undefined_symbols": [],
                     "compile_command": [
-                        "@llvm-bin/clang",
-                        "--target=wasm32-wasip1",
+                        *target_metadata["toolchain"]["commands"]["c"],
                         "-x",
                         "c",
                         "-c",
@@ -14510,6 +14549,22 @@ def _write_current_scientific_seal(
         wheel_path.parent.mkdir(parents=True, exist_ok=True)
         wheel_path.write_bytes(f"wheel:{extension.target}".encode())
         manifest_path = package_dir / f"{artifact_name}.extension_manifest.json"
+        source_plan = _fixture_source_plan(
+            root, package_dir / artifact_name, extension.module, modules=modules
+        )
+        source_plan["plan_sha256"] = _sha256_file(intro_targets)
+        source_plan["link_projection"]["items"].extend(
+            {
+                "disposition": "excluded",
+                "arguments": [],
+                "target_id": library,
+                "archive_output": f"lib{library}.a",
+                "member_objects": [],
+            }
+            for library in extension.exclude_linked_static_libraries
+        )
+        source_plan.pop("digest")
+        source_plan["digest"] = canonical_json_sha256(source_plan)
         sidecar = {
             "schema_version": 1,
             "name": package,
@@ -14536,8 +14591,8 @@ def _write_current_scientific_seal(
             "deterministic": True,
             "capabilities": list(extension.capabilities),
             "init_symbol": init_symbol,
-            "source_plan": {"target_selector": extension.target},
-            "build": {},
+            "source_plan": source_plan,
+            "build": {"source_plan_digest": source_plan["digest"]},
             "object_closure": object_closure,
             "python_exports": (exports_override or {}).get(
                 extension.module, list(extension.python_exports)
@@ -14557,84 +14612,6 @@ def _write_current_scientific_seal(
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"# {relative}\n", encoding="utf-8")
-    target_root = root / "provenance/metadata/target"
-    python_pc = target_root / "pkgconfig/python3.pc"
-    meson_cross = target_root / "meson.cross"
-    python_pc.parent.mkdir(parents=True, exist_ok=True)
-    python_pc.write_text("prefix=@molt\n", encoding="utf-8")
-    meson_cross.write_text("[binaries]\n", encoding="utf-8")
-    tool_names = {
-        "cc": "@llvm-bin/clang",
-        "cxx": "@llvm-bin/clang++",
-        "wasm_ld": "@llvm-bin/wasm-ld",
-        "ar": "@llvm-bin/llvm-ar",
-        "ranlib": "@llvm-bin/llvm-ranlib",
-        "nm": "@llvm-bin/llvm-nm",
-        "strip": "@llvm-bin/llvm-strip",
-    }
-    target_metadata: dict[str, object] = {
-        "schema_version": 3,
-        "kind": "molt-source-extension-target-metadata",
-        "target_triple": "wasm32-wasip1",
-        "target": {
-            "requested": "wasm",
-            "compiler_target_triple": "wasm32-wasip1",
-            "artifact_kind": "wasm_relocatable_object",
-        },
-        "python": {"implementation": "cpython", "version": "3.12"},
-        "abi": {
-            "tier": "cpython-abi",
-            "include_dirs": ["@molt/runtime/molt-cpython-abi/include"],
-            "python_header": "@molt/runtime/molt-cpython-abi/include/Python.h",
-            "python_header_sha256": "e" * 64,
-            "include_surface": {"sha256": "f" * 64},
-        },
-        "toolchain": {
-            "tools": {
-                role: {
-                    "command": [name],
-                    "path": name,
-                    "version": "test",
-                    "sha256": "a" * 64,
-                }
-                for role, name in tool_names.items()
-            },
-            "commands": {
-                "c": ["@llvm-bin/clang", "--target=wasm32-wasip1"],
-                "cpp": ["@llvm-bin/clang++", "--target=wasm32-wasip1"],
-                "ld": ["@llvm-bin/wasm-ld"],
-                "ar": ["@llvm-bin/llvm-ar"],
-                "ranlib": ["@llvm-bin/llvm-ranlib"],
-                "nm": ["@llvm-bin/llvm-nm"],
-                "strip": ["@llvm-bin/llvm-strip"],
-            },
-        },
-        "meson_cross_properties": {},
-        "paths": {},
-        "env": {},
-        "digests": {
-            "python_pc_sha256": _sha256_file(python_pc),
-            "meson_cross_sha256": _sha256_file(meson_cross),
-        },
-    }
-    target_metadata["digest"] = hashlib.sha256(
-        json.dumps(
-            target_metadata,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
-    (target_root / "source-extension-target-metadata.json").write_text(
-        json.dumps(target_metadata), encoding="utf-8"
-    )
-    meson_metadata_root = root / "provenance/metadata/meson"
-    meson_metadata_root.mkdir(parents=True, exist_ok=True)
-    intro_targets = meson_metadata_root / "intro-targets.json"
-    compile_commands = meson_metadata_root / "compile-commands.json"
-    intro_installed = meson_metadata_root / "intro-installed.json"
-    intro_targets.write_text("[]\n", encoding="utf-8")
-    compile_commands.write_text("[]\n", encoding="utf-8")
-    intro_installed.write_text("{}\n", encoding="utf-8")
     config_tool_cross = meson_metadata_root / "build-config-tools.cross"
     if extension_set.use_pkg_config:
         config_tool_cross.write_text("[binaries]\n", encoding="utf-8")
@@ -14701,6 +14678,7 @@ def _write_current_scientific_seal(
                     "intro_targets_sha256": _sha256_file(intro_targets),
                     "compile_commands_sha256": _sha256_file(compile_commands),
                     "intro_installed_sha256": _sha256_file(intro_installed),
+                    "intro_dependencies_sha256": _sha256_file(intro_dependencies),
                     "config_tool_cross_sha256": (
                         _sha256_file(config_tool_cross)
                         if extension_set.use_pkg_config
