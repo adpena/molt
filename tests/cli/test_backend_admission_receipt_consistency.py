@@ -58,6 +58,95 @@ def test_cargo_spawn_failure_is_structured(tmp_path, monkeypatch, capsys):
     assert "cargo executable missing" in captured.err
 
 
+@pytest.mark.parametrize("target", ["native", "wasm", "luau", "rust"])
+@pytest.mark.parametrize(
+    "failure_stage", ["initial", "sccache-retry", "feature-rebuild"]
+)
+def test_backend_admission_preserves_stale_lockfile_on_every_cargo_attempt(
+    target, failure_stage, tmp_path, monkeypatch, capsys
+):
+    import os
+    import subprocess
+
+    from molt.cli import cargo_execution
+
+    root = _isolated_molt_root(tmp_path, monkeypatch)
+    lockfile = root / "Cargo.lock"
+    original_lock = b"version = 4\n# existing dependency resolution\n"
+    lockfile.write_bytes(original_lock)
+    _fake_backend_toolchain(monkeypatch)
+    monkeypatch.setattr(
+        backend_binary,
+        "_run_cargo_with_sccache_retry",
+        cargo_execution._run_cargo_with_sccache_retry,
+    )
+    original_environment = backend_binary._cargo_build_env
+
+    def environment():
+        env = original_environment()
+        if failure_stage == "sccache-retry":
+            env["RUSTC_WRAPPER"] = "sccache"
+        return env
+
+    monkeypatch.setattr(backend_binary, "_cargo_build_env", environment)
+    attempts = []
+    probes = []
+    stale_lock_error = "the lock file needs to be updated but --locked was passed"
+
+    def external(cmd, **kwargs):
+        # Exercise the real attempt/retry controller at its external boundary.
+        # Model Cargo's observable stale-lock behavior, including the unsafe
+        # update a missing flag would permit, rather than asserting argv alone.
+        attempts.append((list(cmd), kwargs["env"].get("RUSTC_WRAPPER")))
+        if failure_stage == "sccache-retry" and len(attempts) == 1:
+            return subprocess.CompletedProcess(
+                cmd, 2, "", "sccache: error: cache server unavailable"
+            )
+        stale = failure_stage != "feature-rebuild" or len(attempts) > 1
+        if stale:
+            if "--locked" in cmd:
+                return subprocess.CompletedProcess(cmd, 101, "", stale_lock_error)
+            lockfile.write_bytes(b"version = 4\n# unexpectedly updated resolution\n")
+        output = (
+            Path(kwargs["env"]["CARGO_TARGET_DIR"])
+            / "release"
+            / ("molt-backend.exe" if os.name == "nt" else "molt-backend")
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"backend executable")
+        output.chmod(0o755)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def probe(cmd, **kwargs):
+        probes.append(list(cmd))
+        if failure_stage == "feature-rebuild" and len(probes) == 1:
+            return subprocess.CompletedProcess(cmd, 1, b"", b"feature mismatch")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(cargo_execution, "_run_completed_command", external)
+    monkeypatch.setattr(backend_binary, "_run_subprocess_captured_to_tempfiles", probe)
+    result = _dispatch(["internal-backend-build", "--target", target, "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert lockfile.read_bytes() == original_lock
+    assert result == 2
+    assert payload["status"] == "error"
+    assert payload["data"]["failure"]["phase"] == (
+        "backend_feature_rebuild"
+        if failure_stage == "feature-rebuild"
+        else "backend_cargo_build"
+    )
+    assert payload["data"]["failure"]["returncode"] == 101
+    assert stale_lock_error in captured.err
+    assert "receipts" not in payload["data"]
+    assert len(attempts) == (1 if failure_stage == "initial" else 2)
+    assert all(command.count("--locked") == 1 for command, _wrapper in attempts)
+    assert len(probes) == (1 if failure_stage == "feature-rebuild" else 0)
+    if failure_stage == "sccache-retry":
+        assert attempts[0][1] == "sccache"
+        assert attempts[1][1] in (None, "")
+
+
 @pytest.mark.parametrize("override,expected", [(None, 1200), ("0.2", 0.2)])
 def test_backend_lock_wait_covers_cold_build_and_preserves_override(
     override, expected, tmp_path, monkeypatch
