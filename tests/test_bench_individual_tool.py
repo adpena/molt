@@ -158,7 +158,7 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
         (daemon_root / name).write_text(
             json.dumps(
                 {
-                    "schema": "molt.backend_daemon.identity.v1",
+                    "schema": bench.daemon_custody.IDENTITY_SCHEMA,
                     "pid": pid,
                     "socket_path": str(socket_path),
                     "project_root": str(ROOT),
@@ -167,6 +167,9 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
                     "backend_bin": "/repo/target/molt-backend",
                     "created_at": 1_700_000_000.0,
                     "command": None,
+                    "started_at_ns": pid * 10,
+                    "backend_sha256": "a" * 64,
+                    "suite_lease": None,
                 },
                 sort_keys=True,
             )

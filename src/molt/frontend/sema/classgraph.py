@@ -10,7 +10,7 @@ and are unit-testable on bare facts (the doc 44 §5.5 testability win).
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import python_import_binding
+from molt.python_private_names import python_import_binding
 
 from collections.abc import Mapping, Sequence
 from typing import Any

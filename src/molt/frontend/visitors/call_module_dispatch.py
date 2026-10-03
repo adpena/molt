@@ -58,82 +58,29 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
         return res
 
-    def _native_callable_export(
-        self,
-        target_module: str,
-        attr_name: str,
-    ) -> dict[str, Any] | None:
-        qualified_name = f"{target_module}.{attr_name}"
-        spec = self.native_callable_exports.get(qualified_name)
-        if isinstance(spec, dict):
-            return spec
-        return None
-
     def _is_native_python_export(
         self,
         target_module: str,
         attr_name: str,
     ) -> bool:
-        return f"{target_module}.{attr_name}" in self.native_python_exports
-
-    def _raise_native_python_export_missing_callable_metadata(
-        self,
-        target_module: str,
-        attr_name: str,
-        node: ast.Call,
-    ) -> None:
         qualified_name = f"{target_module}.{attr_name}"
-        raise FrontendRejection(
-            Diagnostic.IMPORT_RESOLUTION,
-            f"native Python export '{qualified_name}' has no callable ABI metadata",
-            (
-                "declare callable_exports metadata with binding and abi in the "
-                "native artifact manifest"
-            ),
-            (
-                "python_exports grants import visibility only; native package calls "
-                "must route through callable_exports instead of CALL_BIND or "
-                "synthesized module__function symbols"
-            ),
+        return (
+            qualified_name in self.native_python_exports
+            or qualified_name in self.native_callable_exports
         )
 
-    def _validate_native_python_call_candidate(self, node: ast.Call) -> None:
-        candidate: tuple[str, str] | None = None
-        if isinstance(node.func, ast.Name):
-            binding_name = node.func.id
-            imported_from = self.imported_names.get(binding_name)
-            if imported_from is None:
-                imported_from = self.global_imported_names.get(binding_name)
-            if imported_from is not None:
-                target_module = self._normalize_allowlist_module(imported_from)
-                candidate = (
-                    target_module or imported_from,
-                    self._imported_attr_name(binding_name),
-                )
-        elif isinstance(node.func, ast.Attribute):
-            if isinstance(node.func.value, ast.Name):
-                target_module = self._imported_module_binding_target(node.func.value.id)
-                if target_module is not None:
-                    normalized = self._normalize_allowlist_module(target_module)
-                    candidate = (normalized or target_module, node.func.attr)
-            if candidate is None:
-                parts = self._dotted_attribute_parts(node.func)
-                if parts is not None and len(parts) >= 3:
-                    target_module = self._dotted_imported_module_target(parts[:-1])
-                    if target_module is not None:
-                        normalized = self._normalize_allowlist_module(target_module)
-                        candidate = (normalized or target_module, parts[-1])
-        if candidate is None:
-            return
-        target_module, attr_name = candidate
-        if self._native_callable_export(target_module, attr_name) is not None:
-            return
-        if self._is_native_python_export(target_module, attr_name):
-            self._raise_native_python_export_missing_callable_metadata(
-                target_module,
-                attr_name,
-                node,
-            )
+    def _try_emit_published_native_object_call(
+        self, node: ast.Call, module_name: str, attr_name: str
+    ) -> MoltValue | None:
+        if not self._is_native_python_export(module_name, attr_name):
+            return None
+        # Publication owns the callable object, not source function/class facts.
+        # Capture it once before arguments; the shared dynamic emitter owns
+        # signature binding and suspension custody. No symbol hint is authority.
+        callee = self.visit(node.func)
+        if callee is None:
+            raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
+        return self._emit_dynamic_call(node, MoltValue(callee.name, type_hint="Any"))
 
     def _emit_stateful_callable_call(
         self,
@@ -240,17 +187,11 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
     ) -> MoltValue | None:
         if target_module is None:
             return None
-        if self._is_native_python_export(target_module, original_attr):
-            if self._native_callable_export(target_module, original_attr) is None:
-                self._raise_native_python_export_missing_callable_metadata(
-                    target_module,
-                    original_attr,
-                    node,
-                )
-            # Static native manifests publish a real callable object. Its live
-            # module attribute, not a synthesized module__function symbol, owns
-            # dispatch and rebinding semantics.
-            return None
+        native_call = self._try_emit_published_native_object_call(
+            node, target_module, original_attr
+        )
+        if native_call is not None:
+            return native_call
         if not self._is_linkable_module_function_symbol(
             target_module, original_attr
         ) or not self._imported_module_attr_is_stable(target_module, original_attr):

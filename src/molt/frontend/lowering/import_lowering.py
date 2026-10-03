@@ -85,6 +85,8 @@ class ImportLoweringMixin(GeneratorMixinBase):
         if not module_name:
             return False
         normalized = self._normalize_allowlist_module(module_name) or module_name
+        if self._is_native_python_export(normalized, func_id):
+            return False
         return (
             normalized == self.module_name or normalized in self.direct_call_modules
         ) and (
@@ -129,6 +131,18 @@ class ImportLoweringMixin(GeneratorMixinBase):
     def _clear_imported_module_binding(self, binding_name: str) -> None:
         self._set_imported_module_binding(binding_name, None)
 
+    def _clear_import_binding_origin(self, name: str) -> None:
+        """Rebinding clears the current frame, never a deferred outer frame."""
+        self.imported_names.pop(name, None)
+        self.imported_attr_names.pop(name, None)
+        self.local_imported_names.discard(name)
+        self._clear_imported_module_binding(name)
+        if self.current_func_name == "molt_main":
+            self.global_imported_names.pop(name, None)
+            self.global_imported_attr_names.pop(name, None)
+            self.global_imported_modules.pop(name, None)
+            self.global_imported_module_provenance.pop(name, None)
+
     def _record_import_binding_origin(
         self, name: str, module_name: str, *, attr_name: str | None = None
     ) -> None:
@@ -145,7 +159,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
             self._clear_imported_module_binding(name)
             if not module_owned:
                 self.local_imported_names.add(name)
-        if not module_owned:
+        if not module_owned or self.current_func_name != "molt_main":
             return
         self.global_imported_modules.pop(name, None)
         self.global_imported_module_provenance.pop(name, None)

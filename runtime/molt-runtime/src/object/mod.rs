@@ -83,6 +83,7 @@ pub(crate) mod ops_vec;
 pub(crate) mod payload_refs;
 pub(crate) mod refcount_opt;
 pub(crate) mod seq_access;
+pub(crate) mod sequence_index;
 #[allow(dead_code)]
 pub mod string_intern;
 #[allow(dead_code)]

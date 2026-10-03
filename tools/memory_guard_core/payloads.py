@@ -36,6 +36,7 @@ def guarded_child_process_payload(
         "sid": child.sid,
         "command": list(child.command),
         "started_at": child.started_at,
+        "started_at_ns": child.started_at_ns,
     }
 
 

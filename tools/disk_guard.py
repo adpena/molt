@@ -86,6 +86,7 @@ from molt.disk_capacity import (  # noqa: E402
     minimum_headroom_bytes,
 )
 from molt.file_deletion import delete_path  # noqa: E402
+from tools.memory_guard_core.active_custody import has_active_guard_marker  # noqa: E402
 
 _GB = 1024**3
 
@@ -822,71 +823,9 @@ def _rewrite_registry(root: Path, keep: Mapping[str, dict]) -> None:
 # --- discovery --------------------------------------------------------------
 
 
-_TERMINAL_GUARD_STATUSES = frozenset({"completed", "finalizer_completed"})
-
-
 def _has_active_guard(root: Path) -> bool:
-    """Conservatively detect a nonterminal memory-guard marker.
-
-    The disk guard deliberately has no process-inspection capability. Marker
-    status is therefore the custody boundary: terminal markers do not protect
-    artifacts, while an unreadable or nonterminal marker fails closed and
-    protects every reclaimable target in that worktree.
-    """
-    active_dir = root / "tmp" / "memory_guard" / "active"
-    records: list[tuple[float, dict | None]] = []
-    for marker in _iter_dir(active_dir):
-        if (
-            not marker.is_file()
-            or marker.suffix.lower() != ".json"
-            or not marker.name.startswith("guard-")
-        ):
-            continue
-        try:
-            payload = json.loads(marker.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            payload = None
-        try:
-            marker_mtime = marker.stat().st_mtime
-        except OSError:
-            marker_mtime = 0.0
-        records.append((marker_mtime, payload if isinstance(payload, dict) else None))
-
-    # A terminal outer guard can reap a nested guard before that nested marker
-    # gets its own terminal write. Its watched-pid report is durable custody
-    # evidence; use it to retire only older nonterminal markers for those exact
-    # PIDs. PID reuse cannot suppress a newer marker because timestamps gate the
-    # relation.
-    retired_at: dict[int, float] = {}
-    for marker_mtime, payload in records:
-        if payload is None or payload.get("status") not in _TERMINAL_GUARD_STATUSES:
-            continue
-        reports = payload.get("termination_reports")
-        if isinstance(reports, dict):
-            reports = [reports]
-        if not isinstance(reports, list):
-            continue
-        for report in reports:
-            if not isinstance(report, dict):
-                continue
-            watched = report.get("watched_pids")
-            if not isinstance(watched, list):
-                continue
-            for pid in watched:
-                if isinstance(pid, int) and pid > 0:
-                    retired_at[pid] = max(retired_at.get(pid, 0.0), marker_mtime)
-
-    for marker_mtime, payload in records:
-        if payload is None:
-            return True
-        status = payload.get("status")
-        if isinstance(status, str) and status in _TERMINAL_GUARD_STATUSES:
-            continue
-        pid = payload.get("pid")
-        if isinstance(pid, int) and retired_at.get(pid, 0.0) >= marker_mtime:
-            continue
-        return True
-    return False
+    """Project the shared marker authority without observing host processes."""
+    return has_active_guard_marker(root / "tmp" / "memory_guard" / "active")
 
 
 def discover_candidates(

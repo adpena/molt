@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from wasm_link_fact_provider import WasmFactsProvider
+
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -14,13 +16,6 @@ from molt.wasm_artifact import (
 )
 
 from wasm_link_format import (
-    FLAG_BINDING_GLOBAL,
-    FLAG_EXPLICIT_NAME,
-    FLAG_EXPORTED,
-    FLAG_NO_STRIP,
-    FLAG_UNDEFINED,
-    SYMBOL_KIND_FUNCTION,
-    SYMTAB_SUBSECTION_ID,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORTS,
     _ESSENTIAL_EXPORTS,
@@ -30,31 +25,36 @@ from wasm_link_format import (
     _append_linking_function_symbols,
     _build_custom_section,
     _build_linking_payload,
-    _build_sections,
-    _collect_func_names,
-    _collect_function_exports,
-    _collect_imports,
-    _count_func_imports,
     wasm_runtime_export_name,
     _parse_custom_section,
     _parse_indexed_symbol,
     _parse_linking_payload,
-    _parse_func_type_indices,
-    _parse_sections,
-    _parse_type_section,
     _read_string,
     _read_varuint,
     _write_string,
     _write_varuint,
 )
-from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
+from molt._wasm_runtime_exports import (
+    _CPYTHON_ABI_LINK_IMPORT_CLASS,
+    wasm_split_runtime_export_name_for_import,
+)
 from molt.cli.external_link_providers import wasm_external_link_provider_symbols
-from molt.wasm_linking_symbols import parse_wasm_linking_symbols
+from molt.wasm_linking_symbols import (
+    FLAG_BINDING_GLOBAL,
+    FLAG_EXPLICIT_NAME,
+    FLAG_EXPORTED,
+    FLAG_NO_STRIP,
+    FLAG_UNDEFINED,
+    SYMBOL_KIND_FUNCTION,
+    SYMBOL_KIND_DATA,
+    SYMTAB_SUBSECTION_ID,
+)
+from wasm_archive import AR_MAGIC, WASM_HEADER, iter_wasm_archive_members
 from wasm_link_facts import callable_table_entry_rows
-
-
-_CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
-_SYMBOL_KIND_DATA = 1
+from wasm_link_operations import (
+    build_sections as _build_sections,
+    parse_sections as _parse_sections,
+)
 
 
 def _add_symtab_alias(
@@ -64,7 +64,13 @@ def _add_symtab_alias(
     alias_flags: int,
     *,
     preserve_export: bool = False,
+    facts_provider: WasmFactsProvider,
 ) -> bytes | None:
+    if any(
+        symbol.kind == "function" and symbol.name == alias_name
+        for symbol in facts_provider(data).linking_symbols.symbols
+    ):
+        return None
     sections = _parse_sections(data)
     modified = False
     for idx, (section_id, payload) in enumerate(sections):
@@ -77,9 +83,6 @@ def _add_symtab_alias(
         new_subsections: list[tuple[int, bytes]] = []
         for sub_id, sub_payload in subsections:
             if sub_id != SYMTAB_SUBSECTION_ID:
-                new_subsections.append((sub_id, sub_payload))
-                continue
-            if _write_string(alias_name) in sub_payload:
                 new_subsections.append((sub_id, sub_payload))
                 continue
             count, offset = _read_varuint(sub_payload, 0)
@@ -104,10 +107,12 @@ def _add_symtab_alias(
     return _build_sections(sections)
 
 
-def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
-    export_indices = _collect_function_exports(data)
+def _collect_output_export_symbol_map(
+    data: bytes, *, facts_provider: WasmFactsProvider
+) -> dict[str, str]:
+    export_indices = facts_provider(data).function_exports
     by_index: dict[int, set[str]] = {}
-    for symbol in parse_wasm_linking_symbols(data).function_symbols:
+    for symbol in facts_provider(data).linking_symbols.function_symbols:
         if symbol.name and symbol.index is not None:
             by_index.setdefault(symbol.index, set()).add(symbol.name)
     mapping: dict[str, str] = {}
@@ -195,6 +200,7 @@ def _inject_app_export_adapters(
     *,
     public_export_names: Sequence[str],
     call_abi: Mapping[str, object],
+    facts_provider: WasmFactsProvider,
 ) -> tuple[Path, dict[str, str]]:
     """Add exact contract-selected host adapters to a relocatable app object.
 
@@ -233,23 +239,33 @@ def _inject_app_export_adapters(
 
     data = output.read_bytes()
     sections = _parse_sections(data)
-    types = _parse_type_section(sections)
+    facts = facts_provider(data)
+    types = facts["function_types"]
     if not types:
         raise ValueError("app export adapter input has no function types")
-    func_section_idx, func_type_indices = _parse_func_type_indices(sections)
+    func_section_idx = next(
+        (
+            index
+            for index, (section_id, _payload) in enumerate(sections)
+            if section_id == 3
+        ),
+        -1,
+    )
     if func_section_idx < 0:
         raise ValueError("app export adapter input has no defined functions")
-    import_count = _count_func_imports(sections)
+    import_count = int(facts["function_import_count"])
+    func_type_indices = list(facts["function_type_indices"])[import_count:]
     original_func_count = len(func_type_indices)
-    export_indices = _collect_function_exports(data)
+    export_indices = facts_provider(data).function_exports
 
     existing_exports = set(export_indices)
-    linking_symbols = parse_wasm_linking_symbols(data)
+    linking_symbols = facts_provider(data).linking_symbols
     existing_symbols = {
         symbol.name for symbol in linking_symbols.function_symbols if symbol.name
     }
     symbol_indices_by_function_index: dict[int, list[tuple[int, object]]] = {}
-    for symbol_index, symbol in enumerate(linking_symbols.symbols):
+    for symbol in linking_symbols.symbols:
+        symbol_index = symbol.symbol_index
         if symbol.kind == "function" and symbol.index is not None:
             symbol_indices_by_function_index.setdefault(symbol.index, []).append(
                 (symbol_index, symbol)
@@ -272,7 +288,13 @@ def _inject_app_export_adapters(
             raise ValueError(
                 f"contract app export {public_name!r} has invalid type index {type_idx}"
             )
-        params, results = types[type_idx]
+        function_type = types[type_idx]
+        if function_type is None:
+            raise ValueError(
+                f"contract app export {public_name!r} has non-function type index {type_idx}"
+            )
+        params = tuple(bytes(value) for value in function_type["params"])
+        results = tuple(bytes(value) for value in function_type["results"])
         if any(param != b"\x7e" for param in params) or results != (b"\x7e",):
             raise ValueError(
                 f"contract app export {public_name!r} must have canonical "
@@ -372,7 +394,7 @@ def _inject_app_export_adapters(
                 target_idx,
                 target_symbol_index,
             ) in specs:
-                params, _results = types[type_idx]
+                params = types[type_idx]["params"]
                 body = bytearray()
                 body.extend(_write_varuint(0))
                 for param_index in range(len(params)):
@@ -402,7 +424,9 @@ def _inject_app_export_adapters(
         existing_offset_delta=code_count_offset_delta,
         additions=code_relocations,
     )
-    with_symbols = _append_linking_function_symbols(updated, wrapper_symbol_entries)
+    with_symbols = _append_linking_function_symbols(
+        updated, wrapper_symbol_entries, facts_provider=facts_provider
+    )
     if with_symbols is None:
         raise ValueError(
             "app export adapter symbols were not published to linking metadata"
@@ -413,49 +437,42 @@ def _inject_app_export_adapters(
 
 
 def _function_type_for_index(
-    data: bytes, function_index: int
+    data: bytes,
+    function_index: int,
+    *,
+    facts_provider: WasmFactsProvider,
 ) -> tuple[tuple[bytes, ...], tuple[bytes, ...]]:
-    sections = _parse_sections(data)
-    types = _parse_type_section(sections)
-    import_count = _count_func_imports(sections)
-    if function_index < import_count:
-        imported_index = 0
-        for wasm_import in _collect_imports(data):
-            if wasm_import.kind != 0:
-                continue
-            if imported_index == function_index:
-                type_index = wasm_import.type_index
-                if type_index is None or type_index >= len(types):
-                    raise ValueError(
-                        "app export adapter import has invalid function type"
-                    )
-                return types[type_index]
-            imported_index += 1
+    facts = facts_provider(data)
+    indices = facts["function_type_indices"]
+    types = facts["function_types"]
+    if function_index < 0 or function_index >= len(indices):
         raise ValueError(
             f"app export adapter function index is absent: {function_index}"
         )
-    _section_index, type_indices = _parse_func_type_indices(sections)
-    local_index = function_index - import_count
-    if local_index >= len(type_indices):
-        raise ValueError(
-            f"app export adapter function index is absent: {function_index}"
-        )
-    type_index = type_indices[local_index]
-    if type_index >= len(types):
+    type_index = indices[function_index]
+    function_type = types[type_index]
+    if function_type is None:
         raise ValueError("app export adapter has invalid function type")
-    return types[type_index]
+    return (
+        tuple(bytes(value) for value in function_type["params"]),
+        tuple(bytes(value) for value in function_type["results"]),
+    )
 
 
-def _forward_owned_result_adapter_call(data: bytes, function_index: int) -> int:
+def _forward_owned_result_adapter_call(
+    data: bytes, function_index: int, *, facts_provider: WasmFactsProvider
+) -> int:
     """Return the target call from an exact owned-result forwarding adapter."""
 
-    params, results = _function_type_for_index(data, function_index)
+    params, results = _function_type_for_index(
+        data, function_index, facts_provider=facts_provider
+    )
     if any(param != b"\x7e" for param in params) or results != (b"\x7e",):
         raise ValueError(
             "app export adapter must have canonical (i64...) -> i64 signature"
         )
     sections = _parse_sections(data)
-    import_count = _count_func_imports(sections)
+    import_count = int(facts_provider(data)["function_import_count"])
     local_index = function_index - import_count
     if local_index < 0:
         raise ValueError("app export adapter must be a defined function")
@@ -512,17 +529,18 @@ def _validate_app_export_adapters(
     *,
     adapter_symbol_map: Mapping[str, str] | None = None,
     target_symbol_map: Mapping[str, str] | None = None,
+    facts_provider: WasmFactsProvider,
 ) -> None:
     """Validate public identity and ownership semantics for every app export."""
 
     public_names = tuple(dict.fromkeys(public_export_names))
-    exports = _collect_function_exports(data)
+    exports = facts_provider(data).function_exports
     symbol_indices = {
         symbol.name: symbol.index
-        for symbol in parse_wasm_linking_symbols(data).function_symbols
+        for symbol in facts_provider(data).linking_symbols.function_symbols
         if symbol.name and symbol.index is not None
     }
-    for index, name in _collect_func_names(data).items():
+    for index, name in facts_provider(data).function_names.items():
         symbol_indices.setdefault(name, index)
     for name, index in exports.items():
         symbol_indices.setdefault(name, index)
@@ -531,7 +549,9 @@ def _validate_app_export_adapters(
         if public_index is None:
             raise ValueError(f"app export adapter is not public: {public_name}")
         if adapter_symbol_map is None:
-            _forward_owned_result_adapter_call(data, public_index)
+            _forward_owned_result_adapter_call(
+                data, public_index, facts_provider=facts_provider
+            )
             continue
         adapter_symbol = adapter_symbol_map.get(public_name)
         target_symbol = (
@@ -550,7 +570,9 @@ def _validate_app_export_adapters(
                 f"app export {public_name!r} points to raw target {public_index}, "
                 f"not adapter {adapter_index}"
             )
-        target_call = _forward_owned_result_adapter_call(data, public_index)
+        target_call = _forward_owned_result_adapter_call(
+            data, public_index, facts_provider=facts_provider
+        )
         if public_index == target_index or target_call != target_index:
             raise ValueError(
                 f"app export {public_name!r} adapter does not call its distinct raw target"
@@ -600,19 +622,22 @@ def _rename_export_names(data: bytes, rename_map: dict[str, str]) -> bytes | Non
 
 
 def _ensure_function_exports_by_symbol_names(
-    data: bytes, public_to_symbol: dict[str, str]
+    data: bytes,
+    public_to_symbol: dict[str, str],
+    *,
+    facts_provider: WasmFactsProvider,
 ) -> bytes | None:
     if not public_to_symbol:
         return None
     symbol_indices = {
         symbol.name: symbol.index
-        for symbol in parse_wasm_linking_symbols(data).function_symbols
+        for symbol in facts_provider(data).linking_symbols.function_symbols
         if symbol.name and symbol.index is not None
     }
     if not set(public_to_symbol.values()).issubset(symbol_indices):
-        for index, name in _collect_func_names(data).items():
+        for index, name in facts_provider(data).function_names.items():
             symbol_indices.setdefault(name, index)
-    existing_exports = _collect_function_exports(data)
+    existing_exports = facts_provider(data).function_exports
     replacements: dict[str, int] = {}
     additions: list[tuple[str, int]] = []
     for public_name, symbol_name in public_to_symbol.items():
@@ -707,27 +732,27 @@ def _restore_output_export_aliases(data: bytes) -> bytes | None:
     return _build_sections(new_sections)
 
 
-def _table_import_min(data: bytes) -> int | None:
-    for wasm_import in _collect_imports(data):
+def _table_import_min(data: bytes, *, facts_provider: WasmFactsProvider) -> int | None:
+    for wasm_import in facts_provider(data).imports:
         if (
             wasm_import.kind != 1
             or wasm_import.module != "env"
             or wasm_import.name != "__indirect_function_table"
         ):
             continue
-        return wasm_import.minimum
+        return int(wasm_import.extern_type["minimum"])
     return None
 
 
-def _memory_import_min(data: bytes) -> int | None:
-    for wasm_import in _collect_imports(data):
+def _memory_import_min(data: bytes, *, facts_provider: WasmFactsProvider) -> int | None:
+    for wasm_import in facts_provider(data).imports:
         if (
             wasm_import.kind != 2
             or wasm_import.module != "env"
             or wasm_import.name != "memory"
         ):
             continue
-        return wasm_import.minimum
+        return int(wasm_import.extern_type["minimum"])
     return None
 
 
@@ -745,13 +770,15 @@ def _required_linked_table_min(
     data: bytes,
     fallback_min: int | None,
     facts: Mapping[str, object],
+    *,
+    facts_provider: WasmFactsProvider,
 ) -> int | None:
     required = fallback_min
     highest_slot = _highest_active_table_slot(facts)
     if highest_slot is not None:
         slot_required = highest_slot + 1
         required = slot_required if required is None else max(required, slot_required)
-    current_min = _table_import_min(data)
+    current_min = _table_import_min(data, facts_provider=facts_provider)
     if current_min is not None:
         required = current_min if required is None else max(required, current_min)
     return required
@@ -955,7 +982,7 @@ def _rewrite_linking_data_runtime_imports(
                     _, _, offset = _parse_indexed_symbol(sub_payload, offset, flags)
                     rebuilt.extend(sub_payload[entry_start:offset])
                     continue
-                if kind == _SYMBOL_KIND_DATA:
+                if kind == SYMBOL_KIND_DATA:
                     symbol_name, offset = _read_string(sub_payload, offset)
                     target_name = symbol_name
                     if flags & FLAG_UNDEFINED:
@@ -1085,6 +1112,18 @@ def _rewrite_native_runtime_imports(
     force_exports: list[str] = []
     for index, native_object in enumerate(native_objects):
         data = native_object.read_bytes()
+        if data.startswith(AR_MAGIC):
+            # Archive framing and WASM format are checked without deriving
+            # semantic obligations from dormant members. The selected linked
+            # module owns import normalization; selection admission owns C-API.
+            for _member in iter_wasm_archive_members(native_object):
+                pass
+            rewritten_paths.append(native_object)
+            continue
+        if not data.startswith(WASM_HEADER):
+            raise ValueError(
+                f"native linker input is neither WASM nor ar: {native_object}"
+            )
         try:
             rewritten, native_force_exports = _rewrite_runtime_imports_in_module(
                 data,
@@ -1093,9 +1132,10 @@ def _rewrite_native_runtime_imports(
                 runtime_exports=runtime_exports,
                 split_runtime=split_runtime,
             )
-        except ValueError:
-            rewritten_paths.append(native_object)
-            continue
+        except ValueError as exc:
+            raise ValueError(
+                f"cannot rewrite native WASM object {native_object}: {exc}"
+            ) from exc
         force_exports.extend(native_force_exports)
         if rewritten is None:
             rewritten_paths.append(native_object)

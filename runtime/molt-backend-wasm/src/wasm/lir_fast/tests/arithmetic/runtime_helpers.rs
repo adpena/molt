@@ -557,3 +557,47 @@ fn dynbox_inplace_arithmetic_uses_generated_numeric_lir_helpers() {
         );
     }
 }
+
+#[test]
+fn binary_float_divrem_boxed_results_do_not_enter_raw_carriers() {
+    for opcode in [OpCode::Div, OpCode::FloorDiv, OpCode::Mod] {
+        let mut func = TirFunction::new(
+            "float_divrem_carriers".into(),
+            vec![TirType::F64, TirType::F64],
+            TirType::F64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let repr = HashMap::from([
+            (ValueId(0), Repr::FloatUnboxed),
+            (ValueId(1), Repr::FloatUnboxed),
+            (result, Repr::FloatUnboxed),
+        ]);
+        let vr = crate::representation_plan::value_range_for(&func);
+        let lir = lower_function_to_lir_with_inline_proof(&func, &repr, &vr);
+        let output = lower_lir_to_wasm(&lir).test_view();
+        assert!(
+            output.bails_to_generic_path,
+            "{opcode:?} without nonzero proof"
+        );
+        assert!(
+            !output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::F64Div)),
+            "unguarded float division must not precede exception dispatch"
+        );
+    }
+}

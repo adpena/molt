@@ -7,6 +7,10 @@
 //! algorithms.  Time and hash functions are pure Rust, with
 //! `cfg(target_arch = "wasm32")` stubs for platform-specific syscalls.
 
+use molt_runtime_core::numeric_error_policy_generated::{
+    NumericErrorContext, python_integer_divmod,
+};
+use num_traits::{ToPrimitive, Zero};
 use std::fmt::Write as _;
 
 use crate::bridge::*;
@@ -2488,6 +2492,29 @@ pub extern "C" fn molt_date_fromisocalendar(
 
 // ─── timedelta arithmetic ───────────────────────────────────────────────────
 
+fn numeric_zero_error(py: &PyToken, context: NumericErrorContext) -> u64 {
+    let minor = if !molt_runtime_core::rt_target_at_least(3, 12)
+        || molt_runtime_core::rt_target_at_least(3, 15)
+    {
+        return raise_exception::<u64>(
+            py,
+            "RuntimeError",
+            "unsupported numeric exception target version",
+        );
+    } else if molt_runtime_core::rt_target_at_least(3, 14) {
+        14
+    } else if molt_runtime_core::rt_target_at_least(3, 13) {
+        13
+    } else {
+        12
+    };
+    raise_exception::<u64>(
+        py,
+        context.error_class(),
+        context.message(3, minor).expect("admitted target"),
+    )
+}
+
 /// timedelta / scalar (int or float) -> timedelta (days, seconds, us) tuple
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timedelta_truediv_scalar(
@@ -2511,7 +2538,7 @@ pub extern "C" fn molt_timedelta_truediv_scalar(
         };
         let divisor = to_f64(obj_from_bits(divisor_bits)).unwrap_or(0.0);
         if divisor == 0.0 {
-            return raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero");
+            return numeric_zero_error(_py, NumericErrorContext::IntegerFloorDivision);
         }
         let total_us = (days as f64) * 86_400_000_000.0 + (secs as f64) * 1_000_000.0 + (us as f64);
         let result_us = (total_us / divisor).round() as i64;
@@ -2551,12 +2578,23 @@ pub extern "C" fn molt_timedelta_floordiv_td(
     b_us: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let a_total = td_total_us(a_days, a_secs, a_us) as i64;
-        let b_total = td_total_us(b_days, b_secs, b_us) as i64;
+        let a_total = match td_total_us_exact(_py, a_days, a_secs, a_us) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let b_total = match td_total_us_exact(_py, b_days, b_secs, b_us) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
         if b_total == 0 {
-            return raise_exception::<u64>(_py, "ZeroDivisionError", "integer division by zero");
+            return numeric_zero_error(_py, NumericErrorContext::IntegerFloorDivision);
         }
-        MoltObject::from_int(a_total.div_euclid(b_total)).bits()
+        int_bits_from_i128(
+            _py,
+            python_integer_divmod(a_total, b_total)
+                .expect("timedelta totals fit i128")
+                .0,
+        )
     })
 }
 
@@ -2571,17 +2609,27 @@ pub extern "C" fn molt_timedelta_mod_td(
     b_us: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let a_total = td_total_us(a_days, a_secs, a_us) as i64;
-        let b_total = td_total_us(b_days, b_secs, b_us) as i64;
+        let a_total = match td_total_us_exact(_py, a_days, a_secs, a_us) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let b_total = match td_total_us_exact(_py, b_days, b_secs, b_us) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
         if b_total == 0 {
+            return numeric_zero_error(_py, NumericErrorContext::IntegerModulo);
+        }
+        let rem = python_integer_divmod(a_total, b_total)
+            .expect("timedelta totals fit i128")
+            .1;
+        let Some((rd, rs, ru)) = normalize_timedelta_us_exact(rem) else {
             return raise_exception::<u64>(
                 _py,
-                "ZeroDivisionError",
-                "integer division or modulo by zero",
+                "OverflowError",
+                "timedelta days must have magnitude <= 999999999",
             );
-        }
-        let rem = a_total.rem_euclid(b_total);
-        let (rd, rs, ru) = normalize_timedelta_us(rem);
+        };
         timedelta_tuple(_py, rd, rs, ru)
     })
 }
@@ -2607,13 +2655,36 @@ pub extern "C" fn molt_timedelta_floordiv_scalar(
             Ok(v) => v,
             Err(e) => return e,
         };
-        let divisor = obj_from_bits(divisor_bits).as_int().unwrap_or(0);
-        if divisor == 0 {
-            return raise_exception::<u64>(_py, "ZeroDivisionError", "integer division by zero");
+        let Some(divisor) = to_bigint(obj_from_bits(divisor_bits)) else {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "timedelta floor divisor must be an integer",
+            );
+        };
+        if divisor.is_zero() {
+            return numeric_zero_error(_py, NumericErrorContext::IntegerFloorDivision);
         }
-        let total_us = days * 86_400_000_000 + secs * 1_000_000 + us;
-        let result_us = total_us.div_euclid(divisor);
-        let (rd, rs, ru) = normalize_timedelta_us(result_us);
+        let total_us =
+            i128::from(days) * 86_400_000_000 + i128::from(secs) * 1_000_000 + i128::from(us);
+        let numerator = num_bigint::BigInt::from(total_us);
+        let mut result = &numerator / &divisor;
+        let remainder = &numerator % &divisor;
+        if !remainder.is_zero()
+            && (remainder < num_bigint::BigInt::from(0)) != (divisor < num_bigint::BigInt::from(0))
+        {
+            result -= 1;
+        }
+        let result_us = result
+            .to_i128()
+            .expect("division cannot enlarge timedelta beyond i128");
+        let Some((rd, rs, ru)) = normalize_timedelta_us_exact(result_us) else {
+            return raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "timedelta days must have magnitude <= 999999999",
+            );
+        };
         timedelta_tuple(_py, rd, rs, ru)
     })
 }
@@ -2641,6 +2712,33 @@ pub extern "C" fn molt_timedelta_abs(days_bits: u64, secs_bits: u64, us_bits: u6
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+fn td_total_us_exact(
+    py: &PyToken,
+    days_bits: u64,
+    secs_bits: u64,
+    us_bits: u64,
+) -> Result<i128, u64> {
+    let days = unpack_i64(py, days_bits, "days")?;
+    let secs = unpack_i64(py, secs_bits, "seconds")?;
+    let us = unpack_i64(py, us_bits, "microseconds")?;
+    Ok(i128::from(days) * 86_400_000_000 + i128::from(secs) * 1_000_000 + i128::from(us))
+}
+
+fn normalize_timedelta_us_exact(total_us: i128) -> Option<(i64, i64, i64)> {
+    const DAY_US: i128 = 86_400_000_000;
+    if !(-999_999_999 * DAY_US..=(1_000_000_000 * DAY_US - 1)).contains(&total_us) {
+        return None;
+    }
+    let us = total_us.rem_euclid(1_000_000);
+    let total_secs = (total_us - us) / 1_000_000;
+    let secs = total_secs.rem_euclid(86_400);
+    let days = (total_secs - secs) / 86_400;
+    if !(-999_999_999..=999_999_999).contains(&days) {
+        return None;
+    }
+    Some((days as i64, secs as i64, us as i64))
+}
 
 fn td_total_us(days_bits: u64, secs_bits: u64, us_bits: u64) -> f64 {
     let days = obj_from_bits(days_bits).as_int().unwrap_or(0);

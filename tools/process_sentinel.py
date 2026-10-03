@@ -20,6 +20,9 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from tools import guarded_entrypoints, memory_guard  # noqa: E402
+from tools.memory_guard_core.process_model import (  # noqa: E402
+    process_identity_has_creation_marker,
+)
 
 
 DEFAULT_MAX_PROCESS_RSS_GB = memory_guard.DEFAULT_MAX_RSS_GB
@@ -1062,6 +1065,43 @@ def terminate_group(
         )
         return
     if expected_identities is None:
+        return
+    leader = samples.get(pgid)
+    leader_identity = expected_identities.get(pgid)
+    live_owned_leader = (
+        leader is not None
+        and leader.pgid == pgid
+        and leader_identity is not None
+        and memory_guard.process_identity(leader) == leader_identity
+        and process_identity_has_creation_marker(leader_identity)
+    )
+    if not live_owned_leader:
+        # Historical members are PID/birth capabilities, not authority over
+        # future members of a dead or reused leader's numeric process group.
+        owned = {
+            pid: identity
+            for pid, identity in expected_identities.items()
+            if (member := samples.get(pid)) is not None
+            and member.pgid == pgid
+            and memory_guard.process_identity(member) == identity
+            and process_identity_has_creation_marker(identity)
+        }
+        if report_only_enabled():
+            _emit_report_only(pgid, "")
+            return
+        for pid, identity in owned.items():
+            memory_guard._send_pid_signal_if_identity_action(
+                pid, identity, signal.SIGTERM, sampler=sample_processes_for_sentinel
+            )
+        if owned:
+            time.sleep(max(0.0, grace))
+        for pid, identity in owned.items():
+            memory_guard._send_pid_signal_if_identity_action(
+                pid,
+                identity,
+                memory_guard.fallback_kill_signal(),
+                sampler=sample_processes_for_sentinel,
+            )
         return
     if report_only_enabled():
         member = samples.get(pgid)

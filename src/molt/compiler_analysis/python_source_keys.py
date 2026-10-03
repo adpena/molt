@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import python_source_field
+from molt.python_private_names import python_source_field
 import hashlib
 import struct
 from collections.abc import Iterator

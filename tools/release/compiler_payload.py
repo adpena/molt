@@ -27,6 +27,7 @@ from .git_source_snapshot import (
     GitSourceSnapshot,
     capture_git_source_snapshot,
     materialize_git_source_snapshot,
+    immutable_git_environment,
 )
 
 # Harvested from the preserved release-source lane; current config consumers
@@ -57,6 +58,7 @@ REQUIRED_MARKERS = frozenset(
         "Cargo.lock",
         "pyproject.toml",
         "uv.lock",
+        "rust-toolchain.toml",
         "runtime/molt-backend/Cargo.toml",
         "runtime/molt-runtime/Cargo.toml",
         "src/molt/cli/__main__.py",
@@ -91,7 +93,7 @@ def source_environment() -> dict[str, str]:
         GIT_OPTIONAL_LOCKS="0",
         LC_ALL="C",
     )
-    return env
+    return immutable_git_environment(env)
 
 
 def source_snapshot(repo_root: Path, source_sha: str) -> GitSourceSnapshot:

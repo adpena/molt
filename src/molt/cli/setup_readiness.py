@@ -240,55 +240,21 @@ def _luau_runner_setup_advice(system: str) -> list[str]:
     return ["cargo install lune --locked", "or install a luau runner on PATH"]
 
 
-def _windows_vswhere_path() -> Path | None:
+def _windows_vsdevcmd_path() -> Path | None:
     if platform.system() != "Windows":
         return None
-    roots = [
-        os.environ.get("ProgramFiles(x86)", ""),
-        os.environ.get("ProgramFiles", ""),
-    ]
-    for root in roots:
-        if not root:
-            continue
-        candidate = Path(root) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
-        if candidate.exists():
-            return candidate
-    return None
+    from molt.platform_toolchain import visual_studio_installation
 
-
-def _windows_vsdevcmd_path() -> Path | None:
-    vswhere = _windows_vswhere_path()
-    if vswhere is None:
-        return None
     try:
-        proc = _run_completed_command(
-            [
-                str(vswhere),
-                "-latest",
-                "-products",
-                "*",
-                "-requires",
-                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-                "-property",
-                "installationPath",
-            ],
-            env=None,
-            cwd=None,
-            capture_output=True,
-            memory_guard_prefix="MOLT_BUILD",
-            timeout=10,
+        install = visual_studio_installation(
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", os.environ
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
-    if proc.returncode != 0:
+    if install is None:
         return None
-    first = next(
-        (line.strip() for line in proc.stdout.splitlines() if line.strip()), ""
-    )
-    if not first:
-        return None
-    candidate = Path(first) / "Common7" / "Tools" / "VsDevCmd.bat"
-    return candidate if candidate.exists() else None
+    candidate = install / "Common7/Tools/VsDevCmd.bat"
+    return candidate if candidate.is_file() else None
 
 
 def _windows_msvc_env_advice() -> list[str]:
@@ -706,7 +672,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         if os.name == "nt" and not _wrapper_is_sccache and not _forced_sccache:
             # sccache is off-by-default on Windows: measured 0 cache hits + mid-compile
             # crashes (os error 10054) here make it NEGATIVE leverage, so OFF is the
-            # healthy state — do NOT advise enabling it (that would re-introduce the harm).
+            # healthy state â€” do NOT advise enabling it (that would re-introduce the harm).
             sccache_ok = True
             sccache_detail = "off by default on Windows (0 hits + mid-compile crashes here); using direct rustc"
             sccache_advice = None
@@ -932,7 +898,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
                 lib_mtime = runtime_lib.stat().st_mtime
                 runtime_cargo = root / "runtime" / "molt-runtime" / "Cargo.toml"
                 if runtime_cargo.exists() and runtime_cargo.stat().st_mtime > lib_mtime:
-                    runtime_detail += " (stale — runtime Cargo.toml is newer)"
+                    runtime_detail += " (stale â€” runtime Cargo.toml is newer)"
                     runtime_exists = False
             except OSError:
                 pass

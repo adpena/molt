@@ -49,7 +49,7 @@ class CallVisitorMixin(
             and self._specializable_builtin_name(node) is None
         ):
             # Runtime lookup custody precedes every spelling/import registry,
-            # including native candidate validation and builtin shape emission.
+            # including builtin shape emission. ABI admission is independent.
             callee = self.visit(node.func)
             if callee is None:
                 raise FrontendRejection(
@@ -57,7 +57,6 @@ class CallVisitorMixin(
                 )
             return self._emit_dynamic_call(node, callee)
 
-        self._validate_native_python_call_candidate(node)
         builtin_result = self._try_emit_shape_builtin_call(node)
         if builtin_result is not CALL_NOT_HANDLED:
             return builtin_result

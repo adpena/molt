@@ -51,6 +51,7 @@ from molt.llvm_toolchain import (  # noqa: E402
     write_llvm_toolchain_attestation,
 )
 from tools.resource_pressure import plan_resource_pressure  # noqa: E402
+from molt.platform_toolchain import activate_msvc_environment  # noqa: E402
 
 
 LLVM_HOST_TARGET_FAMILIES = tuple(
@@ -360,48 +361,6 @@ def _required_build_tool(name: str) -> _BuildTool:
     )
 
 
-def _vswhere_path() -> Path | None:
-    candidates = [
-        Path(os.environ.get("ProgramFiles(x86)", ""))
-        / "Microsoft Visual Studio"
-        / "Installer"
-        / "vswhere.exe",
-        Path(os.environ.get("ProgramFiles", ""))
-        / "Microsoft Visual Studio"
-        / "Installer"
-        / "vswhere.exe",
-    ]
-    return next((path for path in candidates if path.exists()), None)
-
-
-def _visual_studio_installation(component: str) -> Path | None:
-    vswhere = _vswhere_path()
-    if vswhere is None:
-        return None
-    proc = subprocess.run(
-        [
-            str(vswhere),
-            "-latest",
-            "-products",
-            "*",
-            "-requires",
-            component,
-            "-property",
-            "installationPath",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        return None
-    path = proc.stdout.strip().splitlines()
-    if not path:
-        return None
-    install = Path(path[0])
-    return install if install.exists() else None
-
-
 def _require_windows_atl(env: Mapping[str, str], install: Path | None) -> None:
     include_dirs = tuple(
         Path(part).expanduser()
@@ -419,79 +378,6 @@ def _require_windows_atl(env: Mapping[str, str], install: Path | None) -> None:
         f'modify --installPath "{install_text}" --add '
         "Microsoft.VisualStudio.Component.VC.ATL --quiet --norestart"
     )
-
-
-def _windows_msvc_env(
-    base: dict[str, str],
-    *,
-    machine: str | None = None,
-) -> dict[str, str]:
-    if platform.system() != "Windows":
-        return base
-    raw_machine = machine or platform.machine()
-    host = llvm_host_architecture(ROOT, raw_machine)
-    if (
-        host is None
-        or host.windows_component is None
-        or host.windows_target_arch is None
-        or host.windows_host_arch is None
-    ):
-        raise SystemExit(
-            f"LLVM source bootstrap is not configured for Windows host {raw_machine!r}; "
-            "add its Visual Studio component and host/target architecture to "
-            "config/llvm_toolchain_arches.toml"
-        )
-    active_target = base.get("VSCMD_ARG_TGT_ARCH", "").lower()
-    active_host = base.get("VSCMD_ARG_HOST_ARCH", "").lower()
-    if (
-        shutil.which("cl", path=base.get("PATH"))
-        and active_target == host.windows_target_arch.lower()
-        and active_host == host.windows_host_arch.lower()
-    ):
-        _require_windows_atl(base, _visual_studio_installation(host.windows_component))
-        return base
-    install = _visual_studio_installation(host.windows_component)
-    if install is None:
-        raise SystemExit(
-            "MSVC Build Tools were not found. Install Visual Studio Build Tools "
-            f"with component {host.windows_component} before building LLVM for "
-            f"Windows {host.id}."
-        )
-    vsdevcmd = install / "Common7" / "Tools" / "VsDevCmd.bat"
-    if not vsdevcmd.exists():
-        raise SystemExit(f"Visual Studio developer command file not found: {vsdevcmd}")
-    activation_var = "MOLT_LLVM_VSDEVCMD_CALL"
-    activation_env = base.copy()
-    # Python's Windows argv quoting escapes embedded quotes using MSVCRT rules,
-    # but cmd.exe does not interpret those backslashes.  Expand a trusted,
-    # pre-quoted environment value inside cmd instead, keeping the /c argument
-    # itself quote-free even when the Visual Studio path contains spaces.
-    activation_env[activation_var] = f'"{vsdevcmd}"'
-    command = (
-        f"call %{activation_var}% -arch={host.windows_target_arch} "
-        f"-host_arch={host.windows_host_arch} >nul && set"
-    )
-    proc = subprocess.run(
-        ["cmd.exe", "/d", "/s", "/c", command],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=activation_env,
-    )
-    if proc.returncode != 0:
-        raise SystemExit(proc.stderr.strip() or "Failed to activate VsDevCmd.bat")
-    env = base.copy()
-    for line in proc.stdout.splitlines():
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if key.casefold() == activation_var.casefold():
-            continue
-        env[key] = value
-    if shutil.which("cl", path=env.get("PATH")) is None:
-        raise SystemExit("VsDevCmd.bat completed, but cl.exe is still not on PATH")
-    _require_windows_atl(env, install)
-    return env
 
 
 def _download(
@@ -1590,7 +1476,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     cmake = _compatible_cmake(minimum_cmake)
     ninja = _required_build_tool("ninja")
-    env = _windows_msvc_env(os.environ.copy())
+    env = activate_msvc_environment(os.environ, repo_root=ROOT)
+    if platform.system() == "Windows":
+        _require_windows_atl(env, Path(env["VSINSTALLDIR"]))
     if is_canonical:
         for label, path, expected in (
             ("archive", archive, managed.archive),

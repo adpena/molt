@@ -8,7 +8,7 @@ and static truthiness helpers. Pattern recognizers live in analysis_patterns.py.
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import python_import_binding
+from molt.python_private_names import python_import_binding
 
 from typing import (
     TYPE_CHECKING,

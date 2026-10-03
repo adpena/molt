@@ -12,18 +12,25 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Collection, TypedDict
+from typing import Any, Callable, Collection, Mapping, TypedDict
 
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt import artifact_publication
 from molt.wasm_bundle import BundleManifest, write_wasm_bundle
+from molt.wasm_optimizer_identity import (
+    load_wasm_optimizer_attestation,
+    wasm_optimizer_attestation_path,
+    wasm_optimizer_cache_fact,
+)
+
+
 from molt.file_publication import staged_file_path
 from molt.exact_json import canonical_json_bytes
 from molt._wasm_abi_generated import (
     WASM_ESSENTIAL_EXPORTS,
     WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
 )
-from molt.cli import wasm_link_inputs
+from molt.cli import wasm_link_inputs, wasm_toolchain
 from molt.cli.app_export_contract import load_app_export_contract
 from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
@@ -94,7 +101,10 @@ from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
     native_callable_browser_signature,
 )
-from molt.toolchain_identity import stable_regular_file_identity
+from molt.toolchain_identity import (
+    stable_regular_file_identity,
+    verify_stable_regular_file_identity,
+)
 from molt.wasm_artifact import (
     WasmExportSignature,
     _collect_wasm_module_import_names,
@@ -115,6 +125,42 @@ _BUNDLE_EXCLUDED_NATIVE_SUFFIXES = {
     ".so",
     ".wasm",
 }
+
+
+def _load_optimizer_publication(
+    outputs: Mapping[str, Path],
+    *,
+    cache_fact: Mapping[str, str],
+    level: str,
+    split: bool,
+    preserve_debug: bool,
+) -> dict[str, Any]:
+    """Admit optimizer evidence against the exact generation being published."""
+    roles = (
+        (("linked", "optimizer"), ("app", "app_optimizer"))
+        if split
+        else (("linked", "optimizer"),)
+    )
+    attestations = {}
+    for artifact_role, sidecar_role in roles:
+        attestation = load_wasm_optimizer_attestation(outputs[sidecar_role])
+        identity = stable_regular_file_identity(
+            outputs[artifact_role], label="optimized WASM output"
+        )
+        if (
+            set(cache_fact) != {"tool", "sha256", "binaryen_version"}
+            or cache_fact.get("tool") != "wasm-opt"
+            or attestation["wasm_opt_sha256"] != cache_fact["sha256"]
+            or attestation["binaryen_version"] != cache_fact["binaryen_version"]
+            or attestation["optimization_level"] != level
+            or attestation["optimization_preserve_debug"] is not preserve_debug
+            or attestation["published_output_sha256"] != identity.sha256
+        ):
+            raise ValueError(
+                "WASM optimizer evidence differs from the admitted tool or published artifact"
+            )
+        attestations[artifact_role] = attestation
+    return attestations["app" if split else "linked"]
 
 
 def _file_asset(path: Path, asset_path: str) -> dict[str, object]:
@@ -820,6 +866,8 @@ def _prepare_non_native_build_result_in_generation(
         deployment_plan: WasmDeploymentPlan | None = None
         deployment_sources: WasmDeploymentSources | None = None
         link_skipped = False
+        optimizer_attestation: dict[str, Any] | None = None
+        optimizer_cache_fact: dict[str, str] | None = None
         host_binary: str | None = None
         resolved_linked_output = linked_output_path
         bundle_root: Path | None = None
@@ -1010,6 +1058,7 @@ def _prepare_non_native_build_result_in_generation(
                 link_outputs = wasm_link_output_paths(
                     resolved_linked_output,
                     external_selection=bool(wasm_link_requirements.items),
+                    optimize=wasm_opt_enabled,
                     split_output_dir=output_wasm.parent if _split_runtime else None,
                     inputs=(
                         output_wasm,
@@ -1100,6 +1149,37 @@ def _prepare_non_native_build_result_in_generation(
             link_project_root = project_root or molt_root
             try:
                 link_tool_closure = local_python_import_closure(molt_root, (tool,))
+                linker_identity = wasm_toolchain.resolve_wasm_linker()
+                if linker_identity is None:
+                    raise ValueError(
+                        "wasm-ld not found; install LLVM to enable linking"
+                    )
+                admitted_link_inputs = tuple(
+                    stable_regular_file_identity(
+                        path.resolve(), label="WASM link input"
+                    )
+                    for path in dict.fromkeys(
+                        (
+                            output_wasm,
+                            app_export_contract_path,
+                            wasm_facts_scanner,
+                            linker_identity.path,
+                            *external_native_fingerprint_inputs,
+                        )
+                    )
+                )
+                expected_input_args = [
+                    argument
+                    for identity in admitted_link_inputs
+                    for argument in (
+                        "--expected-input",
+                        str(identity.path),
+                        identity.sha256,
+                    )
+                ]
+                link_cmd.extend(expected_input_args)
+                if wasm_opt_enabled:
+                    optimizer_cache_fact = wasm_optimizer_cache_fact()
                 deploy_asset_root = molt_root / "wasm"
                 browser_asset_names = (
                     wasm_loader_asset_closure(
@@ -1169,6 +1249,7 @@ def _prepare_non_native_build_result_in_generation(
                         app_export_contract_path,
                         *external_native_fingerprint_inputs,
                         *package_payload_inputs,
+                        *(identity.path for identity in admitted_link_inputs),
                     ),
                 )
                 if precompile:
@@ -1207,6 +1288,11 @@ def _prepare_non_native_build_result_in_generation(
                 ],
                 link_cmd=link_cmd,
                 tool_facts=(
+                    *(
+                        (optimizer_cache_fact,)
+                        if optimizer_cache_fact is not None
+                        else ()
+                    ),
                     *((selection_policy,) if selection_policy is not None else ()),
                     {
                         "role": "wasm-link-source-closure",
@@ -1256,6 +1342,10 @@ def _prepare_non_native_build_result_in_generation(
             try:
                 assert deployment_sources is not None
                 deployment_sources.verify_files()
+                for identity in admitted_link_inputs:
+                    verify_stable_regular_file_identity(
+                        identity, label="WASM link input"
+                    )
             except (OSError, ValueError) as exc:
                 return None, _fail(str(exc), json_output, command="build")
             link_skipped = link_fingerprints._link_outputs_match(
@@ -1263,6 +1353,18 @@ def _prepare_non_native_build_result_in_generation(
                 fingerprint=link_fingerprint,
                 receipt_path=link_fingerprint_path,
             )
+            if link_skipped and wasm_opt_enabled:
+                try:
+                    assert optimizer_cache_fact is not None
+                    optimizer_attestation = _load_optimizer_publication(
+                        deployment_plan.outputs,
+                        cache_fact=optimizer_cache_fact,
+                        level=wasm_opt_level,
+                        split=_split_runtime,
+                        preserve_debug=profile == "dev",
+                    )
+                except (OSError, ValueError):
+                    link_skipped = False
             if link_skipped:
                 link_process = subprocess.CompletedProcess(
                     [*link_cmd, *runtime_admission_args], 0, "", ""
@@ -1298,6 +1400,13 @@ def _prepare_non_native_build_result_in_generation(
                     link_run_cmd.extend(
                         ["--native-link-plan", str(native_link_plan_path)]
                     )
+                    link_run_cmd.extend(
+                        [
+                            "--expected-input",
+                            str(native_link_plan_path.resolve()),
+                            hashlib.sha256(native_link_plan_bytes).hexdigest(),
+                        ]
+                    )
                     if stage_timings_ms is not None:
                         link_timings_path = staged_file_path(
                             deployment.outputs["linked"], purpose="link-timings"
@@ -1314,6 +1423,10 @@ def _prepare_non_native_build_result_in_generation(
                         capture_output=True,
                         memory_guard_prefix="MOLT_WASM_LINK",
                     )
+                    for identity in admitted_link_inputs:
+                        verify_stable_regular_file_identity(
+                            identity, label="WASM link input"
+                        )
                     if link_process.returncode != 0:
                         err = link_process.stderr.strip() or link_process.stdout.strip()
                         msg = "Wasm link failed"
@@ -1329,6 +1442,15 @@ def _prepare_non_native_build_result_in_generation(
                             deployment.outputs["selection"],
                             selection_policy,
                             roles={"linked", "app"} if _split_runtime else {"linked"},
+                        )
+                    if wasm_opt_enabled:
+                        assert optimizer_cache_fact is not None
+                        optimizer_attestation = _load_optimizer_publication(
+                            deployment.outputs,
+                            cache_fact=optimizer_cache_fact,
+                            level=wasm_opt_level,
+                            split=_split_runtime,
+                            preserve_debug=profile == "dev",
                         )
                     resolved_linked_output = deployment.outputs["linked"]
                 except (OSError, ValueError) as exc:
@@ -1397,6 +1519,10 @@ def _prepare_non_native_build_result_in_generation(
             artifacts["runtime_wasm"] = str(staged_runtime_wasm)
         if resolved_linked_output is not None:
             artifacts["linked_wasm"] = str(resolved_linked_output)
+            if optimizer_attestation is not None:
+                artifacts["wasm_optimizer_attestation"] = str(
+                    wasm_optimizer_attestation_path(resolved_linked_output)
+                )
         cwasm_path: str | None = artifacts.get("cwasm")
         runtime_cwasm_path: str | None = artifacts.get("runtime_cwasm")
         primary_output = output_wasm
@@ -1466,6 +1592,11 @@ def _prepare_non_native_build_result_in_generation(
                 {
                     "version": 2,
                     "mode": "linked",
+                    **(
+                        {"optimizer": optimizer_attestation}
+                        if optimizer_attestation is not None
+                        else {}
+                    ),
                     "abi": {
                         "runtime_imports": _runtime_import_abi_manifest(
                             resolved_linked_output,
@@ -1651,6 +1782,11 @@ def _prepare_non_native_build_result_in_generation(
             manifest_data: dict[str, Any] = {
                 "version": 2,
                 "mode": "split-runtime",
+                **(
+                    {"optimizer": optimizer_attestation}
+                    if optimizer_attestation is not None
+                    else {}
+                ),
                 "tree_shaken": True,
                 "shared_memory_initial_pages": shared_memory_initial_pages,
                 "shared_table_initial": shared_table_initial,
@@ -1880,6 +2016,10 @@ def _prepare_non_native_build_result_in_generation(
             try:
                 assert deployment_sources is not None
                 deployment_sources.verify()
+                for identity in admitted_link_inputs:
+                    verify_stable_regular_file_identity(
+                        identity, label="WASM link input"
+                    )
                 deployment.publish(
                     link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
                         link_fingerprint_path, link_fingerprint

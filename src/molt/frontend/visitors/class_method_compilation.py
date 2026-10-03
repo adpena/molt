@@ -9,7 +9,7 @@ layout, namespace, and dataclass construction authority.
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import python_definition_name
+from molt.python_private_names import python_definition_name
 from typing import Literal, cast
 
 from molt.frontend._mixin_base import GeneratorMixinBase

@@ -4,19 +4,27 @@ import contextlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
-import json
 import os
 from pathlib import Path
+import re
 import time
 from typing import Iterator, Mapping
 
 from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.default_paths import _default_molt_cache
+from molt.exact_json import loads_exact
 
 
 WASM_LINK_CACHE_DIRECTORY = "wasm_link"
 WASM_LINK_CACHE_FAMILIES = frozenset({"runtime_tree_shake", "split_app_optimize"})
+WASM_LINK_CACHE_ENTRY_SCHEMA = "molt.wasm-link-cache-entry.v4"
+_WASM_LINK_CACHE_ROOT_KEYS = frozenset({"schema", "cache", "payload"})
+_WASM_LINK_CACHE_RECORD_KEYS = frozenset(
+    {"family", "transform_schema", "key", "artifact_bytes", "artifact_sha256"}
+)
+_CACHE_SCHEMA_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -25,6 +33,7 @@ class WasmLinkCacheEntry:
     artifact: Path
     metadata: Path
     lock: Path
+    family: str
     schema: str
     key: str
 
@@ -50,8 +59,10 @@ def _wasm_link_cache_entry(
 ) -> WasmLinkCacheEntry:
     if family not in WASM_LINK_CACHE_FAMILIES:
         raise ValueError(f"unknown wasm linker cache family: {family}")
-    if not schema or not key:
-        raise ValueError("wasm linker cache schema and key must be non-empty")
+    if not isinstance(schema, str) or _CACHE_SCHEMA_RE.fullmatch(schema) is None:
+        raise ValueError("wasm linker cache schema must be a lowercase identifier")
+    if not isinstance(key, str) or _SHA256_RE.fullmatch(key) is None:
+        raise ValueError("wasm linker cache key must be a lowercase SHA-256")
     family_root = (cache_root or _default_wasm_link_cache()) / family
     root = family_root / schema / key
     # A fixed 256-stripe lock set bounds filesystem metadata for the lifetime of
@@ -64,6 +75,7 @@ def _wasm_link_cache_entry(
         artifact=root / "artifact.wasm",
         metadata=root / "metadata.json",
         lock=lock,
+        family=family,
         schema=schema,
         key=key,
     )
@@ -98,16 +110,23 @@ def _read_wasm_link_cache_entry(entry: WasmLinkCacheEntry) -> WasmLinkCacheRead:
         return WasmLinkCacheRead(None, None, "missing", 0)
     try:
         data = entry.artifact.read_bytes()
-        metadata = json.loads(entry.metadata.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
+        metadata = loads_exact(entry.metadata.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
         return WasmLinkCacheRead(None, None, "corrupt", 0)
-    if not isinstance(metadata, dict):
+    if not isinstance(metadata, dict) or set(metadata) != _WASM_LINK_CACHE_ROOT_KEYS:
         return WasmLinkCacheRead(None, None, "corrupt", len(data))
     cache = metadata.get("cache")
-    if not isinstance(cache, dict):
+    payload = metadata.get("payload")
+    if (
+        metadata.get("schema") != WASM_LINK_CACHE_ENTRY_SCHEMA
+        or not isinstance(cache, dict)
+        or set(cache) != _WASM_LINK_CACHE_RECORD_KEYS
+        or not isinstance(payload, dict)
+    ):
         return WasmLinkCacheRead(None, None, "corrupt", len(data))
     expected = {
-        "schema": entry.schema,
+        "family": entry.family,
+        "transform_schema": entry.schema,
         "key": entry.key,
         "artifact_bytes": len(data),
         "artifact_sha256": hashlib.sha256(data).hexdigest(),
@@ -120,10 +139,9 @@ def _read_wasm_link_cache_entry(entry: WasmLinkCacheEntry) -> WasmLinkCacheRead:
     for path in (entry.root, entry.artifact, entry.metadata):
         with contextlib.suppress(OSError):
             os.utime(path, (now, now))
-    payload = metadata.get("payload")
     return WasmLinkCacheRead(
         data,
-        payload if isinstance(payload, dict) else {},
+        payload,
         "hit",
         len(data),
     )
@@ -138,8 +156,10 @@ def _publish_wasm_link_cache_entry(
     if len(data) < 8 or data[:8] != b"\x00asm\x01\x00\x00\x00":
         raise ValueError("refusing to cache a non-WASM linker artifact")
     metadata = {
+        "schema": WASM_LINK_CACHE_ENTRY_SCHEMA,
         "cache": {
-            "schema": entry.schema,
+            "family": entry.family,
+            "transform_schema": entry.schema,
             "key": entry.key,
             "artifact_bytes": len(data),
             "artifact_sha256": hashlib.sha256(data).hexdigest(),

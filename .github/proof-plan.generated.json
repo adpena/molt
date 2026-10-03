@@ -1,6 +1,32 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    "tools/git_identity.py",
+    "tools/proof_plan_cli.py",
+    "src/molt/backend_daemon_suite_custody.py",
+    "src/molt/build_state_layout.py",
+    "src/molt/release_matrix.py",
+    "src/molt/tool_releases.py",
+    "src/molt/wasi_sysroot.py",
+    "tools/compat/diff_output_layout.py",
+    "tools/disk_guard.py",
+    "tools/guarded_entrypoints.py",
+    "tools/proof_queue_pkg/__init__.py",
+    "tools/memory_guard_core/common.py",
+    "tools/memory_guard_core/cli_contract.py",
+    "tools/memory_guard_core/memory_limits.py",
+    "tools/memory_guard_core/repro_context.py",
+    "tools/memory_guard_core/sample_records.py",
+    "tools/memory_guard_core/active_custody.py",
+    "src/molt/backend_daemon_custody.py",
+    "src/molt/backend_executable_names.py",
+    "src/molt/python_private_names.py",
+    "config/python_numeric_errors.toml",
+    "tools/gen_python_numeric_errors.py",
+    "tests/tools/test_gen_python_numeric_errors.py",
+    "runtime/molt-runtime-core/src/numeric_error_policy_generated.rs",
+    "runtime/molt-backend-luau/src/luau/numeric_error_policy_generated.rs",
+    "runtime/molt-backend-rust/src/rust/numeric_error_policy_generated.rs",
     "tests/test_cargo_quarantine_custody.py",
     "tests/tools/test_memory_guard_windows_sampling.py",
     "tools/memory_guard_core/cargo_quarantine.py",
@@ -88,7 +114,10 @@
     "tools/safe_run.py",
     "tests/tools/test_cargo_test_binary_discovery.py",
     "tests/tools/test_runtime_test_gate.py",
+    "tests/tools/test_runtime_descendant_receipts.py",
+    "tests/runtime_descendant_test_support.py",
     "tools/run_runtime_test_gate.py",
+    "tools/runtime_descendant_receipts.py",
     ".gitattributes",
     ".github/actions/setup-lean/action.yml",
     ".github/actions/setup-llvm/action.yml",
@@ -279,7 +308,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "479836e644603c570cf0d1f8564f74c0df42b96874d167eccbccf90be43d921b",
+  "authority_sha256": "bcf35f8ec86227bcb34c24b652f4e3e9b694b4d2fd733afdd689d03422ac1dd3",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -498,7 +527,10 @@
         "tests/tools/test_cargo_test_truth.py",
         "tools/run_runtime_test_gate.py",
         "tests/tools/test_runtime_test_gate.py",
-        "tests/tools/test_cargo_test_binary_discovery.py"
+        "tests/tools/test_cargo_test_binary_discovery.py",
+        "tools/runtime_descendant_receipts.py",
+        "tests/tools/test_runtime_descendant_receipts.py",
+        "tests/runtime_descendant_test_support.py"
       ],
       "job": "rust-build-unit-smoke",
       "name": "rust",
@@ -2498,6 +2530,7 @@
         "tests/test_gen_op_kinds.py",
         "tests/test_gen_heap_kinds.py",
         "tests/test_gen_python_effects.py",
+        "tests/tools/test_gen_python_numeric_errors.py",
         "tests/test_gen_wasm_abi.py",
         "tests/test_gen_intrinsics.py",
         "tests/test_generator_manifest.py",
@@ -2522,7 +2555,9 @@
         "tests/tools/test_phase_exit_manifest.py",
         "tests/tools/test_legacy_inventory.py",
         "tests/tools/test_public_contract_gate.py",
-        "tests/tools/test_gen_luau_support_matrix.py"
+        "tests/tools/test_gen_luau_support_matrix.py",
+        "tests/tools/test_runtime_descendant_receipts.py",
+        "tests/tools/test_runtime_test_gate.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -4407,6 +4442,31 @@
         "rustc",
         "cargo"
       ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/gen_python_numeric_errors.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.python-numeric-errors.generated",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
     }
   ],
   "executor": {
@@ -4464,7 +4524,7 @@
         "headroom_seconds": 180,
         "projected_makespan_seconds": 3420,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2985
+          "repository-policy": 3060
         }
       },
       "rust": {

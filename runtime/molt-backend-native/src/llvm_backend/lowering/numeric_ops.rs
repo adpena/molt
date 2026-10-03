@@ -377,6 +377,143 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         (phi.as_basic_value(), out_ty)
     }
 
+    /// Keep float division/modulo zero dispatch and divisor-sign remainder
+    /// semantics coherent with the runtime, including signed zero and NaNs.
+    fn emit_f64_divrem_zero_guarded(
+        &mut self,
+        op: &crate::tir::ops::TirOp,
+        name: &str,
+        lhs: inkwell::values::FloatValue<'ctx>,
+        rhs: inkwell::values::FloatValue<'ctx>,
+    ) -> (BasicValueEnum<'ctx>, TirType) {
+        use inkwell::FloatPredicate;
+        let f64_ty = self.backend.context.f64_type();
+        let i64_ty = self.backend.context.i64_type();
+        let zero = f64_ty.const_zero();
+        let nonzero = self
+            .backend
+            .builder
+            .build_float_compare(FloatPredicate::UNE, rhs, zero, "float_rhs_nonzero")
+            .unwrap();
+        let fast = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "float_divrem_fast");
+        let slow = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "float_divrem_zero");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "float_divrem_merge");
+        self.all_llvm_blocks.extend([fast, slow, merge]);
+        self.backend
+            .builder
+            .build_conditional_branch(nonzero, fast, slow)
+            .unwrap();
+        self.backend.builder.position_at_end(fast);
+        let fast_value: BasicValueEnum<'ctx> = match name {
+            "div" => self
+                .backend
+                .builder
+                .build_float_div(lhs, rhs, "fdiv")
+                .unwrap()
+                .into(),
+            "mod" => {
+                let rem = self
+                    .backend
+                    .builder
+                    .build_float_rem(lhs, rhs, "fmod_raw")
+                    .unwrap();
+                let rem_nonzero = self
+                    .backend
+                    .builder
+                    .build_float_compare(FloatPredicate::UNE, rem, zero, "remainder_nonzero")
+                    .unwrap();
+                let rem_negative = self
+                    .backend
+                    .builder
+                    .build_float_compare(FloatPredicate::OLT, rem, zero, "remainder_negative")
+                    .unwrap();
+                let rhs_negative = self
+                    .backend
+                    .builder
+                    .build_float_compare(FloatPredicate::OLT, rhs, zero, "divisor_negative")
+                    .unwrap();
+                let signs_differ = self
+                    .backend
+                    .builder
+                    .build_xor(rem_negative, rhs_negative, "float_signs_differ")
+                    .unwrap();
+                let adjusted = self
+                    .backend
+                    .builder
+                    .build_float_add(rem, rhs, "fmod_adjusted")
+                    .unwrap();
+                let signed_rem = self
+                    .backend
+                    .builder
+                    .build_select(signs_differ, adjusted, rem, "fmod_signed")
+                    .unwrap();
+                let rhs_bits = self
+                    .backend
+                    .builder
+                    .build_bit_cast(rhs, i64_ty, "divisor_bits")
+                    .unwrap()
+                    .into_int_value();
+                let sign_bits = self
+                    .backend
+                    .builder
+                    .build_and(rhs_bits, i64_ty.const_int(1 << 63, false), "divisor_sign")
+                    .unwrap();
+                let signed_zero = self
+                    .backend
+                    .builder
+                    .build_bit_cast(sign_bits, f64_ty, "fmod_zero")
+                    .unwrap();
+                self.backend
+                    .builder
+                    .build_select(rem_nonzero, signed_rem, signed_zero, "pymod_float")
+                    .unwrap()
+            }
+            _ => unreachable!("non-divrem float operation"),
+        };
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .unwrap();
+        let fast_pred = self.backend.builder.get_insert_block().unwrap();
+        self.backend.builder.position_at_end(slow);
+        let runtime_name = if name == "div" {
+            "molt_div"
+        } else {
+            "molt_mod"
+        };
+        let boxed = self
+            .call_runtime_2_boxed(runtime_name, op.operands[0], op.operands[1])
+            .into_int_value();
+        // Zero dispatch raises; the dead value still has the phi's carrier type.
+        let slow_value = self
+            .backend
+            .builder
+            .build_bit_cast(boxed, f64_ty, "float_zero_dead")
+            .unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .unwrap();
+        let slow_pred = self.backend.builder.get_insert_block().unwrap();
+        self.backend.builder.position_at_end(merge);
+        let phi = self
+            .backend
+            .builder
+            .build_phi(f64_ty, "float_divrem")
+            .unwrap();
+        phi.add_incoming(&[(&fast_value, fast_pred), (&slow_value, slow_pred)]);
+        (phi.as_basic_value(), TirType::F64)
+    }
+
     pub(super) fn emit_binary_arith(&mut self, op: &crate::tir::ops::TirOp, name: &str) {
         let result_id = op.results[0];
         let lhs_id = op.operands[0];
@@ -500,28 +637,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 (v.into(), TirType::F64)
             }
-            (TirType::F64, TirType::F64, "div") => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_div(lhs.into_float_value(), rhs.into_float_value(), "fdiv")
-                    .unwrap();
-                if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
-                }
-                (v.into(), TirType::F64)
-            }
-            (TirType::F64, TirType::F64, "mod") => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_rem(lhs.into_float_value(), rhs.into_float_value(), "fmod")
-                    .unwrap();
-                if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
-                }
-                (v.into(), TirType::F64)
-            }
+            (TirType::F64, TirType::F64, "div" | "mod") => self.emit_f64_divrem_zero_guarded(
+                op,
+                name,
+                lhs.into_float_value(),
+                rhs.into_float_value(),
+            ),
 
             // Everything else: call runtime (DynBox dispatch).
             //
@@ -1092,5 +1213,52 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
         self.values.insert(result_id, val);
         self.value_types.insert(result_id, out_ty);
+    }
+}
+
+#[cfg(test)]
+mod numeric_family_tests {
+    use super::super::*;
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+    use crate::tir::values::ValueId;
+
+    #[test]
+    fn float_divrem_preserves_zero_dispatch_and_python_remainder_sign() {
+        for (opcode, runtime) in [(OpCode::Div, "molt_div"), (OpCode::Mod, "molt_mod")] {
+            let context = inkwell::context::Context::create();
+            let backend = LlvmBackend::new(&context, "float_divrem_semantics");
+            let mut func = TirFunction::new(
+                "float_divrem".into(),
+                vec![TirType::F64, TirType::F64],
+                TirType::F64,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let result = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: vec![ValueId(0), ValueId(1)],
+                results: vec![result],
+                attrs: AttrDict::from([("fast_math".into(), AttrValue::Bool(true))]),
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return {
+                values: vec![result],
+            };
+            try_lower_tir_to_llvm(&func, &backend).unwrap();
+            backend.module.verify().unwrap();
+            let ir = backend.module.print_to_string().to_string();
+            assert!(ir.contains("float_rhs_nonzero") && ir.contains("fcmp une"));
+            assert!(ir.contains(runtime));
+            assert!(
+                !ir.contains("fdiv fast") && !ir.contains("frem fast"),
+                "fast-math must not erase zero/NaN/sign semantics"
+            );
+            if opcode == OpCode::Mod {
+                assert!(ir.contains("fmod_adjusted") && ir.contains("divisor_sign"));
+                assert!(ir.contains("fmod_zero") && ir.contains("pymod_float"));
+            }
+        }
     }
 }

@@ -386,16 +386,20 @@ mod tests {
             return;
         }
 
-        let output = Command::new(std::env::current_exe().expect("current test executable"))
+        let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+        command
             .args([
                 "--exact",
                 "wasm_abi_exports::tests::scratch_alloc_cold_resource_denial_is_null_and_nounwind",
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env(CHILD, "1")
-            .output()
-            .expect("spawn isolated cold-runtime test");
+            .env(CHILD, "1");
+        let output = crate::test_support::captured_runtime_children::capture(
+            &mut command,
+            "cold-resource-denial",
+            "cold",
+        );
         assert!(
             output.status.success(),
             "cold raw-ABI failure crossed extern C or violated its null contract:\nstdout:\n{}\nstderr:\n{}",

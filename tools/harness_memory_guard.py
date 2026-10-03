@@ -1843,6 +1843,8 @@ class RepoProcessMemorySentinel:
         self._on_violation = on_violation
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._daemon_suite_lease = None
+        self._daemon_suite_lease_previous = None
         self._tree_tracker = memory_guard.ProcessTreeTracker(os.getpid())
         self._baseline_pgids: set[int] = set()
         self._observed_process_identities: dict[int, memory_guard.ProcessIdentity] = {}
@@ -1859,6 +1861,28 @@ class RepoProcessMemorySentinel:
         try:
             self._started_monotonic = time.monotonic()
             self._started_at = _utc_timestamp()
+            if os.name == "posix" and self._drain_on_exit and self._suppress_auto_guard:
+                from molt import backend_daemon_suite_custody as suite_custody
+
+                self._daemon_suite_lease_previous = os.environ.get(
+                    suite_custody.LEASE_ENV
+                )
+                inherited = self._daemon_suite_lease_previous
+                samples = memory_guard.sample_processes()
+                if (
+                    not inherited
+                    or suite_custody.live_lease(
+                        Path(inherited), project_root=self._repo_root, samples=samples
+                    )
+                    is None
+                ):
+                    self._daemon_suite_lease = suite_custody.SuiteDaemonLease.start(
+                        project_root=self._repo_root, environ=os.environ
+                    )
+                    if self._daemon_suite_lease is not None:
+                        os.environ[suite_custody.LEASE_ENV] = str(
+                            self._daemon_suite_lease.path
+                        )
             self._baseline_pgids = self._current_group_pgids()
             self._thread = threading.Thread(
                 target=self._run,
@@ -1868,18 +1892,50 @@ class RepoProcessMemorySentinel:
             self._thread.start()
             return self
         except Exception:
-            if self._suppress_auto_guard:
-                _note_auto_sentinel_suppressor_exited()
+            try:
+                if self._daemon_suite_lease is not None:
+                    from molt import backend_daemon_suite_custody as suite_custody
+
+                    try:
+                        self._daemon_suite_lease.close()
+                    finally:
+                        if self._daemon_suite_lease_previous is None:
+                            os.environ.pop(suite_custody.LEASE_ENV, None)
+                        else:
+                            os.environ[suite_custody.LEASE_ENV] = (
+                                self._daemon_suite_lease_previous
+                            )
+            finally:
+                if self._suppress_auto_guard:
+                    _note_auto_sentinel_suppressor_exited()
             raise
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if self._tree_tracker.root_pid != os.getpid():
+            return  # A fork child never drains its parent's suite.
         try:
             self._stop.set()
             if self._thread is not None:
                 self._thread.join(timeout=max(0.5, self._limits.poll_interval * 2))
-            if self._drain_on_exit:
-                self.drain_new_processes()
+            try:
+                if self._daemon_suite_lease is not None:
+                    self._daemon_suite_lease.close(
+                        timeout=max(7.0, self._drain_max_runtime_sec)
+                    )
+            finally:
+                # A failed guardian must not bypass the suite's bounded drain.
+                if self._drain_on_exit:
+                    self.drain_new_processes()
         finally:
+            if self._daemon_suite_lease is not None:
+                from molt import backend_daemon_suite_custody as suite_custody
+
+                if self._daemon_suite_lease_previous is None:
+                    os.environ.pop(suite_custody.LEASE_ENV, None)
+                else:
+                    os.environ[suite_custody.LEASE_ENV] = (
+                        self._daemon_suite_lease_previous
+                    )
             if self._suppress_auto_guard:
                 _note_auto_sentinel_suppressor_exited()
 
@@ -1897,8 +1953,49 @@ class RepoProcessMemorySentinel:
     ) -> set[int]:
         if not self._scope_to_current_tree:
             return set()
+        if os.name != "posix" or not os.environ.get("MOLT_BACKEND_DAEMON_SUITE_LEASE"):
+            self._tree_tracker.update(samples)
+            return {
+                pid
+                for pid in (self._tree_tracker.known_pids or set())
+                if pid in samples
+            }
+        from molt import backend_daemon_suite_custody as suite_custody
+
+        if (
+            self._daemon_suite_lease is not None
+            and self._daemon_suite_lease.record["owner_pid"] == os.getpid()
+        ):
+            adopted = suite_custody.registered_groups(
+                self._daemon_suite_lease.path,
+                lease=self._daemon_suite_lease.record,
+                samples=samples,
+                acknowledge=False,
+            )
+        else:
+            adopted = suite_custody.transferable_groups(
+                os.environ,
+                project_root=self._repo_root,
+                samples=samples,
+                acknowledge=False,
+            )
+        adopted_pids = {
+            pid for _lease, _identity, members in adopted for pid in members
+        }
+        if self._daemon_suite_lease is not None:
+            # The receiving suite explicitly observes adopted births even after
+            # the short command that spawned the daemon has been reaped.
+            assert self._tree_tracker.known_pids is not None
+            assert self._tree_tracker.known_identities is not None
+            for pid in adopted_pids:
+                self._tree_tracker.known_pids.add(pid)
+                self._tree_tracker.known_identities[pid] = (
+                    memory_guard.process_identity(samples[pid])
+                )
         self._tree_tracker.update(samples)
         known_pids = set(self._tree_tracker.known_pids or set())
+        if self._daemon_suite_lease is None:
+            known_pids.difference_update(adopted_pids)
         return {pid for pid in known_pids if pid in samples}
 
     def _termination_attribution(

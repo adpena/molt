@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+from dataclasses import dataclass
 import os
 import shutil
 import sys
@@ -16,33 +16,48 @@ from molt.wasm_artifact import (
     parse_wasm_section_spans,
 )
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+import wasm_link_validation
+from wasm_link_fact_provider import WasmImportFact
+import wasm_stub_wasi as stub_mod
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "freestanding_hello.py"
 
 
-def _load_stub_module():
-    path = PROJECT_ROOT / "tools" / "wasm_stub_wasi.py"
-    spec = importlib.util.spec_from_file_location("wasm_stub_wasi", path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+@dataclass(frozen=True, slots=True)
+class _FixtureWasmFacts:
+    imports: tuple[WasmImportFact, ...]
 
 
-stub_mod = _load_stub_module()
+class _FixtureWasmFactsProvider:
+    authority_digest = "f" * 64
+
+    def __call__(self, data: bytes) -> _FixtureWasmFacts:
+        next_index_by_kind = {kind: 0 for kind in range(5)}
+        imports: list[WasmImportFact] = []
+        for wasm_import in parse_wasm_imports(data):
+            index = next_index_by_kind[wasm_import.kind]
+            next_index_by_kind[wasm_import.kind] += 1
+            imports.append(
+                WasmImportFact(
+                    module=wasm_import.module,
+                    name=wasm_import.name,
+                    kind=wasm_import.kind,
+                    index=index,
+                    extern_type={},
+                )
+            )
+        return _FixtureWasmFacts(tuple(imports))
 
 
-def _load_wasm_link_module():
-    path = PROJECT_ROOT / "tools" / "wasm_link.py"
-    spec = importlib.util.spec_from_file_location("molt_wasm_link", path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+_FACTS_PROVIDER = _FixtureWasmFactsProvider()
 
 
-wasm_link_mod = _load_wasm_link_module()
+def _validate_freestanding(data: bytes) -> bool:
+    return wasm_link_validation._validate_freestanding(
+        data,
+        facts_provider=_FACTS_PROVIDER,
+    )
 
 
 def _read_varuint(data: bytes, offset: int) -> tuple[int, int]:
@@ -553,25 +568,25 @@ def _build_wasm_with_import(module_name: str, field_name: str) -> bytes:
 def test_validate_freestanding_rejects_molt_runtime_import():
     """_validate_freestanding must fail when molt_runtime imports remain."""
     wasm = _build_wasm_with_import("molt_runtime", "some_func")
-    assert not wasm_link_mod._validate_freestanding(wasm)
+    assert not _validate_freestanding(wasm)
 
 
 def test_validate_freestanding_rejects_wasi_import():
     """_validate_freestanding must fail when wasi_snapshot_preview1 imports remain."""
     wasm = _build_wasm_with_import("wasi_snapshot_preview1", "fd_write")
-    assert not wasm_link_mod._validate_freestanding(wasm)
+    assert not _validate_freestanding(wasm)
 
 
 def test_validate_freestanding_accepts_env_import():
     """_validate_freestanding must accept imports from the env module."""
     wasm = _build_wasm_with_import("env", "__indirect_function_table")
-    assert wasm_link_mod._validate_freestanding(wasm)
+    assert _validate_freestanding(wasm)
 
 
-def test_validate_freestanding_warns_unknown_module(capsys):
-    """_validate_freestanding should warn (not fail) for non-env imports."""
+def test_validate_freestanding_rejects_unknown_module(capsys):
+    """A freestanding artifact must not gain an undeclared host namespace."""
     wasm = _build_wasm_with_import("custom_host", "my_func")
-    assert wasm_link_mod._validate_freestanding(wasm)
+    assert not _validate_freestanding(wasm)
     captured = capsys.readouterr()
     assert "custom_host::my_func" in captured.err
 
@@ -599,7 +614,7 @@ def test_validate_freestanding_accepts_clean_module():
     sections.append((10, bytes(code_payload)))
 
     wasm = stub_mod._build_sections(sections)
-    assert wasm_link_mod._validate_freestanding(wasm)
+    assert _validate_freestanding(wasm)
 
 
 # ---------------------------------------------------------------------------
@@ -607,11 +622,15 @@ def test_validate_freestanding_accepts_clean_module():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
-def test_freestanding_produces_no_wasi_imports(tmp_path):
-    """A freestanding build must contain zero wasi_snapshot_preview1 imports."""
-    output = tmp_path / "output.wasm"
-    linked = tmp_path / "output_linked.wasm"
+@pytest.fixture(scope="module")
+def freestanding_build(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[Path, str]:
+    """Build the shared freestanding artifact once for every end-to-end assertion."""
+
+    output_dir = tmp_path_factory.mktemp("wasm-freestanding")
+    output = output_dir / "output.wasm"
+    linked = output_dir / "output_linked.wasm"
     result = _run_wasm_test_process(
         [
             sys.executable,
@@ -625,14 +644,23 @@ def test_freestanding_produces_no_wasi_imports(tmp_path):
             str(output),
             "--linked-output",
             str(linked),
+            "--precompile",
         ],
         cwd=PROJECT_ROOT,
         env=wasm_test_build_env(PROJECT_ROOT, linked=True),
-        timeout=180,
     )
     assert result.returncode == 0, (
         f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
+    return linked, result.stderr or ""
+
+
+@pytest.mark.slow
+def test_freestanding_produces_no_wasi_imports(
+    freestanding_build: tuple[Path, str],
+):
+    """A freestanding build must contain zero wasi_snapshot_preview1 imports."""
+    linked, _stderr = freestanding_build
     wasm_bytes = linked.read_bytes()
     imports = _wasm_import_pairs(wasm_bytes)
     wasi_imports = [
@@ -642,31 +670,11 @@ def test_freestanding_produces_no_wasi_imports(tmp_path):
 
 
 @pytest.mark.slow
-def test_freestanding_binary_is_valid_wasm(tmp_path):
+def test_freestanding_binary_is_valid_wasm(
+    freestanding_build: tuple[Path, str],
+):
     """The linked freestanding binary must be valid WASM."""
-    output = tmp_path / "output.wasm"
-    linked = tmp_path / "output_linked.wasm"
-    result = _run_wasm_test_process(
-        [
-            sys.executable,
-            "-m",
-            "molt",
-            "build",
-            str(FIXTURE),
-            "--target",
-            "wasm-freestanding",
-            "--output",
-            str(output),
-            "--linked-output",
-            str(linked),
-        ],
-        cwd=PROJECT_ROOT,
-        env=wasm_test_build_env(PROJECT_ROOT, linked=True),
-        timeout=180,
-    )
-    assert result.returncode == 0, (
-        f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-    )
+    linked, _stderr = freestanding_build
     wasm_bytes = linked.read_bytes()
     assert wasm_bytes[:4] == b"\x00asm", "Not a valid WASM binary"
     assert wasm_bytes[4:8] == b"\x01\x00\x00\x00", "Not WASM version 1"

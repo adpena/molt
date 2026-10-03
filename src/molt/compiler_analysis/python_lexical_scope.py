@@ -9,7 +9,7 @@ the target Python policy is supplied explicitly, never inferred from the host.
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import python_import_binding
+from molt.python_private_names import python_import_binding
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias

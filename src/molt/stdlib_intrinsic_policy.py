@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import python_source_field
+from molt.python_private_names import python_source_field
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path

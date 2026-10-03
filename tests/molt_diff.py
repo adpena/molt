@@ -739,6 +739,7 @@ class _BackendDaemonProcess:
     pid: int
     socket_path: Path
     command: str
+    argv: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -750,37 +751,18 @@ class _PrunableProcess:
 
 
 def _list_backend_daemon_processes() -> list[_BackendDaemonProcess]:
-    processes: list[_BackendDaemonProcess] = []
-    if os.name != "posix":
-        return processes
-    try:
-        result = subprocess.run(
-            ["ps", "-axo", "pid=,command="],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2.0,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return processes
-    pattern = re.compile(r"^\s*(\d+)\s+(.*)$")
-    socket_pat = re.compile(r"--socket\s+(\S+)")
-    for line in result.stdout.splitlines():
-        match = pattern.match(line)
-        if match is None:
-            continue
-        pid = int(match.group(1))
-        cmd = match.group(2)
-        if "molt-backend" not in cmd or "--daemon" not in cmd:
-            continue
-        socket_match = socket_pat.search(cmd)
-        if socket_match is None:
-            continue
-        socket_path = Path(socket_match.group(1)).expanduser()
-        processes.append(
-            _BackendDaemonProcess(pid=pid, socket_path=socket_path, command=cmd)
-        )
-    return sorted(processes, key=lambda process: process.pid)
+    return sorted(
+        (
+            _BackendDaemonProcess(
+                pid=sample.pid,
+                socket_path=socket_path,
+                command=sample.command,
+                argv=sample.argv,
+            )
+            for sample, socket_path in daemon_custody.backend_daemon_process_observations()
+        ),
+        key=lambda process: process.pid,
+    )
 
 
 def _current_session_backend_daemon_records_by_pid() -> dict[
@@ -809,7 +791,7 @@ def _verified_backend_daemon_record(
     if identity.socket_path != process.socket_path:
         return None
     if not daemon_custody.backend_daemon_command_matches_identity(
-        process.command,
+        process.argv if process.argv is not None else process.command,
         backend_bin=identity.backend_bin,
         socket_path=identity.socket_path,
     ):

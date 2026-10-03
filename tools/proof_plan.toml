@@ -9,6 +9,32 @@
 schema = "molt.proof-plan.v4"
 
 authority_inputs = [
+  "tools/git_identity.py",
+  "tools/proof_plan_cli.py",
+  "src/molt/backend_daemon_suite_custody.py",
+  "src/molt/build_state_layout.py",
+  "src/molt/release_matrix.py",
+  "src/molt/tool_releases.py",
+  "src/molt/wasi_sysroot.py",
+  "tools/compat/diff_output_layout.py",
+  "tools/disk_guard.py",
+  "tools/guarded_entrypoints.py",
+  "tools/proof_queue_pkg/__init__.py",
+  "tools/memory_guard_core/common.py",
+  "tools/memory_guard_core/cli_contract.py",
+  "tools/memory_guard_core/memory_limits.py",
+  "tools/memory_guard_core/repro_context.py",
+  "tools/memory_guard_core/sample_records.py",
+  "tools/memory_guard_core/active_custody.py",
+  "src/molt/backend_daemon_custody.py",
+  "src/molt/backend_executable_names.py",
+  "src/molt/python_private_names.py",
+  "config/python_numeric_errors.toml",
+  "tools/gen_python_numeric_errors.py",
+  "tests/tools/test_gen_python_numeric_errors.py",
+  "runtime/molt-runtime-core/src/numeric_error_policy_generated.rs",
+  "runtime/molt-backend-luau/src/luau/numeric_error_policy_generated.rs",
+  "runtime/molt-backend-rust/src/rust/numeric_error_policy_generated.rs",
   "tests/test_cargo_quarantine_custody.py",
   "tests/tools/test_memory_guard_windows_sampling.py",
   "tools/memory_guard_core/cargo_quarantine.py",
@@ -97,7 +123,10 @@ authority_inputs = [
   "tools/safe_run.py",
   "tests/tools/test_cargo_test_binary_discovery.py",
   "tests/tools/test_runtime_test_gate.py",
+  "tests/tools/test_runtime_descendant_receipts.py",
+  "tests/runtime_descendant_test_support.py",
   "tools/run_runtime_test_gate.py",
+  "tools/runtime_descendant_receipts.py",
   ".gitattributes",
   ".github/actions/setup-lean/action.yml",
   ".github/actions/setup-llvm/action.yml",
@@ -849,7 +878,7 @@ dependencies = []
 [[ci_family]]
 name = "rust"
 description = "Rust workspace build, target checks, test truth, and non-overlapping lint proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/libtest_results.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py", "tools/run_runtime_test_gate.py", "tests/tools/test_runtime_test_gate.py", "tests/tools/test_cargo_test_binary_discovery.py"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/libtest_results.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py", "tools/run_runtime_test_gate.py", "tests/tools/test_runtime_test_gate.py", "tests/tools/test_cargo_test_binary_discovery.py", "tools/runtime_descendant_receipts.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/runtime_descendant_test_support.py"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "rust-build-unit-smoke"
@@ -1829,7 +1858,7 @@ resource_class = "repository-policy"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.proof-plan.generated", "repository.structural-debt", "repository.canonicalization", "repository.runtime-bridge-stubs", "repository.call-fact-coverage"]
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py",  "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py",  "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py"]
 toolchains = ["python", "uv", "rustfmt"]
 
 [[command]]
@@ -3560,3 +3589,15 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "repository.python-numeric-errors.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_python_numeric_errors.py", "--check"]
+toolchains = ["python", "uv"]

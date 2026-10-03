@@ -30,52 +30,85 @@ impl LuauBackend {
             }
             "sub" | "inplace_sub" => self.emit_scalar_binary_op(op, "-"),
             "mul" | "inplace_mul" => self.emit_scalar_binary_op(op, "*"),
-            "div" => {
+            "div" | "inplace_div" => {
                 // Luau 1/0 = inf (IEEE 754), Python raises ZeroDivisionError.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = self.numeric_operand_expr(&args[0]);
-                    let rhs = sanitize_ident(&args[1]);
                     let rhs_num = self.numeric_operand_expr(&args[1]);
+                    let kind = if args.iter().take(2).any(|arg| {
+                        self.scalar_plan.name_scalar_kind(arg) == Some(ScalarKind::Float)
+                    }) {
+                        "float"
+                    } else {
+                        "int"
+                    };
                     self.emit_line(&format!(
-                        "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"division by zero\"}}) end"
+                        "if {rhs_num} == 0 then molt_numeric_error(\"truediv:{kind}\") end"
                     ));
                     self.emit_line(&format!("local {out}: number = {lhs} / {rhs_num}"));
                 }
             }
-            "mod" => {
+            "mod" | "inplace_mod" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = self.numeric_operand_expr(&args[0]);
-                    let rhs = sanitize_ident(&args[1]);
                     let rhs_num = self.numeric_operand_expr(&args[1]);
+                    let kind = if args.iter().take(2).any(|arg| {
+                        self.scalar_plan.name_scalar_kind(arg) == Some(ScalarKind::Float)
+                    }) {
+                        "float"
+                    } else {
+                        "int"
+                    };
                     self.emit_line(&format!(
-                        "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"integer modulo by zero\"}}) end"
+                        "if {rhs_num} == 0 then molt_numeric_error(\"mod:{kind}\") end"
                     ));
-                    self.emit_line(&format!("local {out}: number = {lhs} % {rhs_num}"));
+                    if kind == "float" {
+                        self.emit_line(&format!(
+                            "local {out}: number = molt_float_mod({lhs}, {rhs_num})"
+                        ));
+                    } else {
+                        self.emit_line(&format!("local {out}: number = {lhs} % {rhs_num}"));
+                    }
                 }
             }
-            "floordiv" => {
+            "floordiv" | "inplace_floordiv" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = self.numeric_operand_expr(&args[0]);
-                    let rhs = sanitize_ident(&args[1]);
                     let rhs_num = self.numeric_operand_expr(&args[1]);
+                    let kind = if args.iter().take(2).any(|arg| {
+                        self.scalar_plan.name_scalar_kind(arg) == Some(ScalarKind::Float)
+                    }) {
+                        "float"
+                    } else {
+                        "int"
+                    };
                     self.emit_line(&format!(
-                        "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"integer division or modulo by zero\"}}) end"
+                        "if {rhs_num} == 0 then molt_numeric_error(\"floordiv:{kind}\") end"
                     ));
-                    self.emit_line(&format!("local {out}: number = {lhs} // {rhs_num}"));
+                    if kind == "float" {
+                        self.emit_line(&format!(
+                            "local {out}: number = molt_float_floor_div({lhs}, {rhs_num})"
+                        ));
+                    } else {
+                        self.emit_line(&format!("local {out}: number = {lhs} // {rhs_num}"));
+                    }
                 }
             }
-            "pow" => {
+            "pow" | "inplace_pow" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = self.numeric_operand_expr(&args[0]);
                     let rhs = self.numeric_operand_expr(&args[1]);
+                    self.emit_line(&format!(
+                        "if {lhs} == 0 and {rhs} < 0 then molt_numeric_error(\"pow:real\") end"
+                    ));
                     self.emit_line(&format!("local {out}: number = {lhs} ^ {rhs}"));
                 }
             }
@@ -87,7 +120,10 @@ impl LuauBackend {
                 if args.len() >= 3 {
                     let base = sanitize_ident(&args[0]);
                     let exp = sanitize_ident(&args[1]);
-                    let modulus = sanitize_ident(&args[2]);
+                    let modulus = self.numeric_operand_expr(&args[2]);
+                    self.emit_line(&format!(
+                        "if {modulus} == 0 then molt_numeric_error(\"pow_mod:int\") end"
+                    ));
                     self.emit_line(&format!(
                         "local {out}; do local __b, __e, __m = {base} % {modulus}, {exp}, {modulus}; \
                          local __r = 1; while __e > 0 do \

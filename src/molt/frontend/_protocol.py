@@ -498,6 +498,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _clear_exact_bindings(self, names: set[str]) -> None: ...
 
+    def _clear_import_binding_origin(self, name: str) -> None: ...
+
     def _clear_imported_module_binding(self, binding_name: str) -> None: ...
 
     def _clear_invalidated_guard_signatures(
@@ -806,7 +808,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_attribute_store(
         self,
         obj: MoltValue | None,
-        obj_expr: ast.AST | None,
+        obj_expr: ast.expr | None,
         obj_name: str | None,
         attr: str,
         value_node: MoltValue,
@@ -2110,10 +2112,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, target_info: MoltValue, func_id: str, node: ast.Call
     ) -> MoltValue: ...
 
-    def _native_callable_export(
-        self, target_module: str, attr_name: str
-    ) -> dict[str, Any] | None: ...
-
     def _native_support_function_roots(self) -> frozenset[str]: ...
 
     def _new_async_internal_slot(self) -> int: ...
@@ -2267,10 +2265,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _qualname_for_def(self, name: str) -> str: ...
 
     def _qualname_prefix(self) -> str: ...
-
-    def _raise_native_python_export_missing_callable_metadata(
-        self, target_module: str, attr_name: str, node: ast.Call
-    ) -> None: ...
 
     def _raise_syntax_error(self, msg: str, node: ast.AST) -> None: ...
 
@@ -2677,6 +2671,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any: ...
 
+    def _try_emit_published_native_object_call(
+        self, node: ast.Call, module_name: str, attr_name: str
+    ) -> MoltValue | None: ...
+
     def _try_emit_shape_builtin_call(self, node: ast.Call) -> Any: ...
 
     def _try_emit_split_call(self, node: ast.Call) -> Any: ...
@@ -2723,8 +2721,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> None: ...
 
     def _validate_match_pattern(self, pattern: ast.pattern) -> None: ...
-
-    def _validate_native_python_call_candidate(self, node: ast.Call) -> None: ...
 
     def _value_number_key_for_op(
         self,

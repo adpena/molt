@@ -621,6 +621,7 @@ pub unsafe extern "C" fn PyModule_AddStringConstant(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModuleDef_Init(def: *mut PyModuleDef) -> *mut PyObject {
     if def.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
     unsafe {
@@ -801,7 +802,8 @@ pub unsafe extern "C" fn PyModule_FromDefAndSpec2(
     spec: *mut PyObject,
     module_api_version: c_int,
 ) -> *mut PyObject {
-    if def.is_null() {
+    if def.is_null() || spec.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
     unsafe { module_from_def_and_slots(def, module_api_version, spec) }
@@ -818,6 +820,7 @@ pub unsafe extern "C" fn PyModule_FromDefAndSpec(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_ExecDef(module: *mut PyObject, def: *mut PyModuleDef) -> c_int {
     if module.is_null() || def.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
     // Loaders may create the module elsewhere and only route exec through
@@ -883,6 +886,7 @@ unsafe fn module_create2(
     attach_legacy_state: bool,
 ) -> *mut PyObject {
     if def.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
     if !unsafe { (*def).m_slots.is_null() } {

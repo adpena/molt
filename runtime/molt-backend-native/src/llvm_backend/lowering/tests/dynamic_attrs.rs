@@ -534,13 +534,21 @@ fn call_bind_consumes_its_builder_when_the_callable_box_fails() {
         instruction = current.get_next_instruction();
     }
     assert!(
-        abort_ir.contains("call void @molt_dec_ref_obj(i64 %0)") && !abort_ir.contains("@molt_call_bind_ic("),
+        abort_ir.contains("store i64 %0, ptr %call_retired_0")
+            && abort_ir.contains(
+                "call void @molt_call_inputs_release(i64 0, i64 %call_retired_ptr, i64 1)",
+            )
+            && !abort_ir.contains("@molt_call_bind_ic("),
         "a call skipped by a failed callable box still consumes its builder: {ir}"
     );
     assert_eq!(
-        ir.matches("call void @molt_dec_ref_obj(i64 %0)").count(),
+        ir.matches("call void @molt_call_inputs_release(").count(),
         1,
         "the builder is released only where the consuming call is skipped: {ir}"
+    );
+    assert!(
+        !ir.contains("call void @molt_dec_ref_obj(i64 %0)"),
+        "builder retirement must use the shared exception-preserving release: {ir}"
     );
     let call = ir
         .lines()

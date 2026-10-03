@@ -82,7 +82,9 @@ def _file_lock_fork_audit(event: str, _args: tuple[object, ...]) -> None:
         if len(_args) == 1 and _args[0] is _FILE_LOCK_AUDIT_INSTALL_TOKEN:
             _FILE_LOCK_AUDIT_INSTALL_VERIFIED = True
         return
-    if event not in ("os.fork", "os.forkpty"):
+    if event == "subprocess.Popen" and os.name != "posix":
+        return
+    if event not in ("os.fork", "os.forkpty", "subprocess.Popen"):
         return
     reasons = getattr(_FILE_LOCK_ATOMIC_LOCAL, "reasons", ())
     if reasons or getattr(_FILE_LOCK_ATOMIC_LOCAL, "fork_protocol_depth", 0):
@@ -128,8 +130,11 @@ def _before_file_lock_fork() -> None:
     # cannot enter while its own descriptor transition is outstanding.
     if getattr(_FILE_LOCK_ATOMIC_LOCAL, "reasons", ()):
         raise RuntimeError("fork lifecycle entered during atomic custody mutation")
+    _FILE_LOCK_ATOMIC_LOCAL.fork_gate_held = False
     _enter_file_lock_fork_protocol()
+    _FILE_LOCK_ATOMIC_LOCAL.fork_protocol_entered = True
     _FILE_LOCK_LIFECYCLE_CONDITION.acquire()
+    _FILE_LOCK_ATOMIC_LOCAL.fork_gate_held = True
     while _FILE_LOCK_DESCRIPTOR_ACTIONS:
         _FILE_LOCK_LIFECYCLE_CONDITION.wait()
     # Keep the gate only over the fork itself. All birth/close I/O has drained.
@@ -137,9 +142,13 @@ def _before_file_lock_fork() -> None:
 
 def _after_file_lock_fork_parent() -> None:
     try:
-        _FILE_LOCK_LIFECYCLE_CONDITION.release()
+        if getattr(_FILE_LOCK_ATOMIC_LOCAL, "fork_gate_held", False):
+            _FILE_LOCK_ATOMIC_LOCAL.fork_gate_held = False
+            _FILE_LOCK_LIFECYCLE_CONDITION.release()
     finally:
-        _leave_file_lock_fork_protocol()
+        if getattr(_FILE_LOCK_ATOMIC_LOCAL, "fork_protocol_entered", False):
+            _FILE_LOCK_ATOMIC_LOCAL.fork_protocol_entered = False
+            _leave_file_lock_fork_protocol()
 
 
 def _reset_in_process_lock_registry_after_fork() -> None:

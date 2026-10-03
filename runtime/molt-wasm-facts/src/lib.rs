@@ -12,16 +12,17 @@ use callable_table_generated::{
 
 pub use model::{
     CallableTableArtifactRole, CallableTableLayout, WasmActiveElementSegment,
-    WasmActiveFunctionElement, WasmCallableTableEntryFact, WasmFunctionReferences,
-    WasmFunctionType, WasmIndirectCall, WasmLinkFacts, WasmTableFact, WasmTableMutation,
-    WasmTableRead,
+    WasmActiveFunctionElement, WasmCallableTableEntryFact, WasmCanonicalExportTypeFact,
+    WasmCanonicalExternType, WasmCanonicalImportTypeFact, WasmFunctionReferences, WasmFunctionType,
+    WasmGotDataGlobalFact, WasmIndirectCall, WasmLinkFacts, WasmLinkingSymbolFact, WasmTableFact,
+    WasmTableMutation, WasmTableRead,
 };
 pub use publication::{
     publish_callable_table_attestation, scan_and_write_callable_table_attestation,
 };
 pub use scan::scan_wasm_link_facts;
 
-pub const WASM_LINK_FACTS_SCHEMA_VERSION: u32 = 4;
+pub const WASM_LINK_FACTS_SCHEMA_VERSION: u32 = 7;
 
 #[cfg(test)]
 mod publication_tests;

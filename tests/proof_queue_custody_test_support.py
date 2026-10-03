@@ -111,16 +111,20 @@ def synthetic_receipt_custody(
         assert command[1:3] == ["run", "--policy"] and command[4] == "--receipt"
         policy_path, receipt_path = Path(command[3]), Path(command[5])
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
-        event_path = receipt_path.with_suffix(".events.jsonl")
         events = b'{"kind":"synthetic-test-event"}\n'
+        event_digest = hashlib.sha256(events).hexdigest()
+        event_path = receipt_path.with_name(
+            f"{receipt_path.name}.events.{event_digest}.jsonl"
+        )
         event_path.write_bytes(events)
         receipt = {
-            "schema": "molt.proof-process-closure-receipt.v3",
+            "schema": supervisor_custody.SUPERVISOR_RECEIPT_SCHEMA,
             "complete": True,
             "state": "COMPLETE",
             "root_exit_code": 0,
             "nonce_sha256": hashlib.sha256(policy["nonce"].encode()).hexdigest(),
             "event_log": {
+                "schema": supervisor_custody.SUPERVISOR_EVENT_LOG_SCHEMA,
                 "file": event_path.name,
                 "count": 1,
                 "bytes": len(events),
@@ -149,7 +153,7 @@ def synthetic_receipt_custody(
         )
         policy = json.loads(policy_bytes)
         capability = {
-            "schema": "molt.proof-supervisor-capability.v2",
+            "schema": supervisor_custody.SUPERVISOR_CAPABILITY_SCHEMA,
             "platform": {"win32": "windows", "darwin": "macos"}.get(
                 sys.platform, sys.platform
             ),
@@ -157,6 +161,7 @@ def synthetic_receipt_custody(
             "backend": "synthetic-test-backend",
             "available": True,
             "pre_entry_exec_authority": True,
+            "pre_entry_process_create_authority": True,
             "recursive_descendant_authority": True,
             "reason": None,
             "required_environment": required_environment,

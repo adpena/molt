@@ -241,11 +241,12 @@ impl BuiltinSum {
                     // An inline int converts to a float exactly.
                     total.add(value as f64);
                     true
-                } else if let Ok(value) = c_long::try_from(value) {
+                } else {
+                    let Some(value) = c_long::try_from(value).ok() else {
+                        return false;
+                    };
                     total.add_uncompensated(value as f64);
                     true
-                } else {
-                    false
                 }
             }
             Self::Complex { re, im } => {

@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -22,17 +21,12 @@ if str(SRC_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 from molt.cli.atomic_io import _atomic_write_json  # noqa: E402
+from wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
+from wasm_link_optimizer_policy import _tree_shake_runtime  # noqa: E402
+from wasm_link_runtime_data import (  # noqa: E402
+    _canonical_split_runtime_required_exports,
+)
 from wasm_metrics import wasm_metrics  # noqa: E402
-
-
-def _load_wasm_link():
-    path = TOOLS_ROOT / "wasm_link.py"
-    spec = importlib.util.spec_from_file_location("molt_wasm_link_cache_bench", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load wasm linker authority from {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _sha256(data: bytes) -> str:
@@ -79,14 +73,15 @@ def _worker_main(args: argparse.Namespace) -> int:
     scratch.mkdir(parents=True)
     session_target.mkdir(parents=True)
     started_at = datetime.now(timezone.utc).isoformat()
-    wasm_link = _load_wasm_link()
     runtime_data = runtime.read_bytes()
-    required_exports = wasm_link._canonical_split_runtime_required_exports(runtime_data)
     facts_metrics: dict[str, float] = {}
-    provider = wasm_link._make_rust_wasm_facts_provider(scanner, scratch, facts_metrics)
+    provider = make_rust_wasm_facts_provider(scanner, scratch, facts_metrics)
+    required_exports = _canonical_split_runtime_required_exports(
+        runtime_data, facts_provider=provider
+    )
     cache_metrics: dict[str, int | float] = {}
     started = time.perf_counter()
-    result = wasm_link._tree_shake_runtime(
+    result = _tree_shake_runtime(
         runtime_data,
         required_exports,
         facts_provider=provider,
@@ -94,7 +89,7 @@ def _worker_main(args: argparse.Namespace) -> int:
     )
     wall_s = max(0.0, time.perf_counter() - started)
     cache_metrics.update(facts_metrics)
-    exports = sorted(wasm_link._collect_exports(result))
+    exports = sorted(provider(result).exports)
     payload = {
         "schema_version": 1,
         "session": args.worker_session,

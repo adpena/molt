@@ -172,6 +172,7 @@ class GuardedChildProcess:
     sid: int | None
     command: tuple[str, ...]
     started_at: str
+    started_at_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

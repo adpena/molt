@@ -27,14 +27,24 @@ pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
-    index_impl(obj_bits, key_bits, false)
+    index_impl(obj_bits, key_bits, false, true)
 }
 
 pub(crate) extern "C" fn molt_getitem_builtin(obj_bits: u64, key_bits: u64) -> u64 {
-    index_impl(obj_bits, key_bits, true)
+    index_impl(obj_bits, key_bits, true, true)
 }
 
-fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
+/// Invoke an admitted native sq_item with an already normalized index.
+pub(crate) fn molt_sequence_item_builtin(obj_bits: u64, key_bits: u64) -> u64 {
+    index_impl(obj_bits, key_bits, true, false)
+}
+
+fn index_impl(
+    obj_bits: u64,
+    key_bits: u64,
+    builtin_only: bool,
+    normalize_negative: bool,
+) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         // Fast path: dict[key] — skips exception_pending and type dispatch chain.
         if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
@@ -81,11 +91,11 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                 // list_int: flat i64 storage — delegate to specialized getitem
                 let tid = object_type_id(obj_ptr);
                 if tid == TYPE_ID_LIST_INT {
-                    return molt_list_int_getitem(obj_bits, key_bits);
+                    return super::specialized_list::list_int_getitem_impl(obj_bits, key_bits, normalize_negative);
                 }
                 // list_bool: flat u8 storage — delegate to specialized getitem
                 if tid == TYPE_ID_LIST_BOOL {
-                    return molt_list_bool_getitem(obj_bits, key_bits);
+                    return super::specialized_list::list_bool_getitem_impl(obj_bits, key_bits, normalize_negative);
                 }
                 // tuple[int]: the most common indexed-tuple shape. Completes the
                 // entry fast-path tier (dict / list_int / list_bool already have
@@ -101,7 +111,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     if key.is_int() {
                         let len = crate::object::seq_access::len(obj_ptr) as i64;
                         let raw = key.as_int_unchecked();
-                        let idx = if raw < 0 { raw + len } else { raw };
+                        let idx = if normalize_negative && raw < 0 { raw + len } else { raw };
                         if idx >= 0 && idx < len {
                             let Some(val) = crate::object::seq_access::item(obj_ptr, idx as usize)
                             else {
@@ -239,7 +249,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                             let mut i = idx;
                             let dim_len = shape[dim];
                             let dim_len_i64 = dim_len as i64;
-                            if i < 0 {
+                            if normalize_negative && i < 0 {
                                 i += dim_len_i64;
                             }
                             if i < 0 || i >= dim_len_i64 {
@@ -343,7 +353,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     }
                     let len = shape[0] as i64;
                     let mut i = idx;
-                    if i < 0 {
+                    if normalize_negative && i < 0 {
                         i += len;
                     }
                     if i < 0 || i >= len {
@@ -466,7 +476,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
                         let mut i = idx;
                         let len = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
-                        if i < 0 {
+                        if normalize_negative && i < 0 {
                             i += len;
                         }
                         if i < 0 || i >= len {
@@ -494,7 +504,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     let bytes = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
                     let len = bytes.len() as i64;
                     let mut i = idx;
-                    if i < 0 {
+                    if normalize_negative && i < 0 {
                         i += len;
                     }
                     if i < 0 || i >= len {
@@ -564,7 +574,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     };
                     let len = list_len(ptr) as i64;
                     let mut i = idx;
-                    if i < 0 {
+                    if normalize_negative && i < 0 {
                         i += len;
                     }
                     if i < 0 || i >= len {
@@ -647,7 +657,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     };
                     let len = tuple_len(ptr) as i64;
                     let mut i = idx;
-                    if i < 0 {
+                    if normalize_negative && i < 0 {
                         i += len;
                     }
                     if i < 0 || i >= len {
@@ -677,7 +687,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     if let Some((start_i64, stop_i64, step_i64)) = range_components_i64(ptr)
                         && let Some(mut idx_i64) = index_i64_integral_bits(key_bits)
                     {
-                        if idx_i64 < 0 {
+                        if normalize_negative && idx_i64 < 0 {
                             let len = range_len_i128(start_i64, stop_i64, step_i64);
                             let adj = (idx_i64 as i128) + len;
                             if adj < 0 {
@@ -716,7 +726,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         return MoltObject::none().bits();
                     };
                     let len = range_len_bigint(&start, &stop, &step);
-                    if idx.is_negative() {
+                    if normalize_negative && idx.is_negative() {
                         idx += &len;
                     }
                     if idx.is_negative() || idx >= len {

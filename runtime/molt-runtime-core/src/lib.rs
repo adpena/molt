@@ -11,6 +11,7 @@ pub mod app_bootstrap;
 pub mod cached_handle;
 pub mod float_repr;
 pub mod host_capabilities_generated;
+pub mod numeric_error_policy_generated;
 
 // ---------------------------------------------------------------------------
 // Convenience helpers (mirror the signatures in molt-runtime/src/object/mod.rs)

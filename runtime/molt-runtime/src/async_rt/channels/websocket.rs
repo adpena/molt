@@ -14,14 +14,14 @@ use super::stream::bytes_channel;
 #[cfg(molt_has_net_io)]
 use crate::GilReleaseGuard;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::audit::AuditArgs;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::string_obj_to_owned;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::{
-    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, dec_ref_bits, has_capability,
+    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, dec_ref_bits,
     header_from_obj_ptr, inc_ref_bits, monotonic_now_secs, obj_from_bits, resolve_obj_ptr,
     runtime_state, to_f64, to_i64,
 };

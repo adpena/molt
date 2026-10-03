@@ -966,8 +966,7 @@ pub extern "C" fn PyMapping_HasKey(o: u64, key: u64) -> i32 {
 /// `PySequence_GetItem(o, i)` — return `o[i]`, or 0 on error.
 pub extern "C" fn PySequence_GetItem(o: u64, i: isize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let idx_bits = MoltObject::from_int(i as i64).bits();
-        let res = molt_getitem_method(o, idx_bits);
+        let res = crate::object::sequence_index::sequence_item_at_index(_py, o, i as i64);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);

@@ -13,8 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn fixed_leaf_closes_with_reconciled_accounting() {
     let receipt = supervise(ClosureMode::Leaf, "exit");
     assert!(receipt.complete, "{receipt:#?}");
-    assert_eq!(receipt.accounting.observed_process_creates, 1);
-    assert_eq!(receipt.accounting.observed_process_exits, 1);
+    assert_eq!(receipt.accounting.process_creates, 1);
+    assert_eq!(receipt.accounting.process_exits, 1);
     assert_eq!(receipt.accounting.active_processes, 0);
     assert!(receipt.identity_is_valid());
     assert!(serde_json::to_vec(&receipt).unwrap().len() < 16 * 1024);
@@ -31,17 +31,17 @@ fn leaf_rejects_descendants_before_they_escape_custody() {
             .any(|value| value.contains("descendant process")),
         "{receipt:#?}"
     );
-    assert!(receipt.accounting.observed_process_creates >= 2);
+    assert!(receipt.accounting.process_creates >= 2);
 }
 
 #[test]
 fn declared_tree_accepts_a_fixed_descendant_image() {
     let receipt = supervise(ClosureMode::DeclaredTree, "spawn-self");
     assert!(receipt.complete, "{receipt:#?}");
-    assert_eq!(receipt.accounting.observed_process_creates, 2);
+    assert_eq!(receipt.accounting.process_creates, 2);
     assert_eq!(
-        receipt.accounting.observed_process_creates,
-        receipt.accounting.observed_process_exits
+        receipt.accounting.process_creates,
+        receipt.accounting.process_exits
     );
 }
 
@@ -112,7 +112,12 @@ fn inventory_observes_a_distinct_runtime_before_normal_policy_sealing() {
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str::<ProcessEvent>(line).unwrap())
-        .filter_map(|event| event.image)
+        .filter_map(|event| match event.event {
+            molt_proof_supervisor::ProcessEventKind::ProcessCreate { image, .. }
+            | molt_proof_supervisor::ProcessEventKind::Fork { image, .. } => image,
+            molt_proof_supervisor::ProcessEventKind::Exec { image } => Some(image),
+            _ => None,
+        })
         .any(|image| image.path == runtime && image.class == ImageClass::Unknown);
     assert!(observed_runtime, "inventory omitted {}", runtime.display());
 
@@ -202,8 +207,8 @@ fn declared_auxiliary_is_terminated_when_root_exits() {
     assert!(receipt.complete, "{receipt:#?}");
     assert_eq!(receipt.accounting.root_exit_terminated_processes, 1);
     assert_eq!(
-        receipt.accounting.observed_process_creates,
-        receipt.accounting.observed_process_exits
+        receipt.accounting.process_creates,
+        receipt.accounting.process_exits
     );
     let _ = fs::remove_dir_all(directory);
 }
@@ -212,7 +217,7 @@ fn declared_auxiliary_is_terminated_when_root_exits() {
 fn process_heavy_declared_tree_keeps_terminal_receipt_compact() {
     let receipt = supervise_with_fixture_args(ClosureMode::DeclaredTree, &["spawn-many", "256"]);
     assert!(receipt.complete, "{receipt:#?}");
-    assert_eq!(receipt.accounting.total_processes, 257);
+    assert_eq!(receipt.accounting.process_creates, 257);
     assert!(receipt.event_log.as_ref().unwrap().count >= 514);
     assert!(serde_json::to_vec_pretty(&receipt).unwrap().len() < 64 * 1024);
 }
@@ -268,7 +273,7 @@ fn failed_root_exec_can_never_reconcile_as_complete() {
         receipt
             .errors
             .iter()
-            .any(|value| value.contains("never reached an admitted exec stop"))
+            .any(|value| value.contains("root executable never reached an admitted image event"))
     );
     let verified = Command::new(&binary)
         .args(["verify", "--policy"])
@@ -287,14 +292,14 @@ fn normal_heap_is_available_to_debugged_root_and_descendant() {
     let leaf = supervise(ClosureMode::Leaf, "normal-heap-leaf");
     assert!(leaf.complete, "{leaf:#?}");
     assert_eq!(leaf.root_exit_code, Some(0), "{leaf:#?}");
-    assert_eq!(leaf.accounting.total_processes, 1);
+    assert_eq!(leaf.accounting.process_creates, 1);
 
     for mode in [ClosureMode::DeclaredTree, ClosureMode::InventoryTree] {
         let tree = supervise(mode, "normal-heap-tree");
         assert!(tree.complete, "{tree:#?}");
         assert_eq!(tree.root_exit_code, Some(0), "{tree:#?}");
-        assert_eq!(tree.accounting.observed_process_creates, 2);
-        assert_eq!(tree.accounting.observed_process_exits, 2);
+        assert_eq!(tree.accounting.process_creates, 2);
+        assert_eq!(tree.accounting.process_exits, 2);
         assert_eq!(tree.accounting.active_processes, 0);
     }
 }
@@ -312,8 +317,8 @@ fn application_breakpoint_is_delivered_to_the_program() {
 fn thread_storm_drains_without_changing_process_accounting() {
     let receipt = supervise(ClosureMode::Leaf, "thread-storm");
     assert!(receipt.complete, "{receipt:#?}");
-    assert_eq!(receipt.accounting.total_processes, 1);
-    assert!(receipt.event_log.as_ref().unwrap().count >= 258);
+    assert_eq!(receipt.accounting.process_creates, 1);
+    assert_eq!(receipt.event_log.as_ref().unwrap().count, 2);
 }
 
 #[cfg(target_os = "windows")]

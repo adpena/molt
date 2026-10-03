@@ -1,7 +1,9 @@
+#![cfg(any(target_os = "windows", target_os = "linux"))]
+
 use molt_proof_supervisor::evidence::{durable_atomic_write, event_artifact_path};
 use molt_proof_supervisor::{
-    ClosureMode, DerivedRoot, FixedImage, POLICY_SCHEMA, Policy, Receipt, RootExitDisposition,
-    platform, sha256_bytes, sha256_file,
+    ClosureMode, DerivedRoot, FixedImage, KernelAccounting, POLICY_SCHEMA, Policy, Receipt,
+    RootExitDisposition, platform, sha256_bytes, sha256_file,
 };
 use serde_json::Value;
 use std::fs;
@@ -94,6 +96,23 @@ fn verify_rejects_unknown_policy_and_receipt_fields() {
     let output = verify(&run.binary, &run.policy_path, &run.receipt_path);
     assert!(!output.status.success());
     assert!(text(&output).contains("unknown field"));
+
+    if receipt["kernel_accounting"].is_object() {
+        receipt
+            .as_object_mut()
+            .unwrap()
+            .remove("unknown_receipt_authority");
+        let mut nested = receipt;
+        nested["kernel_accounting"]["unknown_kernel_authority"] = Value::Bool(true);
+        durable_atomic_write(
+            &run.receipt_path,
+            &serde_json::to_vec_pretty(&nested).unwrap(),
+        )
+        .unwrap();
+        let output = verify(&run.binary, &run.policy_path, &run.receipt_path);
+        assert!(!output.status.success());
+        assert!(text(&output).contains("unknown field"));
+    }
 }
 
 #[test]
@@ -175,6 +194,102 @@ fn verify_rejects_unknown_event_field_even_with_recomputed_artifact_and_receipt_
     assert!(text(&output).contains("unknown field"));
 }
 
+#[test]
+fn verify_rejects_resealed_receipt_semantic_drift() {
+    let run = run_fixture(ClosureMode::Leaf);
+    let original: Receipt = serde_json::from_slice(&fs::read(&run.receipt_path).unwrap()).unwrap();
+
+    let mut capability = original.clone();
+    capability.capability.backend.push_str("-forged");
+    assert_resealed_receipt_rejected(&run, capability, "\"capability_valid\":false");
+
+    let mut root_exit = original.clone();
+    root_exit.root_exit_code = root_exit.root_exit_code.map(|code| code + 1);
+    assert_resealed_receipt_rejected(&run, root_exit, "\"root_exit_valid\":false");
+
+    let mut accounting = original.clone();
+    accounting.accounting.execs += 1;
+    assert_resealed_receipt_rejected(&run, accounting, "\"accounting_valid\":false");
+
+    let mut violations = original.clone();
+    violations.violation_count += 1;
+    violations.violations.push("forged violation".to_owned());
+    assert_resealed_receipt_rejected(&run, violations, "\"violation_replay_valid\":false");
+
+    if original.kernel_accounting.is_some() {
+        let mut kernel = original.clone();
+        let Some(KernelAccounting::WindowsJob {
+            total_processes, ..
+        }) = &mut kernel.kernel_accounting
+        else {
+            unreachable!();
+        };
+        *total_processes += 1;
+        assert_resealed_receipt_rejected(&run, kernel, "\"kernel_accounting_valid\":false");
+    }
+}
+
+#[test]
+fn verify_replays_contiguous_typed_policy_classified_events_after_reseal() {
+    let run = run_fixture(ClosureMode::Leaf);
+    let receipt: Receipt = serde_json::from_slice(&fs::read(&run.receipt_path).unwrap()).unwrap();
+    let event_log = receipt.event_log.as_ref().unwrap();
+    let event_path = run.directory.join(&event_log.file);
+    let rows: Vec<Value> = fs::read_to_string(&event_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+
+    let mut wrong_dialect = rows.clone();
+    wrong_dialect[0]["event"]["image"] = if cfg!(target_os = "windows") {
+        Value::Null
+    } else {
+        rows[1]["event"]["image"].clone()
+    };
+    assert_resealed_event_log_rejected(&run, &receipt, &wrong_dialect, "backend dialect");
+
+    let mut sequence_gap = rows.clone();
+    sequence_gap[1]["sequence"] = Value::from(3);
+    assert_resealed_event_log_rejected(&run, &receipt, &sequence_gap, "not contiguous");
+
+    let mut post_root_activity = rows.clone();
+    let mut late_activity = if cfg!(target_os = "windows") {
+        post_root_activity[0].clone()
+    } else {
+        post_root_activity
+            .iter()
+            .find(|row| row["event"]["kind"] == "exec")
+            .unwrap()
+            .clone()
+    };
+    late_activity["sequence"] = Value::from((post_root_activity.len() + 1) as u64);
+    post_root_activity.push(late_activity);
+    assert_resealed_event_log_rejected(
+        &run,
+        &receipt,
+        &post_root_activity,
+        "after the root exited",
+    );
+
+    let mut forged_classification = rows.clone();
+    let image_event = forged_classification
+        .iter_mut()
+        .find(|row| row["event"]["image"].is_object())
+        .unwrap();
+    image_event["event"]["image"]["roles"] = serde_json::json!(["forged-policy-authority"]);
+    assert_resealed_event_log_rejected(
+        &run,
+        &receipt,
+        &forged_classification,
+        "classification disagrees",
+    );
+
+    let mut impossible_variant = rows;
+    impossible_variant[0]["event"]["exit_code"] = Value::from(0);
+    assert_resealed_event_log_rejected(&run, &receipt, &impossible_variant, "unknown field");
+}
+
 fn run_fixture(mode: ClosureMode) -> TestRun {
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_molt-proof-supervisor"));
     let directory = unique_directory();
@@ -234,6 +349,50 @@ fn verify(binary: &Path, policy: &Path, receipt: &Path) -> Output {
         .arg(receipt)
         .output()
         .unwrap()
+}
+
+fn assert_resealed_receipt_rejected(run: &TestRun, mut receipt: Receipt, expected: &str) {
+    receipt.seal();
+    durable_atomic_write(
+        &run.receipt_path,
+        &serde_json::to_vec_pretty(&receipt).unwrap(),
+    )
+    .unwrap();
+    let output = verify(&run.binary, &run.policy_path, &run.receipt_path);
+    assert_eq!(output.status.code(), Some(79), "{}", text(&output));
+    assert!(text(&output).contains(expected), "{}", text(&output));
+}
+
+fn assert_resealed_event_log_rejected(
+    run: &TestRun,
+    original: &Receipt,
+    rows: &[Value],
+    expected_error: &str,
+) {
+    let mut bytes = Vec::new();
+    for row in rows {
+        serde_json::to_writer(&mut bytes, row).unwrap();
+        bytes.push(b'\n');
+    }
+    let digest = sha256_bytes(&bytes);
+    let path = event_artifact_path(&run.receipt_path, &digest).unwrap();
+    durable_atomic_write(&path, &bytes).unwrap();
+    let mut receipt = original.clone();
+    let event_log = receipt.event_log.as_mut().unwrap();
+    event_log.file = path.file_name().unwrap().to_string_lossy().into_owned();
+    event_log.count = rows.len() as u64;
+    event_log.bytes = bytes.len() as u64;
+    event_log.sha256 = digest;
+    receipt.seal();
+    durable_atomic_write(
+        &run.receipt_path,
+        &serde_json::to_vec_pretty(&receipt).unwrap(),
+    )
+    .unwrap();
+    let output = verify(&run.binary, &run.policy_path, &run.receipt_path);
+    let output_text = text(&output);
+    assert_eq!(output.status.code(), Some(79), "{output_text}");
+    assert!(output_text.contains(expected_error), "{output_text}");
 }
 
 fn text(output: &Output) -> String {

@@ -1,14 +1,148 @@
 """Public export identity and split-runtime contract restoration authority."""
 
 from __future__ import annotations
+
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 import hashlib
 
-from wasm_link_context import WasmExportContext
+from molt.cli.app_export_contract import (
+    app_export_call_abi,
+    excluded_app_symbols,
+    exported_app_symbols,
+)
+from wasm_link_edit import (
+    _ensure_function_exports_by_symbol_names,
+    _rename_export_names,
+    _restore_output_export_aliases,
+    _strip_internal_exports,
+    _validate_app_export_adapters,
+)
+from wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
+from wasm_link_format import (
+    _insert_standard_section,
+    _read_varuint,
+    _write_string,
+    _write_varuint,
+)
+from wasm_link_operations import (
+    build_sections as _build_sections,
+    parse_sections as _parse_sections,
+    strip_publication_sections as strip_wasm_publication_sections,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _SplitRuntimeExportContractEntry:
+    artifact: str
+    kind: int
+    canonical_name: str
+    accepted_names: tuple[str, ...]
+
+
+_SPLIT_RUNTIME_EXPORT_CONTRACT = (
+    _SplitRuntimeExportContractEntry(
+        artifact="app",
+        kind=0,
+        canonical_name="molt_main",
+        accepted_names=("molt_main",),
+    ),
+    _SplitRuntimeExportContractEntry(
+        artifact="app",
+        kind=2,
+        canonical_name="molt_memory",
+        accepted_names=("molt_memory", "memory"),
+    ),
+    _SplitRuntimeExportContractEntry(
+        artifact="app",
+        kind=1,
+        canonical_name="molt_table",
+        accepted_names=("molt_table", "__indirect_function_table"),
+    ),
+)
+
+
+def _split_runtime_export_contract(
+    artifact: str,
+) -> tuple[_SplitRuntimeExportContractEntry, ...]:
+    return tuple(
+        entry for entry in _SPLIT_RUNTIME_EXPORT_CONTRACT if entry.artifact == artifact
+    )
+
+
+def _split_runtime_contract_export_names(artifact: str) -> set[str]:
+    return {
+        name
+        for entry in _split_runtime_export_contract(artifact)
+        for name in entry.accepted_names
+    }
+
+
+def _split_artifact_contract_keep_set(
+    artifact: str,
+    *,
+    public_export_map: Mapping[str, str] | None = None,
+    required_native_direct_symbols: Sequence[str] = (),
+) -> set[str]:
+    """Return the external export contract for a split publication artifact."""
+
+    return (
+        _split_runtime_contract_export_names(artifact)
+        | set(public_export_map or ())
+        | set(required_native_direct_symbols)
+    )
+
+
+def _split_artifact_contract_function_symbols(
+    artifact: str,
+    *,
+    public_export_map: Mapping[str, str] | None = None,
+    required_native_direct_symbols: Sequence[str] = (),
+) -> dict[str, str]:
+    export_map = public_export_map or {}
+    keep = _split_artifact_contract_keep_set(
+        artifact,
+        public_export_map=export_map,
+        required_native_direct_symbols=required_native_direct_symbols,
+    )
+    function_symbols = {
+        public_name: symbol_name
+        for public_name, symbol_name in export_map.items()
+        if public_name in keep
+    }
+    function_symbols.update({name: name for name in required_native_direct_symbols})
+    for entry in _split_runtime_export_contract(artifact):
+        if entry.kind == 0:
+            function_symbols.setdefault(entry.canonical_name, entry.canonical_name)
+    return function_symbols
+
+
+_TRAP_FUNC_BODY = bytes([0x00, 0x00, 0x0B])
+
+
+def _function_body_payloads_by_index(
+    data: bytes, *, facts_provider: WasmFactsProvider
+) -> dict[int, bytes]:
+    sections = _parse_sections(data)
+    import_count = int(facts_provider(data)["function_import_count"])
+    for section_id, payload in sections:
+        if section_id != 10:
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        bodies: dict[int, bytes] = {}
+        for local_index in range(count):
+            body_size, body_start = _read_varuint(payload, offset)
+            body_end = body_start + body_size
+            if body_end > len(payload):
+                raise ValueError("Unexpected EOF while reading function body")
+            bodies[import_count + local_index] = payload[body_start:body_end]
+            offset = body_end
+        return bodies
+    return {}
 
 
 def _public_output_export_symbol_map(
-    output_data: bytes,
     *,
     preserved_output_exports: Sequence[str],
     export_symbol_map: Mapping[str, str],
@@ -69,20 +203,18 @@ def _app_export_identity_maps(
 
 
 def _strip_app_export_identity_markers(
-    context: WasmExportContext,
     data: bytes,
     *,
     identity_exports: Mapping[str, str],
     preserve_exports: set[str],
+    facts_provider: WasmFactsProvider,
 ) -> bytes:
     """Remove optimizer identity roots and reject any publication leak."""
 
-    updated = context["_strip_internal_exports"](
-        data, preserve_exports=preserve_exports
-    )
+    updated = _strip_internal_exports(data, preserve_exports=preserve_exports)
     stripped = data if updated is None else updated
     leaked = sorted(
-        set(identity_exports) & set(context["_collect_function_exports"](stripped))
+        set(identity_exports) & set(facts_provider(stripped).function_exports)
     )
     if leaked:
         raise ValueError(
@@ -92,29 +224,31 @@ def _strip_app_export_identity_markers(
 
 
 def _publish_app_export_identity_markers(
-    context: WasmExportContext,
     data: bytes,
     *,
     public_export_names: Sequence[str],
     adapter_symbol_map: Mapping[str, str],
     target_symbol_map: Mapping[str, str],
     identity_exports: Mapping[str, str],
+    facts_provider: WasmFactsProvider,
 ) -> bytes:
     """Prove exact pre-optimizer identities, then publish durable markers."""
 
-    context["_validate_app_export_adapters"](
+    _validate_app_export_adapters(
         data,
         public_export_names,
         adapter_symbol_map=adapter_symbol_map,
         target_symbol_map=target_symbol_map,
+        facts_provider=facts_provider,
     )
-    updated = context["_ensure_function_exports_by_symbol_names"](
+    updated = _ensure_function_exports_by_symbol_names(
         data,
         dict(identity_exports),
+        facts_provider=facts_provider,
     )
     marked = data if updated is None else updated
     missing = sorted(
-        set(identity_exports) - set(context["_collect_function_exports"](marked))
+        set(identity_exports) - set(facts_provider(marked).function_exports)
     )
     if missing:
         raise ValueError("optimizer identity exports are absent: " + ", ".join(missing))
@@ -122,18 +256,18 @@ def _publish_app_export_identity_markers(
 
 
 def _app_export_surface_error(
-    context: WasmExportContext,
     data: bytes,
     contract: Mapping[str, object] | None,
     *,
     stage: str,
+    facts_provider: WasmFactsProvider,
 ) -> str | None:
     if contract is None:
         return None
-    exports = set(context["_collect_function_exports"](data))
-    expected = set(context["exported_app_symbols"](contract))
+    exports = set(facts_provider(data).function_exports)
+    expected = set(exported_app_symbols(contract))
     missing = sorted(expected - exports)
-    forbidden = sorted(set(context["excluded_app_symbols"](contract)) & exports)
+    forbidden = sorted(set(excluded_app_symbols(contract)) & exports)
     details: list[str] = []
     if missing:
         details.append("missing=" + ",".join(missing))
@@ -141,13 +275,15 @@ def _app_export_surface_error(
         details.append("excluded-exported=" + ",".join(forbidden))
     if not missing:
         try:
-            call_abi = context["app_export_call_abi"](contract)
+            call_abi = app_export_call_abi(contract)
             adapter = call_abi.get("adapter")
             if (
                 isinstance(adapter, Mapping)
                 and adapter.get("strategy") == "forward-owned-result"
             ):
-                context["_validate_app_export_adapters"](data, tuple(sorted(expected)))
+                _validate_app_export_adapters(
+                    data, tuple(sorted(expected)), facts_provider=facts_provider
+                )
         except ValueError as exc:
             details.append(f"adapter-invalid={exc}")
     if not details:
@@ -156,15 +292,17 @@ def _app_export_surface_error(
 
 
 def _restore_public_output_exports(
-    context: WasmExportContext,
     data: bytes,
     public_export_map: Mapping[str, str],
     *,
     preserved_symbol_names: Sequence[str] = (),
+    facts_provider: WasmFactsProvider,
 ) -> bytes:
     restored = data
-    updated = context["_ensure_function_exports_by_symbol_names"](
-        restored, dict(public_export_map)
+    updated = _ensure_function_exports_by_symbol_names(
+        restored,
+        dict(public_export_map),
+        facts_provider=facts_provider,
     )
     if updated is not None:
         restored = updated
@@ -173,15 +311,16 @@ def _restore_public_output_exports(
         for public_name, symbol_name in public_export_map.items()
         if symbol_name != public_name and symbol_name not in preserved_symbol_names
     }
-    updated = context["_rename_export_names"](restored, rename_map)
+    updated = _rename_export_names(restored, rename_map)
     if updated is not None:
         restored = updated
-    updated = context["_restore_output_export_aliases"](restored)
+    updated = _restore_output_export_aliases(restored)
     if updated is not None:
         restored = updated
-    updated = context["_ensure_function_exports_by_symbol_names"](
+    updated = _ensure_function_exports_by_symbol_names(
         restored,
         {name: name for name in preserved_symbol_names},
+        facts_provider=facts_provider,
     )
     if updated is not None:
         restored = updated
@@ -189,128 +328,112 @@ def _restore_public_output_exports(
 
 
 def _import_index_for_kind(
-    context: WasmExportContext,
-    data: bytes,
+    facts: WasmLinkFacts,
     *,
     module: str,
     name: str,
     kind: int,
 ) -> int | None:
-    index = 0
-    for wasm_import in context["_collect_imports"](data):
-        if wasm_import.kind != kind:
-            continue
-        if wasm_import.module == module and wasm_import.name == name:
-            return index
-        index += 1
-    return None
+    return facts.import_index(module=module, name=name, kind=kind)
 
 
 def _ensure_export_by_index(
-    context: WasmExportContext,
     data: bytes,
     *,
     name: str,
     kind: int,
     index: int,
 ) -> bytes | None:
-    sections = context["_parse_sections"](data)
+    sections = _parse_sections(data)
     rebuilt_sections: list[tuple[int, bytes]] = []
     inserted = False
     for section_id, payload in sections:
         if section_id == 7:
-            count, offset = context["_read_varuint"](payload, 0)
-            rebuilt = bytearray(context["_write_varuint"](count + 1))
+            count, offset = _read_varuint(payload, 0)
+            rebuilt = bytearray(_write_varuint(count + 1))
             rebuilt.extend(payload[offset:])
-            rebuilt.extend(context["_write_string"](name))
+            rebuilt.extend(_write_string(name))
             rebuilt.append(kind)
-            rebuilt.extend(context["_write_varuint"](index))
+            rebuilt.extend(_write_varuint(index))
             rebuilt_sections.append((section_id, bytes(rebuilt)))
             inserted = True
             continue
         rebuilt_sections.append((section_id, payload))
     if not inserted:
-        export_payload = bytearray(context["_write_varuint"](1))
-        export_payload.extend(context["_write_string"](name))
+        export_payload = bytearray(_write_varuint(1))
+        export_payload.extend(_write_string(name))
         export_payload.append(kind)
-        export_payload.extend(context["_write_varuint"](index))
-        rebuilt_sections = context["_insert_standard_section"](
+        export_payload.extend(_write_varuint(index))
+        rebuilt_sections = _insert_standard_section(
             rebuilt_sections, 7, bytes(export_payload)
         )
-    return context["_build_sections"](rebuilt_sections)
+    return _build_sections(rebuilt_sections)
 
 
 def _ensure_defined_memory_export(
-    context: WasmExportContext, data: bytes
+    data: bytes,
+    *,
+    facts: WasmLinkFacts,
 ) -> bytes | None:
-    facts = context["parse_wasm_module_facts"](data)
     if any(
-        facts.export_kinds.get(name, (None, None))[0] == 2
+        facts.exports.get(name) is not None and facts.exports[name].kind == 2
         for name in ("molt_memory", "memory")
     ):
         return None
     memory_imports = [entry for entry in facts.imports if entry.kind == 2]
     if memory_imports:
         raise ValueError("cannot restore linked memory export from an imported memory")
-    memory_sections = [
-        payload
-        for section_id, payload in context["_parse_sections"](data)
-        if section_id == 5
-    ]
-    if not memory_sections:
+    if facts.defined_memory_count == 0:
         return None
-    if len(memory_sections) != 1:
+    if facts.defined_memory_count != 1:
         raise ValueError(
             "cannot restore linked memory export without exactly one memory section"
         )
-    memory_count, _ = context["_read_varuint"](memory_sections[0], 0)
-    if memory_count != 1:
-        raise ValueError(
-            "cannot restore linked memory export without exactly one defined memory"
-        )
-    return context["_ensure_export_by_index"](data, name="molt_memory", kind=2, index=0)
+    return _ensure_export_by_index(data, name="molt_memory", kind=2, index=0)
 
 
 def _restore_split_runtime_contract_exports(
-    context: WasmExportContext,
     data: bytes,
     *,
     artifact: str,
     stage: str = "unspecified",
     public_export_map: Mapping[str, str] | None = None,
     required_native_direct_symbols: Sequence[str] = (),
-    operation_counts: dict[str, int | float] | None = None,
+    facts_provider: WasmFactsProvider,
 ) -> bytes:
-    function_symbols = context["_split_artifact_contract_function_symbols"](
+    function_symbols = _split_artifact_contract_function_symbols(
         artifact,
         public_export_map=public_export_map,
         required_native_direct_symbols=required_native_direct_symbols,
     )
-    input_exports = context["_collect_function_exports"](data)
-    input_bodies = context["_function_body_payloads_by_index"](data)
+    input_exports = facts_provider(data).function_exports
+    input_bodies = _function_body_payloads_by_index(data, facts_provider=facts_provider)
     contract_function_bodies = {
         public_name: input_bodies[index]
         for public_name, symbol_name in function_symbols.items()
         if (index := input_exports.get(public_name, input_exports.get(symbol_name)))
         is not None
         and index in input_bodies
-        and input_bodies[index] != context["_TRAP_FUNC_BODY"]
+        and input_bodies[index] != _TRAP_FUNC_BODY
     }
-    restored = context["_restore_public_output_exports"](
+    restored = _restore_public_output_exports(
         data,
         public_export_map or {},
         preserved_symbol_names=required_native_direct_symbols,
+        facts_provider=facts_provider,
     )
-    updated = context["_ensure_function_exports_by_symbol_names"](
-        restored, function_symbols
+    updated = _ensure_function_exports_by_symbol_names(
+        restored, function_symbols, facts_provider=facts_provider
     )
     if updated is not None:
         restored = updated
-    current_exports = context["_collect_function_exports"](restored)
-    current_bodies = context["_function_body_payloads_by_index"](restored)
+    current_exports = facts_provider(restored).function_exports
+    current_bodies = _function_body_payloads_by_index(
+        restored, facts_provider=facts_provider
+    )
     body_indices: dict[bytes, list[int]] = {}
     for index, body in current_bodies.items():
-        if body != context["_TRAP_FUNC_BODY"]:
+        if body != _TRAP_FUNC_BODY:
             body_indices.setdefault(body, []).append(index)
     for public_name, body in contract_function_bodies.items():
         if public_name in current_exports:
@@ -318,7 +441,7 @@ def _restore_split_runtime_contract_exports(
         matches = body_indices.get(body, [])
         if len(matches) != 1:
             continue
-        updated = context["_ensure_export_by_index"](
+        updated = _ensure_export_by_index(
             restored,
             name=public_name,
             kind=0,
@@ -343,15 +466,11 @@ def _restore_split_runtime_contract_exports(
             f"function export(s) at {stage}: {', '.join(details)}"
         )
     import_names = {1: "__indirect_function_table", 2: "memory"}
-    contract = context["_split_runtime_export_contract"](artifact)
-    facts = context["parse_wasm_module_facts"](restored)
-    export_kinds = dict(facts.export_kinds)
-    if operation_counts is not None:
-        eliminated = max(0, len(contract) - 1)
-        operation_counts["wasm_whole_artifact_redundant_parses_eliminated"] = (
-            operation_counts.get("wasm_whole_artifact_redundant_parses_eliminated", 0)
-            + eliminated
-        )
+    contract = _split_runtime_export_contract(artifact)
+    facts = facts_provider(restored)
+    export_kinds = {
+        name: (fact.kind, fact.index) for name, fact in facts.exports.items()
+    }
     for entry in contract:
         if any(
             export_kinds.get(name, (None, None))[0] == entry.kind
@@ -369,8 +488,8 @@ def _restore_split_runtime_contract_exports(
                 f"Split-runtime {artifact} has no restoration source for export "
                 f"{entry.canonical_name} kind {entry.kind}"
             )
-        index = context["_import_index_for_kind"](
-            restored,
+        index = _import_index_for_kind(
+            facts,
             module="env",
             name=import_name,
             kind=entry.kind,
@@ -380,7 +499,7 @@ def _restore_split_runtime_contract_exports(
                 f"Split-runtime {artifact} cannot restore {entry.canonical_name}: "
                 f"missing env.{import_name} kind {entry.kind} import"
             )
-        updated = context["_ensure_export_by_index"](
+        updated = _ensure_export_by_index(
             restored,
             name=entry.canonical_name,
             kind=entry.kind,
@@ -393,7 +512,6 @@ def _restore_split_runtime_contract_exports(
 
 
 def _strip_and_restore_split_artifact(
-    context: WasmExportContext,
     data: bytes,
     *,
     artifact: str,
@@ -401,32 +519,32 @@ def _strip_and_restore_split_artifact(
     preserve_debug: bool,
     public_export_map: Mapping[str, str] | None = None,
     required_native_direct_symbols: Sequence[str] = (),
-    operation_counts: dict[str, int | float] | None = None,
+    facts_provider: WasmFactsProvider,
 ) -> bytes:
-    keep_set = context["_split_artifact_contract_keep_set"](
+    keep_set = _split_artifact_contract_keep_set(
         artifact,
         public_export_map=public_export_map,
         required_native_direct_symbols=required_native_direct_symbols,
     )
-    stripped = context["strip_wasm_publication_sections"](
+    stripped = strip_wasm_publication_sections(
         data,
         final_artifact=True,
         preserve_debug=preserve_debug,
     )
-    restored = context["_restore_split_runtime_contract_exports"](
+    restored = _restore_split_runtime_contract_exports(
         stripped,
         artifact=artifact,
         stage=stage,
         public_export_map=public_export_map,
         required_native_direct_symbols=required_native_direct_symbols,
-        operation_counts=operation_counts,
+        facts_provider=facts_provider,
     )
-    facts = context["parse_wasm_module_facts"](restored)
+    facts = facts_provider(restored)
     missing = sorted(
         name
         for name in keep_set
-        if name not in facts.export_kinds
-        and name not in context["_split_runtime_contract_export_names"](artifact)
+        if name not in facts.exports
+        and name not in _split_runtime_contract_export_names(artifact)
     )
     if missing:
         raise ValueError(

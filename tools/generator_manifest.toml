@@ -528,3 +528,26 @@ audited_defaults = []
 path = "runtime/molt-ffi/src/header.rs"
 producer = "molt-ffi crate (Rust build-side generator)"
 reason = "emitted by the molt-ffi crate's own codegen, not a tools/ generator; checked in for the C ABI header"
+
+[[generator]]
+tool = "tools/gen_python_numeric_errors.py"
+outputs = [
+  "runtime/molt-runtime-core/src/numeric_error_policy_generated.rs",
+  "runtime/molt-backend-luau/src/luau/numeric_error_policy_generated.rs",
+  "runtime/molt-backend-rust/src/rust/numeric_error_policy_generated.rs",
+]
+source = "config/python_numeric_errors.toml + src/molt/target_python.py + tools/generator_io.py"
+check_mode = true
+check_command = "tools/gen_python_numeric_errors.py --check"
+idempotent = true
+sync_test = "tests/tools/test_gen_python_numeric_errors.py"
+closed_domains = ["NumericErrorContext"]
+discovery_only = false
+
+[[closed_domain]]
+name = "NumericErrorContext"
+enum_file = "runtime/molt-runtime-core/src/numeric_error_policy_generated.rs"
+enum_name = "NumericErrorContext"
+owned_by = "tools/gen_python_numeric_errors.py"
+source_table = "config/python_numeric_errors.toml"
+audited_defaults = []

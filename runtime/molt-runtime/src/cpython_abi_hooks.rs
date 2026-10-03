@@ -1658,6 +1658,14 @@ unsafe extern "C" fn hook_iter_next(iter_bits: u64, exhausted: *mut c_int) -> Ow
     })
 }
 
+unsafe extern "C" fn hook_sequence_item(obj_bits: u64, index: isize) -> OwnedHandleResult {
+    with_gil(|py| {
+        owned_result_from_pending(crate::object::sequence_index::sequence_item_at_index(
+            &py, obj_bits, index as i64,
+        ))
+    })
+}
+
 unsafe extern "C" fn hook_sequence_check(obj_bits: u64) -> c_int {
     with_gil(|py| crate::object::ops::sequence_check_bits(&py, obj_bits))
 }
@@ -4873,6 +4881,7 @@ pub fn register_cpython_hooks() -> bool {
                 interrupt_occurred: hook_interrupt_occurred,
                 notify_pending_calls: hook_notify_pending_calls,
                 sequence_check: hook_sequence_check,
+                sequence_item: hook_sequence_item,
                 object_length_hint: hook_object_length_hint,
                 tuple_uses_length_hint: hook_tuple_uses_length_hint,
                 exception_group_admit: hook_exception_group_admit,

@@ -311,15 +311,19 @@ fn process_exit_covers_collection_before_pending_callbacks_with_or_without_lease
         panic!("process exit returned");
     }
     for mode in ["no-lease", "lease"] {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--exact",
                 "state::lifecycle::shutdown_tests::process_exit_covers_collection_before_pending_callbacks_with_or_without_lease",
                 "--ignored", "--nocapture", "--test-threads=1",
             ])
-            .env(CHILD, mode)
-            .output()
-            .unwrap();
+            .env(CHILD, mode);
+        let output = crate::test_support::captured_runtime_children::capture(
+            &mut command,
+            "process-exit-callbacks",
+            mode,
+        );
         assert!(output.status.success(), "{mode}: {output:?}");
         assert!(
             String::from_utf8_lossy(&output.stdout)

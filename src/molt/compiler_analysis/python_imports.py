@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     )
 
 import ast
-from molt.compiler_analysis.python_private_names import python_import_binding
+from molt.python_private_names import python_import_binding
 from collections import deque
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace

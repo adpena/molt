@@ -30,6 +30,11 @@ from tools.git_identity import clean_checkout_status_arguments, require_git_obje
 from .build_bundle import build_bundle
 from .compiler_payload import compiler_record, launcher_record, source_snapshot
 from .runtime_cells import read_runtime_inventory
+from .native_build import (
+    read_native_build,
+    snapshot_rust_channel,
+    validate_receipt as validate_native_receipt,
+)
 from . import release_evidence
 from .release_remote import (
     download_evidence,
@@ -69,7 +74,7 @@ from .release_model import (
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
-CANDIDATE_SCHEMA = "molt.release-candidate.v4"
+CANDIDATE_SCHEMA = "molt.release-candidate.v5"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
 CONSUMER_SCHEMA = "molt.release-consumer-proof.v6"
 # The installed guest matrix for every declared Python coordinate, in receipt
@@ -313,17 +318,44 @@ def assemble_candidate(
     source_sha: str,
     source_date_epoch: int,
     wheel: Path,
-    primary_worker: Path,
-    secondary_worker: Path,
-    primary_compiler: Path,
-    secondary_compiler: Path,
-    primary_launcher: Path,
-    secondary_launcher: Path,
+    primary_native_build: Path,
+    secondary_native_build: Path,
     primary_runtime_cells: Path,
     secondary_runtime_cells: Path,
     output: Path,
 ) -> dict[str, object]:
     target = target_by_id(target_id)
+    if primary_native_build.samefile(secondary_native_build):
+        raise ValueError("independent native builds must use distinct output roots")
+    if primary_runtime_cells.samefile(secondary_runtime_cells):
+        raise ValueError("independent runtime builds must use distinct output roots")
+    snapshot = source_snapshot(ROOT, source_sha)
+    expected_rust_channel = snapshot_rust_channel(ROOT, snapshot)
+    native = read_native_build(
+        primary_native_build,
+        snapshot=snapshot,
+        expected_rust_channel=expected_rust_channel,
+        source_date_epoch=source_date_epoch,
+        platform=target.platform,
+        arch=target.arch,
+    )
+    if native != read_native_build(
+        secondary_native_build,
+        snapshot=snapshot,
+        expected_rust_channel=expected_rust_channel,
+        source_date_epoch=source_date_epoch,
+        platform=target.platform,
+        arch=target.arch,
+    ):
+        raise ValueError(f"{target_id}: native build receipts are not reproducible")
+    primary_worker, primary_compiler, primary_launcher = (
+        primary_native_build / native["artifacts"][role]["path"]
+        for role in ("worker", "compiler", "launcher")
+    )
+    secondary_worker, secondary_compiler, secondary_launcher = (
+        secondary_native_build / native["artifacts"][role]["path"]
+        for role in ("worker", "compiler", "launcher")
+    )
     compiler = compiler_record(
         primary_compiler, platform=target.platform, arch=target.arch
     )
@@ -345,9 +377,10 @@ def assemble_candidate(
         secondary_runtime_cells, platform=target.platform, arch=target.arch
     ):
         raise ValueError(f"{target_id}: runtime cells are not reproducible")
-    if runtime["source"]["commit"] != source_sha:
+    if runtime["source"] != {
+        key: native["source"][key] for key in ("object_format", "commit", "tree")
+    }:
         raise ValueError(f"{target_id}: runtime cells come from different source")
-    snapshot = source_snapshot(ROOT, source_sha)
     worker_primary = file_record(primary_worker, kind="worker-repro-primary")
     worker_secondary = file_record(secondary_worker, kind="worker-repro-secondary")
     if worker_primary["sha256"] != worker_secondary["sha256"]:
@@ -457,6 +490,7 @@ def assemble_candidate(
         "compiler": compiler,
         "launcher": launcher,
         "runtime": runtime,
+        "native_build": native,
         "artifacts": sorted(artifacts, key=lambda item: str(item["filename"])),
         "reproducibility": {
             "worker_sha256": worker_primary["sha256"],
@@ -475,7 +509,7 @@ def assemble_candidate(
 
 def _load_candidate(path: Path) -> dict[str, Any]:
     """Admit the complete current candidate shape before any nested access."""
-    payload = read_exact(path, max_bytes=1024 * 1024, label="release candidate")
+    payload = read_exact(path, max_bytes=16 * 1024 * 1024, label="release candidate")
     if (
         not isinstance(payload, dict)
         or set(payload)
@@ -489,6 +523,7 @@ def _load_candidate(path: Path) -> dict[str, Any]:
             "compiler",
             "launcher",
             "runtime",
+            "native_build",
             "artifacts",
             "reproducibility",
         }
@@ -539,7 +574,22 @@ def _load_candidate(path: Path) -> dict[str, Any]:
     runtime = validate_runtime_inventory(
         payload["runtime"], platform=target["platform"], arch=target["arch"]
     )
-    if runtime["source"]["commit"] != payload["source_sha"]:
+    native = validate_native_receipt(payload["native_build"])
+    if (
+        native["source"]["commit"] != payload["source_sha"]
+        or native["source_date_epoch"] != payload["source_date_epoch"]
+        or (native["target"]["platform"], native["target"]["arch"])
+        != (target["platform"], target["arch"])
+        or any(
+            (native["artifacts"][role]["sha256"], native["artifacts"][role]["size"])
+            != (record["sha256"], record["size"])
+            for role, record in (("compiler", compiler), ("launcher", launcher))
+        )
+    ):
+        raise ValueError("native build receipt differs from candidate inputs")
+    if runtime["source"] != {
+        key: native["source"][key] for key in ("object_format", "commit", "tree")
+    }:
         raise ValueError("release runtime cells come from different source")
     if (
         not isinstance(proof, dict)
@@ -567,6 +617,7 @@ def _load_candidate(path: Path) -> dict[str, Any]:
         or proof.get("matched") is not True
         or not isinstance(proof.get("worker_sha256"), str)
         or re.fullmatch(r"[0-9a-f]{64}", proof["worker_sha256"]) is None
+        or proof["worker_sha256"] != native["artifacts"]["worker"]["sha256"]
         or proof.get("launcher_sha256") != launcher["sha256"]
     ):
         raise ValueError(f"{target['id']}: reproducibility proof is incomplete")
@@ -1542,12 +1593,8 @@ def main() -> None:
     candidate.add_argument("--source-sha", required=True)
     candidate.add_argument("--source-date-epoch", type=int, required=True)
     candidate.add_argument("--wheel", type=Path, required=True)
-    candidate.add_argument("--primary-worker", type=Path, required=True)
-    candidate.add_argument("--secondary-worker", type=Path, required=True)
-    candidate.add_argument("--primary-compiler", type=Path, required=True)
-    candidate.add_argument("--secondary-compiler", type=Path, required=True)
-    candidate.add_argument("--primary-launcher", type=Path, required=True)
-    candidate.add_argument("--secondary-launcher", type=Path, required=True)
+    candidate.add_argument("--primary-native-build", type=Path, required=True)
+    candidate.add_argument("--secondary-native-build", type=Path, required=True)
     candidate.add_argument("--primary-runtime-cells", type=Path, required=True)
     candidate.add_argument("--secondary-runtime-cells", type=Path, required=True)
     candidate.add_argument("--output", type=Path, required=True)
@@ -1685,12 +1732,8 @@ def main() -> None:
             source_sha=args.source_sha,
             source_date_epoch=args.source_date_epoch,
             wheel=args.wheel,
-            primary_worker=args.primary_worker,
-            secondary_worker=args.secondary_worker,
-            primary_compiler=args.primary_compiler,
-            secondary_compiler=args.secondary_compiler,
-            primary_launcher=args.primary_launcher,
-            secondary_launcher=args.secondary_launcher,
+            primary_native_build=args.primary_native_build,
+            secondary_native_build=args.secondary_native_build,
             primary_runtime_cells=args.primary_runtime_cells,
             secondary_runtime_cells=args.secondary_runtime_cells,
             output=args.output,

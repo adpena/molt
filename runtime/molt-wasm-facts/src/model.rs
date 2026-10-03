@@ -45,6 +45,14 @@ pub struct WasmLinkFacts {
     pub reachable_table_reads: Vec<WasmTableRead>,
     pub exported_table_indices: Vec<u32>,
     pub tables: Vec<WasmTableFact>,
+    pub defined_memory_count: u32,
+    pub custom_section_names: Vec<String>,
+    pub linking_symbol_table_present: bool,
+    pub linking_symbols: Vec<WasmLinkingSymbolFact>,
+    pub function_names: Vec<(u32, String)>,
+    pub split_runtime_got_data_globals: Vec<WasmGotDataGlobalFact>,
+    pub canonical_import_types: Vec<WasmCanonicalImportTypeFact>,
+    pub canonical_export_types: Vec<WasmCanonicalExportTypeFact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -113,6 +121,68 @@ pub struct WasmTableFact {
     pub shared: bool,
     pub untyped_funcref: bool,
     pub encoded_element_type: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WasmGotDataGlobalFact {
+    pub symbol: String,
+    pub global_index: u32,
+    pub initial_address: Option<u32>,
+    pub flags: u32,
+    pub defined: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WasmCanonicalExternType {
+    Function {
+        exact: bool,
+        params: Vec<Vec<u8>>,
+        results: Vec<Vec<u8>>,
+    },
+    Global {
+        value_type: Vec<u8>,
+        mutable: bool,
+        shared: bool,
+    },
+    Memory {
+        memory64: bool,
+        shared: bool,
+        minimum: u64,
+        maximum: Option<u64>,
+        page_size_log2: Option<u32>,
+    },
+    Table {
+        table64: bool,
+        shared: bool,
+        minimum: u64,
+        maximum: Option<u64>,
+        element_type: Vec<u8>,
+    },
+    Tag {
+        tag_kind: String,
+        params: Vec<Vec<u8>>,
+        results: Vec<Vec<u8>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct WasmCanonicalImportTypeFact {
+    pub module: String,
+    pub name: String,
+    pub kind: u8,
+    pub index: u32,
+    #[serde(rename = "type")]
+    pub extern_type: WasmCanonicalExternType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct WasmCanonicalExportTypeFact {
+    pub name: String,
+    pub kind: u8,
+    pub index: u32,
+    #[serde(rename = "type")]
+    pub extern_type: WasmCanonicalExternType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -204,6 +274,33 @@ impl Serialize for WasmTableRead {
         let mut row = serializer.serialize_tuple(2)?;
         row.serialize_element(&self.function_index)?;
         row.serialize_element(&self.table_index)?;
+        row.end()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WasmLinkingSymbolFact {
+    pub symbol_index: u32,
+    pub name: String,
+    pub kind: &'static str,
+    pub flags: u32,
+    pub index: Option<u32>,
+    pub segment_index: Option<u32>,
+    pub data_offset: Option<u32>,
+    pub size: Option<u32>,
+}
+
+impl Serialize for WasmGotDataGlobalFact {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut row = serializer.serialize_tuple(5)?;
+        row.serialize_element(&self.symbol)?;
+        row.serialize_element(&self.global_index)?;
+        row.serialize_element(&self.initial_address)?;
+        row.serialize_element(&self.flags)?;
+        row.serialize_element(&self.defined)?;
         row.end()
     }
 }

@@ -153,6 +153,7 @@ def python_capture_authority_paths(
         "python_environment_location",
         "python_environment_custody",
         "python_external_custody",
+        "python_private_names",
         "python_runtime_identity",
         "python_file_node_custody",
         "python_native_dependency_custody",

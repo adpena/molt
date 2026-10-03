@@ -258,6 +258,7 @@ def _backend_daemon_config_digest(
             "codegen": _backend_codegen_env_inputs(is_wasm=False, env=source),
             "backend_features": sorted(backend_features),
             "backend_compiler_fingerprint": compiler,
+            "suite_daemon_lease": source.get("MOLT_BACKEND_DAEMON_SUITE_LEASE", ""),
             "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
             "target_triple": target_triple,
         }
@@ -522,7 +523,7 @@ def _pid_alive(pid: int) -> bool:
     return _daemon_custody._pid_alive(pid)
 
 
-def _backend_daemon_process_command(pid: int) -> str | None:
+def _backend_daemon_process_command(pid: int) -> _daemon_custody.ProcessCommand | None:
     return _daemon_custody._process_command(pid)
 
 
@@ -548,7 +549,7 @@ def _backend_daemon_command_has_socket(
 
 
 def _backend_daemon_command_matches_identity(
-    command: str,
+    command: _daemon_custody.ProcessCommand,
     *,
     backend_bin: Path | None,
     socket_path: Path | None,
@@ -619,6 +620,7 @@ def _backend_daemon_identity_for_pid(
     cargo_profile: str,
     config_digest: str | None,
     backend_bin: Path,
+    environ: Mapping[str, str] | None = None,
 ) -> _BackendDaemonIdentity:
     return _daemon_custody.backend_daemon_identity_for_pid(
         pid=pid,
@@ -628,6 +630,7 @@ def _backend_daemon_identity_for_pid(
         config_digest=config_digest,
         backend_bin=backend_bin,
         process_command=_backend_daemon_process_command,
+        environ=environ,
     )
 
 
@@ -639,6 +642,7 @@ def _backend_daemon_identity_from_health(
     cargo_profile: str,
     config_digest: str | None,
     backend_bin: Path,
+    environ: Mapping[str, str] | None = None,
 ) -> _BackendDaemonIdentity | None:
     return _daemon_custody.backend_daemon_identity_from_health(
         health,
@@ -648,6 +652,7 @@ def _backend_daemon_identity_from_health(
         config_digest=config_digest,
         backend_bin=backend_bin,
         process_command=_backend_daemon_process_command,
+        environ=environ,
     )
 
 
@@ -1132,10 +1137,33 @@ def _start_backend_daemon(
         cargo_profile,
         config_digest=config_digest,
     )
+    from molt.backend_daemon_suite_custody import persistent_daemon_paths_allowed
+
+    path_env = os.environ if backend_env is None else backend_env
+    persistent_paths = [project_root, backend_bin, socket_path, identity_path, log_path]
+    if path_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE"):
+        persistent_paths.append(Path(path_env["MOLT_BACKEND_DAEMON_SUITE_LEASE"]))
+    if not persistent_daemon_paths_allowed(path_env, persistent_paths):
+        _report_daemon_issue(
+            "Backend daemon paths depend on command scratch; using one-shot backend compile."
+        )
+        return False
     # Cheap, idempotent cross-session orphan sweep. Verified live daemons are
     # never disturbed. Suppress for the common case where the current identity
     # is already alive — that path will short-circuit below.
     _sweep_orphaned_backend_daemon_locks_once(project_root)
+
+    def publish_ready_custody() -> bool:
+        custody_env = backend_env if backend_env is not None else os.environ
+        if not custody_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE"):
+            return True
+        from molt.backend_daemon_suite_custody import acknowledge_started_daemon
+
+        ready_identity = _read_backend_daemon_identity(identity_path)
+        return ready_identity is not None and acknowledge_started_daemon(
+            custody_env, project_root=project_root, daemon_pid=ready_identity.pid
+        )
+
     existing_identity = _read_backend_daemon_identity(identity_path)
     if existing_identity is not None:
         if not _backend_daemon_identity_matches_context(
@@ -1165,13 +1193,13 @@ def _start_backend_daemon(
                     probe_timeout=probe_window,
                 )
                 if ready:
-                    return True
+                    return publish_ready_custody()
                 # A verified daemon that misses the short startup probe may
                 # simply be inside a long synchronous compile. Treat the
                 # identity as authoritative and let the compile request
                 # queue on that socket; restarting here can orphan a busy
                 # daemon and submit the same heavy full-IR request twice.
-                return True
+                return publish_ready_custody()
             else:
                 _terminate_backend_daemon_identity(
                     existing_identity,
@@ -1214,7 +1242,7 @@ def _start_backend_daemon(
                     probe_timeout=probe_window,
                 )
                 if ready:
-                    return True
+                    return publish_ready_custody()
                 message = (
                     f"Backend daemon socket {socket_path} existed but did not answer "
                     f"readiness probes within {probe_window:.2f}s; "
@@ -1236,13 +1264,24 @@ def _start_backend_daemon(
                         cargo_profile=cargo_profile,
                         config_digest=config_digest,
                         backend_bin=backend_bin,
+                        environ=backend_env,
                     )
                     if adopted_identity is not None:
                         _write_backend_daemon_identity(
                             identity_path,
                             adopted_identity,
                         )
-                        return True
+                        from molt.backend_daemon_suite_custody import (
+                            acknowledge_started_daemon,
+                        )
+
+                        if not acknowledge_started_daemon(
+                            backend_env if backend_env is not None else os.environ,
+                            project_root=project_root,
+                            daemon_pid=adopted_identity.pid,
+                        ):
+                            return False
+                        return publish_ready_custody()
                 message = (
                     f"Removed stale daemon socket {socket_path.name} "
                     f"(no live daemon process found)."
@@ -1268,6 +1307,10 @@ def _start_backend_daemon(
         repo_root=project_root,
     )
     daemon_env = dict(daemon_context.env)
+    if daemon_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE"):
+        from molt.backend_daemon_suite_custody import persistent_daemon_env
+
+        daemon_env = persistent_daemon_env(daemon_env)
     if config_digest:
         daemon_env["MOLT_BACKEND_DAEMON_CONFIG_DIGEST"] = config_digest
     daemon_popen_kwargs: dict[str, Any] = {"start_new_session": True}
@@ -1319,8 +1362,17 @@ def _start_backend_daemon(
                         cargo_profile=cargo_profile,
                         config_digest=config_digest,
                         backend_bin=backend_bin,
+                        environ=daemon_env,
                     ),
                 )
+                from molt.backend_daemon_suite_custody import acknowledge_started_daemon
+
+                if not acknowledge_started_daemon(
+                    backend_env if backend_env is not None else os.environ,
+                    project_root=project_root,
+                    daemon_pid=daemon_pid,
+                ):
+                    return False
         except OSError as exc:
             if daemon_pid is not None:
                 _remove_backend_daemon_identity(identity_path)
@@ -1333,7 +1385,7 @@ def _start_backend_daemon(
             probe_timeout=None,
         )
         if ready:
-            return True
+            return publish_ready_custody()
         probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
         # Surface concrete subprocess status instead of a bare timeout. If the
         # daemon already exited (crash, missing dynamic dep, port conflict, etc.)

@@ -9,7 +9,10 @@ impl RustBackend {
             || used("molt_sys_version_info(")
             || used("molt_sys_version(")
             || used("molt_sys_hexversion(")
-            || used("molt_unpack_sequence(");
+            || used("molt_unpack_sequence(")
+            || ["molt_div(", "molt_floor_div(", "molt_mod(", "molt_pow("]
+                .iter()
+                .any(|name| used(name));
         let needs_module_cache = used("molt_module_cache_get(")
             || used("molt_module_cache_set(")
             || used("molt_module_cache_del(");

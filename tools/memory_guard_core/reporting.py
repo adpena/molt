@@ -87,6 +87,12 @@ def exit_signal_payload(
         conventional_shell_status = True
     elif windows_process_model and returncode in WINDOWS_PROCESS_SIGNAL_EXIT_CODES:
         signo = returncode
+    elif windows_process_model and 0x80000000 <= returncode <= 0xFFFFFFFF:
+        return {
+            "signal": None,
+            "name": f"NTSTATUS 0x{returncode:08X}",
+            "conventional_shell_status": False,
+        }
     else:
         return None
     with contextlib.suppress(ValueError):

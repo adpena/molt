@@ -170,7 +170,7 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "an exact OS/architecture/Python/backend/target/profile cell, timeout, "
         "resource class, cache domain, and DAG parents. CI admission requires "
         "receipts whose canonical LF-normalized authority-closure digest, source "
-        "commit, command, cell, execution partition, duration, peak RSS, cache "
+        "commit and immutable Git tree, command, cell, execution partition, duration, peak RSS, cache "
         "disposition, and version-constrained toolchain identities validate.",
         "",
         "Proof-family selection parents and GitHub admission edges are distinct "

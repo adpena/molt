@@ -32,6 +32,7 @@ mod flow_dispatch;
 mod frame_runtime;
 mod function_body;
 mod helpers;
+mod numeric_error_policy_generated;
 mod op_attributes;
 mod op_calls;
 mod op_container_access;

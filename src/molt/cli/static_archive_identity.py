@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -301,29 +303,38 @@ def static_archive_identity(
         ) from exc
 
 
-def visit_static_archive_members(
-    path: Path, *, visit_member: StaticArchiveMemberVisitor
-) -> int:
-    """Visit resolved content members without computing an unused semantic hash.
+@contextmanager
+def open_static_archive_members(
+    path: Path,
+) -> Iterator[tuple[tuple[StaticArchiveMember, ...], BinaryIO]]:
+    """Expose the canonical member envelope and its one verified source handle.
 
-    Framing, names and all payload extents use the same parser as semantic
-    identity. The visitor reads only the member structure it needs through
-    this stable handle; the caller's content identity is a separate proof.
+    Callers may project member bytes, symbols, or identities while the context
+    remains open. Header/name/extent parsing and source mutation checks stay in
+    this authority; no consumer reopens an archive between framing and reads.
     """
     try:
         with open_stable_regular_file(path, label="static archive") as opened:
             members = _static_archive_stream_members(
                 opened.stream, archive_size=opened.stat.st_size
             )
-            for member in members:
-                visit_member(member, opened.stream)
-            return len(members)
+            yield members, opened.stream
     except (OSError, ValueError) as exc:
         if isinstance(exc, StaticArchiveIdentityError):
             raise
         raise StaticArchiveIdentityError(
             f"cannot inspect static archive {path}: {exc}"
         ) from exc
+
+
+def visit_static_archive_members(
+    path: Path, *, visit_member: StaticArchiveMemberVisitor
+) -> int:
+    """Visit resolved members through their canonical stable source handle."""
+    with open_static_archive_members(path) as (members, stream):
+        for member in members:
+            visit_member(member, stream)
+        return len(members)
 
 
 def static_archive_member_identities(

@@ -6,10 +6,10 @@ tinygrad primitive compositions.  This is more powerful than hand-coding
 any single model architecture because it works for ANY ONNX model —
 PaddleOCR v3/v4/v5, ResNet, MobileNet, BERT, etc.
 
-Supported op set (30 ops — covers PaddleOCR detector + recognizer + classifier):
-  Arithmetic:  Add, Sub, Mul, Div, Pow, Sqrt, Sigmoid, Relu, Clip,
-               HardSigmoid, HardSwish, Softmax
-  Reduction:   ReduceMean, GlobalAveragePool, AveragePool, MaxPool
+Supported op set (36 ops — covers PaddleOCR plus the Pact W3 witness trunk):
+  Arithmetic:  Add, Sub, Mul, Div, Pow, Sqrt, Exp, Sin, Cos, Tanh,
+               Sigmoid, Relu, Clip, HardSigmoid, HardSwish, Softmax
+  Reduction:   ReduceMean, GlobalAveragePool, AveragePool, MaxPool, ArgMax
   Convolution: Conv (with groups), ConvTranspose
   Linear:      MatMul
   Shape:       Reshape, Transpose, Squeeze, Unsqueeze, Concat, Slice,
@@ -23,10 +23,6 @@ All ops decompose to tinygrad's 26 compute primitives.
 from __future__ import annotations
 
 import struct
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
@@ -330,8 +326,6 @@ class OnnxInterpreter:
         new_weight = weight * (gamma / sqrt(var + eps))   [per output channel]
         new_bias   = (old_bias - mean) * (gamma / sqrt(var + eps)) + beta
         """
-        import tinygrad.realize
-
         # Build output->node index
         output_to_idx: dict[str, int] = {}
         for i, node in enumerate(self._graph_nodes):
@@ -392,18 +386,18 @@ class OnnxInterpreter:
             )
 
             # Realize all parameters to flat lists
-            gamma_data = list(tinygrad.realize.realize(bn_gamma.lazydata))
-            beta_data = list(tinygrad.realize.realize(bn_beta.lazydata))
-            mean_data = list(tinygrad.realize.realize(bn_mean.lazydata))
-            var_data = list(tinygrad.realize.realize(bn_var.lazydata))
-            w_data = list(tinygrad.realize.realize(conv_weight.lazydata))
+            gamma_data = _realize_floats(bn_gamma)
+            beta_data = _realize_floats(bn_beta)
+            mean_data = _realize_floats(bn_mean)
+            var_data = _realize_floats(bn_var)
+            w_data = _realize_floats(conv_weight)
 
             c_out = bn_gamma.shape[0]
             # Weight shape: (C_out, C_in_per_group, kH, kW) — total elements per channel
             elems_per_channel = len(w_data) // c_out
 
             if conv_bias is not None:
-                b_data = list(tinygrad.realize.realize(conv_bias.lazydata))
+                b_data = _realize_floats(conv_bias)
             else:
                 b_data = [0.0] * c_out
 
@@ -505,8 +499,6 @@ class OnnxInterpreter:
             elif field_num == 5 and wire_type == 2:  # initializer
                 name, shape, dtype_code, values = _parse_tensor_proto(value)
                 if name and values is not None:
-                    if not shape:
-                        shape = (len(values),)
                     if dtype_code in (6, 7):
                         self._values[name] = _make_int_tensor(values, shape)
                     else:
@@ -531,17 +523,15 @@ def _load_constant_node(node: dict, values: dict[str, Tensor]) -> None:
         _tensor_name, shape, dtype_code, data = tensor
         if data is None:
             return
-        if not shape:
-            shape = (len(data),)
         if dtype_code in (6, 7):
             values[name] = _make_int_tensor(data, shape)
         else:
             values[name] = _make_tensor(data, shape)
         return
     if "value_int" in attrs:
-        values[name] = _make_int_tensor([int(attrs["value_int"])], (1,))
+        values[name] = _make_int_tensor([int(attrs["value_int"])], ())
     elif "value_float" in attrs:
-        values[name] = _make_tensor([float(attrs["value_float"])], (1,))
+        values[name] = _make_tensor([float(attrs["value_float"])], ())
 
 
 def _parse_node_proto(data: bytes) -> dict:
@@ -797,39 +787,66 @@ def _decode_packed_float32(data: bytes) -> list[float]:
 
 
 def _make_tensor(values: list[float], shape: tuple[int, ...]) -> Tensor:
-    """Create a float32 Tensor from flat values."""
-    from tinygrad.lazy import LazyOp, LazyBuffer
-
-    op = LazyOp("LOAD", (), dtype=dtypes.float32, shape=shape)
-    return Tensor(LazyBuffer(op, dtypes.float32, shape, data=values))
+    """Create a float32 tensor through tinygrad's public API."""
+    return _make_typed_tensor(values, shape, dtypes.float32)
 
 
 def _make_int_tensor(values: list[int], shape: tuple[int, ...]) -> Tensor:
-    """Create an int64 Tensor from flat values (for shape/index constants)."""
-    from tinygrad.lazy import LazyOp, LazyBuffer
+    """Create an int64 tensor through tinygrad's public API."""
+    return _make_typed_tensor(values, shape, dtypes.int64)
 
-    op = LazyOp("LOAD", (), dtype=dtypes.int64, shape=shape)
-    return Tensor(LazyBuffer(op, dtypes.int64, shape, data=values))
+
+def _make_typed_tensor(
+    values: list[float] | list[int], shape: tuple[int, ...], dtype: object
+) -> Tensor:
+    """Create a shaped tensor without depending on tinygrad implementation internals."""
+    tensor = Tensor(values, dtype=dtype)
+    return tensor.reshape(shape)
+
+
+def _flatten_public_values(value: object) -> list[float | int]:
+    """Flatten the nested result of public ``Tensor.tolist()`` in row-major order."""
+    if isinstance(value, (list, tuple)):
+        flattened: list[float | int] = []
+        for item in value:
+            flattened.extend(_flatten_public_values(item))
+        return flattened
+    return [value]
+
+
+def _realize_values(t: Tensor) -> list[float | int]:
+    """Materialize a tensor through tinygrad's public conversion API."""
+    return _flatten_public_values(t.tolist())
 
 
 def _realize_ints(t: Tensor) -> list[int]:
     """Realize a tensor and return its values as a list of ints."""
-    import tinygrad.realize
-
-    flat = tinygrad.realize.realize(t.lazydata)
-    return [int(x) for x in flat]
+    return [int(x) for x in _realize_values(t)]
 
 
 def _realize_floats(t: Tensor) -> list[float]:
     """Realize a tensor and return its values as a list of floats."""
-    import tinygrad.realize
-
-    return list(tinygrad.realize.realize(t.lazydata))
+    return [float(x) for x in _realize_values(t)]
 
 
 # ---------------------------------------------------------------------------
 # ONNX Op implementations — each returns a list of output Tensors
 # ---------------------------------------------------------------------------
+
+
+def _expand_to(tensor: Tensor, shape: tuple[int, ...]) -> Tensor:
+    """Broadcast ``tensor`` to ``shape`` through public shape operations."""
+    if tensor.shape == shape:
+        return tensor
+    if tensor.ndim > len(shape):
+        raise ValueError(f"Cannot broadcast shape {tensor.shape} to {shape}")
+    padded_shape = (1,) * (len(shape) - tensor.ndim) + tensor.shape
+    for source_dim, target_dim in zip(padded_shape, shape):
+        if source_dim not in (1, target_dim):
+            raise ValueError(f"Cannot broadcast shape {tensor.shape} to {shape}")
+    if padded_shape != tensor.shape:
+        tensor = tensor.reshape(*padded_shape)
+    return tensor.expand(*shape)
 
 
 def _broadcast_pair(a: Tensor, b: Tensor) -> tuple[Tensor, Tensor]:
@@ -864,13 +881,7 @@ def _broadcast_pair(a: Tensor, b: Tensor) -> tuple[Tensor, Tensor]:
 
     out = tuple(out_shape)
 
-    # Reshape to match ndim if needed, then broadcast
-    if a.shape != out:
-        a = a.reshape(*a_shape)._broadcast_to(out)
-    if b.shape != out:
-        b = b.reshape(*b_shape)._broadcast_to(out)
-
-    return a, b
+    return _expand_to(a, out), _expand_to(b, out)
 
 
 def _op_add(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
@@ -907,15 +918,32 @@ def _op_pow(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     # General path: x^y = exp2(y * log2(|x|))
     # Uses |x| since log2 is undefined for negative values.
     # Neural net pow ops almost always have non-negative bases (variance, etc.)
+    base, exp_t = _broadcast_pair(base, exp_t)
     abs_base = base.relu() + (base * (-1.0)).relu()  # |x| = relu(x) + relu(-x)
     # Add small epsilon to avoid log2(0)
     log_base = (abs_base + 1e-12).log2()
-    scaled = log_base * exp_t._broadcast_to(base.shape)
+    scaled = log_base * exp_t
     return [scaled.exp2()]
 
 
 def _op_sqrt(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     return [inputs[0].sqrt()]
+
+
+def _op_exp(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
+    return [inputs[0].exp()]
+
+
+def _op_sin(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
+    return [inputs[0].sin()]
+
+
+def _op_cos(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
+    return [inputs[0].cos()]
+
+
+def _op_tanh(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
+    return [inputs[0].tanh()]
 
 
 def _op_relu(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
@@ -987,6 +1015,42 @@ def _op_softmax(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     return [inputs[0].softmax(axis=axis)]
 
 
+def _op_argmax(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
+    """ONNX ArgMax with exact axis, shape, tie, and result-dtype semantics."""
+    if not inputs or inputs[0] is None:
+        raise ValueError("ArgMax requires one tensor input")
+    x = inputs[0]
+    axis = _get_attr_int(attrs, "axis", 0)
+    keepdims = _get_attr_int(attrs, "keepdims", 1)
+    select_last_index = _get_attr_int(attrs, "select_last_index", 0)
+    if keepdims not in (0, 1):
+        raise ValueError(f"ArgMax keepdims must be 0 or 1, got {keepdims}")
+    if select_last_index not in (0, 1):
+        raise ValueError(
+            f"ArgMax select_last_index must be 0 or 1, got {select_last_index}"
+        )
+    if axis < 0:
+        axis += x.ndim
+    if axis < 0 or axis >= x.ndim:
+        raise ValueError(f"ArgMax axis {axis} out of range for rank {x.ndim}")
+    if x.shape[axis] == 0:
+        raise ValueError("ArgMax cannot reduce an empty axis")
+
+    reduced = (
+        x.flip(axis).argmax(axis=axis) if select_last_index else x.argmax(axis=axis)
+    )
+    keep_shape = x.shape[:axis] + (1,) + x.shape[axis + 1 :]
+    drop_shape = x.shape[:axis] + x.shape[axis + 1 :]
+    target_shape = keep_shape if keepdims else drop_shape
+    if reduced.shape != target_shape:
+        reduced = reduced.reshape(*target_shape)
+    if select_last_index:
+        indices = reduced * (-1) + (x.shape[axis] - 1)
+    else:
+        indices = reduced
+    return [indices.cast(dtypes.int64)]
+
+
 def _op_reduce_mean(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     x = inputs[0]
     axes = _get_attr_ints(attrs, "axes", [])
@@ -1050,9 +1114,7 @@ def _op_average_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     sh = strides[0]
     sw = strides[1] if len(strides) > 1 else sh
 
-    import tinygrad.realize
-
-    flat = tinygrad.realize.realize(x.lazydata)
+    flat = _realize_floats(x)
     n, c, h, w = x.shape
     pad_top, pad_left, pad_bottom, pad_right = _pool_resolve_pads(
         auto_pad=auto_pad,
@@ -1196,9 +1258,7 @@ def _op_max_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     oh = _pool_output_dim(h, kh, sh, dh, pad_top, pad_bottom, ceil_mode)
     ow = _pool_output_dim(w, kw, sw, dw, pad_left, pad_right, ceil_mode)
 
-    import tinygrad.realize
-
-    flat = tinygrad.realize.realize(x.lazydata)
+    flat = _realize_floats(x)
     result = [float("-inf")] * (n * c * oh * ow)
 
     for bn in range(n):
@@ -1358,10 +1418,8 @@ def _grouped_conv2d(
     dil_w: int,
 ) -> Tensor:
     """Grouped conv2d via im2col + matmul, supporting dilation and asymmetric padding."""
-    import tinygrad.realize
-
-    x_data = tinygrad.realize.realize(x.lazydata)
-    w_data = tinygrad.realize.realize(weight.lazydata)
+    x_data = _realize_floats(x)
+    w_data = _realize_floats(weight)
 
     n, c_in, h, w_dim = x.shape
     c_out, c_in_per_group, kh, kw = weight.shape
@@ -1421,7 +1479,7 @@ def _grouped_conv2d(
 
     # Add bias
     if bias is not None:
-        b_data = tinygrad.realize.realize(bias.lazydata)
+        b_data = _realize_floats(bias)
         for bn in range(n):
             for oc in range(c_out):
                 for oh in range(h_out):
@@ -1453,10 +1511,8 @@ def _op_conv_transpose(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]
     pad_bottom = pads[2] if len(pads) > 2 else pad_top
     pad_right = pads[3] if len(pads) > 3 else pad_left
 
-    import tinygrad.realize
-
-    x_data = tinygrad.realize.realize(x.lazydata)
-    w_data = tinygrad.realize.realize(weight.lazydata)
+    x_data = _realize_floats(x)
+    w_data = _realize_floats(weight)
 
     n, c_in, h_in, w_in = x.shape
     c_in_w, c_out_per_group, kh, kw = weight.shape
@@ -1505,7 +1561,7 @@ def _op_conv_transpose(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]
                                         result[out_idx] += x_val * w_data[w_idx]
 
     if bias is not None:
-        b_data = tinygrad.realize.realize(bias.lazydata)
+        b_data = _realize_floats(bias)
         for bn in range(n):
             for oc in range(c_out):
                 for oh in range(h_out):
@@ -1525,9 +1581,29 @@ def _op_matmul(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     if len(inputs) < 2 or inputs[0] is None or inputs[1] is None:
         raise ValueError("MatMul requires two tensor inputs")
     lhs, rhs = inputs[0], inputs[1]
-    if lhs.ndim not in (1, 2) or rhs.ndim not in (1, 2):
-        raise ValueError(f"MatMul unsupported ranks: {lhs.ndim} @ {rhs.ndim}")
-    return [lhs.matmul(rhs)]
+    if lhs.ndim == 0 or rhs.ndim == 0:
+        raise ValueError(
+            f"MatMul requires rank-one or higher inputs: {lhs.ndim} @ {rhs.ndim}"
+        )
+    lhs_was_vector = lhs.ndim == 1
+    rhs_was_vector = rhs.ndim == 1
+    if lhs_was_vector:
+        lhs = lhs.reshape(1, lhs.shape[0])
+    if rhs_was_vector:
+        rhs = rhs.reshape(rhs.shape[0], 1)
+    try:
+        result = lhs @ rhs
+    except ValueError as exc:
+        raise ValueError(
+            f"MatMul failed for shapes {lhs.shape} @ {rhs.shape}: {exc}"
+        ) from exc
+    if lhs_was_vector and rhs_was_vector:
+        result = result.reshape()
+    elif lhs_was_vector:
+        result = result.reshape(*(result.shape[:-2] + (result.shape[-1],)))
+    elif rhs_was_vector:
+        result = result.reshape(*result.shape[:-1])
+    return [result]
 
 
 def _op_batch_norm(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
@@ -1559,9 +1635,9 @@ def _op_batch_norm(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     v = var.reshape(*reshape_dims)
 
     inv_std = (v + eps).sqrt().reciprocal()
-    result = (x + m._broadcast_to(x.shape) * (-1.0)) * inv_std._broadcast_to(
-        x.shape
-    ) * s._broadcast_to(x.shape) + b._broadcast_to(x.shape)
+    result = (x + _expand_to(m, x.shape) * (-1.0)) * _expand_to(
+        inv_std, x.shape
+    ) * _expand_to(s, x.shape) + _expand_to(b, x.shape)
     return [result]
 
 
@@ -1664,11 +1740,24 @@ def _op_unsqueeze(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
 
 
 def _op_concat(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
-    axis = _get_attr_int(attrs, "axis", 0)
-    tensors = [t for t in inputs if t is not None]
-    if not tensors:
+    if not inputs:
         raise ValueError("Concat requires at least one tensor")
-    return [Tensor.cat(*tensors, dim=axis)]
+    if any(tensor is None for tensor in inputs):
+        raise ValueError("Concat requires every tensor input")
+    if "axis" not in attrs:
+        raise ValueError("Concat requires the 'axis' attribute")
+    axis = _get_attr_int(attrs, "axis", 0)
+
+    level = [tensor for tensor in inputs if tensor is not None]
+    while len(level) > 1:
+        next_level: list[Tensor] = []
+        for index in range(0, len(level), 2):
+            if index + 1 == len(level):
+                next_level.append(level[index])
+            else:
+                next_level.append(Tensor.cat(level[index], level[index + 1], dim=axis))
+        level = next_level
+    return [level[0]]
 
 
 def _op_slice(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
@@ -1711,10 +1800,8 @@ def _op_slice(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
 
 def _slice_tensor_by_indices(x: Tensor, axis_indices: list[list[int]]) -> Tensor:
     import itertools
-    import tinygrad.realize
-    from tinygrad.lazy import LazyBuffer, LazyOp
 
-    flat = tinygrad.realize.realize(x.lazydata)
+    flat = _realize_values(x)
     out_shape = tuple(len(indices) for indices in axis_indices)
     strides: list[int] = []
     stride = 1
@@ -1722,15 +1809,14 @@ def _slice_tensor_by_indices(x: Tensor, axis_indices: list[list[int]]) -> Tensor
         strides.insert(0, stride)
         stride *= dim
 
-    result: list[float] = []
+    result: list[float | int] = []
     for coords in itertools.product(*axis_indices):
         flat_idx = 0
         for axis, coord in enumerate(coords):
             flat_idx += coord * strides[axis]
         result.append(flat[flat_idx])
 
-    op = LazyOp("LOAD", (), dtype=x.dtype, shape=out_shape)
-    return Tensor(LazyBuffer(op, x.dtype, out_shape, data=result))
+    return _make_typed_tensor(result, out_shape, x.dtype)
 
 
 def _op_shape(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
@@ -1741,23 +1827,32 @@ def _op_shape(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
 
 
 def _op_cast(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
-    """Cast: type coercion. For tinygrad, we keep float32 for compute tensors
-    and int64 for shape tensors. The cast is a passthrough for neural net inference."""
+    """Cast through public tinygrad dtypes for the supported ONNX scalar set."""
+    if not inputs or inputs[0] is None:
+        raise ValueError("Cast requires one tensor input")
     x = inputs[0]
-    to_type = _get_attr_int(attrs, "to", 1)  # 1=float32
-    # In practice, PaddleOCR casts are float->float or int->int
-    # For shape tensors that get cast to float for arithmetic, realize and convert
-    if to_type in (1, 11):  # float32, double
-        if x.dtype == dtypes.int64 or x.dtype == dtypes.int32:
-            vals = _realize_ints(x)
-            return [_make_tensor([float(v) for v in vals], x.shape)]
-    elif to_type in (6, 7):  # int32, int64
-        if x.dtype == dtypes.float32:
-            vals = _realize_floats(x)
-            return [_make_int_tensor([int(v) for v in vals], x.shape)]
-    elif to_type not in (1, 11, 6, 7):
+    if "to" not in attrs:
+        raise ValueError("Cast requires the 'to' attribute")
+    to_type = _get_attr_int(attrs, "to", 0)
+    target_dtypes = {
+        1: dtypes.float32,
+        2: dtypes.uint8,
+        3: dtypes.int8,
+        4: dtypes.uint16,
+        5: dtypes.int16,
+        6: dtypes.int32,
+        7: dtypes.int64,
+        9: dtypes.bool_,
+        11: dtypes.float64,
+        12: dtypes.uint32,
+        13: dtypes.uint64,
+    }
+    target_dtype = target_dtypes.get(to_type)
+    if target_dtype is None:
         raise ValueError(f"Unsupported Cast target type: {to_type}")
-    return [x]
+    if x.dtype == target_dtype:
+        return [x]
+    return [x.cast(target_dtype)]
 
 
 def _op_identity(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
@@ -1817,9 +1912,7 @@ def _nearest_resize(
     nearest_mode: str = "round_prefer_floor",
 ) -> Tensor:
     """Nearest-neighbor resize for 4D tensors."""
-    import tinygrad.realize
-
-    flat = tinygrad.realize.realize(x.lazydata)
+    flat = _realize_floats(x)
     n, c, h, w = x.shape
     _, _, th, tw = target_shape
 
@@ -1896,12 +1989,17 @@ _OP_DISPATCH: dict[str, object] = {
     "Div": _op_div,
     "Pow": _op_pow,
     "Sqrt": _op_sqrt,
+    "Exp": _op_exp,
+    "Sin": _op_sin,
+    "Cos": _op_cos,
+    "Tanh": _op_tanh,
     "Relu": _op_relu,
     "Sigmoid": _op_sigmoid,
     "Clip": _op_clip,
     "HardSigmoid": _op_hard_sigmoid,
     "HardSwish": _op_hard_swish,
     "Softmax": _op_softmax,
+    "ArgMax": _op_argmax,
     "ReduceMean": _op_reduce_mean,
     "GlobalAveragePool": _op_global_avg_pool,
     "AveragePool": _op_average_pool,
