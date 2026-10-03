@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::object_payload_size;
 use molt_obj_model::MoltObject;
 use std::sync::OnceLock;
 
@@ -13,8 +15,7 @@ use crate::{
     builtin_classes_if_initialized, class_layout_version_bits, dec_ref_bits, dict_get_in_place,
     dict_set_in_place, exception_pending, header_from_obj_ptr, inc_ref_bits, instance_dict_bits,
     is_missing_bits, obj_from_bits, object_class_bits, object_is_exact_builtin_dict,
-    object_mark_has_ptrs, object_payload_size, object_type_id, profile_hit, raise_exception,
-    to_i64, usize_from_bits,
+    object_mark_has_ptrs, object_type_id, profile_hit, raise_exception, to_i64, usize_from_bits,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -66,13 +67,22 @@ unsafe fn object_field_slot_ptr(
             }
             return Some((*fields).as_mut_ptr().add(index));
         }
-        if debug_field_bounds_enabled()
-            && offset.saturating_add(std::mem::size_of::<u64>()) > object_payload_size(obj_ptr)
+        if (debug_field_bounds_enabled() || super::native_instance::has_fields(obj_ptr))
+            && offset
+                .checked_add(std::mem::size_of::<u64>())
+                .is_none_or(|end| {
+                    end > super::native_instance::field_payload_size(obj_ptr)
+                        .saturating_sub(std::mem::size_of::<u64>())
+                })
         {
             raise_exception::<()>(_py, "RuntimeError", "object field offset out of range");
             return None;
         }
-        Some(obj_ptr.add(offset).cast())
+        Some(
+            super::native_instance::field_base(obj_ptr)
+                .add(offset)
+                .cast(),
+        )
     }
 }
 
@@ -217,18 +227,52 @@ pub(crate) unsafe fn instance_attribute_lookup(
     name: u64,
     offset: Option<usize>,
 ) -> Option<u64> {
+    unsafe { instance_attribute_lookup_with_policy(py, object, name, offset, false) }
+}
+
+pub(crate) unsafe fn instance_attribute_lookup_with_policy(
+    py: &PyToken<'_>,
+    object: *mut u8,
+    name: u64,
+    offset: Option<usize>,
+    suppress: bool,
+) -> Option<u64> {
     unsafe {
         if let Some(offset) = offset {
             let bits = object_field_get_ptr_raw(py, object, offset);
             if is_missing_bits(py, bits) || exception_pending(py) {
                 dec_ref_bits(py, bits);
+                if suppress {
+                    crate::builtins::attr::clear_attribute_error_if_pending(py);
+                }
                 return None;
             }
             return Some(bits);
         }
         let dictionary = field_storage::current_dictionary(py, object).ok()??;
+        attribute_dictionary_lookup(py, dictionary, name, suppress)
+    }
+}
+
+/// One dictionary probe for the instance-precedence tier. Generic C lookup may
+/// replace the receiver dictionary and suppress AttributeError from key equality
+/// before continuing to the class descriptor tier. Other failures stay pending.
+pub(crate) unsafe fn attribute_dictionary_lookup(
+    py: &PyToken<'_>,
+    dictionary: u64,
+    name: u64,
+    suppress: bool,
+) -> Option<u64> {
+    unsafe {
+        let Some(pointer) = obj_from_bits(dictionary)
+            .as_ptr()
+            .filter(|pointer| object_type_id(*pointer) == TYPE_ID_DICT)
+        else {
+            raise_exception::<u64>(py, "SystemError", "bad argument to internal function");
+            return None;
+        };
         inc_ref_bits(py, dictionary);
-        let value = dict_get_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), name);
+        let value = dict_get_in_place(py, pointer, name);
         if let Some(value) = value {
             inc_ref_bits(py, value);
         }
@@ -236,6 +280,9 @@ pub(crate) unsafe fn instance_attribute_lookup(
         if exception_pending(py) {
             if let Some(value) = value {
                 dec_ref_bits(py, value);
+            }
+            if suppress {
+                crate::builtins::attr::clear_attribute_error_if_pending(py);
             }
             return None;
         }

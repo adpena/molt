@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from tests.compiler_identity_helper import (
+    compiler_build_admission,
+    stub_compiler_admission,
+    write_compiler_lock,
+)
+
 import importlib
 import hashlib
 import json
@@ -78,6 +84,9 @@ def test_cache_identity_preserves_return_abi_without_payload_returns(
 def isolated_compiler_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     source = tmp_path / "runtime" / "molt-backend" / "src" / "lib.rs"
     source.parent.mkdir(parents=True)
+    write_compiler_lock(tmp_path)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(tmp_path))
+    stub_compiler_admission(monkeypatch)
     source.write_text("pub fn marker() -> u8 { 1 }\n", encoding="utf-8")
 
     monkeypatch.setattr(
@@ -88,7 +97,6 @@ def isolated_compiler_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     monkeypatch.setattr(
         RUNTIME_SOURCE_CLOSURE, "runtime_source_paths", lambda root, **_kwargs: []
     )
-    monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
     monkeypatch.setattr(
         CACHE_KEYS, "_cache_tooling_fingerprint", lambda: "tooling-test"
     )
@@ -127,10 +135,12 @@ def test_cache_key_ignores_compiler_source_mtime_only_changes_in_process(
 def test_cache_fingerprint_threads_selected_backend_and_runtime_features(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    stub_compiler_admission(monkeypatch)
     root = tmp_path / "repo"
     backend_source = root / "runtime" / "molt-backend-native" / "src" / "lib.rs"
     runtime_source = root / "runtime" / "molt-runtime" / "src" / "lib.rs"
     backend_source.parent.mkdir(parents=True)
+    write_compiler_lock(root)
     runtime_source.parent.mkdir(parents=True)
     backend_source.write_text("pub fn backend_marker() {}\n", encoding="utf-8")
     runtime_source.write_text("pub fn runtime_marker() {}\n", encoding="utf-8")
@@ -160,7 +170,6 @@ def test_cache_fingerprint_threads_selected_backend_and_runtime_features(
     monkeypatch.setattr(
         RUNTIME_SOURCE_CLOSURE, "runtime_source_paths", runtime_source_paths
     )
-    monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
 
     fingerprint = CACHE_FINGERPRINTS._cache_fingerprint(
         backend_features=("native-backend",),
@@ -175,9 +184,11 @@ def test_cache_fingerprint_threads_selected_backend_and_runtime_features(
 def test_cache_fingerprint_can_exclude_runtime_implementation_sources(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    stub_compiler_admission(monkeypatch)
     root = tmp_path / "repo"
     backend_source = root / "runtime" / "molt-backend-native" / "src" / "lib.rs"
     backend_source.parent.mkdir(parents=True)
+    write_compiler_lock(root)
     backend_source.write_text("pub fn backend_marker() {}\n", encoding="utf-8")
 
     def runtime_source_paths(*args: object, **kwargs: object) -> list[Path]:
@@ -192,7 +203,6 @@ def test_cache_fingerprint_can_exclude_runtime_implementation_sources(
     monkeypatch.setattr(
         RUNTIME_SOURCE_CLOSURE, "runtime_source_paths", runtime_source_paths
     )
-    monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
 
     assert CACHE_FINGERPRINTS._cache_fingerprint(
         backend_features=("native-backend",),
@@ -203,9 +213,11 @@ def test_cache_fingerprint_can_exclude_runtime_implementation_sources(
 def test_cache_fingerprint_custodies_backend_concurrency_feature(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    stub_compiler_admission(monkeypatch)
     root = tmp_path / "repo"
     backend_source = root / "runtime" / "molt-backend-native" / "src" / "lib.rs"
     backend_source.parent.mkdir(parents=True)
+    write_compiler_lock(root)
     backend_source.write_text("pub fn backend_marker() {}\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
     monkeypatch.setattr(
@@ -213,7 +225,6 @@ def test_cache_fingerprint_custodies_backend_concurrency_feature(
         "_backend_source_paths",
         lambda source_root, backend_features: [backend_source],
     )
-    monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
 
     default = CACHE_FINGERPRINTS._cache_fingerprint(
         backend_features=("native-backend",),
@@ -242,7 +253,10 @@ def _write_backend_identity_fixture(
 ) -> dict[str, Path]:
     root.mkdir(parents=True, exist_ok=True)
     (root / "Cargo.toml").write_text("[workspace]\nmembers = []\n", encoding="utf-8")
-    (root / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
+    (root / "Cargo.lock").write_text(
+        'version = 4\n[[package]]\nname = "molt-backend"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
     wasm_dep = (
         'molt-backend-wasm = { path = "../molt-backend-wasm", optional = true, '
         "default-features = false }\n"
@@ -335,16 +349,21 @@ def _write_backend_identity_fixture(
         "molt-codegen-abi",
         '[package]\nname = "molt-codegen-abi"\nversion = "0.1.0"\n',
     )
-    return {"backend": backend, "native": native, "wasm": wasm}
+    catalog = root / "src" / "molt" / "backend_environment.json"
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text('{"schema": 1, "diagnostic": []}\n', encoding="utf-8")
+    return {"backend": backend, "native": native, "wasm": wasm, "catalog": catalog}
 
 
 def _backend_source_fingerprint(root: Path, features: tuple[str, ...]) -> str:
-    source_paths = CACHE_FINGERPRINTS._backend_source_paths(root, features)
+    source_paths, lock_digest = CACHE_FINGERPRINTS._backend_source_identity_inputs(
+        root, CACHE_FINGERPRINTS._backend_source_paths(root, features)
+    )
     return CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
         root=root,
         inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths(source_paths),
         scope=f"backend-test:{','.join(features)}",
-        extra_fingerprint_inputs="",
+        extra_fingerprint_inputs=lock_digest,
     )
 
 
@@ -376,25 +395,116 @@ def test_backend_source_fingerprint_tracks_selected_leaf_sources(
     assert native_second != native_after_wasm
 
 
-def test_backend_source_paths_cache_tracks_manifest_dependency_edits(
-    tmp_path: Path,
+@pytest.mark.parametrize("feature", ["native-backend", "wasm-backend"])
+def test_backend_fingerprints_track_embedded_environment_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feature: str
 ) -> None:
+    stub_compiler_admission(monkeypatch)
+    from molt.cli import backend_binary
+
     root = tmp_path / "repo"
-    _write_backend_identity_fixture(root, include_wasm=False)
+    sources = _write_backend_identity_fixture(root)
+    monkeypatch.setattr(
+        backend_binary, "_compiler_clean_source_state", lambda *args: None
+    )
 
-    before = {
-        path.relative_to(root).as_posix()
-        for path in CACHE_FINGERPRINTS._backend_source_paths(root, ("wasm-backend",))
-    }
-    assert "runtime/molt-backend-wasm" not in before
+    def binary_fingerprint(stored=None):
+        return backend_binary._backend_fingerprint(
+            root,
+            cargo_profile="dev-fast",
+            build_admission=compiler_build_admission(environment={"RUSTFLAGS": ""}),
+            backend_features=(feature,),
+            stored_fingerprint=stored,
+        )
 
-    _write_backend_identity_fixture(root, include_wasm=True)
+    source_before = _backend_source_fingerprint(root, (feature,))
+    binary_before = binary_fingerprint()
+    assert binary_before is not None
+    sources["catalog"].write_text(
+        '{"schema": 1, "diagnostic": ["MOLT_DUMP_IR"]}\n', encoding="utf-8"
+    )
+    assert _backend_source_fingerprint(root, (feature,)) != source_before
+    binary_after = binary_fingerprint(binary_before)
+    assert binary_after is not None
+    assert binary_after["hash"] != binary_before["hash"]
 
-    after = {
-        path.relative_to(root).as_posix()
-        for path in CACHE_FINGERPRINTS._backend_source_paths(root, ("wasm-backend",))
-    }
-    assert "runtime/molt-backend-wasm" in after
+
+def test_source_graphs_follow_preserved_stat_transitive_manifest_replacements(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.cli import runtime_features, runtime_source_closure
+
+    root = tmp_path / "repo"
+    _write_backend_identity_fixture(root)
+    _write_crate(
+        root,
+        "molt-runtime",
+        (
+            '[package]\nname="molt-runtime"\nversion="0.1.0"\n'
+            '[dependencies]\nmolt-passes={path="../molt-passes"}\n'
+            '[features]\nstdlib_micro=["leaf_a"]\nleaf_a=[]\nleaf_b=[]\n'
+        ),
+    )
+    for name in ("leaf_a", "leaf_b"):
+        _write_crate(
+            root, "nested/" + name, f'[package]\nname="{name}"\nversion="0.1.0"\n'
+        )
+    hub = root / "runtime/molt-passes/Cargo.toml"
+    hub.write_text(hub.read_text() + '[dependencies]\nleaf={path="../nested/leaf_a"}\n')
+    runtime_manifest = root / "runtime/molt-runtime/Cargo.toml"
+    changed = {path: path.stat() for path in (hub, runtime_manifest)}
+    real_stat = Path.stat
+
+    def preserved_stat(path, *, follow_symlinks=True):
+        # Reproduce the Windows creation-time cache collision on every host.
+        # Direct-file custody still observes real lstat/open-handle generations.
+        if follow_symlinks and path in changed:
+            return changed[path]
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", preserved_stat)
+    monkeypatch.setattr(runtime_features, "_compiler_root", lambda: root)
+
+    def observe():
+        with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
+            backend = CACHE_FINGERPRINTS._backend_source_paths(root, ("wasm-backend",))
+            runtime = runtime_source_closure.runtime_source_paths(root)
+            runtime_key = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
+                root=root,
+                inputs=CACHE_FINGERPRINTS._SourceFingerprintInputs.from_paths(runtime),
+                scope="runtime-manifest-replacement",
+                extra_fingerprint_inputs="",
+            )
+            return (
+                set(backend),
+                set(runtime),
+                runtime_features.profile_link_features("micro", target_triple=None),
+                _backend_source_fingerprint(root, ("wasm-backend",)),
+                runtime_key,
+            )
+
+    old_leaf, new_leaf = (
+        root / "runtime/nested" / name for name in ("leaf_a", "leaf_b")
+    )
+    before = observe()
+    assert all(old_leaf in paths and new_leaf not in paths for paths in before[:2])
+    assert before[2] == frozenset({"leaf_a"})
+    for path, metadata in changed.items():
+        original = path.read_text()
+        replacement = original.replace('leaf_a"}', 'leaf_b"}').replace(
+            'stdlib_micro=["leaf_a"]', 'stdlib_micro=["leaf_b"]'
+        )
+        assert len(replacement) == len(original) and replacement != original
+        path.write_text(replacement)
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    after = observe()
+    assert all(new_leaf in paths and old_leaf not in paths for paths in after[:2])
+    assert after[2] == frozenset({"leaf_b"})
+    source = new_leaf / "src/lib.rs"
+    source.write_text(source.read_text() + "pub const NEW: u8 = 1;\n")
+    source_changed = observe()
+    assert source_changed[3] != after[3] and source_changed[4] != after[4]
 
 
 def test_cache_tooling_fingerprint_changes_when_tooling_source_changes_in_process(
@@ -417,6 +527,35 @@ def test_cache_tooling_fingerprint_changes_when_tooling_source_changes_in_proces
     second = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
     assert second != first
+
+
+@pytest.mark.parametrize(
+    "filename", ["backend_environment.py", "backend_environment.json"]
+)
+def test_backend_environment_tooling_changes_preserve_frontend_semantic_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, filename: str
+) -> None:
+    root = tmp_path / "repo"
+    package = root / "src" / "molt"
+    frontend = package / "frontend" / "__init__.py"
+    frontend.parent.mkdir(parents=True)
+    frontend.write_text("FRONTEND_MARKER = 1\n", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    backend_environment = package / filename
+    backend_environment.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
+    monkeypatch.setattr(
+        CACHE_FINGERPRINTS,
+        "_compiler_clean_pathspec_source_state",
+        lambda *args: None,
+    )
+    tooling_before = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
+    semantic_before = CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint()
+    backend_environment.write_text('{"changed": true}\n', encoding="utf-8")
+    assert CACHE_FINGERPRINTS._cache_tooling_fingerprint() != tooling_before
+    assert (
+        CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint() == semantic_before
+    )
 
 
 def test_cache_tooling_fingerprint_tracks_frontend_helper_modules(
@@ -730,9 +869,6 @@ def test_source_tree_cache_fingerprint_uses_clean_pathspec_state(
         clean_pathspec_state,
     )
     monkeypatch.setattr(
-        CACHE_FINGERPRINTS, "_hash_source_tree_metadata", content_walk_is_forbidden
-    )
-    monkeypatch.setattr(
         CACHE_FINGERPRINTS, "_file_content_signature", content_walk_is_forbidden
     )
 
@@ -905,3 +1041,136 @@ def test_selected_compiler_root_does_not_relocate_captured_package_layout(
         CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
     )
     assert all(first != second for first, second in zip(before, after, strict=True))
+
+
+# A hand-authored dependency graph independent of the production projection:
+# compiler -> support -> dependency; ABI -> optional Windows dependency. The latter two
+# rows belong to the same workspace, but cannot affect the compiler closure.
+def _write_compiler_lock_fixture(
+    root: Path,
+    *,
+    abi_windows: bool = False,
+    checksum: str = "a" * 64,
+    version: str = "1.0.0",
+    source: str = "registry+https://example.invalid/index",
+) -> None:
+    abi_dependencies = '["windows-sys"]' if abi_windows else "[]"
+    (root / "Cargo.lock").write_text(
+        "version = 4\n"
+        '[[package]]\nname = "molt-backend"\nversion = "0.1.0"\n'
+        'dependencies = ["compiler-support"]\n'
+        '[[package]]\nname = "compiler-support"\nversion = "1.0.0"\n'
+        'dependencies = ["compiler-dependency"]\n'
+        f'[[package]]\nname = "compiler-dependency"\nversion = "{version}"\n'
+        f'source = "{source}"\nchecksum = "{checksum}"\n'
+        '[[package]]\nname = "molt-lang-cpython-abi"\nversion = "0.1.0"\n'
+        f"dependencies = {abi_dependencies}\n"
+        '[[package]]\nname = "windows-sys"\nversion = "0.61.2"\n',
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("feature", ["native-backend", "wasm-backend"])
+@pytest.mark.parametrize("changed", ["checksum", "version", "source"])
+def test_backend_lock_identity_tracks_only_reachable_dependency_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feature: str, changed: str
+) -> None:
+    stub_compiler_admission(monkeypatch)
+    from molt.cli import backend_binary
+
+    root = tmp_path / "repo"
+    _write_backend_identity_fixture(root)
+    _write_compiler_lock_fixture(root)
+    monkeypatch.setattr(CACHE_FINGERPRINTS, "_compiler_root", lambda: root)
+    monkeypatch.setattr(backend_binary, "_compiler_clean_source_state", lambda *_: None)
+
+    def receipt(stored=None):
+        return backend_binary._backend_fingerprint(
+            root,
+            cargo_profile="release",
+            build_admission=compiler_build_admission(environment={"RUSTFLAGS": ""}),
+            backend_features=(feature,),
+            stored_fingerprint=stored,
+        )
+
+    def object_key():
+        return CACHE_FINGERPRINTS._cache_fingerprint(
+            backend_features=(feature,), include_runtime_sources=False
+        )
+
+    cold = receipt()
+    assert cold is not None
+    cold_key = object_key()
+    assert receipt(cold) == cold
+    assert object_key() == cold_key
+    lock = root / "Cargo.lock"
+    timestamps = lock.stat()
+    _write_compiler_lock_fixture(root, abi_windows=True)
+    os.utime(lock, ns=(timestamps.st_atime_ns, timestamps.st_mtime_ns))
+    assert receipt(cold) == cold
+    assert object_key() == cold_key
+    changed_value = {
+        "checksum": "b" * 64,
+        "version": "2.0.0",
+        "source": "registry+https://other.invalid/index",
+    }[changed]
+    _write_compiler_lock_fixture(root, abi_windows=True, **{changed: changed_value})
+    os.utime(lock, ns=(timestamps.st_atime_ns, timestamps.st_mtime_ns))
+    edited = receipt(cold)
+    assert edited is not None and edited["hash"] != cold["hash"]
+    assert object_key() != cold_key
+    assert receipt(edited) == edited
+
+
+@pytest.mark.parametrize("defect", ["duplicate", "missing", "ambiguous", "malformed"])
+def test_compiler_lock_dependency_identity_fails_closed(
+    tmp_path: Path, defect: str
+) -> None:
+    from molt.cli.cargo_source_closure import _cargo_locked_dependency_digest
+
+    _write_backend_identity_fixture(tmp_path)
+    _write_compiler_lock_fixture(tmp_path)
+    lock = tmp_path / "Cargo.lock"
+    source = lock.read_text(encoding="utf-8")
+    if defect == "duplicate":
+        source += '\n[[package]]\nname = "molt-backend"\nversion = "0.1.0"\n'
+    elif defect == "missing":
+        source = source.replace('["compiler-dependency"]', '["missing-dependency"]')
+    elif defect == "ambiguous":
+        source += (
+            '\n[[package]]\nname = "compiler-dependency"\nversion = "1.0.0"\n'
+            'source = "registry+https://other.invalid/index"\n'
+        )
+    else:
+        source = source.replace('["compiler-dependency"]', '["compiler-dependency ("]')
+    lock.write_text(source, encoding="utf-8")
+    with pytest.raises(ValueError):
+        _cargo_locked_dependency_digest(tmp_path, tmp_path / "runtime/molt-backend")
+
+
+def test_compiler_lock_dependency_identity_resolves_same_name_version_by_source(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.cargo_source_closure import _cargo_locked_dependency_digest
+
+    _write_backend_identity_fixture(tmp_path)
+    _write_compiler_lock_fixture(tmp_path)
+    lock = tmp_path / "Cargo.lock"
+    source = lock.read_text(encoding="utf-8").replace(
+        '["compiler-dependency"]',
+        '["compiler-dependency 1.0.0 (registry+https://example.invalid/index)"]',
+    )
+    source += (
+        '\n[[package]]\nname = "compiler-dependency"\nversion = "1.0.0"\n'
+        'source = "registry+https://other.invalid/index"\n'
+        f'checksum = "{"c" * 64}"\n'
+    )
+    lock.write_text(source, encoding="utf-8")
+    before = _cargo_locked_dependency_digest(
+        tmp_path, tmp_path / "runtime/molt-backend"
+    )
+    lock.write_text(source.replace("c" * 64, "d" * 64), encoding="utf-8")
+    assert (
+        _cargo_locked_dependency_digest(tmp_path, tmp_path / "runtime/molt-backend")
+        == before
+    )

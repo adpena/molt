@@ -14,7 +14,7 @@
 #      then SIGABRT'd on the second dec_ref).
 #
 # Fix: `slice` (and the other value-producing `Copy` kinds) is now lowered
-# explicitly in LLVM as a fresh owned object AND classified `FreshValue`; the
+# explicitly in LLVM as a fresh owned object AND classified `OwnedValue`; the
 # alias view fails closed to "alias" for everything not proven to mint a fresh
 # `+1`. Must be byte-identical to CPython on LLVM AND native.
 def aliased_then_reassigned(n):

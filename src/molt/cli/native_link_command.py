@@ -25,6 +25,7 @@ from molt.llvm_linker_roles import (
     is_llvm_linker_role,
 )
 from molt.cli.native_link_deps import _collect_cargo_native_link_deps
+from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.native_link_plan import (
     LinkDialect,
@@ -259,6 +260,7 @@ def _build_native_link_plan(
     sysroot_path: Path | None,
     profile: str,
     runtime_build_identity: RuntimeBuildIdentity,
+    runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
     output_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
     stdlib_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
     stdlib_obj_path: Path | None = None,
@@ -462,13 +464,14 @@ def _build_native_link_plan(
         )
     )
     _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
-    cargo_native_link_flags = _collect_cargo_native_link_deps(
+    runtime_inputs = _collect_cargo_native_link_deps(
         runtime_lib,
         target_triple=target_triple,
         object_format=target.object_format.value,
         runtime_build_identity=runtime_build_identity,
+        runtime_codegen_binding=runtime_codegen_binding,
     )
-    link_cmd.extend(cargo_native_link_flags)
+    link_cmd.extend(runtime_inputs.flags)
     return NativeLinkPlan(
         target=target,
         capabilities=capabilities,
@@ -478,4 +481,5 @@ def _build_native_link_plan(
         normalized_target=normalized_target,
         sidecars=tuple(sidecars),
         selection_requirements=external_inputs if external_inputs.items else None,
+        runtime_inputs=runtime_inputs,
     )

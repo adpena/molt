@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::literal_payload::required_tir_literal_bytes;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn emit_const_int(&mut self, op: &TirOp) {
@@ -59,7 +60,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_const_str(&mut self, op: &TirOp) {
-        let (result, _) = self.emit_byte_literal(&const_bytes_from_attrs(op), TirType::Str);
+        let (result, _) = self.emit_byte_literal(required_tir_literal_bytes(op), TirType::Str);
         self.values.insert(op.results[0], result);
         self.value_types.insert(op.results[0], TirType::Str);
     }
@@ -68,12 +69,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result_id = op.results[0];
         let i64_ty = self.backend.context.i64_type();
 
-        let digits: Vec<u8> = match op.attrs.get("s_value") {
-            Some(AttrValue::Str(s)) => s.as_bytes().to_vec(),
-            other => panic!("ConstBigInt missing s_value attribute: {:?}", other),
-        };
-
-        let ptr_val = self.add_private_bytes_global(&digits, "__const_bigint_", "");
+        let digits = required_tir_literal_bytes(op);
+        let ptr_val = self.add_private_bytes_global(digits, "__const_bigint_", "");
 
         let ptr_ty = self
             .backend
@@ -103,14 +100,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_const_bytes(&mut self, op: &TirOp) {
-        let (result, _) = self.emit_byte_literal(&const_bytes_from_attrs(op), TirType::Bytes);
+        let (result, _) = self.emit_byte_literal(required_tir_literal_bytes(op), TirType::Bytes);
         self.values.insert(op.results[0], result);
         self.value_types.insert(op.results[0], TirType::Bytes);
     }
 
     /// Every materialization returns one owned reference, even for equal payloads.
     /// String constants, attribute names, and bytes share the same outparam ABI;
-    /// the semantic literal type selects the fixed runtime constructor.
+    /// the semantic literal type selects the fixed runtime constructor. The
+    /// outparam is a static entry-block slot, so a literal in a loop never grows
+    /// the stack.
     fn emit_byte_literal(
         &mut self,
         bytes: &[u8],
@@ -153,7 +152,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .i32_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
         let materializer = require_llvm_function_type(runtime_name, materializer, expected_abi);
-        let out_alloca = self.backend.builder.build_alloca(i64_ty, out_name).unwrap();
+        let out_alloca = self.build_entry_i64_alloca(out_name);
 
         let len_val = i64_ty.const_int(bytes.len() as u64, false);
         let status = self
@@ -175,23 +174,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_load(i64_ty, out_alloca, load_name)
             .unwrap();
         (value, status)
-    }
-
-    pub(super) fn const_i64_operand(&self, operand_id: ValueId) -> i64 {
-        for block in self.func.blocks.values() {
-            for op in &block.ops {
-                if op.results.first() == Some(&operand_id)
-                    && op.opcode == OpCode::ConstInt
-                    && let Some(AttrValue::Int(v)) = op.attrs.get("value")
-                {
-                    return *v;
-                }
-            }
-        }
-        panic!(
-            "expected const int operand {:?} in {}",
-            operand_id, self.func.name
-        );
     }
 
     /// A synthesized name is one temporary owner, borrowed by the dependent
@@ -322,16 +304,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         global.set_constant(true);
         global.set_unnamed_addr(true);
         global.as_pointer_value()
-    }
-}
-
-fn const_bytes_from_attrs(op: &TirOp) -> Vec<u8> {
-    if let Some(AttrValue::Bytes(b)) = op.attrs.get("bytes") {
-        b.clone()
-    } else if let Some(AttrValue::Str(s)) = op.attrs.get("s_value") {
-        s.as_bytes().to_vec()
-    } else {
-        Vec::new()
     }
 }
 

@@ -676,7 +676,9 @@ def run_streamed(
         stream_error = exc
     finally:
         try:
-            returncode = process.wait()
+            if stream_error is not None:
+                process.request_cancel()
+            returncode = _COMMANDS.wait_owned(process, timeout=10.0)
         except BaseException as exc:
             wait_error = exc
         finally:

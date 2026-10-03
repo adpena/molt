@@ -16,6 +16,7 @@ pub(super) fn emit_method_op(
     func_index: u32,
     reloc_enabled: bool,
     op_idx: usize,
+    spill_base: u32,
 ) -> bool {
     if descriptor_ops::emit_method_descriptor_op(func, op, import_ids, locals, reloc_enabled) {
         return true;
@@ -30,5 +31,6 @@ pub(super) fn emit_method_op(
         func_index,
         reloc_enabled,
         op_idx,
+        spill_base,
     )
 }

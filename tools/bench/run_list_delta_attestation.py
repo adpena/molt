@@ -48,6 +48,11 @@ CASE_NAMES = (
     "tuple.steady.checked_raw_fast_items",
     "tuple.steady.full_slice_repeat_one_identity",
     "tuple.construction.pytuple_new_fill",
+    "list.removal.tail_128",
+    "list.removal.tail_1048576",
+    "list.removal.dense_8192",
+    "list.removal.projected_tail_65536",
+    "list.removal.projected_dense_8192",
 )
 ZERO_ALLOCATION_CASES = frozenset(
     {
@@ -295,9 +300,16 @@ def run_attestation(
             "timestamp": l7._utc_now(),
             "evidence_path": str(archived_capsule),
             "quiescence_before": before,
+            "source": source_start,
+            "build": build,
+            "child_environment": child_env,
         }
         l7._write_json_atomic(active_capsule, capsule)
         try:
+            if not l7._quiescence_ok(before):
+                raise RuntimeError(
+                    f"run {run_index} not started: host was not quiescent: {before}"
+                )
 
             def record_child_pid(pid: int) -> None:
                 capsule.update(
@@ -316,6 +328,11 @@ def run_attestation(
                 env=child_env,
                 on_spawn=record_child_pid,
             )
+            # Preserve completed work before any host, memory, schema, or
+            # semantic gate can reject it. Rejected measurements remain evidence,
+            # never a pass or an input to the accepted aggregate.
+            capsule["measurement"] = asdict(measured)
+            l7._write_json_atomic(active_capsule, capsule)
             after = asdict(l7.perf_calibration.measure_quiescence())
             capsule.update(
                 {

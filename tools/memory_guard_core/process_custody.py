@@ -148,6 +148,8 @@ class GuardResult:
     temporary_artifacts: Mapping[str, object] | None = None
     child_returncode: int | None = None
     infrastructure_failure: GuardInfrastructureFailure | None = None
+    cancelled: bool = False
+    descendants_closed: bool = False
 
 
 ChildExitResourceUsage = _process_model.ChildExitResourceUsage

@@ -12,6 +12,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
 import builtins
+import _thread as _host_thread
 import importlib.util
 import sys
 import types
@@ -33,6 +34,9 @@ def _lock_new():
 
 
 def _lock_acquire(handle, blocking, timeout):
+    probe = _host_thread.allocate_lock()
+    if probe.acquire(blocking, timeout):
+        probe.release()
     _State.locks[handle] = True
     return True
 
@@ -57,6 +61,9 @@ def _rlock_new():
 
 
 def _rlock_acquire(handle, blocking, timeout):
+    probe = _host_thread.RLock()
+    if probe.acquire(blocking, timeout):
+        probe.release()
     _State.rlocks[handle] += 1
     return True
 
@@ -93,6 +100,7 @@ def _thread_stack_size_set(size):
 
 
 builtins._molt_intrinsics = {{
+    "molt_thread_timeout_max": lambda: _host_thread.TIMEOUT_MAX,
     "molt_lock_new": _lock_new,
     "molt_lock_acquire": _lock_acquire,
     "molt_lock_release": _lock_release,
@@ -113,7 +121,7 @@ builtins._molt_intrinsics = {{
     "molt_thread_registry_active_count": lambda: 1,
     "molt_thread_stack_size_get": lambda: _State.stack_size,
     "molt_thread_stack_size_set": _thread_stack_size_set,
-    "molt_signal_raise_signal": lambda signum: None,
+    "molt_signal_set_interrupt": lambda signum: None,
 }}
 
 _intrinsics_mod = types.ModuleType("_intrinsics")
@@ -205,10 +213,10 @@ checks = {{
     == [
         (
             "TypeError",
-            "'NoneType' object cannot be interpreted as an integer or float",
+            "'NoneType' object cannot be interpreted as an integer",
         ),
         ("ValueError", "can't specify a timeout for a non-blocking call"),
-        ("ValueError", "timeout value must be a non-negative number"),
+        ("ValueError", "timeout value must be positive"),
         ("RuntimeError", "cannot release un-acquired lock"),
     ],
     "rlock_locked_gated": hasattr(_private.RLock, "locked")
@@ -234,7 +242,7 @@ checks = {{
         and "_thread_registry_active_count" not in _private.__dict__
         and "_thread_stack_size_get" not in _private.__dict__
         and "_thread_stack_size_set" not in _private.__dict__
-        and "_signal_raise_signal" not in _private.__dict__
+        and "_signal_set_interrupt" not in _private.__dict__
     ),
 }}
 for key in sorted(checks):

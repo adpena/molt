@@ -10,10 +10,18 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from molt.frontend._mixin_base import GeneratorMixinBase
-from molt.frontend._types import GEN_CONTROL_SIZE, FuncInfo, MoltOp, MoltValue
+from molt.frontend._types import (
+    GEN_CONTROL_SIZE,
+    CodeSlotDeclaration,
+    FuncInfo,
+    MoltOp,
+    MoltValue,
+)
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend.sema.funcmeta import StatefulFunctionFramePlan
@@ -25,6 +33,16 @@ class PythonFrameContextScope:
     done_label: int
     outer_handler: int | None
     outer_class_body: bool
+
+
+@dataclass(frozen=True)
+class FrameRestoreScope:
+    """A region whose normal and exceptional exits both run ``restore``."""
+
+    cleanup_label: int
+    done_label: int
+    outer_handler: int | None
+    restore: Callable[[], object]
 
 
 class FunctionLifecycleMixin(GeneratorMixinBase):
@@ -43,7 +61,12 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             kind = 0
             value = no_value
             if name is not None:
-                if argument_zero is not None:
+                if self.frame_home_slots is not None:
+                    # A synchronous frame's first code slot is argument zero,
+                    # which `super()` reads from its home when called: a
+                    # rebinding, `del` or proxy write needs no publication.
+                    kind = 3
+                elif argument_zero is not None:
                     value, kind = (
                         argument_zero,
                         argument_kind if argument_kind is not None else 1,
@@ -68,14 +91,9 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="CONST", args=[kind], result=mode))
             self.emit(
                 MoltOp(
-                    kind="CALL",
-                    args=[
-                        "molt_frame_context_set",
-                        value,
-                        mode,
-                        class_cell or no_value,
-                    ],
-                    result=MoltValue(self.next_var(), type_hint="None"),
+                    kind="FRAME_CONTEXT_SET",
+                    args=[value, mode, class_cell or no_value],
+                    result=MoltValue("none"),
                 )
             )
         self.python_frame_context_active = True
@@ -85,6 +103,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
     ) -> None:
         if (
             self.python_frame_context_active
+            and self.frame_home_slots is None
             and not self.python_class_body_context
             and name == self.current_python_first_arg
             and (cell or not self._python_argument_zero_is_cell(name))
@@ -121,22 +140,57 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         self.python_class_body_context = scope.outer_class_body
         # The caller has restored compiler scope before this emission. Both
         # normal and exceptional runtime edges restore that same outer frame.
-        self._publish_python_frame_context()
-        self.emit(
-            MoltOp(kind="JUMP", args=[scope.done_label], result=MoltValue("none"))
+        self._emit_scope_exits(
+            scope.cleanup_label,
+            scope.done_label,
+            scope.outer_handler,
+            self._publish_python_frame_context,
         )
-        self.emit(
-            MoltOp(kind="LABEL", args=[scope.cleanup_label], result=MoltValue("none"))
+
+    def _enter_frame_restore_scope(
+        self, restore: Callable[[], object]
+    ) -> FrameRestoreScope:
+        """Open a region whose normal and exceptional exits both run ``restore``."""
+        scope = FrameRestoreScope(
+            self.next_label(),
+            self.next_label(),
+            self.try_end_labels[-1]
+            if self.try_end_labels
+            else self.function_exception_label,
+            restore,
         )
-        self._publish_python_frame_context()
-        if scope.outer_handler is None:
-            raise AssertionError("Python context scope has no exception continuation")
-        self.emit(
-            MoltOp(kind="JUMP", args=[scope.outer_handler], result=MoltValue("none"))
+        self.try_end_labels.append(scope.cleanup_label)
+        return scope
+
+    def _exit_frame_restore_scope(self, scope: FrameRestoreScope) -> None:
+        assert self.try_end_labels.pop() == scope.cleanup_label
+
+        def restore() -> None:
+            # The exceptional exit runs with its exception still pending.
+            with self._suppress_check_exception(emit_on_exit=False):
+                scope.restore()
+
+        self._emit_scope_exits(
+            scope.cleanup_label, scope.done_label, scope.outer_handler, restore
         )
-        self.emit(
-            MoltOp(kind="LABEL", args=[scope.done_label], result=MoltValue("none"))
-        )
+
+    def _emit_scope_exits(
+        self,
+        cleanup_label: int,
+        done_label: int,
+        outer_handler: int | None,
+        on_exit: Callable[[], object],
+    ) -> None:
+        """Run ``on_exit`` on a scope's normal exit and on its exceptional exit,
+        which then continues to the enclosing handler."""
+        on_exit()
+        self.emit(MoltOp(kind="JUMP", args=[done_label], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LABEL", args=[cleanup_label], result=MoltValue("none")))
+        on_exit()
+        if outer_handler is None:
+            raise AssertionError("scope has no exception continuation")
+        self.emit(MoltOp(kind="JUMP", args=[outer_handler], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LABEL", args=[done_label], result=MoltValue("none")))
 
     def _task_closure_size(
         self, payload_slots: int, *, include_gen_control: bool
@@ -148,46 +202,6 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         if base < required:
             return required
         return base
-
-    @staticmethod
-    def _function_contains_locals_call(
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> bool:
-        stack: list[ast.AST] = list(node.body)
-        while stack:
-            current = stack.pop()
-            if (
-                isinstance(current, ast.Call)
-                and isinstance(current.func, ast.Name)
-                and current.func.id == "locals"
-            ):
-                return True
-            if isinstance(
-                current,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-            ):
-                continue
-            stack.extend(ast.iter_child_nodes(current))
-        return False
-
-    @staticmethod
-    def _expr_contains_locals_call(node: ast.AST) -> bool:
-        stack: list[ast.AST] = [node]
-        while stack:
-            current = stack.pop()
-            if (
-                isinstance(current, ast.Call)
-                and isinstance(current.func, ast.Name)
-                and current.func.id == "locals"
-            ):
-                return True
-            if isinstance(
-                current,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-            ):
-                continue
-            stack.extend(ast.iter_child_nodes(current))
-        return False
 
     @staticmethod
     def _function_contains_return(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -279,6 +293,22 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             )
         )
 
+    def _function_binds_homes(self, name: str) -> bool:
+        """Whether ``name`` is a synchronous Python frame, whose homes own its
+        bindings and whose entry therefore adopts every Python argument.
+
+        A stateful activation keeps its bindings in its task payload and
+        module code binds its namespace; their entries borrow. This one
+        predicate decides a function's homes (``start_function``), its
+        FunctionIR ``parameter_custody`` and the custody of a direct call.
+        """
+        info = self.funcs_map.get(name)
+        return (
+            info is not None
+            and "stateful_frame_plan" not in info
+            and self._function_needs_frame_trace(name)
+        )
+
     def start_function(
         self,
         name: str,
@@ -290,6 +320,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         has_exception_handlers: bool = True,
         python_first_arg: str | MoltValue | None = None,
         stateful_frame_plan: StatefulFunctionFramePlan | None = None,
+        code_slots: CodeSlotDeclaration | None = None,
     ) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = FuncInfo(
@@ -315,10 +346,20 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             self.funcs_map[name]["stateful_frame_plan"] = stateful_frame_plan
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
-        self._reset_local_binding_state(
-            reset_locals_cache=True,
-            reset_del_targets=True,
-        )
+        self._reset_local_binding_state(reset_del_targets=True)
+        if self._function_binds_homes(name):
+            # The frame's homes are laid out as its code object's slots
+            # (`code_slots`, the declaration its metadata published).
+            if code_slots is None:
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    f"synchronous frame {name} has no code slot declaration",
+                )
+            home_slots: dict[str, int] = {}
+            for index, slot_name in enumerate(code_slots.slots()):
+                home_slots.setdefault(slot_name, index)
+            self.frame_code_slots = code_slots
+            self.frame_home_slots = home_slots
         self.current_python_first_arg = python_first_arg
         for param in compiler_params or ():
             self.compiler_bindings[param] = MoltValue(param, type_hint="Any")
@@ -483,26 +524,24 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         return self.return_slot
 
     def _emit_return_value(self, value: MoltValue) -> None:
+        # Implicit expression returns (lambdas and generated evaluators) share
+        # the source-return owner. An earlier unwind capture is already owned.
+        # A binding view is captured here, before the frame's exit releases
+        # the homes it borrows from. The exit (`trace_exit`) releases or
+        # retires every binding the frame still holds; no compiled release
+        # precedes it.
+        value = self._capture_expression_reference(value)
         exit_baseline_now = self.return_slot is None or self.return_label is None
         if exit_baseline_now:
-            self._emit_plain_local_scope_exit_boundaries(preserve=value)
-            if self.current_func_name != "molt_main":
-                self._emit_boxed_locals_cleanup()
             self._emit_restore_exception_stack_depth(exit_baseline=True)
             self._emit_normal_return_terminator(value)
             return
         self._emit_restore_exception_stack_depth(exit_baseline=False)
         slot = self._load_return_slot()
         if slot is None:
-            self._emit_plain_local_scope_exit_boundaries(preserve=value)
-            if self.current_func_name != "molt_main":
-                self._emit_boxed_locals_cleanup()
             self._emit_normal_return_terminator(value)
             return
         self._emit_cell_set(slot, value)
-        self._emit_plain_local_scope_exit_boundaries()
-        if self.current_func_name != "molt_main":
-            self._emit_boxed_locals_cleanup()
         self.emit(
             MoltOp(kind="JUMP", args=[self.return_label], result=MoltValue("none"))
         )
@@ -547,16 +586,6 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind=kind, args=args, result=MoltValue("none")))
 
-    def _emit_boxed_locals_cleanup(self) -> None:
-        if not self.boxed_locals:
-            return
-        skip = set(self.free_vars) | self.closure_locals
-        for name, cell in self.boxed_locals.items():
-            if name in skip:
-                continue
-            missing = self._emit_missing_value()
-            self._emit_cell_set(cell, missing)
-
     def _emit_restore_exception_stack_depth(
         self, *, exit_baseline: bool = True
     ) -> None:
@@ -590,13 +619,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         active_label = self.function_exception_label
         if active_label is None:
             return
-        module_failure_cleanup = bool(
-            self.module_name
-            and (
-                self.current_func_name == "molt_main"
-                or self.current_func_name.startswith("molt_init_")
-            )
-        )
+        module_failure_cleanup = bool(self.module_name and self._is_module_entry())
         if module_failure_cleanup and not self._ends_with_return_jump():
             self._emit_void_return_terminator()
         pre_frame_label = (

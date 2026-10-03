@@ -9,6 +9,7 @@ the target Python policy is supplied explicitly, never inferred from the host.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_private_names import python_import_binding
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
@@ -373,6 +374,223 @@ class PythonScopeDeclarations:
     nonlocals: frozenset[str]
 
 
+@dataclass(frozen=True, slots=True)
+class PythonCodeNameLayout:
+    """Name tables in compiler visitation order, before dead-code elimination."""
+
+    varnames: tuple[str, ...]
+    names: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PythonCellStoragePlan:
+    """Python closure cells and private boxed storage have distinct lifetimes."""
+
+    captured: tuple[str, ...]
+    private: tuple[str, ...]
+    cellvars: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PythonScopeCellCaptures:
+    """Enclosing bindings and isolated inlined-comprehension bindings."""
+
+    enclosing: frozenset[str]
+    inlined: frozenset[str]
+
+
+def python_code_name_layout(
+    body: Sequence[ast.AST],
+    parameters: Sequence[str] = (),
+    *,
+    freevars: Sequence[str] = (),
+    cellvars: Sequence[str] = (),
+    eager_annotations: bool,
+    module_scope: bool = False,
+) -> PythonCodeNameLayout:
+    """Project local and external names from the same lexical operation walk.
+
+    Declarations decide *which* scope owns a name. Evaluation order decides its
+    code slot: an assignment's RHS precedes its stores, and a read may precede
+    the first assignment. Neither declaration order nor an optimizer's live
+    branch selection is the code object's layout. No host code compilation or
+    symbol-table API participates in this projection.
+    """
+    statements: list[ast.stmt] = []
+    for node in body:
+        if isinstance(node, ast.stmt):
+            statements.append(node)
+        elif isinstance(node, ast.expr):
+            statements.append(ast.Expr(value=node))
+        else:
+            raise TypeError("code-name layout requires statements or expressions")
+    declarations = python_scope_declarations(
+        statements,
+        parameters,
+        eager_annotations=eager_annotations,
+    )
+    lexical_locals = declarations.bound
+    cells = set(cellvars)
+    free = set(freevars) | declarations.nonlocals
+    variables = dict.fromkeys(parameters)
+    names: dict[str, None] = {}
+
+    class Collector(PythonLexicalScopeVisitor):
+        comprehension_locals: frozenset[str] = frozenset()
+
+        def name(self, name: str) -> None:
+            if name in self.comprehension_locals:
+                # PEP 709's save/restore uses a fast slot even for a cell.
+                # Such names appear in BOTH co_varnames and co_cellvars.
+                variables.setdefault(name, None)
+            elif not module_scope and name in lexical_locals:
+                if name not in cells:
+                    variables.setdefault(name, None)
+            elif module_scope or name not in free:
+                names.setdefault(name, None)
+
+        def visit_Name(self, node: ast.Name) -> None:
+            self.name(node.id)
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            self.visit(node.value)
+            names.setdefault(node.attr, None)
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            self.visit(node.value)
+            for target in node.targets:
+                self.visit(target)
+
+        def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+            self.visit(node.value)
+            self.visit(node.target)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if node.value is not None:
+                self.visit(node.value)
+                self.visit(node.target)
+            elif isinstance(node.target, ast.Attribute):
+                self.visit(node.target.value)
+            elif isinstance(node.target, ast.Subscript):
+                self.visit(node.target.value)
+                self.visit(node.target.slice)
+            if module_scope and eager_annotations:
+                self.visit(node.annotation)
+
+        def visit_Dict(self, node: ast.Dict) -> None:
+            for key, value in zip(node.keys, node.values):
+                if key is not None:
+                    self.visit(key)
+                self.visit(value)
+
+        def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+            self.visit(node.iter)
+            self.visit(node.target)
+            for statement in (*node.body, *node.orelse):
+                self.visit(statement)
+
+        visit_AsyncFor = visit_For
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.type is not None:
+                self.visit(node.type)
+            if node.name is not None:
+                self.name(node.name)
+            for statement in node.body:
+                self.visit(statement)
+
+        def visit_Try(self, node: ast.Try | ast.TryStar) -> None:
+            # The compiler emits the success continuation before handlers.
+            for child in (*node.body, *node.orelse, *node.handlers, *node.finalbody):
+                self.visit(child)
+
+        visit_TryStar = visit_Try
+
+        def _visit_definition_header(self, node: LexicalDefinitionNode) -> None:
+            super()._visit_definition_header(node)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                self.name(node.name)
+            elif isinstance(node, ast.TypeAlias):
+                self.visit(node.name)
+
+        def visit_ListComp(
+            self, node: ast.ListComp | ast.SetComp | ast.DictComp
+        ) -> None:
+            # PEP 709: collection comprehensions have lexical isolation but
+            # share the containing code object's local-slot table on 3.12+.
+            self.visit(node.generators[0].iter)
+            previous = self.comprehension_locals
+            targets = frozenset(
+                child.id
+                for generator in node.generators
+                for child in ast.walk(generator.target)
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)
+            )
+            self.comprehension_locals = previous | targets
+            try:
+                for index, generator in enumerate(node.generators):
+                    if index:
+                        self.visit(generator.iter)
+                    self.visit(generator.target)
+                    for condition in generator.ifs:
+                        self.visit(condition)
+                if isinstance(node, ast.DictComp):
+                    self.visit(node.key)
+                    self.visit(node.value)
+                else:
+                    self.visit(node.elt)
+            finally:
+                self.comprehension_locals = previous
+
+        visit_SetComp = visit_ListComp
+        visit_DictComp = visit_ListComp
+
+        def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+            self.visit(node.generators[0].iter)
+
+        def visit_MatchAs(self, node: ast.MatchAs) -> None:
+            if node.pattern is not None:
+                self.visit(node.pattern)
+            if node.name is not None:
+                self.name(node.name)
+
+        def visit_MatchStar(self, node: ast.MatchStar) -> None:
+            if node.name is not None:
+                self.name(node.name)
+
+        def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+            for key in node.keys:
+                self.visit(key)
+            for pattern in node.patterns:
+                self.visit(pattern)
+            if node.rest is not None:
+                self.name(node.rest)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                names.setdefault(alias.name, None)
+                if alias.asname and "." in alias.name:
+                    for part in alias.name.split(".")[1:]:
+                        names.setdefault(part, None)
+                self.name(python_import_binding(alias))
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            # Relative depth is an instruction operand, not part of co_names.
+            names.setdefault(node.module or "", None)
+            for alias in node.names:
+                if alias.name != "*":
+                    names.setdefault(alias.name, None)
+                    self.name(alias.asname or alias.name)
+
+    collector = Collector(
+        eager_annotations=eager_annotations,
+        variable_annotations=module_scope and eager_annotations,
+    )
+    for node in body:
+        collector.visit(node)
+    return PythonCodeNameLayout(tuple(variables), tuple(names))
+
+
 class _DeclarationCollector(PythonLexicalScopeVisitor):
     """One scope-local symbol-table pass; nested lexical scopes are skipped."""
 
@@ -387,9 +605,7 @@ class _DeclarationCollector(PythonLexicalScopeVisitor):
             self.bound.add(node.id)
 
     def visit_Import(self, node: ast.Import) -> None:
-        self.bound.update(
-            alias.asname or alias.name.split(".", 1)[0] for alias in node.names
-        )
+        self.bound.update(python_import_binding(alias) for alias in node.names)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         self.bound.update(

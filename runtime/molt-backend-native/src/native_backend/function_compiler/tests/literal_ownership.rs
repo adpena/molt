@@ -22,11 +22,11 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
             ops.push(OpIR {
                 kind: kind.into(),
                 out: Some(format!("{kind}_{index}")),
-                s_value: Some(if kind == "const_bigint" {
-                    i64::MAX.to_string()
-                } else {
-                    "non-interned literal".into()
-                }),
+                s_value: match kind {
+                    "const_bigint" => Some(i64::MAX.to_string()),
+                    "const_str" => Some("non-interned literal".into()),
+                    _ => None,
+                },
                 bytes: (kind == "const_bytes").then(|| vec![0, 255, 128]),
                 value: matches!(kind, "const" | "const_int" | "load_const").then_some(i64::MAX),
                 ..OpIR::default()
@@ -42,6 +42,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let mut backend = SimpleBackend::new();
@@ -255,6 +256,7 @@ fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             };
             let plan = native_representation_plan_for_test(&input);

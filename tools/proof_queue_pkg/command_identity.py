@@ -118,10 +118,9 @@ def _owned_directory_manifest_identity(path: Path, *, label: str) -> dict[str, o
     if any(count != links for count, links in hardlinks.values()):
         raise ValueError(f"{label} has hard links outside the owned root")
     capture = PythonFileCaptureContext(hash_workers=1)
-    capture.prepare(regular, label=label)
     files: list[dict[str, object]] = []
-    for candidate, metadata in regular:
-        identity = capture.bind(candidate, metadata, label=label)
+    identities = capture.bind_many(regular, label=label)
+    for (candidate, metadata), identity in zip(regular, identities, strict=True):
         files.append(
             {
                 "relative_path": candidate.relative_to(root).as_posix(),

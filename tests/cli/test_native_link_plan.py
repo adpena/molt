@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 import subprocess
 import sys
 
 import pytest
+from tools.command_execution import CommandExecutor
 
 import molt.cli as cli
 from molt.cli import build_results, link_pipeline, native_link_command, native_link_plan
@@ -20,6 +23,9 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkLoadingPolicy,
     source_extension_link_file,
 )
+
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 def _managed_tool(directory: Path, name: str) -> Path:
@@ -63,7 +69,7 @@ def _plan(
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda _runtime_lib, **_kwargs: [],
+        lambda _runtime_lib, **_kwargs: SimpleNamespace(flags=(), verify=lambda: None),
     )
     monkeypatch.setattr(
         native_link_command,
@@ -230,7 +236,7 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
     cc, ar, nm = (str(candidates[kind][0]) for kind in ("cc", "ar", "nm"))
 
     def run(command):
-        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        result = _COMMANDS.run(command, capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
         return result.stdout
 
@@ -297,7 +303,7 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda *args, **kwargs: [],
+        lambda *args, **kwargs: SimpleNamespace(flags=(), verify=lambda: None),
     )
     plan = native_link_command._build_native_link_plan(
         output_obj=app,

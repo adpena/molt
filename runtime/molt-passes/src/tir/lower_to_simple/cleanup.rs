@@ -35,6 +35,9 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
         // Phase 1: collect all label ids that are explicit branch targets.
         let mut branch_targets: HashSet<i64> = HashSet::new();
         for op in ops.iter() {
+            if let Some(targets) = &op.state_targets {
+                branch_targets.extend(targets.iter().map(|&(_, label)| label));
+            }
             let kind = op.kind.as_str();
             if (simpleir_kind_is_verifier_label_reference(kind)
                 || is_simple_exception_transfer_kind(kind)
@@ -220,6 +223,9 @@ pub(super) fn missing_label_references(ops: &[crate::ir::OpIR]) -> Vec<i64> {
     let mut defined_labels: HashSet<i64> = HashSet::new();
     let mut referenced_labels: HashSet<i64> = HashSet::new();
     for op in ops {
+        if let Some(targets) = &op.state_targets {
+            referenced_labels.extend(targets.iter().map(|&(_, label)| label));
+        }
         let kind = op.kind.as_str();
         if simpleir_kind_is_verifier_label_definition(kind) {
             if let Some(id) = op.value {

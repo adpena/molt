@@ -822,10 +822,9 @@ pub(super) fn emit_terminator(
             default_args,
         } => {
             // The `_poll` state-machine dispatch.  Round-trip back to the
-            // `state_switch` SimpleIR op the native/WASM backends re-derive their
-            // dispatch from (they read `molt_obj_get_state(self)` and switch on
-            // the saved state to the resume continuation that established it,
-            // scanning the linear stream for `state_yield`/`state_label` ids).
+            // `state_switch` with an explicit saved-state -> control-label map.
+            // Consumers read the saved frame state and use that map; label
+            // allocation and physical block order do not define resume identity.
             //
             // The per-edge block-argument incomings are emitted as `store_var`
             // into each target block's join-slot param vars BEFORE the dispatch:
@@ -846,6 +845,12 @@ pub(super) fn emit_terminator(
             emit_block_arg_stores(*default, default_args, block_param_vars, out);
             out.push(OpIR {
                 kind: "state_switch".to_string(),
+                state_targets: Some(
+                    cases
+                        .iter()
+                        .map(|(state, target, _)| (*state, block_label_id(target)))
+                        .collect(),
+                ),
                 ..OpIR::default()
             });
             // State 0 (initial entry) falls through to the default block.

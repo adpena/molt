@@ -1,41 +1,33 @@
 mod coalescing;
 mod runtime_lookup;
 
-use self::coalescing::coalesced_locals;
+use self::coalescing::plan_local_storage;
+pub(in crate::wasm) use self::coalescing::{LocalStoragePlan, ValueOccupancy};
 use self::runtime_lookup::runtime_lookup_only_vars;
 use crate::{FunctionIR, OpIR};
 use molt_tir::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 pub(super) struct LocalVariableAnalysis {
     pub(super) read_vars: BTreeSet<String>,
     pub(super) param_set: BTreeSet<String>,
     pub(super) runtime_lookup_only_vars: BTreeSet<String>,
-    pub(super) coalesced_map: BTreeMap<String, String>,
+    pub(super) storage: LocalStoragePlan,
     pub(super) defined_vars: BTreeSet<String>,
-    pub(super) used_vars: BTreeSet<String>,
 }
 
 pub(super) fn analyze_local_variables(func_ir: &FunctionIR) -> LocalVariableAnalysis {
     let (read_vars, defined_vars) = collect_value_names(&func_ir.ops);
     let param_set: BTreeSet<String> = func_ir.params.iter().cloned().collect();
     let runtime_lookup_only_vars = runtime_lookup_only_vars(&func_ir.ops);
-    let coalesced_map = coalesced_locals(func_ir, &read_vars, &param_set);
-    // Keep the existing dispatch undefined-value seeding policy separate from
-    // field roles. It is a projection of actual reads, not another IR walker.
-    let used_vars = read_vars
-        .iter()
-        .filter(|name| name.starts_with('v'))
-        .cloned()
-        .collect();
+    let storage = plan_local_storage(func_ir, &read_vars, &param_set);
 
     LocalVariableAnalysis {
         read_vars,
         param_set,
         runtime_lookup_only_vars,
-        coalesced_map,
+        storage,
         defined_vars,
-        used_vars,
     }
 }
 
@@ -55,7 +47,7 @@ fn collect_value_names(ops: &[OpIR]) -> (BTreeSet<String>, BTreeSet<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{coalesced_locals, collect_value_names};
+    use super::{collect_value_names, plan_local_storage};
     use crate::OpIR;
     use std::collections::BTreeSet;
 
@@ -169,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn coalescing_keeps_late_binding_writes_out_of_a_reused_live_slot() {
+    fn storage_keeps_late_binding_writes_out_of_a_reused_live_slot() {
         let function = crate::FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             params: vec!["source".into(), "replacement".into()],
@@ -177,21 +169,26 @@ mod tests {
                 op("store_var", Some(vec!["source"]), Some("__tmp_slot"), None),
                 op("inc_ref", Some(vec!["__tmp_slot"]), None, None),
                 op("store_var", Some(vec!["source"]), Some("__tmp_live"), None),
+                // `__tmp_slot` is dead here, but the write still lands in its
+                // physical local while `__tmp_live` is live.
                 op(
                     "store_var",
                     Some(vec!["replacement"]),
                     Some("__tmp_slot"),
                     None,
                 ),
-                // This pure allocation test intentionally has no split barrier:
-                // a return would bypass coalescing before examining ranges.
                 op("inc_ref", Some(vec!["__tmp_live"]), None, None),
+                op("ret_void", None, None, None),
             ],
             ..crate::FunctionIR::default()
         };
         let (reads, _) = collect_value_names(&function.ops);
         let params = function.params.iter().cloned().collect();
-        let coalesced = coalesced_locals(&function, &reads, &params);
-        assert_ne!(coalesced["__tmp_slot"], coalesced["__tmp_live"]);
+        let storage = plan_local_storage(&function, &reads, &params);
+        assert!(storage.shared_slot("__tmp_slot").is_some());
+        assert_ne!(
+            storage.shared_slot("__tmp_slot"),
+            storage.shared_slot("__tmp_live")
+        );
     }
 }

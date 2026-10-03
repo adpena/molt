@@ -45,8 +45,7 @@ def test_molt_queue_invokes_proof_queue_without_shell(
     script.write_text("raise SystemExit(0)\n", encoding="utf-8")
     calls: list[dict[str, object]] = []
 
-    def fake_find_molt_root(cwd: Path) -> Path:
-        assert cwd == Path.cwd()
+    def fake_compiler_source_root() -> Path:
         return tmp_path
 
     def fake_run(
@@ -55,7 +54,7 @@ def test_molt_queue_invokes_proof_queue_without_shell(
         calls.append({"command": command, "cwd": cwd, "env": env})
         return subprocess.CompletedProcess(command, 17)
 
-    monkeypatch.setattr(queue_cli, "_find_molt_root", fake_find_molt_root)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", fake_compiler_source_root)
     monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
 
     rc = queue_cli.handle_queue_command(
@@ -95,7 +94,7 @@ def test_molt_queue_preserves_hostile_paths_and_args_without_shell(
         calls.append({"command": command, "cwd": cwd, "env": env})
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: repo_root)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: repo_root)
     monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
 
     rc = queue_cli.handle_queue_command(
@@ -145,7 +144,7 @@ def test_molt_queue_queue_size_sets_portable_env(monkeypatch, tmp_path: Path) ->
         calls.append((command, cwd, env))
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
     monkeypatch.delenv("MOLT_TARGET_ROOT", raising=False)
 
@@ -178,7 +177,7 @@ def test_molt_queue_rejects_invalid_top_level_queue_size(
     script.parent.mkdir()
     script.write_text("raise SystemExit(0)\n", encoding="utf-8")
 
-    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(
         queue_cli.process_guard,
         "run_completed_command",
@@ -207,7 +206,7 @@ def test_molt_queue_queue_size_is_child_env_only(monkeypatch, tmp_path: Path) ->
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setenv(queue_cli.PROOF_QUEUE_SIZE_ENV, "99")
-    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
 
     rc = queue_cli.handle_queue_command(
@@ -227,7 +226,7 @@ def test_molt_queue_rejects_duplicate_queue_size_authority(
     script.parent.mkdir()
     script.write_text("raise SystemExit(0)\n", encoding="utf-8")
 
-    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(
         queue_cli.process_guard,
         "run_completed_command",
@@ -253,7 +252,7 @@ def test_molt_queue_strips_separator_and_preserves_argv(
     script.write_text("raise SystemExit(0)\n", encoding="utf-8")
     calls: list[list[str]] = []
 
-    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(
         queue_cli.process_guard,
         "run_completed_command",
@@ -299,7 +298,7 @@ def test_molt_queue_defaults_to_quickstart(monkeypatch, tmp_path: Path) -> None:
     script.write_text("raise SystemExit(0)\n", encoding="utf-8")
     calls: list[list[str]] = []
 
-    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(
         queue_cli.process_guard,
         "run_completed_command",
@@ -332,7 +331,7 @@ def test_molt_queue_preserves_active_warm_project_env(
 
     monkeypatch.setenv("VIRTUAL_ENV", str(warm_venv))
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
-    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
 
     rc = queue_cli.handle_queue_command(argparse.Namespace(queue_args=["status"]))
@@ -362,7 +361,7 @@ def test_molt_queue_uses_repo_local_warm_project_env_without_active_env(
 
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
-    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
 
     rc = queue_cli.handle_queue_command(argparse.Namespace(queue_args=["status"]))
@@ -408,7 +407,7 @@ def test_molt_queue_uses_main_worktree_project_env_for_linked_worktree(
 
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
-    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: worktree)
+    monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: worktree)
     monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
 
     rc = queue_cli.handle_queue_command(argparse.Namespace(queue_args=["status"]))

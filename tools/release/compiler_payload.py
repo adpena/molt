@@ -1,4 +1,4 @@
-"""Assemble the committed source closure and production compiler as one payload."""
+"""Assemble the committed source closure, production compiler and runtime cells."""
 
 from __future__ import annotations
 
@@ -60,6 +60,7 @@ REQUIRED_MARKERS = frozenset(
         "runtime/molt-backend/Cargo.toml",
         "runtime/molt-runtime/Cargo.toml",
         "src/molt/cli/__main__.py",
+        "src/molt/backend_environment.json",
         "src/molt/stdlib/builtins.py",
         "packaging/bootstrap.py",
         "packaging/INSTALL.md",
@@ -153,6 +154,7 @@ def materialize_sources(
     snapshot: GitSourceSnapshot,
     compiler: dict[str, Any],
     launcher: dict[str, Any],
+    runtime: dict[str, Any],
 ) -> Path:
     env = source_environment()
     source = materialize_git_source_snapshot(
@@ -174,6 +176,7 @@ def materialize_sources(
             "files": [entry.as_record() for entry in snapshot.files],
             "compiler": compiler,
             "launcher": launcher,
+            "runtime": runtime,
         },
     )
     return source

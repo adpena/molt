@@ -39,9 +39,11 @@ if TYPE_CHECKING:
     def molt_concurrent_future_done(handle_bits: Any) -> Any: ...
     def molt_concurrent_future_drop(handle_bits: Any) -> Any: ...
     def molt_concurrent_future_exception(
-        handle_bits: Any, timeout_bits: Any
+        handle_bits: Any, timeout_bits: Any, cancelled_error: Any, timeout_error: Any
     ) -> Any: ...
-    def molt_concurrent_future_result(handle_bits: Any, timeout_bits: Any) -> Any: ...
+    def molt_concurrent_future_result(
+        handle_bits: Any, timeout_bits: Any, cancelled_error: Any, timeout_error: Any
+    ) -> Any: ...
     def molt_concurrent_future_running(handle_bits: Any) -> Any: ...
     def molt_concurrent_wait(
         futures_bits: Any, timeout_bits: Any, return_when_bits: Any
@@ -102,8 +104,7 @@ class CancelledError(Exception):
     """Raised when a Future is cancelled."""
 
 
-class TimeoutError(_BuiltinTimeoutError):
-    """Raised when a Future result is not available in time."""
+TimeoutError = _BuiltinTimeoutError
 
 
 class InvalidStateError(Exception):
@@ -120,18 +121,6 @@ class BrokenThreadPool(BrokenExecutor):
 
 class BrokenProcessPool(BrokenExecutor):
     """Raised when ProcessPoolExecutor cannot schedule new work."""
-
-
-# ---------------------------------------------------------------------------
-# Process-wide Future handle registry.
-#
-# The Rust wait/as_completed intrinsics return handle integers.  To map
-# those back to Python Future objects we maintain a global dict keyed by
-# the integer handle.  Entries are removed when the Future is dropped.
-# Access is always under the GIL; no locking needed.
-# ---------------------------------------------------------------------------
-
-_FUTURE_REGISTRY: dict = {}  # int handle -> Future instance
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +169,8 @@ class Future:
         # Python-managed path.
         callbacks: list[Callable[[Future], Any]] = []
         with self._condition:
+            if self._state == _CANCELLED:
+                return True
             if self._state != _PENDING:
                 return False
             self._state = _CANCELLED
@@ -219,14 +210,9 @@ class Future:
         or re-raises the stored exception.
         """
         if self._handle is not None:
-            try:
-                return _MOLT_FUTURE_RESULT(self._handle, timeout)
-            except CancelledError:
-                raise
-            except TimeoutError:
-                raise
-            except Exception:
-                raise
+            return _MOLT_FUTURE_RESULT(
+                self._handle, timeout, CancelledError, TimeoutError
+            )
 
         # Python-managed path.
         with self._condition:
@@ -244,18 +230,9 @@ class Future:
         Raises CancelledError if cancelled, TimeoutError if timed out.
         """
         if self._handle is not None:
-            try:
-                raw = _MOLT_FUTURE_EXCEPTION(self._handle, timeout)
-            except CancelledError:
-                raise
-            except TimeoutError:
-                raise
-            if raw is None:
-                return None
-            # Rust returns a str for exceptions; wrap so callers get an object.
-            if isinstance(raw, str):
-                return Exception(raw)
-            return raw  # type: ignore[return-value]
+            return _MOLT_FUTURE_EXCEPTION(
+                self._handle, timeout, CancelledError, TimeoutError
+            )
 
         # Python-managed path.
         with self._condition:
@@ -273,13 +250,11 @@ class Future:
         If the future is already done the callback is invoked immediately.
         """
         if self._handle is not None:
-            handle = self._handle
             future_self = self
 
             def _callback_wrapper(_handle_arg: int) -> None:
-                f = _FUTURE_REGISTRY.get(handle, future_self)
                 try:
-                    fn(f)
+                    fn(future_self)
                 except Exception:
                     pass
 
@@ -378,17 +353,8 @@ class Future:
         """Wait until done or timeout; must be called under self._condition."""
         if self._state in _DONE_STATES:
             return True
-        if timeout is None:
-            while self._state not in _DONE_STATES:
-                self._condition.wait()
-            return True
-        end = _time.monotonic() + float(timeout)
-        while self._state not in _DONE_STATES:
-            remaining = end - _time.monotonic()
-            if remaining <= 0:
-                return False
-            self._condition.wait(remaining)
-        return True
+        self._condition.wait(timeout)
+        return self._state in _DONE_STATES
 
     def _invoke_callbacks(self, callbacks: list[Callable[["Future"], Any]]) -> None:
         for cb in callbacks:
@@ -404,7 +370,9 @@ class Future:
             # calling _MOLT_FUTURE_EXCEPTION on a pending future would block.
             if not _MOLT_FUTURE_DONE(self._handle):
                 return False
-            raw = _MOLT_FUTURE_EXCEPTION(self._handle, 0.0)
+            raw = _MOLT_FUTURE_EXCEPTION(
+                self._handle, 0.0, CancelledError, TimeoutError
+            )
             return raw is not None
         with self._condition:
             return self._state == _FINISHED and self._exception is not None
@@ -414,7 +382,6 @@ class Future:
     def __del__(self) -> None:
         handle = self._handle
         if handle is not None:
-            _FUTURE_REGISTRY.pop(handle, None)
             try:
                 _MOLT_FUTURE_DROP(handle)
             except Exception:
@@ -568,12 +535,9 @@ class ThreadPoolExecutor(Executor):
             )
 
         f = Future._from_handle(future_handle)
-        _FUTURE_REGISTRY[future_handle] = f
         return f
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
-        if self._shutdown:
-            return
         self._shutdown = True
         if self._handle is not None:
             _MOLT_THREADPOOL_SHUTDOWN(self._handle, wait, cancel_futures)

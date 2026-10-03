@@ -56,13 +56,12 @@ pub(super) fn emit_plain_function_body(
         &mut label_stack,
         &mut label_depths,
         0,
+        0,
     );
     while !label_stack.is_empty() {
         label_stack.pop();
         func.instruction(&Instruction::End);
         control_stack.pop();
     }
-    op_emitter
-        .frame
-        .emit_implicit_return(func, op_emitter.import_ids, op_emitter.reloc_enabled);
+    op_emitter.const_cache().emit_none(func);
 }

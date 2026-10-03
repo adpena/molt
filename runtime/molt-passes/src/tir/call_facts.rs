@@ -10,9 +10,9 @@
 //! exists because the compiler **cannot carry the proof needed to remove it**.
 //!
 //! This module is the IR primitive that stops the discarding. A [`CallFacts`]
-//! record is attached to every opcode whose generated [`CallOpcodeRole`] records
-//! facts (`Call`, dynamic-method opcodes, and runtime builtins), keyed by the
-//! op's result [`ValueId`] in a per-function
+//! record is attached to every result-bearing site in the shared
+//! [`FunctionCallSites`] projection (Python callbacks and proven GPU runtime
+//! primitives), keyed by the op's first result [`ValueId`] in a per-function
 //! [`CallFactsTable`]. Each field is a [`FactValue`] — a confidence lattice, not a
 //! bare bool — so the compiler distinguishes *proven* from *unknown* and **never
 //! silently assumes** (doc 47 §1, §7).
@@ -29,7 +29,7 @@
 //! | [`CallFacts::target`] | `call_targets` operation provenance + module membership | typed [`CallTargetFact`] — `StaticDirect{name}` only for proven direct user calls, else `Opaque` |
 //! | [`CallFacts::typed_return`] | the result `ValueId`'s semantic type and `Repr::default_for` | conservative `Some(repr)` for a known semantic type (possibly `DynBox`); `None` for an unknown type |
 //! | [`CallFacts::leaf`] | `CallGraph::makes_any_call` | `Proven` iff the resolved callee makes no call of any kind; `False` iff it provably does; `Unknown` for an unresolved (opaque) target |
-//! | [`CallFacts::no_throw`] | generated `op_kinds` `may_throw` contract | `Proven` only when the operation contract is statically no-throw; else `Unknown`. Handler absence and builtin names are not effect proofs. |
+//! | [`CallFacts::no_throw`] | shared operation-aware effect contract | `Proven` only when the operation contract is statically no-throw; else `Unknown`. Handler absence and builtin names are not effect proofs. |
 //! | [`CallFacts::inlinable`] | `inliner::classify_inline_eligibility` | the typed [`InlineEligibility`] (Eligible \| WhyNot(reason)) — the SAME value `inliner::is_inlineable` derives its bool from (single source of truth, doc 47 §7) |
 //!
 //! `no_alloc` and `no_escape_args` are **Phase 2** (escape-analysis-sourced) and
@@ -82,6 +82,7 @@ use std::collections::BTreeMap;
 
 use super::analysis::{Analysis, AnalysisId};
 use super::call_graph::CallGraph;
+use super::call_sites::FunctionCallSites;
 use super::function::{TirFunction, TirModule};
 use super::passes::ip_summary::ModuleSummaries;
 use super::target_info::TargetInfo;
@@ -93,7 +94,7 @@ mod site_analysis;
 pub use model::{
     CallFacts, CallTargetFact, Confidence, FactValue, GuardId, InlineEligibility, InlineWhyNot,
 };
-use site_analysis::{analyze_call_site_local, analyze_call_site_module, call_op_result};
+use site_analysis::{analyze_call_site_local, analyze_call_site_module};
 
 /// Per-function side-table of [`CallFacts`], keyed by each call op's **result
 /// `ValueId`**. A `BTreeMap` for deterministic iteration (the coverage tool and
@@ -164,13 +165,18 @@ impl CallFactsTable {
         let mut out: BTreeMap<String, CallFactsTable> = BTreeMap::new();
         for func in &module.functions {
             let mut table = CallFactsTable::default();
-            for block in func.blocks.values() {
-                for op in &block.ops {
-                    let Some(result) = call_op_result(op) else {
+            let sites = FunctionCallSites::for_function(func);
+            for (&bid, block) in &func.blocks {
+                for (index, op) in block.ops.iter().enumerate() {
+                    let Some(site) = sites.at((bid, index)) else {
                         continue;
                     };
-                    let facts =
-                        analyze_call_site_module(op, func, call_graph, summaries, tti, &by_name);
+                    let Some(result) = op.results.first().copied() else {
+                        continue;
+                    };
+                    let facts = analyze_call_site_module(
+                        op, site, func, call_graph, summaries, tti, &by_name,
+                    );
                     table.facts.insert(result.0, facts);
                 }
             }
@@ -187,14 +193,18 @@ impl CallFactsTable {
     /// precise [`Self::build_module`] table.
     pub fn build_local(func: &TirFunction) -> CallFactsTable {
         let mut table = CallFactsTable::default();
-        for block in func.blocks.values() {
-            for op in &block.ops {
-                let Some(result) = call_op_result(op) else {
+        let sites = FunctionCallSites::for_function(func);
+        for (&bid, block) in &func.blocks {
+            for (index, op) in block.ops.iter().enumerate() {
+                let Some(site) = sites.at((bid, index)) else {
+                    continue;
+                };
+                let Some(result) = op.results.first().copied() else {
                     continue;
                 };
                 table
                     .facts
-                    .insert(result.0, analyze_call_site_local(op, func));
+                    .insert(result.0, analyze_call_site_local(op, site, func));
             }
         }
         table

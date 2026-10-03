@@ -20,6 +20,7 @@ from molt.cli.link_selection_admission import (
     LinkSelectionAdmission,
     write_link_selection,
 )
+from molt.cli.wasm_link_args import wasm_link_output_arguments
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkInput,
     SourceExtensionLinkRequirements,
@@ -47,12 +48,13 @@ def run_wasm_ld_with_custodied_inputs(
     deploy_runtime_override: Path | None = None,
     native_link_requirements: SourceExtensionLinkRequirements | None = None,
     preserve_debug_sections: bool = False,
-    phase_timings_file: Path | None = None,
+    phase_timings_ms: dict[str, float] | None = None,
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
     link_receipt: FinalLinkReceiptRequest | None = None,
 ) -> int:
-    phase_timings_ms: dict[str, float] = {}
+    if phase_timings_ms is None:
+        phase_timings_ms = {}
     facts_metrics: dict[str, float] = {}
     operation_counts: dict[str, int | float] = {
         "wasm_whole_artifact_full_binary_parses": 0,
@@ -419,15 +421,6 @@ def run_wasm_ld_with_custodied_inputs(
     # unreachable runtime stub.
     link_runtime_path = runtime
 
-    preflight_error = (
-        api["_preflight_relocatable_runtime"](wasm_ld, link_runtime_path, temp_dir)
-        if runtime_role == "reloc"
-        else None
-    )
-    if preflight_error is not None:
-        print(f"Wasm link failed: {preflight_error}", file=sys.stderr)
-        return 1
-
     cmd = [
         wasm_ld,
         "--no-entry",
@@ -483,9 +476,9 @@ def run_wasm_ld_with_custodied_inputs(
             (f"--export-if-defined={name}" for name in reserved_runtime_link_exports),
         )
     )
+    common_link_args = tuple(cmd)
     cmd += [
-        "-o",
-        str(work_linked),
+        *wasm_link_output_arguments(link_outputs["linked"], staged_output=work_linked),
         str(linked_rewritten_path),
         str(link_runtime_path),
     ]
@@ -561,7 +554,7 @@ def run_wasm_ld_with_custodied_inputs(
             else "--no-stack-first"
             if part == "--stack-first"
             else part
-            for part in cmd[: cmd.index("-o")]
+            for part in common_link_args
             if part != "--export=molt_main" and not part.startswith("--table-base=")
         ]
         try:
@@ -574,8 +567,9 @@ def run_wasm_ld_with_custodied_inputs(
             "--import-memory",
             f"--global-base={split_app_data_base}",
             f"--table-base={split_app_table_base}",
-            "-o",
-            str(split_linked_app_path),
+            *wasm_link_output_arguments(
+                link_outputs["app"], staged_output=split_linked_app_path
+            ),
             str(rewritten_path),
             *split_app_link_args,
         ]
@@ -1295,7 +1289,16 @@ def run_wasm_ld_with_custodied_inputs(
             max(0.0, (time.perf_counter() - validation_start) * 1000.0), 6
         )
         strip_start = time.perf_counter()
-        canonical_sections = api["_canonicalize_standard_section_order"](linked_bytes)
+        try:
+            canonical_sections = api["_canonicalize_standard_section_order"](
+                linked_bytes
+            )
+        except ValueError as exc:
+            print(
+                f"Failed to canonicalize linked wasm sections: {exc}",
+                file=sys.stderr,
+            )
+            return 1
         if canonical_sections is not None:
             work_linked.write_bytes(canonical_sections)
             linked_bytes = canonical_sections
@@ -1468,12 +1471,6 @@ def run_wasm_ld_with_custodied_inputs(
         phase_timings_ms["wasm_link_total"] = round(
             max(0.0, (time.perf_counter() - total_start) * 1000.0), 6
         )
-        if phase_timings_file is not None:
-            phase_timings_file.parent.mkdir(parents=True, exist_ok=True)
-            phase_timings_file.write_text(
-                json.dumps(phase_timings_ms, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
         api["_WHOLE_ARTIFACT_OPERATION_COUNTS"].reset(whole_artifact_counts_token)
         for staged_output in staged_outputs:
             with contextlib.suppress(OSError):

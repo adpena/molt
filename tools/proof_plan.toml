@@ -1473,6 +1473,18 @@ argv = ["uv", "run", "python3", "tools/gen_op_kinds.py", "--check"]
 toolchains = ["python", "uv", "rustfmt"]
 
 [[command]]
+id = "repository.unicode-width.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_unicode_width.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
 id = "repository.heap-kinds.generated"
 family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"

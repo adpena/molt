@@ -72,23 +72,25 @@ class ImportLoweringMixin(GeneratorMixinBase):
             return False
         return module_name in self.known_modules
 
-    def _is_linkable_module_function_symbol(self, module_name: str | None) -> bool:
+    def _is_linkable_module_function_symbol(
+        self, module_name: str | None, func_id: str
+    ) -> bool:
         """Return whether a direct ``module__function`` symbol can be emitted.
 
-        ``known_modules`` is import visibility.  It is not link authority.
-        Cross-module Python direct calls are legal only to modules in
-        ``direct_call_modules``; native packages admitted as visible imports
-        must route through explicit callable export ABI metadata or remain
-        dynamic/bound calls.
+        A compiled module and a source-declared function are both required.
+        Import visibility, public API spellings and runtime-published callables
+        do not establish a Python code symbol. The live callable remains the
+        binding/dispatch authority even when its code address is known.
         """
         if not module_name:
             return False
         normalized = self._normalize_allowlist_module(module_name) or module_name
-        if normalized == self.module_name:
-            return True
-        if not self.known_modules and not self.direct_call_modules:
-            return True
-        return normalized in self.direct_call_modules
+        return (
+            normalized == self.module_name or normalized in self.direct_call_modules
+        ) and (
+            self._lookup_func_kind(normalized, func_id) is not None
+            or self._lookup_func_defaults(normalized, func_id) is not None
+        )
 
     def _imported_module_binding_target(self, binding_name: str) -> str | None:
         if self._local_name_shadows_import_binding(binding_name):

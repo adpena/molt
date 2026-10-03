@@ -17,8 +17,13 @@ fn compile_exact_target_reference(kind: &str, target: &str, arity: usize, return
         .module
         .declare_function(target, cranelift_module::Linkage::Import, &signature)
         .expect("predeclare exact target ABI");
+    // The exact target's own parameter declaration: every argument borrowed.
+    backend.function_entry_custody.insert(
+        target.to_string(),
+        molt_codegen_abi::EntryCustodyDeclaration::declare(false, arity, &[]),
+    );
     let args = match kind {
-        "gen_locals_register" | "asyncgen_locals_register" => {
+        "stateful_locals_register" => {
             vec!["metadata".to_string(), "metadata".to_string()]
         }
         _ => Vec::new(),
@@ -50,6 +55,7 @@ fn compile_exact_target_reference(kind: &str, target: &str, arity: usize, return
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let defined = BTreeSet::from(["caller".to_string()]);
@@ -71,7 +77,7 @@ fn compile_exact_target_reference(kind: &str, target: &str, arity: usize, return
 
 #[test]
 fn metadata_pointer_declarations_use_exact_target_abi() {
-    for kind in ["gen_locals_register", "asyncgen_locals_register"] {
+    for kind in ["stateful_locals_register"] {
         for (target, arity, returns_value) in [
             ("opaque_body", 1, true),
             ("ordinary_poll", 0, true),
@@ -161,6 +167,7 @@ fn builtin_func_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
 }
@@ -190,13 +197,14 @@ fn func_new_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
 }
 
 #[test]
-#[should_panic(expected = "asyncgen_locals_register declaration mismatch for `helper`")]
-fn asyncgen_locals_register_signature_mismatch_fails_closed_at_codegen() {
+#[should_panic(expected = "stateful_locals_register declaration mismatch for `helper`")]
+fn stateful_locals_register_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "caller".to_string(),
@@ -209,13 +217,13 @@ fn asyncgen_locals_register_signature_mismatch_fails_closed_at_codegen() {
             },
             OpIR {
                 kind: "const_none".to_string(),
-                out: Some("offsets".to_string()),
+                out: Some("layout".to_string()),
                 ..OpIR::default()
             },
             OpIR {
-                kind: "asyncgen_locals_register".to_string(),
+                kind: "stateful_locals_register".to_string(),
                 s_value: Some("helper".to_string()),
-                args: Some(vec!["names".to_string(), "offsets".to_string()]),
+                args: Some(vec!["names".to_string(), "layout".to_string()]),
                 value: Some(1),
                 ..OpIR::default()
             },
@@ -228,44 +236,7 @@ fn asyncgen_locals_register_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
-        execution_context: Default::default(),
-    });
-}
-
-#[test]
-#[should_panic(expected = "gen_locals_register declaration mismatch for `helper`")]
-fn gen_locals_register_signature_mismatch_fails_closed_at_codegen() {
-    compile_caller_with_incompatible_predeclared_helper(FunctionIR {
-        return_abi: molt_ir::FunctionReturnAbi::Void,
-        name: "caller".to_string(),
-        params: Vec::new(),
-        ops: vec![
-            OpIR {
-                kind: "const_none".to_string(),
-                out: Some("names".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "const_none".to_string(),
-                out: Some("offsets".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "gen_locals_register".to_string(),
-                s_value: Some("helper".to_string()),
-                args: Some(vec!["names".to_string(), "offsets".to_string()]),
-                value: Some(1),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            },
-        ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
 }
@@ -301,6 +272,7 @@ fn call_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
 }
@@ -327,6 +299,7 @@ fn compile_missing_static_target_symbol(kind: &str) {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         "caller",
@@ -374,6 +347,7 @@ fn const_str_missing_payload_fails_closed_at_codegen() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         "const_str_missing_payload",
@@ -404,6 +378,7 @@ fn const_str_empty_string_payload_still_compiles() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         "const_str_empty_payload",
@@ -448,13 +423,17 @@ fn call_guarded_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
 }
 
+// A function object whose arity disagrees with its target's own declaration
+// has no representable entry custody, so it fails at the `func_new`, before a
+// later static call could compare the two declarations.
 #[test]
-#[should_panic(expected = "conflicting static call ABI for helper")]
-fn call_internal_signature_mismatch_fails_closed_at_codegen() {
+#[should_panic(expected = "func_new target `helper` has no runtime entry custody")]
+fn function_object_arity_mismatch_fails_closed_at_codegen() {
     compile_function_to_clif_text(
         vec![
             FunctionIR {
@@ -470,6 +449,7 @@ fn call_internal_signature_mismatch_fails_closed_at_codegen() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -507,6 +487,7 @@ fn call_internal_signature_mismatch_fails_closed_at_codegen() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -545,6 +526,7 @@ fn func_new_closure_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
 }

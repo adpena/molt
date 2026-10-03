@@ -2,11 +2,14 @@
 
 Status: Active
 Owner: testing + runtime + frontend + tooling
-Last updated: 2026-06-12
+Last updated: 2026-09-29
 
 ## Purpose
-Define the minimum command matrix that must pass before we treat Tier 0/1 work as shippable.
-This is the executable gate for the Month 1 "must-pass" roadmap item.
+Define minimum local checks for Tier 0/1 integration. Full release acceptance
+requires the source-bound E1-E4 bundle and, for stable v1.0, authenticated H0
+under the [release authority](../../../../packaging/PACKAGING.md). This local
+matrix does not replace the advertised target, version, profile, or command
+coverage required there.
 
 ## Global Rules
 - Run commands from repo root.
@@ -14,9 +17,9 @@ This is the executable gate for the Month 1 "must-pass" roadmap item.
 - Differential runs must include `MOLT_DIFF_MEASURE_RSS=1`.
 - Keep the adaptive harness memory guard active for every test run. Direct
   pytest entrypoints enter custody through root `sitecustomize.py` and the
-  packaged `molt.pytest_memory_guard_bootstrap` pytest entry point before
-  collection; the repo-configured `molt.pytest_memory_guard_config_plugin`
-  keeps the same guard active when pytest entry-point autoload is disabled.
+  explicitly repo-configured `molt.pytest_memory_guard_config_plugin` before
+  collection. Installed Molt registers no global pytest entry point; the
+  repository's explicit plugin also works with plugin autoload disabled.
   Unguarded pytest re-execs through `tools/memory_guard.py`, forged guard env
   markers fail closed unless a live repo memory-guard ancestor is verified, and
   `--noconftest` / unsafe `--confcutdir` / unsafe pytest `-c` /
@@ -121,18 +124,22 @@ Required hardening gate details for IR dedicated probes (part of G3):
   ancestor, Claude/Codex app/control-plane, or child-reported process groups
   that can include unrelated host processes. Skipped protected groups are
   recorded in the sentinel JSONL as `repo_process_guard_protected_host_group`.
-- If RSS grows rapidly, terminate the run, record abort details and last RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md), then rerun with lower parallelism.
+- If RSS grows rapidly, terminate the run, record abort details and last RSS in [tests/differential/INDEX.md](../../../../tests/differential/INDEX.md), then rerun with lower parallelism.
+
+G3's resolved outcomes can include expected failures. That development result
+is weaker than E3's source-bound all-pass release law; expected failures remain
+release obligations.
 
 ## Minimal Sign-off Checklist
 - [ ] G0 through G3 passed for every runtime/compiler semantic change.
 - [ ] G4 passed before merge for broad-impact changes.
 - [ ] G5 passed for release prep and parity-focused work.
 - [ ] G6 passed for changes that affect guard/deopt/profiling instrumentation.
-- [ ] [tests/differential/INDEX.md](tests/differential/INDEX.md) updated after diff runs (date, host python, totals, failures, RSS notes).
+- [ ] [tests/differential/INDEX.md](../../../../tests/differential/INDEX.md) updated after diff runs (date, host python, totals, failures, RSS notes).
 
 ## Related Docs
-- [docs/ROADMAP_90_DAYS.md](docs/ROADMAP_90_DAYS.md)
-- [docs/spec/areas/testing/0007-testing.md](docs/spec/areas/testing/0007-testing.md)
-- [docs/OPERATIONS.md](docs/OPERATIONS.md)
+- [docs/ROADMAP_90_DAYS.md](../../../ROADMAP_90_DAYS.md)
+- [docs/spec/areas/testing/0007-testing.md](0007-testing.md)
+- [docs/OPERATIONS.md](../../../OPERATIONS.md)
 - [docs/ops/MULTI_AGENT_COORDINATION.md](../../../ops/MULTI_AGENT_COORDINATION.md)
-- [docs/spec/STATUS.md](docs/spec/STATUS.md)
+- [docs/spec/STATUS.md](../../STATUS.md)

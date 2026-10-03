@@ -238,3 +238,22 @@ def test_readonly_copy_flushes_payload_and_preserves_final_mode(
     assert flushed_files[1][1] & stat.S_IWRITE
     assert destination.read_bytes() == b"replacement"
     assert not destination.stat().st_mode & stat.S_IWRITE
+
+
+def test_observed_copy_rejects_source_replacement_before_copy(
+    tmp_path: Path,
+) -> None:
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"source")
+    destination.write_bytes(b"previous")
+    observed = stable_regular_file_identity(source, label="copy fixture")
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"source")
+    replacement.replace(source)
+    with pytest.raises(ValueError, match="changed since identity capture"):
+        atomic_io._atomic_copy_file(source, destination, observed=observed)
+    assert destination.read_bytes() == b"previous"
+    assert not list(tmp_path.glob(".molt-*.tmp"))

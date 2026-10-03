@@ -4,8 +4,8 @@
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 
-// Keep in sync with MOLT_BIND_KIND_OPEN in src/molt/frontend/__init__.py.
-pub const BIND_KIND_OPEN: i64 = 1;
+// Keep in sync with MOLT_BIND_KIND_CLINIC_NAMED in src/molt/frontend/_types.py.
+pub const BIND_KIND_CLINIC_NAMED: i64 = 1;
 pub const BIND_KIND_CAPI_METHOD: i64 = 2;
 pub const BIND_KIND_PACKED_BUILTIN: i64 = 3;
 pub const BIND_KIND_TYPE_NEW_INIT: i64 = 4;
@@ -77,7 +77,8 @@ pub const ASYNCGEN_GEN_OFFSET: usize = 0;
 pub const ASYNCGEN_RUNNING_OFFSET: usize = 8;
 pub const ASYNCGEN_PENDING_OFFSET: usize = 16;
 pub const ASYNCGEN_FIRSTITER_OFFSET: usize = 24;
-pub const ASYNCGEN_CONTROL_SIZE: usize = 32;
+pub const ASYNCGEN_FINALIZER_OFFSET: usize = 32;
+pub const ASYNCGEN_CONTROL_SIZE: usize = 40;
 pub const ASYNCGEN_OP_ANEXT: i64 = 0;
 pub const ASYNCGEN_OP_ASEND: i64 = 1;
 pub const ASYNCGEN_OP_ATHROW: i64 = 2;
@@ -114,14 +115,9 @@ pub static ATTR_SITE_NAME_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static ATTR_SITE_NAME_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static FIELD_OFFSET_IC_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static FIELD_OFFSET_IC_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
-pub static SPLIT_WS_ASCII_FAST_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
-pub static SPLIT_WS_UNICODE_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static DICT_STR_INT_PREHASH_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static DICT_STR_INT_PREHASH_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static DICT_STR_INT_PREHASH_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);
-pub static TAQ_INGEST_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
-pub static TAQ_INGEST_SKIP_MARKER_COUNT: AtomicU64 = AtomicU64::new(0);
-pub static ASCII_I64_PARSE_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);

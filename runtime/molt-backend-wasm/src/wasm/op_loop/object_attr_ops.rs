@@ -41,6 +41,7 @@ pub(super) fn emit_object_attr_op(
         func_index,
         reloc_enabled,
         op_idx,
+        ctx.call_site_abi.call_func_spill_offset(),
     ) {
         return true;
     }

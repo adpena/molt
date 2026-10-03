@@ -4,6 +4,10 @@
 //! whether called from within Molt's execution frame or from a bare C extension.
 
 mod extension_init;
+mod gc_control;
+mod slice;
+mod unicode;
+#[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
 pub(crate) use extension_init::execute_prepared_extension;
 #[cfg(test)]
 use extension_init::molt_cpython_abi_pyinit_module_to_bits;
@@ -24,8 +28,8 @@ use molt_cpython_abi::abi_types::{
     MoltTypeTag, PyModuleDef, PyModuleDef_Type, PyObject, PyTypeObject,
 };
 use molt_cpython_abi::api::cfunction::CFunctionConvention;
-#[cfg(test)]
-use molt_cpython_abi::hooks::DecodedHandleResult;
+use molt_cpython_abi::api::errors::with_preserved_error;
+use molt_cpython_abi::hooks::{AttributeAccess, DecodedHandleResult};
 use molt_cpython_abi::{
     BorrowedHandleResult, EXCEPTION_SNAPSHOT_ARGS, EXCEPTION_SNAPSHOT_CAUSE,
     EXCEPTION_SNAPSHOT_CONTEXT, EXCEPTION_SNAPSHOT_DICT, EXCEPTION_SNAPSHOT_NOTES,
@@ -53,9 +57,7 @@ use crate::object::builders::{
 use crate::object::layout::{
     function_set_call_target_ptr, function_set_trampoline_ptr, module_dict_bits,
 };
-use crate::object::ops::{
-    dict_del_in_place, dict_get_in_place, dict_get_str_bytes_borrowed, dict_set_in_place,
-};
+use crate::object::ops::{dict_get_in_place, dict_set_in_place};
 use crate::object::type_ids::{
     TYPE_ID_BIGINT, TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST,
     TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING,
@@ -225,6 +227,23 @@ unsafe extern "C" fn hook_thread_state_drop_leave(token: u64) {
 unsafe extern "C" fn hook_attached_runtime_context() -> u32 {
     use molt_cpython_abi::hooks::AttachedRuntimeContextKind;
 
+    let attached = unsafe { hook_attached_execution_context() };
+    if attached == AttachedRuntimeContextKind::Detached as u32 {
+        return attached;
+    }
+    // An attached isolate on the process-main thread does not own the
+    // process-static C pending-call ring. The lifecycle remains the owner.
+    if !crate::state::runtime_state::runtime_state_for_gil()
+        .is_some_and(crate::state::runtime_state::owns_process_cpython_state)
+    {
+        return AttachedRuntimeContextKind::Detached as u32;
+    }
+    attached
+}
+
+unsafe fn hook_attached_execution_context() -> u32 {
+    use molt_cpython_abi::hooks::AttachedRuntimeContextKind;
+
     if !crate::state::runtime_state::runtime_is_initialized() {
         return AttachedRuntimeContextKind::Detached as u32;
     }
@@ -252,6 +271,23 @@ unsafe extern "C" fn hook_attached_runtime_context() -> u32 {
             AttachedRuntimeContextKind::Detached as u32
         }
     }
+}
+
+unsafe extern "C" fn hook_check_signals() -> c_int {
+    with_gil(|py| crate::builtins::signal_ext::signal_check_signals(&py))
+}
+
+unsafe extern "C" fn hook_set_interrupt(signum: c_int) -> c_int {
+    // Async-signal-safe: no GIL, TLS, lock, or allocation on this lane.
+    crate::builtins::signal_ext::signal_set_interrupt(i64::from(signum))
+}
+
+unsafe extern "C" fn hook_interrupt_occurred() -> c_int {
+    with_gil(|py| c_int::from(crate::builtins::signal_ext::signal_interrupt_occurred(&py)))
+}
+
+unsafe extern "C" fn hook_notify_pending_calls() {
+    crate::builtins::signal_ext::notify_pending_calls();
 }
 
 unsafe extern "C" fn hook_pending_call_error(reason: u32) {
@@ -307,6 +343,30 @@ unsafe extern "C" fn hook_alloc_bytes(data: *const u8, len: usize) -> u64 {
     with_gil(|_py| {
         let ptr = alloc_bytes(&_py, bytes);
         if ptr.is_null() {
+            0
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+unsafe extern "C" fn hook_alloc_bytearray(data: *const u8, len: usize) -> u64 {
+    with_gil(|py| {
+        if len >= isize::MAX as usize {
+            crate::builtins::exceptions::record_memory_error_without_allocation(&py);
+            return 0;
+        }
+        let ptr = if data.is_null() {
+            crate::object::builders::alloc_bytearray_with_len(&py, len)
+        } else {
+            crate::object::builders::alloc_bytearray(&py, unsafe {
+                std::slice::from_raw_parts(data, len)
+            })
+        };
+        if ptr.is_null() {
+            if !crate::exception_pending(&py) {
+                crate::builtins::exceptions::record_memory_error_without_allocation(&py);
+            }
             0
         } else {
             MoltObject::from_ptr(ptr).bits()
@@ -617,53 +677,6 @@ unsafe fn list_item_bits(ptr: *mut u8, i: usize) -> Option<u64> {
     }
 }
 
-unsafe fn list_bits_snapshot(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<Vec<u64>> {
-    let type_id = unsafe { object_type_id(ptr) };
-    if type_id == TYPE_ID_LIST {
-        let copied = unsafe {
-            crate::object::seq_access::with_borrowed(ptr, |source| {
-                let mut out = Vec::new();
-                if out.try_reserve_exact(source.len()).is_err() {
-                    return None;
-                }
-                out.extend_from_slice(source);
-                Some(out)
-            })
-        };
-        if copied.is_none() {
-            let _ =
-                crate::raise_exception::<u64>(_py, "MemoryError", "list slice allocation failed");
-        }
-        return copied;
-    }
-    let len = match type_id {
-        TYPE_ID_LIST_INT => unsafe { crate::object::layout::list_int_vec_ref(ptr) }.len(),
-        TYPE_ID_LIST_BOOL => unsafe { crate::object::layout::list_bool_vec_ref(ptr) }.len(),
-        _ => return None,
-    };
-    let mut out = Vec::new();
-    if out.try_reserve_exact(len).is_err() {
-        let _ = crate::raise_exception::<u64>(_py, "MemoryError", "list slice allocation failed");
-        return None;
-    }
-    match unsafe { object_type_id(ptr) } {
-        TYPE_ID_LIST_INT => out.extend(
-            unsafe { crate::object::layout::list_int_vec_ref(ptr) }
-                .iter()
-                .copied()
-                .map(|value| MoltObject::from_int(value).bits()),
-        ),
-        TYPE_ID_LIST_BOOL => out.extend(
-            unsafe { crate::object::layout::list_bool_vec_ref(ptr) }
-                .iter()
-                .copied()
-                .map(|value| MoltObject::from_bool(value != 0).bits()),
-        ),
-        _ => unreachable!(),
-    }
-    Some(out)
-}
-
 unsafe extern "C" fn hook_list_append(
     list_bits: u64,
     item_bits: u64,
@@ -772,13 +785,14 @@ unsafe extern "C" fn hook_list_reverse(list_bits: u64) -> i32 {
 /// Replace `list[ilow:ihigh]` with the elements of `itemlist_bits` (a list/tuple,
 /// or 0 to delete the slice), growing/shrinking the backing vector via
 /// `Vec::splice`. The replacement is cloned before the mutable borrow so a
-/// self-slice (`a[i:j] = a`) is safe. Returns -1 for a non-list receiver or a
-/// non-list/tuple itemlist.
+/// self-slice (`a[i:j] = a`) is safe. Replacement iteration and callbacks have
+/// already completed before the caller snapshots the destination storage.
 unsafe extern "C" fn hook_list_set_slice(
     list_bits: u64,
     ilow: isize,
     ihigh: isize,
-    itemlist_bits: u64,
+    replacement: *const u64,
+    replacement_len: usize,
     future_pointers: *const *mut molt_cpython_abi::abi_types::PyObject,
     future_len: usize,
 ) -> i32 {
@@ -790,38 +804,14 @@ unsafe extern "C" fn hook_list_set_slice(
         if !is_list_type_id(unsafe { object_type_id(ptr) }) {
             return -1;
         }
-        let replacement: Vec<u64> = if itemlist_bits == 0 {
-            Vec::new()
+        let replacement = if replacement_len == 0 {
+            &[][..]
+        } else if replacement.is_null() {
+            let _ =
+                crate::raise_exception::<u64>(&_py, "SystemError", "NULL list slice replacement");
+            return -1;
         } else {
-            match MoltObject::from_bits(itemlist_bits).as_ptr() {
-                Some(ip) if unsafe { object_type_id(ip) } == TYPE_ID_TUPLE => {
-                    let out = unsafe {
-                        crate::object::seq_access::with_immutable_tuple_slice(ip, |source| {
-                            let mut out = Vec::new();
-                            if out.try_reserve_exact(source.len()).is_err() {
-                                return None;
-                            }
-                            out.extend_from_slice(source);
-                            Some(out)
-                        })
-                    }
-                    .flatten();
-                    let Some(out) = out else {
-                        let _ = crate::raise_exception::<u64>(
-                            &_py,
-                            "MemoryError",
-                            "list slice allocation failed",
-                        );
-                        return -1;
-                    };
-                    out
-                }
-                Some(ip) => match unsafe { list_bits_snapshot(&_py, ip) } {
-                    Some(bits) => bits,
-                    None => return -1,
-                },
-                None => return -1,
-            }
+            unsafe { std::slice::from_raw_parts(replacement, replacement_len) }
         };
         unsafe { crate::object::ops_list::promote_specialized_list_to_list(&_py, ptr) };
         if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
@@ -835,16 +825,20 @@ unsafe extern "C" fn hook_list_set_slice(
         } else {
             Some(unsafe { std::slice::from_raw_parts(future_pointers, future_len) })
         };
-        c_int::from(!unsafe {
+        if unsafe {
             crate::object::list_mutation::replace_range_with_projection(
                 &_py,
                 ptr,
                 low,
                 high,
-                &replacement,
+                replacement,
                 exact_projection,
             )
-        })
+        } {
+            0
+        } else {
+            -1
+        }
     })
 }
 
@@ -863,7 +857,7 @@ unsafe extern "C" fn hook_tuple_set(
     bits: u64,
     i: usize,
     val_bits: u64,
-    _exact_pointer: *mut PyObject,
+    exact_pointer: *mut PyObject,
 ) -> OwnedHandleResult {
     let obj = MoltObject::from_bits(bits);
     let ptr = match obj.as_ptr() {
@@ -874,7 +868,12 @@ unsafe extern "C" fn hook_tuple_set(
         return OwnedHandleResult::error();
     }
     with_gil(|_py| {
-        match unsafe { crate::object::seq_access::replace_unique_item(&_py, ptr, i, val_bits) } {
+        let val_bits = if exact_pointer.is_null() {
+            crate::missing_bits(&_py)
+        } else {
+            val_bits
+        };
+        match unsafe { crate::object::seq_access::replace_capi_item(&_py, ptr, i, val_bits) } {
             Some(old_bits) if old_bits == crate::missing_bits(&_py) => OwnedHandleResult::missing(),
             Some(old_bits) => OwnedHandleResult::ok(old_bits),
             None => OwnedHandleResult::error(),
@@ -910,6 +909,14 @@ unsafe extern "C" fn hook_tuple_item(bits: u64, i: usize) -> BorrowedHandleResul
     })
 }
 
+unsafe extern "C" fn hook_mappingproxy_new(mapping: u64) -> OwnedHandleResult {
+    with_gil(|py| {
+        owned_result_from_pending(crate::builtins::types::mappingproxy_from_mapping(
+            &py, mapping,
+        ))
+    })
+}
+
 unsafe extern "C" fn hook_alloc_dict() -> u64 {
     with_gil(|_py| {
         let ptr = alloc_dict_with_pairs(&_py, &[]);
@@ -917,6 +924,21 @@ unsafe extern "C" fn hook_alloc_dict() -> u64 {
             0
         } else {
             MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+unsafe extern "C" fn hook_dict_resolve(bits: u64, merge_source: u8) -> BorrowedHandleResult {
+    with_gil(|py| {
+        let result = if merge_source == 0 {
+            crate::object::ops::dict_backing_bits(&py, bits)
+        } else {
+            unsafe { crate::object::mapping_merge::direct_dict(&py, bits) }
+        };
+        match result {
+            Ok(Some(bits)) => BorrowedHandleResult::ok(bits),
+            Ok(None) => BorrowedHandleResult::missing(),
+            Err(()) => BorrowedHandleResult::error(),
         }
     })
 }
@@ -939,7 +961,12 @@ unsafe extern "C" fn hook_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64)
     })
 }
 
-unsafe extern "C" fn hook_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult {
+unsafe extern "C" fn hook_dict_get(
+    dict_bits: u64,
+    key_bits: u64,
+    hash_source: molt_cpython_abi::hooks::DictHashSource,
+    hash: i64,
+) -> BorrowedHandleResult {
     with_gil(|_py| {
         let obj = MoltObject::from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
@@ -948,28 +975,39 @@ unsafe extern "C" fn hook_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHan
         if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
             return BorrowedHandleResult::missing();
         }
-        match unsafe { dict_get_in_place(&_py, ptr, key_bits) } {
-            Some(bits) => BorrowedHandleResult::ok(bits),
-            None if crate::exception_pending(&_py) => BorrowedHandleResult::error(),
-            None => BorrowedHandleResult::missing(),
+        let value = match hash_source {
+            molt_cpython_abi::hooks::DictHashSource::Compute => unsafe {
+                dict_get_in_place(&_py, ptr, key_bits)
+            },
+            molt_cpython_abi::hooks::DictHashSource::Supplied => unsafe {
+                crate::object::ops::dict_get_with_hash_in_place(&_py, ptr, key_bits, hash as u64)
+            },
+        };
+        if crate::exception_pending(&_py) {
+            BorrowedHandleResult::error()
+        } else {
+            value.map_or_else(BorrowedHandleResult::missing, BorrowedHandleResult::ok)
         }
     })
 }
 
-unsafe extern "C" fn hook_dict_del(dict_bits: u64, key_bits: u64) -> i32 {
-    with_gil(|_py| {
-        let obj = MoltObject::from_bits(dict_bits);
-        let ptr = match obj.as_ptr() {
-            Some(p) => p,
-            None => return -1,
-        };
-        if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
-            return -1;
+unsafe extern "C" fn hook_dict_pop(dict_bits: u64, key_bits: u64) -> OwnedHandleResult {
+    with_gil(|py| {
+        let missing = crate::missing_bits(&py);
+        let value = crate::object::ops_dict::molt_dict_pop(
+            dict_bits,
+            key_bits,
+            missing,
+            MoltObject::from_int(1).bits(),
+        );
+        if crate::exception_pending(&py) {
+            return OwnedHandleResult::error();
         }
-        if unsafe { dict_del_in_place(&_py, ptr, key_bits) } {
-            0
+        if value == missing {
+            dec_ref_bits(&py, value);
+            OwnedHandleResult::missing()
         } else {
-            -1
+            OwnedHandleResult::ok(value)
         }
     })
 }
@@ -1083,6 +1121,31 @@ unsafe extern "C" fn hook_bytes_data(bits: u64, out_len: *mut usize) -> *const u
     }
 }
 
+unsafe extern "C" fn hook_bytearray_data(bits: u64, out_len: *mut usize) -> *mut u8 {
+    let mut len = 0;
+    let data = unsafe { crate::c_api::molt_bytearray_as_ptr(bits, &mut len) };
+    if !out_len.is_null() {
+        unsafe { *out_len = len as usize }
+    };
+    data
+}
+
+unsafe extern "C" fn hook_bytearray_resize(bits: u64, len: usize) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        if crate::object::buffer_exports::bytearray_resize(py, bits, len) {
+            0
+        } else {
+            -1
+        }
+    })
+}
+
+unsafe extern "C" fn hook_buffer_supports(bits: u64) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        i32::from(crate::object::buffer_exports::supports_buffer(py, bits))
+    })
+}
+
 unsafe extern "C" fn hook_buffer_acquire(bits: u64, out_view: *mut AbiMoltBufferView) -> i32 {
     if out_view.is_null() {
         return -1;
@@ -1110,9 +1173,127 @@ unsafe extern "C" fn hook_buffer_release(view: *mut AbiMoltBufferView) -> i32 {
     rc
 }
 
-unsafe extern "C" fn hook_object_get_attr(obj_bits: u64, name_bits: u64) -> OwnedHandleResult {
-    let bits = crate::builtins::attributes::molt_get_attr_name(obj_bits, name_bits);
-    owned_result_from_pending(bits)
+unsafe extern "C" fn hook_descriptor_protocol(
+    bits: u64,
+) -> molt_cpython_abi::hooks::DescriptorProtocol {
+    use molt_cpython_abi::hooks::DescriptorProtocol;
+    with_gil(|py| unsafe {
+        let get = crate::builtins::attr::descriptor_has_get(&py, bits);
+        if crate::exception_pending(&py) {
+            return DescriptorProtocol::Error;
+        }
+        let set = crate::builtins::attr::descriptor_is_data(&py, bits);
+        if crate::exception_pending(&py) {
+            DescriptorProtocol::Error
+        } else {
+            DescriptorProtocol::from_slots(get, set)
+        }
+    })
+}
+
+unsafe extern "C" fn hook_descriptor_get(
+    descriptor: u64,
+    receiver: *const u64,
+    owner: *const u64,
+) -> OwnedHandleResult {
+    with_gil(|py| unsafe {
+        let get = crate::builtins::attr::descriptor_has_get(&py, descriptor);
+        if crate::exception_pending(&py) {
+            return OwnedHandleResult::error();
+        }
+        if !get {
+            return OwnedHandleResult::missing();
+        }
+        let result = crate::builtins::attr::descriptor_bind(
+            &py,
+            descriptor,
+            owner.as_ref().copied(),
+            receiver.as_ref().copied(),
+        );
+        if crate::exception_pending(&py) {
+            if let Some(bits) = result {
+                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(&py, bits));
+            }
+            OwnedHandleResult::error()
+        } else {
+            result.map_or_else(OwnedHandleResult::missing, OwnedHandleResult::ok)
+        }
+    })
+}
+
+unsafe extern "C" fn hook_descriptor_set(
+    descriptor: u64,
+    receiver: u64,
+    value: *const u64,
+) -> molt_cpython_abi::hooks::DescriptorMutationStatus {
+    use crate::builtins::attr::{DescriptorMutation, DescriptorMutationOutcome};
+    use molt_cpython_abi::hooks::DescriptorMutationStatus;
+    with_gil(|py| unsafe {
+        let mutation = value.as_ref().map_or(DescriptorMutation::Delete, |&bits| {
+            DescriptorMutation::Set(bits)
+        });
+        match crate::builtins::attr::descriptor_mutate(&py, descriptor, receiver, mutation) {
+            DescriptorMutationOutcome::Applied => DescriptorMutationStatus::Applied,
+            DescriptorMutationOutcome::NotDescriptor => DescriptorMutationStatus::Missing,
+            DescriptorMutationOutcome::Error => DescriptorMutationStatus::Error,
+        }
+    })
+}
+
+unsafe extern "C" fn hook_object_get_attr(
+    obj_bits: u64,
+    name_bits: u64,
+    access: AttributeAccess,
+    dictionary: *const u64,
+    suppress: bool,
+) -> OwnedHandleResult {
+    if access == AttributeAccess::Normal {
+        return owned_result_from_pending(crate::builtins::attributes::molt_get_attr_name(
+            obj_bits, name_bits,
+        ));
+    }
+    if let Some(dictionary) = unsafe { dictionary.as_ref().copied() } {
+        return with_gil(|py| unsafe {
+            let result = crate::builtins::attr::object_attr_lookup_with_dict(
+                &py, obj_bits, name_bits, dictionary, suppress,
+            );
+            if crate::exception_pending(&py) {
+                if let Some(result) = result {
+                    crate::dec_ref_bits(&py, result);
+                }
+                return if suppress && crate::builtins::attr::clear_attribute_error_if_pending(&py) {
+                    OwnedHandleResult::missing()
+                } else {
+                    OwnedHandleResult::error()
+                };
+            }
+            if let Some(result) = result {
+                return OwnedHandleResult::ok(result);
+            }
+            if suppress {
+                return OwnedHandleResult::missing();
+            }
+            let name = crate::string_obj_to_owned(MoltObject::from_bits(name_bits))
+                .unwrap_or_else(|| "<attr>".to_owned());
+            crate::builtins::attr::attr_error_with_obj(
+                &py,
+                crate::type_name(&py, MoltObject::from_bits(obj_bits)),
+                &name,
+                obj_bits,
+            );
+            OwnedHandleResult::error()
+        });
+    }
+    let bits = crate::object::ops_builtins::object_getattribute(obj_bits, name_bits, suppress);
+    with_gil(|py| {
+        if suppress && crate::builtins::attr::clear_attribute_error_if_pending(&py) {
+            OwnedHandleResult::missing()
+        } else if crate::exception_pending(&py) {
+            OwnedHandleResult::error()
+        } else {
+            OwnedHandleResult::ok(bits)
+        }
+    })
 }
 
 unsafe extern "C" fn hook_object_set_attr(
@@ -1120,14 +1301,24 @@ unsafe extern "C" fn hook_object_set_attr(
     name_bits: u64,
     value_bits: u64,
     delete: bool,
+    access: AttributeAccess,
 ) -> i32 {
     // Mutation returns Python None, not a C status. Keep deletion separate
     // from the value payload: all-zero bits encode the valid float +0.0.
-    if delete {
-        let _ = crate::builtins::attributes::molt_del_attr_name(obj_bits, name_bits);
-    } else {
-        let _ = crate::builtins::attributes::molt_set_attr_name(obj_bits, name_bits, value_bits);
-    }
+    let _ = match (access, delete) {
+        (AttributeAccess::Normal, false) => {
+            crate::builtins::attributes::molt_set_attr_name(obj_bits, name_bits, value_bits)
+        }
+        (AttributeAccess::Normal, true) => {
+            crate::builtins::attributes::molt_del_attr_name(obj_bits, name_bits)
+        }
+        (AttributeAccess::Generic, false) => {
+            crate::object::ops_builtins::molt_object_setattr(obj_bits, name_bits, value_bits)
+        }
+        (AttributeAccess::Generic, true) => {
+            crate::object::ops_builtins::molt_object_delattr(obj_bits, name_bits)
+        }
+    };
     if with_gil(|py| crate::exception_pending(&py)) {
         -1
     } else {
@@ -1248,7 +1439,7 @@ unsafe extern "C" fn hook_native_gc_allocate(address: usize) -> c_int {
 
 unsafe extern "C" fn hook_native_gc_track(address: usize) -> c_int {
     with_gil(|_| {
-        if crate::object::gc::native_gc_track(address) {
+        if unsafe { crate::object::gc::native_gc_track(address) } {
             0
         } else {
             -1
@@ -1286,6 +1477,14 @@ unsafe extern "C" fn hook_gc_collect() -> isize {
             }
             crate::object::gc::GcCollectStatus::ResourceError(message) => {
                 let _ = crate::raise_exception::<i64>(&_py, "MemoryError", message);
+                -1
+            }
+            crate::object::gc::GcCollectStatus::CallbackError(message) => {
+                if !crate::exception_pending(&_py)
+                    && unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null()
+                {
+                    let _ = crate::raise_exception::<i64>(&_py, "RuntimeError", message);
+                }
                 -1
             }
             crate::object::gc::GcCollectStatus::UnsupportedConcurrency => {
@@ -1344,105 +1543,281 @@ unsafe extern "C" fn hook_object_repr(obj_bits: u64) -> OwnedHandleResult {
     owned_result_from_pending(crate::molt_repr_from_obj(obj_bits))
 }
 
-fn clear_speculative_sys_lookup_exception(had_pending_exception: bool) {
-    if !had_pending_exception && with_gil(|_py| crate::exception_pending(&_py)) {
-        let _ = crate::molt_exception_clear();
-    }
+unsafe extern "C" fn hook_object_contains(container: u64, needle: u64) -> c_int {
+    with_gil(|py| {
+        let result = crate::builtins::exceptions::ExceptionValue::adopt(
+            &py,
+            crate::molt_contains(container, needle),
+        );
+        if crate::exception_pending(&py) {
+            return -1;
+        }
+        let truth = crate::is_truthy(&py, MoltObject::from_bits(result.bits()));
+        if crate::exception_pending(&py) {
+            -1
+        } else {
+            c_int::from(truth)
+        }
+    })
 }
 
-/// Resolve a borrowed attribute of the compiled `sys` module through import custody.
-///
-/// The Python-side `sys` module owns the CPython-shaped views (e.g.
-/// `sys.flags` is an attribute-carrying tuple subclass built from the raw
-/// payload dict), so ABI consumers read the module attribute rather than a
-/// duplicate raw-intrinsic lane. Returns 0 when the compiled program does not
-/// link the `sys` module or the attribute is absent.
-fn sys_module_attr_borrowed(attr: &[u8]) -> BorrowedHandleResult {
-    let had_pending_exception = with_gil(|_py| crate::exception_pending(&_py));
-    // Cache-first: PySys_GetObject is called from extension init code that
-    // may already be inside the import machinery; re-entering a full import
-    // for "sys" from there can deadlock on the import transaction and pays
-    // the dispatcher on every call. The module cache is the custody for
-    // already-initialized modules; the full import stays as the cold
-    // bootstrap fallback.
-    let name_bits = with_gil(|_py| {
-        let name_ptr = alloc_string(&_py, b"sys");
-        if name_ptr.is_null() {
-            return 0;
+unsafe extern "C" fn hook_object_is_true(obj_bits: u64) -> c_int {
+    with_gil(|py| {
+        let truth = crate::is_truthy(&py, MoltObject::from_bits(obj_bits));
+        if crate::exception_pending(&py) {
+            -1
+        } else {
+            c_int::from(truth)
         }
-        MoltObject::from_ptr(name_ptr).bits()
-    });
-    let mut module_bits = 0u64;
-    if MoltObject::from_bits(name_bits).as_ptr().is_some() {
-        module_bits = crate::builtins::modules::molt_module_cache_get(name_bits);
-        with_gil(|_py| dec_ref_bits(&_py, name_bits));
-        if MoltObject::from_bits(module_bits).as_ptr().is_none() {
-            clear_speculative_sys_lookup_exception(had_pending_exception);
-            module_bits = 0;
+    })
+}
+
+unsafe extern "C" fn hook_object_get_iter(obj_bits: u64) -> OwnedHandleResult {
+    with_gil(|py| {
+        let bits = crate::molt_iter(obj_bits);
+        if crate::exception_pending(&py) {
+            with_preserved_error(|| dec_ref_bits(&py, bits));
+            return OwnedHandleResult::error();
         }
-    }
-    if module_bits == 0 {
-        module_bits = unsafe { hook_import_module(b"sys".as_ptr(), 3) };
-    }
-    if MoltObject::from_bits(module_bits).as_ptr().is_none() {
-        clear_speculative_sys_lookup_exception(had_pending_exception);
-        return BorrowedHandleResult::missing();
-    }
-    let out = with_gil(|_py| unsafe {
-        let module_obj = MoltObject::from_bits(module_bits);
-        let Some(module_ptr) = module_obj.as_ptr() else {
-            return None;
+        if MoltObject::from_bits(bits).is_none() {
+            crate::raise_not_iterable::<()>(&py, obj_bits);
+            return OwnedHandleResult::error();
+        }
+        OwnedHandleResult::ok(bits)
+    })
+}
+
+unsafe extern "C" fn hook_object_get_item(obj_bits: u64, key_bits: u64) -> OwnedHandleResult {
+    with_gil(|py| {
+        let bits = crate::object::ops::molt_index(obj_bits, key_bits);
+        if crate::exception_pending(&py) {
+            with_preserved_error(|| dec_ref_bits(&py, bits));
+            OwnedHandleResult::error()
+        } else {
+            OwnedHandleResult::ok(bits)
+        }
+    })
+}
+
+unsafe extern "C" fn hook_object_supports_subscript(obj_bits: u64) -> c_int {
+    with_gil(|py| {
+        c_int::from(crate::object::ops::value_supports_mp_subscript(
+            &py, obj_bits,
+        ))
+    })
+}
+
+unsafe extern "C" fn hook_object_set_item(
+    obj_bits: u64,
+    key_bits: u64,
+    value: *const u64,
+) -> c_int {
+    with_gil(|py| {
+        if value.is_null() {
+            let _ = crate::object::ops::molt_del_index(obj_bits, key_bits);
+        } else {
+            let _ = crate::object::ops::molt_store_index(obj_bits, key_bits, unsafe { *value });
+        }
+        // Statement operations return a borrowed container, never an owned edge.
+        if crate::exception_pending(&py) { -1 } else { 0 }
+    })
+}
+
+unsafe extern "C" fn hook_iter_check(obj_bits: u64) -> c_int {
+    with_gil(|py| c_int::from(unsafe { crate::builtins::attr::is_iterator_bits(&py, obj_bits) }))
+}
+
+unsafe extern "C" fn hook_iter_next(iter_bits: u64, exhausted: *mut c_int) -> OwnedHandleResult {
+    with_gil(|py| {
+        // Keep the completion payload: compiled-loop unboxed iteration discards
+        // it, whereas PyIter_Send must return the exact StopIteration.value.
+        let pair = crate::molt_iter_next(iter_bits);
+        if crate::exception_pending(&py) {
+            with_preserved_error(|| dec_ref_bits(&py, pair));
+            return OwnedHandleResult::error();
+        }
+        let decoded = MoltObject::from_bits(pair).as_ptr().and_then(|ptr| unsafe {
+            (object_type_id(ptr) == TYPE_ID_TUPLE)
+                .then(|| crate::object::seq_access::tuple_pair(ptr))
+                .flatten()
+        });
+        let decoded = decoded.and_then(|(value, done)| {
+            MoltObject::from_bits(done)
+                .as_bool()
+                .map(|done| (value, done))
+        });
+        let Some((value, done)) = decoded else {
+            dec_ref_bits(&py, pair);
+            crate::raise_exception::<()>(&py, "SystemError", "invalid runtime iterator result");
+            return OwnedHandleResult::error();
         };
-        if object_type_id(module_ptr) != TYPE_ID_MODULE {
-            return None;
+        inc_ref_bits(&py, value);
+        dec_ref_bits(&py, pair);
+        unsafe { *exhausted = c_int::from(done) };
+        OwnedHandleResult::ok(value)
+    })
+}
+
+unsafe extern "C" fn hook_sequence_check(obj_bits: u64) -> c_int {
+    with_gil(|py| crate::object::ops::sequence_check_bits(&py, obj_bits))
+}
+
+unsafe extern "C" fn hook_object_length_hint(obj_bits: u64, default: isize) -> isize {
+    with_gil(|py| {
+        let default_bits = int_bits_from_i64(&py, default as i64);
+        if crate::exception_pending(&py) {
+            dec_ref_bits(&py, default_bits);
+            return -1;
         }
-        let dict_bits = module_dict_bits(module_ptr);
-        let Some(dict_ptr) = MoltObject::from_bits(dict_bits).as_ptr() else {
-            return None;
+        let result = crate::builtins::operator::molt_operator_length_hint(obj_bits, default_bits);
+        dec_ref_bits(&py, default_bits);
+        let hint = if crate::exception_pending(&py) {
+            None
+        } else {
+            let hint = crate::builtins::numbers::index_i64_integral_bits(result)
+                .and_then(|value| isize::try_from(value).ok());
+            if hint.is_none() {
+                crate::raise_exception::<()>(
+                    &py,
+                    "OverflowError",
+                    "cannot fit length hint into an index-sized integer",
+                );
+            }
+            hint
         };
-        if let Some(bits) = dict_get_str_bytes_borrowed(&_py, dict_ptr, attr) {
-            return Some(bits);
+        dec_ref_bits(&py, result);
+        hint.unwrap_or(-1)
+    })
+}
+
+unsafe extern "C" fn hook_tuple_uses_length_hint() -> bool {
+    with_gil(|py| {
+        matches!(
+            crate::object::iterable::tuple_length_hint_policy(&py),
+            crate::object::iterable::LengthHint::Consult
+        )
+    })
+}
+
+unsafe extern "C" fn hook_object_length(obj_bits: u64) -> isize {
+    with_gil(|py| {
+        let result = crate::molt_len(obj_bits);
+        let length = if crate::exception_pending(&py) {
+            None
+        } else {
+            crate::object::ops_sys::coerce_length_result(&py, result)
+        };
+        dec_ref_bits(&py, result);
+        length.unwrap_or(-1)
+    })
+}
+
+unsafe extern "C" fn hook_object_richcompare(op: i32, left: u64, right: u64) -> OwnedHandleResult {
+    use molt_obj_model::sequence_compare::RichCompareOp;
+    let Some(op) = RichCompareOp::from_i32(op) else {
+        with_gil(|py| {
+            crate::raise_exception::<()>(&py, "SystemError", "invalid rich comparison operation");
+        });
+        return OwnedHandleResult::error();
+    };
+    let result = match op {
+        RichCompareOp::Eq => crate::molt_eq(left, right),
+        RichCompareOp::Ne => crate::molt_ne(left, right),
+        RichCompareOp::Lt => crate::molt_lt(left, right),
+        RichCompareOp::Le => crate::molt_le(left, right),
+        RichCompareOp::Gt => crate::molt_gt(left, right),
+        RichCompareOp::Ge => crate::molt_ge(left, right),
+    };
+    owned_result_from_pending(result)
+}
+
+unsafe extern "C" fn hook_object_richcompare_builtin(
+    declaring_class: u64,
+    op: i32,
+    left: u64,
+    right: u64,
+) -> OwnedHandleResult {
+    use molt_obj_model::sequence_compare::RichCompareOp;
+    with_gil(|py| {
+        let Some(op) = RichCompareOp::from_i32(op) else {
+            crate::raise_exception::<()>(&py, "SystemError", "invalid rich comparison operation");
+            return OwnedHandleResult::error();
+        };
+        let Some(family) =
+            crate::object::ops_compare::builtin_families::family_for_owner(&py, declaring_class)
+        else {
+            crate::raise_exception::<()>(&py, "SystemError", "invalid declaring comparison class");
+            return OwnedHandleResult::error();
+        };
+        owned_result_from_pending(family.invoke(&py, left, right, op))
+    })
+}
+
+/// Resolve a borrowed dictionary entry from the interpreter-owned sys module.
+/// The canonical module owns its readonly dictionary for this whole lifetime;
+/// public imports may replace/delete their sys entry without releasing it.
+fn sys_module_attr_borrowed(
+    attr: &[u8],
+    policy: molt_cpython_abi::hooks::SysLookupPolicy,
+) -> BorrowedHandleResult {
+    with_gil(|py| {
+        let lookup = || unsafe {
+            let Some(module) = crate::builtins::modules::ensure_interpreter_sys_module(&py) else {
+                return if crate::exception_pending(&py) {
+                    BorrowedHandleResult::error()
+                } else {
+                    BorrowedHandleResult::missing()
+                };
+            };
+            let module_ptr = MoltObject::from_bits(module).as_ptr().unwrap();
+            let Some(name) = crate::attr_name_bits_from_bytes(&py, attr) else {
+                return BorrowedHandleResult::error();
+            };
+            let _name_owner =
+                crate::PtrDropGuard::new(MoltObject::from_bits(name).as_ptr().unwrap());
+            let value =
+                crate::object::accessors::instance_attribute_lookup(&py, module_ptr, name, None);
+
+            if crate::exception_pending(&py) {
+                if let Some(bits) = value {
+                    with_preserved_error(|| dec_ref_bits(&py, bits));
+                }
+                return BorrowedHandleResult::error();
+            }
+            value.map_or_else(BorrowedHandleResult::missing, |bits| {
+                // This temporary owner came from the shared lookup. The
+                // interpreter namespace still owns the selected dictionary edge.
+                dec_ref_bits(&py, bits);
+                BorrowedHandleResult::ok(bits)
+            })
+        };
+        if policy == molt_cpython_abi::hooks::SysLookupPolicy::PySysGetObject
+            && crate::object::ops_sys::runtime_target_at_least(&py, 3, 13)
+        {
+            let result = crate::builtins::exceptions::run_unraisable(
+                &py,
+                MoltObject::none().bits(),
+                Some("Exception ignored in PySys_GetObject()"),
+                lookup,
+            );
+            // Reporting has consumed the lookup error. PySys_GetObject's ABI
+            // boundary restores the detached incoming indicator afterward.
+            match result.decode() {
+                molt_cpython_abi::hooks::DecodedHandleResult::Error => {
+                    BorrowedHandleResult::missing()
+                }
+                _ => result,
+            }
+        } else {
+            lookup()
         }
-        // The compiled `sys` module materializes its CPython-shaped metadata
-        // views (flags, implementation, version_info, float_info, hash_info, …)
-        // lazily through its PEP 562 module `__getattr__`: the raw module dict
-        // stays cold until Python code first touches the attribute. C
-        // extensions read these through `PySys_GetObject`, which lands here
-        // BEFORE any Python code runs — e.g. numpy's `_multiarray_umath`
-        // multi-phase init reads `sys.flags` from its `Py_mod_exec` slot, and a
-        // cold miss surfaces as "cannot get sys.flags" and fails the whole
-        // C-extension import closed. Drive the module `__getattr__` (which
-        // populates the module dict as a side effect), then re-read the
-        // borrowed handle the dict now owns so the returned reference keeps the
-        // CPython borrowed-reference contract of `PySys_GetObject`.
-        let name_ptr = alloc_string(&_py, attr);
-        if name_ptr.is_null() {
-            return None;
-        }
-        let attr_bits = MoltObject::from_ptr(name_ptr).bits();
-        let materialized =
-            crate::builtins::attr::module_attr_lookup_allow_missing(&_py, module_ptr, attr_bits);
-        dec_ref_bits(&_py, attr_bits);
-        if let Some(owned_bits) = materialized {
-            // `__getattr__` stored the value into the module dict; drop the
-            // owned reference it returned and hand back the borrowed handle the
-            // dict keeps alive.
-            dec_ref_bits(&_py, owned_bits);
-        }
-        dict_get_str_bytes_borrowed(&_py, dict_ptr, attr)
-    });
-    with_gil(|_py| {
-        dec_ref_bits(&_py, module_bits);
-    });
-    if out.is_none() {
-        clear_speculative_sys_lookup_exception(had_pending_exception);
-    }
-    out.map_or_else(BorrowedHandleResult::missing, BorrowedHandleResult::ok)
+    })
 }
 
 unsafe extern "C" fn hook_sys_get_object_borrowed(
     name_data: *const u8,
     name_len: usize,
+    policy: molt_cpython_abi::hooks::SysLookupPolicy,
 ) -> BorrowedHandleResult {
     if name_data.is_null() {
         return BorrowedHandleResult::missing();
@@ -1452,7 +1827,7 @@ unsafe extern "C" fn hook_sys_get_object_borrowed(
         Ok(name) => name,
         Err(_) => return BorrowedHandleResult::missing(),
     };
-    sys_module_attr_borrowed(name.as_bytes())
+    sys_module_attr_borrowed(name.as_bytes(), policy)
 }
 
 unsafe extern "C" fn hook_eval_get_builtins_borrowed() -> BorrowedHandleResult {
@@ -1471,19 +1846,18 @@ unsafe extern "C" fn hook_eval_get_builtins_borrowed() -> BorrowedHandleResult {
                 _ => None,
             }
         };
-        let frame_builtins = crate::frame_stack_active_builtins_bits();
-        if frame_builtins != 0 {
-            return as_builtins_dict(frame_builtins).map_or_else(
-                || {
-                    let _ = crate::raise_exception::<u64>(
-                        &_py,
-                        "SystemError",
-                        "active frame has an invalid builtins dictionary",
-                    );
-                    BorrowedHandleResult::error()
-                },
-                BorrowedHandleResult::ok,
+        if let Some(frame_builtins) = crate::builtins::frames::frame_stack_active_builtins() {
+            // CPython exposes f_builtins itself, including custom mappings and
+            // explicit nonmappings. Protocol validation belongs to item lookup.
+            if frame_builtins != 0 {
+                return BorrowedHandleResult::ok(frame_builtins);
+            }
+            let _ = crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "active frame builtins namespace is unavailable",
             );
+            return BorrowedHandleResult::error();
         }
         let builtins_bits = {
             let cache = crate::builtins::exceptions::internals::module_cache(&_py);
@@ -1511,6 +1885,8 @@ unsafe extern "C" fn hook_classify_heap(bits: u64) -> u8 {
     match unsafe { object_type_id(ptr) } {
         TYPE_ID_STRING => MoltTypeTag::Str as u8,
         TYPE_ID_BYTES => MoltTypeTag::Bytes as u8,
+        crate::TYPE_ID_MEMORYVIEW => MoltTypeTag::MemoryView as u8,
+        crate::TYPE_ID_SLICE => MoltTypeTag::Slice as u8,
         TYPE_ID_BIGINT => MoltTypeTag::Int as u8,
         TYPE_ID_COMPLEX => MoltTypeTag::Complex as u8,
         TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => MoltTypeTag::List as u8,
@@ -1605,7 +1981,6 @@ unsafe extern "C" fn hook_try_mark_abi_view(bits: u64, present: c_int) -> c_int 
         if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
             return 0;
         }
-        with_gil(|py| unsafe { crate::object::gc::gc_track_if_cyclic(&py, ptr, TYPE_ID_LIST) });
     }
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
@@ -1719,9 +2094,7 @@ unsafe extern "C" fn hook_report_unraisable(
             None
         };
         let payload_bits = owned_message_bits.unwrap_or(value_bits);
-        if let Some(value_ptr) = crate::obj_from_bits(value_bits).as_ptr()
-            && unsafe { crate::object_type_id(value_ptr) } == crate::TYPE_ID_EXCEPTION
-        {
+        if crate::builtins::exceptions::exception_is_instance(&_py, value_bits) {
             if !crate::obj_from_bits(traceback_bits).is_none() {
                 let attached = crate::builtins::exceptions::molt_exception_with_traceback(
                     value_bits,
@@ -1807,114 +2180,6 @@ fn runtime_exception_field(field: u32) -> Option<crate::builtins::exceptions::Ex
 /// already shaped `_PyErr_CreateException`'s args tuple; invoke the requested
 /// managed class through the same call/bind authority as ordinary Python so
 /// custom `__new__`/`__init__` and constructor validation remain authoritative.
-unsafe extern "C" fn hook_normalize_exception(
-    requested_class_bits: u64,
-    args_bits: u64,
-    value_bits: u64,
-    has_value: c_int,
-    traceback_bits: u64,
-    has_traceback: c_int,
-    out_actual_class_bits: *mut u64,
-) -> OwnedHandleResult {
-    if out_actual_class_bits.is_null() {
-        return OwnedHandleResult::error();
-    }
-    let valid_class = with_gil(|_py| {
-        let Some(class_ptr) = crate::obj_from_bits(requested_class_bits).as_ptr() else {
-            return false;
-        };
-        (unsafe { crate::object_type_id(class_ptr) }) == crate::TYPE_ID_TYPE
-            && crate::issubclass_bits(
-                requested_class_bits,
-                crate::builtin_classes(&_py).base_exception,
-            )
-    });
-    if !valid_class {
-        with_gil(|_py| {
-            let _ = crate::raise_exception::<u64>(
-                &_py,
-                "TypeError",
-                "exceptions must derive from BaseException",
-            );
-        });
-        return OwnedHandleResult::error();
-    }
-    let existing_exception_bits = with_gil(|_py| {
-        if has_value == 0 {
-            return None;
-        }
-        let value_ptr = crate::obj_from_bits(value_bits).as_ptr()?;
-        if unsafe { crate::object_type_id(value_ptr) } != crate::TYPE_ID_EXCEPTION {
-            return None;
-        }
-        let actual_class_bits = unsafe { crate::object_class_bits(value_ptr) };
-        crate::issubclass_bits(actual_class_bits, requested_class_bits).then_some(value_bits)
-    });
-    let exception_bits = if let Some(existing_bits) = existing_exception_bits {
-        with_gil(|_py| crate::inc_ref_bits(&_py, existing_bits));
-        existing_bits
-    } else {
-        let result = unsafe { hook_object_call(requested_class_bits, args_bits, 0) };
-        let molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) = result.decode() else {
-            return OwnedHandleResult::error();
-        };
-        bits
-    };
-    with_gil(|_py| {
-        let Some(exception_ptr) = crate::obj_from_bits(exception_bits).as_ptr() else {
-            return OwnedHandleResult::error();
-        };
-        if unsafe { crate::object_type_id(exception_ptr) } != crate::TYPE_ID_EXCEPTION {
-            crate::dec_ref_bits(&_py, exception_bits);
-            let _ = crate::raise_exception::<u64>(
-                &_py,
-                "TypeError",
-                "calling an exception class did not return a BaseException instance",
-            );
-            return OwnedHandleResult::error();
-        }
-        if has_traceback != 0
-            && crate::builtins::exceptions::exception_replace_field_bits(
-                &_py,
-                exception_bits,
-                crate::builtins::exceptions::ExceptionFieldSlot::Traceback,
-                traceback_bits,
-            )
-            .is_err()
-        {
-            crate::dec_ref_bits(&_py, exception_bits);
-            return OwnedHandleResult::error();
-        }
-        // `_PyErr_SetObject` implicitly chains from the interpreter's active
-        // handled exception, not from a parallel ABI-local guess. Preserve a
-        // context explicitly supplied by a custom constructor and avoid a
-        // self-cycle when an existing matching instance is restored.
-        if crate::obj_from_bits(unsafe { crate::exception_context_bits(exception_ptr) }).is_none()
-            && let Some(context_bits) = crate::builtins::exceptions::exception_context_active_bits()
-            && context_bits != exception_bits
-            && crate::builtins::exceptions::exception_replace_field_bits(
-                &_py,
-                exception_bits,
-                crate::builtins::exceptions::ExceptionFieldSlot::Context,
-                context_bits,
-            )
-            .is_err()
-        {
-            crate::dec_ref_bits(&_py, exception_bits);
-            return OwnedHandleResult::error();
-        }
-        let actual_class_bits = unsafe { crate::object_class_bits(exception_ptr) };
-        if actual_class_bits == 0 {
-            crate::dec_ref_bits(&_py, exception_bits);
-            return OwnedHandleResult::error();
-        }
-        unsafe {
-            *out_actual_class_bits = actual_class_bits;
-        }
-        OwnedHandleResult::ok(exception_bits)
-    })
-}
-
 unsafe extern "C" fn hook_exception_set_field(
     exception_bits: u64,
     field: u32,
@@ -1965,14 +2230,16 @@ unsafe extern "C" fn hook_exception_get_field(
                 crate::exception_materialize_traceback_bits(&_py, exception_ptr)
             }
             crate::builtins::exceptions::ExceptionFieldSlot::Args => {
-                crate::exception_materialized_args_bits(&_py, exception_ptr)
+                let Some(args) = crate::exception_materialized_args_bits(&_py, exception_ptr)
+                else {
+                    return OwnedHandleResult::error();
+                };
+                args
             }
-            crate::builtins::exceptions::ExceptionFieldSlot::Dict => unsafe {
-                crate::exception_dict_bits(exception_ptr)
-            },
-            crate::builtins::exceptions::ExceptionFieldSlot::Notes => unsafe {
-                crate::exception_notes_bits(exception_ptr)
-            },
+            crate::builtins::exceptions::ExceptionFieldSlot::Dict
+            | crate::builtins::exceptions::ExceptionFieldSlot::Notes => {
+                unreachable!("runtime_exception_field admits only the public C exception fields")
+            }
         };
         if crate::exception_pending(&_py) {
             return OwnedHandleResult::error();
@@ -2012,6 +2279,42 @@ unsafe extern "C" fn hook_exception_layout_kind(exception_or_class_bits: u64) ->
     })
 }
 
+/// Native `BaseExceptionGroup.__new__` admission through the runtime group
+/// authority; the C allocator keeps the physical layout and field owners.
+unsafe extern "C" fn hook_exception_group_admit(
+    request: u32,
+    type_name: *const std::os::raw::c_char,
+    args_bits: u64,
+    message_bits: *mut u64,
+    exceptions_bits: *mut u64,
+) -> c_int {
+    if message_bits.is_null() || exceptions_bits.is_null() {
+        return -1;
+    }
+    let Some(request) = molt_cpython_abi::hooks::ExceptionGroupRequest::from_abi(request) else {
+        return -1;
+    };
+    let name = if type_name.is_null() {
+        &[][..]
+    } else {
+        unsafe { CStr::from_ptr(type_name) }.to_bytes()
+    };
+    with_gil(|_py| {
+        let Some((message, exceptions, narrow)) =
+            crate::builtins::exceptions::exception_group_admit_native(
+                &_py, request, name, args_bits,
+            )
+        else {
+            return -1;
+        };
+        unsafe {
+            message_bits.write(message);
+            exceptions_bits.write(exceptions);
+        }
+        c_int::from(narrow)
+    })
+}
+
 unsafe extern "C" fn hook_exception_snapshot(
     exception_bits: u64,
     out: *mut ExceptionSnapshot,
@@ -2027,7 +2330,9 @@ unsafe extern "C" fn hook_exception_snapshot(
         if unsafe { crate::object_type_id(exception_ptr) } != crate::TYPE_ID_EXCEPTION {
             return -1;
         }
-        let args = crate::exception_materialized_args_bits(&_py, exception_ptr);
+        let Some(args) = crate::exception_materialized_args_bits(&_py, exception_ptr) else {
+            return -1;
+        };
         let traceback = crate::exception_materialize_traceback_bits(&_py, exception_ptr);
         if crate::exception_pending(&_py) || crate::obj_from_bits(args).is_none() {
             return -1;
@@ -2076,7 +2381,12 @@ unsafe extern "C" fn hook_exception_snapshot(
             ),
             (EXCEPTION_SNAPSHOT_CAUSE, cause, &raw mut snapshot.cause),
         ] {
-            if !crate::obj_from_bits(bits).is_none() {
+            let present = if mask == EXCEPTION_SNAPSHOT_NOTES {
+                !crate::builtins::exceptions::exception_field_is_missing(bits)
+            } else {
+                !crate::obj_from_bits(bits).is_none()
+            };
+            if present {
                 snapshot.present_mask |= mask;
                 unsafe { *slot = bits };
             }
@@ -2100,19 +2410,19 @@ unsafe extern "C" fn hook_exception_commit_snapshot(
     let Some(layout_kind) = snapshot.validated_layout(None) else {
         return -1;
     };
-    let fields = snapshot.base_fields();
-    // Optional common fields use an absent bit for runtime None. Object zero
-    // is an ordinary present value; type-specific checks below still reject it
-    // where the contract requires a dict, tuple, traceback or exception.
-    if fields
+    let [dict, args, notes, traceback, context, cause] = snapshot.base_fields();
+    // Notes accept every Python object, including None. The remaining common
+    // fields normalize runtime None to absence and enforce their field types.
+    if [dict, args, traceback, context, cause]
         .into_iter()
         .flatten()
         .any(|bits| crate::obj_from_bits(bits).is_none())
     {
         return -1;
     }
-    let [dict, args, notes, traceback, context, cause] =
-        fields.map(|bits| bits.unwrap_or(MoltObject::none().bits()));
+    let [dict, args, traceback, context, cause] = [dict, args, traceback, context, cause]
+        .map(|bits| bits.unwrap_or(MoltObject::none().bits()));
+    let notes = notes.unwrap_or_else(crate::builtins::exceptions::exception_field_missing_bits);
     with_gil(|_py| {
         let Some(exception_ptr) = crate::obj_from_bits(exception_bits).as_ptr() else {
             return -1;
@@ -2134,11 +2444,7 @@ unsafe extern "C" fn hook_exception_commit_snapshot(
                 .is_some_and(|ptr| unsafe { crate::object_type_id(ptr) } == TYPE_ID_DICT);
         let valid_chain = |bits: u64| {
             crate::obj_from_bits(bits).is_none()
-                || crate::obj_from_bits(bits)
-                    .as_ptr()
-                    .is_some_and(|ptr| unsafe {
-                        crate::object_type_id(ptr) == crate::TYPE_ID_EXCEPTION
-                    })
+                || crate::builtins::exceptions::exception_is_instance(&_py, bits)
         };
         let valid_traceback = crate::obj_from_bits(traceback).is_none()
             || (crate::builtin_classes(&_py).traceback != 0
@@ -2175,6 +2481,28 @@ unsafe extern "C" fn hook_exception_commit_snapshot(
     })
 }
 
+unsafe extern "C" fn hook_object_classinfo_match(
+    operation: molt_cpython_abi::hooks::ClassInfoOperation,
+    value: u64,
+    classinfo: u64,
+) -> c_int {
+    with_gil(|py| {
+        let matched = match operation {
+            molt_cpython_abi::hooks::ClassInfoOperation::Instance => {
+                crate::isinstance_runtime(&py, value, classinfo)
+            }
+            molt_cpython_abi::hooks::ClassInfoOperation::Subclass => {
+                crate::issubclass_runtime(&py, value, classinfo)
+            }
+        };
+        if crate::exception_pending(&py) {
+            -1
+        } else {
+            c_int::from(matched)
+        }
+    })
+}
+
 unsafe extern "C" fn hook_type_is_subtype(subclass_bits: u64, class_bits: u64) -> c_int {
     with_gil(|_py| c_int::from(crate::issubclass_bits(subclass_bits, class_bits)))
 }
@@ -2186,8 +2514,12 @@ unsafe extern "C" fn hook_take_pending_exception(
     if actual_class_bits.is_null() || traceback_bits.is_null() {
         return OwnedHandleResult::error();
     }
+    unsafe {
+        *actual_class_bits = 0;
+        *traceback_bits = 0;
+    }
     let exception_bits = crate::builtins::exceptions::molt_exception_last_pending();
-    let Some(exception_ptr) = crate::obj_from_bits(exception_bits).as_ptr() else {
+    let Some(_) = crate::obj_from_bits(exception_bits).as_ptr() else {
         return OwnedHandleResult::error();
     };
     // Detach the original pending edge while lazily materializing traceback.
@@ -2195,18 +2527,12 @@ unsafe extern "C" fn hook_take_pending_exception(
     // mistaken for the original indicator or cleared at the end.
     let _ = crate::builtins::exceptions::molt_exception_clear();
     let captured = with_gil(|_py| {
-        if unsafe { crate::object_type_id(exception_ptr) } != crate::TYPE_ID_EXCEPTION {
-            return None;
-        }
-        let class_bits = unsafe { crate::object_class_bits(exception_ptr) };
-        if class_bits == 0 {
-            return None;
-        }
-        let trace_bits = crate::exception_materialize_traceback_bits(&_py, exception_ptr);
+        let class = crate::builtins::exceptions::exception_class(&_py, exception_bits)?;
+        let trace = crate::builtins::exceptions::exception_traceback(&_py, exception_bits)?;
         if crate::exception_pending(&_py) {
             return None;
         }
-        Some((class_bits, trace_bits))
+        Some((class.into_bits(), trace.into_bits()))
     });
     let Some((class_bits, trace_bits)) = captured else {
         with_gil(|_py| crate::dec_ref_bits(&_py, exception_bits));
@@ -2223,12 +2549,31 @@ unsafe extern "C" fn hook_take_pending_exception(
     OwnedHandleResult::ok(exception_bits)
 }
 
+unsafe extern "C" fn hook_pending_exception_class() -> molt_cpython_abi::hooks::PendingExceptionClass
+{
+    with_gil(|py| crate::builtins::exceptions::pending_exception_class(&py))
+}
+
 unsafe extern "C" fn hook_clear_pending_exception() {
     let exception_bits = crate::builtins::exceptions::molt_exception_clear();
     with_gil(|_py| {
         if !crate::obj_from_bits(exception_bits).is_none() {
             crate::dec_ref_bits(&_py, exception_bits);
         }
+    });
+}
+
+unsafe extern "C" fn hook_with_preserved_pending_exception(
+    callback: unsafe extern "C" fn(*mut std::ffi::c_void),
+    context: *mut std::ffi::c_void,
+) {
+    with_gil(|py| {
+        crate::builtins::exceptions::with_saved_raised_exception(&py, || {
+            // The ABI trampoline catches Rust unwind and drains cleanup errors
+            // before returning, while the exact raised owner remains detached.
+            unsafe { callback(context) };
+            true
+        });
     });
 }
 
@@ -2307,6 +2652,23 @@ unsafe extern "C" fn hook_number_unary_op(op: u32, a_bits: u64) -> OwnedHandleRe
         x if x == NumberUnaryOp::Positive as u32 => crate::c_api::PyNumber_Positive(a_bits),
         x if x == NumberUnaryOp::Absolute as u32 => crate::c_api::PyNumber_Absolute(a_bits),
         x if x == NumberUnaryOp::Invert as u32 => crate::c_api::PyNumber_Invert(a_bits),
+        x if x == NumberUnaryOp::Float as u32 => crate::molt_float_from_obj(a_bits),
+        x if x == NumberUnaryOp::FloatAsDouble as u32 => with_gil(|py| {
+            crate::builtins::numbers::float_as_double(&py, a_bits).map_or_else(
+                || MoltObject::none().bits(),
+                |value| crate::object::ops::float_result_bits(&py, value),
+            )
+        }),
+        x if x == NumberUnaryOp::Index as u32 => with_gil(|py| {
+            let message = format!(
+                "'{}' object cannot be interpreted as an integer",
+                crate::type_name(&py, crate::obj_from_bits(a_bits))
+            );
+            crate::builtins::numbers::index_bigint_from_obj(&py, a_bits, &message).map_or_else(
+                || MoltObject::none().bits(),
+                |value| crate::builtins::numbers::int_bits_from_bigint(&py, value),
+            )
+        }),
         _ => with_gil(|_py| {
             crate::raise_exception::<u64>(
                 &_py,
@@ -2334,6 +2696,9 @@ unsafe extern "C" fn hook_number_power(
 unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
     use molt_cpython_abi::DictOp;
     match op {
+        x if x == DictOp::MappingKeys as u32 => crate::c_api::PyMapping_Keys(dict_bits),
+        x if x == DictOp::MappingValues as u32 => crate::c_api::PyMapping_Values(dict_bits),
+        x if x == DictOp::MappingItems as u32 => crate::c_api::PyMapping_Items(dict_bits),
         x if x == DictOp::Copy as u32 => crate::c_api::PyDict_Copy(dict_bits),
         x if x == DictOp::Keys as u32 => crate::c_api::PyDict_Keys(dict_bits),
         x if x == DictOp::Values as u32 => crate::c_api::PyDict_Values(dict_bits),
@@ -2359,7 +2724,6 @@ unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
 unsafe extern "C" fn hook_set_op(op: u32, set_bits: u64) -> OwnedHandleResult {
     use molt_cpython_abi::SetOp;
     let bits = match op {
-        x if x == SetOp::FrozenNew as u32 => crate::c_api::PyFrozenSet_New(set_bits),
         x if x == SetOp::Pop as u32 => crate::c_api::PySet_Pop(set_bits),
         x if x == SetOp::Clear as u32 => {
             let rc = crate::c_api::PySet_Clear(set_bits);
@@ -2389,10 +2753,14 @@ unsafe extern "C" fn hook_set_op(op: u32, set_bits: u64) -> OwnedHandleResult {
 // unhashable keys, SystemError for non-sets). These hooks are a thin routing
 // layer; they perform NO set logic themselves.
 
-/// `PySet_New(iterable)` — 0 (empty) or a populated set. Returns handle bits, or
-/// 0 with a pending exception on error.
-unsafe extern "C" fn hook_set_new(iterable_bits: u64) -> u64 {
-    crate::c_api::PySet_New(iterable_bits)
+/// One tagged constructor ingress for both mutable and frozen sets.
+unsafe extern "C" fn hook_set_new(iterable: BorrowedHandleResult, frozen: bool) -> u64 {
+    let iterable = match iterable.decode() {
+        DecodedHandleResult::Ok(bits) => Some(bits),
+        DecodedHandleResult::Missing => None,
+        DecodedHandleResult::Error => return 0,
+    };
+    crate::c_api::new_set_from_iterable(iterable, frozen)
 }
 
 /// `PySet_Size(anyset)` — element count, or -1 with a pending exception.
@@ -2418,16 +2786,225 @@ unsafe extern "C" fn hook_set_discard(set_bits: u64, key_bits: u64) -> c_int {
     crate::c_api::PySet_Discard(set_bits, key_bits)
 }
 
-/// `PyObject_Dir(o)` — return `dir(o)` as a list. Routes to the runtime dir
-/// authority (`molt_object_dir_method`), which walks the MRO / `__dict__` /
-/// `__dir__`. Returns 0 with a pending exception on error so the ABI side fails
-/// closed instead of fabricating an empty list.
-unsafe extern "C" fn hook_object_dir(obj_bits: u64) -> u64 {
-    let result = crate::molt_object_dir_method(obj_bits);
-    if with_gil(|_py| crate::exception_pending(&_py)) {
-        return 0;
-    }
-    result
+/// dir() owns special lookup, result materialization and sorting for both
+/// managed objects and existing foreign wrappers. Errors cross as owned status.
+unsafe extern "C" fn hook_object_dir(obj_bits: u64) -> OwnedHandleResult {
+    owned_result_from_pending(crate::molt_dir_builtin(obj_bits))
+}
+
+unsafe extern "C" fn hook_object_bytes(obj_bits: u64, special: bool) -> OwnedHandleResult {
+    with_gil(|py| {
+        owned_result_from_pending(crate::object::ops_bytes::bytes_from_object(
+            &py, obj_bits, special,
+        ))
+    })
+}
+
+unsafe extern "C" fn hook_memoryview_new(bits: u64) -> OwnedHandleResult {
+    owned_result_from_pending(crate::object::ops_memoryview::molt_memoryview_new(bits))
+}
+unsafe extern "C" fn hook_memoryview_release(bits: u64) -> OwnedHandleResult {
+    owned_result_from_pending(crate::object::ops_memoryview::molt_memoryview_release(bits))
+}
+unsafe extern "C" fn hook_memoryview_from_buffer(
+    view: *const AbiMoltBufferView,
+    format: *const std::ffi::c_char,
+    lease: *const std::ffi::c_void,
+) -> OwnedHandleResult {
+    with_gil(|py| {
+        if view.is_null() {
+            crate::raise_exception::<u64>(&py, "SystemError", "null memoryview descriptor");
+            return OwnedHandleResult::error();
+        }
+        owned_result_from_pending(unsafe {
+            crate::object::memoryview::from_native_descriptor(
+                &py,
+                &*view,
+                format,
+                lease
+                    .cast::<molt_cpython_abi::api::memory::MemoryViewLease>()
+                    .as_ref()
+                    .cloned(),
+            )
+        })
+    })
+}
+unsafe extern "C" fn hook_memoryview_snapshot(
+    bits: u64,
+    out: *mut AbiMoltBufferView,
+    native_base: *mut *mut molt_cpython_abi::abi_types::PyObject,
+    format: *mut *const u8,
+    format_len: *mut usize,
+) -> i32 {
+    with_gil(|py| unsafe {
+        let clear_outputs = || {
+            if !out.is_null() {
+                *out = AbiMoltBufferView::default();
+            }
+            if !native_base.is_null() {
+                *native_base = std::ptr::null_mut();
+            }
+            if !format.is_null() {
+                *format = std::ptr::null();
+            }
+            if !format_len.is_null() {
+                *format_len = 0;
+            }
+        };
+        let fail = |message| {
+            clear_outputs();
+            if !crate::exception_pending(&py) {
+                crate::raise_exception::<u64>(&py, "SystemError", message);
+            }
+            -1
+        };
+        if out.is_null() || native_base.is_null() || format.is_null() || format_len.is_null() {
+            return fail("null memoryview snapshot output");
+        }
+        let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
+            return fail("memoryview snapshot requires a memoryview");
+        };
+        if crate::object_type_id(ptr) != crate::TYPE_ID_MEMORYVIEW {
+            return fail("memoryview snapshot requires a memoryview");
+        }
+        if crate::memoryview_released(ptr) {
+            clear_outputs();
+            return 1;
+        }
+        let Some(format_ptr) = crate::obj_from_bits(crate::memoryview_format_bits(ptr))
+            .as_ptr()
+            .filter(|ptr| crate::object_type_id(*ptr) == TYPE_ID_STRING)
+        else {
+            return fail("memoryview has no valid format");
+        };
+        if crate::object::ops_memoryview::molt_buffer_export(bits, out.cast()) != 0 {
+            return fail("memoryview snapshot export failed");
+        }
+        *native_base = (*crate::memoryview_ptr(ptr))
+            .native_lease
+            .as_ref()
+            .map_or(std::ptr::null_mut(), |lease| lease.owner());
+        *format = crate::string_bytes(format_ptr);
+        *format_len = crate::string_len(format_ptr);
+        0
+    })
+}
+
+/// C type namespaces share the runtime declaration and raw MRO authorities.
+unsafe extern "C" fn hook_type_metadata(
+    type_bits: u64,
+    field: molt_cpython_abi::hooks::TypeMetadataField,
+) -> OwnedHandleResult {
+    use molt_cpython_abi::hooks::TypeMetadataField;
+    with_gil(|py| unsafe {
+        let Some(class) = crate::obj_from_bits(type_bits)
+            .as_ptr()
+            .filter(|ptr| object_type_id(*ptr) == crate::TYPE_ID_TYPE)
+        else {
+            crate::raise_exception::<u64>(&py, "SystemError", "expected runtime type");
+            return OwnedHandleResult::error();
+        };
+        let value = match field {
+            TypeMetadataField::Name => crate::class_name_bits(class),
+            TypeMetadataField::QualName => {
+                let name = crate::class_qualname_bits(class);
+                if name == 0 {
+                    crate::class_name_bits(class)
+                } else {
+                    name
+                }
+            }
+            TypeMetadataField::Bases | TypeMetadataField::Mro => {
+                let tuple = if field == TypeMetadataField::Bases {
+                    crate::class_bases_bits(class)
+                } else {
+                    crate::class_mro_bits(class)
+                };
+                if !crate::obj_from_bits(tuple)
+                    .as_ptr()
+                    .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_TUPLE)
+                {
+                    crate::raise_exception::<u64>(
+                        &py,
+                        "SystemError",
+                        "runtime type hierarchy is not sealed",
+                    );
+                    return OwnedHandleResult::error();
+                }
+                tuple
+            }
+            TypeMetadataField::SemanticFlags => {
+                let flags = crate::object::class_storage::ClassSemanticPolicy::of(&py, class)
+                    .cpython_flags();
+                crate::MoltObject::from_int(flags as i64).bits()
+            }
+            TypeMetadataField::SolidOwner => {
+                match crate::object::class_layout::class_solid_owner(&py, type_bits) {
+                    Ok(owner) => owner,
+                    Err(()) => return OwnedHandleResult::error(),
+                }
+            }
+            TypeMetadataField::Base => {
+                match crate::object::class_layout::class_best_base(&py, class) {
+                    Ok(Some(base)) => base.direct,
+                    Ok(None) => return OwnedHandleResult::missing(),
+                    Err(()) => return OwnedHandleResult::error(),
+                }
+            }
+        };
+        inc_ref_bits(&py, value);
+        OwnedHandleResult::ok(value)
+    })
+}
+
+unsafe extern "C" fn hook_type_dict_borrowed(type_bits: u64) -> BorrowedHandleResult {
+    with_gil(|py| unsafe {
+        let Some(class) = crate::obj_from_bits(type_bits)
+            .as_ptr()
+            .filter(|ptr| object_type_id(*ptr) == crate::TYPE_ID_TYPE)
+        else {
+            crate::raise_exception::<u64>(&py, "SystemError", "expected runtime type");
+            return BorrowedHandleResult::error();
+        };
+        if !crate::builtins::methods::publish_builtin_class_methods(&py, type_bits) {
+            return BorrowedHandleResult::error();
+        }
+        let dict = crate::class_dict_bits(class);
+        if !crate::obj_from_bits(dict)
+            .as_ptr()
+            .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT)
+        {
+            crate::raise_exception::<u64>(&py, "SystemError", "runtime type has no namespace");
+            return BorrowedHandleResult::error();
+        }
+        BorrowedHandleResult::ok(dict)
+    })
+}
+
+unsafe extern "C" fn hook_type_lookup_borrowed(
+    type_bits: u64,
+    name_bits: u64,
+    search_mro: u8,
+) -> BorrowedHandleResult {
+    with_gil(|py| unsafe {
+        let Some(class) = crate::obj_from_bits(type_bits)
+            .as_ptr()
+            .filter(|ptr| object_type_id(*ptr) == crate::TYPE_ID_TYPE)
+        else {
+            crate::raise_exception::<u64>(&py, "SystemError", "expected runtime type");
+            return BorrowedHandleResult::error();
+        };
+        let value = if search_mro != 0 {
+            crate::builtins::attr::class_namespace_lookup_mro(&py, class, name_bits)
+        } else {
+            crate::builtins::attr::class_namespace_lookup_raw(&py, class, name_bits)
+        };
+        if crate::exception_pending(&py) {
+            BorrowedHandleResult::error()
+        } else {
+            value.map_or_else(BorrowedHandleResult::missing, BorrowedHandleResult::ok)
+        }
+    })
 }
 
 unsafe extern "C" fn hook_module_get_dict_borrowed(module_bits: u64) -> BorrowedHandleResult {
@@ -2458,14 +3035,93 @@ unsafe extern "C" fn hook_module_get_dict_borrowed(module_bits: u64) -> Borrowed
     })
 }
 
+/// CPython import_add_module: an owned current public module, or a raw new
+/// module published before its caller populates it. This operation neither
+/// adopts a compiler LoaderNamespace nor copies public values into the private
+/// cache. Both PyImport_AddModule and legacy extension replay use this primitive.
+fn import_add_module_owned(
+    py: &crate::PyToken<'_>,
+    name_bits: u64,
+    on_admitted: impl FnOnce(u64),
+) -> Result<u64, u64> {
+    let sys = crate::builtins::modules::interpreter_sys_module(py);
+
+    let Some(sys) = sys else {
+        return Err(crate::raise_exception::<u64>(
+            py,
+            "SystemError",
+            "sys.modules is unavailable",
+        ));
+    };
+    let modules = crate::builtins::modules::sys_modules_dict_bits(py, sys);
+    if crate::exception_pending(py) {
+        if let Some(bits) = modules {
+            with_preserved_error(|| crate::dec_ref_bits(py, bits));
+        }
+        return Err(MoltObject::none().bits());
+    }
+    let Some(modules) = modules else {
+        return Err(crate::raise_exception::<u64>(
+            py,
+            "SystemError",
+            "sys.modules is unavailable",
+        ));
+    };
+    let result = (|| {
+        let Some(modules_ptr) = crate::obj_from_bits(modules).as_ptr() else {
+            return Err(crate::raise_exception::<u64>(
+                py,
+                "SystemError",
+                "sys.modules is not a dictionary",
+            ));
+        };
+        let existing = unsafe { dict_get_in_place(py, modules_ptr, name_bits) };
+        if crate::exception_pending(py) {
+            return Err(MoltObject::none().bits());
+        }
+        if let Some(bits) = existing
+            && crate::obj_from_bits(bits)
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_MODULE)
+        {
+            crate::inc_ref_bits(py, bits);
+            on_admitted(bits);
+            return Ok(bits);
+        }
+        // Allocate a fresh physical module, independent of a surrounding
+        // compiler execution context. Non-module public values are replaced.
+        let ptr = alloc_module_obj(py, name_bits);
+        if ptr.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        let bits = MoltObject::from_ptr(ptr).bits();
+        match unsafe { crate::object::ops::dict_set_deferred(py, modules_ptr, name_bits, bits) } {
+            Ok(retired) => {
+                on_admitted(bits);
+                // The constructor owner pins the result while displaced
+                // values are released outside the dictionary mutation.
+                with_preserved_error(|| drop(retired));
+                Ok(bits)
+            }
+            Err(()) => {
+                with_preserved_error(|| crate::dec_ref_bits(py, bits));
+                Err(MoltObject::none().bits())
+            }
+        }
+    })();
+    with_preserved_error(|| crate::dec_ref_bits(py, modules));
+    result
+}
+
 unsafe extern "C" fn hook_import_add_module_borrowed(
     name_data: *const u8,
     name_len: usize,
 ) -> BorrowedHandleResult {
     if name_data.is_null() {
-        return with_gil(|_py| {
+        return with_gil(|py| {
+            let py = &py;
             let _ = crate::raise_exception::<u64>(
-                &_py,
+                py,
                 "SystemError",
                 "PyImport_AddModule requires a module name",
             );
@@ -2473,78 +3129,23 @@ unsafe extern "C" fn hook_import_add_module_borrowed(
         });
     }
     let name = unsafe { std::slice::from_raw_parts(name_data, name_len) };
-    with_gil(|_py| {
-        let sys_bits = {
-            let cache = crate::builtins::exceptions::internals::module_cache(&_py);
-            cache.lock().unwrap().get("sys").copied()
-        };
-        let Some(sys_bits) = sys_bits else {
-            let _ =
-                crate::raise_exception::<u64>(&_py, "SystemError", "sys.modules is unavailable");
-            return BorrowedHandleResult::error();
-        };
-        let Some(modules_bits) = crate::builtins::modules::sys_modules_dict_bits(&_py, sys_bits)
-        else {
-            if !crate::exception_pending(&_py) {
-                let _ = crate::raise_exception::<u64>(
-                    &_py,
-                    "SystemError",
-                    "sys.modules is unavailable",
-                );
-            }
-            return BorrowedHandleResult::error();
-        };
-        let Some(modules_ptr) = crate::obj_from_bits(modules_bits).as_ptr() else {
-            crate::dec_ref_bits(&_py, modules_bits);
-            let _ = crate::raise_exception::<u64>(
-                &_py,
-                "SystemError",
-                "sys.modules is not a dictionary",
-            );
-            return BorrowedHandleResult::error();
-        };
-        let name_ptr = alloc_string(&_py, name);
+    with_gil(|py| {
+        let py = &py;
+        let name_ptr = alloc_string(py, name);
         if name_ptr.is_null() {
-            crate::dec_ref_bits(&_py, modules_bits);
             return BorrowedHandleResult::error();
         }
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let existing = unsafe { dict_get_in_place(&_py, modules_ptr, name_bits) };
-        if let Some(existing_bits) = existing
-            && crate::obj_from_bits(existing_bits)
-                .as_ptr()
-                .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_MODULE)
-        {
-            crate::dec_ref_bits(&_py, name_bits);
-            crate::dec_ref_bits(&_py, modules_bits);
-            return BorrowedHandleResult::ok(existing_bits);
+        let result = import_add_module_owned(py, name_bits, |_| {});
+        with_preserved_error(|| crate::dec_ref_bits(py, name_bits));
+        match result {
+            Ok(bits) => {
+                // The C API borrows the dictionary's reference.
+                with_preserved_error(|| crate::dec_ref_bits(py, bits));
+                BorrowedHandleResult::ok(bits)
+            }
+            Err(_) => BorrowedHandleResult::error(),
         }
-        let module_ptr = alloc_module_obj(&_py, name_bits);
-        if module_ptr.is_null() {
-            crate::dec_ref_bits(&_py, name_bits);
-            crate::dec_ref_bits(&_py, modules_bits);
-            return BorrowedHandleResult::error();
-        }
-        let module_bits = MoltObject::from_ptr(module_ptr).bits();
-        // `dict_set_in_place` is transactional for the mapping: every
-        // fallible hash/equality/rebuild/reserve step completes before it
-        // changes order/value storage. Once mutation starts, capacity is
-        // reserved and publication is infallible. Therefore a pending error
-        // means the prior non-module value (or absence) is still exact; never
-        // run a second fallible dict operation under that error indicator.
-        unsafe { dict_set_in_place(&_py, modules_ptr, name_bits, module_bits) };
-        if crate::exception_pending(&_py) {
-            crate::dec_ref_bits(&_py, module_bits);
-            crate::dec_ref_bits(&_py, name_bits);
-            crate::dec_ref_bits(&_py, modules_bits);
-            return BorrowedHandleResult::error();
-        }
-        // sys.modules owns the published edge. Drop constructor temporaries and
-        // return the dictionary's borrowed handle.
-        crate::dec_ref_bits(&_py, module_bits);
-        crate::dec_ref_bits(&_py, name_bits);
-        crate::dec_ref_bits(&_py, modules_bits);
-        BorrowedHandleResult::ok(module_bits)
     })
 }
 
@@ -2606,8 +3207,15 @@ unsafe extern "C" fn hook_module_capi_register(
     module_def_ptr: usize,
     module_state_size: u64,
     defer_state: bool,
+    callbacks: molt_cpython_abi::hooks::ModuleGcCallbacks,
 ) -> i32 {
-    crate::c_api::register_module_capi(module_bits, module_def_ptr, module_state_size, defer_state)
+    crate::c_api::register_module_capi_with_callbacks(
+        module_bits,
+        module_def_ptr,
+        module_state_size,
+        defer_state,
+        callbacks,
+    )
 }
 
 unsafe extern "C" fn hook_module_capi_get_state(module_bits: u64) -> *mut u8 {
@@ -2936,69 +3544,90 @@ pub unsafe extern "C" fn molt_module_add_py_cfunction_bytes(
     })
 }
 
+/// Publish the native failure before returning to Python. All native call,
+/// attribute and descriptor paths share this error boundary. A malformed native
+/// failure must produce SystemError rather than appear to be a missing value.
+pub(crate) fn propagate_native_failure(py: &crate::PyToken<'_>, operation: &str) {
+    if !transfer_pending_cpython_exception() && !crate::exception_pending(py) {
+        crate::raise_exception::<()>(
+            py,
+            "SystemError",
+            &format!("{operation} failed without an exception"),
+        );
+    }
+}
+
 pub(crate) fn transfer_pending_cpython_exception() -> bool {
     let Some(error) = molt_cpython_abi::api::errors::take_current_error() else {
         return false;
     };
-    let value_bits = if error.value.is_null() {
-        MoltObject::none().bits()
-    } else {
-        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(error.value) }
-            .unwrap_or_else(|| MoltObject::none().bits())
-    };
-    let traceback_bits = if error.traceback.is_null() {
-        MoltObject::none().bits()
-    } else {
-        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(error.traceback) }
-            .unwrap_or_else(|| MoltObject::none().bits())
-    };
-    let transferred = with_gil(|_py| {
-        if let Some(value_ptr) = crate::obj_from_bits(value_bits).as_ptr()
-            && unsafe { crate::object_type_id(value_ptr) } == crate::TYPE_ID_EXCEPTION
-        {
-            if crate::builtins::exceptions::exception_replace_field_bits(
-                &_py,
-                value_bits,
-                crate::builtins::exceptions::ExceptionFieldSlot::Traceback,
-                traceback_bits,
-            )
-            .is_err()
-            {
-                dec_ref_bits(&_py, value_bits);
-                if !crate::obj_from_bits(traceback_bits).is_none() {
-                    dec_ref_bits(&_py, traceback_bits);
-                }
-                let _ = crate::raise_exception::<u64>(
-                    &_py,
+    let transferred = with_gil(|py| {
+        use crate::builtins::exceptions::{
+            ExceptionFieldSlot, ExceptionValue, exception_is_instance, exception_replace_field_bits,
+        };
+        let value = if error.value.is_null() {
+            None
+        } else {
+            unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(error.value) }
+                .map(|bits| ExceptionValue::adopt(&py, bits))
+        };
+        let Some(value) = value else {
+            if !crate::exception_pending(&py) {
+                crate::raise_exception::<()>(
+                    &py,
                     "SystemError",
-                    "C extension supplied an invalid traceback for its pending exception",
+                    "C error indicator has no normalized exception instance",
                 );
-                return false;
             }
-            // Record through the canonical exception transition so an
-            // already-pending runtime error becomes implicit context instead
-            // of being silently overwritten by the C indicator transfer.
-            crate::record_exception(&_py, value_ptr);
-            dec_ref_bits(&_py, value_bits);
-            if !crate::obj_from_bits(traceback_bits).is_none() {
-                dec_ref_bits(&_py, traceback_bits);
+            return false;
+        };
+        if !exception_is_instance(&py, value.bits()) {
+            crate::raise_exception::<()>(
+                &py,
+                "SystemError",
+                "C error indicator has no normalized exception instance",
+            );
+            return false;
+        }
+        let trace = if error.traceback.is_null() {
+            Some(ExceptionValue::pin(&py, MoltObject::none().bits()))
+        } else {
+            unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(error.traceback) }
+                .map(|bits| ExceptionValue::adopt(&py, bits))
+        };
+        let Some(trace) = trace else {
+            if !crate::exception_pending(&py) {
+                crate::raise_exception::<()>(
+                    &py,
+                    "SystemError",
+                    "C exception traceback projection failed",
+                );
             }
-            return true;
+            return false;
+        };
+        if let Err(message) = exception_replace_field_bits(
+            &py,
+            value.bits(),
+            ExceptionFieldSlot::Traceback,
+            trace.bits(),
+        ) {
+            if !crate::exception_pending(&py) {
+                crate::raise_exception::<()>(&py, "SystemError", message);
+            }
+            return false;
         }
-        if !crate::obj_from_bits(value_bits).is_none() {
-            dec_ref_bits(&_py, value_bits);
-        }
-        if !crate::obj_from_bits(traceback_bits).is_none() {
-            dec_ref_bits(&_py, traceback_bits);
-        }
-        let _ = crate::raise_exception::<u64>(
-            &_py,
-            "SystemError",
-            "C error indicator did not contain a normalized runtime exception instance",
-        );
-        false
+        // This is transport of an already-normalized C indicator, not a new
+        // Python raise site. Preserve its context and traceback exactly.
+        let bits = value.into_bits();
+        let mut raised = Some(match crate::current_task_key() {
+            Some(task) => crate::builtins::exceptions::RaisedSnapshot::Task(task, bits),
+            None => crate::builtins::exceptions::RaisedSnapshot::Thread(bits),
+        });
+        crate::builtins::exceptions::resolve_raised(&py, &mut raised);
+        true
     });
-    transferred || with_gil(|_py| crate::exception_pending(&_py))
+    molt_cpython_abi::api::errors::with_preserved_error(|| drop(error));
+    transferred || with_gil(|py| crate::exception_pending(&py))
 }
 
 fn cpython_error_is_pending() -> bool {
@@ -3008,56 +3637,39 @@ fn cpython_error_is_pending() -> bool {
 
 struct NativePendingSnapshot {
     c_error: Option<molt_cpython_abi::api::errors::OwnedCError>,
-    runtime_error_bits: Option<u64>,
+    runtime_error: Option<crate::builtins::exceptions::RaisedSnapshot>,
 }
 
 impl NativePendingSnapshot {
     fn has_error(&self) -> bool {
-        self.c_error.is_some() || self.runtime_error_bits.is_some()
+        self.c_error.is_some()
+            || !matches!(
+                self.runtime_error,
+                None | Some(crate::builtins::exceptions::RaisedSnapshot::None)
+            )
     }
 }
 
 fn take_native_pending_snapshot() -> NativePendingSnapshot {
     let c_error = molt_cpython_abi::api::errors::take_current_error();
-    let runtime_error_bits = with_gil(|_py| {
-        if !crate::exception_pending(&_py) {
-            return None;
-        }
-        let bits = crate::exception_last_bits_noinc(&_py)?;
-        crate::inc_ref_bits(&_py, bits);
-        crate::clear_exception(&_py);
-        Some(bits)
-    });
+    let runtime_error = with_gil(|py| Some(crate::builtins::exceptions::take_raised(&py)));
     NativePendingSnapshot {
         c_error,
-        runtime_error_bits,
+        runtime_error,
     }
 }
 
-fn restore_native_pending_snapshot(snapshot: NativePendingSnapshot) {
+fn restore_native_pending_snapshot(mut snapshot: NativePendingSnapshot) {
     // Discard any destructor/conversion failure produced while the original
     // channels were detached, then restore the exact originals in their
     // respective authorities.
-    drop(molt_cpython_abi::api::errors::take_current_error());
-    with_gil(|_py| {
-        crate::clear_exception(&_py);
-        if let Some(bits) = snapshot.runtime_error_bits {
-            if let Some(ptr) = crate::obj_from_bits(bits).as_ptr() {
-                crate::record_exception(&_py, ptr);
-            }
-            crate::dec_ref_bits(&_py, bits);
-        }
-    });
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     if let Some(error) = snapshot.c_error {
         molt_cpython_abi::api::errors::restore_current_error_exact(error);
     }
-}
-
-pub(crate) fn with_preserved_native_error<R>(cleanup: impl FnOnce() -> R) -> R {
-    let pending = take_native_pending_snapshot();
-    let result = cleanup();
-    restore_native_pending_snapshot(pending);
-    result
+    with_gil(|py| {
+        crate::builtins::exceptions::resolve_raised(&py, &mut snapshot.runtime_error);
+    });
 }
 
 fn raise_native_result_with_error(message: &str) -> i64 {
@@ -3144,16 +3756,16 @@ impl CExtIngress {
 
 impl Drop for CExtIngress {
     fn drop(&mut self) {
-        let pending = take_native_pending_snapshot();
-        let owned = if self.promoted.is_empty() {
-            &self.inline[..self.inline_len]
-        } else {
-            self.promoted.as_slice()
-        };
-        for &view in owned {
-            unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
-        }
-        restore_native_pending_snapshot(pending);
+        with_preserved_error(|| {
+            let owned = if self.promoted.is_empty() {
+                &self.inline[..self.inline_len]
+            } else {
+                self.promoted.as_slice()
+            };
+            for &view in owned {
+                unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
+            }
+        });
     }
 }
 
@@ -3238,20 +3850,27 @@ fn cext_trampoline_key() -> u64 {
     )
 }
 
+/// Recognize a published C wrapper by its canonical executable identity.
+/// Callers must provide a live function object; public names are irrelevant.
+pub(crate) unsafe fn is_cext_callable(function: *mut u8) -> bool {
+    crate::builtins::functions::runtime_callable_represents_symbol(
+        unsafe { crate::function_fn_ptr(function) },
+        unsafe { crate::function_trampoline_ptr(function) },
+        cext_trampoline_key(),
+    )
+}
+
 /// Bind runtime argument owners to the same C convention authority used by
 /// PyObject_Call/vectorcall, without inventing a Python parameter signature.
-pub(crate) unsafe fn try_call_cext_with_keywords(
+/// Own exactly one invocation and acquire execution custody only if absent.
+pub(crate) unsafe fn try_call_cext(
     py: &crate::PyToken<'_>,
     function: *mut u8,
     args: &[u64],
     keyword_names: &[u64],
     keyword_values: &[u64],
 ) -> Option<u64> {
-    if !crate::builtins::functions::runtime_callable_represents_symbol(
-        unsafe { crate::function_fn_ptr(function) },
-        unsafe { crate::function_trampoline_ptr(function) },
-        cext_trampoline_key(),
-    ) {
+    if !unsafe { is_cext_callable(function) } {
         return None;
     }
     let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(py) else {
@@ -3543,32 +4162,73 @@ unsafe extern "C" fn hook_register_c_function(
                     .fetch_or_flags(HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE);
             }
 
-            // Stash __name__ on the function dict so repr() and tracebacks
-            // report the C extension's actual function name.
+            let public_name = String::from_utf8_lossy(name_bytes);
+            let receiver = (!self_is_null).then_some(self_bits);
+            let resolve_owner = || -> Result<Option<u64>, ()> {
+                use crate::object::class_layout::{
+                    real_class_view, real_type_bits, try_is_real_instance,
+                };
+                let Some(bits) = receiver else {
+                    return Ok(None);
+                };
+                if try_is_real_instance(&_py, bits, crate::builtin_classes(&_py).module)? {
+                    return Ok(None);
+                }
+                let managed_class = MoltObject::from_bits(bits)
+                    .as_ptr()
+                    .is_some_and(|pointer| object_type_id(pointer) == crate::TYPE_ID_TYPE);
+                if managed_class || real_class_view(bits)?.is_some() {
+                    inc_ref_bits(&_py, bits);
+                    Ok(Some(bits))
+                } else {
+                    real_type_bits(&_py, bits).map(Some)
+                }
+            };
+            let owner = match resolve_owner() {
+                Ok(owner) => owner,
+                Err(()) => {
+                    with_preserved_error(|| {
+                        dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits())
+                    });
+                    propagate_native_failure(&_py, "native callable receiver type");
+                    return 0;
+                }
+            };
+            let owner_guard = owner.map(|bits| {
+                crate::PtrDropGuard::new(
+                    MoltObject::from_bits(bits)
+                        .as_ptr()
+                        .expect("owned callable class"),
+                )
+            });
+            let spec = crate::builtins::functions::native_callable::NativeCallableSpec {
+                kind: if dispatch_kind == CFunctionConvention::Method {
+                    crate::builtins::functions::native_callable::NativeCallableKind::CMethod
+                } else {
+                    crate::builtins::functions::native_callable::NativeCallableKind::Function
+                },
+                owner,
+                name: Some(&public_name),
+                self_bits: None,
+                cache: None,
+                text_signature: None,
+            };
+            let configured = crate::builtins::functions::native_callable::configure_native_callable(
+                &_py, func_ptr, spec,
+            );
+            // Configuration has retained its descriptor edge or copied the
+            // qualified name. The C closure below separately owns self_bits.
+            with_preserved_error(|| drop(owner_guard));
+            if !configured {
+                dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
+                return 0;
+            }
             let name_str = alloc_string(&_py, name_bytes);
             if name_str.is_null() {
                 dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
-                if !crate::exception_pending(&_py) {
-                    crate::raise_exception::<u64>(
-                        &_py,
-                        "MemoryError",
-                        "extension callable name allocation failed",
-                    );
-                }
                 return 0;
             }
             let name_bits = MoltObject::from_ptr(name_str).bits();
-            let named = crate::call::class_init::function_set_attr_name(
-                &_py,
-                func_ptr,
-                b"__name__",
-                name_bits,
-            );
-            if !named {
-                dec_ref_bits(&_py, name_bits);
-                dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
-                return 0;
-            }
             // Preallocate every traced edge before claiming an executable
             // record. Filling the reserved integer slot cannot allocate or
             // call Python while holding the registry lock.
@@ -3654,11 +4314,6 @@ unsafe extern "C" fn hook_register_c_function(
             dec_ref_bits(&_py, closure_bits);
         }
         let func_bits = MoltObject::from_ptr(func_ptr).bits();
-        let _ = crate::builtins::functions::function_set_builtin_class(
-            &_py,
-            func_bits,
-            dispatch_kind == CFunctionConvention::Method,
-        );
         if crate::exception_pending(&_py) {
             dec_ref_bits(&_py, func_bits);
             return 0;
@@ -3715,6 +4370,27 @@ impl CpythonRuntimeState {
         bits: u64,
         canonical_view: bool,
     ) {
+        let semantic_flags = unsafe {
+            crate::object::class_storage::ClassSemanticPolicy::of(
+                py,
+                crate::obj_from_bits(bits).as_ptr().expect("bound class"),
+            )
+            .cpython_flags()
+        };
+        unsafe {
+            use molt_cpython_abi::abi_types::{
+                Py_TPFLAGS_BASETYPE, Py_TPFLAGS_HEAPTYPE, Py_TPFLAGS_IMMUTABLETYPE,
+            };
+            let ty = pointer.cast::<PyTypeObject>();
+            assert_eq!(
+                (*ty).tp_flags & Py_TPFLAGS_HEAPTYPE,
+                semantic_flags & Py_TPFLAGS_HEAPTYPE,
+                "bound C type allocation extent disagrees with runtime origin"
+            );
+            (*ty).tp_flags = ((*ty).tp_flags
+                & !(Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_IMMUTABLETYPE))
+                | semantic_flags;
+        }
         let mut bindings = self.static_bindings.lock().unwrap();
         assert!(
             bindings.iter().all(|binding| binding.pointer != pointer),
@@ -3956,6 +4632,14 @@ pub fn register_cpython_hooks() -> bool {
                 (&raw mut molt_cpython_abi::abi_types::PyByteArray_Type).cast::<PyObject>(),
             ),
             (
+                builtins.range,
+                (&raw mut molt_cpython_abi::abi_types::PyRange_Type).cast::<PyObject>(),
+            ),
+            (
+                crate::builtins::types::mappingproxy_class_bits(&_py),
+                (&raw mut molt_cpython_abi::abi_types::PyDictProxy_Type).cast::<PyObject>(),
+            ),
+            (
                 builtins.list,
                 (&raw mut molt_cpython_abi::abi_types::PyList_Type).cast::<PyObject>(),
             ),
@@ -4000,6 +4684,14 @@ pub fn register_cpython_hooks() -> bool {
                 (&raw mut molt_cpython_abi::abi_types::PyCFunction_Type).cast::<PyObject>(),
             ),
             (
+                builtins.classmethod,
+                (&raw mut molt_cpython_abi::abi_types::PyClassMethod_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.staticmethod,
+                (&raw mut molt_cpython_abi::abi_types::PyStaticMethod_Type).cast::<PyObject>(),
+            ),
+            (
                 builtins.builtin_method,
                 (&raw mut molt_cpython_abi::abi_types::PyCMethod_Type).cast::<PyObject>(),
             ),
@@ -4011,16 +4703,14 @@ pub fn register_cpython_hooks() -> bool {
                 continue;
             };
             let requested_name = c_name.strip_prefix("PyExc_").unwrap_or(c_name);
-            let runtime_name = if requested_name == "IOError" {
-                "OSError"
-            } else {
-                requested_name
+            let Some(spec) = molt_obj_model::builtin_exception_spec(requested_name) else {
+                continue;
             };
-            let class_bits = crate::exception_type_bits_from_name(&_py, runtime_name);
+            let class_bits = crate::exception_type_bits_from_name(&_py, spec.canonical_name());
             if class_bits == 0 {
                 continue;
             }
-            let canonical_view = crate::class_name_for_error(class_bits) == requested_name;
+            let canonical_view = spec.canonical_name() == requested_name;
             unsafe { runtime.bind_static(&_py, exception, class_bits, canonical_view) };
         }
         static INSTALL_PROCESS_HOOKS: Once = Once::new();
@@ -4041,6 +4731,7 @@ pub fn register_cpython_hooks() -> bool {
                 pending_call_error: hook_pending_call_error,
                 alloc_str: hook_alloc_str,
                 alloc_bytes: hook_alloc_bytes,
+                alloc_bytearray: hook_alloc_bytearray,
                 int_from_i64: hook_int_from_i64,
                 int_from_u64: hook_int_from_u64,
                 int_as_i64: hook_int_as_i64,
@@ -4072,20 +4763,44 @@ pub fn register_cpython_hooks() -> bool {
                 tuple_len: hook_tuple_len,
                 tuple_item: hook_tuple_item,
                 alloc_dict: hook_alloc_dict,
+                mappingproxy_new: hook_mappingproxy_new,
+                dict_resolve: hook_dict_resolve,
                 dict_set: hook_dict_set,
                 dict_get: hook_dict_get,
-                dict_del: hook_dict_del,
+                dict_pop: hook_dict_pop,
                 dict_len: hook_dict_len,
                 dict_entry: hook_dict_entry,
                 str_data: hook_str_data,
+                unicode_new: unicode::hook_unicode_new,
+                unicode_commit: unicode::hook_unicode_commit,
+                unicode_encode: unicode::hook_unicode_encode,
                 bytes_data: hook_bytes_data,
+                bytearray_data: hook_bytearray_data,
+                bytearray_resize: hook_bytearray_resize,
+                buffer_supports: hook_buffer_supports,
                 buffer_acquire: hook_buffer_acquire,
                 buffer_release: hook_buffer_release,
                 object_get_attr: hook_object_get_attr,
+                type_dict_borrowed: hook_type_dict_borrowed,
+                type_metadata: hook_type_metadata,
+                type_lookup_borrowed: hook_type_lookup_borrowed,
                 object_set_attr: hook_object_set_attr,
+                descriptor_protocol: hook_descriptor_protocol,
+                descriptor_get: hook_descriptor_get,
+                descriptor_set: hook_descriptor_set,
                 object_format: hook_object_format,
                 object_str: hook_object_str,
                 object_repr: hook_object_repr,
+                object_is_true: hook_object_is_true,
+                object_length: hook_object_length,
+                object_get_item: hook_object_get_item,
+                object_supports_subscript: hook_object_supports_subscript,
+                object_set_item: hook_object_set_item,
+                object_get_iter: hook_object_get_iter,
+                iter_check: hook_iter_check,
+                iter_next: hook_iter_next,
+                object_richcompare: hook_object_richcompare,
+                object_richcompare_builtin: hook_object_richcompare_builtin,
                 sys_get_object_borrowed: hook_sys_get_object_borrowed,
                 eval_get_builtins_borrowed: hook_eval_get_builtins_borrowed,
                 classify_heap: hook_classify_heap,
@@ -4110,6 +4825,7 @@ pub fn register_cpython_hooks() -> bool {
                 import_module: hook_import_module,
                 initialize_extension: hook_initialize_extension,
                 exception_pending: hook_exception_pending,
+                pending_exception_class: hook_pending_exception_class,
                 number_binary_op: hook_number_binary_op,
                 number_unary_op: hook_number_unary_op,
                 number_power: hook_number_power,
@@ -4125,7 +4841,6 @@ pub fn register_cpython_hooks() -> bool {
                 object_is_callable: crate::builtins::callable::molt_is_callable_bool,
                 foreign_new: hook_foreign_new,
                 report_unraisable: hook_report_unraisable,
-                normalize_exception: hook_normalize_exception,
                 exception_set_field: hook_exception_set_field,
                 exception_get_field: hook_exception_get_field,
                 runtime_class_borrowed: hook_runtime_class_borrowed,
@@ -4133,11 +4848,16 @@ pub fn register_cpython_hooks() -> bool {
                 exception_snapshot: hook_exception_snapshot,
                 exception_commit_snapshot: hook_exception_commit_snapshot,
                 type_is_subtype: hook_type_is_subtype,
+                object_classinfo_match: hook_object_classinfo_match,
                 take_pending_exception: hook_take_pending_exception,
                 clear_pending_exception: hook_clear_pending_exception,
+                with_preserved_pending_exception: hook_with_preserved_pending_exception,
                 handled_exception_get: hook_handled_exception_get,
                 handled_exception_set: hook_handled_exception_set,
                 native_gc_allocate: hook_native_gc_allocate,
+                managed_gc_control: gc_control::hook_managed_gc_control,
+                managed_gc_traverse: gc_control::hook_managed_gc_traverse,
+                managed_gc_clear: gc_control::hook_managed_gc_clear,
                 native_gc_track: hook_native_gc_track,
                 native_gc_untrack: hook_native_gc_untrack,
                 native_gc_deallocate: hook_native_gc_deallocate,
@@ -4148,6 +4868,23 @@ pub fn register_cpython_hooks() -> bool {
                 gc_enable: hook_gc_enable,
                 gc_disable: hook_gc_disable,
                 gc_is_enabled: hook_gc_is_enabled,
+                check_signals: hook_check_signals,
+                set_interrupt: hook_set_interrupt,
+                interrupt_occurred: hook_interrupt_occurred,
+                notify_pending_calls: hook_notify_pending_calls,
+                sequence_check: hook_sequence_check,
+                object_length_hint: hook_object_length_hint,
+                tuple_uses_length_hint: hook_tuple_uses_length_hint,
+                exception_group_admit: hook_exception_group_admit,
+                private_c_heap_contains: crate::c_api::molt_c_heap_contains,
+                object_bytes: hook_object_bytes,
+                memoryview_new: hook_memoryview_new,
+                memoryview_release: hook_memoryview_release,
+                memoryview_from_buffer: hook_memoryview_from_buffer,
+                memoryview_snapshot: hook_memoryview_snapshot,
+                slice_new: slice::hook_slice_new,
+                slice_item: slice::hook_slice_item,
+                object_contains: hook_object_contains,
             };
             // SAFETY: all fn pointers are valid for the process lifetime.
             let installed = unsafe { molt_cpython_abi::try_set_runtime_hooks(hooks) };
@@ -4168,11 +4905,40 @@ pub fn register_cpython_hooks() -> bool {
 }
 
 #[cfg(test)]
+mod allocation_tests;
+#[cfg(test)]
+mod buffer_semantics_tests;
+#[cfg(test)]
 mod cfunction_tests;
+#[cfg(test)]
+mod exception_group_admission_tests;
+#[cfg(test)]
+mod exception_rendering_tests;
+#[cfg(test)]
+mod generic_attributes_tests;
+#[cfg(test)]
+mod immortal_ownership_tests;
+#[cfg(test)]
+mod inquiry_tests;
+#[cfg(test)]
+mod native_lifecycle_tests;
+#[cfg(test)]
+mod native_namespace_tests;
+#[cfg(test)]
+mod native_raised_state_tests;
+#[cfg(test)]
+mod native_test_fixture;
+#[cfg(test)]
+mod pending_cleanup_tests;
+#[cfg(test)]
+mod slice_semantics_tests;
+#[cfg(test)]
+mod type_watcher_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TYPE_ID_BYTEARRAY;
     use molt_cpython_abi::abi_types::{
         PyBaseExceptionObject, PyExc_IndexError, PyExc_LookupError, PyExc_MemoryError,
         PyExc_RuntimeError, PyExc_TypeError, PyExc_UnicodeDecodeError, PyExc_UnicodeEncodeError,
@@ -4377,10 +5143,13 @@ mod tests {
                 -1,
                 "layout kind is immutable"
             );
-            let unchanged =
-                crate::builtins::exceptions::exception_typed_field_get(_py, exception_ptr, "name")
-                    .expect("AttributeError.name descriptor")
-                    .expect("AttributeError.name before rejected commit");
+            let unchanged = crate::builtins::exceptions::exception_typed_field_get(
+                _py,
+                exception_ptr,
+                molt_obj_model::ExceptionTypedField::AttributeErrorName,
+            )
+            .expect("AttributeError.name descriptor")
+            .expect("AttributeError.name before rejected commit");
             assert_eq!(
                 crate::string_obj_to_owned(crate::obj_from_bits(unchanged)).as_deref(),
                 Some("before-name")
@@ -4396,10 +5165,13 @@ mod tests {
                 unsafe { hook_exception_commit_snapshot(exception_bits, &raw const snapshot) },
                 0
             );
-            let observed =
-                crate::builtins::exceptions::exception_typed_field_get(_py, exception_ptr, "name")
-                    .expect("AttributeError.name descriptor")
-                    .expect("AttributeError.name value");
+            let observed = crate::builtins::exceptions::exception_typed_field_get(
+                _py,
+                exception_ptr,
+                molt_obj_model::ExceptionTypedField::AttributeErrorName,
+            )
+            .expect("AttributeError.name descriptor")
+            .expect("AttributeError.name value");
             assert_eq!(
                 crate::string_obj_to_owned(crate::obj_from_bits(observed)).as_deref(),
                 Some("after-name")
@@ -4414,9 +5186,250 @@ mod tests {
     }
 
     #[test]
+    fn raised_error_transfer_drains_superseded_channels_and_preserves_handled_state() {
+        use molt_cpython_abi::api::{errors, refcount};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        register_cpython_hooks();
+        crate::with_gil_entry_nopanic!(py, {
+            let first = crate::builtins::exceptions::alloc_exception(py, "ValueError", "first");
+            let second = crate::builtins::exceptions::alloc_exception(py, "LookupError", "second");
+            assert!(!first.is_null() && !second.is_null());
+            let first_bits = MoltObject::from_ptr(first).bits();
+            let second_bits = MoltObject::from_ptr(second).bits();
+            unsafe {
+                let first_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(first_bits);
+                let second_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(second_bits);
+                assert!(!first_view.is_null() && !second_view.is_null());
+                errors::PyErr_SetHandledException(second_view);
+                refcount::Py_INCREF(first_view);
+                errors::PyErr_SetRaisedException(first_view);
+                crate::builtins::exceptions::molt_exception_set_last(second_bits);
+                with_preserved_error(|| {
+                    refcount::Py_INCREF(second_view);
+                    errors::PyErr_SetRaisedException(second_view);
+                    crate::builtins::exceptions::molt_exception_set_last(first_bits);
+                });
+                assert_eq!(crate::exception_last_bits_noinc(py), Some(second_bits));
+                let restored = errors::PyErr_GetRaisedException();
+                assert_eq!(restored, first_view);
+                refcount::Py_DECREF(restored);
+                assert!(!crate::exception_pending(py));
+                for operation in 0..4 {
+                    refcount::Py_INCREF(first_view);
+                    errors::PyErr_SetRaisedException(first_view);
+                    crate::builtins::exceptions::molt_exception_set_last(second_bits);
+                    assert!(crate::exception_pending(py));
+                    match operation {
+                        0 => {
+                            let value = errors::PyErr_GetRaisedException();
+                            assert_eq!(value, first_view);
+                            refcount::Py_DECREF(value);
+                        }
+                        1 => {
+                            let (mut class, mut value, mut traceback) =
+                                (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+                            errors::PyErr_Fetch(&raw mut class, &raw mut value, &raw mut traceback);
+                            assert_eq!(value, first_view);
+                            refcount::Py_XDECREF(class);
+                            refcount::Py_DECREF(value);
+                            refcount::Py_XDECREF(traceback);
+                        }
+                        2 => errors::PyErr_Clear(),
+                        _ => errors::PyErr_SetRaisedException(ptr::null_mut()),
+                    }
+                    assert!(errors::PyErr_Occurred().is_null());
+                    assert!(!crate::exception_pending(py));
+                    let handled = errors::PyErr_GetHandledException();
+                    assert_eq!(handled, second_view);
+                    refcount::Py_DECREF(handled);
+                }
+                crate::builtins::exceptions::molt_exception_set_last(second_bits);
+                let value = errors::PyErr_GetRaisedException();
+                assert_eq!(
+                    value, second_view,
+                    "runtime-only raised error is transferred"
+                );
+                refcount::Py_DECREF(value);
+                assert!(!crate::exception_pending(py));
+                assert!(errors::PyErr_Occurred().is_null());
+                errors::PyErr_SetHandledException(ptr::null_mut());
+            }
+            dec_ref_bits(py, first_bits);
+            dec_ref_bits(py, second_bits);
+        });
+    }
+
+    #[test]
+    fn exception_rendering_managed_abi_uses_declaring_slots_and_owned_string_results() {
+        use molt_cpython_abi::api::{errors, refcount, typeobj};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        register_cpython_hooks();
+        crate::with_gil_entry_nopanic!(py, {
+            let key = crate::builtins::exceptions::alloc_exception(py, "KeyError", "x");
+            assert!(!key.is_null());
+            let key_bits = MoltObject::from_ptr(key).bits();
+            let view = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(key_bits) };
+            assert!(!view.is_null());
+            for (result, expected) in unsafe {
+                [
+                    (typeobj::PyObject_Str(view), "'x'"),
+                    (typeobj::PyObject_Repr(view), "KeyError('x')"),
+                    (errors::molt_native_exception_str(view), "x"),
+                    (errors::molt_native_exception_repr(view), "KeyError('x')"),
+                ]
+            } {
+                assert!(!result.is_null());
+                let bits = GLOBAL_BRIDGE
+                    .observed_handle_for_pyobj(result)
+                    .unwrap()
+                    .bits();
+                assert_eq!(
+                    crate::string_obj_to_owned(crate::obj_from_bits(bits)).as_deref(),
+                    Some(expected)
+                );
+                unsafe { refcount::Py_DECREF(result) };
+            }
+            dec_ref_bits(py, key_bits);
+
+            let argument = alloc_string(py, &[0xed, 0xa0, 0x80]);
+            assert!(!argument.is_null());
+            let argument_bits = MoltObject::from_ptr(argument).bits();
+            let error =
+                crate::builtins::exceptions::molt_exception_new_builtin_one(5, argument_bits);
+            dec_ref_bits(py, argument_bits);
+            let view = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(error) };
+            let rendered = unsafe { typeobj::PyObject_Str(view) };
+            assert!(!rendered.is_null());
+            let rendered_bits = GLOBAL_BRIDGE
+                .observed_handle_for_pyobj(rendered)
+                .unwrap()
+                .bits();
+            assert_eq!(
+                rendered_bits, argument_bits,
+                "single string args keep their string identity"
+            );
+            let replacement = crate::alloc_tuple(py, &[MoltObject::from_int(7).bits()]);
+            let replacement_bits = MoltObject::from_ptr(replacement).bits();
+            crate::builtins::exceptions::exception_replace_field_bits(
+                py,
+                error,
+                crate::builtins::exceptions::ExceptionFieldSlot::Args,
+                replacement_bits,
+            )
+            .unwrap();
+            dec_ref_bits(py, replacement_bits);
+            dec_ref_bits(py, error);
+            let argument = crate::obj_from_bits(rendered_bits).as_ptr().unwrap();
+            assert_eq!(
+                unsafe {
+                    std::slice::from_raw_parts(
+                        crate::string_bytes(argument),
+                        crate::string_len(argument),
+                    )
+                },
+                &[0xed, 0xa0, 0x80]
+            );
+            unsafe { refcount::Py_DECREF(rendered) };
+            assert!(!crate::exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn managed_type_name_observers_share_current_structural_metadata() {
+        use molt_cpython_abi::api::{refcount, typeobj};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        register_cpython_hooks();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = MoltObject::from_ptr(alloc_string(py, b"Original")).bits();
+            let class_bits = crate::molt_class_new(name);
+            let class = crate::obj_from_bits(class_bits)
+                .as_ptr()
+                .expect("class allocation");
+            let base_result =
+                crate::molt_class_set_base(class_bits, crate::builtin_classes(py).object);
+            crate::dec_ref_bits(py, base_result);
+            unsafe { crate::object::class_finish_definition(py, class) }
+                .expect("complete the class before projecting its hierarchy");
+            let view = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class_bits) }
+                .cast::<molt_cpython_abi::abi_types::PyTypeObject>();
+            assert!(!view.is_null());
+            let qualified = MoltObject::from_ptr(alloc_string(py, b"Outer.Q")).bits();
+            assert!(unsafe { crate::class_set_qualname_bits(py, class, qualified) });
+            let observed_name = unsafe { typeobj::PyType_GetName(view) };
+            let observed_qualname = unsafe { typeobj::PyType_GetQualName(view) };
+            assert_eq!(
+                GLOBAL_BRIDGE
+                    .observed_handle_for_pyobj(observed_name)
+                    .unwrap()
+                    .bits(),
+                name
+            );
+            assert_eq!(
+                GLOBAL_BRIDGE
+                    .observed_handle_for_pyobj(observed_qualname)
+                    .unwrap()
+                    .bits(),
+                qualified
+            );
+            unsafe {
+                refcount::Py_DECREF(observed_name);
+                refcount::Py_DECREF(observed_qualname);
+            }
+            for raw in [b"prefix.Renamed".as_slice()] {
+                let renamed = MoltObject::from_ptr(alloc_string(py, raw)).bits();
+                assert!(unsafe { crate::class_set_name_bits(py, class, renamed) });
+                assert_eq!(
+                    unsafe { std::ffi::CStr::from_ptr((*view).tp_name) }.to_bytes(),
+                    raw
+                );
+                let observed = unsafe { typeobj::PyType_GetName(view) };
+                assert_eq!(
+                    GLOBAL_BRIDGE
+                        .observed_handle_for_pyobj(observed)
+                        .unwrap()
+                        .bits(),
+                    renamed
+                );
+                unsafe { refcount::Py_DECREF(observed) };
+                dec_ref_bits(py, renamed);
+            }
+            let heap = view.cast::<molt_cpython_abi::abi_types::PyHeapTypeObject>();
+            let previous_name = unsafe { crate::class_name_bits(class) };
+            let previous_c_name = unsafe { (*view).tp_name };
+            let previous_heap_name = unsafe { (*heap).ht_name };
+            let invalid = MoltObject::from_ptr(alloc_string(py, &[0xed, 0xa0, 0x80])).bits();
+            assert!(!unsafe { crate::class_set_name_bits(py, class, invalid) });
+            assert!(crate::exception_pending(py));
+            let exception = crate::builtins::exceptions::molt_exception_last_pending();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                exception,
+                "UnicodeEncodeError"
+            ));
+            dec_ref_bits(py, exception);
+            crate::molt_exception_clear();
+            assert_eq!(unsafe { crate::class_name_bits(class) }, previous_name);
+            assert_eq!(unsafe { (*view).tp_name }, previous_c_name);
+            assert_eq!(unsafe { (*heap).ht_name }, previous_heap_name);
+            dec_ref_bits(py, invalid);
+            for bits in [class_bits, name, qualified] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!crate::exception_pending(py));
+        });
+    }
+
+    #[test]
     fn exception_snapshot_zero_fields_survive_bidirectional_physical_projection() {
         use crate::builtins::exceptions::{
-            ExceptionFieldSlot, exception_replace_field_bits, exception_typed_field_get,
+            ExceptionFieldSlot, exception_field_is_missing, exception_field_missing_bits,
+            exception_replace_field_bits, exception_typed_field_get,
             exception_typed_fields_replace_internal,
         };
         use molt_cpython_abi::abi_types::PyAttributeErrorObject;
@@ -4461,7 +5474,7 @@ mod tests {
                     dec_ref_bits(_py, observed);
                 }
                 assert!(GLOBAL_BRIDGE.commit_exception_view(bits));
-                for name in ["obj", "name"] {
+                for name in [AttributeErrorObject, AttributeErrorName] {
                     let observed = exception_typed_field_get(_py, ptr, name)
                         .expect("typed descriptor")
                         .expect("present typed field");
@@ -4510,9 +5523,62 @@ mod tests {
                 .cast::<PyAttributeErrorObject>();
             assert!(!view.is_null());
             assert!(unsafe {
+                (*view).obj == &raw mut molt_cpython_abi::abi_types::Py_None
+                    && (*view).name == &raw mut molt_cpython_abi::abi_types::Py_None
+                    && (*view).base.notes == &raw mut molt_cpython_abi::abi_types::Py_None
+            });
+            assert!(GLOBAL_BRIDGE.commit_exception_view(bits));
+            let mut snapshot = ExceptionSnapshot::default();
+            assert_eq!(
+                unsafe { hook_exception_snapshot(bits, &raw mut snapshot) },
+                0
+            );
+            assert_eq!(snapshot.typed_present_mask, 0b11);
+            assert_eq!(snapshot.typed_handles[..2], [none, none]);
+            assert_ne!(snapshot.present_mask & EXCEPTION_SNAPSHOT_NOTES, 0);
+            assert_eq!(snapshot.notes, none);
+            let mut rejected = snapshot;
+            rejected.layout_kind = molt_obj_model::ExceptionLayoutKind::Base as u8;
+            assert_eq!(
+                unsafe { hook_exception_commit_snapshot(bits, &raw const rejected) },
+                -1
+            );
+            assert!(GLOBAL_BRIDGE.refresh_exception_view(bits));
+            assert_eq!(
+                unsafe { (*view).obj },
+                &raw mut molt_cpython_abi::abi_types::Py_None
+            );
+            for owned in snapshot.present_handles() {
+                dec_ref_bits(_py, owned);
+            }
+            for field in [AttributeErrorObject, AttributeErrorName] {
+                crate::builtins::exceptions::exception_typed_field_delete(_py, bits, field)
+                    .expect("typed descriptor")
+                    .expect("delete typed field");
+            }
+            exception_replace_field_bits(
+                _py,
+                bits,
+                ExceptionFieldSlot::Notes,
+                exception_field_missing_bits(),
+            )
+            .unwrap();
+            assert!(GLOBAL_BRIDGE.refresh_exception_view(bits));
+            assert!(unsafe {
                 (*view).obj.is_null() && (*view).name.is_null() && (*view).base.notes.is_null()
             });
             assert!(GLOBAL_BRIDGE.commit_exception_view(bits));
+            assert!(exception_field_is_missing(unsafe {
+                crate::exception_notes_bits(ptr)
+            }));
+            let mut absent = ExceptionSnapshot::default();
+            assert_eq!(unsafe { hook_exception_snapshot(bits, &raw mut absent) }, 0);
+            assert_eq!(absent.typed_present_mask, 0);
+            assert_eq!(absent.present_mask & EXCEPTION_SNAPSHOT_NOTES, 0);
+            assert_eq!(absent.notes, 0);
+            for owned in absent.present_handles() {
+                dec_ref_bits(_py, owned);
+            }
             assert!(!crate::exception_pending(_py));
             dec_ref_bits(_py, bits);
         });
@@ -4592,14 +5658,20 @@ mod tests {
                 unsafe { hook_exception_commit_snapshot(exception_bits, &raw const snapshot) },
                 0
             );
-            let start =
-                crate::builtins::exceptions::exception_typed_field_get(_py, exception_ptr, "start")
-                    .expect("UnicodeError.start descriptor")
-                    .expect("UnicodeError.start value");
-            let end =
-                crate::builtins::exceptions::exception_typed_field_get(_py, exception_ptr, "end")
-                    .expect("UnicodeError.end descriptor")
-                    .expect("UnicodeError.end value");
+            let start = crate::builtins::exceptions::exception_typed_field_get(
+                _py,
+                exception_ptr,
+                molt_obj_model::ExceptionTypedField::UnicodeStart,
+            )
+            .expect("UnicodeError.start descriptor")
+            .expect("UnicodeError.start value");
+            let end = crate::builtins::exceptions::exception_typed_field_get(
+                _py,
+                exception_ptr,
+                molt_obj_model::ExceptionTypedField::UnicodeEnd,
+            )
+            .expect("UnicodeError.end descriptor")
+            .expect("UnicodeError.end value");
             assert_eq!(crate::obj_from_bits(start).as_int(), Some(7));
             assert_eq!(crate::obj_from_bits(end).as_int(), Some(11));
             dec_ref_bits(_py, start);
@@ -4672,6 +5744,98 @@ mod tests {
             }
             dec_ref_bits(_py, parent_bits);
             dec_ref_bits(_py, child_bits);
+        });
+    }
+
+    #[test]
+    fn exception_physical_c_owned_fields_retire_without_an_observation_roundtrip() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            use molt_cpython_abi::abi_types::{
+                exception_layout_for_type, exception_typed_object_slot,
+            };
+            use molt_cpython_abi::api::refcount::{Py_INCREF, Py_XDECREF};
+            use molt_obj_model::ExceptionTypedField;
+
+            for (kind, typed_field) in [
+                ("RuntimeError", None),
+                (
+                    "AttributeError",
+                    Some(ExceptionTypedField::AttributeErrorName),
+                ),
+                ("SystemExit", Some(ExceptionTypedField::SystemExitCode)),
+                (
+                    "StopIteration",
+                    Some(ExceptionTypedField::StopIterationValue),
+                ),
+            ] {
+                let exception =
+                    crate::builtins::exceptions::alloc_exception(py, kind, "physical owner");
+                assert!(!exception.is_null());
+                let bits = MoltObject::from_ptr(exception).bits();
+                let view = unsafe {
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits)
+                }
+                .cast::<PyBaseExceptionObject>();
+                assert!(!view.is_null());
+                // Foreign C-owned values make over-release and leaked physical
+                // edges visible without relying on the managed ledger itself.
+                let mut first = PyObject {
+                    ob_refcnt: 1,
+                    ob_type: &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                };
+                let mut second = PyObject {
+                    ob_refcnt: 1,
+                    ob_type: &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                };
+                unsafe {
+                    let slot = if let Some(field) = typed_field {
+                        let layout = exception_layout_for_type((*view).ob_base.ob_type).unwrap();
+                        exception_typed_object_slot(view, layout, field).unwrap()
+                    } else {
+                        &raw mut (*view).notes
+                    };
+                    for incoming in [&raw mut first, &raw mut second, &raw mut second] {
+                        Py_INCREF(incoming);
+                        let old = std::mem::replace(&mut *slot, incoming);
+                        Py_XDECREF(old);
+                    }
+                }
+                assert_eq!(first.ob_refcnt, 1);
+                assert_eq!(second.ob_refcnt, 2);
+                // No observation/commit before terminal teardown: native
+                // callbacks and failed initializers may exit on exactly this path.
+                dec_ref_bits(py, bits);
+                assert_eq!(first.ob_refcnt, 1);
+                assert_eq!(second.ob_refcnt, 1);
+                assert!(!crate::exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
+    fn exception_physical_c_only_cycle_is_collected_without_runtime_commit() {
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            let exception =
+                crate::builtins::exceptions::alloc_exception(py, "RuntimeError", "C cycle");
+            assert!(!exception.is_null());
+            let bits = MoltObject::from_ptr(exception).bits();
+            let view =
+                unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) }
+                    .cast::<PyBaseExceptionObject>();
+            assert!(!view.is_null());
+            unsafe {
+                molt_cpython_abi::api::refcount::Py_INCREF(view.cast());
+                let old = std::mem::replace(&mut (*view).notes, view.cast());
+                molt_cpython_abi::api::refcount::Py_XDECREF(old);
+            }
+            dec_ref_bits(py, bits);
+            assert!(unsafe { crate::object::gc::gc_is_tracked(exception) });
+            unsafe { crate::object::gc::collect_cycles(py) };
+            // Registry membership queries treat the retired address as opaque.
+            assert!(!unsafe { crate::object::gc::gc_is_tracked(exception) });
+            assert!(!crate::exception_pending(py));
         });
     }
 
@@ -4787,34 +5951,25 @@ mod tests {
     unsafe impl Send for ForeignProxyMutation {}
     unsafe impl Sync for ForeignProxyMutation {}
 
-    fn fetched_exception_args(value: *mut PyObject) -> Vec<u64> {
-        let value_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .molt_handle_for_pyobj(value)
-            .expect("normalized C error value must be a managed runtime exception")
-            .bits();
-        with_gil(|_py| {
-            let value_ptr = crate::obj_from_bits(value_bits)
-                .as_ptr()
-                .expect("normalized exception handle must remain live");
-            assert_eq!(
-                unsafe { crate::object_type_id(value_ptr) },
-                crate::TYPE_ID_EXCEPTION
+    fn fetched_exception_args(value: *mut PyObject) -> Vec<RuntimeValue> {
+        use molt_cpython_abi::api::{object, refcount::OwnedPyObject, sequences};
+        unsafe {
+            let args =
+                OwnedPyObject::from_owned(object::PyObject_GetAttrString(value, c"args".as_ptr()));
+            assert!(
+                !args.as_ptr().is_null(),
+                "normalized exception must expose args"
             );
-            let args_bits = crate::exception_materialized_args_bits(&_py, value_ptr);
-            let args_ptr = crate::obj_from_bits(args_bits)
-                .as_ptr()
-                .expect("exception args must be a tuple");
-            assert_eq!(
-                unsafe { crate::object_type_id(args_ptr) },
-                crate::TYPE_ID_TUPLE
-            );
-            unsafe {
-                crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
-                    args.to_vec()
+            let count = sequences::PyTuple_Size(args.as_ptr());
+            assert!(count >= 0, "exception args must be a tuple");
+            (0..count)
+                .map(|index| {
+                    let item = sequences::PyTuple_GetItem(args.as_ptr(), index);
+                    assert!(!item.is_null());
+                    runtime_value(item)
                 })
-            }
-            .expect("type-checked exception args tuple must remain live")
-        })
+                .collect()
+        }
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -4824,27 +5979,38 @@ mod tests {
         Str(String),
     }
 
-    fn runtime_value(bits: u64) -> RuntimeValue {
-        let object = MoltObject::from_bits(bits);
-        if let Some(value) = object.as_int() {
-            return RuntimeValue::Int(value);
-        }
-        let ptr = object
-            .as_ptr()
-            .expect("Unicode error field must be a materialized runtime value");
+    fn runtime_value(value: *mut PyObject) -> RuntimeValue {
+        use molt_cpython_abi::api::{errors, numbers, strings};
         unsafe {
-            match object_type_id(ptr) {
-                TYPE_ID_STRING => RuntimeValue::Str(
-                    String::from_utf8(
-                        std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)).to_vec(),
-                    )
-                    .expect("runtime str field must remain valid UTF-8"),
-                ),
-                TYPE_ID_BYTES => RuntimeValue::Bytes(
-                    std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr)).to_vec(),
-                ),
-                type_id => panic!("unexpected Unicode error field type id {type_id}"),
+            assert!(!value.is_null());
+            if numbers::PyLong_Check(value) != 0 {
+                let number = numbers::PyLong_AsLongLong(value);
+                assert!(errors::PyErr_Occurred().is_null());
+                return RuntimeValue::Int(number);
             }
+            let mut length = 0;
+            if strings::PyUnicode_Check(value) != 0 {
+                let bytes = strings::PyUnicode_AsUTF8AndSize(value, &raw mut length);
+                assert!(!bytes.is_null() && length >= 0);
+                return RuntimeValue::Str(
+                    String::from_utf8(
+                        std::slice::from_raw_parts(bytes.cast(), length as usize).to_vec(),
+                    )
+                    .expect("Unicode fixture field must be valid UTF-8"),
+                );
+            }
+            assert_ne!(
+                strings::PyBytes_Check(value),
+                0,
+                "unexpected fixture field type"
+            );
+            let mut bytes = ptr::null_mut();
+            assert_eq!(
+                strings::PyBytes_AsStringAndSize(value, &raw mut bytes, &raw mut length),
+                0
+            );
+            assert!(!bytes.is_null() && length >= 0);
+            RuntimeValue::Bytes(std::slice::from_raw_parts(bytes.cast(), length as usize).to_vec())
         }
     }
 
@@ -4860,32 +6026,20 @@ mod tests {
         };
         assert!(std::ptr::eq(exc_type, expected_type));
         assert!(!exc_value.is_null());
-        let args = fetched_exception_args(exc_value)
+        let args = fetched_exception_args(exc_value);
+        let attrs = [c"encoding", c"object", c"start", c"end", c"reason"]
             .into_iter()
-            .map(runtime_value)
+            .map(|name| unsafe {
+                let attribute = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                    molt_cpython_abi::api::object::PyObject_GetAttrString(exc_value, name.as_ptr()),
+                );
+                assert!(
+                    !attribute.as_ptr().is_null(),
+                    "missing Unicode error attribute {name:?}"
+                );
+                runtime_value(attribute.as_ptr())
+            })
             .collect::<Vec<_>>();
-        let value_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .molt_handle_for_pyobj(exc_value)
-            .expect("normalized Unicode error must retain its runtime identity")
-            .bits();
-        let attrs = with_gil(|_py| {
-            let value_ptr = crate::obj_from_bits(value_bits)
-                .as_ptr()
-                .expect("normalized Unicode error must remain live");
-            ["encoding", "object", "start", "end", "reason"]
-                .into_iter()
-                .map(|name| {
-                    let bits = crate::builtins::exceptions::exception_typed_field_get(
-                        &_py, value_ptr, name,
-                    )
-                    .unwrap_or_else(|| panic!("missing Unicode error descriptor {name}"))
-                    .unwrap_or_else(|_| panic!("missing Unicode error attribute {name}"));
-                    let value = runtime_value(bits);
-                    dec_ref_bits(&_py, bits);
-                    value
-                })
-                .collect::<Vec<_>>()
-        });
         unsafe {
             molt_cpython_abi::api::refcount::Py_DECREF(exc_type);
             molt_cpython_abi::api::refcount::Py_DECREF(exc_value);
@@ -4979,10 +6133,7 @@ mod tests {
         ));
         assert_eq!(
             fetched_exception_args(exc_value),
-            vec![
-                MoltObject::from_int(11).bits(),
-                MoltObject::from_int(22).bits()
-            ]
+            vec![RuntimeValue::Int(11), RuntimeValue::Int(22)]
         );
         unsafe {
             molt_cpython_abi::api::refcount::Py_DECREF(exc_type);
@@ -5637,10 +6788,17 @@ mod tests {
             1,
             "drain rc must branch while the C TypeError moves into runtime custody"
         );
+        assert!(
+            molt_cpython_abi::api::errors::take_current_error().is_none(),
+            "the runtime safepoint must consume the C indicator"
+        );
         assert_eq!(
             unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
-            ptr::null_mut(),
-            "the runtime safepoint must consume the C indicator"
+            (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()
+        );
+        assert!(
+            molt_cpython_abi::api::errors::take_current_error().is_none(),
+            "observing the pending type must not create a C-owned error"
         );
         assert_eq!(pending_exception_type_for_assertion(), "TypeError");
         assert_eq!(
@@ -5661,10 +6819,17 @@ mod tests {
             crate::builtins::exceptions::molt_async_work_poll_and_exception_pending(),
             1
         );
+        assert!(
+            molt_cpython_abi::api::errors::take_current_error().is_none(),
+            "a runtime-originated TypeError must stay in runtime custody"
+        );
         assert_eq!(
             unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
-            ptr::null_mut(),
-            "a runtime-originated TypeError must never be projected into C"
+            (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()
+        );
+        assert!(
+            molt_cpython_abi::api::errors::take_current_error().is_none(),
+            "observing the pending type must not create a C-owned error"
         );
         assert_eq!(pending_exception_type_for_assertion(), "TypeError");
         assert_eq!(
@@ -5697,10 +6862,17 @@ mod tests {
             !MoltObject::from_bits(exc_bits).is_none(),
             "the fused observer must return the callback exception object"
         );
+        assert!(
+            molt_cpython_abi::api::errors::take_current_error().is_none(),
+            "the runtime safepoint must consume the C exception indicator"
+        );
         assert_eq!(
             unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
-            ptr::null_mut(),
-            "the runtime safepoint must consume the C exception indicator"
+            (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()
+        );
+        assert!(
+            molt_cpython_abi::api::errors::take_current_error().is_none(),
+            "observing the pending type must not create a C-owned error"
         );
 
         with_gil(|_py| {
@@ -6011,6 +7183,83 @@ mod tests {
     }
 
     #[test]
+    fn cext_qualnames_use_native_classes_and_live_receiver_types() {
+        use molt_cpython_abi::abi_types::{PyBaseObject_Type, PyType_Type};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(register_cpython_hooks());
+        with_gil(|py| unsafe {
+            let qualname = crate::attr_name_bits_from_bytes(&py, b"__qualname__").unwrap();
+            let register_and_check = |receiver, self_is_null, expected: &str| {
+                let function = hook_register_c_function(
+                    gil_bench_noargs as *const () as usize as u64,
+                    METH_NOARGS,
+                    receiver,
+                    self_is_null,
+                    MoltObject::none().bits(),
+                    b"method".as_ptr(),
+                    b"method".len(),
+                );
+                assert_ne!(function, 0);
+                let name = crate::attr_lookup_ptr(
+                    &py,
+                    MoltObject::from_bits(function).as_ptr().unwrap(),
+                    qualname,
+                )
+                .expect("public native callable qualified name");
+                assert_eq!(
+                    crate::string_obj_to_owned(MoltObject::from_bits(name)).as_deref(),
+                    Some(expected)
+                );
+                dec_ref_bits(&py, name);
+                dec_ref_bits(&py, function);
+            };
+            let mut first: PyTypeObject = std::mem::zeroed();
+            first.ob_base.ob_base.ob_refcnt = 1;
+            first.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+            first.tp_base = &raw mut PyBaseObject_Type;
+            first.tp_name = c"native_fixture.CallableFirst".as_ptr();
+            let mut second: PyTypeObject = std::mem::zeroed();
+            second.ob_base.ob_base.ob_refcnt = 1;
+            second.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+            second.tp_base = &raw mut PyBaseObject_Type;
+            second.tp_name = c"native_fixture.CallableSecond".as_ptr();
+            let mut value = PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut first,
+            };
+            let class = GLOBAL_BRIDGE
+                .molt_value_for_pyobj((&raw mut first).cast())
+                .unwrap();
+            let instance = GLOBAL_BRIDGE.molt_value_for_pyobj(&raw mut value).unwrap();
+            register_and_check(class, false, "CallableFirst.method");
+            register_and_check(instance, false, "CallableFirst.method");
+            value.ob_type = &raw mut second;
+            register_and_check(instance, false, "CallableSecond.method");
+
+            let module_name = MoltObject::from_ptr(alloc_string(&py, b"callable_module")).bits();
+            let module = alloc_module_obj(&py, module_name);
+            assert!(!module.is_null());
+            register_and_check(MoltObject::from_ptr(module).bits(), false, "method");
+            register_and_check(MoltObject::none().bits(), true, "method");
+            assert!(!crate::exception_pending(&py));
+            assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+            for bits in [
+                MoltObject::from_ptr(module).bits(),
+                module_name,
+                instance,
+                class,
+                qualname,
+            ] {
+                dec_ref_bits(&py, bits);
+            }
+            assert_eq!(value.ob_refcnt, 1);
+            assert_eq!(first.ob_base.ob_base.ob_refcnt, 1);
+            assert_eq!(second.ob_base.ob_base.ob_refcnt, 1);
+        });
+    }
+
+    #[test]
     fn cext_receiver_is_owned_by_the_traced_function_closure() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         with_gil(|py| unsafe {
@@ -6079,7 +7328,42 @@ mod tests {
                         .bits();
                     assert_eq!(observed, binding.bits);
                 }
+                unsafe {
+                    super::native_lifecycle_tests::assert_c_exception_symbols_preserve_pending();
+                }
                 let type_error = (&raw mut PyExc_TypeError).cast::<PyObject>();
+                let group_bits = crate::builtin_classes(&py).exception_group;
+                unsafe {
+                    let view = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .handle_to_borrowed_pyobj(group_bits)
+                        .cast::<PyTypeObject>();
+                    let heap = view.cast::<molt_cpython_abi::abi_types::PyHeapTypeObject>();
+                    assert_ne!(
+                        (*view).tp_flags & molt_cpython_abi::abi_types::Py_TPFLAGS_HEAPTYPE,
+                        0
+                    );
+                    assert_eq!(
+                        (*view).tp_flags & molt_cpython_abi::abi_types::Py_TPFLAGS_IMMUTABLETYPE,
+                        0
+                    );
+                    assert!(!(*heap).ht_name.is_null() && !(*heap).ht_qualname.is_null());
+                    assert_eq!(
+                        std::ffi::CStr::from_ptr((*view).tp_name).to_bytes(),
+                        b"ExceptionGroup"
+                    );
+                    let renamed =
+                        crate::attr_name_bits_from_bytes(&py, b"RenamedExceptionGroup").unwrap();
+                    assert!(crate::class_set_name_bits(
+                        &py,
+                        crate::obj_from_bits(group_bits).as_ptr().unwrap(),
+                        renamed
+                    ));
+                    crate::dec_ref_bits(&py, renamed);
+                    assert_eq!(
+                        std::ffi::CStr::from_ptr((*view).tp_name).to_bytes(),
+                        b"RenamedExceptionGroup"
+                    );
+                }
                 // A non-static canonical type has a generic managed ABI view,
                 // not a process-shell binding. Even direct C references to
                 // that view have interpreter lifetime and must not survive
@@ -6098,6 +7382,44 @@ mod tests {
                 unsafe { molt_cpython_abi::api::refcount::Py_INCREF(descriptor_view) };
                 assert!(
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(descriptor_class)
+                );
+                // Exercise the actual type -> MRO -> type cycle, plus an MRO
+                // alias held by the C thread-state dictionary. That owner must
+                // drain before forced cohort retirement can free any C view.
+                let (descriptor_mro, mro_alias) = unsafe {
+                    let mro = (*descriptor_view.cast::<PyTypeObject>()).tp_mro;
+                    assert!(!mro.is_null());
+                    assert_eq!(
+                        molt_cpython_abi::api::sequences::PyTuple_GetItem(mro, 0),
+                        descriptor_view
+                    );
+                    molt_cpython_abi::api::refcount::Py_INCREF(mro);
+                    let alias = molt_cpython_abi::api::sequences::PyTuple_New(1);
+                    assert!(!alias.is_null());
+                    assert_eq!(
+                        molt_cpython_abi::api::sequences::PyTuple_SetItem(alias, 0, mro),
+                        0
+                    );
+                    let state_dict = molt_cpython_abi::api::sys::PyThreadState_GetDict();
+                    assert!(!state_dict.is_null());
+                    assert_eq!(
+                        molt_cpython_abi::api::mapping::PyDict_SetItemString(
+                            state_dict,
+                            c"__restart_mro_owner__".as_ptr(),
+                            alias,
+                        ),
+                        0
+                    );
+                    // Locals retain only opaque addresses. No external owned
+                    // pointer or Rust guard may decref after finalization.
+                    molt_cpython_abi::api::refcount::Py_DECREF(alias);
+                    molt_cpython_abi::api::refcount::Py_DECREF(descriptor_view);
+                    (mro, alias)
+                };
+                assert!(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .mirrored_c_refcount(descriptor_view.addr())
+                        > 0
                 );
                 assert_eq!(
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE
@@ -6157,11 +7479,17 @@ mod tests {
                 assert_eq!(crate::state::runtime_state::molt_runtime_shutdown(), 1);
                 // Query the opaque address map only: dereferencing/decrefing
                 // an interpreter-owned pointer after finalization is invalid.
-                assert!(
-                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .managed_handle_for_pyobj(descriptor_view)
-                        .is_none()
-                );
+                for pointer in [descriptor_view, descriptor_mro, mro_alias] {
+                    assert!(
+                        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                            .managed_handle_for_pyobj(pointer)
+                            .is_none()
+                    );
+                    assert_eq!(
+                        molt_cpython_abi::bridge::GLOBAL_BRIDGE.mirrored_c_refcount(pointer.addr()),
+                        0
+                    );
+                }
                 assert_eq!(
                     molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
                     0
@@ -7450,7 +8778,7 @@ mod tests {
     }
 
     #[test]
-    fn pysys_getobject_prefers_cached_sys_module_attribute() {
+    fn pysys_getobject_reads_interpreter_sys_module_attribute() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
 
@@ -7492,7 +8820,7 @@ mod tests {
             );
 
             let result_bits =
-                crate::builtins::modules::molt_module_cache_set(name_bits, module_bits);
+                crate::builtins::module_table::publish_interpreter_sys_for_test(&_py, module_bits);
             if !MoltObject::from_bits(result_bits).is_none() {
                 dec_ref_bits(&_py, result_bits);
             }
@@ -7517,7 +8845,7 @@ mod tests {
         );
         assert!(
             !flags.is_null(),
-            "PySys_GetObject(flags) must resolve through the cached sys module"
+            "PySys_GetObject(flags) must resolve through the interpreter sys module"
         );
         let flags_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .molt_handle_for_pyobj(flags)
@@ -7552,15 +8880,9 @@ mod tests {
         });
     }
 
-    // A cold `sys` module dict that has neither the requested attribute nor a
-    // `__getattr__` must make `PySys_GetObject` fail closed (NULL) WITHOUT
-    // leaking a pending exception. This guards the lazy-materialization branch
-    // added to `sys_module_attr_borrowed`: when the raw dict lookup misses it
-    // drives the module `__getattr__` (allow-missing) and re-reads the dict;
-    // the miss path must not surface an AttributeError to the C-API caller.
-    // (The real numpy path — where sys.py's PEP 562 `__getattr__` materializes
-    // `flags` into the dict — is exercised by the pact-witness E2E, since the
-    // compiled `sys` module is not linked into the unit-test binary.)
+    // C sys lookup observes only the rooted dictionary. Missing keys stay
+    // missing without invoking the public module attribute protocol.
+
     #[test]
     fn pysys_getobject_missing_attr_on_cold_module_fails_closed() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
@@ -7577,7 +8899,7 @@ mod tests {
             let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
             let result_bits =
-                crate::builtins::modules::molt_module_cache_set(name_bits, module_bits);
+                crate::builtins::module_table::publish_interpreter_sys_for_test(&_py, module_bits);
             if !MoltObject::from_bits(result_bits).is_none() {
                 dec_ref_bits(&_py, result_bits);
             }
@@ -7597,11 +8919,521 @@ mod tests {
         );
         assert!(
             !with_gil(|_py| crate::exception_pending(&_py)),
-            "cold-miss lazy-materialization branch must not leak a pending exception"
+            "dictionary miss must not leak a pending exception"
         );
 
         with_gil(|_py| {
             dec_ref_bits(&_py, sys_module_bits);
+        });
+    }
+
+    static SYS_LOOKUP_MODE: AtomicUsize = AtomicUsize::new(0);
+    static SYS_LOOKUP_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static SYS_LOOKUP_REPORTS: AtomicUsize = AtomicUsize::new(0);
+    static SYS_LOOKUP_MODULE: AtomicU64 = AtomicU64::new(0);
+    static SYS_LOOKUP_GETATTR_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn sys_lookup_key_eq(_self: u64, _other: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            SYS_LOOKUP_CALLS.fetch_add(1, AtomicOrdering::SeqCst);
+            match SYS_LOOKUP_MODE.swap(0, AtomicOrdering::SeqCst) {
+                1 => crate::raise_exception::<u64>(py, "RuntimeError", "sys key equality failed"),
+                2 => {
+                    // Drop public, private and registry owners during equality.
+                    // Only the interpreter role may keep this namespace alive.
+                    let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+                    crate::builtins::modules::molt_module_cache_del(name);
+                    let sys = SYS_LOOKUP_MODULE.load(AtomicOrdering::SeqCst);
+                    let modules = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
+                    unsafe {
+                        dict_set_in_place(
+                            py,
+                            MoltObject::from_bits(modules).as_ptr().unwrap(),
+                            name,
+                            MoltObject::from_int(91).bits(),
+                        );
+                    }
+                    let nested = unsafe {
+                        molt_cpython_abi::api::sys::PySys_GetObject(c"molt_sys_probe".as_ptr())
+                    };
+                    assert!(!nested.is_null());
+                    dec_ref_bits(py, modules);
+                    dec_ref_bits(py, name);
+                    MoltObject::from_bool(true).bits()
+                }
+                _ => MoltObject::from_bool(true).bits(),
+            }
+        })
+    }
+
+    extern "C" fn sys_lookup_unraisable(_args: u64) -> u64 {
+        SYS_LOOKUP_REPORTS.fetch_add(1, AtomicOrdering::SeqCst);
+        MoltObject::none().bits()
+    }
+
+    extern "C" fn sys_lookup_getattr_trap(_name: u64) -> u64 {
+        SYS_LOOKUP_GETATTR_CALLS.fetch_add(1, AtomicOrdering::SeqCst);
+        crate::with_gil_entry_nopanic!(py, {
+            crate::raise_exception::<u64>(
+                py,
+                "RuntimeError",
+                "PySys_GetObject invoked sys.__getattr__",
+            )
+        })
+    }
+
+    fn sys_lookup_function(py: &crate::PyToken<'_>, target: *const (), arity: u64) -> u64 {
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            py,
+            crate::provenance::abi::expose_function_address(target),
+            arity,
+        );
+        assert!(!ptr.is_null());
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    fn sys_lookup_key(py: &crate::PyToken<'_>) -> (u64, u64) {
+        let name = crate::attr_name_bits_from_bytes(py, b"SysLookupKey").unwrap();
+        let class = crate::molt_class_new(name);
+        crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+        dec_ref_bits(py, name);
+        let eq = crate::attr_name_bits_from_bytes(py, b"__eq__").unwrap();
+        let function = sys_lookup_function(py, sys_lookup_key_eq as *const (), 2);
+        crate::molt_set_attr_name(class, eq, function);
+        dec_ref_bits(py, eq);
+        dec_ref_bits(py, function);
+        let ptr = MoltObject::from_bits(class).as_ptr().unwrap();
+        unsafe {
+            crate::object::class_finish_definition(py, ptr).unwrap();
+        }
+        let key = unsafe { crate::alloc_instance_for_class(py, ptr) };
+        (key, class)
+    }
+
+    #[test]
+    fn pysys_getobject_equality_owns_namespace_across_public_replacement_and_deletion() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        with_gil(|py| unsafe {
+            let name = crate::attr_name_bits_from_bytes(&py, b"sys").unwrap();
+            let _restore = ModuleCacheRestore::new(&py, name);
+            let sys = MoltObject::from_ptr(alloc_module_obj(&py, name)).bits();
+            // Same-named publication has no interpreter authority.
+            crate::builtins::modules::molt_module_cache_set(name, sys);
+            assert!(crate::builtins::modules::interpreter_sys_module(&py).is_none());
+            crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
+            assert_eq!(
+                crate::builtins::modules::interpreter_sys_module(&py),
+                Some(sys)
+            );
+            SYS_LOOKUP_MODULE.store(sys, AtomicOrdering::SeqCst);
+            let dictionary = module_dict_bits(MoltObject::from_bits(sys).as_ptr().unwrap());
+            let dict = MoltObject::from_bits(dictionary).as_ptr().unwrap();
+            let (key, class) = sys_lookup_key(&py);
+            let value =
+                MoltObject::from_ptr(crate::alloc_tuple(&py, &[MoltObject::from_int(17).bits()]))
+                    .bits();
+            crate::object::ops::dict_set_with_hash_in_place(
+                &py,
+                dict,
+                key,
+                value,
+                crate::object::ops_hash::hash_string_bytes(&py, b"molt_sys_probe") as u64,
+            );
+            dec_ref_bits(&py, value);
+            dec_ref_bits(&py, sys);
+            SYS_LOOKUP_CALLS.store(0, AtomicOrdering::SeqCst);
+            SYS_LOOKUP_MODE.store(2, AtomicOrdering::SeqCst);
+            let result = molt_cpython_abi::api::sys::PySys_GetObject(c"molt_sys_probe".as_ptr());
+            assert!(!result.is_null());
+            assert_eq!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(result)
+                    .unwrap()
+                    .bits(),
+                value
+            );
+            assert_eq!((*result).ob_refcnt, 1, "result is borrowed");
+            assert_eq!(
+                SYS_LOOKUP_CALLS.load(AtomicOrdering::SeqCst),
+                2,
+                "one outer and one nested lookup"
+            );
+            let replacement = crate::builtins::modules::molt_module_cache_get(name);
+            assert_eq!(MoltObject::from_bits(replacement).as_int(), Some(91));
+            dec_ref_bits(&py, replacement);
+            crate::builtins::modules::molt_module_cache_del(name);
+            assert!(
+                MoltObject::from_bits(crate::builtins::modules::molt_module_cache_get(name))
+                    .is_none()
+            );
+            assert_eq!(
+                molt_cpython_abi::api::sys::PySys_GetObject(c"molt_sys_probe".as_ptr()),
+                result
+            );
+            assert_eq!((*result).ob_refcnt, 1);
+            assert!(!crate::exception_pending(&py));
+            dec_ref_bits(&py, key);
+            dec_ref_bits(&py, class);
+            SYS_LOOKUP_MODULE.store(0, AtomicOrdering::SeqCst);
+        });
+    }
+
+    #[test]
+    fn pysys_getobject_preserves_exact_error_and_gates_unraisable_reporting() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        with_gil(|py| unsafe {
+            let state = crate::runtime_state(&py);
+            let previous = crate::object::ops_sys::runtime_target_python_info(state);
+            let name = crate::attr_name_bits_from_bytes(&py, b"sys").unwrap();
+            let _restore = ModuleCacheRestore::new(&py, name);
+            let sys = MoltObject::from_ptr(alloc_module_obj(&py, name)).bits();
+            crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
+            let dict = MoltObject::from_bits(module_dict_bits(
+                MoltObject::from_bits(sys).as_ptr().unwrap(),
+            ))
+            .as_ptr()
+            .unwrap();
+            let (key, class) = sys_lookup_key(&py);
+            crate::object::ops::dict_set_with_hash_in_place(
+                &py,
+                dict,
+                key,
+                MoltObject::from_int(17).bits(),
+                crate::object::ops_hash::hash_string_bytes(&py, b"molt_sys_probe") as u64,
+            );
+            let hook_name = crate::attr_name_bits_from_bytes(&py, b"unraisablehook").unwrap();
+            let hook = sys_lookup_function(&py, sys_lookup_unraisable as *const (), 1);
+            crate::builtins::modules::molt_module_set_attr(sys, hook_name, hook);
+            dec_ref_bits(&py, hook_name);
+            dec_ref_bits(&py, hook);
+            for minor in [12, 13, 14] {
+                let mut target = previous.clone();
+                target.minor = minor;
+                *state.sys_version_info.lock().unwrap() = Some(target);
+                SYS_LOOKUP_REPORTS.store(0, AtomicOrdering::SeqCst);
+                for raising in [false, true] {
+                    molt_cpython_abi::api::errors::PyErr_SetString(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast::<PyObject>(),
+                        c"incoming exact exception".as_ptr(),
+                    );
+                    let (mut kind, mut value, mut traceback) =
+                        (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+                    molt_cpython_abi::api::errors::PyErr_Fetch(
+                        &raw mut kind,
+                        &raw mut value,
+                        &raw mut traceback,
+                    );
+                    assert!(!value.is_null());
+                    molt_cpython_abi::api::errors::PyErr_Restore(kind, value, traceback);
+                    SYS_LOOKUP_MODE.store(usize::from(raising), AtomicOrdering::SeqCst);
+                    let result =
+                        molt_cpython_abi::api::sys::PySys_GetObject(c"molt_sys_probe".as_ptr());
+                    assert_eq!(result.is_null(), raising);
+                    let (mut restored_kind, mut restored_value, mut restored_traceback) =
+                        (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+                    molt_cpython_abi::api::errors::PyErr_Fetch(
+                        &raw mut restored_kind,
+                        &raw mut restored_value,
+                        &raw mut restored_traceback,
+                    );
+                    assert_eq!(
+                        (restored_kind, restored_value, restored_traceback),
+                        (kind, value, traceback)
+                    );
+                    for object in [restored_kind, restored_value, restored_traceback] {
+                        molt_cpython_abi::api::refcount::Py_XDECREF(object);
+                    }
+                    assert!(!crate::exception_pending(&py));
+                }
+                assert_eq!(
+                    SYS_LOOKUP_REPORTS.load(AtomicOrdering::SeqCst),
+                    usize::from(minor >= 13)
+                );
+            }
+            // The sibling import API deliberately propagates; it must not use
+            // PySys_GetObject's suppression or unraisable reporting policy.
+            let modules_name = crate::attr_name_bits_from_bytes(&py, b"modules").unwrap();
+            crate::dict_del_in_place(&py, dict, modules_name);
+            let (modules_key, modules_class) = sys_lookup_key(&py);
+            crate::object::ops::dict_set_with_hash_in_place(
+                &py,
+                dict,
+                modules_key,
+                MoltObject::from_int(0).bits(),
+                crate::object::ops_hash::hash_string_bytes(&py, b"modules") as u64,
+            );
+            SYS_LOOKUP_MODE.store(1, AtomicOrdering::SeqCst);
+            let reports = SYS_LOOKUP_REPORTS.load(AtomicOrdering::SeqCst);
+            assert!(molt_cpython_abi::api::imports::PyImport_GetModuleDict().is_null());
+            assert_eq!(
+                molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_RuntimeError).cast::<PyObject>()
+                ),
+                1
+            );
+            assert_eq!(SYS_LOOKUP_REPORTS.load(AtomicOrdering::SeqCst), reports);
+            molt_cpython_abi::api::errors::PyErr_Clear();
+            crate::clear_exception(&py);
+            // Release the adversarial namespace before cache restoration.
+            crate::dict_clear_in_place(&py, dict);
+            *state.sys_version_info.lock().unwrap() = Some(previous);
+            for bits in [modules_name, modules_key, modules_class, key, class, sys] {
+                dec_ref_bits(&py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn pysys_getobject_never_calls_module_getattr_or_restores_deleted_entries() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        with_gil(|py| unsafe {
+            let name = crate::attr_name_bits_from_bytes(&py, b"sys").unwrap();
+            let _restore = ModuleCacheRestore::new(&py, name);
+            let sys = MoltObject::from_ptr(alloc_module_obj(&py, name)).bits();
+            crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
+            let hook_name = crate::attr_name_bits_from_bytes(&py, b"__getattr__").unwrap();
+            let hook = sys_lookup_function(&py, sys_lookup_getattr_trap as *const (), 1);
+            crate::builtins::modules::molt_module_set_attr(sys, hook_name, hook);
+            SYS_LOOKUP_GETATTR_CALLS.store(0, AtomicOrdering::SeqCst);
+            assert!(
+                molt_cpython_abi::api::sys::PySys_GetObject(c"molt_namespace_probe".as_ptr())
+                    .is_null()
+            );
+            assert_eq!(SYS_LOOKUP_GETATTR_CALLS.load(AtomicOrdering::SeqCst), 0);
+            assert!(!crate::exception_pending(&py));
+
+            let key = crate::attr_name_bits_from_bytes(&py, b"molt_namespace_probe").unwrap();
+            let stored =
+                MoltObject::from_ptr(crate::alloc_tuple(&py, &[MoltObject::from_int(33).bits()]))
+                    .bits();
+            crate::builtins::modules::molt_module_set_attr(sys, key, stored);
+            let value =
+                molt_cpython_abi::api::sys::PySys_GetObject(c"molt_namespace_probe".as_ptr());
+            assert!(!value.is_null());
+            assert_eq!((*value).ob_refcnt, 1);
+            assert_eq!(
+                molt_cpython_abi::api::sys::PySys_GetObject(c"molt_namespace_probe".as_ptr()),
+                value
+            );
+            let dict = MoltObject::from_bits(module_dict_bits(
+                MoltObject::from_bits(sys).as_ptr().unwrap(),
+            ))
+            .as_ptr()
+            .unwrap();
+            let _ = crate::dict_del_in_place(&py, dict, key);
+            assert!(
+                molt_cpython_abi::api::sys::PySys_GetObject(c"molt_namespace_probe".as_ptr())
+                    .is_null()
+            );
+            let replacement = MoltObject::from_int(77).bits();
+            crate::builtins::modules::molt_module_set_attr(sys, key, replacement);
+            let replaced =
+                molt_cpython_abi::api::sys::PySys_GetObject(c"molt_namespace_probe".as_ptr());
+            assert!(!replaced.is_null());
+            assert_eq!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(replaced)
+                    .unwrap()
+                    .bits(),
+                replacement
+            );
+            assert_eq!(SYS_LOOKUP_GETATTR_CALLS.load(AtomicOrdering::SeqCst), 0);
+            assert!(!crate::exception_pending(&py));
+            for bits in [key, stored, hook_name, hook, sys] {
+                dec_ref_bits(&py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn abi_public_bytearray_constructor_roundtrips_through_python_operations() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        register_cpython_hooks();
+        with_gil(|py| unsafe {
+            use molt_cpython_abi::abi_types::{Py_buffer, PyBUF_WRITABLE};
+            use molt_cpython_abi::api::{buffer, errors, refcount, strings};
+            let object = strings::PyByteArray_FromStringAndSize(c"abc".as_ptr(), 3);
+            assert!(!object.is_null());
+            let bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(object)
+                .unwrap()
+                .bits();
+            let ptr = MoltObject::from_bits(bits).as_ptr().unwrap();
+            assert_eq!(object_type_id(ptr), TYPE_ID_BYTEARRAY);
+            assert_eq!(
+                MoltObject::from_bits(crate::molt_len(bits)).as_int(),
+                Some(3)
+            );
+            assert_eq!(
+                MoltObject::from_bits(crate::object::ops::molt_getitem_method(
+                    bits,
+                    MoltObject::from_int(1).bits()
+                ))
+                .as_int(),
+                Some(98)
+            );
+            crate::object::ops::molt_store_index(
+                bits,
+                MoltObject::from_int(1).bits(),
+                MoltObject::from_int(90).bits(),
+            );
+            assert!(!crate::exception_pending(&py));
+            let data = strings::PyByteArray_AsString(object).cast::<u8>();
+            assert_eq!(std::slice::from_raw_parts(data, 4), b"aZc\0");
+            let mut view: Py_buffer = std::mem::zeroed();
+            assert_eq!(
+                buffer::PyObject_GetBuffer(object, &mut view, PyBUF_WRITABLE),
+                0
+            );
+            assert_eq!(view.buf, data.cast());
+            view.buf.cast::<u8>().add(2).write(b'!');
+            assert_eq!(
+                MoltObject::from_bits(crate::object::ops::molt_getitem_method(
+                    bits,
+                    MoltObject::from_int(2).bits()
+                ))
+                .as_int(),
+                Some(33)
+            );
+            buffer::PyBuffer_Release(&mut view);
+            let copied = strings::PyByteArray_FromObject(object);
+            assert!(!copied.is_null());
+            assert_ne!(strings::PyByteArray_AsString(copied).cast::<u8>(), data);
+            let joined = strings::PyByteArray_Concat(object, copied);
+            assert!(!joined.is_null());
+            assert_eq!(
+                std::slice::from_raw_parts(strings::PyByteArray_AsString(joined).cast::<u8>(), 7),
+                b"aZ!aZ!\0"
+            );
+            assert!(!crate::object::buffer_exports::bytearray_is_exported(ptr));
+            assert!(strings::PyByteArray_Concat(object, std::ptr::null_mut()).is_null());
+            assert!(!crate::object::buffer_exports::bytearray_is_exported(ptr));
+            errors::PyErr_Clear();
+            crate::clear_exception(&py);
+            for len in [0, 3] {
+                let zeroed = strings::PyByteArray_FromStringAndSize(std::ptr::null(), len);
+                assert!(!zeroed.is_null());
+                assert_eq!(strings::PyByteArray_Size(zeroed), len);
+                assert_eq!(
+                    std::slice::from_raw_parts(
+                        strings::PyByteArray_AsString(zeroed).cast::<u8>(),
+                        len as usize + 1
+                    ),
+                    vec![0; len as usize + 1]
+                );
+                refcount::Py_DECREF(zeroed);
+            }
+            for value in [joined, copied, object] {
+                refcount::Py_DECREF(value);
+            }
+            assert!(errors::PyErr_Occurred().is_null());
+        });
+    }
+
+    #[test]
+    fn abi_bytearray_storage_aliases_managed_exact_and_subclass_backing() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        register_cpython_hooks();
+        with_gil(|py| unsafe {
+            use crate::object::native_instance::NativePayload;
+            use molt_cpython_abi::abi_types::{Py_buffer, PyBUF_WRITABLE, PyExc_BufferError};
+            use molt_cpython_abi::api::{buffer, errors, refcount, strings};
+            let name = MoltObject::from_ptr(alloc_string(&py, b"AbiBytearrayStorage")).bits();
+            let subclass = crate::molt_class_new(name);
+            dec_ref_bits(&py, name);
+            crate::molt_class_set_base(subclass, NativePayload::Bytearray.owner(&py));
+            crate::object::class_finish_definition(
+                &py,
+                MoltObject::from_bits(subclass).as_ptr().unwrap(),
+            )
+            .unwrap();
+            for class in [NativePayload::Bytearray.owner(&py), subclass] {
+                let input = MoltObject::from_ptr(alloc_bytes(&py, b"abc")).bits();
+                let bits =
+                    crate::call::bind::call_bind_borrowed(&py, class, None, &[input], &[], &[]);
+                dec_ref_bits(&py, input);
+                assert!(!crate::exception_pending(&py));
+                let ptr = MoltObject::from_bits(bits).as_ptr().unwrap();
+                assert_eq!(object_type_id(ptr), TYPE_ID_BYTEARRAY);
+                let object = molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits);
+                assert!(!object.is_null());
+                assert_eq!(strings::PyByteArray_Check(object), 1);
+                assert_eq!(
+                    strings::PyByteArray_CheckExact(object),
+                    i32::from(class != subclass)
+                );
+                let data = strings::PyByteArray_AsString(object).cast::<u8>();
+                let mut direct_len = 0;
+                assert_eq!(
+                    crate::c_api::molt_bytearray_as_ptr(bits, &mut direct_len),
+                    data
+                );
+                assert_eq!(direct_len, 3);
+                assert_eq!(std::slice::from_raw_parts(data, 4), b"abc\0");
+                let python_view = crate::object::ops_memoryview::molt_memoryview_new(bits);
+                assert!(!crate::exception_pending(&py));
+                let mut exported: Py_buffer = std::mem::zeroed();
+                assert_eq!(
+                    buffer::PyObject_GetBuffer(object, &mut exported, PyBUF_WRITABLE),
+                    0
+                );
+                assert_eq!(exported.buf, data.cast());
+                exported.buf.cast::<u8>().add(1).write(b'Z');
+                assert_eq!(crate::object::layout::bytearray_vec_ref(ptr), b"aZc");
+                assert!(
+                    crate::object::buffer_exports::bytearray_mutate(&py, ptr, 3, |bytes| bytes
+                        [2] =
+                        b'!')
+                    .is_some()
+                );
+                assert_eq!(std::slice::from_raw_parts(data, 4), b"aZ!\0");
+                assert_eq!(strings::PyByteArray_Resize(object, 3), 0);
+                for len in [0, 2, 8] {
+                    assert_eq!(strings::PyByteArray_Resize(object, len), -1);
+                    assert_eq!(
+                        errors::PyErr_ExceptionMatches(
+                            (&raw mut PyExc_BufferError).cast::<PyObject>()
+                        ),
+                        1
+                    );
+                    errors::PyErr_Clear();
+                    crate::clear_exception(&py);
+                    assert_eq!(strings::PyByteArray_AsString(object).cast::<u8>(), data);
+                }
+                buffer::PyBuffer_Release(&mut exported);
+                // The independent Python memoryview is still a live counted pin.
+                assert_eq!(strings::PyByteArray_Resize(object, 8), -1);
+                errors::PyErr_Clear();
+                crate::clear_exception(&py);
+                crate::object::ops_memoryview::molt_memoryview_release(python_view);
+                dec_ref_bits(&py, python_view);
+                assert_eq!(strings::PyByteArray_Resize(object, 5), 0);
+                assert_eq!(
+                    std::slice::from_raw_parts(
+                        strings::PyByteArray_AsString(object).cast::<u8>(),
+                        6
+                    ),
+                    b"aZ!\0\0\0"
+                );
+                crate::object::ops_bytes::molt_bytearray_resize(
+                    bits,
+                    MoltObject::from_int(1).bits(),
+                );
+                assert!(!crate::exception_pending(&py));
+                assert_eq!(
+                    std::slice::from_raw_parts(
+                        strings::PyByteArray_AsString(object).cast::<u8>(),
+                        2
+                    ),
+                    b"a\0"
+                );
+                assert_eq!(strings::PyByteArray_Resize(object, 0), 0);
+                assert_eq!(strings::PyByteArray_Size(object), 0);
+                assert_eq!(*strings::PyByteArray_AsString(object), 0);
+                refcount::Py_DECREF(object);
+                assert!(errors::PyErr_Occurred().is_null());
+            }
+            dec_ref_bits(&py, subclass);
         });
     }
 
@@ -8639,11 +10471,48 @@ mod tests {
         // fake-success value, this catches it before it could mask a missing
         // runtime authority.
         use molt_cpython_abi::hooks::STUB_HOOKS;
-        assert_eq!(unsafe { (STUB_HOOKS.set_new)(0) }, 0);
+        assert_eq!(
+            unsafe { (STUB_HOOKS.set_new)(BorrowedHandleResult::missing(), false) },
+            0
+        );
         assert_eq!(unsafe { (STUB_HOOKS.set_size)(0) }, -1);
         assert_eq!(unsafe { (STUB_HOOKS.set_contains)(0, 0) }, -1);
         assert_eq!(unsafe { (STUB_HOOKS.set_add)(0, 0) }, -1);
         assert_eq!(unsafe { (STUB_HOOKS.set_discard)(0, 0) }, -1);
+    }
+
+    #[test]
+    fn abi_list_projection_retains_heap_fill_and_promotes_inline_storage() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        register_cpython_hooks();
+        with_gil(|py| unsafe {
+            let fill = crate::int_bits_from_i64(&py, 1_i64 << 62);
+            let ptr = crate::object::builders::alloc_list_int_from_fill(&py, 3, fill).unwrap();
+            let bits = MoltObject::from_ptr(ptr).bits();
+            assert_eq!(object_type_id(ptr), TYPE_ID_LIST);
+            assert_eq!(hook_try_mark_abi_view(bits, 1), 1);
+            assert_eq!(borrowed_bits(hook_list_item(bits, 0)), Some(fill));
+            assert_eq!(borrowed_bits(hook_list_item(bits, 2)), Some(fill));
+            assert_eq!(hook_try_mark_abi_view(bits, 0), 1);
+            dec_ref_bits(&py, bits);
+            assert_eq!(
+                (*header_from_obj_ptr(MoltObject::from_bits(fill).as_ptr().unwrap()))
+                    .ref_count_snapshot(),
+                1
+            );
+            dec_ref_bits(&py, fill);
+
+            let ptr = crate::object::builders::alloc_list_int_from_raw_slice(&py, &[1, 2]).unwrap();
+            let bits = MoltObject::from_ptr(ptr).bits();
+            assert_eq!(hook_try_mark_abi_view(bits, 1), 1);
+            assert_eq!(object_type_id(ptr), TYPE_ID_LIST);
+            assert_eq!(
+                borrowed_bits(hook_list_item(bits, 1)),
+                Some(MoltObject::from_int(2).bits())
+            );
+            assert_eq!(hook_try_mark_abi_view(bits, 0), 1);
+            dec_ref_bits(&py, bits);
+        });
     }
 
     #[test]
@@ -8699,7 +10568,20 @@ mod tests {
             );
 
             assert_eq!(
-                hook_list_set_slice(int_bits, 0, 2, bool_bits, std::ptr::null(), 0),
+                hook_list_set_slice(
+                    int_bits,
+                    0,
+                    2,
+                    [
+                        MoltObject::from_bool(true).bits(),
+                        MoltObject::from_bool(false).bits(),
+                        MoltObject::from_bool(true).bits()
+                    ]
+                    .as_ptr(),
+                    3,
+                    std::ptr::null(),
+                    0
+                ),
                 0
             );
             assert_eq!(hook_list_len(int_bits), 5);
@@ -9316,6 +11198,12 @@ mod tests {
                 Some(4)
             );
 
+            use molt_cpython_abi::api::refcount::OwnedPyObject;
+            let zero_pointer =
+                OwnedPyObject::from_owned(molt_cpython_abi::api::numbers::PyFloat_FromDouble(0.0));
+            let value_pointer =
+                OwnedPyObject::from_owned(molt_cpython_abi::api::numbers::PyLong_FromLong(42));
+            assert!(!zero_pointer.as_ptr().is_null() && !value_pointer.as_ptr().is_null());
             let val = MoltObject::from_int(42).bits();
             for index in [0, 1, 3] {
                 assert!(matches!(
@@ -9325,7 +11213,7 @@ mod tests {
                 assert_eq!(crate::c_api::PyTuple_GetItem(bits, index as isize), 0);
                 assert!(!crate::exception_pending(&_py));
                 assert!(matches!(
-                    hook_tuple_set(bits, index, 0, ptr::null_mut()).decode(),
+                    hook_tuple_set(bits, index, 0, zero_pointer.as_ptr()).decode(),
                     DecodedHandleResult::Missing
                 ));
                 assert_eq!(borrowed_bits(hook_tuple_item(bits, index)), Some(0));
@@ -9333,15 +11221,19 @@ mod tests {
                 assert!(!crate::exception_pending(&_py));
             }
             let none = MoltObject::none().bits();
+            let none_pointer = OwnedPyObject::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(none),
+            );
+            assert!(!none_pointer.as_ptr().is_null());
             assert!(matches!(
-                hook_tuple_set(bits, 3, none, ptr::null_mut()).decode(),
+                hook_tuple_set(bits, 3, none, none_pointer.as_ptr()).decode(),
                 DecodedHandleResult::Ok(0)
             ));
             assert_eq!(borrowed_bits(hook_tuple_item(bits, 3)), Some(none));
             assert_eq!(crate::c_api::PyTuple_GetItem(bits, 3), none);
             assert!(!crate::exception_pending(&_py));
 
-            match hook_tuple_set(bits, 2, val, ptr::null_mut()).decode() {
+            match hook_tuple_set(bits, 2, val, value_pointer.as_ptr()).decode() {
                 molt_cpython_abi::hooks::DecodedHandleResult::Missing => {}
                 _ => panic!("tuple store failed"),
             }
@@ -9356,7 +11248,12 @@ mod tests {
             let heap_ptr = alloc_string(&_py, b"owned");
             assert!(!heap_ptr.is_null());
             let heap_bits = MoltObject::from_ptr(heap_ptr).bits();
-            let old = match hook_tuple_set(bits, 2, heap_bits, ptr::null_mut()).decode() {
+            let heap_pointer = OwnedPyObject::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(heap_bits),
+            );
+            assert!(!heap_pointer.as_ptr().is_null());
+            inc_ref_bits(&_py, heap_bits);
+            let old = match hook_tuple_set(bits, 2, heap_bits, heap_pointer.as_ptr()).decode() {
                 molt_cpython_abi::hooks::DecodedHandleResult::Ok(old) => old,
                 _ => panic!("tuple heap store failed"),
             };
@@ -9378,7 +11275,7 @@ mod tests {
                     & crate::object::HEADER_FLAG_CONTAINS_REFS,
                 0
             );
-            let old = match hook_tuple_set(bits, 2, val, ptr::null_mut()).decode() {
+            let old = match hook_tuple_set(bits, 2, val, value_pointer.as_ptr()).decode() {
                 molt_cpython_abi::hooks::DecodedHandleResult::Ok(old) => old,
                 _ => panic!("tuple primitive replacement failed"),
             };

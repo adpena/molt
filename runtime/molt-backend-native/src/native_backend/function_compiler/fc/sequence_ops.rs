@@ -37,6 +37,8 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
     scalarized_tuples: &mut BTreeMap<String, Vec<Value>>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
+    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
                                        import_ids: &mut BTreeMap<
@@ -172,72 +174,28 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             }
         }
         "tuple_new" => {
-            let empty_args: Vec<String> = Vec::new();
-            let args = op.args.as_ref().unwrap_or(&empty_args);
-            let Some(out_name) = op.out.as_ref() else {
-                return OpFlow::Continue;
-            };
-
-            if op.stack_eligible == Some(true) && args.len() <= 4 {
-                let mut elems: Vec<Value> = Vec::with_capacity(args.len());
-                for name in args {
-                    let val = var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        name,
-                        representation_plan,
-                    )
-                    .expect("Tuple elem not found");
-                    elems.push(*val);
-                }
-                scalarized_tuples.insert(out_name.to_string(), elems);
-            }
-
-            let values_ptr = if args.is_empty() {
-                builder.ins().iconst(types::I64, 0)
-            } else {
-                let values_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    (args.len() * 8) as u32,
-                    3,
-                ));
-                for (idx, name) in args.iter().enumerate() {
-                    let val = var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        name,
-                        representation_plan,
-                    )
-                    .expect("Tuple elem not found");
-                    builder
-                        .ins()
-                        .stack_store(*val, values_slot, (idx * 8) as i32);
-                }
-                builder.ins().stack_addr(types::I64, values_slot, 0)
-            };
-            let len = builder.ins().iconst(types::I64, args.len() as i64);
-            let tuple_from_values = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_tuple_from_values",
-                &[types::I64, types::I64],
-                &[types::I64],
+            let elements = emit_fixed_aggregate_constructor(
+                op,
+                FixedAggregateConstructor::Tuple,
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                vars,
+                representation_plan,
+                nbc,
+                block_tracked_obj,
+                block_tracked_ptr,
             );
-            let tuple_from_values_local =
-                module.declare_func_in_func(tuple_from_values, builder.func);
-            let tuple_call = builder
-                .ins()
-                .call(tuple_from_values_local, &[values_ptr, len]);
-            let tuple_bits = builder.inst_results(tuple_call)[0];
-            def_var_named(&mut *builder, vars, out_name, tuple_bits);
+            if let Some(out) = crate::tir::simple_def_use::simple_ir_out_result(op) {
+                scalarized_tuples.remove(out);
+                if op.stack_eligible == Some(true)
+                    && let Some(elements) = elements.filter(|values| values.len() <= 4)
+                {
+                    scalarized_tuples.insert(out.to_owned(), elements);
+                }
+            }
         }
         "unpack_sequence" => {
             // Generated SimpleIR field authority separates the sole sequence

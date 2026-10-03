@@ -798,10 +798,19 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "packaging/bootstrap.py",
-        "_install_wheel",
-        "check_call",
-        "explicit packaging bootstrap installs the already-built wheel into the "
-        "repo-local bootstrap venv",
+        "_prepare_environment",
+        "run",
+        "installed launcher bootstraps before repository tooling is importable; "
+        "one explicit locked uv setup and one offline read-only readiness check "
+        "own only the private CLI environment",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
+        "packaging/bootstrap.py",
+        "main",
+        "call",
+        "installed Windows launcher waits for its exact CLI child and propagates "
+        "its exit status; this is the product entrypoint, not a developer proof",
     ),
 )
 

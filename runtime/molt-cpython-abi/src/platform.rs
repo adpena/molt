@@ -1,6 +1,6 @@
 //! Target C-runtime authority used by the CPython ABI surface.
 
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_int, c_void};
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) const C_EDOM: c_int = libc::EDOM;
@@ -22,7 +22,7 @@ pub struct CFile {
 }
 
 unsafe extern "C" {
-    fn molt_capi_write_string(text: *const c_char, stream: *mut CFile) -> c_int;
+    fn molt_capi_write_bytes(text: *const u8, length: usize, stream: *mut CFile) -> c_int;
     fn molt_capi_malloc(size: usize) -> *mut c_void;
     fn molt_capi_calloc(size: usize) -> *mut c_void;
     fn molt_capi_realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
@@ -36,8 +36,8 @@ unsafe extern "C" {
 /// so native, WASI, and freestanding providers all consume one FILE/fwrite ABI
 /// authority instead of a Rust-side target fallback.
 #[inline]
-pub(crate) unsafe fn write_c_string(text: *const c_char, stream: *mut CFile) -> c_int {
-    unsafe { molt_capi_write_string(text, stream) }
+pub(crate) unsafe fn write_bytes(text: *const u8, length: usize, stream: *mut CFile) -> c_int {
+    unsafe { molt_capi_write_bytes(text, length, stream) }
 }
 
 /// Allocate through the target C runtime that also serves extension objects.

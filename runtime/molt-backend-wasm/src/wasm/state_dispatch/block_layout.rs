@@ -57,13 +57,16 @@ pub(super) fn emit_dispatch_block_lookup(
     block_count: usize,
     locals: NonLinearDispatchLocals,
 ) {
+    // An invalid operation or block index must trap, never become a loop
+    // backedge. The innermost block is only the br_table failure destination;
+    // it is closed before block bodies, so their label depths do not change.
     func.instruction(&Instruction::LocalGet(locals.state_local));
     func.instruction(&Instruction::I64Const(op_count as i64));
     func.instruction(&Instruction::I64GeU);
     func.instruction(&Instruction::If(BlockType::Empty));
-    func.instruction(&Instruction::I64Const(block_count as i64));
-    func.instruction(&Instruction::LocalSet(locals.state_local));
-    func.instruction(&Instruction::Else);
+    func.instruction(&Instruction::Unreachable);
+    func.instruction(&Instruction::End);
+    func.instruction(&Instruction::Block(BlockType::Empty));
     func.instruction(&Instruction::LocalGet(locals.block_map_base_local));
     func.instruction(&Instruction::I32WrapI64);
     func.instruction(&Instruction::LocalGet(locals.state_local));
@@ -76,13 +79,9 @@ pub(super) fn emit_dispatch_block_lookup(
         offset: 0,
         memory_index: 0,
     }));
-    func.instruction(&Instruction::I64ExtendI32U);
-    func.instruction(&Instruction::LocalSet(locals.state_local));
+    let targets: Vec<u32> = (0..block_count).map(|idx| idx as u32 + 1).collect();
+    func.instruction(&Instruction::BrTable(targets.into(), 0));
     func.instruction(&Instruction::End);
-
-    func.instruction(&Instruction::LocalGet(locals.state_local));
-    func.instruction(&Instruction::I32WrapI64);
-    let targets: Vec<u32> = (0..block_count).map(|idx| idx as u32).collect();
-    func.instruction(&Instruction::BrTable(targets.into(), block_count as u32));
+    func.instruction(&Instruction::Unreachable);
     func.instruction(&Instruction::End);
 }

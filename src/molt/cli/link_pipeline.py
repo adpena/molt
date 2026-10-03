@@ -13,7 +13,6 @@ from molt import file_publication
 from molt.artifact_publication import discard_staged_output
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli import link_fingerprints
-from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _stage_shared_stdlib_object_for_link,
 )
@@ -54,8 +53,7 @@ from molt.cli.link_selection_admission import (
     link_selection_policy,
     native_link_selection,
 )
-from molt.cli.runtime_paths import _runtime_lib_path
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 from molt.cli.atomic_io import _write_text_if_changed
 
 
@@ -155,10 +153,7 @@ def _prepare_native_link(
     artifacts_root: Path,
     json_output: bool,
     output_binary: Path | None,
-    runtime_lib: Path | None,
-    runtime_build_identity: RuntimeBuildIdentity,
-    molt_root: Path,
-    runtime_cargo_profile: str,
+    runtime_codegen_binding: NativeRuntimeCodegenBinding,
     target_triple: str | None,
     sysroot_path: Path | None,
     profile: BuildProfile,
@@ -174,9 +169,10 @@ def _prepare_native_link(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
-    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     bolt_requested: bool = False,
 ) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
+    if diagnostics_enabled:
+        phase_starts["link"] = time.perf_counter()
     output_obj = output_artifact
     link_stdlib_obj = stdlib_obj_path
     if stdlib_obj_path is not None:
@@ -228,15 +224,9 @@ def _prepare_native_link(
         return None, _fail("Binary output unavailable", json_output, command="build")
     if output_binary.parent != Path("."):
         output_binary.parent.mkdir(parents=True, exist_ok=True)
-    resolved_runtime_lib = runtime_lib
-    if resolved_runtime_lib is None:
-        resolved_runtime_lib = _runtime_lib_path(
-            molt_root,
-            runtime_cargo_profile,
-            target_triple,
-            stdlib_profile=stdlib_profile,
-        )
+    resolved_runtime_lib = runtime_codegen_binding.runtime_lib
     try:
+        runtime_codegen_binding.verify()
         link_plan = _build_native_link_plan(
             output_obj=output_obj,
             output_kind=NativeArtifactKind.ARCHIVE,
@@ -247,7 +237,8 @@ def _prepare_native_link(
             target_triple=target_triple,
             sysroot_path=sysroot_path,
             profile=profile,
-            runtime_build_identity=runtime_build_identity,
+            runtime_build_identity=runtime_codegen_binding.build_identity,
+            runtime_codegen_binding=runtime_codegen_binding,
             stdlib_obj_path=link_stdlib_obj,
             external_link_requirements=(
                 _external_native_link_requirements(
@@ -382,8 +373,6 @@ def _prepare_native_link(
             link_selection_candidate = file_publication.staged_file_path(
                 selection_output, purpose="native-link"
             )
-        if diagnostics_enabled and "link" not in phase_starts:
-            phase_starts["link"] = time.perf_counter()
         try:
             with native_link_selection(
                 link_plan, link_output, surface=selection_surface
@@ -444,6 +433,24 @@ def _prepare_native_link(
                 link_output.unlink()
             if link_selection_candidate is not None:
                 discard_staged_output(link_selection_candidate)
+    try:
+        # Link-cache reuse and real execution both consume the same codegen
+        # generation. A mutation after final preflight cannot publish success.
+        runtime_codegen_binding.verify()
+        if link_plan.runtime_inputs is None:
+            raise ValueError("Native link plan lost its runtime custody observation")
+        link_plan.runtime_inputs.verify()
+    except (OSError, RuntimeError, ValueError) as exc:
+        if not link_skipped:
+            with contextlib.suppress(OSError):
+                link_output.unlink()
+        if link_selection_candidate is not None:
+            discard_staged_output(link_selection_candidate)
+        return None, _fail(
+            f"Native runtime changed during final linking: {exc}",
+            json_output,
+            command="build",
+        )
     return _PreparedNativeLink(
         output_obj=output_obj,
         stub_path=stub_path,

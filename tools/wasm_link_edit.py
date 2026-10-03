@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from molt.wasm_artifact import (
+    is_wasm_final_artifact_forbidden_custom_section,
     read_wasm_limits as _read_limits,
     skip_wasm_import_description as _parse_import_desc,
     write_wasm_limits as _write_limits,
@@ -1217,49 +1218,71 @@ def _rewrite_output_imports(
 
 
 def _canonicalize_standard_section_order(data: bytes) -> bytes | None:
+    """Normalize linker output to one canonically ordered section per standard id.
+
+    Duplicate vector sections merge into their first occurrence. Custom sections
+    carry no order key: each keeps its bytes and relative order and is emitted
+    right after the canonically latest standard section that preceded it (ahead
+    of every standard section when none did). A custom section therefore never
+    moves above a standard section it followed, so ``name`` and DWARF sections
+    stay after the function, code and data sections they describe. Returns
+    ``None`` when the standard sections are already unique and ordered: the
+    module is then exactly its own normal form.
+    """
     sections = _parse_sections(data, allow_duplicate_standard_sections=True)
     vector_section_ids = {1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 13}
-    merged_sections: list[tuple[int, bytes]] = []
-    merged_indices: dict[int, int] = {}
+    standard_payloads: dict[int, bytes] = {}
+    # Custom payloads keyed by the canonical rank of the latest standard section
+    # before them; rank 0 is the module start.
+    customs_by_anchor: dict[int, list[bytes]] = {}
+    anchor_rank = 0
     changed = False
+    relocation_metadata: set[str] = set()
     for section_id, payload in sections:
-        if section_id == 0 or section_id not in merged_indices:
-            merged_indices.setdefault(section_id, len(merged_sections))
-            merged_sections.append((section_id, payload))
+        if section_id == 0:
+            customs_by_anchor.setdefault(anchor_rank, []).append(payload)
+            name, _offset = _read_string(payload, 0)
+            if is_wasm_final_artifact_forbidden_custom_section(name):
+                relocation_metadata.add(name)
             continue
-        if section_id not in vector_section_ids:
+        rank = _STANDARD_SECTION_ORDER.get(section_id)
+        if rank is None:
+            raise ValueError(f"unknown standard section id {section_id}")
+        existing_payload = standard_payloads.get(section_id)
+        if existing_payload is None:
+            standard_payloads[section_id] = payload
+        elif section_id not in vector_section_ids:
             raise ValueError(f"duplicate singleton standard section id {section_id}")
-        existing_index = merged_indices[section_id]
-        existing_payload = merged_sections[existing_index][1]
-        if section_id == 7:
-            merged_sections[existing_index] = (
-                section_id,
-                _merge_export_section_payloads(existing_payload, payload),
+        elif section_id == 7:
+            standard_payloads[section_id] = _merge_export_section_payloads(
+                existing_payload, payload
             )
-            changed = True
-            continue
-        existing_count, existing_offset = _read_varuint(existing_payload, 0)
-        added_count, added_offset = _read_varuint(payload, 0)
-        merged_sections[existing_index] = (
-            section_id,
-            _write_varuint(existing_count + added_count)
-            + existing_payload[existing_offset:]
-            + payload[added_offset:],
-        )
-        changed = True
-    indexed_sections = list(enumerate(merged_sections))
-    canonical = sorted(
-        indexed_sections,
-        key=lambda item: (
-            _STANDARD_SECTION_ORDER.get(item[1][0], 0 if item[1][0] == 0 else 100),
-            item[0],
-        ),
-    )
-    if not changed and [index for index, _section in canonical] == list(
-        range(len(merged_sections))
-    ):
+        else:
+            existing_count, existing_offset = _read_varuint(existing_payload, 0)
+            added_count, added_offset = _read_varuint(payload, 0)
+            standard_payloads[section_id] = (
+                _write_varuint(existing_count + added_count)
+                + existing_payload[existing_offset:]
+                + payload[added_offset:]
+            )
+        changed = changed or existing_payload is not None or rank < anchor_rank
+        anchor_rank = max(anchor_rank, rank)
+    if not changed:
         return None
-    return _build_sections([section for _index, section in canonical])
+    if relocation_metadata:
+        # Merging or reordering renumbers sections; linking/reloc.* payloads
+        # address sections by index and cannot follow that renumbering.
+        raise ValueError(
+            "cannot renumber wasm sections under relocation metadata "
+            f"{sorted(relocation_metadata)}"
+        )
+    canonical = [(0, payload) for payload in customs_by_anchor.get(0, ())]
+    ordered_ids = sorted(standard_payloads, key=_STANDARD_SECTION_ORDER.__getitem__)
+    for section_id in ordered_ids:
+        canonical.append((section_id, standard_payloads[section_id]))
+        anchored = customs_by_anchor.get(_STANDARD_SECTION_ORDER[section_id], ())
+        canonical.extend((0, payload) for payload in anchored)
+    return _build_sections(canonical)
 
 
 def _merge_export_section_payloads(first: bytes, second: bytes) -> bytes:

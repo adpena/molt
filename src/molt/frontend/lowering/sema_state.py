@@ -50,6 +50,8 @@ class SemaStateMixin(GeneratorMixinBase):
                                             and class/call lowering queries
           sema.class_facts                → read directly by class/call lowering
                                             (no god-object dict shim)
+          sema.import_names               → read directly by the call-form rule
+                                            in call lowering (no dict shim)
           self.module_func_defaults       ← known_func_defaults override, else
                                             sema.function_meta.defaults
                                             (sema/funcmeta.collect_module_func_defaults)

@@ -1,7 +1,10 @@
-use crate::OpIR;
+use crate::{OpIR, ParameterCustody};
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 use crate::tir::op_kinds_generated::{
-    SimpleIrOpValueRule, SimpleIrReturnShape, SimpleIrRuntimeRequirements, SimpleIrVarFieldRole,
+    SimpleIrCallTargetRole, SimpleIrOpValueRule, SimpleIrReturnShape, SimpleIrRuntimeRequirements,
+    SimpleIrVarFieldRole, kind_consumed_operand_table, kind_source_call_callable_operand,
+    kind_source_call_first_adopted_operand, kind_to_opcode_table, simpleir_backend_service_kind,
+    simpleir_call_target_role, simpleir_kind_has_function_reference_s_value,
     simpleir_kind_may_carry_async_work_poll_marker,
     simpleir_kind_may_carry_runtime_requirement_bits, simpleir_kind_may_carry_runtime_symbol,
     simpleir_op_shape, simpleir_return_shape, simpleir_var_field_role_table,
@@ -316,8 +319,82 @@ mod op_shape_tests {
     }
 }
 
+/// Validate the control-label transport of the typed StateDispatch terminator.
+/// Source IR without a map is lifted before terminal activation lowering.
+pub fn validate_state_dispatch(ops: &[OpIR]) -> Result<(), String> {
+    use std::collections::BTreeSet;
+    let mut labels = BTreeSet::new();
+    let mut duplicate_labels = BTreeSet::new();
+    for op in ops {
+        if matches!(op.kind.as_str(), "label" | "state_label")
+            && let Some(label) = op.value
+            && !labels.insert(label)
+        {
+            duplicate_labels.insert(label);
+        }
+    }
+    let mut switches = 0;
+    for (index, op) in ops.iter().enumerate() {
+        if op.kind == "state_switch" {
+            switches += 1;
+            if switches > 1 {
+                return Err(format!("op#{index}: multiple state_switch dispatch sites"));
+            }
+        }
+        let Some(targets) = &op.state_targets else {
+            continue;
+        };
+        if op.kind != "state_switch" {
+            return Err(format!(
+                "op#{index}: state_targets requires state_switch, found `{}`",
+                op.kind
+            ));
+        }
+        let mut states = BTreeSet::new();
+        for &(state, label) in targets {
+            if !states.insert(state) {
+                return Err(format!("op#{index}: duplicate saved state {state}"));
+            }
+            if !labels.contains(&label) || duplicate_labels.contains(&label) {
+                return Err(format!(
+                    "op#{index}: saved state {state} requires one control label {label}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
+    if op.kind == "callargs_new" {
+        op.call_argument_form()?;
+    }
+    // Interpret symbol metadata only on executable/callable carriers, never
+    // arbitrary string literals. The service-to-kind relation has one owner.
+    let direct_symbol = (simpleir_call_target_role(&op.kind).is_some()
+        || simpleir_kind_has_function_reference_s_value(&op.kind)
+        || op.kind == "builtin_func"
+        || kind_to_opcode_table(&op.kind) == Some(crate::tir::ops::OpCode::CallBuiltin))
+    .then_some(op.s_value.as_deref())
+    .flatten();
+    for symbol in [
+        direct_symbol,
+        op.runtime_symbol.as_deref(),
+        op.builtin_name.as_deref(),
+        op.native_callable_symbol.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(kind) = simpleir_backend_service_kind(symbol) {
+            return Err(format!(
+                "backend service `{symbol}` cannot use generic `{}` transport; use `{kind}` operation",
+                op.kind
+            ));
+        }
+    }
     validate_simple_op_shape(op).map_err(|error| error.to_string())?;
+    crate::literal_payload::validate_simple_literal(op)?;
     validate_representation_fields(op)
 }
 
@@ -491,6 +568,7 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if op.async_work_poll && !simpleir_kind_may_carry_async_work_poll_marker(op.kind.as_str()) {
         return Err(format!("op `{}` cannot carry async_work_poll", op.kind));
     }
+    validate_argument_custody(op)?;
     validate_native_callable_fields(op)?;
     Ok(())
 }
@@ -560,6 +638,78 @@ fn validate_native_callable_fields(op: &OpIR) -> Result<(), String> {
             return Err(format!(
                 "invoke_ffi native callable export `{export_name}` with ABI `{abi}` has {} argument(s), expected {expected}",
                 args.len()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Custody vectors have one encoding: absent (every position borrowed), or one
+/// entry per position naming at least one transfer.
+pub(crate) fn validate_custody_projection(
+    custody: &[ParameterCustody],
+    positions: usize,
+    what: &str,
+) -> Result<(), String> {
+    if custody.len() != positions {
+        return Err(format!(
+            "{what} names {} entries for {positions} positions",
+            custody.len()
+        ));
+    }
+    if !custody.contains(&ParameterCustody::Transferred) {
+        return Err(format!(
+            "{what} transfers nothing; all-borrowed custody is absent"
+        ));
+    }
+    Ok(())
+}
+
+/// Typed `argument_custody` marks a source Python call instruction, on a
+/// spelling with a generated `[[source_call_kind]]` row. A raw direct call
+/// carries its target's parameter custody, which the whole-document check
+/// compares. A dynamic source call adopts every argument, as CPython's CALL
+/// does, but never an operand before the row's first adopted one (a `super()`
+/// class). Its callable goes with its call form: a builder call's form is its
+/// builder's, checked against the builder's `callargs_new`, and every other
+/// callable belongs to an ordinary call, which adopts it.
+fn validate_argument_custody(op: &OpIR) -> Result<(), String> {
+    let Some(custody) = op.argument_custody.as_deref() else {
+        return Ok(());
+    };
+    let Some(first_adopted) = kind_source_call_first_adopted_operand(&op.kind) else {
+        return Err(format!("op `{}` cannot carry argument_custody", op.kind));
+    };
+    validate_custody_projection(
+        custody,
+        op.args.as_ref().map_or(0, Vec::len),
+        &format!("op `{}` argument_custody", op.kind),
+    )?;
+    if matches!(
+        simpleir_call_target_role(&op.kind),
+        Some(SimpleIrCallTargetRole::InternalRequired | SimpleIrCallTargetRole::ExternalOrRuntime)
+    ) {
+        return Ok(());
+    }
+    let callable = kind_source_call_callable_operand(&op.kind);
+    let builder_call = kind_consumed_operand_table(&op.kind, custody.len()).is_some();
+    for (position, &actual) in custody.iter().enumerate() {
+        let expected = if position < first_adopted {
+            ParameterCustody::Borrowed
+        } else if builder_call && Some(position) == callable {
+            continue;
+        } else {
+            ParameterCustody::Transferred
+        };
+        if actual != expected {
+            return Err(format!(
+                "op `{}` operand {position} custody {actual:?} disagrees with its source call, which {} it",
+                op.kind,
+                if expected == ParameterCustody::Transferred {
+                    "adopts"
+                } else {
+                    "borrows"
+                },
             ));
         }
     }

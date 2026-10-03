@@ -49,6 +49,71 @@ def _custody(
     )
 
 
+@pytest.mark.parametrize(
+    "call,candidate,claim",
+    [
+        ("__import__('admitted.target', **options)", "admitted.target", "matching"),
+        ("load_builtin('admitted.target', **options)", "admitted.target", "matching"),
+        (
+            "importlib.import_module('admitted.target', **options)",
+            "admitted.target",
+            "matching",
+        ),
+        (
+            "importlib.util.find_spec('admitted.target', **options)",
+            "admitted.target",
+            "matching",
+        ),
+        ("load_builtin(*arguments, **options)", None, "matching"),
+        (
+            "load_builtin(*arguments, name='admitted.target')",
+            "admitted.target",
+            "matching",
+        ),
+        ("importlib.import_module('.target', **options)", None, "matching"),
+        ("load_builtin('admitted.target', **options)", "admitted.target", "name"),
+        ("load_builtin('admitted.target', **options)", "admitted.target", "path"),
+        ("load_builtin('admitted.target', **options)", "admitted.target", "ast"),
+        ("load_builtin('admitted.target', **options)", "admitted.target", "missing"),
+    ],
+)
+def test_expanded_import_calls_require_exact_runtime_source_custody(
+    tmp_path: Path, call: str, candidate: str | None, claim: str
+) -> None:
+    source = (
+        "import importlib\nimport importlib.util\n"
+        "from builtins import __import__ as load_builtin\n"
+        f"def deferred(arguments, options):\n    return {call}\n"
+    )
+    owner, custody = _custody(tmp_path, source)
+    tree = ast.parse(source)
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == (
+        (candidate,) if candidate is not None else ()
+    )
+    assert "admitted.target" not in projection.imports
+    if claim == "ast":
+        tree = ast.parse(source + "changed = True\n")
+
+    def collect() -> list[str]:
+        return _collect_imports(
+            tree,
+            "other.entry" if claim == "name" else "pkg.entry",
+            runtime_import_custody=None if claim == "missing" else custody,
+            source_path=tmp_path / "other.py" if claim == "path" else owner,
+        )
+
+    if claim == "matching":
+        assert set(custody.modules) <= set(collect())
+    elif claim == "ast":
+        with pytest.raises(ValueError, match="source AST changed"):
+            collect()
+    else:
+        with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+            collect()
+
+
 @pytest.mark.parametrize("statement", ["from . import child", "from . import *"])
 def test_dynamic_package_uses_complete_catalog_not_lexical_package(
     tmp_path: Path, statement: str
@@ -555,9 +620,17 @@ def test_full_module_analysis_keeps_custody_out_of_persisted_cache(
     assert set(result[1]) == set(custody.modules)
 
 
+@pytest.mark.parametrize(
+    "source,needs_custody",
+    [
+        ("print(1)\n", False),
+        ("import importlib.machinery\nprint(1)\n", True),
+    ],
+    ids=["print-only", "runtime-import"],
+)
 @_source_tree_fingerprint_transaction()
-def test_print_graph_import_plan_and_full_frontend_share_runtime_custody(
-    tmp_path: Path,
+def test_graph_import_plan_and_full_frontend_share_runtime_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, needs_custody: bool
 ) -> None:
     # Match build()'s transaction: frontend cache reads/writes share one source
     # fingerprint instead of repeatedly scanning the compiler during this test.
@@ -567,8 +640,11 @@ def test_print_graph_import_plan_and_full_frontend_share_runtime_custody(
         _prepare_entry_module_graph,
     )
 
+    # A print-only micro program no longer imports runtime protocol owners as a
+    # side effect of builtin publication. The positive case owns a real import.
+    monkeypatch.setenv("MOLT_STDLIB_PROFILE", "micro")
     entry = tmp_path / "demo.py"
-    entry.write_text("print(1)\n", encoding="utf-8")
+    entry.write_text(source, encoding="utf-8")
     stdlib = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
     reasons: dict[str, set[str]] = {}
     graph, error = _prepare_entry_module_graph(
@@ -594,9 +670,10 @@ def test_print_graph_import_plan_and_full_frontend_share_runtime_custody(
     )
     assert plan.runtime_import_scan_custody is graph.runtime_import_scan_custody
     custody = plan.runtime_import_scan_custody
-    assert custody is not None
-    custody.validate_graph(plan.module_graph)
-    assert set(custody.modules).issubset(plan.runtime_import_dispatch_roots)
+    assert (custody is not None) is needs_custody
+    if custody is not None:
+        custody.validate_graph(plan.module_graph)
+        assert set(custody.modules).issubset(plan.runtime_import_dispatch_roots)
     analysis, error = _prepare_frontend_analysis(
         module_graph=plan.module_graph,
         module_graph_metadata=plan.module_graph_metadata,
@@ -613,11 +690,14 @@ def test_print_graph_import_plan_and_full_frontend_share_runtime_custody(
     )
     assert error is None and analysis is not None
     assert "demo" in analysis.module_order
-    assert "importlib.machinery" in analysis.module_order
-    assert (
-        set(custody.modules) - {"importlib.machinery"}
-        <= analysis.module_deps["importlib.machinery"]
-    )
+    if custody is not None:
+        assert "importlib.machinery" in analysis.module_order
+        assert (
+            set(custody.modules) - {"importlib.machinery"}
+            <= analysis.module_deps["importlib.machinery"]
+        )
+    else:
+        assert "importlib.machinery" not in analysis.module_order
 
 
 @pytest.mark.parametrize("mode", ["module_init", "module_init_static_helpers"])

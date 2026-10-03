@@ -12,19 +12,41 @@ from molt.toolchain_identity import executable_candidates
 
 
 def installation_checks(root: Path) -> list[dict[str, Any]]:
-    installed = installed_compiler(root)
+    try:
+        installed = installed_compiler(root)
+        damage: str | None = None
+    except (OSError, ValueError) as exc:
+        # Damaged installed metadata is installed damage, not a source checkout.
+        installed, damage = None, str(exc)
     launcher = None if installed is None else root.parent / installed.launcher["path"]
+    mode = (
+        f"damaged installation ({damage})"
+        if damage is not None
+        else "installed distribution"
+        if installed is not None
+        else "source checkout"
+    )
     checks: list[dict[str, Any]] = [
         {
             "name": "molt-installation",
-            "ok": True,
-            "detail": f"{'installed bundle' if installed else 'source checkout'}: {root}; Python: {sys.executable}",
+            "ok": damage is None,
+            "detail": f"{mode}: {root}; Python: {sys.executable}",
             "source_root": str(root),
             "launcher": None if launcher is None else str(launcher),
             "python": sys.executable,
         }
     ]
-    for command in ("molt", "uv", "cargo", "rustc", "clang"):
+    if damage is not None:
+        checks[0].update(
+            level="error",
+            advice=[
+                "Reinstall Molt with the installer, package manager or wheel that provided it"
+            ],
+        )
+    # Rust tools are source-development tools; an installed distribution
+    # neither uses nor inspects them.
+    source_tools = ("cargo", "rustc") if installed is None and damage is None else ()
+    for command in ("molt", "uv", *source_tools, "clang"):
         candidates: list[Path] = []
         for candidate in executable_candidates(command, environment=os.environ):
             # PATH aliases, junctions, symlinks and hardlinks to the same file

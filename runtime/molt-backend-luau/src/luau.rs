@@ -53,6 +53,8 @@ mod op_sets;
 mod op_strings;
 mod op_tuples;
 mod op_values;
+mod runtime_fragments;
+mod runtime_prelude;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum IdentityProvenance {

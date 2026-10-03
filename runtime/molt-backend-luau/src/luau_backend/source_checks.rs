@@ -52,7 +52,7 @@ fn luau_block_kind_name(kind: LuauBlockKind) -> &'static str {
 
 // Block keywords must come from code, never from diagnostics or string values.
 // Preserve byte positions while masking quoted literals and removing comments.
-fn luau_line_code(line: &str) -> String {
+pub(super) fn luau_line_code(line: &str) -> String {
     let mut code = String::with_capacity(line.len());
     let mut quote = None;
     let mut escaped = false;
@@ -93,12 +93,47 @@ fn opens_luau_function_block(trimmed: &str) -> bool {
         && !trimmed.contains(" end")
 }
 
-fn opens_luau_if_block(trimmed: &str) -> bool {
-    trimmed.starts_with("if ") && trimmed.contains(" then") && !trimmed.ends_with(" end")
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LuauBlockHeader {
+    If,
+    ElseIf,
+    Loop,
 }
 
-fn opens_luau_loop_block(trimmed: &str) -> bool {
-    (trimmed.starts_with("for ") || trimmed.starts_with("while ")) && trimmed.ends_with(" do")
+impl LuauBlockHeader {
+    fn delimiter(self) -> &'static str {
+        if self == Self::Loop { "do" } else { "then" }
+    }
+}
+
+fn luau_code_words(code: &str) -> impl Iterator<Item = &str> {
+    code.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+}
+
+fn luau_block_header(code: &str) -> Option<LuauBlockHeader> {
+    match luau_code_words(code).next()? {
+        "if" => Some(LuauBlockHeader::If),
+        "elseif" => Some(LuauBlockHeader::ElseIf),
+        "for" | "while" => Some(LuauBlockHeader::Loop),
+        _ => None,
+    }
+}
+
+// This checker admits the backend's statement-line structure, including header
+// continuations. It does not parse expression grammar: inline function bodies
+// and conditional expressions remain Luau syntax owned by the guest parser.
+// Only a standalone structural boundary can interrupt a pending header; an
+// `end` inside `if function() return true end then` belongs to the expression.
+fn luau_header_boundary(code: &str) -> bool {
+    is_luau_end_line(code)
+        || matches!(
+            luau_code_words(code).next(),
+            Some("else" | "elseif" | "until")
+        )
+}
+
+fn luau_header_complete(code: &str, header: LuauBlockHeader) -> bool {
+    luau_code_words(code).any(|word| word == header.delimiter())
 }
 
 fn is_luau_end_line(trimmed: &str) -> bool {
@@ -107,20 +142,44 @@ fn is_luau_end_line(trimmed: &str) -> bool {
 
 fn validate_luau_block_structure(source: &str) -> Result<(), String> {
     let mut stack: Vec<(LuauBlockKind, usize)> = Vec::new();
+    let mut pending_header: Option<(LuauBlockHeader, usize, String)> = None;
 
     for (line_index, raw_line) in source.lines().enumerate() {
-        let line_number = line_index + 1;
+        let mut line_number = line_index + 1;
         let code = luau_line_code(raw_line);
-        let trimmed = code.trim();
-        if trimmed.is_empty() {
+        if code.trim().is_empty() {
             continue;
         }
+        let (header, code) = if let Some((header, opened_line, mut previous)) =
+            pending_header.take()
+        {
+            if luau_header_boundary(code.trim()) {
+                return Err(format!(
+                    "luau block structure error at line {opened_line}: header is missing `{}` before `{}` at line {line_number}",
+                    header.delimiter(),
+                    code.trim()
+                ));
+            }
+            line_number = opened_line;
+            previous.push(' ');
+            previous.push_str(code.trim());
+            (Some(header), previous)
+        } else {
+            (luau_block_header(code.trim()), code.trim().to_owned())
+        };
+        if let Some(header) = header
+            && !luau_header_complete(&code, header)
+        {
+            pending_header = Some((header, line_number, code));
+            continue;
+        }
+        let trimmed = code.trim();
 
         // Both continuation branches retain the existing if frame. Either may
         // contain a body and close that frame on the same line; a body without
         // an inline end leaves it open, just like a branch with a separate body.
         let is_else = trimmed == "else" || trimmed.starts_with("else ");
-        let is_elseif = trimmed.starts_with("elseif ") && trimmed.contains(" then");
+        let is_elseif = header == Some(LuauBlockHeader::ElseIf);
         if is_else || is_elseif {
             match stack.last() {
                 Some((LuauBlockKind::If, _)) => {}
@@ -186,16 +245,19 @@ fn validate_luau_block_structure(source: &str) -> Result<(), String> {
             continue;
         }
 
+        if let Some(header) = header {
+            if !trimmed.ends_with(" end") {
+                let kind = if header == LuauBlockHeader::Loop {
+                    LuauBlockKind::Loop
+                } else {
+                    LuauBlockKind::If
+                };
+                stack.push((kind, line_number));
+            }
+            continue;
+        }
         if opens_luau_function_block(trimmed) {
             stack.push((LuauBlockKind::Function, line_number));
-            continue;
-        }
-        if opens_luau_if_block(trimmed) {
-            stack.push((LuauBlockKind::If, line_number));
-            continue;
-        }
-        if opens_luau_loop_block(trimmed) {
-            stack.push((LuauBlockKind::Loop, line_number));
             continue;
         }
         if trimmed == "do" {
@@ -207,6 +269,12 @@ fn validate_luau_block_structure(source: &str) -> Result<(), String> {
         }
     }
 
+    if let Some((header, opened_line, _)) = pending_header {
+        let delimiter = header.delimiter();
+        return Err(format!(
+            "luau block structure error at line {opened_line}: unterminated header missing `{delimiter}`"
+        ));
+    }
     if let Some((kind, opened_line)) = stack.last() {
         return Err(format!(
             "luau block structure error: unterminated {} block opened at line {opened_line}",
@@ -384,6 +452,88 @@ mod tests {
         .join("\n");
         validate_luau_source(&source)
             .expect("a function expression may be followed by sibling call arguments");
+    }
+
+    #[test]
+    fn runtime_provider_fragments_keep_their_block_structure() {
+        // In particular CALLABLE_FRAME_RUNTIME's namespace guard has `if` and
+        // `then` on different physical lines. Validate the provider authority,
+        // not a rewritten one-line surrogate of the failing generated code.
+        for (name, source) in super::super::runtime_fragments::fragments() {
+            validate_luau_source(&source)
+                .unwrap_or_else(|error| panic!("runtime provider {name}: {error}"));
+        }
+    }
+
+    #[test]
+    fn statement_headers_own_continuations_through_then_and_do() {
+        let source = r#"
+local function visit(values, then_value, do_value)
+    if values ~= nil
+        -- then end are not header delimiters in a comment.
+        and then_value
+        and values["then"]
+    then
+        print("then end")
+    elseif then_value
+        and values["do"]
+    then print(2)
+    elseif do_value
+    then print(3)
+    else print(4) end
+    for index,
+        value in
+        values
+    do
+        while value
+            and do_value
+        do value = nil end
+    end
+    if if then_value then do_value else false then print(5) end
+    for _, value in if then_value then values else {}
+    do print(value) end
+    if function() return true end then
+        print(6)
+    end
+    for value in function() return nil end do
+        print(value)
+    end
+end
+"#;
+        validate_luau_source(source).expect("physical line breaks do not change block ownership");
+    }
+
+    #[test]
+    fn incomplete_statement_headers_do_not_consume_other_block_terminators() {
+        for (header, delimiter) in [
+            ("if ready", "then"),
+            ("if ready then\nelseif other", "then"),
+            ("for index in values", "do"),
+            ("while ready", "do"),
+        ] {
+            let source = format!("local function f()\n{header}\n-- {delimiter}\n");
+            let error = validate_luau_source(&source).expect_err("header needs its delimiter");
+            assert!(error.contains(&format!("missing `{delimiter}`")), "{error}");
+            assert!(error.contains("unterminated header"), "{error}");
+            let terminated = format!("{source}end\n");
+            let error = validate_luau_source(&terminated)
+                .expect_err("an outer end cannot silently close an incomplete header");
+            assert!(
+                error.contains(&format!("missing `{delimiter}` before `end`")),
+                "{error}"
+            );
+        }
+        for source in [
+            "if ready\nthen\nend\nend\n",
+            "for index in values\ndo\nend\nend\n",
+            "while ready\ndo\nend\nend\n",
+        ] {
+            let error = validate_luau_source(source).expect_err("extra block terminator");
+            assert!(error.contains("orphan `end`"), "{error}");
+        }
+        let error = validate_luau_source("elseif ready\nthen print(1) end\n")
+            .expect_err("a continued elseif still needs its owning if");
+        assert!(error.contains("orphan"), "{error}");
     }
 
     #[test]

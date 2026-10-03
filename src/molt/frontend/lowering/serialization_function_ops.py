@@ -196,8 +196,6 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                 _del_info, _del_owner = self._resolve_method_info(_onb_class, "__del__")
                 if _del_info is not None and _del_owner != "object":
                     _onb_op["defines_del"] = True
-            if (op.metadata or {}).get("bound_local"):
-                _onb_op["bound_local"] = True
             ctx.json_ops.append(_onb_op)
         elif op.kind == "CLASSMETHOD_NEW":
             ctx.json_ops.append(

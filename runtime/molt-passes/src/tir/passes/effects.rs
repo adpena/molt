@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 /// Operand maps passed to these instance oracles must come from
 /// `type_refine::extract_exact_scalar_map`, never annotation-derived types.
-pub(super) fn op_effects_with_types(
+pub(crate) fn op_effects_with_types(
     op: &TirOp,
     value_types: &HashMap<ValueId, TirType>,
 ) -> crate::tir::op_kinds_generated::OpcodeEffects {
@@ -29,11 +29,45 @@ pub(super) fn op_effects_with_types(
         if super::value_identity::copy_value_source(op).is_some() {
             return crate::tir::op_kinds_generated::OPCODE_EFFECTS_PURE;
         }
-        if op.attrs.contains_key("_original_kind") {
-            return crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE;
+        if let Some(crate::tir::ops::AttrValue::Str(kind)) = op.attrs.get("_original_kind") {
+            let mut effects = crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE;
+            // Callback capability is independent from ownership and marker
+            // categories. Trace lifecycle returns no owner while acquiring
+            // namespaces and releasing frame-held references.
+            effects.may_call_python =
+                !crate::tir::op_kinds_generated::copy_kind_is_callback_free_table(kind);
+            return effects;
         }
+        return crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE;
     }
-    crate::tir::op_semantics::op_instance_effects_for_op(op, value_types)
+    let mut effects = crate::tir::op_semantics::op_instance_effects_for_op(op, value_types);
+    if crate::tir::call_targets::gpu_runtime_result_type_for_op(op).is_some() {
+        effects.may_call_python = false;
+    }
+    // Exact builtin scalars cannot own user finalizers. Use the generated
+    // release projection so DeleteVar's name/metadata operand is never released.
+    use crate::tir::op_kinds_generated::{
+        ExplicitReleaseOperands, opcode_explicit_release_operands_table,
+    };
+    let released = opcode_explicit_release_operands_table(op.opcode, op.operands.len());
+    let release_neutral = match released {
+        ExplicitReleaseOperands::None => false,
+        ExplicitReleaseOperands::All => {
+            !op.operands.is_empty()
+                && op
+                    .operands
+                    .iter()
+                    .all(|value| value_types.contains_key(value))
+        }
+        ExplicitReleaseOperands::One(index) => op
+            .operands
+            .get(index)
+            .is_some_and(|value| value_types.contains_key(value)),
+    };
+    if release_neutral {
+        effects.may_call_python = false;
+    }
+    effects
 }
 
 pub(super) fn op_may_throw_with_types(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> bool {
@@ -92,6 +126,36 @@ mod tests {
         opcode_effects_table, opcode_gvn_numbering_role_table,
         opcode_type_refine_operand_type_rule_table,
     };
+
+    #[test]
+    fn builtin_reference_lookup_keeps_opaque_effects_without_allocation_facts() {
+        use crate::tir::ops::{AttrDict, AttrValue, Dialect};
+        for named in [false, true] {
+            let mut attrs = AttrDict::new();
+            attrs.insert(
+                "_original_kind".into(),
+                AttrValue::Str("builtin_func".into()),
+            );
+            attrs.insert("s_value".into(), AttrValue::Str("molt_len".into()));
+            attrs.insert("value".into(), AttrValue::Int(1));
+            if named {
+                attrs.insert("builtin_name".into(), AttrValue::Str("len".into()));
+            }
+            let op = TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: if named { vec![ValueId(0)] } else { vec![] },
+                results: vec![ValueId(1)],
+                attrs,
+                source_span: None,
+            };
+            assert_eq!(
+                op_effects_with_types(&op, &HashMap::new()),
+                crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE
+            );
+            assert!(!crate::tir::op_kinds_generated::opcode_is_escape_alloc_site_table(op.opcode));
+        }
+    }
 
     // Unified generated operation-effect oracle.
     #[test]

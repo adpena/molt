@@ -14,6 +14,23 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+The gate's `release-fast` label currently selects the public CLI's
+`--build-profile release`. Without explicit overrides, that selects a
+`release-output` runtime and an independently built `release` compiler. The
+scoreboard's compiler-identity lookup still probes the older `release-fast`
+layout and must be reconciled with the compiler that actually ran. A label or
+an artifact found in a different profile directory is not proof of that identity.
+The current best-effort search can also select the `molt` launcher or return no
+identity, and omits Windows executable suffixes. An authoritative receipt must
+bind the backend that actually ran using observed build diagnostics and content
+identity, including its profile and feature set, and
+fail closed when that identity is absent.
+
+LLVM is required by E2 and the verified-subset policy. The current prebuilt
+compiler feature set omits LLVM. Its availability and acceptance remain open;
+a native-only pass cannot replace the required LLVM cells. These implementation
+gaps do not change the canonical command or relax its acceptance requirements.
+
 `tools/release_exit_gate.py` treats every `status: pass` criterion as a typed
 receipt, not a generic file attachment. E1 must include a
 `pact-witness-acceptance` receipt with a real `candidate_outputs.npz` path and a
@@ -28,7 +45,9 @@ native+LLVM release-fast gate above (`--set core`, `--backend native`,
 release-fast cells for both native and LLVM across the full canonical core suite
 (`bench_suites.BENCHMARKS`), with backend binary identity receipts for both
 backends. E3 must include the exact source-bound verified-subset receipt closure
-for every required CPython-version, OS, architecture, and native/WASM coordinate.
+for every required CPython-version, OS, architecture, backend and guest-profile
+coordinate. The policy requires LLVM, native and WASM with `dev` and `release`
+guest profiles.
 Each receipt binds the coordinate-specific test projection, raw/resolved/backend
 outcomes, reference interpreter, host, toolchain, and CI execution identity.
 
@@ -44,7 +63,157 @@ baselines and fail closed on any regression; the poison receipt must contain the
 The existing core gate is necessary, not sufficient, for v1.0. A native/LLVM
 core pass does not certify WASM, ecosystem workloads, frontend/build latency,
 memory, temporary disk usage, or binary size. Missing target coverage and stale
-measurements remain release gaps; they are not implicit passes.
+measurements remain release gaps; they are not implicit passes. The current
+startup budget has null ceilings, and the cold-start table leaves the shipped
+`release-output` runtime unseeded and has no WASM cell. Existing native/LLVM
+baseline ceilings still apply; the missing numeric product budgets must be
+declared and measured through this authority.
+
+WASM development benchmark commands disable V8 tier-up and suppress host
+warnings. Their engine settings and stderr treatment differ from public runs
+and must be explicit in each claim; results cannot be relabelled as default
+installed-user behavior.
+
+Component diagnostics must retain their pipeline scope. Shared exceptional
+cleanup factoring reduced a preserved module-metadata entry from 52,161 to
+1,425 post-insertion TIR operations. The entry has 741 source operations and
+1,232 signature-only siblings. Three serial samples per production compiler,
+on the same host with the same native input and archive-callable binding, gave
+guarded median compile times of 82.359 s before and 31.532 s after. Maximum
+sampled compiler RSS fell from 2,208,509,952 to 97,107,968 bytes; the native object
+fell from 3,695,361 to 128,893 bytes. CLIF output was disabled for timing.
+
+These are development component measurements, not the public full-module
+pipeline, installed-user latency, linked artifact size or E2 acceptance.
+The cleanup compiler checkpoint's public native and linked-WASM ownership
+stdout matches the independent CPython 3.12 oracle with Python absent from PATH.
+Native stderr matches; the public Node WASI host warning is preserved separately
+in the WASM assessment. The subsequent production SSA verifier repair uses
+shared executable program-point dominance, also used by DropInsertion's split
+continuation remapper. Focused correctness checks and public native/linked-WASM
+stdout replay pass on this integrated change. Native stderr matches; the public
+Node host warning is retained and independent WASM guest-stderr attribution
+remains open. No performance gain is claimed for the verifier/remapper repair.
+Native immutable-value transport now uses shared definition/execution facts and
+the actual emitted values; mutable joins and stack/frame/resume custody retain
+explicit transport. Liveness and transport share canonical name IDs with sparse
+per-operation sets. A separate CLIF diagnostic reduced explicit block
+parameters from 154,957 to 8 across the same 1,396 blocks. Three alternating quiet samples per retained
+production compiler, on the same input and archive-callable binding, measured
+28.390 s before and 28.890 s after. Maximum sampled compiler RSS was
+96,759,808 and 96,473,088 bytes respectively; both produced the same
+128,893-byte native object, byte for byte. These results establish the
+representation reduction, not a compile-latency, executable-size or material
+memory improvement. Focused liveness and native codegen checks pass, along with
+public native/linked-WASM stdout replay of the transport implementation against
+CPython 3.12 with
+Python absent from guest PATH. Native guest stderr matches the oracle;
+independent WASM guest-stderr attribution and the wider declared matrix remain
+open.
+These remain development component results, with CLIF output disabled for
+comparison timings. Public-build cold/warm/edit measurements must include actual
+module discovery, lowering, linking, delivered bytes and memory.
+
+Build-Python capture now binds inventory rows within the shared stable-file
+transaction and batches capture and final verification. An isolated Windows
+CPython 3.12 capture diagnostic reduced scheduled futures from 5,382 to 169 and
+`lstat` calls from 24,961 to 19,491. These are profiled operation counts, not an
+end-to-end latency claim. The representative public native and linked-WASM
+ExceptionGroup executions match the CPython oracle with Python absent from the
+guest PATH. Warm source-checkout timing samples had materially different host
+load before and after the change and establish no compile-latency improvement.
+Comparable cold/warm/edit and installed-user measurements remain required.
+
+Build diagnostics use one terminal snapshot after artifact finalization and
+publication, including cache-hit link admission and requested artifact analysis.
+Their `build_preamble_to_terminal_result` interval excludes interpreter startup,
+compiler identity enrichment and diagnostic serialization/publication; the outer
+process measurement remains the compile-latency authority. Sequential phases may
+be summed; overlapping attribution aggregates must not be summed. A reporting
+failure preserves the primary build failure, or returns nonzero after a successful
+artifact publication while retaining that artifact. This instrumentation change
+does not establish a product speedup.
+
+The shared native object/archive cache decoder now uses native Unicode scanning
+and reuses lexical validation within each payload. A Windows CPython 3.12
+development diagnostic of the same 4,781-member cached archive measured
+1.141 s before and 0.178 s after (median of five samples after two warmups).
+Every decoded member table round-tripped to the original payload; sampled
+process-tree RSS increased from 148,635,648 to 150,257,664 bytes. This measures
+cache decoding, excluding JSON I/O and artifact/toolchain custody. The public
+native and linked-WASM ExceptionGroup authority executions still match the
+independent CPython oracle, with empty guest/runner stderr and Python absent
+from guest PATH. These observations establish a component improvement, not a
+whole-build, installed-user, generated-program, or release-performance claim.
+
+Runtime source/tooling admission now uses one live tree index per resolver and
+bounded file batches across native, shared/relocatable WASM and standalone WASM
+ABI builds. On identical copied source/tooling bytes (1,195 files), a Windows
+CPython 3.12 component diagnostic reduced scheduled futures from 2,390 to 96.
+Sequential samples under host load observed median capture time of 0.888 s
+before and 0.763 s after (five samples after two warmups), with identical source
+and publication summaries. These are development component observations,
+excluding Python/toolchain capture, archives, lowering and linking. They do not
+establish quiescent or installed-user compile latency. Fresh post-build and
+final-link observations retain membership and byte-change detection; no tree
+index is reused across those boundaries.
+
+Direct dictionary snapshot materialization shares the canonical list backing
+authority and avoids the temporary view used by the view-to-list path. Seven
+alternating correctness-checked component samples on Windows x86_64, using the
+same `dev-fast` runtime test executable and 32 repetitions per sample, observed:
+
+| Entries / operation | View-to-list median | Direct median |
+| --- | ---: | ---: |
+| 64 keys | 10.597 us | 4.425 us |
+| 64 values | 10.709 us | 4.456 us |
+| 64 items | 246.463 us | 196.078 us |
+| 4096 keys | 64.456 us | 42.809 us |
+| 4096 values | 66.316 us | 43.034 us |
+| 4096 items | 15,040.913 us | 12,097.359 us |
+
+Separate allocation diagnostics observed one fewer runtime object per direct
+snapshot: keys/values allocate one instead of two, and items allocate `N + 1`
+instead of `N + 2`. Timing disabled profiling; allocation diagnostics enabled
+it. These are paired implementation paths on one source, not historical
+before/after builds. Quiescence was not established, and the object counters
+exclude native buffers and process memory. They establish neither whole-program
+nor installed-user nor release performance. The fixture is
+`c_api::tests::dictionary_snapshot_materialization_components`.
+
+Relocatable WASM runtime metadata admission now performs one `wasm-ld -r`
+preflight on the custodied immutable input; the pipeline consumes that same
+admitted input without repeating the preflight. Five alternating serial pairs
+on a 60,578,040-byte development runtime with LLVM 22.1.8 measured median
+component time of 1.801794 s for two invocations and 0.899768 s for one,
+eliminating 0.902026 s. Input, linker and output content identities were equal.
+This measures the removed admission work, excludes the rest of linking and
+compilation, and establishes no installed-user or whole-build speedup.
+
+Source-build Python admission retains the observed interpreter for one build
+operation, checks fresh startup selection at the next boundary, and closes
+through the existing guarded-command custody. Five alternating Windows
+component pairs measured 6.022947 s for two complete captures versus 5.602407 s
+for retained admission, fresh selection, verification and closure: 0.420540 s
+removed. The semantic identity was equal. This excludes guest compilation and
+does not establish public-build, installed-user or cross-platform latency.
+Installed distributions use shipped runtime cells and bypass build-Python and
+Cargo preparation; their admission cost needs separate measurement.
+
+Installed runtime admission now carries captured generations through callable
+binding, layout, hydration and final-link custody, with lazy member facts and
+one WASM acceptance report. Five serial Windows CPython 3.12 component samples
+on identical frozen development artifacts measured native admission medians
+of 1.300023 s before and 0.726186 s after, and WASM admission medians of
+0.959667 s before and 0.788988 s after. Semantic outputs matched. Maximum
+process-tree job commit fell from 176,267,264 to 136,699,904 bytes. Instrumented
+reads fell from 803,451,895 to 404,583,523 bytes and from 25,259 to 12,701 calls;
+these counters exclude mmap page traffic and metadata syscalls. The WASM
+component covers pair read, binding and split layout; it does not cover the
+complete non-split export/structural admission path. These are development
+component measurements, not public CLI latency, installed qualification,
+generated-program speedups or release performance. The full public-build and
+installed-user comparisons remain required.
 
 Each claimed workload and target needs reproducible correctness-checked
 measurements, explicit resource/latency budgets, and input-size scaling. Extend
@@ -65,6 +234,16 @@ The semantic acceptance matrix retains CPython 3.12, 3.13, and 3.14 across the
 declared verified subset. Asyncio, threading, multiprocessing, stdlib, and
 advertised third-party package coverage require coordinate-bound correctness
 evidence before their performance results can establish release acceptance.
+
+
+A retained Windows native attribute workload measured 46.485 s before and
+43.031 s after the integrated class-storage changes (median, seven fresh-process
+samples after two warmups per artifact). Every sample matched its independent
+CPython 3.12 output with empty stderr and Python absent from guest PATH. Both
+artifacts used the development guest/runtime profile and the same workload;
+compilation is excluded. The 7.4% wall-time reduction is a development comparison
+of integrated source checkpoints, not attribution to one change, current-source
+qualification, a release-profile result, or E2 acceptance.
 
 Megafunctions are structural review triggers: isolate semantic responsibilities
 and ownership, remove repeated analysis, and measure compiler and generated-code

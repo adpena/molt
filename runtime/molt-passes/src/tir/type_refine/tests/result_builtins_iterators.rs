@@ -1,85 +1,47 @@
 use super::*;
 
 #[test]
-fn builtin_len_return_refines_to_i64_without_transport_hint() {
-    let list = ValueId(0);
-    let result = ValueId(1);
-    let mut attrs = AttrDict::new();
-    attrs.insert("name".into(), AttrValue::Str("len".into()));
-    let ops = vec![make_op(
-        OpCode::CallBuiltin,
-        vec![list],
-        vec![result],
-        attrs,
-    )];
-    let mut func = single_block_func(ops, 2);
-    func.value_types
-        .insert(list, TirType::List(Box::new(TirType::DynBox)));
-
-    refine_types(&mut func);
-    let type_map = extract_type_map(&func);
-
-    assert_eq!(type_map.get(&result), Some(&TirType::I64));
-}
-
-#[test]
-fn builtin_predicate_returns_refine_to_bool() {
-    for name in ["hasattr", "isinstance", "issubclass"] {
-        let value = ValueId(0);
-        let result = ValueId(1);
-        let mut attrs = AttrDict::new();
-        attrs.insert("name".into(), AttrValue::Str(name.into()));
-        let ops = vec![make_op(
-            OpCode::CallBuiltin,
-            vec![value],
-            vec![result],
-            attrs,
-        )];
-        let mut func = single_block_func(ops, 2);
-        func.value_types.insert(value, TirType::DynBox);
-
-        refine_types(&mut func);
-        let type_map = extract_type_map(&func);
-
-        assert_eq!(
-            type_map.get(&result),
-            Some(&TirType::Bool),
-            "call_builtin {name} should refine to Bool"
-        );
+fn public_builtin_names_never_refine_replacement_results() {
+    for name in [
+        "len",
+        "id",
+        "ord",
+        "chr",
+        "hasattr",
+        "isinstance",
+        "issubclass",
+    ] {
+        for dynamic in [false, true] {
+            let name_value = ValueId(0);
+            let argument = ValueId(1);
+            let result = ValueId(2);
+            let mut attrs = AttrDict::from([
+                ("return_type".into(), AttrValue::Str("int".into())),
+                ("_type_hint".into(), AttrValue::Str("str".into())),
+            ]);
+            let operands = if dynamic {
+                vec![name_value, argument]
+            } else {
+                attrs.insert("name".into(), AttrValue::Str(name.into()));
+                vec![argument]
+            };
+            let mut function = single_block_func(
+                vec![
+                    make_op(OpCode::ConstStr, vec![], vec![name_value], str_attr(name)),
+                    make_op(OpCode::ConstInt, vec![], vec![argument], int_attr(1)),
+                    make_op(OpCode::CallBuiltin, operands, vec![result], attrs),
+                ],
+                3,
+            );
+            refine_types(&mut function);
+            assert_eq!(
+                extract_type_map(&function).get(&result),
+                Some(&TirType::DynBox),
+                "{name}, dynamic={dynamic}"
+            );
+            assert!(!extract_exact_scalar_map(&function).contains_key(&result));
+        }
     }
-}
-
-#[test]
-fn builtin_ord_and_chr_return_types_refine() {
-    let value = ValueId(0);
-    let ord_result = ValueId(1);
-    let chr_result = ValueId(2);
-    let mut ord_attrs = AttrDict::new();
-    ord_attrs.insert("name".into(), AttrValue::Str("ord".into()));
-    let mut chr_attrs = AttrDict::new();
-    chr_attrs.insert("name".into(), AttrValue::Str("chr".into()));
-    let ops = vec![
-        make_op(
-            OpCode::CallBuiltin,
-            vec![value],
-            vec![ord_result],
-            ord_attrs,
-        ),
-        make_op(
-            OpCode::CallBuiltin,
-            vec![ord_result],
-            vec![chr_result],
-            chr_attrs,
-        ),
-    ];
-    let mut func = single_block_func(ops, 3);
-    func.value_types.insert(value, TirType::Str);
-
-    refine_types(&mut func);
-    let type_map = extract_type_map(&func);
-
-    assert_eq!(type_map.get(&ord_result), Some(&TirType::I64));
-    assert_eq!(type_map.get(&chr_result), Some(&TirType::Str));
 }
 
 #[test]

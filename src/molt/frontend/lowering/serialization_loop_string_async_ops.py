@@ -116,194 +116,34 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
             ctx.json_ops.append({"kind": "loop_continue"})
         elif op.kind == "LOOP_END":
             ctx.json_ops.append({"kind": "loop_end"})
-        elif op.kind == "VEC_SUM_INT":
+        elif op.kind == "VEC_SUM":
             ctx.json_ops.append(
                 {
-                    "kind": "vec_sum_int",
+                    "kind": "vec_sum",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "VEC_SUM_INT_TRUSTED":
+        elif op.kind == "VEC_PROD":
             ctx.json_ops.append(
                 {
-                    "kind": "vec_sum_int_trusted",
+                    "kind": "vec_prod",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "VEC_SUM_INT_RANGE":
+        elif op.kind == "VEC_MIN":
             ctx.json_ops.append(
                 {
-                    "kind": "vec_sum_int_range",
+                    "kind": "vec_min",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "VEC_SUM_INT_RANGE_TRUSTED":
+        elif op.kind == "VEC_MAX":
             ctx.json_ops.append(
                 {
-                    "kind": "vec_sum_int_range_trusted",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_SUM_INT_RANGE_ITER":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_sum_int_range_iter",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_SUM_INT_RANGE_ITER_TRUSTED":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_sum_int_range_iter_trusted",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_SUM_FLOAT":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_sum_float",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_SUM_FLOAT_TRUSTED":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_sum_float_trusted",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_SUM_FLOAT_RANGE":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_sum_float_range",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_SUM_FLOAT_RANGE_TRUSTED":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_sum_float_range_trusted",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_SUM_FLOAT_RANGE_ITER":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_sum_float_range_iter",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_SUM_FLOAT_RANGE_ITER_TRUSTED":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_sum_float_range_iter_trusted",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_PROD_INT":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_prod_int",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_PROD_INT_TRUSTED":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_prod_int_trusted",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_PROD_INT_RANGE":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_prod_int_range",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_PROD_INT_RANGE_TRUSTED":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_prod_int_range_trusted",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_MIN_INT":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_min_int",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_MIN_INT_TRUSTED":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_min_int_trusted",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_MIN_INT_RANGE":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_min_int_range",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_MIN_INT_RANGE_TRUSTED":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_min_int_range_trusted",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_MAX_INT":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_max_int",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_MAX_INT_TRUSTED":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_max_int_trusted",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_MAX_INT_RANGE":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_max_int_range",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "VEC_MAX_INT_RANGE_TRUSTED":
-            ctx.json_ops.append(
-                {
-                    "kind": "vec_max_int_range_trusted",
+                    "kind": "vec_max",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
@@ -458,6 +298,14 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
             ctx.json_ops.append(
                 {
                     "kind": "str_from_obj",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+            )
+        elif op.kind == "OPERATOR_INDEX":
+            ctx.json_ops.append(
+                {
+                    "kind": "operator_index",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }

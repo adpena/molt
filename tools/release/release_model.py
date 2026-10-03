@@ -16,6 +16,8 @@ from molt.release_matrix import RELEASE_TARGETS
 from molt.portable_paths import portable_relative_path
 from molt.toolchain_identity import stable_regular_file_identity
 from packaging.utils import parse_wheel_filename
+
+from .binary_compatibility import wheel_platform_tag_matches
 from tools.git_identity import require_git_object_id
 
 
@@ -23,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "release_supply_chain.toml"
 CONFIG_SCHEMA = "molt.release-supply-chain.v1"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-MANIFEST_SCHEMA = "molt.release-manifest.v3"
+MANIFEST_SCHEMA = "molt.release-manifest.v4"
 SPDX_VERSION = "2.3"
 SPDX_PREDICATE_TYPE = f"https://spdx.dev/Document/v{SPDX_VERSION}"
 RELEASE_EXIT_ARCHIVE_KIND = "release-exit-evidence"
@@ -170,16 +172,37 @@ def validate_artifact_record(
     if set(record) != keys or record["version"] != version:
         raise ValueError("release artifact metadata is invalid")
     name, platform, arch = (record[key] for key in ("name", "platform", "arch"))
-    if name == "molt-wheel":
-        wheel_name, wheel_version, _, _ = parse_wheel_filename(record["filename"])
+    if name == "molt-wheel" and (platform, arch) == ("any", "any"):
+        wheel_name, wheel_version, _, tags = parse_wheel_filename(record["filename"])
         if (
             wheel_name != "molt"
             or _numeric_version_identity(str(wheel_version))
             != _numeric_version_identity(version)
-            or (record["kind"], platform, arch, record["libc"])
-            != ("wheel", "any", "any", None)
+            or (record["kind"], record["libc"]) != ("wheel", None)
         ):
             raise ValueError("release wheel metadata is invalid")
+    elif name == "molt-wheel":
+        # One platform wheel per release target: the target bundle for pip.
+        wheel_name, wheel_version, build, tags = parse_wheel_filename(
+            record["filename"]
+        )
+        target = next(
+            (t for t in release_targets() if (t.platform, t.arch) == (platform, arch)),
+            None,
+        )
+        if (
+            target is None
+            or wheel_name != "molt"
+            or build
+            or _numeric_version_identity(str(wheel_version))
+            != _numeric_version_identity(version)
+            or len(tags) != 1
+            or (next(iter(tags)).interpreter, next(iter(tags)).abi) != ("py3", "none")
+            or not wheel_platform_tag_matches(platform, arch, next(iter(tags)).platform)
+            or (record["kind"], record["libc"])
+            != ("wheel", "gnu" if platform == "linux" else None)
+        ):
+            raise ValueError("release platform wheel metadata is invalid")
     else:
         target = next(
             (t for t in release_targets() if (t.platform, t.arch) == (platform, arch)),
@@ -257,7 +280,7 @@ def validate_release_manifest(value: object) -> dict[str, Any]:
     expected = {("molt-wheel", "any", "any")} | {
         (name, target.platform, target.arch)
         for target in release_targets()
-        for name in ("molt", "molt-worker")
+        for name in ("molt", "molt-worker", "molt-wheel")
     }
     if not isinstance(artifacts, list) or len(artifacts) != len(expected):
         raise ValueError("release manifest artifact matrix is incomplete")

@@ -192,35 +192,18 @@ pub unsafe extern "C" fn PyModule_NewObject(name: *mut PyObject) -> *mut PyObjec
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_Check(module: *mut PyObject) -> c_int {
-    if module.is_null() {
-        return 0;
-    }
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(module) {
-        return (value.decode().is_ptr()
-            && unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::Module as u8) as c_int;
-    }
-    let ob_type = unsafe { (*module).ob_type };
-    if std::ptr::eq(ob_type, &raw mut crate::abi_types::PyModule_Type) {
-        return 1;
-    }
     unsafe {
-        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PyModule_Type)
+        crate::bridge::is_semantic_instance_of(module, &raw mut crate::abi_types::PyModule_Type)
+            as c_int
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_CheckExact(module: *mut PyObject) -> c_int {
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(module) {
-        return (value.decode().is_ptr()
-            && unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::Module as u8) as c_int;
+    unsafe {
+        crate::bridge::is_exact_semantic_type(module, &raw mut crate::abi_types::PyModule_Type)
+            as c_int
     }
-    (!module.is_null()
-        && std::ptr::eq(
-            unsafe { (*module).ob_type },
-            &raw const crate::abi_types::PyModule_Type,
-        )) as c_int
 }
 
 /// CPython 3.13+ Unstable API (`Objects/moduleobject.c`):
@@ -436,7 +419,10 @@ pub unsafe extern "C" fn PyModule_GetState(module: *mut PyObject) -> *mut std::f
     if module.is_null() {
         return ptr::null_mut();
     }
-    let Some(module_value) = (unsafe { RuntimeValue::acquire(module) }) else {
+    // Metadata remains valid during m_free after the runtime has committed
+    // death. Borrow identity under the GIL; do not manufacture a semantic owner.
+    let _gil = hooks::RuntimeGilGuard::ensure();
+    let Some(module_value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(module) else {
         return ptr::null_mut();
     };
     let module_bits = module_value.bits();
@@ -450,7 +436,8 @@ pub unsafe extern "C" fn PyModule_GetDef(module: *mut PyObject) -> *mut PyModule
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
-    let Some(module_value) = (unsafe { RuntimeValue::acquire(module) }) else {
+    let _gil = hooks::RuntimeGilGuard::ensure();
+    let Some(module_value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(module) else {
         return ptr::null_mut();
     };
     unsafe {
@@ -667,6 +654,11 @@ unsafe fn register_module_capi(
             def as usize,
             module_state_size(def),
             !attach_legacy_state,
+            hooks::ModuleGcCallbacks {
+                traverse: if (*def).m_traverse.is_null() { None } else { Some(std::mem::transmute((*def).m_traverse)) },
+                clear: if (*def).m_clear.is_null() { None } else { Some(std::mem::transmute((*def).m_clear)) },
+                free: if (*def).m_free.is_null() { None } else { Some(std::mem::transmute((*def).m_free)) },
+            },
         )
     };
     if rc != 0 {

@@ -12,7 +12,7 @@ fn app_callable_manifest_publication_retains_the_supported_builtin_namespace() {
         Some("molt_module_cache_set"),
         Some("module_cache_set"),
     ] {
-        for name in [Some("builtins"), Some("other"), None] {
+        for name in [Some("builtins"), Some("_io"), Some("other"), None] {
             let mut ops = Vec::new();
             if let Some(name) = name {
                 ops.push(make_const_str("name", name));
@@ -28,10 +28,10 @@ fn app_callable_manifest_publication_retains_the_supported_builtin_namespace() {
                 args: Some(vec!["name".into(), "module".into()]),
                 ..Default::default()
             });
-            let expected = if name == Some("other") {
-                BTreeSet::new()
-            } else {
-                symbols.clone()
+            let expected = match name {
+                Some("_io") => BTreeSet::from(["molt_open_builtin".to_owned()]),
+                Some("other") => BTreeSet::new(),
+                _ => symbols.clone(),
             };
             let functions = [manifest_func(ops)];
             let requirements = collect_app_callable_requirements(&functions);

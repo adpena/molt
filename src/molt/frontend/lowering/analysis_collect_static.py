@@ -8,6 +8,7 @@ and static truthiness helpers. Pattern recognizers live in analysis_patterns.py.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_private_names import python_import_binding
 
 from typing import (
     TYPE_CHECKING,
@@ -24,6 +25,10 @@ from molt.compiler_analysis.python_effects_generated import (
 from molt.compiler_analysis.python_lexical_scope import (
     LexicalDefinitionNode,
     PythonDependencyAuthority,
+    PythonCodeNameLayout,
+    PythonCellStoragePlan,
+    PythonScopeCellCaptures,
+    python_code_name_layout,
     PythonLexicalScopeVisitor,
     ScopedNamedExprCollector,
 )
@@ -282,7 +287,7 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
 
             def visit_Import(self, node: ast.Import) -> None:
                 for alias in node.names:
-                    name = alias.asname or alias.name.split(".", 1)[0]
+                    name = python_import_binding(alias)
                     record(name)
 
             def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -496,7 +501,7 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
                 # conditionally (re)imported name is an ordered binding of the
                 # enclosing function/module for co_varnames and flush/evict.
                 for alias in node.names:
-                    self._add(alias.asname or alias.name.split(".", 1)[0])
+                    self._add(python_import_binding(alias))
 
             def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
                 for alias in node.names:
@@ -509,7 +514,7 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
             collector.visit(stmt)
         return collector.names
 
-    def _collect_varnames_for_body(
+    def _collect_callable_name_layout(
         self,
         *,
         posonly_params: list[str],
@@ -518,28 +523,22 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
         vararg: str | None,
         varkw: str | None,
         body: list[ast.stmt],
-    ) -> list[str]:
-        params = self._varnames_from_params(
-            posonly_params=posonly_params,
-            pos_or_kw_params=pos_or_kw_params,
-            kwonly_params=kwonly_params,
-            vararg=vararg,
-            varkw=varkw,
+        free_vars: Sequence[str] = (),
+        cell_vars: Sequence[str] = (),
+    ) -> PythonCodeNameLayout:
+        return python_code_name_layout(
+            body,
+            self._varnames_from_params(
+                posonly_params=posonly_params,
+                pos_or_kw_params=pos_or_kw_params,
+                kwonly_params=kwonly_params,
+                vararg=vararg,
+                varkw=varkw,
+            ),
+            freevars=free_vars,
+            cellvars=cell_vars,
+            eager_annotations=self.eager_annotations and not self.future_annotations,
         )
-        assigned = self._collect_assigned_names_ordered(body)
-        global_decls = self._collect_global_decls(body)
-        nonlocal_decls = self._collect_nonlocal_decls(body)
-        locals_only: list[str] = []
-        for name in assigned:
-            if (
-                name in params
-                or name in global_decls
-                or name in nonlocal_decls
-                or name in locals_only
-            ):
-                continue
-            locals_only.append(name)
-        return params + locals_only
 
     def _collect_code_names_for_body(
         self,
@@ -549,96 +548,16 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
         free_vars: Sequence[str],
         module_scope: bool = False,
     ) -> list[str]:
-        """Collect the ordered name table backing ``code.co_names``.
-
-        The table is a runtime introspection fact, not an execution fallback:
-        it mirrors the names referenced by bytecode-style name operations for
-        the current code object while leaving nested code objects to describe
-        their own bodies.
-        """
-
-        local_names = set(varnames)
-        free_var_names = set(free_vars)
-        stmt_nodes = [node for node in nodes if isinstance(node, ast.stmt)]
-        global_decls = self._collect_global_decls(stmt_nodes)
-        nonlocal_decls = self._collect_nonlocal_decls(stmt_nodes)
-        outer = self
-        names: list[str] = []
-        seen: set[str] = set()
-
-        def add(name: str | None) -> None:
-            if not name or name in seen:
-                return
-            seen.add(name)
-            names.append(name)
-
-        def import_store_name(alias: ast.alias) -> str:
-            if alias.asname:
-                return alias.asname
-            return alias.name.split(".", 1)[0]
-
-        class CodeNamesCollector(PythonLexicalScopeVisitor):
-            def visit_Name(self, node: ast.Name) -> None:
-                if module_scope:
-                    add(node.id)
-                    return
-                if node.id in nonlocal_decls or node.id in free_var_names:
-                    return
-                if node.id in global_decls:
-                    add(node.id)
-                    return
-                if isinstance(node.ctx, ast.Load) and node.id not in local_names:
-                    add(node.id)
-
-            def visit_Attribute(self, node: ast.Attribute) -> None:
-                self.visit(node.value)
-                add(node.attr)
-
-            def visit_Import(self, node: ast.Import) -> None:
-                for alias in node.names:
-                    add(alias.name)
-                    if "." in alias.name:
-                        if module_scope:
-                            add(import_store_name(alias))
-                        else:
-                            add(alias.name.rsplit(".", 1)[1])
-                    elif module_scope:
-                        add(import_store_name(alias))
-
-            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-                add("." * int(node.level or 0) + (node.module or ""))
-                for alias in node.names:
-                    add(alias.name)
-                    if module_scope and alias.asname:
-                        add(alias.asname)
-
-            def conditional_children(self, node: ast.If) -> Sequence[ast.AST]:
-                return _static_conditional_children(node, outer._static_truth_kwargs())
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                super().visit_FunctionDef(node)
-                if module_scope or node.name in global_decls:
-                    add(node.name)
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                super().visit_AsyncFunctionDef(node)
-                if module_scope or node.name in global_decls:
-                    add(node.name)
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                super().visit_ClassDef(node)
-                if module_scope or node.name in global_decls:
-                    add(node.name)
-
-        collector = CodeNamesCollector(
-            eager_annotations=self.eager_annotations and not self.future_annotations,
-            variable_annotations=(
-                module_scope and self.eager_annotations and not self.future_annotations
-            ),
+        return list(
+            python_code_name_layout(
+                nodes,
+                varnames,
+                freevars=free_vars,
+                eager_annotations=self.eager_annotations
+                and not self.future_annotations,
+                module_scope=module_scope,
+            ).names
         )
-        for node in nodes:
-            collector.visit(node)
-        return names
 
     def _collect_namedexpr_names(self, node: ast.AST) -> list[str]:
         # Source order, deduplicated.  Walrus (:=) targets are synced to the
@@ -761,11 +680,11 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
         candidates = set(authority.summary(node).body.lexical)
         return self._free_vars_in_outer_scope(candidates)
 
-    def _callable_cell_vars(
+    def _callable_cell_plan(
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp,
-    ) -> tuple[str, ...]:
-        """Return source locals whose canonical storage is a closure cell."""
+    ) -> PythonCellStoragePlan:
+        """Plan captured cells separately from compiler-private boxed locals."""
 
         authority = self._lexical_dependencies()
         regions = authority.regions(node)
@@ -775,21 +694,51 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
             - set(declarations.globals)
             - set(declarations.nonlocals)
         )
-        captured = self._collect_scope_cell_vars(regions.body, local_candidates)
-        if regions.kind == "function":
-            captured.update(
+        return self._scope_cell_storage_plan(
+            regions.body,
+            regions.parameters,
+            local_candidates,
+            global_decls=set(declarations.globals),
+            nonlocal_decls=set(declarations.nonlocals),
+            private_storage=regions.kind == "function",
+        )
+
+    def _scope_cell_storage_plan(
+        self,
+        body: Sequence[ast.AST],
+        parameters: Sequence[str],
+        local_candidates: set[str],
+        *,
+        global_decls: set[str],
+        nonlocal_decls: set[str],
+        private_storage: bool,
+    ) -> PythonCellStoragePlan:
+        """One physical/logical cell projection, including generated evaluators."""
+        captures = self._collect_scope_cell_vars(body, local_candidates)
+        code_cells = captures.enclosing | captures.inlined
+        captured = captures.enclosing | (captures.inlined & local_candidates)
+        private: set[str] = set()
+        if private_storage:
+            private.update(
                 self._collect_comp_walrus_cell_names(
-                    regions.body,
-                    global_decls=set(declarations.globals),
-                    nonlocal_decls=set(declarations.nonlocals),
+                    body,
+                    global_decls=global_decls,
+                    nonlocal_decls=nonlocal_decls,
                 )
             )
-        # CPython exposes captured parameters first in co_varnames order, then
-        # the remaining local cells in lexical-symbol order. This tuple is also
-        # the storage preboxing order used by every callable producer.
-        parameter_cells = [name for name in regions.parameters if name in captured]
-        parameter_cell_names = set(parameter_cells)
-        return tuple([*parameter_cells, *sorted(captured - parameter_cell_names)])
+
+        def ordered(cells: frozenset[str]) -> tuple[str, ...]:
+            parameter_cells = [name for name in parameters if name in cells]
+            return tuple([*parameter_cells, *sorted(cells - set(parameter_cells))])
+
+        # Inlined-comprehension cells belong to the containing code object,
+        # but a comprehension-only name must not become an enclosing binding.
+        # Otherwise a subsequent global read would incorrectly load that cell.
+        return PythonCellStoragePlan(
+            ordered(captured),
+            tuple(sorted(private - captured)),
+            ordered(code_cells),
+        )
 
     def _collect_comprehension_cell_vars(
         self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
@@ -797,7 +746,9 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
         authority = self._lexical_dependencies()
         regions = authority.regions(node)
         return sorted(
-            self._collect_scope_cell_vars(regions.body, set(regions.parameters))
+            self._collect_scope_cell_vars(
+                regions.body, set(regions.parameters)
+            ).enclosing
         )
 
     def _collect_namedexpr_targets_comprehension(
@@ -822,10 +773,9 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
 
     def _collect_scope_cell_vars(
         self, body: Sequence[ast.AST], local_candidates: set[str]
-    ) -> set[str]:
-        if not local_candidates:
-            return set()
+    ) -> PythonScopeCellCaptures:
         captured: set[str] = set()
+        inlined: set[str] = set()
         outer = self
 
         authority = self._lexical_dependencies()
@@ -840,7 +790,9 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
 
             def _record(self, names: Iterable[str]) -> None:
                 for name in names:
-                    if name in local_candidates and name not in self.shadowed:
+                    if name in self.shadowed:
+                        inlined.add(name)
+                    elif name in local_candidates:
                         captured.add(name)
 
             def _visit_definition_header(self, node: LexicalDefinitionNode) -> None:
@@ -852,27 +804,6 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
                 )
                 for expression in regions.enclosing:
                     self.visit(expression)
-
-            def visit_Call(self, node: ast.Call) -> None:
-                if (
-                    isinstance(node.func, ast.Name)
-                    and len(node.args) == 1
-                    and not node.keywords
-                    and isinstance(node.args[0], ast.GeneratorExp)
-                    and (
-                        (
-                            node.func.id == "sum"
-                            and outer._can_inline_sum_genexpr(node.args[0])
-                        )
-                        or (
-                            node.func.id in {"any", "all"}
-                            and outer._can_inline_any_all_genexpr(node.args[0])
-                        )
-                    )
-                ):
-                    self._visit_inline_comprehension(node.args[0])
-                    return
-                self.generic_visit(node)
 
             def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
                 self._record(authority.summary(node).body.lexical)
@@ -911,7 +842,7 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
         collector = Collector()
         for stmt in body:
             collector.visit(stmt)
-        return captured
+        return PythonScopeCellCaptures(frozenset(captured), frozenset(inlined))
 
     def _collect_comp_walrus_cell_names(
         self,
@@ -935,8 +866,9 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
 
         comp_walrus: set[str] = set()
 
-        class _Scan(ast.NodeVisitor):
+        class _Scan(PythonLexicalScopeVisitor):
             def __init__(self) -> None:
+                super().__init__(eager_annotations=eager_annotations)
                 self._in_comp_depth = 0
 
             def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
@@ -982,18 +914,7 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
             def visit_DictComp(self, node: ast.DictComp) -> None:
                 self._visit_comprehension(node, [node.key, node.value])
 
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
+        eager_annotations = self.eager_annotations and not self.future_annotations
         scanner = _Scan()
         for stmt in body:
             scanner.visit(stmt)
@@ -1197,7 +1118,7 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
                 continue
             if isinstance(stmt, (ast.Import, ast.ImportFrom)):
                 for alias in stmt.names:
-                    rebound.add(alias.asname or alias.name.split(".", 1)[0])
+                    rebound.add(python_import_binding(alias))
 
         return {
             name

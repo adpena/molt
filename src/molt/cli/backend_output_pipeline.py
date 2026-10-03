@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any, Callable
+
+from molt import file_publication
 
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli import non_native_output as _non_native_output
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest
-from molt.cli.build_diagnostics import _emit_build_diagnostics_if_present
+from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
 from molt.cli.build_results import (
     _emit_native_link_result,
     _observed_build_toolchain,
@@ -38,6 +41,7 @@ def _emit_backend_pipeline_outputs(
     prepared_build_config: _PreparedBuildConfig,
     resolved_build_entry: _ResolvedBuildEntry,
     output_layout: _BuildOutputLayout,
+    native_object_destination: Path | None,
     prepared_backend_setup: _PreparedBackendSetup,
     prepared_backend_runtime_context: _PreparedBackendRuntimeContext,
     prepared_backend_compile: _PreparedBackendCompile,
@@ -45,7 +49,7 @@ def _emit_backend_pipeline_outputs(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan,
     artifacts_root: Path,
     resolved_modules: frozenset[str],
-    build_diagnostics_payload: Callable[[], tuple[Any, Path | None]],
+    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]],
     pipeline_stage_ms: dict[str, float] | None,
     target: str,
     deterministic: bool,
@@ -77,7 +81,6 @@ def _emit_backend_pipeline_outputs(
         ),
         "target": target,
     }
-    runtime_lib = prepared_backend_runtime_context.runtime_lib
     runtime_state = prepared_backend_runtime_context.runtime_state
     ensure_runtime_wasm_both = prepared_backend_runtime_context.ensure_runtime_wasm_both
     cache = prepared_backend_compile.cache_enabled
@@ -89,13 +92,16 @@ def _emit_backend_pipeline_outputs(
     cache_hit_tier = prepared_backend_compile.cache_hit_tier
     backend_daemon_cached = prepared_backend_compile.backend_daemon_cached
     backend_daemon_cache_tier = prepared_backend_compile.backend_daemon_cache_tier
-    diagnostics_payload = None
-    diagnostics_path = None
     backend_daemon_config_digest = prepared_backend_compile.backend_daemon_config_digest
     wasm_table_base = prepared_backend_compile.wasm_table_base
+    input_admission = (
+        prepared_backend_runtime_context.runtime_state.build_python_admission
+    )
+    finalize_inputs = input_admission.close if input_admission is not None else None
 
-    def snapshot_build_diagnostics() -> tuple[Any, Path | None]:
-        nonlocal diagnostics_payload, diagnostics_path
+    def snapshot_build_diagnostics() -> tuple[dict[str, Any] | None, Path | None]:
+        if not prepared_build_preamble.diagnostics_enabled:
+            return None, None
         diagnostics_payload, diagnostics_path = build_diagnostics_payload()
         if diagnostics_payload is not None:
             diagnostics_payload["compiler"] = {
@@ -115,14 +121,13 @@ def _emit_backend_pipeline_outputs(
         return diagnostics_payload, diagnostics_path
 
     def return_after_build_diagnostics(result: int) -> int:
-        snapshot_build_diagnostics()
-        _emit_build_diagnostics_if_present(
-            diagnostics_payload=diagnostics_payload,
-            diagnostics_path=diagnostics_path,
+        return _emit_build_diagnostics_for_result(
+            result,
+            diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+            build_diagnostics_payload=snapshot_build_diagnostics,
             json_output=json_output,
             verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
         )
-        return result
 
     if (
         output_layout.is_rust_transpile
@@ -165,16 +170,24 @@ def _emit_backend_pipeline_outputs(
         if prepared_non_native_result_error is not None:
             return return_after_build_diagnostics(prepared_non_native_result_error)
         assert prepared_non_native_result is not None
-        snapshot_build_diagnostics()
 
         # -- Snapshot metadata-template generation ---------------------------
         if snapshot and output_layout.is_wasm:
-            _non_native_output._generate_snapshot_header(
-                output_wasm=prepared_non_native_result.primary_output,
-                target_profile=target,
-                resolved_capability_policy=prepared_build_config.resolved_capability_policy,
-                verbose=verbose,
-            )
+            try:
+                _non_native_output._generate_snapshot_header(
+                    output_wasm=prepared_non_native_result.primary_output,
+                    target_profile=target,
+                    resolved_capability_policy=prepared_build_config.resolved_capability_policy,
+                    verbose=verbose,
+                )
+            except (OSError, ValueError) as exc:
+                return return_after_build_diagnostics(
+                    _fail(
+                        f"Cannot generate WASM snapshot metadata: {exc}",
+                        json_output,
+                        command="build",
+                    )
+                )
             prepared_non_native_result.success_messages.append(
                 f"Snapshot metadata template (non-restorable): {prepared_non_native_result.primary_output.parent / 'molt.snapshot.json'}"
             )
@@ -205,8 +218,8 @@ def _emit_backend_pipeline_outputs(
             emit_mode=output_layout.emit_mode,
             profile=profile,
             native_arch_perf_enabled=prepared_build_preamble.native_arch_perf_enabled,
-            diagnostics_payload=diagnostics_payload,
-            diagnostics_path=diagnostics_path,
+            diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+            build_diagnostics_payload=snapshot_build_diagnostics,
             pgo_profile_payload=prepared_build_config.pgo_profile_payload,
             runtime_feedback_payload=prepared_build_config.runtime_feedback_payload,
             emit_ir_path=output_layout.emit_ir_path,
@@ -224,9 +237,56 @@ def _emit_backend_pipeline_outputs(
             },
             artifacts=prepared_non_native_result.artifacts,
             success_messages=prepared_non_native_result.success_messages,
+            finalize_inputs=finalize_inputs,
+        )
+
+    if not _ensure_native_runtime_lib_ready_before_link(
+        prepared_backend_runtime_context.runtime_state,
+        target_triple=output_layout.target_triple,
+        json_output=json_output,
+        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
+        molt_root=prepared_build_roots.molt_root,
+        cargo_timeout=prepared_build_config.cargo_timeout,
+        diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+        phase_starts=prepared_build_preamble.phase_starts,
+        stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
+    ):
+        failure = (
+            prepared_backend_runtime_context.runtime_state.native_runtime_build_failure
+        )
+        return return_after_build_diagnostics(
+            _fail(
+                failure.summary
+                if failure is not None
+                else "Native runtime admission failed",
+                json_output,
+                command="build",
+                data={"runtime_build_failure": failure.json_payload()}
+                if failure is not None
+                else None,
+            )
         )
 
     if output_layout.emit_mode == "obj":
+        if prepared_build_preamble.diagnostics_enabled:
+            prepared_build_preamble.phase_starts["seal"] = time.perf_counter()
+        if (
+            native_object_destination is None
+            or not file_publication.is_owned_staged_file_path(
+                output_layout.output_artifact,
+                native_object_destination,
+                purpose="native-object",
+                suffix=native_object_destination.suffix or ".o",
+            )
+        ):
+            return return_after_build_diagnostics(
+                _fail(
+                    "Native object output has no publication stage",
+                    json_output,
+                    command="build",
+                )
+            )
         prepared_object_output, prepared_object_error = (
             _link_pipeline._prepare_native_object_artifact(
                 output_artifact=output_layout.output_artifact,
@@ -238,7 +298,37 @@ def _emit_backend_pipeline_outputs(
         if prepared_object_error is not None:
             return return_after_build_diagnostics(prepared_object_error)
         assert prepared_object_output is not None
-        snapshot_build_diagnostics()
+        try:
+            binding = runtime_state.native_runtime_codegen_binding
+            if (
+                binding is None
+                or runtime_state.runtime_lib != binding.runtime_lib
+                or runtime_state.native_runtime_build_identity != binding.build_identity
+            ):
+                raise ValueError("native object lost its runtime codegen binding")
+            binding.verify()
+        except (OSError, ValueError) as exc:
+            runtime_state.revoke_native_runtime_admission()
+            return return_after_build_diagnostics(
+                _fail(
+                    f"Native runtime changed during object codegen: {exc}",
+                    json_output,
+                    command="build",
+                )
+            )
+        try:
+            file_publication.durable_replace(
+                prepared_object_output, native_object_destination
+            )
+        except (OSError, ValueError) as exc:
+            return return_after_build_diagnostics(
+                _fail(
+                    f"Cannot publish native object output: {exc}",
+                    json_output,
+                    command="build",
+                )
+            )
+        prepared_object_output = native_object_destination
         return _emit_non_native_build_result(
             output=prepared_object_output,
             consumer_output=prepared_object_output,
@@ -264,8 +354,8 @@ def _emit_backend_pipeline_outputs(
             emit_mode=output_layout.emit_mode,
             profile=profile,
             native_arch_perf_enabled=prepared_build_preamble.native_arch_perf_enabled,
-            diagnostics_payload=diagnostics_payload,
-            diagnostics_path=diagnostics_path,
+            diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+            build_diagnostics_payload=snapshot_build_diagnostics,
             pgo_profile_payload=prepared_build_config.pgo_profile_payload,
             runtime_feedback_payload=prepared_build_config.runtime_feedback_payload,
             emit_ir_path=output_layout.emit_ir_path,
@@ -282,30 +372,15 @@ def _emit_backend_pipeline_outputs(
             },
             artifacts={"object": str(prepared_object_output)},
             success_messages=[f"Successfully built {prepared_object_output}"],
+            finalize_inputs=finalize_inputs,
         )
 
     stdlib_link_obj_path = prepared_backend_setup.cache_setup.stdlib_object_path
 
-    if not _ensure_native_runtime_lib_ready_before_link(
-        prepared_backend_runtime_context.runtime_state,
-        target_triple=output_layout.target_triple,
-        json_output=json_output,
-        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
-        molt_root=prepared_build_roots.molt_root,
-        cargo_timeout=prepared_build_config.cargo_timeout,
-        diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
-        phase_starts=prepared_build_preamble.phase_starts,
-        stdlib_profile=stdlib_profile,
-        resolved_modules=resolved_modules,
-    ):
-        return return_after_build_diagnostics(
-            _fail("Runtime build failed", json_output, command="build")
-        )
-    snapshot_build_diagnostics()
-    runtime_build_identity = (
-        prepared_backend_runtime_context.runtime_state.native_runtime_build_identity
+    runtime_codegen_binding = (
+        prepared_backend_runtime_context.runtime_state.native_runtime_codegen_binding
     )
-    assert runtime_build_identity is not None
+    assert runtime_codegen_binding is not None
     prepared_native_link, prepared_native_link_error = (
         _link_pipeline._prepare_native_link(
             output_artifact=output_layout.output_artifact,
@@ -313,10 +388,7 @@ def _emit_backend_pipeline_outputs(
             artifacts_root=artifacts_root,
             json_output=json_output,
             output_binary=output_layout.output_binary,
-            runtime_lib=runtime_lib,
-            runtime_build_identity=runtime_build_identity,
-            molt_root=prepared_build_roots.molt_root,
-            runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
+            runtime_codegen_binding=runtime_codegen_binding,
             target_triple=output_layout.target_triple,
             sysroot_path=prepared_build_roots.sysroot_path,
             profile=profile,
@@ -330,13 +402,15 @@ def _emit_backend_pipeline_outputs(
             stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
             stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
             native_artifact_plan=native_artifact_plan,
-            stdlib_profile=stdlib_profile,
             bolt_requested=bolt_requested,
         )
     )
     if prepared_native_link_error is not None:
+        prepared_backend_runtime_context.runtime_state.revoke_native_runtime_admission()
         return return_after_build_diagnostics(prepared_native_link_error)
     assert prepared_native_link is not None
+    if prepared_build_preamble.diagnostics_enabled:
+        prepared_build_preamble.phase_starts["seal"] = time.perf_counter()
     if bolt_requested and prepared_native_link.link_process.returncode == 0:
         bolt_rc = _run_bolt_post_link(
             bolt_requested=True,
@@ -399,8 +473,8 @@ def _emit_backend_pipeline_outputs(
         stub_path=prepared_native_link.stub_path,
         runtime_lib=prepared_native_link.runtime_lib,
         external_native_artifacts=prepared_native_link.external_native_artifacts,
-        diagnostics_payload=diagnostics_payload,
-        diagnostics_path=diagnostics_path,
+        diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+        build_diagnostics_payload=snapshot_build_diagnostics,
         pgo_profile_payload=prepared_build_config.pgo_profile_payload,
         runtime_feedback_payload=prepared_build_config.runtime_feedback_payload,
         emit_ir_path=output_layout.emit_ir_path,
@@ -410,4 +484,5 @@ def _emit_backend_pipeline_outputs(
         resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
         strip_after_link=prepared_native_link.strip_after_link,
         link_selection=prepared_native_link.link_selection,
+        finalize_inputs=finalize_inputs,
     )

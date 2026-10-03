@@ -293,9 +293,14 @@ def _verified_receipt(
     *,
     expected_failure: bool = False,
     raw_status: str = "pass",
+    backend: str = "native",
 ) -> tuple[receipt.Receipt, verified_authority.VerifiedSubsetCoordinate]:
     policy = verified_authority.load_verified_subset_policy()
-    coordinate = verified_authority.verified_subset_coordinates(policy)[0]
+    coordinate = next(
+        cell
+        for cell in verified_authority.verified_subset_coordinates(policy)
+        if cell.backend == backend
+    )
     projection = _verified_projection(
         coordinate,
         expected_failure=expected_failure,
@@ -1163,4 +1168,47 @@ def test_unpatched_structural_scan_metrics_validate_with_real_receipt_consumer(
             now=VALIDATION_NOW,
         )
         == ()
+    )
+
+
+@pytest.mark.parametrize("backend", ["llvm", "native", "wasm"])
+def test_verified_receipt_accepts_exact_backend_identity(monkeypatch, backend):
+    payload, coordinate = _verified_receipt(monkeypatch, backend=backend)
+    assert coordinate.backend == backend
+    assert _validate_verified(payload) == ()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["native-label", "node-runner", "wasm-object", "extra-field", "missing-runner"],
+)
+def test_llvm_receipt_rejects_backend_identity_substitution(monkeypatch, mutation):
+    payload, _ = _verified_receipt(monkeypatch, backend="llvm")
+    identity = payload["facts"]["execution"]["backend"]
+    if mutation == "native-label":
+        identity["backend"] = "native"
+    elif mutation == "node-runner":
+        identity["runner"] = "node-wasi"
+    elif mutation == "wasm-object":
+        identity.update(
+            backend="wasm",
+            runner="node-wasi",
+            binary_name="node",
+            binary_sha256="2" * 64,
+            version="v24.16.0",
+        )
+    elif mutation == "extra-field":
+        identity["binary_sha256"] = "2" * 64
+    else:
+        del identity["runner"]
+    assert any(
+        "execution.backend" in problem for problem in _validate_verified(payload)
+    )
+
+
+def test_wasm_receipt_rejects_process_identity(monkeypatch):
+    payload, _ = _verified_receipt(monkeypatch, backend="wasm")
+    payload["facts"]["execution"]["backend"] = {"backend": "wasm", "runner": "process"}
+    assert any(
+        "execution.backend" in problem for problem in _validate_verified(payload)
     )

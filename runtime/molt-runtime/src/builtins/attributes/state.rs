@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const ATTRIBUTES_OBJECT_SLOT_COUNT: usize = 7;
+const ATTRIBUTES_OBJECT_SLOT_COUNT: usize = 3;
 
 pub(crate) struct AttributesRuntimeState {
     pub(super) wrapper_member_get: AtomicU64,
@@ -14,10 +14,6 @@ pub(crate) struct AttributesRuntimeState {
     /// Publication receipt, not a boxed object or independent version authority.
     pub(super) wrapper_members_version: AtomicU64,
     pub(super) attr_site_name_cache: Mutex<HashMap<u64, u64>>,
-    pub(super) generic_alias_mro_entries: AtomicU64,
-    pub(super) bytes_fromhex: AtomicU64,
-    pub(super) bytearray_fromhex: AtomicU64,
-    pub(super) memoryview_from_flags: AtomicU64,
 }
 
 impl AttributesRuntimeState {
@@ -28,10 +24,6 @@ impl AttributesRuntimeState {
             wrapper_member_delete: AtomicU64::new(0),
             wrapper_members_version: AtomicU64::new(0),
             attr_site_name_cache: Mutex::new(HashMap::new()),
-            generic_alias_mro_entries: AtomicU64::new(0),
-            bytes_fromhex: AtomicU64::new(0),
-            bytearray_fromhex: AtomicU64::new(0),
-            memoryview_from_flags: AtomicU64::new(0),
         }
     }
 
@@ -40,10 +32,6 @@ impl AttributesRuntimeState {
             &self.wrapper_member_get,
             &self.wrapper_member_set,
             &self.wrapper_member_delete,
-            &self.generic_alias_mro_entries,
-            &self.bytes_fromhex,
-            &self.bytearray_fromhex,
-            &self.memoryview_from_flags,
         ]
     }
 }

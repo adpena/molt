@@ -1,7 +1,7 @@
 use super::super::super::control_flow::dispatch_control_panic;
 use super::super::super::op_loop::WasmFunctionEmitContext;
 use super::super::DispatchMode;
-use super::super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
+use super::super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan, StaticDispatchEdge};
 use crate::wasm_binary::emit_call;
 use crate::wasm_plan::wasm_scalar_truthiness_fast_path_for_name;
 use crate::wasm_values::emit_branch_truthiness_i32;
@@ -45,7 +45,16 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_if(
         op_emitter.import_ids[truthy_import],
         op_emitter.reloc_enabled,
     );
-    emit_conditional_state_branch(func, locals.state_local, idx + 1, false_target, depth + 1);
+    emit_conditional_state_branch(
+        func,
+        op_emitter,
+        plan,
+        locals,
+        idx,
+        idx + 1,
+        false_target,
+        depth,
+    );
 }
 
 pub(in crate::wasm::state_dispatch) fn emit_dispatch_loop_break_cond(
@@ -72,7 +81,9 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_loop_break_cond(
     if invert {
         func.instruction(&Instruction::I32Eqz);
     }
-    emit_conditional_state_branch(func, locals.state_local, end_block, next_block, depth + 1);
+    emit_conditional_state_branch(
+        func, op_emitter, plan, locals, idx, end_block, next_block, depth,
+    );
 }
 
 pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
@@ -113,32 +124,86 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
     );
     func.instruction(&Instruction::I64Const(0));
     func.instruction(&Instruction::I64Ne);
-    emit_conditional_state_branch(func, locals.state_local, target_idx, idx + 1, depth + 1);
+    emit_conditional_state_branch(
+        func,
+        op_emitter,
+        plan,
+        locals,
+        idx,
+        target_idx,
+        idx + 1,
+        depth,
+    );
 }
 
 pub(in crate::wasm::state_dispatch) fn emit_conditional_state_branch(
     func: &mut Function,
-    state_local: u32,
+    op_emitter: &WasmFunctionEmitContext<'_, '_>,
+    plan: &NonLinearDispatchPlan,
+    locals: NonLinearDispatchLocals,
+    source: usize,
     true_state: usize,
     false_state: usize,
-    branch_depth: u32,
+    dispatch_depth: u32,
 ) {
     func.instruction(&Instruction::If(BlockType::Empty));
-    emit_set_state_and_br(func, state_local, true_state, branch_depth);
+    emit_static_dispatch_edge(
+        func,
+        op_emitter,
+        plan,
+        locals,
+        source,
+        true_state,
+        dispatch_depth,
+        1,
+    );
     func.instruction(&Instruction::Else);
-    emit_set_state_and_br(func, state_local, false_state, branch_depth);
+    emit_static_dispatch_edge(
+        func,
+        op_emitter,
+        plan,
+        locals,
+        source,
+        false_state,
+        dispatch_depth,
+        1,
+    );
     func.instruction(&Instruction::End);
 }
 
-pub(in crate::wasm::state_dispatch) fn emit_set_state_and_br(
+pub(in crate::wasm::state_dispatch) fn emit_static_dispatch_edge(
     func: &mut Function,
-    state_local: u32,
-    state: usize,
-    depth: u32,
+    op_emitter: &WasmFunctionEmitContext<'_, '_>,
+    plan: &NonLinearDispatchPlan,
+    locals: NonLinearDispatchLocals,
+    source: usize,
+    target: usize,
+    dispatch_depth: u32,
+    selection_depth: u32,
 ) {
-    func.instruction(&Instruction::I64Const(state as i64));
-    func.instruction(&Instruction::LocalSet(state_local));
-    func.instruction(&Instruction::Br(depth));
+    match plan.static_edge(source, target) {
+        StaticDispatchEdge::Forward { label_depth } => {
+            func.instruction(&Instruction::Br(label_depth + selection_depth));
+        }
+        StaticDispatchEdge::Redispatch { operation } => {
+            func.instruction(&Instruction::I64Const(operation as i64));
+            func.instruction(&Instruction::LocalSet(locals.state_local));
+            func.instruction(&Instruction::Br(dispatch_depth + selection_depth));
+        }
+        StaticDispatchEdge::ReturnNone => {
+            if plan.state_resume.is_some() {
+                dispatch_control_panic(
+                    &op_emitter.func_ir.name,
+                    source,
+                    "stateful fallthrough requires an explicit terminal return",
+                );
+            }
+            op_emitter.const_cache().emit_none(func);
+            op_emitter
+                .frame
+                .emit_return(func, dispatch_depth + selection_depth + 1);
+        }
+    }
 }
 
 pub(in crate::wasm::state_dispatch) fn loop_break_target(

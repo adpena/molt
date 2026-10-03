@@ -32,7 +32,7 @@ pub(super) fn detect_loop_structure(
             .map(|bid| BlockId(bid as u32))
     };
     for (bid, bb) in cfg.blocks.iter().enumerate() {
-        if bb.start_op >= ir.ops.len() {
+        if bb.start_op == bb.end_op || bb.start_op >= ir.ops.len() {
             continue;
         }
         let first_kind = ir.ops[bb.start_op].kind.as_str();

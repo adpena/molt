@@ -4,11 +4,11 @@ use crate::wasm::op_loop::WasmFunctionEmitContext;
 use crate::wasm::state_dispatch::DispatchMode;
 use crate::wasm::state_dispatch::common::{
     emit_conditional_state_branch, emit_dispatch_check_exception, emit_dispatch_if,
-    emit_dispatch_loop_break_cond, emit_set_state_and_br, label_target, loop_break_target,
+    emit_dispatch_loop_break_cond, emit_static_dispatch_edge, label_target, loop_break_target,
     require_stateful,
 };
 use crate::wasm::state_dispatch::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
-use crate::wasm::state_dispatch::stateful_ops::{emit_state_transition, emit_state_yield};
+use crate::wasm::state_dispatch::stateful_ops::emit_activation_op;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::emit_branch_truthiness_i32;
 use std::collections::BTreeMap;
@@ -59,16 +59,15 @@ pub(super) fn emit_dispatch_op(
             ));
             false
         }
-        "state_transition" => {
+        "state_set" | "task_wait" | "is_pending" => {
             require_stateful(mode, func_ir, idx, op);
-            emit_state_transition(func, op_emitter, plan, locals, op, idx, depth);
-            true
+            emit_activation_op(func, op_emitter, plan, locals, op);
+            false
         }
-        "state_yield" => {
-            require_stateful(mode, func_ir, idx, op);
-            emit_state_yield(func, op_emitter, plan, locals, op, idx);
-            true
-        }
+        "state_transition" | "state_yield" => panic!(
+            "{}: suspension must be normalized by shared terminal ownership before WASM emission",
+            func_ir.name
+        ),
         "if" => {
             emit_dispatch_if(func, op_emitter, plan, locals, op, idx, depth);
             true
@@ -82,12 +81,12 @@ pub(super) fn emit_dispatch_op(
                 .unwrap_or_else(|| {
                     dispatch_control_panic(&func_ir.name, idx, "else without end_if")
                 });
-            emit_set_state_and_br(func, locals.state_local, end_idx + 1, depth);
+            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, end_idx + 1, depth, 0);
             true
         }
         "end_if" | "loop_start" | "loop_end" | "try_start" | "try_end" | "label"
         | "state_label" => {
-            emit_set_state_and_br(func, locals.state_local, idx + 1, depth);
+            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, idx + 1, depth, 0);
             true
         }
         "loop_index_start" => {
@@ -96,7 +95,7 @@ pub(super) fn emit_dispatch_op(
             let out = op_emitter.locals()[op.out.as_ref().unwrap()];
             func.instruction(&Instruction::LocalGet(start));
             func.instruction(&Instruction::LocalSet(out));
-            emit_set_state_and_br(func, locals.state_local, idx + 1, depth);
+            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, idx + 1, depth, 0);
             true
         }
         "loop_break_if_true" => {
@@ -117,20 +116,16 @@ pub(super) fn emit_dispatch_op(
                 op_emitter.import_ids
                     [crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
             );
-            op_emitter.const_cache().emit_none(func);
+            func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Ne);
             emit_conditional_state_branch(
-                func,
-                locals.state_local,
-                end_block,
-                next_block,
-                depth + 1,
+                func, op_emitter, plan, locals, idx, end_block, next_block, depth,
             );
             true
         }
         "loop_break" => {
             let end_idx = loop_break_target(plan, func_ir, idx, "loop_break");
-            emit_set_state_and_br(func, locals.state_local, end_idx + 1, depth);
+            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, end_idx + 1, depth, 0);
             true
         }
         "loop_continue" => {
@@ -142,7 +137,7 @@ pub(super) fn emit_dispatch_op(
                 .unwrap_or_else(|| {
                     dispatch_control_panic(&func_ir.name, idx, "loop_continue without loop")
                 });
-            emit_set_state_and_br(func, locals.state_local, start_idx + 1, depth);
+            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, start_idx + 1, depth, 0);
             true
         }
         "jump" => {
@@ -150,7 +145,7 @@ pub(super) fn emit_dispatch_op(
                 dispatch_control_panic(&func_ir.name, idx, "jump missing label")
             });
             let target_idx = label_target(plan, func_ir, idx, target_label, "jump");
-            emit_set_state_and_br(func, locals.state_local, target_idx, depth);
+            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, target_idx, depth, 0);
             true
         }
         "br_if" => {
@@ -167,7 +162,7 @@ pub(super) fn emit_dispatch_op(
                 op_emitter.reloc_enabled,
             );
             func.instruction(&Instruction::If(BlockType::Empty));
-            emit_set_state_and_br(func, locals.state_local, target_idx, depth + 1);
+            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, target_idx, depth, 1);
             func.instruction(&Instruction::End);
             false
         }
@@ -186,6 +181,7 @@ pub(super) fn emit_dispatch_op(
                 &mut scratch.label_stack,
                 &mut scratch.label_depths,
                 idx,
+                depth + 1,
             );
             molt_tir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(&op.kind)
         }

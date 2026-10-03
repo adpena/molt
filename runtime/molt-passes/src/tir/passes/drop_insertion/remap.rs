@@ -88,34 +88,26 @@ pub(super) fn remap_uses_dominated_by_split_continuation(
     if remap.is_empty() {
         return;
     }
-    let pred_map = crate::tir::dominators::build_pred_map_with(
-        func,
-        crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
-    );
-    let idoms = crate::tir::dominators::compute_idoms_with(
-        func,
-        &pred_map,
-        crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
-    );
-    let mut dominated_blocks: Vec<BlockId> = func
-        .blocks
-        .keys()
-        .copied()
-        .filter(|block| crate::tir::dominators::dominates(continuation, *block, &idoms))
-        .collect();
-    dominated_blocks.sort_unstable_by_key(|block| block.0);
-
-    for bid in dominated_blocks {
-        let Some(block) = func.blocks.get_mut(&bid) else {
-            continue;
-        };
-        for op in &mut block.ops {
-            for operand in &mut op.operands {
-                if let Some(new_value) = remap.get(operand).copied() {
-                    *operand = new_value;
+    // A split continuation can itself be reached only through an exception
+    // observation. Ordinary block dominance would miss every use downstream;
+    // block-only full dominance also loses the observation's program position.
+    // Rename only where the continuation's arguments reach every execution path.
+    let dominance = crate::tir::dominators::ProgramPointDominance::compute_executable(func);
+    let mut blocks: Vec<_> = func.blocks.keys().copied().collect();
+    blocks.sort_unstable();
+    for bid in blocks {
+        let block = func.blocks.get_mut(&bid).unwrap();
+        for (index, op) in block.ops.iter_mut().enumerate() {
+            if dominance.definition_available(continuation, None, bid, index) {
+                for operand in &mut op.operands {
+                    if let Some(new_value) = remap.get(operand).copied() {
+                        *operand = new_value;
+                    }
                 }
             }
         }
-        block.terminator = remap_terminator_values(&block.terminator, remap);
+        if dominance.definition_available(continuation, None, bid, usize::MAX) {
+            block.terminator = remap_terminator_values(&block.terminator, remap);
+        }
     }
 }

@@ -3,48 +3,42 @@
 from __future__ import annotations
 
 import contextvars
+import errno as _errno
 import os
 import signal
 import subprocess
 import sys
 import threading
-import time as _time
 import warnings as _warnings
-from collections import deque as _deque
+import weakref as _weakref
 from typing import TYPE_CHECKING, Any, Callable, cast as _cast
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-from ._debug import _debug_exc_state, _debug_task_summary, _debug_write
-
+from ._debug import _debug_write
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 import asyncio as _asyncio
 from asyncio import (
     Future,
     ProcessStreamWriter,
-    _RUN_FOREVER_IDLE_CAP,
     StreamReader,
     StreamWriter,
     Task,
-    _DEBUG_ASYNCIO_EXC,
-    _DEBUG_ASYNCIO_HANDLES,
-    _DEBUG_ASYNCIO_SHUTDOWN,
     _EXPOSE_CHILD_WATCHERS,
     _EXPOSE_WINDOWS_POLICIES,
     _IS_WINDOWS,
     _asyncio_cancel_pending_tasks,
     _fd_from_fileobj,
-    _restore_token_id,
     _require_asyncio_intrinsic,
     _require_child_watcher_support,
     _require_ssl_transport_support,
     _socket_wait_key,
-    _swap_current_token,
     _socket_module,
     _tls_client_from_fd,
     _tls_server_from_fd,
     _tls_server_payload,
     all_tasks,
+    gather,
     create_subprocess_exec,
     create_subprocess_shell,
     molt_asyncio_child_watcher_add,
@@ -57,13 +51,8 @@ from asyncio import (
     molt_asyncio_event_loop_set,
     molt_asyncio_fd_watcher_register,
     molt_asyncio_fd_watcher_unregister,
-    molt_asyncio_gather_new,
-    molt_asyncio_loop_enqueue_handle,
-    molt_asyncio_ready_runner_new,
     molt_asyncio_running_loop_get,
     molt_asyncio_running_loop_set,
-    molt_asyncio_timer_handle_cancel,
-    molt_asyncio_timer_schedule,
     molt_asyncio_sock_accept_new,
     molt_asyncio_sock_connect_new,
     molt_asyncio_sock_recv_into_new,
@@ -72,12 +61,9 @@ from asyncio import (
     molt_asyncio_sock_recvfrom_new,
     molt_asyncio_sock_sendall_new,
     molt_asyncio_sock_sendto_new,
-    molt_asyncgen_shutdown,
-    molt_block_on,
     molt_event_loop_add_reader,
     molt_event_loop_add_writer,
     molt_event_loop_call_at,
-    molt_event_loop_call_later,
     molt_event_loop_call_soon,
     molt_event_loop_cancel_timer,
     molt_event_loop_close,
@@ -85,23 +71,23 @@ from asyncio import (
     molt_event_loop_get_debug,
     molt_event_loop_get_exception_handler,
     molt_event_loop_get_task_factory,
-    molt_event_loop_has_pending,
     molt_event_loop_is_closed,
     molt_event_loop_is_running,
     molt_event_loop_new,
-    molt_event_loop_next_deadline_delay,
     molt_event_loop_notify_reader_ready,
     molt_event_loop_notify_writer_ready,
-    molt_event_loop_ready_count,
     molt_event_loop_remove_reader,
     molt_event_loop_remove_writer,
     molt_event_loop_run_once,
     molt_event_loop_set_debug,
     molt_event_loop_set_exception_handler,
     molt_event_loop_set_task_factory,
+    molt_event_loop_spawn,
     molt_event_loop_start,
     molt_event_loop_stop,
     molt_event_loop_time,
+    molt_event_loop_wait,
+    molt_event_loop_wake,
     molt_pipe_transport_close,
     molt_pipe_transport_drop,
     molt_pipe_transport_get_fd,
@@ -111,8 +97,6 @@ from asyncio import (
     molt_pipe_transport_pause_reading,
     molt_pipe_transport_resume_reading,
     molt_pipe_transport_write,
-    molt_task_register_token_owned,
-    molt_thread_submit,
     open_connection,
     open_unix_connection,
     start_server,
@@ -150,11 +134,13 @@ class Handle:
         self._callback = callback
         self._args = args
         self._loop = loop
-        self._context = context
+        self._context = _contextvars.copy_context() if context is None else context
         self._cancelled = False
 
     def cancel(self) -> None:
         self._cancelled = True
+        self._callback = None
+        self._args = None
 
     def cancelled(self) -> bool:
         return self._cancelled
@@ -162,16 +148,16 @@ class Handle:
     def _run(self) -> None:
         if self._cancelled:
             return
-        if _DEBUG_ASYNCIO_HANDLES:
-            cb = self._callback
-            cb_name = getattr(cb, "__qualname__", None) or getattr(cb, "__name__", None)
-            if cb_name is None:
-                cb_name = type(cb).__name__
-            _debug_write(f"asyncio_handle_run callback={cb_name}")
-        if self._context is not None:
+        try:
             self._context.run(self._callback, *self._args)
-        else:
-            self._callback(*self._args)
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except BaseException as exc:
+            self._loop.call_exception_handler({
+                "message": f"Exception in callback {self._callback!r}",
+                "exception": exc,
+                "handle": self,
+            })
 
 class TimerHandle(Handle):
     def __init__(
@@ -184,21 +170,19 @@ class TimerHandle(Handle):
     ) -> None:
         super().__init__(callback, args, loop, context)
         self._when = when
-        self._timer_task: Task | None = None
+        self._timer_id: Any | None = None
 
     def when(self) -> float:
         return self._when
 
     def cancel(self) -> None:
+        if self._cancelled:
+            return
         super().cancel()
-        _require_asyncio_intrinsic(
-            molt_asyncio_timer_handle_cancel, "asyncio_timer_handle_cancel"
-        )(
-            self._loop._scheduled,  # type: ignore[attr-defined]
-            self,
-            self._timer_task,
-        )
-        self._timer_task = None
+        timer_id = self._timer_id
+        self._timer_id = None
+        if timer_id is not None:
+            self._loop._cancel_rust_timer(timer_id)
 
 class AbstractEventLoop:
     def run_forever(self) -> None:
@@ -222,7 +206,7 @@ class AbstractEventLoop:
     async def shutdown_asyncgens(self) -> None:
         raise RuntimeError("abstract asyncio event loop API")
 
-    async def shutdown_default_executor(self) -> None:
+    async def shutdown_default_executor(self, timeout=None) -> None:
         raise RuntimeError("abstract asyncio event loop API")
 
     def create_task(
@@ -432,27 +416,41 @@ class AbstractEventLoop:
     async def sock_sendfile(self, sock: Any, file: Any, offset: int = 0, count=None):
         raise RuntimeError("abstract asyncio event loop API")
 
+def _signal_dispatcher(loop_ref: Any) -> Callable[[int, Any], None]:
+    """Python-level handler installed by ``add_signal_handler``.
+
+    It holds its loop weakly: the process signal table never keeps a loop
+    alive. A delivery for a collected loop retires the handler, as that loop's
+    ``close()`` would have; that one delivery is not re-raised.
+    """
+
+    def _dispatch_loop_signal(signum: int, frame: Any) -> None:
+        loop = loop_ref()
+        if loop is not None:
+            loop._handle_signal(signum)
+            return
+        _signal.signal(
+            signum,
+            _signal.default_int_handler if signum == _signal.SIGINT else _signal.SIG_DFL,
+        )
+
+    return _dispatch_loop_signal
+
 class _EventLoop(AbstractEventLoop):
     def __init__(self, selector: Any | None = None) -> None:
-        # Allocate a Rust-owned event loop handle.  All state for timing,
-        # I/O readiness, timers, debug mode, exception handler, and task
-        # factory is stored inside this handle; Python attributes below are
-        # kept only for compatibility with code that reads them directly.
+        # Rust owns callback and timer custody for every loop driver.
         self._loop_handle: Any = _require_asyncio_intrinsic(
             molt_event_loop_new, "event_loop_new"
         )()
         self._readers: dict[int, tuple[Any, tuple[Any, ...], Task]] = {}
         self._writers: dict[int, tuple[Any, tuple[Any, ...], Task]] = {}
-        self._ready: _deque[Handle] = _deque()
-        self._ready_lock = _threading.Lock()
-        self._scheduled: set[TimerHandle] = set()
-        self._ready_task: Task | None = None
+        self._asyncgens = _weakref.WeakSet()
+        self._asyncgens_shutdown_called = False
         self._stopping = False
         self._default_executor: Any | None = None
+        self._executor_shutdown_called = False
         self._selector = selector
-        self._signal_handlers: dict[
-            int, tuple[Callable[..., Any], tuple[Any, ...]]
-        ] = {}
+        self._signal_handlers: dict[int, Handle] = {}
 
     def __del__(self) -> None:
         handle = getattr(self, "_loop_handle", None)
@@ -463,7 +461,7 @@ class _EventLoop(AbstractEventLoop):
                 pass
 
     def create_future(self) -> Future:
-        return Future()
+        return Future(loop=self)
 
     def create_task(
         self, coro: Any, *, name: str | None = None, context: Any | None = None
@@ -483,19 +481,10 @@ class _EventLoop(AbstractEventLoop):
                 setattr(task, "_name", name)
         return task
 
-    def _ensure_ready_runner(self) -> None:
-        if self._ready_task is not None and not self._ready_task.done():
-            return
-        runner = _require_asyncio_intrinsic(
-            molt_asyncio_ready_runner_new, "asyncio_ready_runner_new"
-        )(self, self._ready_lock, self._ready)
-        self._ready_task = self.create_task(runner, name=None, context=None)
-
-    async def _ready_loop(self) -> None:
-        runner = _require_asyncio_intrinsic(
-            molt_asyncio_ready_runner_new, "asyncio_ready_runner_new"
-        )(self, self._ready_lock, self._ready)
-        await runner
+    def _spawn_task(self, runner: Any) -> None:
+        _require_asyncio_intrinsic(molt_event_loop_spawn, "event_loop_spawn")(
+            self._loop_handle, runner
+        )
 
     def call_soon(
         self, callback: Callable[..., Any], /, *args: Any, context: Any | None = None
@@ -513,107 +502,38 @@ class _EventLoop(AbstractEventLoop):
         _require_asyncio_intrinsic(molt_event_loop_call_soon, "event_loop_call_soon")(
             self._loop_handle, handle
         )
-        # Enqueue in the Python-visible ready deque used by the coroutine runner.
-        _require_asyncio_intrinsic(
-            molt_asyncio_loop_enqueue_handle, "asyncio_loop_enqueue_handle"
-        )(self, self._ready_lock, self._ready, handle)
         return handle
 
     def call_soon_threadsafe(
         self, callback: Callable[..., Any], /, *args: Any, context: Any | None = None
     ) -> Handle:
+        # Every Rust ready-queue publication signals a parked loop, so the
+        # thread-safe variant needs no separate self-pipe write.
         return self.call_soon(callback, *args, context=context)
 
     def call_later(
-        self,
-        delay: float,
-        callback: Callable[..., Any],
-        /,
-        *args: Any,
+        self, delay: float, callback: Callable[..., Any], /, *args: Any,
         context: Any | None = None,
     ) -> TimerHandle:
-        if self.is_closed():
-            raise RuntimeError("Event loop is closed")
-        if context is None:
-            copy_ctx = getattr(_contextvars, "copy_context", None)
-            if callable(copy_ctx):
-                context = copy_ctx()
-            else:
-                context = None
-        if _DEBUG_ASYNCIO_EXC:
-            time_attr = getattr(type(self), "time", None)
-            time_owner = getattr(time_attr, "__qualname__", repr(time_attr))
-            _debug_write(
-                f"call_later loop={type(self).__name__} time={time_owner} delay={delay}"
-            )
-        if delay <= 0:
-            return self.call_at(self.time(), callback, *args, context=context)
-        when = self.time() + float(delay)
-        handle = TimerHandle(when, callback, args, self, context)
-        # Register with Rust event loop for timer tracking; returns an opaque
-        # timer_id that the handle can use for cancellation.
-        timer_id = _require_asyncio_intrinsic(
-            molt_event_loop_call_later, "event_loop_call_later"
-        )(self._loop_handle, float(delay), handle)
-        if timer_id is not None:
-            handle._rust_timer_id = timer_id
-        # Also schedule through the existing asyncio timer infrastructure.
-        timer_task = _require_asyncio_intrinsic(
-            molt_asyncio_timer_schedule, "asyncio_timer_schedule"
-        )(
-            handle,
-            delay,
-            self,
-            self._scheduled,
-            self._ready_lock,
-            self._ready,
-        )
-        if timer_task is not None:
-            handle._timer_task = timer_task
-        return handle
+        return self.call_at(self.time() + float(delay), callback, *args, context=context)
 
     def call_at(
-        self,
-        when: float,
-        callback: Callable[..., Any],
-        /,
-        *args: Any,
+        self, when: float, callback: Callable[..., Any], /, *args: Any,
         context: Any | None = None,
     ) -> TimerHandle:
         if self.is_closed():
             raise RuntimeError("Event loop is closed")
-        if context is None:
-            copy_ctx = getattr(_contextvars, "copy_context", None)
-            if callable(copy_ctx):
-                context = copy_ctx()
-            else:
-                context = None
-        delay = max(0.0, float(when) - self.time())
         handle = TimerHandle(float(when), callback, args, self, context)
-        # Register with Rust event loop for timer tracking.
-        timer_id = _require_asyncio_intrinsic(
+        handle._timer_id = _require_asyncio_intrinsic(
             molt_event_loop_call_at, "event_loop_call_at"
         )(self._loop_handle, float(when), handle)
-        if timer_id is not None:
-            handle._rust_timer_id = timer_id
-        # Also schedule through the existing asyncio timer infrastructure.
-        timer_task = _require_asyncio_intrinsic(
-            molt_asyncio_timer_schedule, "asyncio_timer_schedule"
-        )(
-            handle,
-            delay,
-            self,
-            self._scheduled,
-            self._ready_lock,
-            self._ready,
-        )
-        if timer_task is not None:
-            handle._timer_task = timer_task
         return handle
 
     def set_exception_handler(
         self, handler: Callable[["EventLoop", dict[str, Any]], Any] | None
     ) -> None:
+        if handler is not None and not callable(handler):
+            raise TypeError("A callable object or None is expected")
         _require_asyncio_intrinsic(
             molt_event_loop_set_exception_handler, "event_loop_set_exception_handler"
         )(self._loop_handle, handler)
@@ -625,17 +545,36 @@ class _EventLoop(AbstractEventLoop):
             molt_event_loop_get_exception_handler, "event_loop_get_exception_handler"
         )(self._loop_handle)
 
-    def call_exception_handler(self, context: dict[str, Any]) -> None:
-        handler = self.get_exception_handler()
-        if handler is not None:
-            handler(self, context)
-            return
+    def default_exception_handler(self, context: dict[str, Any]) -> None:
         message = context.get("message", "Unhandled exception in event loop")
         exc = context.get("exception")
-        if exc is None:
-            _debug_write(message)
-        else:
-            _debug_write(f"{message}: {exc}")
+        _debug_write(message if exc is None else f"{message}: {exc}")
+
+    def call_exception_handler(self, context: dict[str, Any]) -> None:
+        handler = self.get_exception_handler()
+        try:
+            if handler is None:
+                self.default_exception_handler(context)
+            else:
+                source = context.get("task") or context.get("future") or context.get("handle")
+                callback_context = getattr(source, "_context", None)
+                if callback_context is None:
+                    handler(self, context)
+                else:
+                    callback_context.run(handler, self, context)
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except BaseException as exc:
+            try:
+                self.default_exception_handler({
+                    "message": "Unhandled error in exception handler",
+                    "exception": exc,
+                    "context": context,
+                })
+            except (SystemExit, KeyboardInterrupt):
+                raise
+            except BaseException as error:
+                _debug_write(f"Exception in default exception handler: {error}")
 
     def set_debug(self, enabled: bool) -> None:
         _require_asyncio_intrinsic(molt_event_loop_set_debug, "event_loop_set_debug")(
@@ -682,7 +621,9 @@ class _EventLoop(AbstractEventLoop):
 
     def stop(self) -> None:
         self._stopping = True
-        _require_asyncio_intrinsic(molt_event_loop_stop, "event_loop_stop")(
+        # The request lives outside the Rust queues: wake a parked loop so it
+        # observes it. Stopping a retired loop is a no-op, as in CPython.
+        _require_asyncio_intrinsic(molt_event_loop_wake, "event_loop_wake")(
             self._loop_handle
         )
 
@@ -694,37 +635,51 @@ class _EventLoop(AbstractEventLoop):
         _require_asyncio_intrinsic(molt_event_loop_close, "event_loop_close")(
             self._loop_handle
         )
-        if self._ready_task is not None and not self._ready_task.done():
-            self._ready_task.cancel()
+        self._executor_shutdown_called = True
+        executor = self._default_executor
+        self._default_executor = None
+        if executor is not None:
+            executor.shutdown(wait=False)
         if self._selector is not None and hasattr(self._selector, "close"):
             self._selector.close()
+        # CPython `_UnixSelectorEventLoop.close`: a closed loop cannot run what
+        # its signal handlers schedule, so they are removed with it.
+        if self._signal_handlers:
+            if _sys.is_finalizing():
+                _warnings.warn(
+                    f"Closing the loop {self!r} on interpreter shutdown stage, "
+                    "skipping signal handlers removal",
+                    ResourceWarning,
+                    source=self,
+                )
+                self._signal_handlers.clear()
+            else:
+                for sig in list(self._signal_handlers):
+                    self.remove_signal_handler(sig)
 
-    def run_in_executor(self, executor: Any, func: Any, *args: Any) -> Future:
+    def run_in_executor(self, executor, func, *args):
+        if self.is_closed():
+            raise RuntimeError("Event loop is closed")
         if executor is None:
+            if self._executor_shutdown_called:
+                raise RuntimeError("Executor shutdown has been called")
             executor = self._default_executor
-        if executor is None:
-            future = molt_thread_submit(func, args, {})
-            return future
-        submit = getattr(executor, "submit", None)
-        if submit is None or not callable(submit):
-            raise TypeError("executor must define submit()")
-        try:
-            submitted = submit(func, *args)
-        except BaseException as exc:
-            failed = Future()
-            failed.set_exception(exc)
-            return failed
-        return wrap_future(submitted, loop=self)
+            if executor is None:
+                executor = _asyncio._concurrent.futures.ThreadPoolExecutor(
+                    thread_name_prefix="asyncio"
+                )
+                self._default_executor = executor
+        return wrap_future(executor.submit(func, *args), loop=self)
 
     def add_reader(self, fd: Any, callback: Any, *args: Any) -> None:
         fileno = _fd_from_fileobj(fd)
         # Register with Rust event loop for I/O readiness notification.
         _require_asyncio_intrinsic(molt_event_loop_add_reader, "event_loop_add_reader")(
-            self._loop_handle, fileno, callback
+            self._loop_handle, fileno, Handle(callback, args, self, None)
         )
         _require_asyncio_intrinsic(
             molt_asyncio_fd_watcher_register, "asyncio_fd_watcher_register"
-        )(self, self._readers, fileno, callback, args, 1)
+        )(self, self._readers, fileno, self._notify_reader_ready, (fileno,), 1)
 
     def remove_reader(self, fd: Any) -> bool:
         fileno = _fd_from_fileobj(fd)
@@ -741,11 +696,11 @@ class _EventLoop(AbstractEventLoop):
         fileno = _fd_from_fileobj(fd)
         # Register with Rust event loop for I/O writability notification.
         _require_asyncio_intrinsic(molt_event_loop_add_writer, "event_loop_add_writer")(
-            self._loop_handle, fileno, callback
+            self._loop_handle, fileno, Handle(callback, args, self, None)
         )
         _require_asyncio_intrinsic(
             molt_asyncio_fd_watcher_register, "asyncio_fd_watcher_register"
-        )(self, self._writers, fileno, callback, args, 2)
+        )(self, self._writers, fileno, self._notify_writer_ready, (fileno,), 2)
 
     async def sock_recv(self, sock: Any, n: int) -> bytes:
         fut = _require_asyncio_intrinsic(
@@ -821,30 +776,6 @@ class _EventLoop(AbstractEventLoop):
             )
         )
 
-    def _has_pending(self) -> bool:
-        """Return True if the Rust event loop has pending timers or I/O watchers."""
-        return bool(
-            _require_asyncio_intrinsic(
-                molt_event_loop_has_pending, "event_loop_has_pending"
-            )(self._loop_handle)
-        )
-
-    def _ready_count(self) -> int:
-        """Return the number of callbacks currently in the Rust ready queue."""
-        return int(
-            _require_asyncio_intrinsic(
-                molt_event_loop_ready_count, "event_loop_ready_count"
-            )(self._loop_handle)
-        )
-
-    def _next_deadline_delay(self) -> float:
-        """Return seconds until the next scheduled timer fires (inf if none)."""
-        return float(
-            _require_asyncio_intrinsic(
-                molt_event_loop_next_deadline_delay, "event_loop_next_deadline_delay"
-            )(self._loop_handle)
-        )
-
     def _cancel_rust_timer(self, timer_id: Any) -> None:
         """Cancel a Rust-level timer by the opaque timer_id returned from call_later/call_at."""
         _require_asyncio_intrinsic(
@@ -867,117 +798,50 @@ class _EventLoop(AbstractEventLoop):
             molt_event_loop_notify_writer_ready, "event_loop_notify_writer_ready"
         )(self._loop_handle, fd)
 
-    def run_until_complete(self, future: Any) -> Any:
-        if self.is_closed():
-            raise RuntimeError("Event loop is closed")
-        if self.is_running():
-            raise RuntimeError("Event loop is already running")
-        prev = _get_running_loop()
-        _set_running_loop(self)
-        # Mark the Rust handle as running.
-        _require_asyncio_intrinsic(molt_event_loop_start, "event_loop_start")(
-            self._loop_handle
-        )
-        self._stopping = False
-        if self._ready:
-            self._ensure_ready_runner()
-        completed: Future | None = None
-        try:
-            if isinstance(future, Future):
-                fut = future
-                completed = fut
-                if isinstance(fut, Task):
-                    runner = getattr(fut, "_runner_task", None)
-                    needs_runner = not getattr(fut, "_runner_spawned", True)
-                    prev_token_id = _swap_current_token(fut._token)
-                    try:
-                        if needs_runner or runner is None:
-                            runner = fut._runner(fut.get_coro())
-                            fut._runner_task = runner
-                            if molt_task_register_token_owned is not None:  # type: ignore[name-defined]
-                                molt_task_register_token_owned(  # type: ignore[name-defined]
-                                    runner, fut._token.token_id()
-                                )
-                        if getattr(fut, "_runner_spawned", True):
-                            molt_block_on(fut._wait())
-                        else:
-                            molt_block_on(runner)
-                        _debug_exc_state("run_until_complete_after_block_on")
-                    finally:
-                        _restore_token_id(prev_token_id)
-                else:
-                    molt_block_on(fut._wait())
-                    _debug_exc_state("run_until_complete_after_wait")
-            else:
-                fut = Task(future, loop=self, _spawn_runner=False)
-                completed = fut
-                prev_token_id = _swap_current_token(fut._token)
-                try:
-                    runner = fut._runner(fut.get_coro())
-                    fut._runner_task = runner
-                    if molt_task_register_token_owned is not None:  # type: ignore[name-defined]
-                        molt_task_register_token_owned(  # type: ignore[name-defined]
-                            runner, fut._token.token_id()
-                        )
-                    molt_block_on(runner)
-                    _debug_exc_state("run_until_complete_after_block_on")
-                finally:
-                    _restore_token_id(prev_token_id)
-        except BaseException:
-            _require_asyncio_intrinsic(molt_event_loop_stop, "event_loop_stop")(
-                self._loop_handle
-            )
-            self._stopping = False
-            _set_running_loop(prev)
-            raise
-        _require_asyncio_intrinsic(molt_event_loop_stop, "event_loop_stop")(
-            self._loop_handle
-        )
-        self._stopping = False
-        _set_running_loop(prev)
-        _debug_exc_state("run_until_complete_return")
-        if completed is None:
-            return None
-        result = Future.result(completed)
-        _debug_exc_state("run_until_complete_after_result")
-        return result
-
-    def run_forever(self) -> None:
-        # CPython-faithful imperative driver: each iteration runs one event-loop
-        # turn (ready ``call_soon`` handles, due timers, and one scheduler drain
-        # so awaited tasks advance) and then checks ``self._stopping``. This is a
-        # direct port of ``BaseEventLoop.run_forever``'s
-        # ``while True: self._run_once(); if self._stopping: break`` loop.
-        #
-        # The previous implementation drove a ``while not self._stopping: await
-        # sleep(0)`` coroutine through ``run_until_complete``. That busy-wait
-        # never observed a ``stop()`` scheduled from a ``call_soon`` callback
-        # (the callback's turn was never reached), so ``_stopping`` never flipped
-        # and each spin allocated a fresh sleep future -> unbounded allocation ->
-        # OOM. Driving the loop directly makes the stop handshake deterministic
-        # and the idle loop block instead of spin.
+    def _check_running(self) -> None:
         if self.is_closed():
             raise RuntimeError("Event loop is closed")
         if self.is_running():
             raise RuntimeError("This event loop is already running")
-        prev = _get_running_loop()
+        if _get_running_loop() is not None:
+            raise RuntimeError("Cannot run the event loop while another loop is running")
+
+    def run_until_complete(self, future: Any) -> Any:
+        self._check_running()
+        completed = _asyncio.ensure_future(future, loop=self)
+
+        def stop_when_done(done):
+            if not done.cancelled() and isinstance(done.exception(), (SystemExit, KeyboardInterrupt)):
+                return
+            self.stop()
+
+        completed.add_done_callback(stop_when_done)
+        try:
+            self.run_forever()
+        finally:
+            completed.remove_done_callback(stop_when_done)
+        if not completed.done():
+            raise RuntimeError("Event loop stopped before Future completed.")
+        return completed.result()
+
+    def run_forever(self) -> None:
+        self._check_running()
+        previous_hooks = sys.get_asyncgen_hooks()
         _set_running_loop(self)
         _require_asyncio_intrinsic(molt_event_loop_start, "event_loop_start")(
             self._loop_handle
         )
-        # NB: ``_stopping`` is intentionally NOT reset here. CPython's
-        # ``run_forever`` only clears it in the ``finally`` block, so a
-        # ``stop()`` issued before ``run_forever`` (``_stopping`` already True)
-        # runs exactly one turn and returns -- matching
-        # ``asyncio_run_forever_prestopped``.
         try:
+            sys.set_asyncgen_hooks(
+                firstiter=self._asyncgen_firstiter_hook,
+                finalizer=self._asyncgen_finalizer_hook,
+            )
+            # A pre-stopped loop still executes one turn. Callbacks queued by that
+            # turn remain owned by this loop for its next invocation.
             while True:
                 ran = self._run_once()
                 if self._stopping:
                     break
-                # Only block when the turn did no work: an active loop (callbacks
-                # still firing) advances immediately, while a genuinely idle loop
-                # blocks instead of busy-spinning.
                 if ran == 0:
                     self._run_forever_idle_wait()
         finally:
@@ -985,39 +849,93 @@ class _EventLoop(AbstractEventLoop):
             _require_asyncio_intrinsic(molt_event_loop_stop, "event_loop_stop")(
                 self._loop_handle
             )
-            _set_running_loop(prev)
+            _set_running_loop(None)
+            sys.set_asyncgen_hooks(*previous_hooks)
 
     def _run_forever_idle_wait(self) -> None:
-        # Block (never busy-spin) between turns. When a timer is scheduled, sleep
-        # until just before its deadline; otherwise yield with a short bounded
-        # sleep so external wakeups (worker threads completing tasks, I/O, timers
-        # re-enqueued by the sleep worker) are observed promptly on the next turn.
-        # Mirrors CPython blocking on the selector with the computed timeout.
-        if self._stopping:
+        # Rust parks this thread until ready work, the earliest deadline,
+        # stop(), close, or a signal delivery for the main thread; native parks
+        # release the GIL. Python signal handlers run at the safepoint that
+        # follows this call's return.
+        _require_asyncio_intrinsic(molt_event_loop_wait, "event_loop_wait")(
+            self._loop_handle
+        )
+
+    def _asyncgen_firstiter_hook(self, generator):
+        if self._asyncgens_shutdown_called:
+            _warnings.warn(
+                'Asynchronous generator {!r} was scheduled after '
+                'loop.shutdown_asyncgens() call'.format(generator),
+                ResourceWarning,
+                source=self,
+            )
+        self._asyncgens.add(generator)
+
+    def _asyncgen_finalizer_hook(self, generator):
+        self._asyncgens.discard(generator)
+        if not self.is_closed():
+            self.call_soon_threadsafe(self._close_asyncgen, generator)
+
+    def _close_asyncgen(self, generator):
+        _asyncio.ensure_future(generator.aclose(), loop=self)
+
+    async def shutdown_asyncgens(self):
+        self._asyncgens_shutdown_called = True
+        if not self._asyncgens:
             return
-        delay = self._next_deadline_delay()
-        if delay <= 0.0:
-            # Work is due right now (or a zero-delay timer/ready task is pending);
-            # take the next turn immediately without sleeping.
+        # The WeakSet snapshot creates real owned references before any close callback.
+        generators = list(self._asyncgens)
+        self._asyncgens.clear()
+        results = await gather(
+            *(generator.aclose() for generator in generators),
+            return_exceptions=True,
+        )
+        for result, generator in zip(results, generators):
+            if isinstance(result, BaseException):
+                self.call_exception_handler({
+                    'message': 'an error occurred during closing of asynchronous generator {!r}'.format(generator),
+                    'exception': result,
+                    'asyncgen': generator,
+                })
+
+    async def shutdown_default_executor(self, timeout=None):
+        self._executor_shutdown_called = True
+        executor = self._default_executor
+        if executor is None:
             return
-        # Cap the wait so a stop()/wakeup arriving from another thread is observed
-        # without waiting out a long timer deadline.
-        wait = delay if delay < _RUN_FOREVER_IDLE_CAP else _RUN_FOREVER_IDLE_CAP
-        _time.sleep(wait)
+        finished = self.create_future()
 
-    async def shutdown_asyncgens(self) -> None:
-        _require_asyncio_intrinsic(molt_asyncgen_shutdown, "asyncgen_shutdown")()
-        return None
+        def complete(exception):
+            if not finished.done():
+                if exception is None:
+                    finished.set_result(None)
+                else:
+                    finished.set_exception(exception)
 
-    async def shutdown_default_executor(self) -> None:
-        self._default_executor = None
-        return None
+        def join_executor():
+            exception = None
+            try:
+                executor.shutdown(wait=True)
+            except BaseException as error:
+                exception = error
+            if not self.is_closed():
+                self.call_soon_threadsafe(complete, exception)
 
-    def set_default_executor(self, executor: Any) -> None:
-        if executor is not None:
-            submit = getattr(executor, "submit", None)
-            if submit is None or not callable(submit):
-                raise TypeError("executor must define submit()")
+        thread = threading.Thread(target=join_executor)
+        thread.start()
+        try:
+            async with _asyncio.timeout(timeout):
+                await finished
+        except TimeoutError:
+            _warnings.warn("The executor did not finish joining within the timeout.",
+                           RuntimeWarning, stacklevel=2)
+            executor.shutdown(wait=False)
+        else:
+            thread.join()
+
+    def set_default_executor(self, executor):
+        if not isinstance(executor, _asyncio._concurrent.futures.ThreadPoolExecutor):
+            raise TypeError("executor must be ThreadPoolExecutor instance")
         self._default_executor = executor
 
     def add_signal_handler(
@@ -1025,44 +943,84 @@ class _EventLoop(AbstractEventLoop):
     ) -> None:
         """Register *callback* to be called when signal *sig* is received.
 
-        On WASM platforms signals are not supported and this raises
-        ``NotImplementedError``.
+        Unix only, as in CPython: Windows and WASM loops raise
+        ``NotImplementedError``. The callback is bound now, in the current
+        context, and each delivery schedules it on this loop.
         """
-        _platform = _sys.platform
-        if _platform in ("emscripten", "wasi"):
+        if _IS_WINDOWS:
+            raise NotImplementedError
+        if _sys.platform in ("emscripten", "wasi"):
             raise NotImplementedError(
                 "signal handlers are not supported on this platform"
             )
-        if not callable(callback):
-            raise TypeError(f"callback must be callable, got {type(callback).__name__}")
-        # Validate the signal number early.
-        _signal.getsignal(sig)  # raises ValueError/OSError for invalid sigs
-        self._signal_handlers[sig] = (callback, args)
-
-        def _handle_sig(signum: int, frame: Any) -> None:
-            self.call_soon_threadsafe(callback, *args)
-
-        _signal.signal(sig, _handle_sig)
+        if _asyncio.iscoroutine(callback) or _asyncio.iscoroutinefunction(callback):
+            raise TypeError("coroutines cannot be used with add_signal_handler()")
+        self._check_signal(sig)
+        if self.is_closed():
+            raise RuntimeError("Event loop is closed")
+        if _threading.current_thread() is not _threading.main_thread():
+            # CPython reports the main-thread requirement through
+            # signal.set_wakeup_fd(), which it calls at this point.
+            raise RuntimeError(
+                "set_wakeup_fd only works in main thread of the main interpreter"
+            )
+        self._signal_handlers[sig] = Handle(callback, args, self, None)
+        try:
+            _signal.signal(sig, _signal_dispatcher(_weakref.ref(self)))
+        except ValueError as exc:
+            del self._signal_handlers[sig]
+            raise RuntimeError(str(exc))
+        except OSError as exc:
+            del self._signal_handlers[sig]
+            if exc.errno == _errno.EINVAL:
+                raise RuntimeError(f"sig {sig:d} cannot be caught")
+            raise
 
     def remove_signal_handler(self, sig: int) -> bool:
-        """Remove signal handler for signal *sig*.
+        """Remove the handler for signal *sig*; return whether one was set.
 
-        Returns ``True`` if a handler was removed, ``False`` if no handler
-        was installed for *sig*.
-
-        On WASM platforms signals are not supported and this raises
-        ``NotImplementedError``.
+        Unix only, as in CPython. SIGINT returns to ``default_int_handler``,
+        every other signal to ``SIG_DFL``.
         """
-        _platform = _sys.platform
-        if _platform in ("emscripten", "wasi"):
+        if _IS_WINDOWS:
+            raise NotImplementedError
+        if _sys.platform in ("emscripten", "wasi"):
             raise NotImplementedError(
                 "signal handlers are not supported on this platform"
             )
-        entry = self._signal_handlers.pop(sig, None)
-        if entry is None:
+        self._check_signal(sig)
+        if self._signal_handlers.pop(sig, None) is None:
             return False
-        _signal.signal(sig, _signal.SIG_DFL)
+        handler = (
+            _signal.default_int_handler if sig == _signal.SIGINT else _signal.SIG_DFL
+        )
+        try:
+            _signal.signal(sig, handler)
+        except OSError as exc:
+            if exc.errno == _errno.EINVAL:
+                raise RuntimeError(f"sig {sig:d} cannot be caught")
+            raise
         return True
+
+    def _check_signal(self, sig: Any) -> None:
+        if not isinstance(sig, int):
+            raise TypeError(f"sig must be an int, not {sig!r}")
+        if sig not in _signal.valid_signals():
+            raise ValueError(f"invalid signal number {sig}")
+
+    def _handle_signal(self, sig: int) -> None:
+        """Schedule the Handle bound to *sig* (CPython ``_handle_signal``)."""
+        handle = self._signal_handlers.get(sig)
+        if handle is None or self.is_closed():
+            return  # A delivery racing removal or close.
+        if handle._cancelled:
+            self.remove_signal_handler(sig)
+            return
+        # The same Handle, with its registration-time context, is queued for
+        # each delivery; queuing wakes a parked loop.
+        _require_asyncio_intrinsic(molt_event_loop_call_soon, "event_loop_call_soon")(
+            self._loop_handle, handle
+        )
 
     async def connect_read_pipe(
         self, protocol_factory: Callable[[], Protocol], pipe: Any
@@ -1828,38 +1786,22 @@ def new_event_loop() -> EventLoop:
     return get_event_loop_policy().new_event_loop()
 
 def _cancel_all_tasks(loop: EventLoop) -> None:
-    try:
-        live_tasks = all_tasks(loop)
-    except BaseException:
-        return
-    tasks = list(live_tasks)
-    if _DEBUG_ASYNCIO_SHUTDOWN:
-        summaries = [_debug_task_summary(task) for task in tasks]
-        _debug_write(
-            "asyncio_cancel_all_tasks loop={loop_type} count={count} tasks={tasks}".format(
-                loop_type=type(loop).__name__,
-                count=len(tasks),
-                tasks=summaries,
-            )
-        )
+    tasks = list(all_tasks(loop))
     if not tasks:
         return
     _asyncio_cancel_pending_tasks(tasks)
-    try:
-        waiter = _require_asyncio_intrinsic(
-            molt_asyncio_gather_new, "asyncio_gather_new"
-        )(tasks, True)
-        if _DEBUG_ASYNCIO_SHUTDOWN:
-            _debug_write(
-                "asyncio_cancel_all_tasks_waiter {summary}".format(
-                    summary=_debug_task_summary(waiter)
-                )
-            )
-        loop.run_until_complete(waiter)
-    except BaseException:
-        if _DEBUG_ASYNCIO_SHUTDOWN:
-            _debug_exc_state("cancel_all_tasks_after_waiter_exception")
-        pass
+    waiter = gather(*tasks, return_exceptions=True)
+    loop.run_until_complete(waiter)
+    for task in tasks:
+        if task.cancelled():
+            continue
+        error = task.exception()
+        if error is not None:
+            loop.call_exception_handler({
+                "message": "unhandled exception during asyncio.run() shutdown",
+                "exception": error,
+                "task": task,
+            })
 
 def on_fork() -> None:
     global _CHILD_WATCHER

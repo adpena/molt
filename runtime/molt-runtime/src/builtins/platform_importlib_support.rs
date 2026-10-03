@@ -1922,8 +1922,11 @@ pub(super) fn importlib_extension_spec_target(
     if let Some(loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)?
         && !obj_from_bits(loader_bits).is_none()
     {
-        let loader_type = type_name(_py, obj_from_bits(loader_bits));
-        has_extension_loader = loader_type.contains("ExtensionFileLoader");
+        has_extension_loader = crate::object::class_storage::object_class_declares(
+            _py,
+            loader_bits,
+            crate::object::class_storage::ClassDeclaration::ExtensionLoader,
+        );
         dec_ref_bits(_py, loader_bits);
     }
 

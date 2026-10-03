@@ -15,6 +15,32 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 
 
 class SerializationBasicOpsMixin(GeneratorMixinBase):
+    def _call_argument_custody(
+        self, op: MoltOp, kind: str, target: str | None, operand_count: int
+    ) -> list[str] | None:
+        """Operand custody of a call instruction; None when it borrows.
+
+        A raw direct call (`call`, `call_internal`) enters its target's machine
+        entry, which owns exactly the parameters its declaration transfers, so
+        it carries that custody whether the source or the compiler spelled it;
+        the callee supplies a closure parameter itself. Every other call adopts
+        only as the instruction that evaluates a source call expression
+        (`_mark_source_call`), whose custody is an instruction fact recorded on
+        the op; a call the compiler synthesizes borrows.
+        """
+        if kind in ("call", "call_internal"):
+            if not operand_count or not target or not self._entry_adopts_symbol(target):
+                return None
+            return ["transferred"] * operand_count
+        custody = (op.metadata or {}).get("argument_custody")
+        if custody is None:
+            return None
+        if len(custody) != operand_count:
+            raise AssertionError(
+                f"{kind} custody names {len(custody)} of {operand_count} operands"
+            )
+        return list(custody)
+
     def _serialize_basic_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
         if op.kind == "CONST":
             value = op.args[0]
@@ -499,11 +525,57 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             ctx.json_ops.append({"kind": "trace_enter_slot", "value": int(op.args[0])})
         elif op.kind == "TRACE_EXIT":
             ctx.json_ops.append({"kind": "trace_exit"})
+        elif op.kind in (
+            "FRAME_HOME_STORE",
+            "FRAME_HOME_CELL",
+            "FRAME_HOME_PRIVATE_CELL",
+        ):
+            # The code slot is the op's value; the result is the binding view.
+            ctx.json_ops.append(
+                {
+                    "kind": op.kind.lower(),
+                    "value": int((op.metadata or {})["slot"]),
+                    "args": [op.args[0].name],
+                    "out": op.result.name,
+                }
+            )
+        elif op.kind in ("FRAME_HOME_LOAD", "FRAME_HOME_TAKE"):
+            ctx.json_ops.append(
+                {
+                    "kind": op.kind.lower(),
+                    "value": int((op.metadata or {})["slot"]),
+                    "out": op.result.name,
+                }
+            )
+        elif op.kind == "FRAME_HOME_CLEAR":
+            ctx.json_ops.append(
+                {
+                    "kind": "frame_home_clear",
+                    "value": int((op.metadata or {})["slot"]),
+                }
+            )
+        elif op.kind == "FRAME_LOCALS":
+            # value 1: the activation's one shared locals() dict (before PEP 667).
+            ctx.json_ops.append(
+                {
+                    "kind": "frame_locals",
+                    "args": [arg.name for arg in op.args],
+                    "value": 1 if (op.metadata or {}).get("shared") else 0,
+                    "out": op.result.name,
+                }
+            )
         elif op.kind == "FRAME_LOCALS_SET":
             ctx.json_ops.append(
                 {
                     "kind": "frame_locals_set",
                     "args": [op.args[0].name],
+                }
+            )
+        elif op.kind == "FRAME_CONTEXT_SET":
+            ctx.json_ops.append(
+                {
+                    "kind": "frame_context_set",
+                    "args": [arg.name for arg in op.args],
                 }
             )
         elif op.kind == "CALL":
@@ -516,6 +588,9 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "value": code_id,
                 "out": op.result.name,
             }
+            custody = self._call_argument_custody(op, "call", target, len(op.args) - 1)
+            if custody is not None:
+                entry["argument_custody"] = custody
             # Same lane-classification fix as CALL_BIND/CALL_METHOD —
             # preserve a meaningful result type_hint so the backend's
             # preanalysis (function_compiler.rs:1618-1624) can route
@@ -543,33 +618,49 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 "value": code_id,
                 "out": op.result.name,
             }
+            custody = self._call_argument_custody(
+                op, "call_internal", target, len(op.args) - 1
+            )
+            if custody is not None:
+                entry["argument_custody"] = custody
             if target in self.module_chunk_symbols:
                 entry["passes_execution_context"] = True
             ctx.json_ops.append(entry)
         elif op.kind == "CALL_INDIRECT":
-            ctx.json_ops.append(
-                {
-                    "kind": "call_indirect",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
+            indirect_entry: dict[str, Any] = {
+                "kind": "call_indirect",
+                "args": [arg.name for arg in op.args],
+                "out": op.result.name,
+            }
+            custody = self._call_argument_custody(
+                op, "call_indirect", None, len(op.args)
             )
+            if custody is not None:
+                indirect_entry["argument_custody"] = custody
+            ctx.json_ops.append(indirect_entry)
         elif op.kind == "CALL_GUARDED":
             target = op.metadata["target"] if op.metadata else ""
-            ctx.json_ops.append(
-                {
-                    "kind": "call_guarded",
-                    "s_value": target,
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
+            guarded_entry: dict[str, Any] = {
+                "kind": "call_guarded",
+                "s_value": target,
+                "args": [arg.name for arg in op.args],
+                "out": op.result.name,
+            }
+            custody = self._call_argument_custody(
+                op, "call_guarded", target, len(op.args)
             )
+            if custody is not None:
+                guarded_entry["argument_custody"] = custody
+            ctx.json_ops.append(guarded_entry)
         elif op.kind == "CALL_FUNC":
             entry = {
                 "kind": "call_func",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
+            custody = self._call_argument_custody(op, "call_func", None, len(op.args))
+            if custody is not None:
+                entry["argument_custody"] = custody
             if op.metadata is not None:
                 runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
                 if (
@@ -633,8 +724,9 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             metadata = op.metadata or {}
             if metadata.get("defines_del") is True:
                 entry["defines_del"] = True
-            if metadata.get("bound_local") is True:
-                entry["bound_local"] = True
+            custody = self._call_argument_custody(op, "call_bind", None, len(op.args))
+            if custody is not None:
+                entry["argument_custody"] = custody
             ctx.json_ops.append(entry)
         elif op.kind == "DEL_BOUNDARY":
             entry = {
@@ -665,6 +757,9 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             result_hint = op.result.type_hint
             if result_hint and result_hint != "Any":
                 entry["type_hint"] = result_hint
+            custody = self._call_argument_custody(op, "call_method", None, len(op.args))
+            if custody is not None:
+                entry["argument_custody"] = custody
             ctx.json_ops.append(entry)
         elif op.kind == "BUILTIN_FUNC":
             func_name, arity, *name_args = op.args
@@ -738,22 +833,13 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                     "args": [code_val.name, globals_dict.name],
                 }
             )
-        elif op.kind == "ASYNCGEN_LOCALS_REGISTER":
-            func_name, names_tuple, offsets_tuple = op.args
+        elif op.kind == "STATEFUL_LOCALS_REGISTER":
+            func_name, names_tuple, layout_tuple = op.args
             ctx.json_ops.append(
                 {
-                    "kind": "asyncgen_locals_register",
+                    "kind": "stateful_locals_register",
                     "s_value": func_name,
-                    "args": [names_tuple.name, offsets_tuple.name],
-                }
-            )
-        elif op.kind == "GEN_LOCALS_REGISTER":
-            func_name, names_tuple, offsets_tuple = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": "gen_locals_register",
-                    "s_value": func_name,
-                    "args": [names_tuple.name, offsets_tuple.name],
+                    "args": [names_tuple.name, layout_tuple.name],
                 }
             )
         else:

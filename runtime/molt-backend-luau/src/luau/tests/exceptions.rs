@@ -12,6 +12,7 @@ fn test_compile_checked_keeps_ordinary_programs_available() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "ret_void".to_string(),
@@ -59,6 +60,7 @@ fn test_compile_checked_rejects_async_work_poll_runtime_requirement_without_boun
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: if kind == "async_work_poll" {
                     vec![
@@ -383,6 +385,7 @@ fn test_luau_exception_region_module_global_ops_use_module_dict_helpers() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -444,6 +447,7 @@ fn test_luau_exception_region_type_of_uses_python_descriptor_helper() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -494,6 +498,7 @@ fn test_pcall_try_except_compile() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -583,6 +588,7 @@ fn test_no_duplicate_local_declarations() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 // First definition of v0 — should get `local v0 = 1`

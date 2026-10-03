@@ -749,7 +749,7 @@ pub extern "C" fn molt_importlib_invalidate_caches() -> u64 {
                 b"_SPEC_CACHE",
             );
         }
-        if let Some(sys_bits) = importlib_module_cache_lookup_bits(_py, "sys")
+        if let Some(sys_bits) = crate::builtins::modules::interpreter_sys_module(_py)
             && !obj_from_bits(sys_bits).is_none()
         {
             importlib_clear_mapping_attr_best_effort(
@@ -770,7 +770,7 @@ pub extern "C" fn molt_importlib_filefinder_invalidate(path_bits: u64) -> u64 {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let Some(sys_bits) = importlib_module_cache_lookup_bits(_py, "sys") else {
+        let Some(sys_bits) = crate::builtins::modules::interpreter_sys_module(_py) else {
             return MoltObject::none().bits();
         };
         if obj_from_bits(sys_bits).is_none() {

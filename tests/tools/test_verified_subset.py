@@ -166,7 +166,9 @@ def _execution(coordinate: authority.VerifiedSubsetCoordinate) -> dict[str, obje
     }
 
 
-def _write_receipts(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, ...]:
+def _write_receipts(
+    root: Path, monkeypatch: pytest.MonkeyPatch, *, build_profile: str | None = None
+) -> tuple[Path, ...]:
     policy = authority.load_verified_subset_policy()
     inputs = list(verified_subset.verified_subset_authority_files(policy))
     monkeypatch.setattr(
@@ -178,6 +180,8 @@ def _write_receipts(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, 
     )
     paths: list[Path] = []
     for coordinate in authority.verified_subset_coordinates(policy):
+        if build_profile is not None and coordinate.build_profile != build_profile:
+            continue
         projection = _one_test_projection(coordinate)
         results = [_outcome(coordinate)]
         path = root / f"{coordinate.id}.json"
@@ -218,10 +222,10 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
 
     assert policy.python_versions == ("3.12", "3.13", "3.14")
     assert policy.reference_cpython == ("3.12.13", "3.13.11", "3.14.3")
-    assert policy.backends == ("native", "wasm")
+    assert policy.backends == ("llvm", "native", "wasm")
     assert policy.abi == "cpython-language"
     assert policy.concurrency == "gil"
-    assert len(coordinates) == 72
+    assert len(coordinates) == 108
     assert {
         (
             coordinate.python,
@@ -238,7 +242,7 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
         for backend in policy.backends
         for profile in policy.build_profiles
     }
-    assert len({coordinate.id for coordinate in coordinates}) == 72
+    assert len({coordinate.id for coordinate in coordinates}) == 108
 
 
 def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(
@@ -271,7 +275,7 @@ def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(
     assert loaded.fallback_policy == "error"
     assert loaded.abi == "cpython-language"
     assert loaded.concurrency == "gil"
-    assert loaded.backends == ("native", "wasm")
+    assert loaded.backends == ("llvm", "native", "wasm")
 
     policy_path.write_text(document + 'fallback_policy = "error"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="schema or keys are not exact"):
@@ -463,7 +467,9 @@ def test_projection_refuses_excluding_cpython_equivalence_scope() -> None:
         )
 
 
+@pytest.mark.parametrize("backend", ["llvm", "native", "wasm"])
 def test_run_differential_suites_uses_projected_file_schedule(
+    backend: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -471,7 +477,7 @@ def test_run_differential_suites_uses_projected_file_schedule(
     coordinate = next(
         item
         for item in authority.verified_subset_coordinates(policy)
-        if item.python == "3.14" and item.backend == "wasm"
+        if item.python == "3.14" and item.backend == backend
     )
     projection = _one_test_projection(coordinate)
     captured: dict[str, object] = {}
@@ -509,6 +515,7 @@ def test_run_differential_suites_uses_projected_file_schedule(
     )
     cmd = captured["cmd"]
     assert cmd[-2:] == ["--files-from", str(schedule)]
+    assert cmd[cmd.index("--target") + 1] == backend
     assert cmd[cmd.index("--python-version") + 1] == coordinate.reference_python
     assert cmd[cmd.index("--molt-target-python") + 1] == coordinate.python
     assert coordinate.reference_python != coordinate.python
@@ -874,7 +881,7 @@ def test_invalid_build_profile_fails_closed():
 def test_receipt_closure_rejects_a_different_requested_build_profile(
     tmp_path, monkeypatch
 ):
-    _write_receipts(tmp_path, monkeypatch)
+    _write_receipts(tmp_path, monkeypatch, build_profile="dev")
     with pytest.raises(ValueError, match="profile differs"):
         verified_subset.verify_receipt_closure(
             receipt_root=tmp_path, source_sha=SOURCE_SHA, build_profile="release"
@@ -909,3 +916,86 @@ def test_generated_theorem_programs_are_required_without_counting_package_fixtur
             if test.path.endswith("generated_from_proofs/__init__.py")
         )
         assert fixture.exclusion_reason == "inert fixture source"
+
+
+@pytest.mark.parametrize("backend", ["llvm", "native"])
+def test_process_backend_identity_never_probes_node(backend, monkeypatch):
+    coordinate = next(
+        cell
+        for cell in authority.verified_subset_coordinates()
+        if cell.backend == backend
+    )
+
+    def unexpected_probe(*args, **kwargs):
+        raise AssertionError("process backend must not use Node identity")
+
+    monkeypatch.setattr(verified_subset.shutil, "which", unexpected_probe)
+    assert verified_subset._backend_identity(coordinate) == {
+        "backend": backend,
+        "runner": "process",
+    }
+
+
+def test_backend_identity_rejects_unknown_backend_before_probe(monkeypatch):
+    coordinate = replace(authority.verified_subset_coordinates()[0], backend="unknown")
+
+    def unexpected_probe(*args, **kwargs):
+        raise AssertionError("unknown backend must fail before tool discovery")
+
+    monkeypatch.setattr(verified_subset.shutil, "which", unexpected_probe)
+    with pytest.raises(ValueError, match="unsupported verified-subset backend"):
+        verified_subset._backend_identity(coordinate)
+
+
+@pytest.mark.parametrize("profile", [None, "dev", "release"])
+def test_receipt_closure_accepts_exact_selected_profile(
+    tmp_path, monkeypatch, capsys, profile
+):
+    paths = _write_receipts(tmp_path, monkeypatch, build_profile=profile)
+    assert len(paths) == (108 if profile is None else 54)
+    args = [
+        "verify-receipts",
+        "--receipt-root",
+        str(tmp_path),
+        "--source-sha",
+        SOURCE_SHA,
+    ]
+    if profile is not None:
+        args.extend(["--build-profile", profile])
+    assert verified_subset.main(args) == 0
+    assert capsys.readouterr().out == (
+        f"verified subset receipts: OK source_sha={SOURCE_SHA} "
+        f"coordinates={len(paths)}\n"
+    )
+
+
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_selected_profile_closure_rejects_missing_receipt(
+    tmp_path, monkeypatch, profile
+):
+    paths = _write_receipts(tmp_path, monkeypatch, build_profile=profile)
+    paths[-1].unlink()
+    with pytest.raises(ValueError, match="count is not exact"):
+        verified_subset.verify_receipt_closure(
+            receipt_root=tmp_path, source_sha=SOURCE_SHA, build_profile=profile
+        )
+
+
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_selected_profile_closure_rejects_duplicate_receipt(
+    tmp_path, monkeypatch, profile
+):
+    paths = _write_receipts(tmp_path, monkeypatch, build_profile=profile)
+    paths[-1].write_bytes(paths[0].read_bytes())
+    with pytest.raises(ValueError, match="duplicated"):
+        verified_subset.verify_receipt_closure(
+            receipt_root=tmp_path, source_sha=SOURCE_SHA, build_profile=profile
+        )
+
+
+def test_selected_profile_closure_rejects_unfiltered_tree(tmp_path, monkeypatch):
+    _write_receipts(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="extra files"):
+        verified_subset.verify_receipt_closure(
+            receipt_root=tmp_path, source_sha=SOURCE_SHA, build_profile="dev"
+        )

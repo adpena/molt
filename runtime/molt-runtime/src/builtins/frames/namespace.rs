@@ -54,9 +54,21 @@ impl CodeNamespace {
 pub(crate) struct CompiledCodeSlot {
     code: AtomicU64,
     globals: AtomicU64,
+    /// The frame plan of every synchronous activation of this compiled body
+    /// ([`super::FramePlan`]), derived once when its code is published.
+    frame_plan: AtomicU64,
 }
 
 impl CompiledCodeSlot {
+    pub(crate) fn set_frame_plan(&self, plan: super::FramePlan) {
+        crate::gil_assert();
+        self.frame_plan.store(plan.bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn frame_plan(&self) -> super::FramePlan {
+        super::FramePlan::from_bits(self.frame_plan.load(Ordering::Relaxed))
+    }
+
     pub(crate) fn replace(&self, py: &PyToken<'_>, value: CodeNamespace) {
         crate::gil_assert();
         value.retain(py);
@@ -92,8 +104,8 @@ impl CompiledCodeSlot {
 
 struct PendingNamespace {
     slot: u64,
-    /// Owned globals, builtins and exact callable code identity.
-    namespace: Option<[u64; 3]>,
+    /// Owned globals, builtins, exact code identity and optional activation.
+    namespace: Option<[u64; 4]>,
 }
 
 thread_local! {
@@ -127,12 +139,40 @@ pub(crate) fn acquire_pending_invocation_context(
         let pending = pending.borrow();
         let entry = pending.last()?;
         let namespace = entry.namespace?;
-        code_targets_callable(namespace[2], target).then_some(namespace)
+        code_targets_callable(namespace[2], target).then_some([
+            namespace[0],
+            namespace[1],
+            namespace[2],
+        ])
     })?;
     for bits in context {
         inc_ref_bits(py, bits);
     }
     Some(context)
+}
+
+/// One admission rule for every compiled Python frame: the code must own a
+/// compiled slot and its activation must carry a real globals namespace.
+/// `Ok(None)` identifies runtime builtins, which own no Python frame.
+pub(crate) fn admit_compiled_namespace(
+    py: &PyToken<'_>,
+    code_bits: u64,
+    globals_bits: u64,
+) -> Result<Option<u64>, ()> {
+    let Some(slot) = compiled_slot_for_code(code_bits) else {
+        return Ok(None);
+    };
+    if globals_namespace_storage_bits(py, globals_bits).is_none() {
+        if !crate::exception_pending(py) {
+            raise_exception::<u64>(
+                py,
+                "SystemError",
+                "compiled invocation has no globals namespace",
+            );
+        }
+        return Err(());
+    }
+    Ok(Some(slot))
 }
 
 /// Owns one invocation handoff until entry consumes it or the call returns.
@@ -198,30 +238,33 @@ impl<'a, 'py> FrameInvocationGuard<'a, 'py> {
         globals_bits: u64,
         builtins_bits: u64,
     ) -> Option<Self> {
-        let Some(slot) = compiled_slot_for_code(code_bits) else {
+        Self::for_activation_namespace(py, code_bits, globals_bits, builtins_bits, 0)
+    }
+
+    /// The poll invocation pins its payload until the real compiled frame exits.
+    pub(crate) fn for_activation_namespace(
+        py: &'a PyToken<'py>,
+        code_bits: u64,
+        globals_bits: u64,
+        builtins_bits: u64,
+        activation_bits: u64,
+    ) -> Option<Self> {
+        let slot = match admit_compiled_namespace(py, code_bits, globals_bits) {
+            Ok(Some(slot)) => slot,
             // Runtime builtins do not own Python execution frames.
-            return Some(Self { py, depth: None });
+            Ok(None) => return Some(Self { py, depth: None }),
+            Err(()) => return None,
         };
-        if globals_namespace_storage_bits(py, globals_bits).is_none() {
-            if crate::exception_pending(py) {
-                return None;
-            }
-            raise_exception::<u64>(
-                py,
-                "SystemError",
-                "compiled invocation has no globals namespace",
-            );
-            return None;
-        }
         inc_ref_bits(py, globals_bits);
         inc_ref_bits(py, builtins_bits);
         inc_ref_bits(py, code_bits);
+        inc_ref_bits(py, activation_bits);
         let depth = PENDING_NAMESPACES.with(|pending| {
             let mut pending = pending.borrow_mut();
             let depth = pending.len();
             pending.push(PendingNamespace {
                 slot,
-                namespace: Some([globals_bits, builtins_bits, code_bits]),
+                namespace: Some([globals_bits, builtins_bits, code_bits, activation_bits]),
             });
             depth
         });
@@ -255,7 +298,7 @@ impl Drop for FrameInvocationGuard<'_, '_> {
 }
 
 /// Transfers the owned namespace only to the explicitly targeted compiled slot.
-pub(crate) fn take_invocation_namespace(slot: u64) -> Option<[u64; 3]> {
+pub(crate) fn take_invocation_namespace(slot: u64) -> Option<[u64; 4]> {
     PENDING_NAMESPACES.with(|pending| {
         let mut pending = pending.borrow_mut();
         let entry = pending.last_mut()?;

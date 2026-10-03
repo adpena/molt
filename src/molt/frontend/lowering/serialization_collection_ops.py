@@ -82,12 +82,20 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                 }
             )
         elif op.kind == "CALLARGS_NEW":
-            ctx.json_ops.append(
-                {
-                    "kind": "callargs_new",
-                    "out": op.result.name,
-                }
-            )
+            callargs_op: dict[str, Any] = {
+                "kind": "callargs_new",
+                "out": op.result.name,
+            }
+            # A CALL_FUNCTION_EX call site's builder is its tuple and mapping;
+            # the runtime cannot recover the form from values. Source calls
+            # record their form. Compiler-synthesized calls (decorators, class
+            # creation, t-strings) record none and bind as CALL.
+            form = (op.metadata or {}).get("call_form", "stack")
+            if form == "expanded":
+                callargs_op["s_value"] = "expanded"
+            elif form != "stack":
+                raise AssertionError(f"unknown call form {form!r}")
+            ctx.json_ops.append(callargs_op)
         elif op.kind == "CALLARGS_PUSH_POS":
             ctx.json_ops.append(
                 {
@@ -127,10 +135,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                 "out": op.result.name,
                 "type_hint": "list",
             }
-            # Named-local fact (#58): a container literal bound to a local
-            # carries the Python scope boundary for any finalizer-bearing
-            # element it absorbs.
-            ctx.json_ops.append(self._serialization_carry_bound_local(op, _list_op))
+            ctx.json_ops.append(_list_op)
         elif op.kind == "LIST_INT_NEW":
             # Specialized flat i64 list: args are [count, fill_value]
             ctx.json_ops.append(
@@ -172,7 +177,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                 "out": op.result.name,
                 "type_hint": "tuple",
             }
-            ctx.json_ops.append(self._serialization_carry_bound_local(op, _tuple_op))
+            ctx.json_ops.append(_tuple_op)
         elif op.kind == "LIST_APPEND":
             ctx.json_ops.append(
                 {
@@ -316,14 +321,6 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "INTARRAY_FROM_SEQ":
-            ctx.json_ops.append(
-                {
-                    "kind": "intarray_from_seq",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "FLOAT_FROM_OBJ":
             ctx.json_ops.append(
                 {
@@ -356,33 +353,14 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "MEMORYVIEW_NEW":
-            ctx.json_ops.append(
-                {
-                    "kind": "memoryview_new",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "MEMORYVIEW_TOBYTES":
-            ctx.json_ops.append(
-                {
-                    "kind": "memoryview_tobytes",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "DICT_NEW":
             ctx.json_ops.append(
-                self._serialization_carry_bound_local(
-                    op,
-                    {
-                        "kind": "dict_new",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                        "type_hint": "dict",
-                    },
-                )
+                {
+                    "kind": "dict_new",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                    "type_hint": "dict",
+                }
             )
         elif op.kind == "DICT_FROM_OBJ":
             ctx.json_ops.append(
@@ -394,40 +372,26 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
             )
         elif op.kind == "SET_NEW":
             ctx.json_ops.append(
-                self._serialization_carry_bound_local(
-                    op,
-                    {
-                        "kind": "set_new",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                        "type_hint": "set",
-                    },
-                )
+                {
+                    "kind": "set_new",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                    "type_hint": "set",
+                }
             )
         elif op.kind == "FROZENSET_NEW":
             ctx.json_ops.append(
-                self._serialization_carry_bound_local(
-                    op,
-                    {
-                        "kind": "frozenset_new",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                        "type_hint": "frozenset",
-                    },
-                )
+                {
+                    "kind": "frozenset_new",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                    "type_hint": "frozenset",
+                }
             )
         elif op.kind == "DICT_GET":
             ctx.json_ops.append(
                 {
                     "kind": "dict_get",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "DICT_INC":
-            ctx.json_ops.append(
-                {
-                    "kind": "dict_inc",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
@@ -452,14 +416,6 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
             ctx.json_ops.append(
                 {
                     "kind": "string_split_sep_dict_inc",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "TAQ_INGEST_LINE":
-            ctx.json_ops.append(
-                {
-                    "kind": "taq_ingest_line",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }

@@ -32,7 +32,7 @@ _POLICY_KEYS = frozenset(
 _FALLBACK_POLICY = "error"
 _ABI = "cpython-language"
 _CONCURRENCY = "gil"
-_SUPPORTED_BACKENDS = ("native", "wasm")
+_SUPPORTED_BACKENDS = ("llvm", "native", "wasm")
 
 
 @dataclass(frozen=True, slots=True)

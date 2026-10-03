@@ -11,18 +11,19 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "float_from_obj",
     "int_from_obj",
     "int_from_str_of_obj",
+    "operator_index",
     "complex_from_obj",
-    "intarray_from_seq",
     "str_from_obj",
     "repr_from_obj",
     "ascii_from_obj",
 ];
 use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for scalar/sequence type-conversion constructors: `bytes`/`bytearray`/`float`/`int`/`complex`/`str`/`repr`/`ascii`/`intarray` from objects or strings.
+/// Cranelift codegen handlers for scalar/sequence type-conversion constructors: `bytes`/`bytearray`/`float`/`int`/`complex`/`str`/`repr`/`ascii` from objects or strings.
 ///
-/// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1 phase 1).
-/// Each arm body is byte-for-byte identical to the original; only the access
+/// `operator_index` uses the shared operand transaction and owned-result sink.
+/// The other arms were extracted from `compile_func_inner`'s per-op dispatch
+/// (M1 phase 1), preserving their original bodies; only the access
 /// path to the backend's split-borrowed fields changed (`self.module` ->
 /// `module`, `Self::` -> `SimpleBackend::`, owned locals -> reborrowed `&mut`
 /// params). The op-local closure `var_get_boxed_overflow_safe` is reconstructed
@@ -39,6 +40,8 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
+    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
     // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
@@ -409,32 +412,24 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "intarray_from_seq" => {
+        "operator_index" => {
+            // range()'s bound conversion: `operator.index(x)`, an owned exact int.
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let src = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
+            emit_operand_transaction_call(
+                op,
+                args,
+                "molt_operator_index",
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
                 vars,
-                &args[0],
                 representation_plan,
-            )
-            .expect("Intarray source not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_intarray_from_seq",
-                &[types::I64],
-                &[types::I64],
+                nbc,
+                block_tracked_obj,
+                block_tracked_ptr,
             );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*src]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
         }
         "str_from_obj" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

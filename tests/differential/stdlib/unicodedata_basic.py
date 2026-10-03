@@ -43,6 +43,9 @@ print("numeric_half", unicodedata.numeric("\u00bd"))
 
 # east_asian_width
 print("eaw_A", unicodedata.east_asian_width("A"))
+for code in (0x231A, 0x301, 0xD800, 0xDFFF, 0xFF21, 0x1FAE9, 0x1FA8F, 0x10FFFF):
+    print("eaw", code, unicodedata.east_asian_width(chr(code)))
+print("ucd_version", unicodedata.unidata_version)
 
 # normalize round-trip
 cafe_nfd = "caf\u0065\u0301"

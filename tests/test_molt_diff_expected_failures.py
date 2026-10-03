@@ -15,10 +15,12 @@ from types import ModuleType
 import pytest
 
 from tools.compat import test_policy
+from tools.command_execution import CommandExecutor
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tests" / "molt_diff.py"
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 def _load_diff_module() -> ModuleType:
@@ -43,7 +45,7 @@ def _configure_fixture_cpython_runner(
     def run_from_fixture_cwd(
         cmd: list[str], *, env: dict[str, str], timeout: float | None
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        return _COMMANDS.run(
             cmd,
             cwd=cwd,
             env=env,

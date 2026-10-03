@@ -191,7 +191,6 @@ if TYPE_CHECKING:
 
     def molt_block_on(awaitable: Any) -> Any: ...
 
-    def molt_asyncgen_shutdown() -> None: ...
 
     def molt_cancel_token_set_current(_token_id: int) -> int: ...
 
@@ -207,21 +206,12 @@ if TYPE_CHECKING:
 
     def molt_future_cancel(_future: Any) -> None: ...
 
-    def molt_asyncio_wait_for_new(_future: Any, _timeout: Any | None = None) -> Any: ...
 
-    def molt_asyncio_wait_new(
-        _tasks: Any, _timeout: Any | None = None, _return_when: int = 0
-    ) -> Any: ...
 
-    def molt_asyncio_gather_new(
-        _tasks: Any, _return_exceptions: bool = False
-    ) -> Any: ...
 
     def molt_asyncio_cancel_pending(_tasks: Any) -> int: ...
 
-    def molt_asyncio_ready_batch_run(_handles: Any) -> int: ...
 
-    def molt_asyncio_ready_queue_drain(_ready_lock: Any, _ready: Any) -> int: ...
 
     def molt_asyncio_waiters_notify(
         _waiters: Any, _count: int = 1, _result: Any = True
@@ -326,13 +316,7 @@ if TYPE_CHECKING:
 
     def molt_asyncio_event_loop_policy_set(_policy: Any) -> None: ...
 
-    def molt_asyncio_taskgroup_on_task_done(
-        _tasks: Any, _errors: Any, _task: Any
-    ) -> bool: ...
 
-    def molt_asyncio_taskgroup_request_cancel(
-        _loop: Any | None, _cancel_callback: Any, _cancel_handle: Any | None = None
-    ) -> Any | None: ...
 
     def molt_asyncio_tasks_add_done_callback(_tasks: Any, _callback: Any) -> int: ...
 
@@ -342,35 +326,12 @@ if TYPE_CHECKING:
 
     def molt_asyncio_task_uncancel_apply(_future: Any) -> None: ...
 
-    def molt_asyncio_future_invoke_callbacks(_future: Any, _callbacks: Any) -> int: ...
 
     def molt_asyncio_event_set_waiters(_waiters: Any, _result: Any = True) -> int: ...
 
-    def molt_asyncio_loop_enqueue_handle(
-        _loop: Any, _ready_lock: Any, _ready: Any, _handle: Any
-    ) -> int: ...
 
-    def molt_asyncio_timer_handle_new(
-        _handle: Any,
-        _delay: Any,
-        _loop: Any,
-        _scheduled: Any,
-        _ready_lock: Any,
-        _ready: Any,
-    ) -> Any: ...
 
-    def molt_asyncio_timer_schedule(
-        _handle: Any,
-        _delay: Any,
-        _loop: Any,
-        _scheduled: Any,
-        _ready_lock: Any,
-        _ready: Any,
-    ) -> Any: ...
 
-    def molt_asyncio_timer_handle_cancel(
-        _scheduled: Any, _handle: Any, _timer_task: Any | None
-    ) -> None: ...
 
     def molt_asyncio_fd_watcher_new(
         _registry: Any, _fileno: Any, _callback: Any, _args: Any, _events: Any
@@ -436,9 +397,6 @@ if TYPE_CHECKING:
         _closed_probe: Any,
     ) -> Any: ...
 
-    def molt_asyncio_ready_runner_new(
-        _loop: Any, _ready_lock: Any, _ready: Any
-    ) -> Any: ...
 
     def molt_asyncio_stream_reader_read_new(_reader: Any, _n: int = -1) -> Any: ...
 
@@ -491,9 +449,9 @@ if TYPE_CHECKING:
 
     def molt_asyncio_future_exception(_handle: int) -> Any: ...
 
-    def molt_asyncio_future_set_result_fast(_handle: int, _result: Any) -> int: ...
+    def molt_asyncio_future_set_result_fast(_handle: int, _result: Any) -> None: ...
 
-    def molt_asyncio_future_set_exception_fast(_handle: int, _exc: Any) -> int: ...
+    def molt_asyncio_future_set_exception_fast(_handle: int, _exc: Any) -> None: ...
 
     def molt_asyncio_future_cancel_fast(_handle: int, _msg: Any) -> bool: ...
 
@@ -501,7 +459,6 @@ if TYPE_CHECKING:
 
     def molt_asyncio_future_cancelled(_handle: int) -> bool: ...
 
-    def molt_asyncio_future_add_done_callback_fast(_handle: int, _cb: Any) -> bool: ...
 
     def molt_asyncio_future_drop(_handle: int) -> None: ...
 
@@ -564,6 +521,8 @@ if TYPE_CHECKING:
     def molt_asyncio_queue_drop(_handle: int) -> None: ...
 
     # Handle-based event loop intrinsics (RT2 core)
+    def molt_event_loop_spawn(_loop_handle: Any, _runner: Any) -> None: ...
+
     def molt_event_loop_new() -> Any: ...
 
     def molt_event_loop_call_soon(_loop_handle: Any, _callback: Any) -> None: ...
@@ -594,11 +553,9 @@ if TYPE_CHECKING:
 
     def molt_event_loop_time(_loop_handle: Any) -> float: ...
 
-    def molt_event_loop_next_deadline_delay(_loop_handle: Any) -> float: ...
+    def molt_event_loop_wait(_loop_handle: Any) -> None: ...
 
-    def molt_event_loop_has_pending(_loop_handle: Any) -> bool: ...
-
-    def molt_event_loop_ready_count(_loop_handle: Any) -> int: ...
+    def molt_event_loop_wake(_loop_handle: Any) -> None: ...
 
     def molt_event_loop_start(_loop_handle: Any) -> None: ...
 
@@ -649,9 +606,7 @@ from .exceptions import (
 )
 
 def _is_cancelled_exc(exc: BaseException) -> bool:
-    if isinstance(exc, CancelledError):
-        return True
-    return type(exc).__name__ == "CancelledError"
+    return isinstance(exc, CancelledError)
 
 def iscoroutine(obj: Any) -> bool:
     return bool(_molt_inspect_iscoroutine(obj))
@@ -659,43 +614,7 @@ def iscoroutine(obj: Any) -> bool:
 def iscoroutinefunction(func: Any) -> bool:
     return bool(_molt_inspect_iscoroutinefunction(func))
 
-from ._debug import (
-    _debug_asyncio_condition_enabled as _debug_asyncio_condition_enabled,
-    _debug_asyncio_exc_enabled as _debug_asyncio_exc_enabled,
-    _debug_asyncio_handles_enabled as _debug_asyncio_handles_enabled,
-    _debug_asyncio_promise_enabled as _debug_asyncio_promise_enabled,
-    _debug_asyncio_shutdown_enabled as _debug_asyncio_shutdown_enabled,
-    _debug_exc_state as _debug_exc_state,
-    _debug_gather_enabled as _debug_gather_enabled,
-    _debug_task_summary as _debug_task_summary,
-    _debug_tasks_enabled as _debug_tasks_enabled,
-    _debug_wait_for_enabled as _debug_wait_for_enabled,
-    _debug_write as _debug_write,
-)
-
-_DEBUG_GATHER = _debug_gather_enabled()
-
-_DEBUG_WAIT_FOR = _debug_wait_for_enabled()
-
-_DEBUG_TASKS = _debug_tasks_enabled()
-
-_DEBUG_ASYNCIO_PROMISE = _debug_asyncio_promise_enabled()
-
-_DEBUG_ASYNCIO_EXC = _debug_asyncio_exc_enabled()
-
-_DEBUG_ASYNCIO_CONDITION = _debug_asyncio_condition_enabled()
-
-_DEBUG_ASYNCIO_HANDLES = _debug_asyncio_handles_enabled()
-
-_DEBUG_ASYNCIO_SHUTDOWN = _debug_asyncio_shutdown_enabled()
-
 _UNSET = object()
-# Upper bound (seconds) on how long ``run_forever`` blocks between turns when a
-# timer is scheduled further out, so a ``stop()``/wakeup arriving from another
-# thread is observed promptly instead of waiting out a long deadline. Idle waits
-# with no scheduled timer also use this bound, keeping the idle loop blocking
-# (never busy-spinning) while staying responsive to cross-thread wakeups.
-_RUN_FOREVER_IDLE_CAP = 0.05
 _PROC_STDIO_INHERIT = 0
 _PROC_STDIO_PIPE = 1
 _PROC_STDIO_DEVNULL = 2
@@ -925,19 +844,6 @@ def _event_waiters_cleanup_token(token_id: int) -> int:
         )(token_id)
     )
 
-def _asyncio_ready_queue_drain(ready_lock: Any, ready: Any) -> int:
-    return int(
-        _require_asyncio_intrinsic(
-            molt_asyncio_ready_queue_drain, "asyncio_ready_queue_drain"
-        )(ready_lock, ready)
-    )
-
-def _asyncio_taskgroup_on_task_done(tasks: Any, errors: Any, task: Any) -> bool:
-    return bool(
-        _require_asyncio_intrinsic(
-            molt_asyncio_taskgroup_on_task_done, "asyncio_taskgroup_on_task_done"
-        )(tasks, errors, task)
-    )
 
 def _asyncio_tasks_add_done_callback(tasks: Any, callback: Callable[[Any], Any]) -> int:
     return int(
@@ -958,7 +864,6 @@ _molt_io_wait_new = _intrinsic_require("molt_io_wait_new", globals())
 molt_pending = _intrinsic_require("molt_pending", globals())
 molt_async_sleep = _intrinsic_require("molt_async_sleep", globals())
 molt_block_on = _intrinsic_require("molt_block_on", globals())
-molt_asyncgen_shutdown = _intrinsic_require("molt_asyncgen_shutdown", globals())
 molt_spawn = _intrinsic_require("molt_spawn", globals())
 molt_cancel_token_new = _intrinsic_require("molt_cancel_token_new", globals())
 molt_cancel_token_clone = _intrinsic_require("molt_cancel_token_clone", globals())
@@ -980,17 +885,8 @@ molt_task_register_token_owned = _intrinsic_require(
     "molt_task_register_token_owned", globals()
 )
 molt_future_cancel = _intrinsic_require("molt_future_cancel", globals())
-molt_asyncio_wait_for_new = _intrinsic_require("molt_asyncio_wait_for_new", globals())
-molt_asyncio_wait_new = _intrinsic_require("molt_asyncio_wait_new", globals())
-molt_asyncio_gather_new = _intrinsic_require("molt_asyncio_gather_new", globals())
 molt_asyncio_cancel_pending = _intrinsic_require(
     "molt_asyncio_cancel_pending", globals()
-)
-molt_asyncio_ready_batch_run = _intrinsic_require(
-    "molt_asyncio_ready_batch_run", globals()
-)
-molt_asyncio_ready_queue_drain = _intrinsic_require(
-    "molt_asyncio_ready_queue_drain", globals()
 )
 molt_asyncio_waiters_notify = _intrinsic_require(
     "molt_asyncio_waiters_notify", globals()
@@ -1112,12 +1008,6 @@ molt_asyncio_event_loop_policy_get = _intrinsic_require(
 molt_asyncio_event_loop_policy_set = _intrinsic_require(
     "molt_asyncio_event_loop_policy_set", globals()
 )
-molt_asyncio_taskgroup_on_task_done = _intrinsic_require(
-    "molt_asyncio_taskgroup_on_task_done", globals()
-)
-molt_asyncio_taskgroup_request_cancel = _intrinsic_require(
-    "molt_asyncio_taskgroup_request_cancel", globals()
-)
 molt_asyncio_tasks_add_done_callback = _intrinsic_require(
     "molt_asyncio_tasks_add_done_callback", globals()
 )
@@ -1127,23 +1017,8 @@ molt_asyncio_task_cancel_apply = _intrinsic_require(
 molt_asyncio_task_uncancel_apply = _intrinsic_require(
     "molt_asyncio_task_uncancel_apply", globals()
 )
-molt_asyncio_future_invoke_callbacks = _intrinsic_require(
-    "molt_asyncio_future_invoke_callbacks", globals()
-)
 molt_asyncio_event_set_waiters = _intrinsic_require(
     "molt_asyncio_event_set_waiters", globals()
-)
-molt_asyncio_loop_enqueue_handle = _intrinsic_require(
-    "molt_asyncio_loop_enqueue_handle", globals()
-)
-molt_asyncio_timer_handle_new = _intrinsic_require(
-    "molt_asyncio_timer_handle_new", globals()
-)
-molt_asyncio_timer_schedule = _intrinsic_require(
-    "molt_asyncio_timer_schedule", globals()
-)
-molt_asyncio_timer_handle_cancel = _intrinsic_require(
-    "molt_asyncio_timer_handle_cancel", globals()
 )
 molt_asyncio_fd_watcher_new = _intrinsic_require(
     "molt_asyncio_fd_watcher_new", globals()
@@ -1161,6 +1036,7 @@ molt_event_loop_connect_write_pipe = _intrinsic_require(
     "molt_event_loop_connect_write_pipe", globals()
 )
 # --- Event loop Rust handle intrinsics (RT2 core, 28 total) ---
+molt_event_loop_spawn = _intrinsic_require("molt_event_loop_spawn", globals())
 molt_event_loop_new = _intrinsic_require("molt_event_loop_new", globals())
 molt_event_loop_call_soon = _intrinsic_require("molt_event_loop_call_soon", globals())
 molt_event_loop_call_later = _intrinsic_require("molt_event_loop_call_later", globals())
@@ -1178,15 +1054,8 @@ molt_event_loop_remove_writer = _intrinsic_require(
 )
 molt_event_loop_run_once = _intrinsic_require("molt_event_loop_run_once", globals())
 molt_event_loop_time = _intrinsic_require("molt_event_loop_time", globals())
-molt_event_loop_next_deadline_delay = _intrinsic_require(
-    "molt_event_loop_next_deadline_delay", globals()
-)
-molt_event_loop_has_pending = _intrinsic_require(
-    "molt_event_loop_has_pending", globals()
-)
-molt_event_loop_ready_count = _intrinsic_require(
-    "molt_event_loop_ready_count", globals()
-)
+molt_event_loop_wait = _intrinsic_require("molt_event_loop_wait", globals())
+molt_event_loop_wake = _intrinsic_require("molt_event_loop_wake", globals())
 molt_event_loop_start = _intrinsic_require("molt_event_loop_start", globals())
 molt_event_loop_stop = _intrinsic_require("molt_event_loop_stop", globals())
 molt_event_loop_is_running = _intrinsic_require("molt_event_loop_is_running", globals())
@@ -1236,9 +1105,6 @@ molt_asyncio_subprocess_stdio_normalize = _intrinsic_require(
 molt_asyncio_server_accept_loop_new = _intrinsic_require(
     "molt_asyncio_server_accept_loop_new", globals()
 )
-molt_asyncio_ready_runner_new = _intrinsic_require(
-    "molt_asyncio_ready_runner_new", globals()
-)
 molt_asyncio_stream_reader_read_new = _intrinsic_require(
     "molt_asyncio_stream_reader_read_new", globals()
 )
@@ -1284,14 +1150,12 @@ molt_asyncio_sock_sendto_new = _intrinsic_require(
 )
 molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new", globals())
 molt_thread_submit = _intrinsic_require("molt_thread_submit", globals())
-molt_asyncio_to_thread = _intrinsic_require("molt_asyncio_to_thread", globals())
 
 _molt_module_new = _intrinsic_require("molt_module_new", globals())
 _molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin", globals())
 _molt_future_cancel_msg = _intrinsic_require("molt_future_cancel_msg", globals())
 _molt_future_cancel_clear = _intrinsic_require("molt_future_cancel_clear", globals())
-_molt_exception_pending = _intrinsic_require("molt_exception_pending", globals())
-_molt_exception_last = _intrinsic_require("molt_exception_last", globals())
+_molt_exception_last_pending = _intrinsic_require("molt_exception_last_pending", globals())
 _molt_process_spawn = _intrinsic_require("molt_process_spawn", globals())
 _molt_process_wait_future = _intrinsic_require("molt_process_wait_future", globals())
 _molt_process_pid = _intrinsic_require("molt_process_pid", globals())
@@ -1344,9 +1208,6 @@ molt_asyncio_future_cancel_fast = _intrinsic_require(
 molt_asyncio_future_done = _intrinsic_require("molt_asyncio_future_done", globals())
 molt_asyncio_future_cancelled = _intrinsic_require(
     "molt_asyncio_future_cancelled", globals()
-)
-molt_asyncio_future_add_done_callback_fast = _intrinsic_require(
-    "molt_asyncio_future_add_done_callback_fast", globals()
 )
 molt_asyncio_future_drop = _intrinsic_require("molt_asyncio_future_drop", globals())
 

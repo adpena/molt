@@ -1,0 +1,439 @@
+//! Shared ownership-bearing dictionary/string runtime for ABI fixture binaries.
+//! The real runtime remains the semantic oracle; this model supplies the hook
+//! capabilities and terminal foreign-owner release needed by native C fixtures.
+#![allow(dead_code)]
+
+use molt_cpython_abi::abi_types::{self, MoltTypeTag, PyTypeObject};
+use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+use molt_cpython_abi::hooks::{BorrowedHandleResult, DictHashSource, RuntimeHooks};
+use molt_lang_obj_model::MoltObject;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
+
+enum Value {
+    Opaque,
+    Class,
+    CFunction { method: bool },
+    String(Vec<u8>),
+    Dict(HashMap<u64, u64>),
+    Module(u64),
+    Foreign(usize),
+}
+struct Entry {
+    refs: usize,
+    value: Value,
+}
+static NEXT: AtomicU64 = AtomicU64::new(0x6400_0000);
+static VALUES: LazyLock<Mutex<HashMap<u64, Entry>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static INTERN: LazyLock<Mutex<HashMap<Vec<u8>, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn allocate(value: Value) -> u64 {
+    let address = NEXT.fetch_add(0x10, Ordering::Relaxed) as usize;
+    let bits = MoltObject::from_ptr(std::ptr::with_exposed_provenance_mut(address)).bits();
+    VALUES
+        .lock()
+        .unwrap()
+        .insert(bits, Entry { refs: 1, value });
+    bits
+}
+pub fn fresh_handle() -> u64 {
+    allocate(Value::Opaque)
+}
+pub fn contains(bits: u64) -> bool {
+    VALUES.lock().unwrap().contains_key(&bits)
+}
+pub unsafe extern "C" fn register_c_function(
+    _: u64,
+    flags: std::os::raw::c_int,
+    _: u64,
+    _: bool,
+    _: u64,
+    _: *const u8,
+    _: usize,
+) -> u64 {
+    allocate(Value::CFunction {
+        method: flags & abi_types::METH_METHOD != 0,
+    })
+}
+
+pub unsafe extern "C" fn inc_ref(bits: u64) {
+    let retain = || {
+        let mut values = VALUES.lock().unwrap();
+        let value = values.get_mut(&bits)?;
+        let previous = value.refs;
+        value.refs += 1;
+        Some(u32::try_from(previous).unwrap())
+    };
+    if GLOBAL_BRIDGE
+        .transition_runtime_owner_add(bits, false, 0, retain)
+        .is_none()
+    {
+        let _ = retain();
+    }
+}
+pub unsafe extern "C" fn dec_ref(bits: u64) {
+    let release = || {
+        let mut values = VALUES.lock().unwrap();
+        let Some(value) = values.get_mut(&bits) else {
+            return 0;
+        };
+        let previous = value.refs;
+        value.refs = previous
+            .checked_sub(1)
+            .expect("fixture runtime ownership underflow");
+        u32::try_from(previous).unwrap()
+    };
+    let restore = || {
+        VALUES.lock().unwrap().get_mut(&bits).unwrap().refs += 1;
+    };
+    let terminal = match GLOBAL_BRIDGE.transition_runtime_owner_release(bits, 0, release, restore) {
+        Some(outcome) => {
+            if outcome.should_finalize() {
+                drop(GLOBAL_BRIDGE.retire_runtime_object_deferred(bits));
+                assert_eq!(release(), 1);
+            }
+            outcome.should_finalize()
+        }
+        None => release() == 1,
+    };
+    if !terminal {
+        return;
+    }
+    let value = VALUES.lock().unwrap().remove(&bits).unwrap().value;
+    match value {
+        Value::Dict(entries) => {
+            for (key, value) in entries {
+                unsafe {
+                    dec_ref(key);
+                    dec_ref(value);
+                }
+            }
+        }
+        Value::Foreign(address) => unsafe {
+            molt_cpython_abi::bridge::molt_foreign_object_release(address)
+        },
+        Value::Module(dict) => unsafe { dec_ref(dict) },
+        Value::String(_) | Value::Opaque | Value::Class | Value::CFunction { .. } => {}
+    }
+}
+pub unsafe extern "C" fn ref_count(bits: u64) -> usize {
+    VALUES
+        .lock()
+        .unwrap()
+        .get(&bits)
+        .map_or(0, |value| value.refs)
+}
+pub unsafe extern "C" fn foreign_new(address: usize) -> u64 {
+    allocate(Value::Foreign(address))
+}
+pub unsafe extern "C" fn alloc_dict() -> u64 {
+    allocate(Value::Dict(HashMap::new()))
+}
+pub unsafe extern "C" fn alloc_module(_: *const u8, _: usize) -> u64 {
+    allocate(Value::Module(unsafe { alloc_dict() }))
+}
+pub unsafe extern "C" fn module_get_dict(module: u64) -> BorrowedHandleResult {
+    match VALUES
+        .lock()
+        .unwrap()
+        .get(&module)
+        .map(|entry| &entry.value)
+    {
+        Some(Value::Module(dict)) => BorrowedHandleResult::ok(*dict),
+        _ => BorrowedHandleResult::error(),
+    }
+}
+pub unsafe extern "C" fn dict_resolve(bits: u64, _: u8) -> BorrowedHandleResult {
+    if VALUES
+        .lock()
+        .unwrap()
+        .get(&bits)
+        .is_some_and(|entry| matches!(entry.value, Value::Dict(_)))
+    {
+        BorrowedHandleResult::ok(bits)
+    } else {
+        BorrowedHandleResult::missing()
+    }
+}
+pub unsafe extern "C" fn dict_set(dict: u64, key: u64, value: u64) -> i32 {
+    let previous = {
+        let mut values = VALUES.lock().unwrap();
+        let Some(Entry {
+            value: Value::Dict(entries),
+            ..
+        }) = values.get_mut(&dict)
+        else {
+            return -1;
+        };
+        entries.insert(key, value)
+    };
+    unsafe {
+        inc_ref(value);
+        if let Some(previous) = previous {
+            dec_ref(previous);
+        } else {
+            inc_ref(key);
+        }
+    }
+    0
+}
+pub unsafe extern "C" fn dict_get(
+    dict: u64,
+    key: u64,
+    _: DictHashSource,
+    _: i64,
+) -> BorrowedHandleResult {
+    let values = VALUES.lock().unwrap();
+    let Some(Entry {
+        value: Value::Dict(entries),
+        ..
+    }) = values.get(&dict)
+    else {
+        return BorrowedHandleResult::error();
+    };
+    entries
+        .get(&key)
+        .copied()
+        .map_or_else(BorrowedHandleResult::missing, BorrowedHandleResult::ok)
+}
+pub unsafe extern "C" fn dict_len(dict: u64) -> usize {
+    let values = VALUES.lock().unwrap();
+    let Some(Entry {
+        value: Value::Dict(entries),
+        ..
+    }) = values.get(&dict)
+    else {
+        return 0;
+    };
+    entries.len()
+}
+pub unsafe extern "C" fn dict_entry(
+    dict: u64,
+    index: usize,
+    out_key: *mut u64,
+    out_value: *mut u64,
+) -> i32 {
+    let values = VALUES.lock().unwrap();
+    let Some(Entry {
+        value: Value::Dict(entries),
+        ..
+    }) = values.get(&dict)
+    else {
+        return 0;
+    };
+    let Some((&key, &value)) = entries.iter().nth(index) else {
+        return 0;
+    };
+    unsafe {
+        if !out_key.is_null() {
+            *out_key = key;
+        }
+        if !out_value.is_null() {
+            *out_value = value;
+        }
+    }
+    1
+}
+pub unsafe extern "C" fn dict_op(op: u32, dict: u64) -> u64 {
+    assert_eq!(op, molt_cpython_abi::DictOp::Clear as u32);
+    let entries = {
+        let mut values = VALUES.lock().unwrap();
+        let Some(Entry {
+            value: Value::Dict(entries),
+            ..
+        }) = values.get_mut(&dict)
+        else {
+            return 0;
+        };
+        std::mem::take(entries)
+    };
+    for (key, value) in entries {
+        unsafe {
+            dec_ref(key);
+            dec_ref(value);
+        }
+    }
+    MoltObject::none().bits()
+}
+pub unsafe extern "C" fn alloc_str(data: *const u8, len: usize) -> u64 {
+    let bytes = if data.is_null() || len == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
+    };
+    let bits = *INTERN
+        .lock()
+        .unwrap()
+        .entry(bytes.clone())
+        .or_insert_with(|| {
+            let mut terminated = bytes;
+            terminated.push(0);
+            allocate(Value::String(terminated))
+        });
+    // The intern table retains its original owner; every allocation returns one.
+    unsafe { inc_ref(bits) };
+    bits
+}
+pub unsafe extern "C" fn str_data(bits: u64, out_len: *mut usize) -> *const u8 {
+    let values = VALUES.lock().unwrap();
+    if let Some(Entry {
+        value: Value::String(bytes),
+        ..
+    }) = values.get(&bits)
+    {
+        if !out_len.is_null() {
+            unsafe {
+                *out_len = bytes.len() - 1;
+            }
+        }
+        return bytes.as_ptr();
+    }
+    drop(values);
+    unsafe { super::fake_strings::str_data(bits, out_len) }
+}
+pub unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
+    let values = VALUES.lock().unwrap();
+    match values.get(&bits).map(|entry| &entry.value) {
+        Some(Value::Class) => MoltTypeTag::Type as u8,
+        Some(Value::CFunction { .. }) => MoltTypeTag::BuiltinCallable as u8,
+        Some(Value::String(_)) => MoltTypeTag::Str as u8,
+        Some(Value::Dict(_)) => MoltTypeTag::Dict as u8,
+        Some(Value::Module(_)) => MoltTypeTag::Module as u8,
+        _ if super::fake_strings::contains(bits) => MoltTypeTag::Str as u8,
+        _ => MoltTypeTag::Other as u8,
+    }
+}
+// Storage classification does not supply Python class identity. Public type
+// predicates and diagnostic text admission use the runtime class hook, exactly
+// as the production provider does. Each immortal fixture class anchor resolves
+// through the existing static-binding authority, never a second PyType shell.
+struct Classes {
+    type_class: u64,
+    string: u64,
+    dict: u64,
+    module: u64,
+    list: u64,
+    function: u64,
+    method: u64,
+    opaque: u64,
+}
+static CLASSES: LazyLock<Classes> = LazyLock::new(|| {
+    let bind = |class: *mut PyTypeObject| {
+        let bits = allocate(Value::Class);
+        unsafe {
+            GLOBAL_BRIDGE
+                .bind_static_pyobj_to_runtime_handle(class.cast(), bits, true)
+                .expect("bind fixture class to its canonical static type");
+        }
+        bits
+    };
+    Classes {
+        type_class: bind(&raw mut abi_types::PyType_Type),
+        string: bind(&raw mut abi_types::PyUnicode_Type),
+        dict: bind(&raw mut abi_types::PyDict_Type),
+        module: bind(&raw mut abi_types::PyModule_Type),
+        list: bind(&raw mut abi_types::PyList_Type),
+        function: bind(&raw mut abi_types::PyCFunction_Type),
+        method: bind(&raw mut abi_types::PyCMethod_Type),
+        opaque: bind(&raw mut abi_types::MoltManaged_Type),
+    }
+});
+pub unsafe extern "C" fn runtime_class_borrowed(bits: u64) -> BorrowedHandleResult {
+    let classes = &*CLASSES;
+    let callable_class = {
+        let values = VALUES.lock().unwrap();
+        match values.get(&bits).map(|entry| &entry.value) {
+            Some(Value::CFunction { method: true }) => Some(classes.method),
+            Some(Value::CFunction { method: false }) => Some(classes.function),
+            _ => None,
+        }
+    };
+    if let Some(class) = callable_class {
+        return BorrowedHandleResult::ok(class);
+    }
+    // Specialized list/dict fixtures keep their explicit storage registries.
+    // Consult their installed classifier without holding the shared value lock.
+    let tag = unsafe { (molt_cpython_abi::hooks::hooks_or_stubs().classify_heap)(bits) };
+    let class = match tag {
+        tag if tag == MoltTypeTag::Type as u8 => classes.type_class,
+        tag if tag == MoltTypeTag::Str as u8 => classes.string,
+        tag if tag == MoltTypeTag::Dict as u8 => classes.dict,
+        tag if tag == MoltTypeTag::Module as u8 => classes.module,
+        tag if tag == MoltTypeTag::List as u8 => classes.list,
+        _ => classes.opaque,
+    };
+    BorrowedHandleResult::ok(class)
+}
+unsafe extern "C" fn type_is_subtype(subclass: u64, class: u64) -> i32 {
+    // This fixture cohort has no user-defined managed classes. Its only
+    // non-reflexive relation between bound classes is CMethod -> CFunction.
+    let classes = &*CLASSES;
+    i32::from(subclass == class || (subclass == classes.method && class == classes.function))
+}
+pub unsafe extern "C" fn object_str(bits: u64) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    let is_string = VALUES
+        .lock()
+        .unwrap()
+        .get(&bits)
+        .is_some_and(|entry| matches!(entry.value, Value::String(_)));
+    if is_string {
+        unsafe { inc_ref(bits) };
+        molt_cpython_abi::hooks::OwnedHandleResult::ok(bits)
+    } else {
+        unsafe { own_rendered_string(super::fake_strings::object_str(bits)) }
+    }
+}
+unsafe fn own_rendered_string(
+    result: molt_cpython_abi::hooks::OwnedHandleResult,
+) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    let molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) = result.decode() else {
+        return molt_cpython_abi::hooks::OwnedHandleResult::error();
+    };
+    let mut len = 0;
+    let data = unsafe { super::fake_strings::str_data(bits, &mut len) };
+    if data.is_null() {
+        return molt_cpython_abi::hooks::OwnedHandleResult::error();
+    }
+    molt_cpython_abi::hooks::OwnedHandleResult::ok(unsafe { alloc_str(data, len) })
+}
+pub unsafe extern "C" fn object_repr(bits: u64) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    let bytes = {
+        let values = VALUES.lock().unwrap();
+        match values.get(&bits).map(|entry| &entry.value) {
+            Some(Value::String(bytes)) => Some(bytes[..bytes.len() - 1].to_vec()),
+            _ => None,
+        }
+    };
+    // Reuse the existing fixture's scalar/string formatting authority.
+    let value = if let Some(bytes) = bytes {
+        unsafe { super::fake_strings::alloc_str(bytes.as_ptr(), bytes.len()) }
+    } else {
+        bits
+    };
+    unsafe { own_rendered_string(super::fake_strings::object_repr(value)) }
+}
+pub fn wire(hooks: &mut RuntimeHooks) {
+    hooks.register_c_function = register_c_function;
+    hooks.alloc_dict = alloc_dict;
+    hooks.alloc_module = alloc_module;
+    hooks.module_get_dict_borrowed = module_get_dict;
+    hooks.dict_set = dict_set;
+    hooks.dict_resolve = dict_resolve;
+    hooks.dict_get = dict_get;
+    hooks.dict_len = dict_len;
+    hooks.dict_entry = dict_entry;
+    hooks.dict_op = dict_op;
+    hooks.alloc_str = alloc_str;
+    hooks.str_data = str_data;
+    hooks.classify_heap = classify_heap;
+    hooks.runtime_class_borrowed = runtime_class_borrowed;
+    hooks.type_is_subtype = type_is_subtype;
+    hooks.inc_ref = inc_ref;
+    hooks.dec_ref = dec_ref;
+    hooks.ref_count = ref_count;
+    hooks.foreign_new = foreign_new;
+    hooks.object_str = object_str;
+    hooks.object_repr = object_repr;
+}

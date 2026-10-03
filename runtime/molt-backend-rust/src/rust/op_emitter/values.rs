@@ -354,6 +354,73 @@ impl RustBackend {
         }
     }
 
+    /// A frame's binding home: the function-level `__molt_home_<slot>`
+    /// variable the function prologue declares. The transpiled program runs
+    /// no drop insertion; a home holds its binding as a value.
+    fn frame_home_var(&mut self, op: &OpIR) -> Option<String> {
+        match op.value {
+            Some(slot) if slot >= 0 => Some(format!("__molt_home_{slot}")),
+            _ => {
+                self.emit_unsupported_op(op, "frame home op requires a code slot");
+                None
+            }
+        }
+    }
+
+    pub(super) fn emit_op_frame_home_store(&mut self, op: &OpIR) {
+        let Some(home) = self.frame_home_var(op) else {
+            return;
+        };
+        let Some([source]) = op.args.as_deref() else {
+            self.emit_unsupported_op(op, "frame home store requires exactly one operand");
+            return;
+        };
+        self.emit_line(&format!("{home} = {};", rust_clone(source)));
+        // The result is a view of the stored value.
+        if let Some(output) = molt_tir::tir::simple_def_use::simple_ir_out_result(op) {
+            let output = rust_ident(output);
+            self.emit_line(&declare_molt_value(
+                &output,
+                &rust_clone(source),
+                &self.hoisted_vars,
+            ));
+            if is_assignable_var(source) {
+                self.note_alias(output, rust_ident(source));
+            }
+        }
+    }
+
+    pub(super) fn emit_op_frame_home_load(&mut self, op: &OpIR) {
+        let Some(home) = self.frame_home_var(op) else {
+            return;
+        };
+        let output = out_var(op);
+        self.emit_line(&declare_molt_value(
+            &output,
+            &format!("{home}.clone()"),
+            &self.hoisted_vars,
+        ));
+    }
+
+    pub(super) fn emit_op_frame_home_take(&mut self, op: &OpIR) {
+        let Some(home) = self.frame_home_var(op) else {
+            return;
+        };
+        let output = out_var(op);
+        self.emit_line(&declare_molt_value(
+            &output,
+            &format!("std::mem::replace(&mut {home}, MoltValue::None)"),
+            &self.hoisted_vars,
+        ));
+    }
+
+    pub(super) fn emit_op_frame_home_clear(&mut self, op: &OpIR) {
+        let Some(home) = self.frame_home_var(op) else {
+            return;
+        };
+        self.emit_line(&format!("{home} = MoltValue::None;"));
+    }
+
     pub(super) fn emit_op_phi(&mut self, _op: &OpIR) {
 
         // Phi nodes are handled by the hoisting logic above; skip here.

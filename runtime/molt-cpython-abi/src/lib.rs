@@ -83,7 +83,7 @@ pub mod hooks;
 #[cfg(feature = "l7-attestation-core")]
 pub mod l7_attestation;
 pub(crate) mod platform;
-pub(crate) mod type_slots;
+pub mod type_slots;
 
 #[cfg(all(feature = "extension-loader", not(target_arch = "wasm32")))]
 pub mod loader;

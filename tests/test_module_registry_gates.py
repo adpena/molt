@@ -178,6 +178,35 @@ def test_module_registry_json_checker_rejects_malformed_rows() -> None:
     assert any(problem.startswith("registry_digest mismatch") for problem in problems)
 
 
+def test_runtime_builtin_declaration_requires_initializer() -> None:
+    with pytest.raises(ValueError, match="runtime builtin.*requires init_symbol"):
+        ModuleRegistryEntry(name="builtins", kind="runtime_builtin")
+
+
+@pytest.mark.parametrize("missing", ["init_symbol", "flags"])
+def test_runtime_builtin_projection_requires_body_even_with_valid_digest(missing):
+    payload = _sample_registry().registry_json_payload()
+    row = next(row for row in payload["rows"] if row["name"] == "sys")
+    row[missing] = "" if missing == "init_symbol" else 0
+    names = [row["name"] for row in payload["rows"]]
+    canonical_rows = [
+        {
+            **row,
+            "parent": None if row["parent"] is None else names[row["parent"]],
+            "alias_target": (
+                None if row["alias_target"] is None else names[row["alias_target"]]
+            ),
+        }
+        for row in payload["rows"]
+    ]
+    payload["registry_digest"] = authority.registry_digest_for_rows(
+        canonical_rows, schema=payload["schema"]
+    )
+    assert check_registry_json_payload(payload) == [
+        "runtime builtin registry row 'sys' requires an init body"
+    ]
+
+
 def test_module_registry_blob_layout_matches_schema() -> None:
     registry = _sample_registry()
     payload = registry.backend_ir_payload()
@@ -280,7 +309,14 @@ def test_module_registry_blob_symbol_is_one_name_everywhere() -> None:
 # ─── G3: init bodies reachable only through MODULE_INIT_TABLE ───────────────
 
 
-def _prepare_native_ir(tmp_path: Path, *, gc_ops: list[dict] | None = None):
+def _prepare_binary_ir(
+    tmp_path: Path,
+    *,
+    target: str = "native",
+    gc_ops: list[dict] | None = None,
+    builtins_ops: list[dict] | None = None,
+    dispatch_roots: set[str] | None = None,
+):
     cli = pytest.importorskip("molt.cli")
     from molt.cli import backend_ir as BACKEND_IR
 
@@ -288,16 +324,20 @@ def _prepare_native_ir(tmp_path: Path, *, gc_ops: list[dict] | None = None):
     gc_path = tmp_path / "gc.py"
     machinery_path = tmp_path / "machinery.py"
     sys_path = tmp_path / "sys.py"
+    builtins_path = tmp_path / "builtins.py"
+    unrelated_path = tmp_path / "unrelated.py"
     entry_path.write_text("import gc\n", encoding="utf-8")
-    for path in (gc_path, machinery_path, sys_path):
+    for path in (gc_path, machinery_path, sys_path, builtins_path, unrelated_path):
         path.write_text("", encoding="utf-8")
     module_graph = {
         "demo": entry_path,
         "gc": gc_path,
         "importlib.machinery": machinery_path,
         "sys": sys_path,
+        "builtins": builtins_path,
+        "unrelated": unrelated_path,
     }
-    module_order = ["sys", "gc", "importlib.machinery", "demo"]
+    module_order = ["sys", "builtins", "gc", "importlib.machinery", "unrelated", "demo"]
     integration_state = cli._FrontendIntegrationState(
         functions=[
             {
@@ -307,6 +347,8 @@ def _prepare_native_ir(tmp_path: Path, *, gc_ops: list[dict] | None = None):
                 "ops": (
                     [*(gc_ops or ()), {"kind": "ret_void"}]
                     if module_name == "gc"
+                    else [*(builtins_ops or ()), {"kind": "ret_void"}]
+                    if module_name == "builtins"
                     else [{"kind": "ret_void"}]
                 ),
             }
@@ -323,13 +365,16 @@ def _prepare_native_ir(tmp_path: Path, *, gc_ops: list[dict] | None = None):
         fail=cli._fail,
         json_output=True,
         module_order=module_order,
-        runtime_import_dispatch_roots={"gc"},
+        runtime_import_dispatch_roots={"gc"}
+        if dispatch_roots is None
+        else dispatch_roots,
         spawn_enabled=False,
         pgo_profile_summary=None,
         runtime_feedback_summary=None,
         emit_ir_path=None,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="full",
+        target=target,
     )
     assert error is None, error
     assert prepared is not None
@@ -356,7 +401,7 @@ def _ensure_call_module_id(ops: list, ensure_call: dict) -> int | None:
 
 
 def test_init_reachable_only_via_table(tmp_path: Path) -> None:
-    cli, prepared = _prepare_native_ir(tmp_path)
+    cli, prepared = _prepare_binary_ir(tmp_path)
     ir = prepared.ir
     function_names = {func["name"] for func in ir["functions"]}
     # The string_eq dispatch chain is deleted on the native lane.
@@ -406,7 +451,7 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
 
 
 def test_table_only_init_root_closes_required_runtime_features(tmp_path: Path) -> None:
-    _, prepared = _prepare_native_ir(
+    _, prepared = _prepare_binary_ir(
         tmp_path,
         gc_ops=[
             {
@@ -416,6 +461,38 @@ def test_table_only_init_root_closes_required_runtime_features(tmp_path: Path) -
             }
         ],
     )
+    assert prepared.required_link_features == frozenset({"stdlib_regex"})
+
+
+@pytest.mark.parametrize("target", ["native", "llvm", "wasm"])
+def test_runtime_builtin_initializers_do_not_require_explicit_import_roots(
+    tmp_path: Path, target: str
+) -> None:
+    cli, prepared = _prepare_binary_ir(
+        tmp_path,
+        target=target,
+        dispatch_roots=set(),
+        builtins_ops=[
+            {"kind": "builtin_func", "s_value": "molt_re_compile", "out": "v0"}
+        ],
+    )
+    registry = prepared.module_registry
+    assert registry is not None
+    payload = registry.backend_ir_payload()
+    for name in ("builtins", "sys"):
+        row = registry.row_of(name)
+        assert row is not None and row.kind == "runtime_builtin"
+        assert row.flags & authority.MODULE_FLAG_HAS_BODY
+        assert registry.ensure_lane_id(name) == row.id
+        symbol = cli.SimpleTIRGenerator.module_init_symbol(name)
+        assert row.init_symbol == symbol
+        assert symbol in payload["init_symbols"]
+        assert [row.id, symbol] in payload["init_rows"]
+        assert symbol in {reloc[1] for reloc in payload["relocs"]}
+    unrelated = registry.row_of("unrelated")
+    assert unrelated is not None and unrelated.kind == "source"
+    assert not unrelated.flags & authority.MODULE_FLAG_HAS_BODY
+    assert registry.ensure_lane_id("unrelated") is None
     assert prepared.required_link_features == frozenset({"stdlib_regex"})
 
 
@@ -511,16 +588,17 @@ def test_module_ensure_is_the_only_state_transition_owner() -> None:
                     f"{path}: calls the sys.modules view mutation entry point "
                     f"{needle} (PR2 owns wiring it to the dict view)"
                 )
-    # The publication bridges have exactly one sanctioned caller: the
-    # module_cache_set/del store writes in builtins/modules.rs.
+    # Publication and deferred detachment have exactly one sanctioned caller:
+    # module_cache_set/remove in builtins/modules.rs. Detachment returns an
+    # owned reference for release after every namespace owner agrees.
     modules_rs = (RUNTIME_SRC / "builtins" / "modules.rs").read_text(encoding="utf-8")
     assert "publish_from_cache_set" in modules_rs
-    assert "unpublish_from_cache_del" in modules_rs
+    assert "detach_cache_publication" in modules_rs
     for path in RUNTIME_SRC.rglob("*.rs"):
         if path in (owner, RUNTIME_SRC / "builtins" / "modules.rs"):
             continue
         text = _strip_line_comments(path.read_text(encoding="utf-8", errors="replace"))
-        if "publish_from_cache_set" in text or "unpublish_from_cache_del" in text:
+        if "publish_from_cache_set" in text or "detach_cache_publication" in text:
             offenders.append(f"{path}: unsanctioned publication-bridge caller")
     assert offenders == [], "\n".join(offenders)
 

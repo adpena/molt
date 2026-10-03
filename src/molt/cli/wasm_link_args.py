@@ -10,6 +10,20 @@ from molt.cli import atomic_io
 from molt.cli.runtime_paths import _build_state_root
 
 
+def wasm_link_output_arguments(
+    published: Path, *, staged_output: Path
+) -> tuple[str, str, str]:
+    """Name the module by its publication coordinate, not its transaction file.
+
+    wasm-ld otherwise embeds the output basename in the name section. Atomic
+    publishers use unique staging names, which must not change artifact bytes
+    or discard the function/local names needed for debugging.
+    """
+    if not published.name or "\0" in published.name:
+        raise ValueError("WASM publication requires a nonempty module filename")
+    return (f"--soname={published.name}", "-o", str(staged_output))
+
+
 _RUNTIME_LINK_SWITCHES = frozenset(
     {
         "--import-memory",

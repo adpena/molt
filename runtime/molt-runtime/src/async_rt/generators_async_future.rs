@@ -56,173 +56,211 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(future_bits);
-        let Some(ptr) = obj.as_ptr() else {
+        let caller = current_task_ptr();
+        // An exception injected at an await continuation belongs to its caller.
+        // Do not execute or terminalize the child merely to deliver that error.
+        let injected = maybe_ptr_from_bits(future_bits)
+            .and_then(|child| crate::async_rt::awaitable::direct_exception_before_poll(_py, child));
+        let result = injected.unwrap_or_else(|| poll_future_value(_py, future_bits));
+        if !caller.is_null()
+            && let Some(child) = maybe_ptr_from_bits(future_bits)
+            && child != caller
+        {
+            unsafe {
+                if result == pending_bits_i64() && !exception_pending(_py) {
+                    if crate::object::aux_header::object_frame_awaited_bits(caller) != future_bits {
+                        inc_ref_bits(_py, future_bits);
+                        crate::object::aux_header::object_replace_frame_awaited_owned(
+                            _py,
+                            caller,
+                            future_bits,
+                        );
+                    }
+                    await_waiter_register(_py, caller, child);
+                    let flags = (*header_from_obj_ptr(caller)).load_synchronized_flags();
+                    if flags & (HEADER_FLAG_BLOCK_ON | HEADER_FLAG_SPAWN_RETAIN) != 0 {
+                        let target = resolve_sleep_target(_py, child);
+                        let _ = sleep_register_impl(_py, caller, target);
+                    }
+                } else {
+                    // Completion, including an early host-stream completion,
+                    // retires only the deadline owned by this awaited edge.
+                    // The owned edge survives removal of the wake subscription
+                    // by a completion published inside this poll. Another
+                    // child's wait must survive an unrelated poll.
+                    if crate::object::aux_header::object_frame_awaited_bits(caller) == future_bits {
+                        crate::async_rt::scheduler::cancel_task_sleep(_py, caller);
+                        crate::object::aux_header::object_replace_frame_awaited_owned(
+                            _py, caller, 0,
+                        );
+                        await_waiter_clear(_py, caller);
+                    }
+                }
+            }
+        }
+        result
+    })
+}
+
+// All completion/cache/error paths return through the caller's continuation
+// publication above. Scheduler wake subscriptions are separate from ownership.
+fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
+    let obj = obj_from_bits(future_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+            eprintln!(
+                "Molt awaitable debug: poll bits=0x{:x} type={}",
+                future_bits,
+                type_name(_py, obj)
+            );
+        }
+        raise_exception::<i64>(_py, "TypeError", "object is not awaitable");
+        return 0;
+    };
+    unsafe {
+        let header = header_from_obj_ptr(ptr);
+        let poll_fn_addr = crate::object::object_poll_fn(ptr);
+        if poll_fn_addr == 0 {
             if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+                let mut class_name = None;
+                if object_type_id(ptr) == TYPE_ID_OBJECT {
+                    let class_bits = object_class_bits(ptr);
+                    if class_bits != 0 {
+                        class_name = Some(class_name_for_error(class_bits));
+                    }
+                }
                 eprintln!(
-                    "Molt awaitable debug: poll bits=0x{:x} type={}",
+                    "Molt awaitable debug: poll bits=0x{:x} type={} class={} poll=0x0 state={} size={}",
                     future_bits,
-                    type_name(_py, obj)
+                    type_name(_py, obj),
+                    class_name.as_deref().unwrap_or("-"),
+                    crate::object::object_state(ptr),
+                    crate::object::total_size_from_header(&*header, ptr)
                 );
             }
             raise_exception::<i64>(_py, "TypeError", "object is not awaitable");
             return 0;
-        };
-        unsafe {
-            let header = header_from_obj_ptr(ptr);
-            let poll_fn_addr = crate::object::object_poll_fn(ptr);
-            if poll_fn_addr == 0 {
-                if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
-                    let mut class_name = None;
-                    if object_type_id(ptr) == TYPE_ID_OBJECT {
-                        let class_bits = object_class_bits(ptr);
-                        if class_bits != 0 {
-                            class_name = Some(class_name_for_error(class_bits));
-                        }
-                    }
-                    eprintln!(
-                        "Molt awaitable debug: poll bits=0x{:x} type={} class={} poll=0x0 state={} size={}",
-                        future_bits,
-                        type_name(_py, obj),
-                        class_name.as_deref().unwrap_or("-"),
-                        crate::object::object_state(ptr),
-                        crate::object::total_size_from_header(&*header, ptr)
-                    );
-                }
-                raise_exception::<i64>(_py, "TypeError", "object is not awaitable");
-                return 0;
-            }
-            if ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0 {
-                if let Some(result_bits) = task_result_get(_py, ptr) {
-                    return result_bits as i64;
-                }
-                let cached_exception = {
-                    let guard = task_last_exceptions(_py).lock().unwrap();
-                    guard.get(&PtrSlot(ptr)).copied()
-                };
-                if let Some(exc_ptr) = cached_exception {
-                    let exc_bits = MoltObject::from_ptr(exc_ptr.0).bits();
-                    inc_ref_bits(_py, exc_bits);
-                    let raised = molt_raise(exc_bits);
-                    dec_ref_bits(_py, exc_bits);
-                    return raised as i64;
-                }
-                return MoltObject::none().bits() as i64;
-            }
-            if ((*header).load_metadata_flags() & HEADER_FLAG_COROUTINE) != 0
-                && crate::object::object_state(ptr) == 0
-                && task_cancel_pending(ptr)
-            {
-                task_take_cancel_pending(ptr);
-                task_mark_done(_py, ptr);
-                return raise_cancelled_with_message::<i64>(_py, ptr);
-            }
-            let res = crate::poll_future_with_task_stack(_py, ptr, poll_fn_addr);
-            if trace_task_result() {
-                eprintln!(
-                    "molt task_result poll ptr=0x{:x} res=0x{:x} pending={} done_before=false",
-                    ptr as usize,
-                    res as u64,
-                    res == pending_bits_i64()
-                );
-            }
-            if promise_trace_enabled() && poll_fn_addr == promise_poll_fn_addr() {
-                let state = crate::object::object_state(ptr);
-                eprintln!(
-                    "molt async trace: promise_poll task=0x{:x} state={} res=0x{:x}",
-                    ptr as usize, state, res as u64
-                );
-            }
-            if task_cancel_pending(ptr) {
-                task_take_cancel_pending(ptr);
-                return raise_cancelled_with_message::<i64>(_py, ptr);
-            }
-            let current_task = current_task_ptr();
-            if res == pending_bits_i64() {
-                if !current_task.is_null() && ptr != current_task {
-                    await_waiter_register(_py, current_task, ptr);
-                    let current_header = header_from_obj_ptr(current_task);
-                    let is_block_on =
-                        ((*current_header).load_synchronized_flags() & HEADER_FLAG_BLOCK_ON) != 0;
-                    let is_spawned = ((*current_header).load_synchronized_flags()
-                        & HEADER_FLAG_SPAWN_RETAIN)
-                        != 0;
-                    if is_block_on || is_spawned {
-                        let sleep_target = resolve_sleep_target(_py, ptr);
-                        let _ = sleep_register_impl(_py, current_task, sleep_target);
-                    }
-                }
-            } else if !current_task.is_null() {
-                await_waiter_clear(_py, current_task);
-            }
-            if !current_task.is_null() {
-                let current_cancelled = task_cancel_pending(current_task);
-                if current_cancelled {
-                    task_take_cancel_pending(current_task);
-                    return raise_cancelled_with_message::<i64>(_py, current_task);
-                }
-            }
-            let awaited_exception =
-                if res != pending_bits_i64() && !current_task.is_null() && ptr != current_task {
-                    let guard = task_last_exceptions(_py).lock().unwrap();
-                    guard.get(&PtrSlot(ptr)).copied()
-                } else {
-                    None
-                };
-            let poll_pending = exception_pending(_py) || awaited_exception.is_some();
-            if res != pending_bits_i64() {
-                if !poll_pending {
-                    crate::task_last_exception_drop(_py, ptr);
-                    task_result_store(_py, ptr, res as u64);
-                } else {
-                    task_result_drop(_py, ptr);
-                }
-                task_mark_done(_py, ptr);
-            }
-            if res != pending_bits_i64()
-                && poll_pending
-                && !current_task.is_null()
-                && ptr != current_task
-            {
-                if let Some(exc_ptr) = awaited_exception {
-                    let exc_bits = MoltObject::from_ptr(exc_ptr.0).bits();
-                    inc_ref_bits(_py, exc_bits);
-                    let raised = molt_raise(exc_bits);
-                    dec_ref_bits(_py, exc_bits);
-                    return raised as i64;
-                } else {
-                    let task_scope = crate::CurrentTaskScope::enter(_py, ptr);
-                    let prev_task = task_scope.previous();
-                    let exc_bits = if exception_pending(_py) {
-                        molt_exception_last()
-                    } else {
-                        MoltObject::none().bits()
-                    };
-                    if debug_current_task() && prev_task.is_null() {
-                        let current = crate::CURRENT_TASK.with(|cell| cell.get());
-                        if !current.is_null() {
-                            eprintln!(
-                                "molt task trace: generators restore null current=0x{:x} task=0x{:x}",
-                                current as usize, ptr as usize
-                            );
-                        }
-                    }
-                    drop(task_scope);
-                    if !obj_from_bits(exc_bits).is_none() {
-                        let raised = molt_raise(exc_bits);
-                        dec_ref_bits(_py, exc_bits);
-                        return raised as i64;
-                    }
-                }
-            }
-            if res != pending_bits_i64() && !task_has_token(_py, ptr) {
-                task_exception_stack_drop(_py, ptr);
-                task_exception_depth_drop(_py, ptr);
-                task_exception_baseline_drop(_py, ptr);
-            }
-            res
         }
-    })
+        if ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0
+            && !crate::async_rt::awaitable::is_coroutine_wrapper_bits(future_bits)
+        {
+            if crate::async_rt::generators::is_native_coroutine_bits(future_bits) {
+                return raise_exception::<i64>(
+                    _py,
+                    "RuntimeError",
+                    "cannot reuse already awaited coroutine",
+                );
+            }
+            if let Some(result_bits) = task_result_get(_py, ptr) {
+                return result_bits as i64;
+            }
+            let cached_exception = {
+                let guard = task_last_exceptions(_py).lock().unwrap();
+                guard.get(&PtrSlot(ptr)).copied()
+            };
+            if let Some(exc_ptr) = cached_exception {
+                let exc_bits = MoltObject::from_ptr(exc_ptr.0).bits();
+                inc_ref_bits(_py, exc_bits);
+                let raised = molt_raise(exc_bits);
+                dec_ref_bits(_py, exc_bits);
+                return raised as i64;
+            }
+            return MoltObject::none().bits() as i64;
+        }
+        if ((*header).load_metadata_flags() & HEADER_FLAG_COROUTINE) != 0
+            && crate::object::object_state(ptr) == 0
+            && task_cancel_pending(ptr)
+        {
+            task_take_cancel_pending(ptr);
+            task_mark_done(_py, ptr);
+            return raise_cancelled_with_message::<i64>(_py, ptr);
+        }
+        let res = crate::poll_future_with_task_stack(_py, ptr, poll_fn_addr);
+
+        if trace_task_result() {
+            eprintln!(
+                "molt task_result poll ptr=0x{:x} res=0x{:x} pending={} done_before=false",
+                ptr as usize,
+                res as u64,
+                res == pending_bits_i64()
+            );
+        }
+        if promise_trace_enabled() && poll_fn_addr == promise_poll_fn_addr() {
+            let state = crate::object::object_state(ptr);
+            eprintln!(
+                "molt async trace: promise_poll task=0x{:x} state={} res=0x{:x}",
+                ptr as usize, state, res as u64
+            );
+        }
+        if task_cancel_pending(ptr) {
+            task_take_cancel_pending(ptr);
+            return raise_cancelled_with_message::<i64>(_py, ptr);
+        }
+        let current_task = current_task_ptr();
+        if !current_task.is_null() {
+            let current_cancelled = task_cancel_pending(current_task);
+            if current_cancelled {
+                task_take_cancel_pending(current_task);
+                return raise_cancelled_with_message::<i64>(_py, current_task);
+            }
+        }
+        let awaited_exception = if res != pending_bits_i64() && ptr != current_task {
+            let guard = task_last_exceptions(_py).lock().unwrap();
+            guard.get(&PtrSlot(ptr)).map(|exc_ptr| {
+                let bits = MoltObject::from_ptr(exc_ptr.0).bits();
+                inc_ref_bits(_py, bits);
+                bits
+            })
+        } else {
+            None
+        };
+        let poll_pending = exception_pending(_py) || awaited_exception.is_some();
+        if res != pending_bits_i64() {
+            if !poll_pending {
+                crate::task_last_exception_drop(_py, ptr);
+                task_result_store(_py, ptr, res as u64);
+            } else {
+                task_result_drop(_py, ptr);
+            }
+            task_mark_done(_py, ptr);
+        }
+        if res != pending_bits_i64() && poll_pending && ptr != current_task {
+            if let Some(exc_bits) = awaited_exception {
+                let raised = molt_raise(exc_bits);
+                dec_ref_bits(_py, exc_bits);
+                return raised as i64;
+            } else {
+                let task_scope = crate::CurrentTaskScope::enter(_py, ptr);
+                let prev_task = task_scope.previous();
+                let exc_bits = if exception_pending(_py) {
+                    molt_exception_last()
+                } else {
+                    MoltObject::none().bits()
+                };
+                if debug_current_task() && prev_task.is_null() {
+                    let current = crate::CURRENT_TASK.with(|cell| cell.get());
+                    if !current.is_null() {
+                        eprintln!(
+                            "molt task trace: generators restore null current=0x{:x} task=0x{:x}",
+                            current as usize, ptr as usize
+                        );
+                    }
+                }
+                drop(task_scope);
+                if !obj_from_bits(exc_bits).is_none() {
+                    let raised = molt_raise(exc_bits);
+                    dec_ref_bits(_py, exc_bits);
+                    return raised as i64;
+                }
+            }
+        }
+        if res != pending_bits_i64() && !task_has_token(_py, ptr) {
+            task_exception_stack_drop(_py, ptr);
+            task_exception_depth_drop(_py, ptr);
+            task_exception_baseline_drop(_py, ptr);
+        }
+        res
+    }
 }
 
 pub(crate) fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits: Option<u64>) {
@@ -328,6 +366,20 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
     let task_ptr = resolved_task;
     let _header = unsafe { header_from_obj_ptr(future_ptr) };
     let poll_fn = crate::object::object_poll_fn(future_ptr);
+    #[cfg(target_arch = "wasm32")]
+    if poll_fn == process_poll_fn_addr() {
+        // A host may publish exit only when polled. A scheduled process future
+        // owns its own retry; an inline process future borrows its scheduled
+        // awaiter. Never give both the child and its waiter a retry timer for
+        // the same host operation. Native process workers publish wakes.
+        let flags = unsafe { (*_header).load_synchronized_flags() };
+        let owner = if flags & (HEADER_FLAG_BLOCK_ON | HEADER_FLAG_SPAWN_RETAIN) != 0 {
+            future_ptr
+        } else {
+            task_ptr
+        };
+        return crate::async_rt::io_poller::register_host_progress_retry(_py, owner);
+    }
     if poll_fn != async_sleep_poll_fn_addr() && poll_fn != io_wait_poll_fn_addr() {
         if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!(
@@ -391,7 +443,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
                 .register_blocking(_py, task_ptr, deadline);
             return true;
         }
-        runtime_state(_py).scheduler().defer_task_ptr(task_ptr);
+        runtime_state(_py).scheduler().defer_task_ptr(_py, task_ptr);
         return true;
     }
     if deadline_secs <= 0.0 {
@@ -411,26 +463,8 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
                     .register_blocking(_py, task_ptr, deadline);
                 return true;
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                runtime_state(_py)
-                    .sleep_queue()
-                    .register_blocking(_py, task_ptr, deadline);
-                return true;
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                if is_block_on_task(task_ptr) {
-                    runtime_state(_py)
-                        .sleep_queue()
-                        .register_blocking(_py, task_ptr, deadline);
-                } else {
-                    runtime_state(_py)
-                        .sleep_queue()
-                        .register_scheduler(_py, task_ptr, deadline);
-                }
-                return true;
-            }
+            crate::async_rt::scheduler::register_task_sleep(_py, task_ptr, deadline);
+            return true;
         }
         wake_task_ptr(_py, task_ptr);
         return true;
@@ -453,26 +487,8 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
                     .register_blocking(_py, task_ptr, deadline);
                 return true;
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                runtime_state(_py)
-                    .sleep_queue()
-                    .register_blocking(_py, task_ptr, deadline);
-                return true;
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                if is_block_on_task(task_ptr) {
-                    runtime_state(_py)
-                        .sleep_queue()
-                        .register_blocking(_py, task_ptr, deadline);
-                } else {
-                    runtime_state(_py)
-                        .sleep_queue()
-                        .register_scheduler(_py, task_ptr, deadline);
-                }
-                return true;
-            }
+            crate::async_rt::scheduler::register_task_sleep(_py, task_ptr, deadline);
+            return true;
         }
         wake_task_ptr(_py, task_ptr);
         return true;
@@ -484,35 +500,8 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
             .register_blocking(_py, task_ptr, deadline);
         return true;
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        runtime_state(_py)
-            .sleep_queue()
-            .register_blocking(_py, task_ptr, deadline);
-        true
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if is_block_on_task(task_ptr) {
-            runtime_state(_py)
-                .sleep_queue()
-                .register_blocking(_py, task_ptr, deadline);
-        } else {
-            runtime_state(_py)
-                .sleep_queue()
-                .register_scheduler(_py, task_ptr, deadline);
-        }
-        if async_trace_enabled() {
-            let delay = deadline.saturating_duration_since(Instant::now());
-            eprintln!(
-                "molt async trace: sleep_register_request task=0x{:x} deadline_secs={} delay_ms={}",
-                task_ptr as usize,
-                deadline_secs,
-                delay.as_secs_f64() * 1000.0
-            );
-        }
-        true
-    }
+    crate::async_rt::scheduler::register_task_sleep(_py, task_ptr, deadline);
+    true
 }
 
 /// # Safety
@@ -837,8 +826,15 @@ pub unsafe extern "C" fn molt_async_sleep_poll(obj_bits: u64) -> i64 {
                 let delay_secs = if payload_len >= 1 {
                     let delay_bits = *payload_ptr;
                     let float_bits = molt_float_from_obj(delay_bits);
-                    let delay_obj = obj_from_bits(float_bits);
-                    delay_obj.as_float().unwrap_or(0.0)
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, float_bits);
+                        return MoltObject::none().bits() as i64;
+                    }
+                    let delay_secs =
+                        crate::object::ops::as_float_extended(obj_from_bits(float_bits))
+                            .expect("float conversion returned a float without an exception");
+                    dec_ref_bits(_py, float_bits);
+                    delay_secs
                 } else {
                     0.0
                 };
@@ -848,15 +844,25 @@ pub unsafe extern "C" fn molt_async_sleep_poll(obj_bits: u64) -> i64 {
                     0.0
                 };
                 let immediate = delay_secs <= 0.0;
-                if payload_len >= 1 {
+                let displaced_delay = if payload_len >= 1 {
                     let deadline = if immediate {
                         ASYNC_SLEEP_YIELD_SENTINEL
                     } else {
                         crate::monotonic_now_secs(_py) + delay_secs
                     };
-                    *payload_ptr = MoltObject::from_float(deadline).bits();
-                }
+                    crate::object::payload_refs::exchange_owned(
+                        _py,
+                        _obj_ptr,
+                        0,
+                        MoltObject::from_float(deadline).bits(),
+                    )
+                } else {
+                    MoltObject::none().bits()
+                };
+                // A delay finalizer may reenter this future. Publish both the
+                // deadline and poll state before releasing its displaced owner.
                 crate::object::object_set_state(_obj_ptr, 1);
+                dec_ref_bits(_py, displaced_delay);
                 if async_trace_enabled() || sleep_trace_enabled() {
                     eprintln!(
                         "molt async trace: async_sleep_init task=0x{:x} delay={} immediate={}",
@@ -913,38 +919,40 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
             let iter_bits = *payload_ptr;
             let default_bits = *payload_ptr.add(1);
             if crate::object::object_state(_obj_ptr) == 0 {
-                let await_bits = molt_anext(iter_bits);
-                inc_ref_bits(_py, await_bits);
+                let raw = molt_anext(iter_bits);
+                let await_bits = if exception_pending(_py) {
+                    MoltObject::none().bits()
+                } else {
+                    crate::molt_get_awaitable(raw)
+                };
+                dec_ref_bits(_py, raw);
                 *payload_ptr.add(2) = await_bits;
                 crate::object::object_set_state(_obj_ptr, 1);
             }
-            let await_bits = *payload_ptr.add(2);
-            let Some(await_ptr) = maybe_ptr_from_bits(await_bits) else {
-                return MoltObject::none().bits() as i64;
+            let mut result = if exception_pending(_py) {
+                MoltObject::none().bits() as i64
+            } else {
+                molt_future_poll(*payload_ptr.add(2))
             };
-            let poll_fn_addr = crate::object::object_poll_fn(await_ptr);
-            if poll_fn_addr == 0 {
-                return MoltObject::none().bits() as i64;
-            }
-            let res = molt_future_poll(await_bits);
-            if res == pending_bits_i64() {
-                return res;
+            if result == pending_bits_i64() && !exception_pending(_py) {
+                return result;
             }
             if exception_pending(_py) {
-                let exc_bits = molt_exception_last();
-                let kind_bits = molt_exception_kind(exc_bits);
-                let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                dec_ref_bits(_py, kind_bits);
-                if kind.as_deref() == Some("StopAsyncIteration") {
-                    exception_clear_reason_set("anext_default_stopasync");
+                let exception = molt_exception_last();
+                if crate::builtins::exceptions::exception_matches_builtin_name(
+                    _py,
+                    exception,
+                    "StopAsyncIteration",
+                ) {
                     molt_exception_clear();
-                    dec_ref_bits(_py, exc_bits);
+                    dec_ref_bits(_py, result as u64);
                     inc_ref_bits(_py, default_bits);
-                    return default_bits as i64;
+                    result = default_bits as i64;
                 }
-                dec_ref_bits(_py, exc_bits);
+                dec_ref_bits(_py, exception);
             }
-            res
+            crate::object::payload_refs::clear_prefix::<3>(_py, _obj_ptr);
+            result
         })
     }
 }
@@ -973,5 +981,231 @@ pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut
                 0
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod sleep_payload_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static OWNER: AtomicU64 = AtomicU64::new(0);
+    static CONVERSION_ERROR: AtomicU64 = AtomicU64::new(0);
+    static RETIRED_PREFIX: AtomicU64 = AtomicU64::new(0);
+    static FINALIZER_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    extern "C" fn delay_float(_self: u64) -> u64 {
+        let error = CONVERSION_ERROR.load(Ordering::Relaxed);
+        if error != 0 {
+            return crate::molt_exception_set_last(error);
+        }
+        MoltObject::from_float(0.0).bits()
+    }
+
+    extern "C" fn delay_finalizer(_self: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let owner = OWNER.load(Ordering::Relaxed);
+            if owner != 0 {
+                let ptr = ptr_from_bits(owner);
+                unsafe {
+                    assert_eq!(crate::object::object_state(ptr), 1);
+                    let prefix = RETIRED_PREFIX.load(Ordering::Relaxed);
+                    if prefix == 0 {
+                        assert_eq!(
+                            obj_from_bits(*ptr.cast::<u64>()).as_float(),
+                            Some(ASYNC_SLEEP_YIELD_SENTINEL)
+                        );
+                        // Reenter the same poll before replacing the deadline.
+                        let result = molt_async_sleep_poll(owner) as u64;
+                        assert_eq!(result, MoltObject::from_int(41).bits());
+                        dec_ref_bits(py, result);
+                    } else {
+                        for offset in 0..prefix as usize {
+                            assert!(obj_from_bits(*ptr.cast::<u64>().add(offset)).is_none());
+                        }
+                    }
+                    crate::object::payload_refs::store_borrowed(
+                        py,
+                        ptr,
+                        0,
+                        MoltObject::from_float(-2.0).bits(),
+                    );
+                }
+                FINALIZER_CALLS.fetch_add(1, Ordering::Relaxed);
+            }
+            MoltObject::none().bits()
+        })
+    }
+
+    fn delay_class(py: &PyToken<'_>) -> u64 {
+        let name = attr_name_bits_from_bytes(py, b"SleepPayloadDelay").unwrap();
+        let class = crate::molt_class_new(name);
+        dec_ref_bits(py, name);
+        crate::molt_class_set_base(class, builtin_classes(py).object);
+        for (name, address) in [
+            (b"__float__".as_slice(), delay_float as *const ()),
+            (b"__del__".as_slice(), delay_finalizer as *const ()),
+        ] {
+            let name = attr_name_bits_from_bytes(py, name).unwrap();
+            let function = crate::object::builders::alloc_function_obj(
+                py,
+                crate::provenance::abi::expose_function_address(address),
+                1,
+            );
+            assert!(!function.is_null());
+            unsafe { crate::object::layout::function_set_call_target_ptr(function, address) };
+            let function = MoltObject::from_ptr(function).bits();
+            crate::molt_set_attr_name(class, name, function);
+            dec_ref_bits(py, function);
+            dec_ref_bits(py, name);
+        }
+        unsafe {
+            crate::object::class_finish_definition(py, ptr_from_bits(class)).unwrap();
+        }
+        assert!(!exception_pending(py));
+        class
+    }
+
+    fn delay_instance(py: &PyToken<'_>, class: u64) -> u64 {
+        let size = unsafe {
+            crate::object::layout::class_cached_layout_size(ptr_from_bits(class)).unwrap()
+        };
+        let instance = crate::object::builders::alloc_class_instance(py, size, class);
+        assert!(!obj_from_bits(instance).is_none());
+        unsafe { crate::object::gc::gc_publish_initialized(py, ptr_from_bits(instance)) };
+        instance
+    }
+
+    fn owners(bits: u64) -> u64 {
+        unsafe { (*header_from_obj_ptr(ptr_from_bits(bits))).ref_count_snapshot() as u64 }
+    }
+
+    #[test]
+    fn payload_reference_sleep_conversion_releases_delay_and_heap_float_result_owners() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for delay in [
+                MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(py, b"0"))
+                    .bits(),
+                crate::object::ops::float_result_bits(py, f64::NAN),
+            ] {
+                let before = owners(delay);
+                assert_eq!(
+                    before, 1,
+                    "ownership regression requires a mortal allocation"
+                );
+                let future = molt_async_sleep(delay, MoltObject::from_int(41).bits());
+                assert_eq!(owners(delay), before + 1);
+                assert_eq!(unsafe { molt_async_sleep_poll(future) }, pending_bits_i64());
+                assert_eq!(owners(delay), before);
+                assert_eq!(
+                    unsafe { molt_async_sleep_poll(future) } as u64,
+                    MoltObject::from_int(41).bits()
+                );
+                dec_ref_bits(py, future);
+                assert_eq!(owners(delay), before);
+                dec_ref_bits(py, delay);
+                assert!(!exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
+    fn payload_reference_sleep_conversion_preserves_exact_failure_and_unpublished_payload() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = delay_class(py);
+            let delay = delay_instance(py, class);
+            let future = molt_async_sleep(delay, MoltObject::from_int(41).bits());
+            let before = owners(delay);
+            let raised = raise_exception::<u64>(py, "ValueError", "delay conversion failed");
+            dec_ref_bits(py, raised);
+            let original = crate::builtins::exceptions::molt_exception_last_pending();
+            crate::molt_exception_clear();
+            CONVERSION_ERROR.store(original, Ordering::Relaxed);
+            let result = unsafe { molt_async_sleep_poll(future) } as u64;
+            assert!(obj_from_bits(result).is_none());
+            let observed = crate::builtins::exceptions::molt_exception_last_pending();
+            assert_eq!(observed, original);
+            assert_eq!(owners(delay), before);
+            unsafe {
+                assert_eq!(crate::object::object_state(ptr_from_bits(future)), 0);
+                assert_eq!(*ptr_from_bits(future).cast::<u64>(), delay);
+            }
+            CONVERSION_ERROR.store(0, Ordering::Relaxed);
+            crate::molt_exception_clear();
+            for bits in [result, observed, original, future, delay, class] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn payload_reference_sleep_publication_and_anext_retirement_precede_finalizer_reentry() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = delay_class(py);
+            for retired_prefix in [0, 3] {
+                FINALIZER_CALLS.store(0, Ordering::Relaxed);
+                RETIRED_PREFIX.store(retired_prefix, Ordering::Relaxed);
+                let delay = delay_instance(py, class);
+                let future = if retired_prefix == 0 {
+                    molt_async_sleep(delay, MoltObject::from_int(41).bits())
+                } else {
+                    let ready = molt_promise_new();
+                    unsafe { molt_promise_set_result(ready, MoltObject::from_int(41).bits()) };
+                    let wrapper = molt_future_new(
+                        anext_default_poll_fn_addr(),
+                        (3 * std::mem::size_of::<u64>()) as u64,
+                    );
+                    let ptr = ptr_from_bits(wrapper);
+                    unsafe {
+                        crate::object::payload_refs::store_borrowed(py, ptr, 0, delay);
+                        crate::object::payload_refs::store_borrowed(
+                            py,
+                            ptr,
+                            std::mem::size_of::<u64>(),
+                            MoltObject::from_int(99).bits(),
+                        );
+                        crate::object::payload_refs::store_owned(
+                            py,
+                            ptr,
+                            2 * std::mem::size_of::<u64>(),
+                            ready,
+                        );
+                        crate::object::object_set_state(ptr, 1);
+                    }
+                    wrapper
+                };
+                dec_ref_bits(py, delay);
+                OWNER.store(future, Ordering::Relaxed);
+                let result = unsafe {
+                    if retired_prefix == 0 {
+                        molt_async_sleep_poll(future)
+                    } else {
+                        molt_anext_default_poll(future)
+                    }
+                };
+                assert_eq!(
+                    result,
+                    if retired_prefix == 0 {
+                        pending_bits_i64()
+                    } else {
+                        MoltObject::from_int(41).bits() as i64
+                    }
+                );
+                assert_eq!(FINALIZER_CALLS.load(Ordering::Relaxed), 1);
+                assert_eq!(
+                    unsafe { *ptr_from_bits(future).cast::<u64>() },
+                    MoltObject::from_float(-2.0).bits()
+                );
+                OWNER.store(0, Ordering::Relaxed);
+                dec_ref_bits(py, future);
+                assert!(!exception_pending(py));
+            }
+            RETIRED_PREFIX.store(0, Ordering::Relaxed);
+            dec_ref_bits(py, class);
+        });
     }
 }

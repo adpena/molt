@@ -199,3 +199,48 @@ fn structural_return_type_refines_call_return_type() {
         "explicit structural return_type remains the call-return refinement contract",
     );
 }
+
+#[test]
+fn builtin_reference_results_are_dynamic_independent_of_name_operands() {
+    for name in [None, Some("len"), Some("molt_len")] {
+        let name_value = ValueId(0);
+        let result = ValueId(1);
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "_original_kind".into(),
+            AttrValue::Str("builtin_func".into()),
+        );
+        attrs.insert("s_value".into(), AttrValue::Str("molt_len".into()));
+        attrs.insert("value".into(), AttrValue::Int(1));
+        if let Some(name) = name {
+            attrs.insert("builtin_name".into(), AttrValue::Str(name.into()));
+        }
+        let operands = if name.is_some() {
+            vec![name_value]
+        } else {
+            vec![]
+        };
+        let mut function = single_block_func(
+            vec![
+                make_op(
+                    OpCode::ConstStr,
+                    vec![],
+                    vec![name_value],
+                    str_attr(name.unwrap_or("unused")),
+                ),
+                make_op(OpCode::Copy, operands, vec![result], attrs),
+            ],
+            2,
+        );
+        refine_types(&mut function);
+        assert_eq!(
+            extract_type_map(&function).get(&result),
+            Some(&TirType::DynBox),
+            "{name:?}"
+        );
+        assert!(
+            !extract_exact_scalar_map(&function).contains_key(&result),
+            "{name:?}"
+        );
+    }
+}

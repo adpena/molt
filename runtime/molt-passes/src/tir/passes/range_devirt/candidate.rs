@@ -32,8 +32,8 @@ pub(super) struct RangeLoopCandidate {
     pub(super) start_val: ValueId,
     pub(super) stop_val: ValueId,
     pub(super) step_val: ValueId,
-    /// Whether the step is a known constant.
-    pub(super) step_const: Option<i64>,
+    /// The step: a nonzero constant.
+    pub(super) step_const: i64,
     /// The exit block (where done=true branches to).
     pub(super) exit_block: BlockId,
     /// The body block (where done=false branches to).
@@ -113,6 +113,16 @@ pub(super) fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
 
             let (start_val, stop_val, step_val, step_const) =
                 extract_range_args(func, &block_ids, range_args);
+            // The step's sign picks the comparison, and a zero step must still
+            // raise from `range_new`.
+            let Some(step_const) = step_const.filter(|step| *step != 0) else {
+                continue;
+            };
+            // The range object and its iterator disappear: nothing else may
+            // read them.
+            if value_use_count(func, source_val) != 1 || value_use_count(func, iter_val) != 1 {
+                continue;
+            }
 
             let (exit_block, body_block) = match &header_block.terminator {
                 Terminator::CondBranch {
@@ -163,6 +173,29 @@ fn extract_range_args(
         unreachable!("range_new argument shape admitted by builtin_call")
     };
     (*start, *stop, *step, const_map.get(step).copied())
+}
+
+/// How many operands and terminator arguments read `value`.
+fn value_use_count(func: &TirFunction, value: ValueId) -> usize {
+    let mut count = 0usize;
+    for block in func.blocks.values() {
+        count += block
+            .ops
+            .iter()
+            .map(|op| {
+                op.operands
+                    .iter()
+                    .filter(|&&operand| operand == value)
+                    .count()
+            })
+            .sum::<usize>();
+        block.terminator.for_each_value(|used| {
+            if used == value {
+                count += 1;
+            }
+        });
+    }
+    count
 }
 
 fn build_const_map(func: &TirFunction, block_ids: &[BlockId]) -> HashMap<ValueId, i64> {

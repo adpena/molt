@@ -15,6 +15,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_thread_spawn_shared",
             crate::molt_thread_spawn_shared as *const (),
         )),
+        "molt_thread_timeout_max" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_thread_timeout_max",
+            crate::molt_thread_timeout_max as *const (),
+        )),
         "molt_thread_join" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_thread_join",
             crate::molt_thread_join as *const (),
@@ -114,10 +118,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_condition_wait" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_condition_wait",
             crate::molt_condition_wait as *const (),
-        )),
-        "molt_condition_wait_for" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_condition_wait_for",
-            crate::molt_condition_wait_for as *const (),
         )),
         "molt_condition_notify" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_condition_notify",

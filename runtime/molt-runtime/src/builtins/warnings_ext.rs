@@ -250,11 +250,15 @@ fn emit_warning(
     true
 }
 
-/// Runtime deprecations use the active public warnings module when loaded so
+/// Runtime warnings use the active public warnings module when loaded so
 /// record/custom-display hooks observe them. Before that module is loaded, the
 /// same intrinsic filter/emission authority applies; there is no private cache.
 /// False means a pending warning/callback exception which callers must preserve.
 pub(crate) fn emit_deprecation_warning(py: &PyToken<'_>, message: &str) -> bool {
+    emit_runtime_warning(py, message, "DeprecationWarning")
+}
+
+pub(crate) fn emit_runtime_warning(py: &PyToken<'_>, message: &str, category: &str) -> bool {
     let Some(name) = attr_name_bits_from_bytes(py, b"warnings") else {
         return false;
     };
@@ -265,7 +269,7 @@ pub(crate) fn emit_deprecation_warning(py: &PyToken<'_>, message: &str) -> bool 
         return false;
     }
     if obj_from_bits(module).is_none() {
-        return emit_warning(py, message, "DeprecationWarning", "__main__", "<string>", 1);
+        return emit_warning(py, message, category, "__main__", "<string>", 1);
     }
     let Some(name) = attr_name_bits_from_bytes(py, b"warn") else {
         dec_ref_bits(py, module);
@@ -278,8 +282,7 @@ pub(crate) fn emit_deprecation_warning(py: &PyToken<'_>, message: &str) -> bool 
         dec_ref_bits(py, module);
         return false;
     }
-    let category =
-        crate::builtins::exceptions::exception_type_bits_from_name(py, "DeprecationWarning");
+    let category = crate::builtins::exceptions::exception_type_bits_from_name(py, category);
     let message = alloc_string_result(py, message);
     if exception_pending(py) || category == 0 {
         dec_ref_bits(py, message);

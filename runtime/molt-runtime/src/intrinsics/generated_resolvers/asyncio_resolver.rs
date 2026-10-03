@@ -17,10 +17,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_protocol_register",
             crate::molt_protocol_register as *const (),
         )),
-        "molt_asyncgen_shutdown" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncgen_shutdown",
-            crate::molt_asyncgen_shutdown as *const (),
-        )),
         "molt_async_sleep" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_async_sleep",
             crate::molt_async_sleep as *const (),
@@ -90,34 +86,9 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_future_features as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_wait_for_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_wait_for_new",
-            crate::molt_asyncio_wait_for_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_wait_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_wait_new",
-            crate::molt_asyncio_wait_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_gather_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_gather_new",
-            crate::molt_asyncio_gather_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_cancel_pending" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_asyncio_cancel_pending",
             crate::molt_asyncio_cancel_pending as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_ready_batch_run" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_ready_batch_run",
-            crate::molt_asyncio_ready_batch_run as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_ready_queue_drain" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_ready_queue_drain",
-            crate::molt_asyncio_ready_queue_drain as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_waiters_notify" => Some(crate::builtins::functions::runtime_fn_addr(
@@ -291,11 +262,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_asyncio_tls_server_from_fd_new as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_to_thread" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_to_thread",
-            crate::molt_asyncio_to_thread as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_require_unix_socket_support" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_asyncio_require_unix_socket_support",
@@ -365,18 +331,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_asyncio_unregister_task as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_taskgroup_on_task_done" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_taskgroup_on_task_done",
-            crate::molt_asyncio_taskgroup_on_task_done as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_taskgroup_request_cancel" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_asyncio_taskgroup_request_cancel",
-                crate::molt_asyncio_taskgroup_request_cancel as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_tasks_add_done_callback" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_asyncio_tasks_add_done_callback",
@@ -394,36 +348,9 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_asyncio_task_uncancel_apply as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_future_invoke_callbacks" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_asyncio_future_invoke_callbacks",
-                crate::molt_asyncio_future_invoke_callbacks as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_event_set_waiters" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_asyncio_event_set_waiters",
             crate::molt_asyncio_event_set_waiters as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_loop_enqueue_handle" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_loop_enqueue_handle",
-            crate::molt_asyncio_loop_enqueue_handle as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_timer_handle_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_timer_handle_new",
-            crate::molt_asyncio_timer_handle_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_timer_schedule" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_timer_schedule",
-            crate::molt_asyncio_timer_schedule as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_timer_handle_cancel" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_timer_handle_cancel",
-            crate::molt_asyncio_timer_handle_cancel as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_fd_watcher_new" => Some(crate::builtins::functions::runtime_fn_addr(
@@ -451,11 +378,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_asyncio_server_accept_loop_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_asyncio_server_accept_loop_new",
             crate::molt_asyncio_server_accept_loop_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_ready_runner_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_ready_runner_new",
-            crate::molt_asyncio_ready_runner_new as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_stream_reader_read_new" => Some(crate::builtins::functions::runtime_fn_addr(
@@ -537,6 +459,11 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_asyncio_sock_sendto_new as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_spawn" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_event_loop_spawn",
+            crate::molt_event_loop_spawn as *const (),
+        )),
+        #[cfg(feature = "stdlib_asyncio")]
         "molt_event_loop_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_event_loop_new",
             crate::molt_event_loop_new as *const (),
@@ -592,19 +519,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_event_loop_time as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
-        "molt_event_loop_next_deadline_delay" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_event_loop_next_deadline_delay",
-            crate::molt_event_loop_next_deadline_delay as *const (),
+        "molt_event_loop_wait" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_event_loop_wait",
+            crate::molt_event_loop_wait as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
-        "molt_event_loop_has_pending" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_event_loop_has_pending",
-            crate::molt_event_loop_has_pending as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_event_loop_ready_count" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_event_loop_ready_count",
-            crate::molt_event_loop_ready_count as *const (),
+        "molt_event_loop_wake" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_event_loop_wake",
+            crate::molt_event_loop_wake as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
         "molt_event_loop_start" => Some(crate::builtins::functions::runtime_fn_addr(
@@ -779,13 +701,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_asyncio_future_cancelled",
             crate::molt_asyncio_future_cancelled as *const (),
         )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_future_add_done_callback_fast" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_asyncio_future_add_done_callback_fast",
-                crate::molt_asyncio_future_add_done_callback_fast as *const (),
-            ))
-        }
         #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_future_drop" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_asyncio_future_drop",

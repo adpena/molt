@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
 from molt.source_root import compiler_source_root
+from molt.tool_releases import ToolReleaseError, require_pinned_tool
 from molt.dx import DX_ENV_KEYS, DxProject
 from molt.cli import wasm_toolchain
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
@@ -22,11 +23,12 @@ from molt.cli.models import _ToolchainReport
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.project_roots import (
-    _find_molt_root,
     _is_path_within,
     _require_molt_root,
 )
 from molt.cli.runtime_paths import _runtime_lib_path
+from molt.cli.installed_runtime import installed_runtime_profile_readiness
+from molt.compiler_distribution import installed_compiler
 from molt.llvm_toolchain import (
     LlvmBackendPin,
     LlvmToolchainConfigError,
@@ -202,7 +204,19 @@ def _ninja_setup_advice(system: str) -> list[str]:
 
 def _wasm_tools_setup_advice(system: str) -> list[str]:
     del system
-    return ["cargo install wasm-tools --locked"]
+    return [
+        shlex.join(
+            [
+                sys.executable,
+                "-m",
+                "molt.tool_releases",
+                "provision",
+                "wasm-tools",
+                "--repo-root",
+                str(compiler_source_root()),
+            ]
+        )
+    ]
 
 
 def _wasm_pack_setup_advice(system: str) -> list[str]:
@@ -364,6 +378,14 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
     ]
     errors: list[str] = []
     system = platform.system()
+    try:
+        installed = installed_compiler(root)
+        installed_damage: str | None = None
+    except (OSError, ValueError) as exc:
+        installed, installed_damage = None, str(exc)
+    # Rust/Cargo readiness is explicit source development. An installed (or
+    # damaged installed) distribution never requires, probes or installs Rust.
+    source_checkout = installed is None and installed_damage is None
 
     def record(
         name: str,
@@ -405,110 +427,130 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         advice=_uv_setup_advice(system) if not uv_path else None,
     )
 
-    cargo_path = shutil.which("cargo")
-    record(
-        "cargo",
-        bool(cargo_path),
-        cargo_path or "not found",
-        level="error",
-        advice=_cargo_setup_advice(system) if not cargo_path else None,
+    cargo_path: str | None = None
+    rust_contract = wasm_toolchain.RustToolchainContract(
+        channel=None,
+        components=(),
+        targets=(),
     )
+    if installed_damage is not None:
+        record(
+            "molt-installation-integrity",
+            False,
+            f"installed Molt metadata is damaged: {installed_damage}",
+            advice=[
+                "Reinstall Molt with the installer, package manager or wheel that provided it"
+            ],
+        )
+    if source_checkout:
+        cargo_path = shutil.which("cargo")
+        record(
+            "cargo",
+            bool(cargo_path),
+            cargo_path or "not found",
+            level="error",
+            advice=_cargo_setup_advice(system) if not cargo_path else None,
+        )
 
-    try:
-        rust_contract = wasm_toolchain.rust_toolchain_contract(root)
-        rust_contract_error: str | None = None
-    except wasm_toolchain.RustToolchainContractError as exc:
-        rust_contract = wasm_toolchain.RustToolchainContract(
-            channel=None,
-            components=(),
-            targets=(),
-        )
-        rust_contract_error = str(exc)
-    pinned_rust = rust_contract.channel
-    pinned_components = rust_contract.components
-    rustc_path = shutil.which("rustc")
-    if rust_contract_error is not None:
-        record(
-            "rust-toolchain",
-            False,
-            rust_contract_error,
-            level="error",
-            advice=["Fix rust-toolchain.toml"],
-        )
-    elif pinned_rust is None:
-        record(
-            "rust-toolchain",
-            True,
-            "no rust-toolchain.toml channel pin detected",
-            level="warning",
-        )
-    elif rustc_path is None:
-        record(
-            "rust-toolchain",
-            False,
-            f"rustc not found; requires Rust {pinned_rust}",
-            level="error",
-            advice=[shlex.join(wasm_toolchain.rustup_toolchain_install_cmd(root))],
-        )
-    else:
         try:
-            rustc = _run_completed_command(
-                [rustc_path, "--version"],
-                env=None,
-                cwd=None,
-                capture_output=True,
-                memory_guard_prefix="MOLT_BUILD",
-                timeout=5,
+            rust_contract = wasm_toolchain.rust_toolchain_contract(root)
+            rust_contract_error: str | None = None
+        except wasm_toolchain.RustToolchainContractError as exc:
+            rust_contract = wasm_toolchain.RustToolchainContract(
+                channel=None,
+                components=(),
+                targets=(),
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            rust_contract_error = str(exc)
+        pinned_rust = rust_contract.channel
+        pinned_components = rust_contract.components
+        rustc_path = shutil.which("rustc")
+        if rust_contract_error is not None:
             record(
                 "rust-toolchain",
                 False,
-                f"failed to query rustc: {exc}",
+                rust_contract_error,
+                level="error",
+                advice=["Fix rust-toolchain.toml"],
+            )
+        elif pinned_rust is None:
+            record(
+                "rust-toolchain",
+                True,
+                "no rust-toolchain.toml channel pin detected",
+                level="warning",
+            )
+        elif rustc_path is None:
+            record(
+                "rust-toolchain",
+                False,
+                f"rustc not found; requires Rust {pinned_rust}",
                 level="error",
                 advice=[shlex.join(wasm_toolchain.rustup_toolchain_install_cmd(root))],
             )
         else:
-            rustc_detail = (rustc.stdout or rustc.stderr).strip()
-            rustc_matches_pin = re.search(
-                rf"\brustc\s+{re.escape(pinned_rust)}(?:\s|\b)", rustc_detail
-            )
-            rustc_ok = rustc.returncode == 0 and rustc_matches_pin is not None
+            try:
+                rustc = _run_completed_command(
+                    [rustc_path, "--version"],
+                    env=None,
+                    cwd=None,
+                    capture_output=True,
+                    memory_guard_prefix="MOLT_BUILD",
+                    timeout=5,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                record(
+                    "rust-toolchain",
+                    False,
+                    f"failed to query rustc: {exc}",
+                    level="error",
+                    advice=[
+                        shlex.join(wasm_toolchain.rustup_toolchain_install_cmd(root))
+                    ],
+                )
+            else:
+                rustc_detail = (rustc.stdout or rustc.stderr).strip()
+                rustc_matches_pin = re.search(
+                    rf"\brustc\s+{re.escape(pinned_rust)}(?:\s|\b)", rustc_detail
+                )
+                rustc_ok = rustc.returncode == 0 and rustc_matches_pin is not None
+                record(
+                    "rust-toolchain",
+                    rustc_ok,
+                    f"{rustc_detail or 'unknown rustc'} (requires {pinned_rust})",
+                    level="error",
+                    advice=[
+                        shlex.join(wasm_toolchain.rustup_toolchain_install_cmd(root))
+                    ]
+                    if not rustc_ok
+                    else None,
+                )
+        if pinned_components:
             record(
-                "rust-toolchain",
-                rustc_ok,
-                f"{rustc_detail or 'unknown rustc'} (requires {pinned_rust})",
-                level="error",
-                advice=[shlex.join(wasm_toolchain.rustup_toolchain_install_cmd(root))]
-                if not rustc_ok
-                else None,
+                "rust-components",
+                True,
+                "pinned components: " + ", ".join(pinned_components),
             )
-    if pinned_components:
+
+        rustup_path = shutil.which("rustup")
         record(
-            "rust-components",
-            True,
-            "pinned components: " + ", ".join(pinned_components),
+            "rustup",
+            bool(rustup_path),
+            rustup_path or "not found",
+            level="warning",
+            advice=_rustup_setup_advice(system) if not rustup_path else None,
         )
 
-    rustup_path = shutil.which("rustup")
-    record(
-        "rustup",
-        bool(rustup_path),
-        rustup_path or "not found",
-        level="warning",
-        advice=_rustup_setup_advice(system) if not rustup_path else None,
-    )
-
-    cargo_upgrade_path = shutil.which("cargo-upgrade")
-    record(
-        "cargo-upgrade",
-        bool(cargo_upgrade_path),
-        cargo_upgrade_path or "not found",
-        level="warning",
-        advice=["cargo install cargo-edit --locked", "Use `molt update --all`"]
-        if not cargo_upgrade_path
-        else None,
-    )
+        cargo_upgrade_path = shutil.which("cargo-upgrade")
+        record(
+            "cargo-upgrade",
+            bool(cargo_upgrade_path),
+            cargo_upgrade_path or "not found",
+            level="warning",
+            advice=["cargo install cargo-edit --locked", "Use `molt update --all`"]
+            if not cargo_upgrade_path
+            else None,
+        )
 
     cc = os.environ.get("CC", "clang")
     cc_path = shutil.which(cc) or shutil.which("clang")
@@ -597,11 +639,20 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         advice=_clang_setup_advice(system) if not wasm_ld_path else None,
     )
 
-    wasm_tools_path = shutil.which("wasm-tools")
+    try:
+        wasm_tools = require_pinned_tool("wasm-tools")
+        wasm_tools_path = str(wasm_tools.executable)
+        wasm_tools_detail = (
+            f"{wasm_tools_path} version={wasm_tools.release.version} "
+            f"sha256={wasm_tools.executable_sha256}"
+        )
+    except (ToolReleaseError, OSError, ValueError) as exc:
+        wasm_tools_path = None
+        wasm_tools_detail = str(exc)
     record(
         "wasm-tools",
         bool(wasm_tools_path),
-        wasm_tools_path or "not found",
+        wasm_tools_detail,
         level="warning",
         advice=_wasm_tools_setup_advice(system) if not wasm_tools_path else None,
     )
@@ -642,51 +693,56 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         advice=["Install zig if you need wasm linking"] if not zig_path else None,
     )
 
-    rustc_wrapper = os.environ.get("RUSTC_WRAPPER", "").strip()
-    sccache_mode = os.environ.get("MOLT_USE_SCCACHE", "auto").strip().lower() or "auto"
-    sccache_path = shutil.which("sccache")
-    _forced_sccache = sccache_mode in {"1", "true", "yes", "on"}
-    _wrapper_is_sccache = bool(rustc_wrapper) and Path(rustc_wrapper).name == "sccache"
-    if os.name == "nt" and not _wrapper_is_sccache and not _forced_sccache:
-        # sccache is off-by-default on Windows: measured 0 cache hits + mid-compile
-        # crashes (os error 10054) here make it NEGATIVE leverage, so OFF is the
-        # healthy state — do NOT advise enabling it (that would re-introduce the harm).
-        sccache_ok = True
-        sccache_detail = "off by default on Windows (0 hits + mid-compile crashes here); using direct rustc"
-        sccache_advice = None
-    elif rustc_wrapper:
-        wrapper_name = Path(rustc_wrapper).name
-        sccache_ok = wrapper_name == "sccache"
-        sccache_detail = f"RUSTC_WRAPPER={rustc_wrapper}"
-        sccache_advice = (
-            [
-                "Use RUSTC_WRAPPER=sccache for compile throughput",
-                "or unset RUSTC_WRAPPER and set MOLT_USE_SCCACHE=auto",
-            ]
-            if not sccache_ok
-            else None
+    if source_checkout:
+        rustc_wrapper = os.environ.get("RUSTC_WRAPPER", "").strip()
+        sccache_mode = (
+            os.environ.get("MOLT_USE_SCCACHE", "auto").strip().lower() or "auto"
         )
-    elif sccache_mode in {"0", "false", "no", "off"}:
-        sccache_ok = False
-        sccache_detail = "disabled via MOLT_USE_SCCACHE"
-        sccache_advice = ["Set MOLT_USE_SCCACHE=auto or 1 for faster rebuilds"]
-    elif sccache_path is None:
-        sccache_ok = False
-        sccache_detail = "not found on PATH"
-        sccache_advice = [
-            "Install sccache and keep MOLT_USE_SCCACHE=auto (or set to 1)"
-        ]
-    else:
-        sccache_ok = True
-        sccache_detail = f"{sccache_path} (mode={sccache_mode})"
-        sccache_advice = None
-    record(
-        "sccache",
-        sccache_ok,
-        sccache_detail,
-        level="warning",
-        advice=sccache_advice,
-    )
+        sccache_path = shutil.which("sccache")
+        _forced_sccache = sccache_mode in {"1", "true", "yes", "on"}
+        _wrapper_is_sccache = (
+            bool(rustc_wrapper) and Path(rustc_wrapper).name == "sccache"
+        )
+        if os.name == "nt" and not _wrapper_is_sccache and not _forced_sccache:
+            # sccache is off-by-default on Windows: measured 0 cache hits + mid-compile
+            # crashes (os error 10054) here make it NEGATIVE leverage, so OFF is the
+            # healthy state — do NOT advise enabling it (that would re-introduce the harm).
+            sccache_ok = True
+            sccache_detail = "off by default on Windows (0 hits + mid-compile crashes here); using direct rustc"
+            sccache_advice = None
+        elif rustc_wrapper:
+            wrapper_name = Path(rustc_wrapper).name
+            sccache_ok = wrapper_name == "sccache"
+            sccache_detail = f"RUSTC_WRAPPER={rustc_wrapper}"
+            sccache_advice = (
+                [
+                    "Use RUSTC_WRAPPER=sccache for compile throughput",
+                    "or unset RUSTC_WRAPPER and set MOLT_USE_SCCACHE=auto",
+                ]
+                if not sccache_ok
+                else None
+            )
+        elif sccache_mode in {"0", "false", "no", "off"}:
+            sccache_ok = False
+            sccache_detail = "disabled via MOLT_USE_SCCACHE"
+            sccache_advice = ["Set MOLT_USE_SCCACHE=auto or 1 for faster rebuilds"]
+        elif sccache_path is None:
+            sccache_ok = False
+            sccache_detail = "not found on PATH"
+            sccache_advice = [
+                "Install sccache and keep MOLT_USE_SCCACHE=auto (or set to 1)"
+            ]
+        else:
+            sccache_ok = True
+            sccache_detail = f"{sccache_path} (mode={sccache_mode})"
+            sccache_advice = None
+        record(
+            "sccache",
+            sccache_ok,
+            sccache_detail,
+            level="warning",
+            advice=sccache_advice,
+        )
 
     if os.name == "posix":
         daemon_enabled = _backend_daemon_enabled()
@@ -704,7 +760,9 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         record("backend-daemon", True, "unsupported on non-posix hosts")
 
     cargo_target_dir = _resolved_env_dir_from_root(root, "CARGO_TARGET_DIR")
-    if cargo_target_dir is None:
+    if not source_checkout:
+        pass  # Cargo target placement is source-development state.
+    elif cargo_target_dir is None:
         record(
             "cargo-target-dir",
             False,
@@ -748,7 +806,9 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
     )
 
     diff_target_dir = _resolved_env_dir_from_root(root, "MOLT_DIFF_CARGO_TARGET_DIR")
-    if diff_target_dir is None:
+    if not source_checkout:
+        pass  # Differential Cargo targets are source-development state.
+    elif diff_target_dir is None:
         record(
             "molt-diff-target-dir",
             False,
@@ -844,67 +904,107 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
                     advice=["Ensure uv.lock exists and is readable"],
                 )
 
-    runtime_lib = _runtime_lib_path(root, "release", None)
-    runtime_exists = runtime_lib.exists()
-    if runtime_exists:
-        runtime_detail = str(runtime_lib)
+    if installed is not None:
         try:
-            lib_mtime = runtime_lib.stat().st_mtime
-            runtime_cargo = root / "runtime" / "molt-runtime" / "Cargo.toml"
-            if runtime_cargo.exists() and runtime_cargo.stat().st_mtime > lib_mtime:
-                runtime_detail += " (stale — runtime Cargo.toml is newer)"
-                runtime_exists = False
-        except OSError:
-            pass
-    else:
-        runtime_detail = f"not found: {runtime_lib}"
-    record(
-        "molt-runtime",
-        runtime_exists,
-        runtime_detail,
-        level="warning",
-        advice=[
-            "Run: molt run examples/hello.py to auto-build and materialize runtime aliases",
-            "Raw cargo builds only refresh the platform staticlib scratch artifact; Molt publishes profile-qualified aliases",
-        ]
-        if not runtime_exists
-        else None,
-    )
+            installed.verify_runtime()
+            runtime_ok = True
+            runtime_detail = (
+                f"{len(installed.runtime['cells'])} shipped runtime cells "
+                f"verified under {installed.runtime_root}"
+            )
+        except (OSError, ValueError) as exc:
+            runtime_ok = False
+            runtime_detail = str(exc)
+        record(
+            "molt-runtime",
+            runtime_ok,
+            runtime_detail,
+            advice=["Reinstall Molt; installed Molt never builds its runtime"]
+            if not runtime_ok
+            else None,
+        )
+    elif source_checkout:
+        runtime_lib = _runtime_lib_path(root, "release", None)
+        runtime_exists = runtime_lib.exists()
+        if runtime_exists:
+            runtime_detail = str(runtime_lib)
+            try:
+                lib_mtime = runtime_lib.stat().st_mtime
+                runtime_cargo = root / "runtime" / "molt-runtime" / "Cargo.toml"
+                if runtime_cargo.exists() and runtime_cargo.stat().st_mtime > lib_mtime:
+                    runtime_detail += " (stale — runtime Cargo.toml is newer)"
+                    runtime_exists = False
+            except OSError:
+                pass
+        else:
+            runtime_detail = f"not found: {runtime_lib}"
+        record(
+            "molt-runtime",
+            runtime_exists,
+            runtime_detail,
+            level="warning",
+            advice=[
+                "Run: molt run examples/hello.py to auto-build and materialize runtime aliases",
+                "Raw cargo builds only refresh the platform staticlib scratch artifact; Molt publishes profile-qualified aliases",
+            ]
+            if not runtime_exists
+            else None,
+        )
 
-    target_errors = [
-        error
-        for target in rust_contract.required_wasm_targets
-        if (error := wasm_toolchain.rust_target_readiness_error(target, root=root))
-        is not None
-    ]
-    wasm_target_ok = not target_errors
-    record(
-        "wasm-target",
-        wasm_target_ok,
-        "; ".join(target_errors)
-        if target_errors
-        else ", ".join(rust_contract.required_wasm_targets),
-        level="warning",
-        advice=target_errors or None,
-    )
+    wasm_target_ok = True
+    if source_checkout:
+        target_errors = [
+            error
+            for target in rust_contract.required_wasm_targets
+            if (error := wasm_toolchain.rust_target_readiness_error(target, root=root))
+            is not None
+        ]
+        wasm_target_ok = not target_errors
+        record(
+            "wasm-target",
+            wasm_target_ok,
+            "; ".join(target_errors)
+            if target_errors
+            else ", ".join(rust_contract.required_wasm_targets),
+            level="warning",
+            advice=target_errors or None,
+        )
 
     environment = _canonical_env_defaults(root)
-    backends = {
-        "native": bool(cargo_path and cc_path and cmake_path and ninja_path),
-        "llvm": bool(cargo_path and cc_path and llvm_toolchain),
-        "wasm": bool(cargo_path and wasm_target_ok),
-        "linked-wasm": bool(
-            cargo_path
-            and wasm_target_ok
-            and (zig_path or wasm_ld_path)
-            and wasm_tools_path
-        ),
-        "luau": bool(luau_runner_path),
-    }
-    profiles = {
-        "dev": bool(cargo_path),
-        "release": bool(cargo_path),
-    }
+    if installed is not None:
+        # Installed readiness is the shipped runtime cells plus the host linker
+        # and WASM tools; no Rust toolchain participates.
+        readiness = installed_runtime_profile_readiness(installed)
+        backends = {
+            "native": bool(cc_path) and any(readiness["native"].values()),
+            # The distributed compiler features exclude the LLVM backend.
+            "llvm": False,
+            "wasm": any(readiness["wasm"].values()),
+            "linked-wasm": any(readiness["wasm"].values())
+            and bool((zig_path or wasm_ld_path) and wasm_tools_path),
+            "luau": bool(luau_runner_path),
+        }
+        profiles = {
+            profile: readiness["native"][profile] or readiness["wasm"][profile]
+            for profile in ("dev", "release")
+        }
+    else:
+        backends = {
+            "native": bool(cargo_path and cc_path and cmake_path and ninja_path),
+            "llvm": bool(cargo_path and cc_path and llvm_toolchain),
+            "wasm": bool(cargo_path and wasm_target_ok),
+            "linked-wasm": bool(
+                cargo_path
+                and wasm_target_ok
+                and (zig_path or wasm_ld_path)
+                and wasm_tools_path
+            ),
+            "luau": bool(luau_runner_path),
+        }
+        profiles = {
+            "dev": bool(cargo_path),
+            "release": bool(cargo_path),
+        }
     actions = _collect_setup_actions(checks)
     return _ToolchainReport(
         checks=checks,
@@ -949,7 +1049,7 @@ def setup(
     strict: bool = False,
 ) -> int:
     del verbose
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "setup")
     if root_error is not None:
         return root_error
@@ -984,7 +1084,7 @@ def doctor(
     strict: bool = False,
 ) -> int:
     del verbose
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "doctor")
     if root_error is not None:
         return root_error

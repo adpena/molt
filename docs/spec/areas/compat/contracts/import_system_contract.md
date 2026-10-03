@@ -49,11 +49,19 @@ function, and generated module init bodies carry no cache-guard preambles —
 init-exactly-once is the ensure `Uninit→Initializing` CAS.  The former
 app-owned `molt_isolate_import` string-comparison dispatch chain is deleted
 on native (wasm32 keeps its env import until PR3 unifies the WASM
-projection); the legacy `module_cache`/`sys.modules` store remains the
-module-object home until PR2 collapses it into the table-backed
-`sys.modules` view. The PR2 execution inventory is
-`docs/design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md`;
-it is a cutover map for doc 69's one-store design, not a second authority.
+projection). Normal imports and `MODULE_CACHE_GET` read the current
+`sys.modules` dictionary directly, including arbitrary replacement values and
+deletions. Public reads never populate the private module cache. Registered
+imports reconcile public replacement/deletion through the existing table
+transitions; foreign initialization still waits, and parent execution/retry
+refreshes the public observation. Bootstrap before `sys` and explicit
+runpy/loader execution suppression retain the private publication path.
+This public-cache projection includes dictionary lookup and locking; the
+registered slot lookup alone is not a performance claim for a public import.
+Known absence of a Molt provider permits spec/backport resolution, including
+children of removed providers. A declared execution dependency failure and an
+actual initializer/loader exception remain failures. Public cache presence
+takes precedence over provider policy.
 Gates: `tests/test_module_registry_gates.py` (G1/G3/G7, single-owner and
 chain-is-gone structural gates) and the runtime G4 state machine unit
 (`g4_ensure_state_machine_transitions`).
@@ -61,6 +69,14 @@ chain-is-gone structural gates) and the runtime G4 state machine unit
 ---
 
 ## 2. Module Objects
+`sys.modules` entries determine cached import identity. An empty namespace,
+private-only attributes, runtime bootstrap markers, or absent metadata never
+trigger eviction or re-execution. This includes a package published before its
+body imports a child. The initialization probe of `__spec__._initializing` retains
+the module across user callbacks: importlib propagates probe failures, while
+built-in `__import__` suppresses them, matching CPython. Other namespace contents
+do not govern initialization. A cached `None` blocks the import.
+
 Every module must expose:
 - `__name__`, `__package__`, `__file__` (when applicable),
 - `__spec__` with loader metadata,
@@ -70,6 +86,38 @@ Modules may be:
 - compiled Molt modules,
 - standard library shims,
 - bridge modules (policy-gated).
+
+Deleting an admitted C extension from `sys.modules` reenters the same runtime
+initializer transaction. Legacy single-phase definitions (`m_size == -1`)
+produce a fresh module from the first successful initialization's dictionary;
+post-initialization namespace mutations do not alter that snapshot, and native
+functions retain the original receiver stored in the copied dictionary.
+Reinitializable single-phase definitions (`m_size >= 0`) and multi-phase
+definitions rerun their initializer. The existing C-API runtime state owns the
+legacy snapshot independently of the current `PyState_FindModule` entry, so
+`PyState_RemoveModule` does not discard it. Explicit legacy `create_module`
+replay also honors an existing module in `sys.modules`, merging the snapshot
+into that same namespace; absent/non-module entries receive a raw new module
+before the merge. Existing C-API metadata remains attached. Single-phase `create_module`
+publishes its already-executed result on the first call too; reinitializable
+single-phase calls rerun PyInit and replace the prior public/private publication.
+Multi-phase `create_module` still defers publication and execution to its caller.
+All admitted extension publications own their exact identity, including
+multi-phase execution when a stale private cache entry exists. Completed table
+projections are reconciled at that same boundary; foreign initializer and
+explicit execution custody remain intact. Rollback detaches only transaction-owned
+identities, preserving a different public replacement.
+
+Single-phase callback ordering follows the selected Python target: first import
+registers extension state and its legacy snapshot before publication on 3.13+;
+3.12 first imports and repeatable reloads publish before state registration.
+Successful import identity survives `PyState_RemoveModule` for both legacy and
+repeatable definitions. Each initializer/name/origin identity has one definition
+owner even after nested initialization; transferring it preserves independent
+PyState ownership and releases an orphaned snapshot. PyInit failure publishes no
+snapshot. On 3.13+, a later
+publication failure retains the already-registered extension state, matching the
+first-import contract. Runtime shutdown detaches owners before releasing them.
 
 Source initialization has one ordering across entry paths and targets: publish
 the module object, establish its lexical frame and captured builtin namespace,
@@ -84,6 +132,13 @@ facade, use the same class; script entry points retain `__spec__ = None`.
 Explicit and inherited builtin namespaces remain authoritative; initialization
 does not re-import `builtins` unconditionally or refill a mutated namespace.
 Generated annotation callables and module chunks run after this bootstrap.
+
+Lexical execution does not resolve its namespace through `sys.modules`.
+Functions retain their captured globals and builtins across public module-cache
+replacement, deletion, and re-import. Module bodies and generated chunks carry
+their held module owner explicitly. Frame ownership, exception cleanup, and
+annotation publication follow the compiler's registered entry and chunk
+identities; user module and function names do not select execution roles.
 
 Generated module metadata, the machinery facade and bootstrap-free extension
 initialization share one runtime-owned `ModuleSpec` class and its initializer.
@@ -147,7 +202,31 @@ Metadata construction and native-provider publication use that same cleanup path
 - `from x import y as z`
 - `from x import *` (module scope only; honors `__all__` when present, otherwise skips underscore-prefixed names)
 
+Import-flow analysis resolves each request from the metadata visible before its
+bindings are published. Explicit aliases to `__package__`, `__spec__`,
+`__name__`, and `__path__` update that same authority with their lexical scope.
+Star imports invalidate metadata and callable-identity assumptions because an
+owner's `__all__` may export those names. A later relative import then requires
+runtime custody; intrinsic-backed forwarding does not make the anchor static.
+Exception paths retain states from partially completed multi-name imports.
+`ModuleSpec` parent inference consumes the canonical call-site identity,
+result and effects. Aliases can preserve that proof; a familiar spelling,
+class-local import or rebound constructor cannot create it. The syntax-only
+effect projection does not carry a separate registry of pure callable names.
+
 ### 3.3 Dynamic Imports
+- Import-call dependency binding distinguishes a proven invalid call from an
+  unresolved expansion. Missing, excess, duplicate, and unexpected arguments
+  remain ordinary runtime calls so their argument expressions execute and their
+  binding `TypeError` can be caught; they do not request an imported module.
+  Calls with unresolved `*args`/`**kwargs` use the existing source/AST/catalog
+  custody of executable graph scans. Explicit module names are discovery
+  candidates only until runtime binding succeeds; expansion may change package,
+  level, or fromlist. Strict source-closure scans still require their dynamic
+  import manifest. Argument expressions retain their own import edges in both
+  cases. This classification applies to aliases and to `__import__`,
+  `importlib.import_module`, and the scanner's `importlib.util.find_spec` calls;
+  it grants no imports outside the admitted runtime catalog.
 - Build-time graph discovery separates module-init closure from future runtime
   behavior. Graph seeding does not grant full-depth scan authority: application,
   declared static, spawn, and native-support roots are full-scanned; profile core
@@ -196,6 +275,14 @@ Metadata construction and native-provider publication use that same cleanup path
   graph cache key includes that policy. Package-parent `__init__` files needed
   for an admitted leaf cannot backdoor additional external children unless the
   package is explicitly admitted.
+- Finder-returned extension specs use two independent admission facts: an
+  extension artifact suffix (including archive members), or the private
+  extension-loader declaration carried by the real loader class and its
+  current MRO. Class names, writable attributes, facade aliases, and
+  `sys.modules` membership are not loader identity. A declared loader needs
+  an origin even when its artifact has a nonstandard suffix. File/archive
+  custody and manifest validation remain mandatory at every finder/import
+  boundary; a loader declaration grants no execution capability.
 - Explicit external package admission is also native-artifact custody. Any
   package-local `.so`/`.pyd` artifact discovered under an admitted package must
   have a nearby `extension_manifest.json` sidecar whose module name, extension
@@ -434,6 +521,12 @@ This manifest is part of reproducible builds.
 ---
 
 ## 7. Errors
+Resolver absence is an explicit import outcome, separate from a failed finder,
+loader, initializer, or publication callback. Only actual absence permits the
+next admitted resolution mechanism. Exception names and messages never select
+another importer. Execution failures retain the original exception object,
+including its class, arguments, cause, context, notes, and traceback.
+
 Import errors must include:
 - target module name,
 - resolution path attempted,

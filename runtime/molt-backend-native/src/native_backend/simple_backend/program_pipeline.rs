@@ -67,6 +67,13 @@ impl SimpleBackend {
                 fold_constants(&mut func_ir.ops);
                 fold_constants_cross_block(&mut func_ir.ops);
                 elide_safe_exception_checks(func_ir);
+                // Fuse `obj.method(args)` / `super().method(args)` into the
+                // allocation-free IC calls before the TIR lift, on both native
+                // lanes. The fused call carries its source call's adoption
+                // (design 20 §1.6), so the receiver moves into the call as
+                // in CPython's method-form LOAD_ATTR and CALL, and ownership
+                // planning sees one instruction.
+                fuse_method_dispatch(func_ir);
             });
         }
 
@@ -107,6 +114,19 @@ impl SimpleBackend {
             eliminate_dead_ops(ir, &dead_op_target);
         }
 
+        // Bound per-function optimization growth while transport allocations
+        // can still be planned by the shared terminal ownership phase.
+        if let (Some(target), Some(cached)) = (native_tti.as_ref(), native_cached_tir.as_mut()) {
+            self.partition_sources.extend(
+                crate::tir::pipeline_cache::partition_cached_functions_before_drops(
+                    ir,
+                    cached,
+                    target,
+                    split_megafunctions,
+                ),
+            );
+        }
+
         self.run_cranelift_module_pipeline_if_needed(
             ir,
             use_llvm,
@@ -131,11 +151,6 @@ impl SimpleBackend {
         // downstream linker work.
         if !self.skip_ir_passes {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
-        }
-        // Bound growth introduced by the native TIR roundtrip. LLVM runs its
-        // TIR module phase later and retains the explicit partition barrier.
-        if !use_llvm {
-            self.partition_sources.extend(split_megafunctions(ir));
         }
         run_post_tir_simple_ir_rewrites(&mut ir.functions);
 

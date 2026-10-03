@@ -1,4 +1,5 @@
 use super::*;
+use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::builtins::methods::is_missing_bits;
 use crate::object::seq_access::with_immutable_tuple_slice;
 
@@ -17,80 +18,158 @@ pub(crate) fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::fixed(
             "__new__",
-            &state.mappingproxy_new_fn,
+            NativeCallableKind::Constructor,
             molt_types_mappingproxy_new as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__init__",
-            &state.mappingproxy_init_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_mappingproxy_init as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__getitem__",
-            &state.mappingproxy_getitem_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_mappingproxy_getitem as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__iter__",
-            &state.mappingproxy_iter_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_mappingproxy_iter as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             "__len__",
-            &state.mappingproxy_len_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_mappingproxy_len as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             "__contains__",
-            &state.mappingproxy_contains_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_mappingproxy_contains as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             "get",
-            &state.mappingproxy_get_fn,
+            NativeCallableKind::MethodDescriptor,
             molt_types_mappingproxy_get as *const () as usize as u64,
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
             "keys",
-            &state.mappingproxy_keys_fn,
+            NativeCallableKind::MethodDescriptor,
             molt_types_mappingproxy_keys as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             "items",
-            &state.mappingproxy_items_fn,
+            NativeCallableKind::MethodDescriptor,
             molt_types_mappingproxy_items as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             "values",
-            &state.mappingproxy_values_fn,
+            NativeCallableKind::MethodDescriptor,
             molt_types_mappingproxy_values as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             "__repr__",
-            &state.mappingproxy_repr_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_mappingproxy_repr as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
+            "copy",
+            NativeCallableKind::MethodDescriptor,
+            mappingproxy_copy as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__reversed__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_reversed as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__str__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_str as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__hash__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_hash as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__ior__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_ior as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__or__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_or as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__ror__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_ror as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__eq__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_eq as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__ne__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_ne as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__lt__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_lt as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__le__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_le as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__gt__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_gt as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__ge__",
+            NativeCallableKind::WrapperDescriptor,
+            mappingproxy_ge as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
             "__setitem__",
-            &state.mappingproxy_setitem_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_mappingproxy_setitem as *const () as usize as u64,
             3,
         ),
         RuntimeClassMethodSpec::fixed(
             "__delitem__",
-            &state.mappingproxy_delitem_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_mappingproxy_delitem as *const () as usize as u64,
             2,
         ),
@@ -99,14 +178,238 @@ pub(crate) fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.mappingproxy_class,
         "mappingproxy",
+        ClassSemanticPolicy::static_type(false),
         16,
         Some(crate::object::ObjectShapeId::TypesMappingProxy),
+        Some(crate::object::class_storage::ClassSlotPolicy::default()),
         &methods,
     )
 }
 
+pub(crate) fn mappingproxy_from_mapping(py: &PyToken<'_>, mapping: u64) -> u64 {
+    let class = mappingproxy_class(py);
+    if class == 0 || exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    molt_types_mappingproxy_new(class, mapping)
+}
+
 pub(crate) fn mappingproxy_class_bits(_py: &PyToken<'_>) -> u64 {
     mappingproxy_class(_py)
+}
+
+/// Publish `frame.f_locals`, the read-only getset over each frame object's
+/// typed binding source, and `frame.clear()` over the same owner
+/// (`builtins/frames/locals_proxy.rs`), before the first frame object is
+/// materialized. `false`: an exception is pending.
+pub(crate) fn frame_class_ready(_py: &PyToken<'_>) -> bool {
+    let state = types_state(_py);
+    if state
+        .frame_f_locals_descriptor
+        .load(AtomicOrdering::Acquire)
+        != 0
+    {
+        return true;
+    }
+    let descriptor = init_atomic_bits(_py, &state.frame_f_locals_descriptor, || {
+        let frame_class = builtin_classes(_py).frame;
+        let Some(class_ptr) = obj_from_bits(frame_class).as_ptr() else {
+            return 0;
+        };
+        let Some(dict_ptr) = obj_from_bits(unsafe { class_dict_bits(class_ptr) }).as_ptr() else {
+            return 0;
+        };
+        if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+            return 0;
+        }
+        let getter = builtin_func_bits(
+            _py,
+            NativeCallableSpec::function(&state.frame_f_locals_get_fn),
+            crate::builtins::frames::molt_frame_f_locals_get as *const () as usize as u64,
+            2,
+        );
+        if getter == 0 || exception_pending(_py) {
+            return 0;
+        }
+        let Some(name) = attr_name_bits_from_bytes(_py, b"f_locals") else {
+            return 0;
+        };
+        let none = MoltObject::none().bits();
+        let descriptor = alloc_native_descriptor(
+            _py,
+            NativeDescriptorSpec {
+                flavor: NativeDescriptorFlavor::GetSet,
+                operation: 0,
+                owner: frame_class,
+                name,
+                doc: none,
+                getter,
+                setter: none,
+                deleter: none,
+            },
+        );
+        dec_ref_bits(_py, name);
+        if descriptor == 0 || exception_pending(_py) {
+            return 0;
+        }
+        if !set_class_method(_py, dict_ptr, "f_locals", descriptor) {
+            dec_ref_bits(_py, descriptor);
+            return 0;
+        }
+        let clear = builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(
+                NativeCallableKind::MethodDescriptor,
+                builtin_classes(_py).frame,
+                "clear",
+            ),
+            crate::builtins::frames::molt_frame_clear as *const () as usize as u64,
+            1,
+        );
+        if clear == 0 || exception_pending(_py) || !set_class_method(_py, dict_ptr, "clear", clear)
+        {
+            dec_ref_bits(_py, descriptor);
+            return 0;
+        }
+        unsafe { class_bump_layout_version(class_ptr) };
+        // The runtime state keeps this reference; it marks publication done.
+        descriptor
+    });
+    if descriptor == 0 && !exception_pending(_py) {
+        let _ = raise_exception::<u64>(_py, "SystemError", "frame.f_locals publication failed");
+    }
+    descriptor != 0
+}
+
+/// PEP 667's view of an optimized frame's bindings (3.13 onward). Instances
+/// exist only as `frame.f_locals`; each holds its frame's binding source.
+pub(crate) fn frame_locals_proxy_class(_py: &PyToken<'_>) -> u64 {
+    use crate::builtins::frames::{
+        molt_frame_locals_proxy_contains, molt_frame_locals_proxy_copy,
+        molt_frame_locals_proxy_delitem, molt_frame_locals_proxy_eq, molt_frame_locals_proxy_get,
+        molt_frame_locals_proxy_getitem, molt_frame_locals_proxy_items,
+        molt_frame_locals_proxy_iter, molt_frame_locals_proxy_keys, molt_frame_locals_proxy_len,
+        molt_frame_locals_proxy_pop, molt_frame_locals_proxy_repr,
+        molt_frame_locals_proxy_setdefault, molt_frame_locals_proxy_setitem,
+        molt_frame_locals_proxy_update, molt_frame_locals_proxy_values,
+    };
+    let state = types_state(_py);
+    let varargs = RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true);
+    let methods = [
+        RuntimeClassMethodSpec::fixed(
+            "__getitem__",
+            NativeCallableKind::WrapperDescriptor,
+            molt_frame_locals_proxy_getitem as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__contains__",
+            NativeCallableKind::WrapperDescriptor,
+            molt_frame_locals_proxy_contains as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__len__",
+            NativeCallableKind::WrapperDescriptor,
+            molt_frame_locals_proxy_len as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__iter__",
+            NativeCallableKind::WrapperDescriptor,
+            molt_frame_locals_proxy_iter as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::with_signature(
+            "get",
+            NativeCallableKind::MethodDescriptor,
+            molt_frame_locals_proxy_get as *const () as usize as u64,
+            3,
+            varargs,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "keys",
+            NativeCallableKind::MethodDescriptor,
+            molt_frame_locals_proxy_keys as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "values",
+            NativeCallableKind::MethodDescriptor,
+            molt_frame_locals_proxy_values as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "items",
+            NativeCallableKind::MethodDescriptor,
+            molt_frame_locals_proxy_items as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "copy",
+            NativeCallableKind::MethodDescriptor,
+            molt_frame_locals_proxy_copy as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__repr__",
+            NativeCallableKind::WrapperDescriptor,
+            molt_frame_locals_proxy_repr as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__eq__",
+            NativeCallableKind::WrapperDescriptor,
+            molt_frame_locals_proxy_eq as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__setitem__",
+            NativeCallableKind::WrapperDescriptor,
+            molt_frame_locals_proxy_setitem as *const () as usize as u64,
+            3,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__delitem__",
+            NativeCallableKind::WrapperDescriptor,
+            molt_frame_locals_proxy_delitem as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::with_signature(
+            "setdefault",
+            NativeCallableKind::MethodDescriptor,
+            molt_frame_locals_proxy_setdefault as *const () as usize as u64,
+            3,
+            varargs,
+        ),
+        RuntimeClassMethodSpec::with_signature(
+            "pop",
+            NativeCallableKind::MethodDescriptor,
+            molt_frame_locals_proxy_pop as *const () as usize as u64,
+            3,
+            varargs,
+        ),
+        RuntimeClassMethodSpec::with_signature(
+            "update",
+            NativeCallableKind::MethodDescriptor,
+            molt_frame_locals_proxy_update as *const () as usize as u64,
+            3,
+            varargs,
+        ),
+    ];
+    init_cached_runtime_class_configured(
+        _py,
+        &state.frame_locals_proxy_class,
+        "FrameLocalsProxy",
+        ClassSemanticPolicy::static_type(false),
+        16,
+        Some(crate::object::ObjectShapeId::TypesFrameLocalsProxy),
+        Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        |class_bits, dict_ptr| {
+            configure_runtime_class_methods(_py, class_bits, dict_ptr, &methods)
+                && set_class_method(_py, dict_ptr, "__hash__", MoltObject::none().bits())
+        },
+    )
 }
 
 pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
@@ -114,18 +417,29 @@ pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::fixed(
             "__new__",
-            &state.method_new_fn,
+            NativeCallableKind::Constructor,
             molt_types_method_new as *const () as usize as u64,
             3,
         ),
         RuntimeClassMethodSpec::fixed(
             "__init__",
-            &state.method_init_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_method_init as *const () as usize as u64,
             3,
         ),
     ];
-    init_cached_runtime_class(_py, &state.method_class, "method", 16, None, &methods)
+    init_cached_runtime_class(
+        _py,
+        &state.method_class,
+        "method",
+        ClassSemanticPolicy::static_type(false),
+        16,
+        None,
+        Some(crate::object::class_storage::ClassSlotPolicy::native(
+            crate::TYPE_ID_BOUND_METHOD,
+        )),
+        &methods,
+    )
 }
 
 pub(crate) fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
@@ -133,20 +447,20 @@ pub(crate) fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::with_signature(
             "__init__",
-            &state.simplenamespace_init_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_simplenamespace_init as *const () as usize as u64,
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
             "__repr__",
-            &state.simplenamespace_repr_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_simplenamespace_repr as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             "__eq__",
-            &state.simplenamespace_eq_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_simplenamespace_eq as *const () as usize as u64,
             2,
         ),
@@ -155,8 +469,14 @@ pub(crate) fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.simplenamespace_class,
         "SimpleNamespace",
+        ClassSemanticPolicy::static_type(true),
         8,
         None,
+        Some(crate::object::class_storage::ClassSlotPolicy {
+            allows_dict: true,
+            allows_weakref: false,
+            variable_sized: false,
+        }),
         &methods,
     )
 }
@@ -165,11 +485,20 @@ pub(crate) fn capsule_class(_py: &PyToken<'_>) -> u64 {
     let state = types_state(_py);
     let methods = [RuntimeClassMethodSpec::fixed(
         "__new__",
-        &state.capsule_new_fn,
+        NativeCallableKind::Constructor,
         molt_types_capsule_new as *const () as usize as u64,
         1,
     )];
-    init_cached_runtime_class(_py, &state.capsule_class, "capsule", 8, None, &methods)
+    init_cached_runtime_class(
+        _py,
+        &state.capsule_class,
+        "capsule",
+        ClassSemanticPolicy::static_type(false),
+        8,
+        None,
+        Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        &methods,
+    )
 }
 
 pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
@@ -177,44 +506,44 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::with_signature(
             "__new__",
-            &state.cell_new_fn,
+            NativeCallableKind::Constructor,
             molt_types_cell_new as *const () as usize as u64,
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
             "__eq__",
-            &state.cell_eq_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_cell_eq as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__ne__",
-            &state.cell_ne_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_cell_ne as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__lt__",
-            &state.cell_lt_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_cell_lt as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__le__",
-            &state.cell_le_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_cell_le as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__gt__",
-            &state.cell_gt_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_cell_gt as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "__ge__",
-            &state.cell_ge_fn,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_cell_ge as *const () as usize as u64,
             2,
         ),
@@ -223,29 +552,31 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.cell_class,
         "cell",
+        ClassSemanticPolicy::static_type(false),
         8,
         None,
+        Some(crate::object::class_storage::ClassSlotPolicy::default()),
         |class_bits, dict_ptr| {
-            if !configure_runtime_class_methods(_py, dict_ptr, &methods)
+            if !configure_runtime_class_methods(_py, class_bits, dict_ptr, &methods)
                 || !set_class_method(_py, dict_ptr, "__hash__", MoltObject::none().bits())
             {
                 return false;
             }
             let getter = builtin_func_bits(
                 _py,
-                &state.cell_contents_get_fn,
+                NativeCallableSpec::function(&state.cell_contents_get_fn),
                 molt_types_cell_contents_get as *const () as usize as u64,
                 2,
             );
             let setter = builtin_func_bits(
                 _py,
-                &state.cell_contents_set_fn,
+                NativeCallableSpec::function(&state.cell_contents_set_fn),
                 molt_types_cell_contents_set as *const () as usize as u64,
                 3,
             );
             let deleter = builtin_func_bits(
                 _py,
-                &state.cell_contents_delete_fn,
+                NativeCallableSpec::function(&state.cell_contents_delete_fn),
                 molt_types_cell_contents_delete as *const () as usize as u64,
                 2,
             );
@@ -262,6 +593,7 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
                 _py,
                 NativeDescriptorSpec {
                     flavor: NativeDescriptorFlavor::GetSet,
+                    operation: 0,
                     owner: class_bits,
                     name,
                     doc: MoltObject::none().bits(),
@@ -288,7 +620,7 @@ pub extern "C" fn molt_types_method_new(_cls_bits: u64, func_bits: u64, self_bit
             inc_ref_bits(_py, func_bits);
             return func_bits;
         }
-        crate::molt_bound_method_new(func_bits, self_bits)
+        crate::builtins::functions::bound_method_new(_py, func_bits, self_bits, false)
     })
 }
 
@@ -306,6 +638,17 @@ pub extern "C" fn molt_types_mappingproxy_new(cls_bits: u64, mapping_bits: u64) 
                 "TypeError",
                 "mappingproxy() argument cannot be None",
             );
+        }
+        match mappingproxy_admits(_py, mapping_bits) {
+            Ok(true) => {}
+            Ok(false) => {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "mappingproxy() argument must be a mapping",
+                );
+            }
+            Err(()) => return MoltObject::none().bits(),
         }
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
@@ -349,6 +692,9 @@ pub extern "C" fn molt_types_mappingproxy_iter(self_bits: u64) -> u64 {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
         let iter_bits = molt_iter(mapping_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, mapping_bits);
         }
@@ -429,21 +775,26 @@ pub extern "C" fn molt_types_mappingproxy_get(
         let key_bits = key_bits.expect("non-empty mappingproxy.get arguments");
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
-        // mappingproxy instances in Molt always wrap a class dict, so route to
-        // direct dict.get semantics to avoid descriptor re-resolution.
-        let Some(mapping_ptr) = obj_from_bits(mapping_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "mappingproxy backing store is invalid");
-        };
-        unsafe {
-            if object_type_id(mapping_ptr) != TYPE_ID_DICT {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "mappingproxy backing store must be a dict",
-                );
-            }
+        if obj_from_bits(mapping_bits)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT })
+        {
+            return molt_dict_get(mapping_bits, key_bits, default_bits);
         }
-        molt_dict_get(mapping_bits, key_bits, default_bits)
+        let Some(name_bits) = attr_name_bits_from_bytes(_py, b"get") else {
+            return MoltObject::none().bits();
+        };
+        let method = molt_getattr_builtin(mapping_bits, name_bits, missing_bits(_py));
+        dec_ref_bits(_py, name_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if is_missing_bits(_py, method) {
+            return raise_exception::<_>(_py, "AttributeError", "get");
+        }
+        let result = unsafe { call_callable2(_py, method, key_bits, default_bits) };
+        dec_ref_bits(_py, method);
+        result
     })
 }
 
@@ -490,6 +841,9 @@ pub extern "C" fn molt_types_mappingproxy_repr(self_bits: u64) -> u64 {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
         let mapping_repr_bits = molt_repr_from_obj(mapping_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         let mapping_repr =
             string_obj_to_owned(obj_from_bits(mapping_repr_bits)).unwrap_or_default();
         dec_ref_bits(_py, mapping_repr_bits);
@@ -527,6 +881,94 @@ pub extern "C" fn molt_types_mappingproxy_delitem(_self_bits: u64, _key_bits: u6
         )
     })
 }
+
+// These methods delegate to the same mapping retained by the read-only view.
+// They do not copy the namespace or publish a second C proxy representation.
+fn mappingproxy_admits(py: &PyToken<'_>, mapping: u64) -> Result<bool, ()> {
+    unsafe {
+        let roots = builtin_classes(py);
+        for excluded in [roots.list, roots.tuple] {
+            match crate::object::class_layout::try_is_real_instance(py, mapping, excluded) {
+                Ok(true) => return Ok(false),
+                Ok(false) => {}
+                Err(()) => {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        py,
+                        "mappingproxy receiver admission",
+                    );
+                    return Err(());
+                }
+            }
+        }
+        let present = crate::object::ops::value_supports_mp_subscript(py, mapping);
+        if exception_pending(py) {
+            Err(())
+        } else {
+            Ok(present)
+        }
+    }
+}
+
+extern "C" fn mappingproxy_copy(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { mappingproxy_call_noargs(py, self_bits, "copy") })
+}
+
+extern "C" fn mappingproxy_reversed(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let pointer = obj_from_bits(self_bits).as_ptr().unwrap();
+        crate::molt_reversed_builtin(unsafe { mappingproxy_mapping_bits(pointer) })
+    })
+}
+
+extern "C" fn mappingproxy_str(self_bits: u64) -> u64 {
+    crate::molt_str_from_obj(mappingproxy_unwrap(self_bits))
+}
+
+extern "C" fn mappingproxy_hash(self_bits: u64) -> u64 {
+    crate::molt_hash_builtin(mappingproxy_unwrap(self_bits))
+}
+
+extern "C" fn mappingproxy_ior(_self_bits: u64, _other: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        raise_exception::<_>(
+            py,
+            "TypeError",
+            "'|=' is not supported by mappingproxy; use '|' instead",
+        )
+    })
+}
+
+fn mappingproxy_unwrap(bits: u64) -> u64 {
+    match obj_from_bits(bits).as_ptr() {
+        Some(pointer)
+            if crate::object::object_shape_id(pointer)
+                == crate::object::ObjectShapeId::TypesMappingProxy =>
+        unsafe { mappingproxy_mapping_bits(pointer) },
+        _ => bits,
+    }
+}
+
+extern "C" fn mappingproxy_or(self_bits: u64, other: u64) -> u64 {
+    crate::molt_bit_or(mappingproxy_unwrap(self_bits), mappingproxy_unwrap(other))
+}
+
+extern "C" fn mappingproxy_ror(self_bits: u64, other: u64) -> u64 {
+    crate::molt_bit_or(mappingproxy_unwrap(other), mappingproxy_unwrap(self_bits))
+}
+
+macro_rules! mappingproxy_comparison {
+    ($name:ident, $operation:path) => {
+        extern "C" fn $name(self_bits: u64, other: u64) -> u64 {
+            $operation(mappingproxy_unwrap(self_bits), mappingproxy_unwrap(other))
+        }
+    };
+}
+mappingproxy_comparison!(mappingproxy_eq, crate::molt_eq);
+mappingproxy_comparison!(mappingproxy_ne, crate::molt_ne);
+mappingproxy_comparison!(mappingproxy_lt, crate::molt_lt);
+mappingproxy_comparison!(mappingproxy_le, crate::molt_le);
+mappingproxy_comparison!(mappingproxy_gt, crate::molt_gt);
+mappingproxy_comparison!(mappingproxy_ge, crate::molt_ge);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_types_capsule_new(_cls_bits: u64) -> u64 {
@@ -807,6 +1249,12 @@ pub(crate) unsafe fn types_visit_owned_edges(
         crate::object::ObjectShapeId::TypesMappingProxy => {
             visit(unsafe { mappingproxy_mapping_bits(ptr) });
         }
+        crate::object::ObjectShapeId::TypesFrame => unsafe {
+            crate::builtins::frames::frame_object_visit(ptr, visit);
+        },
+        crate::object::ObjectShapeId::TypesFrameLocalsProxy => unsafe {
+            crate::builtins::frames::frame_locals_proxy_visit(ptr, visit);
+        },
         _ => unreachable!("non-types object shape"),
     }
 }
@@ -821,6 +1269,12 @@ pub(crate) unsafe fn types_detach_owned_edges(
             let old = mappingproxy_mapping_bits(ptr);
             mappingproxy_set_mapping_bits(ptr, MoltObject::none().bits());
             detach(old);
+        },
+        crate::object::ObjectShapeId::TypesFrame => unsafe {
+            crate::builtins::frames::frame_object_detach(ptr, detach);
+        },
+        crate::object::ObjectShapeId::TypesFrameLocalsProxy => unsafe {
+            crate::builtins::frames::frame_locals_proxy_detach(ptr, detach);
         },
         _ => unreachable!("non-types object shape"),
     }

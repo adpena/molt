@@ -174,22 +174,10 @@ interface intrinsics {
 
     add: func(a: molt-object, b: molt-object) -> molt-object;
     inplace_add: func(a: molt-object, b: molt-object) -> molt-object;
-    vec_sum_int: func(seq: molt-object, acc: molt-object) -> molt-object;
-    vec_sum_int_trusted: func(seq: molt-object, acc: molt-object) -> molt-object;
-    vec_prod_int: func(seq: molt-object, acc: molt-object) -> molt-object;
-    vec_prod_int_trusted: func(seq: molt-object, acc: molt-object) -> molt-object;
-    vec_min_int: func(seq: molt-object, acc: molt-object) -> molt-object;
-    vec_min_int_trusted: func(seq: molt-object, acc: molt-object) -> molt-object;
-    vec_max_int: func(seq: molt-object, acc: molt-object) -> molt-object;
-    vec_max_int_trusted: func(seq: molt-object, acc: molt-object) -> molt-object;
-    vec_sum_int_range: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
-    vec_sum_int_range_trusted: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
-    vec_prod_int_range: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
-    vec_prod_int_range_trusted: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
-    vec_min_int_range: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
-    vec_min_int_range_trusted: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
-    vec_max_int_range: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
-    vec_max_int_range_trusted: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
+    vec_sum: func(it: molt-object, acc: molt-object, target: molt-object) -> molt-object;
+    vec_prod: func(it: molt-object, acc: molt-object, target: molt-object) -> molt-object;
+    vec_min: func(it: molt-object, acc: molt-object, target: molt-object) -> molt-object;
+    vec_max: func(it: molt-object, acc: molt-object, target: molt-object) -> molt-object;
     sub: func(a: molt-object, b: molt-object) -> molt-object;
     mul: func(a: molt-object, b: molt-object) -> molt-object;
     inplace_sub: func(a: molt-object, b: molt-object) -> molt-object;
@@ -230,6 +218,7 @@ interface intrinsics {
     function_is_coroutine: func(func: molt-object) -> molt-object;
     call_arity_error: func(expected: u64, got: u64) -> molt-object;
     callargs_new: func(pos_capacity: u64, kw_capacity: u64) -> molt-object;
+    callargs_new_expanded: func(pos_capacity: u64, kw_capacity: u64) -> molt-object;
     callargs_push_pos: func(builder: u64, val: molt-object) -> molt-object;
     callargs_push_kw: func(builder: u64, name: molt-object, val: molt-object) -> molt-object;
     callargs_expand_star: func(builder: u64, iterable: molt-object) -> molt-object;
@@ -254,6 +243,7 @@ interface intrinsics {
     bytes_from_bytes: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     bigint_from_str: func(ptr: molt-ptr, len: u64) -> molt-object;
     str_from_obj: func(val: molt-object) -> molt-object;
+    operator_index: func(val: molt-object) -> molt-object;
     repr_from_obj: func(val: molt-object) -> molt-object;
     repr_builtin: func(val: molt-object) -> molt-object;
     format_builtin: func(val: molt-object, format_spec: molt-object) -> molt-object;
@@ -370,10 +360,6 @@ interface intrinsics {
     slice: func(obj: molt-object, start: molt-object, end: molt-object) -> molt-object;
     slice_new: func(start: molt-object, stop: molt-object, step: molt-object) -> molt-object;
     range_new: func(start: molt-object, stop: molt-object, step: molt-object) -> molt-object;
-    list_builder_new: func(capacity: u64) -> u64;
-    list_builder_append: func(builder: u64, val: molt-object);
-    list_builder_finish: func(builder: u64) -> molt-object;
-    tuple_builder_finish: func(builder: u64) -> molt-object;
     list_append: func(list: molt-object, val: molt-object) -> molt-object;
     list_pop: func(list: molt-object, index: molt-object) -> molt-object;
     list_extend: func(list: molt-object, other: molt-object) -> molt-object;
@@ -397,6 +383,8 @@ interface intrinsics {
     heapq_heapreplace: func(list: molt-object, item: molt-object) -> molt-object;
     heapq_heappushpop: func(list: molt-object, item: molt-object) -> molt-object;
     tuple_from_list: func(obj: molt-object) -> molt-object;
+    tuple_from_values: func(values: u64, len: u64) -> molt-object;
+    list_from_values: func(values: u64, len: u64) -> molt-object;
     dict_new: func(capacity: u64) -> molt-object;
     dict_from_obj: func(obj: molt-object) -> molt-object;
     dict_set: func(dict: molt-object, key: molt-object, val: molt-object) -> molt-object;
@@ -517,7 +505,6 @@ interface intrinsics {
     bytearray_from_str: func(obj: molt-object, encoding: molt-object, errors: molt-object) -> molt-object;
     float_from_obj: func(obj: molt-object) -> molt-object;
     complex_from_obj: func(obj: molt-object, imag: molt-object, has_imag: molt-object) -> molt-object;
-    intarray_from_seq: func(obj: molt-object) -> molt-object;
     memoryview_new: func(obj: molt-object) -> molt-object;
     memoryview_tobytes: func(obj: molt-object) -> molt-object;
     memoryview_cast: func(obj: molt-object, format: molt-object, shape: molt-object, has_shape: molt-object) -> molt-object;
@@ -526,6 +513,7 @@ interface intrinsics {
     buffer2d_set: func(buf: molt-object, row: molt-object, col: molt-object, val: molt-object) -> molt-object;
     buffer2d_matmul: func(lhs: molt-object, rhs: molt-object) -> molt-object;
     dataclass_new: func(name: molt-object, fields: molt-object, values: molt-object, flags: molt-object) -> molt-object;
+    dataclass_new_from_values: func(name: molt-object, fields: molt-object, values: u64, len: u64, flags: molt-object) -> molt-object;
     dataclass_get: func(obj: molt-object, index: molt-object) -> molt-object;
     dataclass_set: func(obj: molt-object, index: molt-object, value: molt-object) -> molt-object;
     dataclass_set_class: func(obj: molt-object, class_obj: molt-object) -> molt-object;

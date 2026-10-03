@@ -106,7 +106,8 @@ fn collect_function_index_patches(
             | Operator::RefFunc { function_index } => function_index,
             _ => continue,
         };
-        let operand_start = op_offset
+        let operand_start = usize::try_from(op_offset)
+            .map_err(|_| "function-index operand offset exceeds addressable bytes")?
             .checked_add(1)
             .ok_or("function-index operand offset overflow")?;
         let (_, operand_end) = read_u32_leb128(body, operand_start)

@@ -26,16 +26,15 @@ from molt.cli.build_inputs import (
 from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.output import emit_json, fail, json_payload
 from molt.cli.project_roots import (
-    _find_molt_root,
-    _find_project_root,
     _require_molt_root,
 )
 from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
     _runtime_artifact_fingerprint_matches,
 )
-from molt.compiler_distribution import installed_compiler
+from molt.cli.compiler_identity import installed_compiler_admission
 from molt.exact_json import read_exact
+from molt.source_root import compiler_source_root
 from molt.toolchain_identity import executable_content_identity
 
 _COMMAND = "internal-backend-build"
@@ -182,7 +181,8 @@ def _prebuild_backend_binary(
             f"--cargo-timeout must be greater than zero, not {cargo_timeout}.",
             json_output,
         )
-    molt_root = _find_molt_root(project_root, _find_project_root(Path.cwd()))
+    # Match public build: compiler inputs are independent of the user project.
+    molt_root = compiler_source_root()
     root_error = _require_molt_root(molt_root, json_output, _COMMAND)
     if root_error is not None:
         return root_error
@@ -245,15 +245,16 @@ def _prebuild_backend_binary(
             identity = executable_content_identity(
                 selection.binary, label="prebuilt backend compiler"
             )
-            installed_manifest = installed_compiler(molt_root)
+            installed_manifest = installed_compiler_admission(
+                molt_root, selection.features, selection.cargo_profile, fresh=True
+            )
             installed = installed_manifest is not None
             if installed_manifest is not None:
-                fingerprint = _backend_binary._installed_compiler_cache_fingerprint(
-                    installed_manifest,
-                    selection.binary,
-                    selection.features,
-                    selection.cargo_profile,
-                )
+                if installed_manifest.compiler.binary != selection.binary:
+                    raise ValueError(
+                        "Selected compiler differs from the installed compiler"
+                    )
+                fingerprint = installed_manifest.fingerprint
                 if fingerprint != result.cache_compiler_fingerprint:
                     raise ValueError("Installed compiler changed after admission")
             else:

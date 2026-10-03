@@ -363,3 +363,70 @@ fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
     assert!(!output.exists());
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
+    let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
+    let root = std::env::temp_dir().join(format!(
+        "molt-daemon-diagnostic-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("create fixture");
+    for (kind, is_wasm) in [("wasm", true), ("object", false), ("archive", false)] {
+        if !is_wasm && !cfg!(feature = "native-backend") {
+            continue;
+        }
+        for tier in ["module", "function"] {
+            let mut cache = DaemonCache::new(None);
+            cache.insert(
+                format!("artifact-v1:{kind}:{tier}"),
+                Arc::from(b"cached output".as_slice()),
+            );
+            for (case, dump, timing) in [
+                ("ordinary", None, None),
+                ("timing", None, Some("1")),
+                ("empty-dump", Some(""), None),
+                ("dump", Some("1"), None),
+            ] {
+                for (key, value) in [("MOLT_DUMP_IR", dump), ("MOLT_BACKEND_TIMING", timing)] {
+                    match value {
+                        Some(value) => unsafe { std::env::set_var(key, value) },
+                        None => unsafe { std::env::remove_var(key) },
+                    }
+                }
+                let output = root.join(format!("{kind}-{tier}-{case}"));
+                let mut request = serde_json::json!({
+                    "id": case, "is_wasm": is_wasm,
+                    "output": output.to_string_lossy(),
+                    "cache_key": "module", "function_cache_key": "function",
+                    "probe_cache_only": true,
+                });
+                if !is_wasm {
+                    request["native_output_kind"] = kind.into();
+                }
+                let result = compile_single_job(
+                    DaemonJobRequest::from_json_value(&request, "job").expect("parse probe"),
+                    &mut cache,
+                );
+                let expected_hit = dump.is_none();
+                assert!(result.ok, "{kind}/{tier}/{case}: {:?}", result.message);
+                assert_eq!(result.cached, expected_hit, "{kind}/{tier}/{case}");
+                assert_eq!(result.needs_ir, !expected_hit, "{kind}/{tier}/{case}");
+                assert_eq!(result.output_written, expected_hit, "{kind}/{tier}/{case}");
+                assert_eq!(output.exists(), expected_hit, "{kind}/{tier}/{case}");
+                if expected_hit {
+                    assert_eq!(
+                        std::fs::read(&output).expect("cached output"),
+                        b"cached output"
+                    );
+                }
+            }
+        }
+    }
+    std::fs::remove_dir_all(root).expect("clean fixture");
+}

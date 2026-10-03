@@ -1,7 +1,9 @@
 //! Shared dominator tree utilities for TIR passes.
 //!
 //! Provides the Cooper-Harvey-Kennedy algorithm for computing immediate
-//! dominators and a `dominates` query. Factored out of `refcount_elim.rs`
+//! dominators, a `dominates` query, and the dominance frontiers and
+//! dominator-tree preorder that SSA construction reads (memory SSA,
+//! generator frame promotion). Factored out of `refcount_elim.rs`
 //! so that multiple passes (refcount elimination, guard-to-type propagation)
 //! can reuse the same dominator computation.
 
@@ -9,8 +11,18 @@ use std::collections::{HashMap, HashSet};
 
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::function::TirFunction;
-use super::op_kinds_generated::{kind_to_opcode_table, opcode_is_exception_transfer_edge_table};
+use super::op_kinds_generated::{
+    ExceptionRegionNestingRole, kind_to_opcode_table, opcode_exception_region_nesting_role_table,
+    opcode_is_exception_transfer_edge_table,
+};
 use super::ops::{AttrValue, OpCode};
+
+mod indexed;
+mod points;
+mod simple_points;
+pub use indexed::IndexedDominance;
+pub use points::ProgramPointDominance;
+pub use simple_points::{SimpleExecutionDominance, SimpleProgramPoint};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,18 +70,16 @@ pub fn exception_label_to_block(func: &TirFunction) -> HashMap<i64, BlockId> {
 /// gets a sound dominator and is treated as reachable. This is the default
 /// (`Full`).
 ///
-/// The TIR verifier deliberately restricts its SSA-dominance check to the
-/// strict terminator-only CFG (`TerminatorOnly`): handler blocks reached only
-/// through exception edges are intentionally *not* checked for SSA dominance,
-/// because their defs may legitimately come from the protected region rather
-/// than via a terminator-dominating block. Both views are produced by the same
-/// algorithm here so there is exactly ONE dominator implementation over
-/// `TirFunction`.
+/// `TerminatorOnly` projects ordinary block control flow. Production SSA
+/// verification instead uses [`ProgramPointDominance::compute_executable`]:
+/// exceptional entries must be checked at their observation positions, while
+/// region registrations do not execute a handler. All views reuse this shared
+/// dominator algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CfgEdgePolicy {
     /// Terminator edges plus implicit exception edges (the analysis view).
     Full,
-    /// Terminator edges only (the strict-CFG verifier view).
+    /// Terminator edges only (ordinary block-control-flow view).
     TerminatorOnly,
     /// Block retention only: executable edges plus non-executable exception
     /// label custody (for example TryEnd). Never use this as executable proof.
@@ -127,6 +137,19 @@ pub fn is_exception_transfer_edge(opcode: OpCode) -> bool {
     opcode_is_exception_transfer_edge_table(opcode)
 }
 
+/// Whether control leaving through an exception-transfer edge binds its
+/// target's block arguments to the operation's operands. A pending-state
+/// observation (`CheckException`) does, when it raises. A region registration,
+/// the transfer op that enters a lexical exception region (`TryStart`), keeps its
+/// handler reachable for dominance, liveness and verification, but control never
+/// leaves through it: every backend lowers it as region structure, and SimpleIR
+/// verification marks its edge non-executable. Ownership transfer and
+/// exceptional landings read only the edges that bind.
+pub fn exception_edge_binds_handler_arguments(opcode: OpCode) -> bool {
+    is_exception_transfer_edge(opcode)
+        && opcode_exception_region_nesting_role_table(opcode) != ExceptionRegionNestingRole::Enter
+}
+
 /// Whether a SimpleIR spelling lowers to an implicit exception-transfer edge.
 ///
 /// SimpleIR has wire aliases (currently `async_work_poll` for
@@ -136,6 +159,11 @@ pub fn is_exception_transfer_edge(opcode: OpCode) -> bool {
 /// edge and block-argument payload.
 pub fn is_simple_exception_transfer_kind(kind: &str) -> bool {
     kind_to_opcode_table(kind).is_some_and(is_exception_transfer_edge)
+}
+
+/// Actual exceptional execution, excluding handler registration metadata.
+pub fn is_simple_exception_observation_kind(kind: &str) -> bool {
+    kind_to_opcode_table(kind).is_some_and(exception_edge_binds_handler_arguments)
 }
 
 fn append_block_successors(
@@ -267,8 +295,8 @@ pub fn executable_reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
 /// BlockId -> Option<BlockId> (idom). The entry block has no dominator (None).
 ///
 /// `pred_map` MUST have been built under the same edge policy (here,
-/// [`CfgEdgePolicy::Full`] via [`build_pred_map`]). For the strict-CFG verifier
-/// view, use [`compute_idoms_with`] with [`CfgEdgePolicy::TerminatorOnly`].
+/// [`CfgEdgePolicy::Full`] via [`build_pred_map`]). For ordinary block flow,
+/// use [`compute_idoms_with`] with [`CfgEdgePolicy::TerminatorOnly`].
 pub fn compute_idoms(
     func: &TirFunction,
     pred_map: &HashMap<BlockId, Vec<BlockId>>,
@@ -296,6 +324,34 @@ pub fn compute_idoms_with(
         .map(|(i, &bid)| (bid, i))
         .collect();
 
+    let predecessors: Vec<Vec<usize>> = rpo_order
+        .iter()
+        .map(|bid| {
+            pred_map[bid]
+                .iter()
+                .filter_map(|pred| rpo_index.get(pred).copied())
+                .collect()
+        })
+        .collect();
+    let doms = idoms_in_rpo(&predecessors);
+    rpo_order
+        .iter()
+        .enumerate()
+        .map(|(i, &bid)| {
+            (
+                bid,
+                (i != 0).then(|| doms[i].map(|d| rpo_order[d])).flatten(),
+            )
+        })
+        .collect()
+}
+
+/// Cooper-Harvey-Kennedy over reachable nodes indexed in reverse postorder.
+/// Block and operation-position projections share this solver.
+fn idoms_in_rpo(predecessors: &[Vec<usize>]) -> Vec<Option<usize>> {
+    if predecessors.is_empty() {
+        return Vec::new();
+    }
     // Intersect two dominator paths.
     let intersect = |mut a: usize, mut b: usize, doms: &[Option<usize>]| -> usize {
         while a != b {
@@ -309,7 +365,7 @@ pub fn compute_idoms_with(
         a
     };
 
-    let n = rpo_order.len();
+    let n = predecessors.len();
     let mut doms: Vec<Option<usize>> = vec![None; n];
     doms[0] = Some(0); // Entry dominates itself.
 
@@ -317,15 +373,12 @@ pub fn compute_idoms_with(
     while changed {
         changed = false;
         for i in 1..n {
-            let bid = rpo_order[i];
-            let preds = &pred_map[&bid];
+            let preds = &predecessors[i];
 
             // Find first processed predecessor.
             let mut new_idom: Option<usize> = None;
-            for pred in preds {
-                if let Some(&rpo_i) = rpo_index.get(pred)
-                    && doms[rpo_i].is_some()
-                {
+            for &rpo_i in preds {
+                if doms[rpo_i].is_some() {
                     new_idom = Some(rpo_i);
                     break;
                 }
@@ -335,11 +388,8 @@ pub fn compute_idoms_with(
             };
 
             // Intersect with remaining processed predecessors.
-            for pred in preds {
-                if let Some(&rpo_i) = rpo_index.get(pred)
-                    && doms[rpo_i].is_some()
-                    && rpo_i != new_idom_val
-                {
+            for &rpo_i in preds {
+                if doms[rpo_i].is_some() && rpo_i != new_idom_val {
                     new_idom_val = intersect(rpo_i, new_idom_val, &doms);
                 }
             }
@@ -351,16 +401,7 @@ pub fn compute_idoms_with(
         }
     }
 
-    // Convert RPO-index idoms back to BlockIds.
-    let mut result: HashMap<BlockId, Option<BlockId>> = HashMap::new();
-    for (i, &bid) in rpo_order.iter().enumerate() {
-        if i == 0 {
-            result.insert(bid, None);
-        } else {
-            result.insert(bid, doms[i].map(|d| rpo_order[d]));
-        }
-    }
-    result
+    doms
 }
 
 /// Build the dominator-tree children map from an idom map: for each block, the
@@ -385,6 +426,92 @@ pub fn build_dom_children(
         kids.sort_unstable_by_key(|b| b.0);
     }
     children
+}
+
+/// Dominance frontiers by the Cooper-Harvey-Kennedy algorithm, from the
+/// immediate-dominator tree and the predecessor map of one edge policy. Only
+/// `reachable` blocks, and their reachable predecessors, take part.
+pub fn compute_dominance_frontiers(
+    idoms: &HashMap<BlockId, Option<BlockId>>,
+    pred_map: &HashMap<BlockId, Vec<BlockId>>,
+    reachable: &HashSet<BlockId>,
+) -> HashMap<BlockId, HashSet<BlockId>> {
+    let mut df: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
+    for (&b, preds) in pred_map {
+        if !reachable.contains(&b) {
+            continue;
+        }
+        // Only join points (≥2 reachable preds) contribute to frontiers.
+        let live_preds: Vec<BlockId> = preds
+            .iter()
+            .copied()
+            .filter(|p| reachable.contains(p))
+            .collect();
+        if live_preds.len() < 2 {
+            continue;
+        }
+        let idom_b = idoms.get(&b).and_then(|d| *d);
+        for p in live_preds {
+            let mut runner = p;
+            // Walk up from `p` until we reach `b`'s idom, adding `b` to each
+            // visited node's frontier.
+            while Some(runner) != idom_b {
+                df.entry(runner).or_default().insert(b);
+                match idoms.get(&runner).and_then(|d| *d) {
+                    Some(idom) if idom != runner => runner = idom,
+                    // Reached the dominator-tree root; stop.
+                    _ => break,
+                }
+            }
+        }
+    }
+    df
+}
+
+/// The iterated dominance frontier of `def_blocks`: the blocks where a value
+/// defined in any of them needs a join. Standard worklist fixpoint.
+pub fn iterated_dominance_frontier(
+    def_blocks: &HashSet<BlockId>,
+    df: &HashMap<BlockId, HashSet<BlockId>>,
+) -> HashSet<BlockId> {
+    let mut phi_blocks: HashSet<BlockId> = HashSet::new();
+    let mut worklist: Vec<BlockId> = def_blocks.iter().copied().collect();
+    while let Some(b) = worklist.pop() {
+        if let Some(frontier) = df.get(&b) {
+            for &f in frontier {
+                if phi_blocks.insert(f) {
+                    // A join is itself a definition; iterate.
+                    worklist.push(f);
+                }
+            }
+        }
+    }
+    phi_blocks
+}
+
+/// Dominator-tree preorder from the root, in deterministic (ascending child id)
+/// order, so every block follows its immediate dominator. Iterative to avoid
+/// deep recursion on long dominator chains.
+pub fn dom_tree_preorder(
+    root: BlockId,
+    dom_children: &HashMap<BlockId, Vec<BlockId>>,
+) -> Vec<BlockId> {
+    let mut order: Vec<BlockId> = Vec::new();
+    let mut stack: Vec<BlockId> = vec![root];
+    let mut seen: HashSet<BlockId> = HashSet::new();
+    while let Some(b) = stack.pop() {
+        if !seen.insert(b) {
+            continue;
+        }
+        order.push(b);
+        if let Some(children) = dom_children.get(&b) {
+            // Push in reverse so children pop in ascending order.
+            for &c in children.iter().rev() {
+                stack.push(c);
+            }
+        }
+    }
+    order
 }
 
 /// Returns `true` if `dominator` dominates `target` according to the idom tree.
@@ -880,5 +1007,26 @@ mod tests {
             !full_reach.contains(&handler),
             "TryEnd.value is pairing metadata, not a handler-transfer edge"
         );
+    }
+
+    #[test]
+    fn only_observation_edges_bind_handler_arguments() {
+        use crate::tir::ops::OpCode;
+
+        assert!(exception_edge_binds_handler_arguments(
+            OpCode::CheckException
+        ));
+        assert!(
+            is_exception_transfer_edge(OpCode::TryStart)
+                && !exception_edge_binds_handler_arguments(OpCode::TryStart),
+            "a region registration keeps its handler reachable but never enters it"
+        );
+        for &opcode in crate::tir::op_kinds_generated::ALL_OPCODES {
+            assert!(
+                is_exception_transfer_edge(opcode)
+                    || !exception_edge_binds_handler_arguments(opcode),
+                "{opcode:?} binds handler arguments without an exception edge"
+            );
+        }
     }
 }

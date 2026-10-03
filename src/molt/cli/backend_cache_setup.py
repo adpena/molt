@@ -51,6 +51,10 @@ from molt.cli.models import (
 )
 from molt.cli.runtime_paths import _build_state_root, _normalize_runtime_stdlib_profile
 from molt.target_python import TargetPythonVersion
+from molt.cli.runtime_native_codegen import (
+    NativeRuntimeCodegenBinding,
+    native_runtime_codegen_environment,
+)
 
 _BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION = 2
 
@@ -265,6 +269,8 @@ def _build_cache_variant(
 
     ``runtime_wasm_codegen_digest`` binds every WASM cache tier to the physical
     runtime pair whose memory and table addresses code generation consumed.
+    It hashes both admitted members by role, not their publication receipt.
+    Byte-identical republication can reuse app code only after fresh admission.
     Runtime source exclusion from the compiler fingerprint is not permission
     to reuse app bytes against another runtime generation.
     """
@@ -319,7 +325,7 @@ def _prepare_backend_cache_setup(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
-    runtime_callable_symbols_digest: str = "",
+    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
     runtime_wasm_codegen_digest: str = "",
     resolved_capability_policy: ResolvedRuntimePolicy | None = None,
     backend_compiler_fingerprint: str | None = None,
@@ -390,6 +396,7 @@ def _prepare_backend_cache_setup(
                     # Runtime implementation source is guarded by the runtime artifact
                     # fingerprint; backend object code keys on IR + runtime ABI surface.
                     include_runtime_sources=False,
+                    cargo_profile=backend_cargo_profile,
                 )
             tooling_fingerprint = _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT
             stdlib_compiler_fingerprint = _shared_stdlib_compiler_fingerprint(
@@ -415,13 +422,22 @@ def _prepare_backend_cache_setup(
         backend_cargo=backend_cargo_profile,
         emit=emit_mode,
         stdlib_split=split_stdlib_object,
-        codegen_env=_backend_codegen_env_digest(is_wasm=is_wasm),
+        codegen_env=_backend_codegen_env_digest(
+            is_wasm=is_wasm,
+            env=native_runtime_codegen_environment(
+                os.environ, native_runtime_codegen_binding
+            ),
+        ),
         linked=linked,
         target_python=target_python,
         stdlib_profile=stdlib_profile,
         backend_binary_identity=backend_binary_identity,
         external_static_packages_digest=native_artifact_plan.digest(),
-        runtime_callable_symbols_digest=runtime_callable_symbols_digest,
+        runtime_callable_symbols_digest=(
+            native_runtime_codegen_binding.semantic_digest
+            if native_runtime_codegen_binding is not None
+            else ""
+        ),
         runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
         capability_config_digest=capability_config_digest,
     )

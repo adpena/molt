@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     )
 
 import ast
+from molt.compiler_analysis.python_private_names import python_import_binding
 from collections import deque
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -22,7 +23,6 @@ from typing import Literal
 from molt.compiler_analysis.python_effects import (
     dotted_expression_name,
     expression_evaluation_children,
-    expression_may_execute_python,
 )
 from molt.compiler_analysis.python_source_keys import (
     _PythonAstDigestAdmission,
@@ -80,7 +80,6 @@ class ModuleImportState:
     spec_parent: StaticMetadataValue
     name: StaticMetadataValue
     has_path: bool | None
-    proven_pure_calls: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,19 +146,28 @@ class StaticImportRequest:
 
 @dataclass(frozen=True, slots=True)
 class StaticImportCallArguments:
-    name: ast.expr
+    name: ast.expr | None
     package: ast.expr | None = None
     globals: ast.expr | None = None
     locals: ast.expr | None = None
     fromlist: ast.expr | None = None
     level: ast.expr | None = None
+    requires_runtime_binding: bool = False
 
 
 def bind_static_import_call_arguments(
     call: ast.Call,
     kind: ImportOperationKind,
-) -> StaticImportCallArguments:
-    """Bind import-call arguments once with CPython duplicate/arity rules."""
+) -> StaticImportCallArguments | None:
+    """Bind a static request, or return None when Python binding must fail.
+
+    A missing, excess, duplicate, or unexpected argument cannot execute the
+    import operation. Leave that call and its argument evaluation to runtime,
+    where its TypeError is observable and catchable. Unknown expansion is a
+    partial binding that requires runtime import custody, not proof of an
+    invalid call. Explicit operands keep their values on every successful
+    binding; an expansion cannot replace one without a duplicate error.
+    """
 
     parameter_names = (
         ("name", "package")
@@ -168,20 +176,32 @@ def bind_static_import_call_arguments(
     )
     if kind == "statement":
         raise ValueError("import statements do not have call arguments")
-    if len(call.args) > len(parameter_names):
-        raise ValueError(f"too many {kind} positional arguments")
-    bound: dict[str, ast.expr] = dict(zip(parameter_names, call.args))
+    positional_minimum = sum(
+        not isinstance(argument, ast.Starred) for argument in call.args
+    )
+    if positional_minimum > len(parameter_names):
+        return None
+    bound: dict[str, ast.expr] = {}
+    requires_runtime_binding = False
+    for argument in call.args:
+        if isinstance(argument, ast.Starred):
+            requires_runtime_binding = True
+        elif not requires_runtime_binding:
+            bound[parameter_names[len(bound)]] = argument
     for keyword in call.keywords:
         if keyword.arg is None:
-            raise ValueError(f"dynamic **kwargs are unsupported for {kind}")
-        if keyword.arg not in parameter_names:
-            raise ValueError(f"unexpected {kind} argument {keyword.arg!r}")
-        if keyword.arg in bound:
-            raise ValueError(f"duplicate {kind} argument {keyword.arg!r}")
+            requires_runtime_binding = True
+            continue
+        if (
+            keyword.arg not in parameter_names
+            or keyword.arg in bound
+            or parameter_names.index(keyword.arg) < positional_minimum
+        ):
+            return None
         bound[keyword.arg] = keyword.value
     name = bound.get("name")
-    if name is None:
-        raise ValueError(f"{kind} requires a name argument")
+    if name is None and not requires_runtime_binding:
+        return None
     return StaticImportCallArguments(
         name=name,
         package=bound.get("package"),
@@ -189,6 +209,7 @@ def bind_static_import_call_arguments(
         locals=bound.get("locals"),
         fromlist=bound.get("fromlist"),
         level=bound.get("level"),
+        requires_runtime_binding=requires_runtime_binding,
     )
 
 
@@ -267,16 +288,30 @@ def context_import_state(context: ModuleImportContext) -> ModuleImportState:
 
 def parse_module_spec_parent(
     value: ast.AST,
-    proven_pure_calls: Collection[str] = (),
+    call_fact: PythonCallSiteFact | None = None,
 ) -> StaticMetadataValue:
     """Evaluate a statically known, CPython-valid ModuleSpec parent."""
+
+    from molt.compiler_analysis.python_binding_facts import (
+        PythonIdentity,
+        PythonNodeKey,
+        identity_fact_is_exact,
+    )
+    from molt.compiler_analysis.python_effects_generated import (
+        NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
+    )
 
     if isinstance(value, ast.Constant) and value.value is None:
         return NONE_VALUE
     if (
         not isinstance(value, ast.Call)
-        or dotted_expression_name(value.func) not in proven_pure_calls
-        or expression_may_execute_python(value, proven_pure_calls=proven_pure_calls)
+        or call_fact is None
+        or call_fact.node != PythonNodeKey.from_node(value)
+        or not call_fact.callee_is(PythonIdentity.MODULE_SPEC_CLASS)
+        or not identity_fact_is_exact(
+            call_fact.result_identities, PythonIdentity.MODULE_SPEC_INSTANCE
+        )
+        or call_fact.effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
     ):
         return INVALID_VALUE if isinstance(value, ast.Constant) else UNKNOWN_VALUE
     # ModuleSpec(name, loader, *, origin=None, loader_state=None, is_package=None)
@@ -448,7 +483,6 @@ def dunder_globals_state_from_expression(
                     else state.spec_parent,
                     unpacked.name if unpacked.name.kind != "absent" else state.name,
                     unpacked.has_path or state.has_path,
-                    state.proven_pure_calls & unpacked.proven_pure_calls,
                 )
             continue
         if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
@@ -460,7 +494,6 @@ def dunder_globals_state_from_expression(
                 state.spec_parent,
                 state.name,
                 state.has_path,
-                state.proven_pure_calls,
             )
         elif key.value == "__spec__":
             state = ModuleImportState(
@@ -468,7 +501,6 @@ def dunder_globals_state_from_expression(
                 parse_module_spec_parent(value),
                 state.name,
                 state.has_path,
-                state.proven_pure_calls,
             )
         elif key.value == "__name__":
             state = ModuleImportState(
@@ -477,7 +509,6 @@ def dunder_globals_state_from_expression(
                 metadata_value_from_expression(value, context, resolve_string)
                 or UNKNOWN_VALUE,
                 state.has_path,
-                state.proven_pure_calls,
             )
         elif key.value == "__path__":
             state = ModuleImportState(
@@ -485,7 +516,6 @@ def dunder_globals_state_from_expression(
                 state.spec_parent,
                 state.name,
                 True,
-                state.proven_pure_calls,
             )
     return state
 
@@ -494,6 +524,7 @@ def update_module_import_state(
     state: ModuleImportState,
     target: ast.AST,
     value: ast.AST,
+    call_fact: PythonCallSiteFact | None = None,
 ) -> ModuleImportState:
     target_name = import_metadata_target_name(target)
     if target_name is None:
@@ -503,7 +534,7 @@ def update_module_import_state(
     if target_name == "__spec__":
         return replace(
             state,
-            spec_parent=parse_module_spec_parent(value, state.proven_pure_calls),
+            spec_parent=parse_module_spec_parent(value, call_fact),
         )
     if target_name == "__name__":
         return replace(state, name=_metadata_value(value))
@@ -542,7 +573,6 @@ def _state_sort_key(state: ModuleImportState) -> tuple[str, ...]:
         state.name.kind,
         state.name.value or "",
         str(state.has_path),
-        "\0".join(sorted(state.proven_pure_calls)),
     )
 
 
@@ -558,14 +588,12 @@ def _merge_states(
         return next(iter(values)) if len(values) == 1 else UNKNOWN_VALUE
 
     path_values = {state.has_path for state in states}
-    proven_calls = set.intersection(*(set(state.proven_pure_calls) for state in states))
     return (
         ModuleImportState(
             join_value("package"),
             join_value("spec_parent"),
             join_value("name"),
             next(iter(path_values)) if len(path_values) == 1 else None,
-            frozenset(proven_calls),
         ),
     )
 
@@ -640,7 +668,10 @@ def _analyze_module_import_flow_uncached(
         states: tuple[ModuleImportState, ...], target: ast.AST, value: ast.AST
     ) -> tuple[ModuleImportState, ...]:
         updated = _merge_states(
-            update_module_import_state(state, target, value) for state in states
+            update_module_import_state(
+                state, target, value, call_facts.get(PythonNodeKey.from_node(value))
+            )
+            for state in states
         )
         all_states.update(updated)
         return updated
@@ -720,71 +751,30 @@ def _analyze_module_import_flow_uncached(
         all_states.update(current)
         return current
 
-    def bind_proven_import_calls(
+    def bind_imported_names(
         states: tuple[ModuleImportState, ...],
         statement: ast.Import | ast.ImportFrom,
+        direct_metadata_names: Collection[str],
+        raised_states: list[tuple[ModuleImportState, ...]],
     ) -> tuple[ModuleImportState, ...]:
-        rebound_targets = tuple(
-            ast.Name(id=alias.asname or alias.name.split(".", 1)[0])
-            for alias in statement.names
-        )
-        states = invalidate_proven_call_bindings(states, rebound_targets)
-        calls: set[str] = set()
-        if isinstance(statement, ast.ImportFrom):
-            if statement.level == 0 and statement.module == "importlib.machinery":
-                calls.update(
-                    alias.asname or alias.name
-                    for alias in statement.names
-                    if alias.name == "ModuleSpec"
-                )
-        else:
-            for alias in statement.names:
-                if alias.name == "importlib.machinery":
-                    calls.add(
-                        f"{alias.asname}.ModuleSpec"
-                        if alias.asname
-                        else "importlib.machinery.ModuleSpec"
-                    )
-        if not calls:
-            return states
-        current = _merge_states(
-            replace(
-                state,
-                proven_pure_calls=state.proven_pure_calls | frozenset(calls),
-            )
-            for state in states
-        )
-        all_states.update(current)
-        return current
-
-    def invalidate_proven_call_bindings(
-        states: tuple[ModuleImportState, ...],
-        targets: Sequence[ast.AST],
-    ) -> tuple[ModuleImportState, ...]:
-        rebound_names = {
-            name
-            for target in targets
-            if (name := dotted_expression_name(target)) is not None
-        }
-        if not rebound_names:
-            return states
-        current = _merge_states(
-            replace(
-                state,
-                proven_pure_calls=frozenset(
-                    call
-                    for call in state.proven_pure_calls
-                    if not any(
-                        call == rebound
-                        or call.startswith(rebound + ".")
-                        or rebound.startswith(call + ".")
-                        for rebound in rebound_names
-                    )
-                ),
-            )
-            for state in states
-        )
-        all_states.update(current)
+        # The request itself uses the incoming metadata. Binding its results
+        # happens afterwards and may change the anchor of the next import.
+        if isinstance(statement, ast.ImportFrom) and any(
+            alias.name == "*" for alias in statement.names
+        ):
+            # __all__ may export metadata and change the next import anchor.
+            # It may also fail after a prefix of those bindings was published.
+            return unknown_states(states)
+        current = states
+        for alias in statement.names:
+            target = ast.Name(id=python_import_binding(alias))
+            if target_writes_metadata(target, direct_metadata_names):
+                # Imported values are opaque; a successful __path__ binding
+                # still establishes presence, as any ordinary assignment does.
+                current = metadata_assignment(current, target, target)
+            # A later alias can fail after earlier aliases were bound. Keep
+            # those states for handlers, not just the statement endpoints.
+            raised_states.append(current)
         return current
 
     def expression_may_be_metadata_mutator(value: ast.AST) -> bool:
@@ -994,7 +984,7 @@ def _analyze_module_import_flow_uncached(
                 direct_metadata_names=direct_metadata_names,
                 raised_states=raised_states,
             )
-            return invalidate_proven_call_bindings(current, (expression.target,))
+            return current
         call = call_facts.get(PythonNodeKey.from_node(expression))
         if (
             isinstance(expression, ast.Call)
@@ -1052,29 +1042,10 @@ def _analyze_module_import_flow_uncached(
                     # It cannot publish a precise caller-module anchor merely
                     # because the supplied member has a metadata spelling.
                     return unknown_states(current)
-                owner_name = dotted_expression_name(expression.args[0])
-                rebound = (
-                    f"{owner_name}.{attribute_name}" if owner_name is not None else None
-                )
-                if rebound is not None:
-                    synthetic_target = ast.parse(rebound, mode="eval").body
-                    current = invalidate_proven_call_bindings(
-                        current, (synthetic_target,)
-                    )
-            pure_call_name = dotted_expression_name(expression.func)
-            if any(
-                pure_call_name in state.proven_pure_calls
-                and expression_may_execute_python(
-                    expression,
-                    proven_pure_calls=state.proven_pure_calls,
-                )
-                for state in current
-            ):
-                return unknown_states(current)
         # Executing Python is not by itself authority to poison the caller's
         # module globals. The explicit exec/globals/local-mutator paths above
         # are the mutation boundaries; ordinary callees own a different global
-        # mapping. Proven-pure calls remain useful to ModuleSpec parsing.
+        # mapping. ModuleSpec parsing consumes canonical call-site identity.
         return current
 
     def record_unreachable(node: ast.AST) -> None:
@@ -1129,7 +1100,9 @@ def _analyze_module_import_flow_uncached(
             outcome: PythonCompletionFlow[tuple[ModuleImportState, ...]] | None = None
             if isinstance(statement, (ast.Import, ast.ImportFrom)):
                 record(statement, current)
-                current = bind_proven_import_calls(current, statement)
+                current = bind_imported_names(
+                    current, statement, direct_metadata_names, pending_expression_raises
+                )
             elif isinstance(statement, ast.Assign):
                 current = evaluate(statement.value, current)
                 current = assign_states(
@@ -1139,7 +1112,6 @@ def _analyze_module_import_flow_uncached(
                     direct_metadata_names=direct_metadata_names,
                     raised_states=pending_expression_raises,
                 )
-                current = invalidate_proven_call_bindings(current, statement.targets)
                 update_mutator_bindings(statement.targets, statement.value)
             elif isinstance(statement, ast.AnnAssign):
                 if statement.value is not None:
@@ -1150,9 +1122,6 @@ def _analyze_module_import_flow_uncached(
                         statement.value,
                         direct_metadata_names=direct_metadata_names,
                         raised_states=pending_expression_raises,
-                    )
-                    current = invalidate_proven_call_bindings(
-                        current, (statement.target,)
                     )
                     update_mutator_bindings((statement.target,), statement.value)
                 else:
@@ -1177,7 +1146,6 @@ def _analyze_module_import_flow_uncached(
                     statement.target, current, direct_metadata_names
                 )
             elif isinstance(statement, ast.Delete):
-                current = invalidate_proven_call_bindings(current, statement.targets)
                 for target in statement.targets:
                     current = evaluate(target, current)
                     if target_writes_metadata(target, direct_metadata_names):
@@ -1305,9 +1273,6 @@ def _analyze_module_import_flow_uncached(
                 ):
                     unreachable_block(statement.orelse)
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                current = invalidate_proven_call_bindings(
-                    current, (ast.Name(id=statement.name),)
-                )
                 for expression in (*statement.decorator_list, *statement.args.defaults):
                     current = evaluate(expression, current)
                 for expression in statement.args.kw_defaults:
@@ -1350,9 +1315,6 @@ def _analyze_module_import_flow_uncached(
                 ):
                     current = unknown_states(current)
             elif isinstance(statement, ast.ClassDef):
-                current = invalidate_proven_call_bindings(
-                    current, (ast.Name(id=statement.name),)
-                )
                 for expression in (
                     *statement.decorator_list,
                     *statement.bases,
