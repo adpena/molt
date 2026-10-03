@@ -398,6 +398,7 @@ _SIMPLEIR_FIELD_ROLE_FACT_SETS = (
     "simpleir_var_definition_kinds",
     "simpleir_var_result_kinds",
     "simpleir_var_metadata_when_args_kinds",
+    "simpleir_var_forbidden_kinds",
 )
 _SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS = (
     "verifier_label_definition",

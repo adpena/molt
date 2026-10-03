@@ -174,9 +174,10 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_representation_copy(&mut self, op: &OpIR) {
+        // compile_checked admits every spelling through the shared wire shape;
+        // dispatch's typed round trip preserves this unary operand transport.
         let Some([source]) = op.args.as_deref() else {
-            self.emit_unsupported_op(op, "representation conversion requires exactly one operand");
-            return;
+            unreachable!("representation conversion must have passed shared shape admission");
         };
         // The source target keeps every admitted value in MoltValue already;
         // neither conversion has a raw carrier to materialize or extract.
