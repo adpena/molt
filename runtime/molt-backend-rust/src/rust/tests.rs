@@ -303,26 +303,56 @@ fn raw_integer_representation_conversions_require_arbitrary_precision_authority(
 #[test]
 fn representation_conversions_reject_malformed_operands_even_without_results() {
     for kind in ["box", "box_from_raw_int", "unbox", "unbox_to_raw_int"] {
-        for args in [
-            None,
-            Some(vec![]),
-            Some(vec!["source".into(), "extra".into()]),
+        for (args, var) in [
+            (None, None),
+            (Some(vec![]), None),
+            (Some(vec!["source".into(), "extra".into()]), None),
+            (Some(vec!["source".into()]), Some("extra")),
+            (Some(vec!["source".into()]), Some("source")),
+            (Some(vec!["source".into()]), Some("none")),
+            (Some(vec!["source".into()]), Some("")),
         ] {
-            for output in [None, Some("none"), Some("converted")] {
+            for output in [None, Some("none"), Some(""), Some("converted")] {
                 let mut backend = RustBackend::new();
-                backend.emit_op(&OpIR {
-                    kind: kind.to_string(),
-                    args: args.clone(),
-                    out: output.map(str::to_string),
-                    ..OpIR::default()
-                });
+                let error = backend
+                    .compile_checked(&SimpleIR {
+                        functions: vec![FunctionIR {
+                            return_abi: molt_ir::FunctionReturnAbi::Void,
+                            name: "representation_shape".into(),
+                            params: vec!["source".into(), "extra".into()],
+                            ops: vec![
+                                OpIR {
+                                    kind: kind.to_string(),
+                                    args: args.clone(),
+                                    var: var.map(str::to_owned),
+                                    out: output.map(str::to_string),
+                                    ..OpIR::default()
+                                },
+                                OpIR {
+                                    kind: "ret_void".into(),
+                                    ..OpIR::default()
+                                },
+                            ],
+                            ..FunctionIR::default()
+                        }],
+                        profile: None,
+                    })
+                    .expect_err("malformed conversion must fail shared admission before emission");
                 assert!(backend.output.is_empty(), "{kind} {args:?} {output:?}");
-                assert_eq!(
-                    backend.unsupported_ops.len(),
-                    1,
+                assert!(
+                    backend.unsupported_ops.is_empty(),
                     "{kind} {args:?} {output:?}"
                 );
-                assert!(backend.unsupported_ops[0].contains("requires exactly one operand"));
+                let violation = if var.is_some() {
+                    "forbids `var`"
+                } else {
+                    "requires `args` length 1"
+                };
+                assert!(error.contains(&format!("`{kind}` {violation}")), "{error}");
+                assert!(
+                    error.contains("function `representation_shape` op#0"),
+                    "{error}"
+                );
             }
         }
     }

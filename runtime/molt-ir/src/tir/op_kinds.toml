@@ -524,6 +524,9 @@ simpleir_out_metadata_kinds = [
 simpleir_var_definition_kinds = ["delete_var", "store_fast", "store_var"]
 simpleir_var_result_kinds = ["checked_add", "checked_mul", "iter_next_unboxed"]
 simpleir_var_metadata_when_args_kinds = ["copy_var", "load_var"]
+# Canonical shaped kinds whose args are their sole input carrier. Aliases
+# inherit this field role; return-family roles remain owned by return_shape.
+simpleir_var_forbidden_kinds = ["box", "unbox"]
 simpleir_format_protocol_semantics_kinds = ["format_string", "string_format"]
 simpleir_iterable_protocol_semantics_kinds = [
     "string_join", "unpack_sequence", "list_fill_new",
@@ -1927,6 +1930,9 @@ classifier_no_heap_move = [
 # Operation shapes shared by wire admission, isolated-function lowering and
 # preserved-Copy TIR verification. Backends consume admitted operands/IDs;
 # none owns a second arity or missing-ID policy.
+# Mapped fixed-arity shapes must agree with their opcode's operand_arity.
+# Aliases inherit each canonical shape through the existing kind mapping;
+# result cardinality and discarded-result effects remain opcode-owned.
 [[simpleir_op_shape]]
 kind = "code_new"
 family = "code_metadata"
@@ -1955,6 +1961,18 @@ value_rule = "nonnegative"
 kind = "bytearray_fill_range"
 family = "range_fill"
 operands = 4
+value_rule = "unconstrained"
+
+[[simpleir_op_shape]]
+kind = "box"
+family = "representation_conversion"
+operands = 1
+value_rule = "unconstrained"
+
+[[simpleir_op_shape]]
+kind = "unbox"
+family = "representation_conversion"
+operands = 1
 value_rule = "unconstrained"
 
 [[simpleir_trailing_arg_result]]
