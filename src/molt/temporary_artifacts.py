@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import re
+import reprlib
 import stat
 import tempfile
 import time
@@ -127,30 +128,65 @@ def _locked(generation: Path) -> Iterator[None]:
         _release_file_lock(handle)
 
 
+def _owner_mismatch(
+    generation: Path, field: str, expected: object, observed: object
+) -> ValueError:
+    formatter = reprlib.Repr()
+    formatter.maxstring = 512
+
+    def display(value: str) -> str:
+        # Diagnostics must not echo custody tokens or unbounded child metadata.
+        return formatter.repr(re.sub(r"[0-9a-f]{32}", "<token>", value, flags=re.I))
+
+    details = []
+    for label, value in (("expected", expected), ("observed", observed)):
+        detail = f"{label}_type={type(value).__name__}"
+        if isinstance(value, str):
+            if field == "token":
+                detail += f" {label}=<redacted,length={len(value)}>"
+            else:
+                detail += f" {label}={display(value)}"
+        details.append(detail)
+    return ValueError(
+        f"scratch owner mismatch: {display(str(generation))}; field={field}; "
+        + "; ".join(details)
+    )
+
+
 def _owner(generation: Path) -> dict[str, object]:
     value = read_exact(
         resolve_owned_path(generation / "owner.json"),
         max_bytes=_MAX_RECEIPT_BYTES,
         label="scratch owner",
     )
-    if (
-        not isinstance(value, dict)
-        or value.get("schema") != SCHEMA
-        or value.get("token") != generation.name
-        or value.get("generation") != str(generation)
-        or value.get("state")
-        not in {
-            "leased",
-            "indeterminate",
-            "retiring",
-            "retained",
-            "reclaiming",
-            "reclaimed",
-            "blocked",
-        }
-        or not isinstance(value.get("target_identity"), dict)
+    if not isinstance(value, dict):
+        raise _owner_mismatch(generation, "owner", {}, value)
+    for field, expected in (
+        ("schema", SCHEMA),
+        ("token", generation.name),
+        ("generation", str(generation)),
     ):
-        raise ValueError(f"scratch owner mismatch: {generation}")
+        observed = value.get(field)
+        if observed != expected:
+            raise _owner_mismatch(generation, field, expected, observed)
+    states = {
+        "leased",
+        "indeterminate",
+        "retiring",
+        "retained",
+        "reclaiming",
+        "reclaimed",
+        "blocked",
+    }
+    state = value.get("state")
+    if not isinstance(state, str) or state not in states:
+        raise _owner_mismatch(
+            generation, "state", "one of " + ", ".join(sorted(states)), state
+        )
+    if not isinstance(value.get("target_identity"), dict):
+        raise _owner_mismatch(
+            generation, "target_identity", {}, value.get("target_identity")
+        )
     return value
 
 
