@@ -10,7 +10,10 @@ owns their output root and retention; tests do not create a second temp-root or
 destructor cleanup policy. Exclusive owner directories have compact identities,
 with descriptive labels retained as metadata so linker intermediate filenames
 do not inherit unbounded path lengths. Commands use lossless owner-relative
-arguments through the same helper on Windows, macOS and Linux.
+arguments through the same helper on Windows, macOS and Linux. Tests that
+re-execute their own image use `runtime/test_support/captured_runtime_children.rs`,
+which retains the child's complete streams under the same custody and publishes
+a source/image-bound descendant record (see `docs/agent/PROOF_QUEUE.md`).
 
 ## Test quality and agent-written tests
 

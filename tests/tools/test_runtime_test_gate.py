@@ -5,53 +5,48 @@ from pathlib import Path
 
 import pytest
 
+from tests import runtime_descendant_test_support as support
 from tools import run_runtime_test_gate as gate
 
+# The actual runtime remainder contains the trap and cold-denial owners (and
+# the trap's child test); the process-exit owner is a mandatory isolated case.
+REMAINDER = ["ordinary::parallel_case", support.TRAP, support.TRAP_CHILD, support.COLD]
 
-def fixture_ledger():
-    binary = Path("runtime-test.exe").resolve()
-    inventory = [*gate.ISOLATED, *gate.PROBES, "ordinary::parallel_case"]
+
+def fixture_ledger(tmp_path):
+    binary = support.make_image(tmp_path)
+    inventory = [*gate.ISOLATED, *gate.PROBES, *REMAINDER]
     selections = gate.selections(inventory, 4)
-    source = {"schema": "molt.git-source.v1", "head": "tested"}
-    identity = (123, "a" * 64)
+    data = binary.read_bytes()
+    identity = (len(data), support.sha256(data))
     children = {}
     for index, (name, (args, tests)) in enumerate(selections.items()):
+        owners = [test for test in tests if test in support.MODES]
         children[name] = [
-            {
-                "schema": "molt.cargo-test-binary.v2",
-                "source_identity": source,
-                "run_id": "run",
-                "invocation_id": str(index),
-                "executable_resolved": str(binary),
-                "executable_size": 123,
-                "executable_sha256": "a" * 64,
-                "inherited_args": args,
-                "status": "success",
-                "returncode": 0,
-                "failure_identities": [],
-                "test_results": [
-                    {"identity": test, "status": "pass"} for test in tests
-                ],
-                "result_accounting": {
-                    "schema": "molt.libtest-accounting.v1",
-                    "complete": True,
-                    "observed_results": len(tests),
-                    "declared_results": len(tests),
-                    "issues": [],
-                },
-                "executions": [{"argv": [str(binary), *args]}],
-            }
+            support.binary_receipt(
+                tmp_path / f"child-{index}",
+                binary,
+                sorted(tests),
+                support.family_records(binary, owners),
+                args=args,
+                invocation=str(index),
+            )
         ]
     return (
         children,
         selections,
-        dict(source=source, run_id="run", binary=binary, identity=identity),
+        dict(source=support.SOURCE, run_id="run", binary=binary, identity=identity),
     )
 
 
-def test_complete_parallel_and_fresh_process_ledger_passes():
-    children, selections, binding = fixture_ledger()
-    gate.validate_children(children, selections, **binding)
+def test_complete_parallel_and_fresh_process_ledger_passes(tmp_path):
+    children, selections, binding = fixture_ledger(tmp_path)
+    verified = gate.validate_children(children, selections, **binding)
+    assert {name: value and value["children"] for name, value in verified.items()} == {
+        "parallel": 2,
+        **{name: None for name in gate.ISOLATED},
+        support.EXIT: 2,
+    }
     assert len(children) == 8
     assert "--test-threads=4" in selections["parallel"][0]
     for name in gate.ISOLATED:
@@ -85,8 +80,8 @@ def test_complete_parallel_and_fresh_process_ledger_passes():
         "run",
     ],
 )
-def test_aggregate_fails_closed_for_child_evidence_mutations(mutation):
-    children, selections, binding = fixture_ledger()
+def test_aggregate_fails_closed_for_child_evidence_mutations(mutation, tmp_path):
+    children, selections, binding = fixture_ledger(tmp_path)
     name = gate.ISOLATED[0]
     child = children[name][0]
     if mutation == "missing":
@@ -123,6 +118,51 @@ def test_aggregate_fails_closed_for_child_evidence_mutations(mutation):
     elif mutation == "run":
         child["run_id"] = "old"
     with pytest.raises(RuntimeError):
+        gate.validate_children(children, selections, **binding)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("exit_lease_child_missing", "missing mandatory"),
+        ("parallel_children_removed", "missing mandatory"),
+        ("descendant_stream_changed", "stream changed"),
+        ("saved_rows_hide_owner", "disagree with the saved ledger"),
+        ("parent_capture_changed", "capture changed"),
+        ("saved_summary_forged", "missing mandatory"),
+    ],
+)
+def test_aggregate_rederives_descendants_from_raw_child_evidence(
+    mutation, message, tmp_path
+):
+    children, selections, binding = fixture_ledger(tmp_path)
+    exit_child = children[support.EXIT][0]
+    parallel = children["parallel"][0]
+    if mutation == "exit_lease_child_missing":
+        stderr = Path(exit_child["executions"][0]["stderr_evidence"]).read_text()
+        kept = [line for line in stderr.splitlines() if '"mode": "lease"' not in line]
+        support.republish(exit_child, "stderr", "\n".join(kept) + "\n")
+    elif mutation == "parallel_children_removed":
+        support.republish(parallel, "stderr", "")
+    elif mutation == "descendant_stream_changed":
+        artifacts = binding["binary"].parent / "molt-test-artifacts"
+        next(artifacts.glob("*/stdout.log")).write_text("mutated")
+    elif mutation == "saved_rows_hide_owner":
+        parallel["test_results"] = [
+            row for row in parallel["test_results"] if row["identity"] != support.COLD
+        ]
+        accounting = parallel["result_accounting"]
+        accounting["observed_results"] = accounting["declared_results"] = len(
+            parallel["test_results"]
+        )
+        selections["parallel"][1].discard(support.COLD)
+    elif mutation == "parent_capture_changed":
+        path = Path(parallel["executions"][0]["stdout_evidence"])
+        path.write_bytes(path.read_bytes() + b"\n")
+    elif mutation == "saved_summary_forged":
+        support.republish(exit_child, "stderr", "")
+        exit_child["runtime_descendants"] = {"status": "verified", "children": 2}
+    with pytest.raises(RuntimeError, match=message):
         gate.validate_children(children, selections, **binding)
 
 

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests import runtime_descendant_test_support as descendants
 from tests.process_guard_common import run_guarded_test_process
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -2095,6 +2096,197 @@ def test_binary_runner_carries_exact_source_identity_into_receipt(
     [receipt_path] = list(tmp_path.glob("*.json"))
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["source_identity"] == source_identity
+
+
+def _run_descendant_owner_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stdout: str,
+    stderr: str,
+    returncode: int,
+):
+    """Drive the real runner main/execute path; only the guarded spawn is faked."""
+    binary_runner = _load_tool(
+        "cargo_test_binary_runner_descendants", "cargo_test_binary_runner.py"
+    )
+    seen: list[dict] = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(dict(kwargs["env"]))
+        Path(kwargs["stdout_capture_path"]).write_text(stdout, encoding="utf-8")
+        Path(kwargs["stderr_capture_path"]).write_text(stderr, encoding="utf-8")
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(binary_runner, "_COMMANDS", SimpleNamespace(run=fake_run))
+    monkeypatch.setenv("MOLT_TEST_SOURCE_IDENTITY_JSON", '{"head": "inherited"}')
+    return binary_runner, tmp_path / "receipts", seen
+
+
+@pytest.fixture
+def descendant_owner(tmp_path: Path):
+    image = descendants.make_image(tmp_path)
+    records = descendants.family_records(image, [descendants.TRAP, descendants.COLD])
+    tests = [
+        "ordinary::parallel_case",
+        descendants.TRAP_CHILD,
+        descendants.TRAP,
+        descendants.COLD,
+    ]
+    return image, records, tests
+
+
+def _invoke_runner(binary_runner, receipts: Path, image: Path) -> tuple[int, dict]:
+    returncode = binary_runner.main(
+        [
+            "--timeout-seconds",
+            "30",
+            "--receipt-dir",
+            str(receipts),
+            "--run-id",
+            "run",
+            "--source-identity-json",
+            json.dumps(descendants.SOURCE),
+            "--",
+            str(image),
+            "--test-threads=4",
+            "--nocapture",
+        ]
+    )
+    [receipt_path] = list(receipts.glob("*.json"))
+    return returncode, json.loads(receipt_path.read_text(encoding="utf-8"))
+
+
+def test_binary_runner_binds_runtime_descendants_from_real_captures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, descendant_owner
+) -> None:
+    image, records, tests = descendant_owner
+    binary_runner, receipts, seen = _run_descendant_owner_binary(
+        tmp_path,
+        monkeypatch,
+        stdout=descendants.transcript(tests),
+        stderr=descendants.records_text(records),
+        returncode=0,
+    )
+    returncode, receipt = _invoke_runner(binary_runner, receipts, image)
+    assert returncode == 0
+    assert receipt["status"] == "success"
+    assert receipt["receipt_custody_root"] == str(receipts.resolve())
+    assert receipt["runtime_descendants"] == {
+        "status": "verified",
+        "children": 2,
+        "coordinate_authority": "unavailable",
+    }
+    # Children echo only the admitted identity, never an inherited one.
+    assert [json.loads(env["MOLT_TEST_SOURCE_IDENTITY_JSON"]) for env in seen] == [
+        descendants.SOURCE
+    ]
+    truth = _load_tool("run_cargo_test_truth_descendants", "run_cargo_test_truth.py")
+    [loaded] = truth.load_binary_receipts(
+        receipts, expected_run_id="run", expected_source_identity=descendants.SOURCE
+    )
+    assert loaded["runtime_descendants"]["children"] == 2
+
+
+def test_binary_runner_demotes_success_whose_children_left_no_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, descendant_owner
+) -> None:
+    image, _records, tests = descendant_owner
+    # libtest capture swallowing print-macro records looks exactly like this.
+    binary_runner, receipts, _ = _run_descendant_owner_binary(
+        tmp_path,
+        monkeypatch,
+        stdout=descendants.transcript(tests),
+        stderr="",
+        returncode=0,
+    )
+    returncode, receipt = _invoke_runner(binary_runner, receipts, image)
+    assert returncode == 2
+    assert receipt["status"] == "failed"
+    assert receipt["diagnosis"]["kind"] == "descendant-evidence-error"
+    assert "missing mandatory" in receipt["diagnosis"]["error"]
+    assert receipt["runtime_descendants"]["status"] == "failed"
+
+
+def test_binary_runner_never_forwards_an_inherited_source_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, descendant_owner
+) -> None:
+    image, records, tests = descendant_owner
+    binary_runner, receipts, seen = _run_descendant_owner_binary(
+        tmp_path,
+        monkeypatch,
+        stdout=descendants.transcript(tests),
+        stderr=descendants.records_text(records),
+        returncode=0,
+    )
+    returncode = binary_runner.main(
+        ["--timeout-seconds", "30", "--receipt-dir", str(receipts), "--", str(image)]
+    )
+    assert ["MOLT_TEST_SOURCE_IDENTITY_JSON" in env for env in seen] == [False]
+    [receipt_path] = list(receipts.glob("*.json"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    # Owners passed without an admitted source; their children cannot promote.
+    assert returncode == 2
+    assert "not admitted" in receipt["diagnosis"]["error"]
+
+
+def test_descendant_failure_never_overwrites_unrelated_failure_attribution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, descendant_owner
+) -> None:
+    image, _records, tests = descendant_owner
+    statuses = {"ordinary::parallel_case": "fail"}
+    binary_runner, receipts, _ = _run_descendant_owner_binary(
+        tmp_path,
+        monkeypatch,
+        stdout=descendants.transcript(tests, statuses=statuses),
+        stderr="",
+        returncode=101,
+    )
+    returncode, receipt = _invoke_runner(binary_runner, receipts, image)
+    assert returncode == 1
+    assert receipt["diagnosis"] is None
+    assert receipt["failure_identities"] == ["ordinary::parallel_case"]
+    assert receipt["runtime_descendants"]["status"] == "failed"
+    truth = _load_tool("run_cargo_test_truth_attribution", "run_cargo_test_truth.py")
+    [loaded] = truth.load_binary_receipts(receipts, expected_run_id="run")
+    assert loaded["failure_identities"] == ["ordinary::parallel_case"]
+    metadata = {
+        "workspace": "",
+        "package": "molt-runtime@0.1.0",
+        "target_name": "molt_runtime",
+        "target_kind": "lib",
+        "executable": str(image.resolve()),
+    }
+    rows, _problems = truth.receipt_test_rows(
+        [loaded], {truth._executable_key(str(image)): metadata}, {"platform": "test"}
+    )
+    statuses = {row["identity"]: row["status"] for row in rows}
+    failed = "molt-runtime@0.1.0::lib:molt_runtime::ordinary::parallel_case"
+    assert statuses[failed] == "fail"
+
+
+def test_truth_loader_rederives_descendants_instead_of_saved_summaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, descendant_owner
+) -> None:
+    image, records, tests = descendant_owner
+    binary_runner, receipts, _ = _run_descendant_owner_binary(
+        tmp_path,
+        monkeypatch,
+        stdout=descendants.transcript(tests),
+        stderr=descendants.records_text(records),
+        returncode=0,
+    )
+    assert _invoke_runner(binary_runner, receipts, image)[0] == 0
+    [path] = list(receipts.glob("*.json"))
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    receipt["runtime_descendants"] = {"status": "verified", "children": 99}
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    truth = _load_tool("run_cargo_test_truth_rederive", "run_cargo_test_truth.py")
+    [loaded] = truth.load_binary_receipts(receipts, expected_run_id="run")
+    assert loaded["runtime_descendants"]["children"] == 2
+    Path(records[0]["stderr"]["path"]).write_text("changed after publication")
+    with pytest.raises(RuntimeError, match="changed after receipt publication"):
+        truth.load_binary_receipts(receipts, expected_run_id="run")
 
 
 @pytest.mark.parametrize("threads", [("--test-threads=1",), ("--test-threads", "1")])

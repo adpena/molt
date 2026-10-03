@@ -88,7 +88,10 @@
     "tools/safe_run.py",
     "tests/tools/test_cargo_test_binary_discovery.py",
     "tests/tools/test_runtime_test_gate.py",
+    "tests/tools/test_runtime_descendant_receipts.py",
+    "tests/runtime_descendant_test_support.py",
     "tools/run_runtime_test_gate.py",
+    "tools/runtime_descendant_receipts.py",
     ".gitattributes",
     ".github/actions/setup-lean/action.yml",
     ".github/actions/setup-llvm/action.yml",
@@ -279,7 +282,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "8b88852cab5d36f3758b354cf3d7e583c2adf9b61675b2e73445fce5519b604f",
+  "authority_sha256": "65fc421f329db1aeabfb19b6b21896b7e59949ffaef1187cc52d1f54e7716dd5",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -498,7 +501,10 @@
         "tests/tools/test_cargo_test_truth.py",
         "tools/run_runtime_test_gate.py",
         "tests/tools/test_runtime_test_gate.py",
-        "tests/tools/test_cargo_test_binary_discovery.py"
+        "tests/tools/test_cargo_test_binary_discovery.py",
+        "tools/runtime_descendant_receipts.py",
+        "tests/tools/test_runtime_descendant_receipts.py",
+        "tests/runtime_descendant_test_support.py"
       ],
       "job": "rust-build-unit-smoke",
       "name": "rust",
@@ -2497,7 +2503,9 @@
         "tests/tools/test_phase_exit_manifest.py",
         "tests/tools/test_legacy_inventory.py",
         "tests/tools/test_public_contract_gate.py",
-        "tests/tools/test_gen_luau_support_matrix.py"
+        "tests/tools/test_gen_luau_support_matrix.py",
+        "tests/tools/test_runtime_descendant_receipts.py",
+        "tests/tools/test_runtime_test_gate.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
