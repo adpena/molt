@@ -521,6 +521,23 @@ An attributed known failure cannot mask a partial cohort, timeout, abnormal
 termination, or unexecuted isolated test. Preserve those identities as diagnostics;
 only complete execution accounting can enter the known-red acceptance check.
 
+Runtime tests that re-execute their own Cargo test image (process exit with and
+without an execution lease, the intentional pending-exception trap, cold scratch
+allocation denial, and the three call-binding trace children) run those children
+through `runtime/test_support/captured_runtime_children.rs`. It retains each
+child's complete streams in Cargo test-image custody and writes one
+source/image-bound record straight to the owning test's stderr, so libtest output
+capture cannot drop it and stdout accounting never interleaves with it.
+`tools/runtime_descendant_receipts.py` is the one consumer authority for the
+binary runner, the Cargo truth loader, and the runtime gate: each re-hashes the
+parent's full captures, re-derives its libtest rows, requires one record per
+passing owner and mode, and re-binds the image, exact argv, typed termination
+(POSIX `SIGABRT` and the Windows fast-fail status stay distinct), and retained
+streams. Saved summaries are never evidence. A descendant failure demotes only a
+binary that would otherwise succeed; an existing failure keeps its attribution.
+These receipts carry no CPython target-minor coordinate; a requested minor fails
+closed.
+
 Public ownership/memory pass contracts live in the `ownership_memory_contracts`
 Cargo integration target and link the ordinary `molt-passes` library; private
 analysis/kernel tests remain in libtest. The core batch selects both targets,
