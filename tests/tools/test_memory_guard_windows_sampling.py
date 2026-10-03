@@ -1679,8 +1679,12 @@ def test_terminate_watched_processes_windows_refuses_current_guard_shell_child(
     )
 
 
+@pytest.mark.parametrize(
+    "root_reaped", [None, False, True], ids=["default", "unreaped", "reaped"]
+)
 def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
     monkeypatch,
+    root_reaped: bool | None,
 ) -> None:
     module = process_custody
     tracker = module.ProcessTreeTracker(root_pid=100)
@@ -1711,6 +1715,7 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
         reason,
         sampler,
         root_owned,
+        root_reaped,
     ):
         terminated["root_pid"] = root_pid
         terminated["samples"] = samples
@@ -1721,6 +1726,7 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
         terminated["reason"] = reason
         terminated["sampler"] = sampler
         terminated["root_owned"] = root_owned
+        terminated["root_reaped"] = root_reaped
         return module.GuardTerminationReport(
             reason=reason,
             started_at="2026-06-17T00:00:00Z",
@@ -1755,6 +1761,7 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
         tracker=tracker,
         sampler=lambda: live,
         grace=0.5,
+        **({} if root_reaped is None else {"root_reaped": root_reaped}),
     )
 
     assert orphans.process_groups == (101,)
@@ -1770,6 +1777,7 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
     assert terminated["reason"] == "tracked_orphan_cleanup"
     assert terminated["sampler"] is not None
     assert terminated["root_owned"] is True
+    assert terminated["root_reaped"] is (root_reaped is True)
 
 
 @pytest.mark.parametrize("transfer", [0, 3, 4, 5])
