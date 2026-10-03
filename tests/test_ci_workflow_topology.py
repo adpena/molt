@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from fnmatch import fnmatchcase
+import glob
+import json
 import re
 import tomllib
 
@@ -363,6 +365,176 @@ def test_ci_command_diagnostics_survive_missing_final_receipts(family: str) -> N
             "${{ steps.build-control.outputs.profile_log }}",
             "${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}",
         ]
+
+
+def _diagnostic_path_expression(line: str, values: dict[str, str]) -> str:
+    """Model only the upload's declared GitHub path-expression subset."""
+    conditional = re.fullmatch(
+        r"\$\{\{ ([\w.-]+) != '' && format\('([^']+)', \1\) \|\| '' \}\}",
+        line,
+    )
+    if conditional:
+        value = values[conditional[1]]
+        return conditional[2].format(value) if value else ""
+    return re.sub(r"\$\{\{ ([\w.-]+) \}\}", lambda match: values[match[1]], line)
+
+
+@pytest.mark.parametrize("os_name", ["linux", "macos", "windows"])
+@pytest.mark.parametrize(
+    "state",
+    [
+        "failed-with-receipt",
+        "failed-without-receipt",
+        "setup-no-output",
+        "setup-no-root",
+    ],
+)
+def test_platform_diagnostics_retain_inner_custody_without_final_receipt(
+    tmp_path: Path, os_name: str, state: str
+) -> None:
+    from molt.memory_guard_paths import pytest_guard_summary_dir
+    from tools.build_control_path import build_control_output
+    from tools.harness_memory_guard import command_profile_log_path
+
+    plan = tomllib.loads(_read("tools/proof_plan.toml"))
+    cells = [
+        cell
+        for cell in plan["matrix_cell"]
+        if cell["backend"] == "proof-queue" and cell["os"] == os_name
+    ]
+    assert len(cells) == 1
+    cell = cells[0]["id"]
+    jobs = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"]
+    job = jobs["platform-portability"]
+    steps = job["steps"]
+    upload = next(
+        step
+        for step in steps
+        if step.get("with", {}).get("name")
+        == "proof-diagnostics-platform-portability-${{ matrix.cell }}"
+    )
+    assert upload["if"] == "always()", (
+        "failed commands or missing receipts cannot gate diagnostics"
+    )
+    assert upload["uses"].startswith("actions/upload-artifact@")
+    assert upload["with"]["include-hidden-files"] is True
+    assert upload["with"]["if-no-files-found"] == "warn"
+    resolver = next(step for step in steps if step.get("id") == "build-control")
+    assert resolver["shell"] == "bash"
+    assert resolver["run"].strip() == (
+        'uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"'
+    )
+    executor = next(
+        step
+        for step in steps
+        if "--run-family platform_portability" in step.get("run", "")
+    )
+    setup = next(
+        step for step in steps if step.get("name") == "Setup portability toolchains"
+    )
+    assert (
+        steps.index(setup)
+        < steps.index(resolver)
+        < steps.index(executor)
+        < steps.index(upload)
+    )
+    assert "continue-on-error" not in executor
+    receipt_upload = next(
+        step
+        for step in steps
+        if step.get("name") == "Upload platform portability receipt"
+    )
+    assert receipt_upload["if"] == (
+        "always() && hashFiles(format('proof-receipts/platform-portability-{0}.json', matrix.cell)) != ''"
+    )
+    assert receipt_upload["with"]["if-no-files-found"] == "error"
+    strict_download = next(
+        step
+        for step in jobs["proof-plan-verdict"]["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
+
+    custody = tmp_path / "ephemeral-custody"
+    workspace = tmp_path / "checkout"
+    # Keep the producer's project under host-issued scratch. A hosted Windows
+    # checkout on D: needs its full custody attestation, absent from this fixture.
+    workspace.mkdir()
+    environment = {"MOLT_EXT_ROOT": str(custody), "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1"}
+    profile = command_profile_log_path(environment, repo_root=workspace)
+    pytest_dir = pytest_guard_summary_dir(workspace, environment)
+    outputs = dict(
+        line.split("=", 1)
+        for line in build_control_output(environment, repo_root=workspace).splitlines()
+    )
+    assert outputs["profile_log"] == str(profile)
+    values = {
+        "matrix.cell": cell,
+        "steps.build-control.outputs.profile_log": outputs["profile_log"]
+        if state.startswith("failed-")
+        else "",
+        "env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT": ""
+        if state == "setup-no-root"
+        else str(custody),
+    }
+    name = _diagnostic_path_expression(upload["with"]["name"], values)
+    assert name == f"proof-diagnostics-platform-portability-{cell}"
+    assert not fnmatchcase(name, strict_download["with"]["pattern"])
+    paths = upload["with"]["path"].splitlines()
+    assert paths == [
+        "proof-receipts/platform-portability-${{ matrix.cell }}.json",
+        "${{ steps.build-control.outputs.profile_log }}",
+        "${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}",
+        "${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}",
+    ]
+    rendered = [_diagnostic_path_expression(line, values) for line in paths]
+    if not values["steps.build-control.outputs.profile_log"]:
+        assert rendered[1:3] == ["", ""]
+    if not values["env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT"]:
+        assert rendered[3] == ""
+
+    expected: set[Path] = set()
+    if state.startswith("failed-"):
+        inner = {
+            "prefix": "MOLT_PERF_CALIBRATION",
+            "returncode": 125,
+            "temporary_artifacts": {"closure": {"closed": False}},
+            "termination_reports": [{"reason": "tracked_orphan_cleanup"}],
+        }
+        for retained in (profile, profile.with_name(profile.name + ".1")):
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            retained.write_text(json.dumps(inner) + "\n", encoding="utf-8")
+            expected.add(retained)
+        for relative in (
+            "pytest-1_outer-guard.json",
+            "test-custody-2.json",
+            ".workers/gw0_current-test.json",
+        ):
+            retained = pytest_dir / relative
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            retained.write_text("{}", encoding="utf-8")
+            expected.add(retained)
+        (pytest_dir / "unrelated.txt").write_text("not guard JSON", encoding="utf-8")
+    if state == "failed-with-receipt":
+        receipt = workspace / f"proof-receipts/platform-portability-{cell}.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text('{"status":"failed"}', encoding="utf-8")
+        expected.add(receipt)
+    retained_paths: set[Path] = set()
+    for path in filter(None, rendered):
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = workspace / candidate
+        assert candidate.is_relative_to(custody) or candidate.is_relative_to(
+            workspace / "proof-receipts"
+        )
+        retained_paths.update(
+            Path(found)
+            for found in glob.glob(str(candidate), recursive=True, include_hidden=True)
+        )
+    assert retained_paths == expected
+    if state.startswith("failed-"):
+        assert json.loads(profile.read_text(encoding="utf-8")) == inner
+        assert profile.with_name(profile.name + ".1") in retained_paths
 
 
 def test_ci_heavy_jobs_are_path_classified() -> None:
