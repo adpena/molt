@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from fnmatch import fnmatchcase
 import re
 import tomllib
 
@@ -313,6 +314,55 @@ def test_ci_control_evidence_uses_shared_path_command(workflow, job, upload_name
             in paths
         )
     assert steps.index(resolver) < steps.index(upload)
+
+
+@pytest.mark.parametrize("family", ["rust", "llvm"])
+def test_ci_command_diagnostics_survive_missing_final_receipts(family: str) -> None:
+    jobs = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"]
+    job = jobs["rust-build-unit-smoke" if family == "rust" else "llvm-backend"]
+    steps = job["steps"]
+    diagnostics = [
+        step
+        for step in steps
+        if step.get("with", {}).get("name") == f"proof-diagnostics-{family}"
+    ]
+    assert len(diagnostics) == 1
+    upload = diagnostics[0]
+    assert upload["uses"].startswith("actions/upload-artifact@")
+    assert upload["with"]["include-hidden-files"] is True
+    assert upload["with"]["if-no-files-found"] == "warn"
+    # A killed phase may leave only its manifest and hidden partial log.
+    # Final receipt publication must not gate collection of those bytes.
+    assert upload["if"] == "always()"
+    executor = next(
+        step
+        for step in steps
+        if f"--run-family {family} --receipt" in step.get("run", "")
+    )
+    assert steps.index(executor) < steps.index(upload)
+    assert "continue-on-error" not in executor
+    strict_download = next(
+        step
+        for step in jobs["proof-plan-verdict"]["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
+    assert not fnmatchcase(upload["with"]["name"], strict_download["with"]["pattern"])
+    paths = upload["with"]["path"].splitlines()
+    if family == "rust":
+        assert paths == ["proof-receipts/evidence/cargo-test-truth-runs/"]
+    else:
+        assert job["env"]["MOLT_DEBUG_ARTIFACT_DIR"] == (
+            "${{ github.workspace }}/proof-receipts/evidence/llvm-backend-debug"
+        )
+        assert paths == [
+            "proof-receipts/llvm.json",
+            "proof-receipts/evidence/llvm-differential-truth.json",
+            "proof-receipts/evidence/llvm-backend-debug/native-batch-failures/",
+            "${{ steps.build-control.outputs.root != '' && format('{0}/backend_daemon/*.log', steps.build-control.outputs.root) || '' }}",
+            "${{ steps.build-control.outputs.root != '' && format('{0}/backend_daemon/*.log.old', steps.build-control.outputs.root) || '' }}",
+            "${{ steps.build-control.outputs.profile_log }}",
+            "${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}",
+        ]
 
 
 def test_ci_heavy_jobs_are_path_classified() -> None:

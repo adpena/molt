@@ -2,19 +2,29 @@ from pathlib import Path
 import pytest
 
 from molt.build_state_layout import build_state_root
+from molt.memory_guard_paths import harness_guard_artifact_dir
+from molt.dx import development_artifact_env
 from molt.backend_daemon_custody import backend_daemon_build_state_root_from_env
 from molt.cli.runtime_paths import _build_state_root_cached
 from tools.build_control_path import build_control_output
 from tools.harness_memory_guard import canonical_harness_env
 
 
+@pytest.mark.parametrize("pinned_session", [False, True])
+@pytest.mark.parametrize("profile", ["absolute", "relative", "default"])
 @pytest.mark.parametrize("target", ["absolute", "relative", "default"])
 @pytest.mark.parametrize("explicit_state", [False, True])
 def test_ci_build_control_output_uses_admitted_consumer_root(
-    tmp_path: Path, target: str, explicit_state: bool
+    tmp_path: Path,
+    target: str,
+    explicit_state: bool,
+    profile: str,
+    pinned_session: bool,
 ):
     repo = Path(__file__).resolve().parents[1]
     env = {"MOLT_EXT_ROOT": str(tmp_path / "canonical")}
+    if pinned_session:
+        env["MOLT_SESSION_ID"] = "retained-ci-diagnostics"
     if target != "default":
         env["CARGO_TARGET_DIR"] = (
             str(tmp_path / "payload")
@@ -23,9 +33,39 @@ def test_ci_build_control_output_uses_admitted_consumer_root(
         )
     if explicit_state:
         env["MOLT_BUILD_STATE_DIR"] = str(tmp_path / "canonical" / "operator-state")
+    if profile != "default":
+        env["MOLT_GUARD_PROFILE_LOG"] = (
+            str(tmp_path / "selected-profile.jsonl")
+            if profile == "absolute"
+            else "diagnostics/selected-profile.jsonl"
+        )
     admitted = canonical_harness_env(env, repo_root=repo)
     expected = backend_daemon_build_state_root_from_env(admitted, project_root=repo)
-    assert build_control_output(env, repo_root=repo) == f"root={expected}"
+    expected_profile = (
+        tmp_path / "selected-profile.jsonl"
+        if profile == "absolute"
+        else repo / "diagnostics/selected-profile.jsonl"
+        if profile == "relative"
+        else harness_guard_artifact_dir(repo, admitted) / "commands.jsonl"
+    )
+    producer_env = development_artifact_env(
+        repo, admitted, session_prefix="test-loop-join-dev", create_dirs=False
+    )
+    producer_root = _build_state_root_cached(
+        str(repo),
+        producer_env.get("MOLT_BUILD_STATE_DIR"),
+        producer_env.get("CARGO_TARGET_DIR"),
+        str(Path.cwd()),
+        producer_env.get("MOLT_SESSION_ID"),
+        producer_env.get("MOLT_EXT_ROOT"),
+    )
+    assert producer_root == expected
+    outputs = dict(
+        line.split("=", 1)
+        for line in build_control_output(env, repo_root=repo).splitlines()
+    )
+    assert outputs == {"root": str(expected), "profile_log": str(expected_profile)}
+    assert not expected_profile.exists(), "profile projection must not create evidence"
     assert expected.is_relative_to(tmp_path / "canonical")
     assert not expected.exists(), "path projection must not create control directories"
 

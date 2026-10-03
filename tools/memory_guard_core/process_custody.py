@@ -1047,9 +1047,15 @@ def terminate_watched_processes(
     expected_identities: Mapping[int, ProcessIdentity] | None = None,
     grace: float = 0.25,
     root_owned: bool = False,
+    root_reaped: bool = False,
     reason: str = "terminate_watched_processes",
     sampler: Callable[[], Mapping[int, ProcessSample]] | None = None,
 ) -> GuardTerminationReport:
+    """Terminate only identity-bound live members of the guarded tree.
+
+    ``root_reaped`` must come from the caller's owned child handle, never from
+    a missing sampler row. It grants no descendant or process-group ownership.
+    """
     if sampler is None:
         sampler = sample_processes
     started_at = _utc_timestamp()
@@ -1293,15 +1299,27 @@ def terminate_watched_processes(
             for pid, sample in observed_samples.items()
             if pid in observed or pid == root_pid
         }
+    reaped_root_absent = root_owned and root_reaped and root_pid not in observed_samples
+    identity_candidates = set(observed) | {root_pid}
+    if reaped_root_absent:
+        identity_candidates.discard(root_pid)
+        actions.append(
+            _termination_action(
+                target_kind="process",
+                target_id=root_pid,
+                signum=None,
+                result="reaped",
+            )
+        )
     identity_owned_pids = {
         pid
-        for pid in set(observed) | {root_pid}
+        for pid in identity_candidates
         if (sample := observed_samples.get(pid)) is not None
         and (identity := observed_identities.get(pid)) is not None
         and process_identity_has_creation_marker(identity)
         and process_identity(sample) == identity
     }
-    for pid in sorted((set(observed) | {root_pid}) - identity_owned_pids):
+    for pid in sorted(identity_candidates - identity_owned_pids):
         actions.append(
             _termination_action(
                 target_kind="process",
@@ -1329,9 +1347,13 @@ def terminate_watched_processes(
     root_group_pgid = (
         _sample_pgid(root_sample)
         if root_sample is not None
+        else root_pid
+        if reaped_root_absent
         else _safe_getpgid(root_pid) or root_pid
     )
-    root_sid = _safe_getsid(root_pid)
+    # A reaped PID may already name a different process. Do not query that
+    # replacement for the owned child's original session/group metadata.
+    root_sid = None if reaped_root_absent else _safe_getsid(root_pid)
     observed = _filter_protected_watched_pids(observed_samples, set(observed))
     pids: set[int] = set()
     if root_pid in identity_owned_pids and _root_pid_is_kill_eligible(
@@ -1341,7 +1363,7 @@ def terminate_watched_processes(
         root_owned=root_owned,
     ):
         pids.add(root_pid)
-    else:
+    elif not reaped_root_absent or root_group_pgid in protected_pgids:
         actions.append(
             _termination_action(
                 target_kind="process_group",
@@ -1394,7 +1416,12 @@ def terminate_watched_processes(
                 target_kind="process_group",
                 target_id=root_group_pgid,
                 signum=None,
-                result="skipped_not_fully_owned",
+                result=(
+                    "missing"
+                    if reaped_root_absent
+                    and not _process_group_members(observed_samples, root_group_pgid)
+                    else "skipped_not_fully_owned"
+                ),
             )
         )
     individual_pids = set(escaped_pids)
@@ -1479,6 +1506,7 @@ def cleanup_tracked_orphans(
     remembered_samples: Mapping[int, ProcessSample] | None = None,
     remembered_watched: set[int] | None = None,
     grace: float = 0.25,
+    root_reaped: bool = False,
 ) -> GuardOrphanCleanupResult:
     """Terminate descendants still alive after the guarded root process exits."""
 
@@ -1519,6 +1547,7 @@ def cleanup_tracked_orphans(
         reason="tracked_orphan_cleanup",
         sampler=sampler,
         root_owned=True,
+        root_reaped=root_reaped,
     )
     if sampler_failure is not None:
         raise sampler_failure
