@@ -835,9 +835,12 @@ def _ensure_backend_binary(
         # A backend rebuild therefore invalidates by selecting new keys, not by
         # deleting shared immutable cache artifacts that concurrent sessions may
         # still be reading. Size/age retention belongs to `molt clean`.
+        # The lockfile is a source-identity input, not an output of admission.
+        # This command is reused by both wrapper and feature-mismatch retries.
         cmd = [
             "cargo",
             "build",
+            "--locked",
             "--package",
             "molt-backend",
             "--bin",

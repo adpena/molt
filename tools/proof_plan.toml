@@ -1830,8 +1830,9 @@ timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "build", "--locked", "--profile", "dev-fast", "-p", "molt-backend", "--no-default-features", "--features", "wasm-backend"]
-toolchains = ["rustc", "cargo", "ld.lld", "wasm-ld"]
+env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "wasm", "--json"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld"]
 
 [[command]]
 id = "wasm.build.host"
