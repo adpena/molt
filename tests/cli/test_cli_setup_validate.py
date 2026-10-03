@@ -1434,48 +1434,25 @@ def test_windows_msvc_env_reports_inactive_dev_shell(
     assert any("VsDevCmd.bat" in advice for advice in msvc["advice"])
 
 
-def test_windows_vsdevcmd_probe_uses_build_guard(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    vswhere = tmp_path / "vswhere.exe"
-    vswhere.write_text("", encoding="utf-8")
+def test_windows_vsdevcmd_advice_uses_shared_installation_selection(
+    tmp_path, monkeypatch
+):
+    from molt import platform_toolchain
+
     installation = tmp_path / "Visual Studio"
-    vsdevcmd = installation / "Common7" / "Tools" / "VsDevCmd.bat"
-    vsdevcmd.parent.mkdir(parents=True)
-    vsdevcmd.write_text("", encoding="utf-8")
-    captured: dict[str, object] = {}
+    script = installation / "Common7/Tools/VsDevCmd.bat"
+    script.parent.mkdir(parents=True)
+    script.write_text("")
+    selected = []
 
-    def fake_run(command: list[str], **kwargs: object):
-        captured["command"] = command
-        captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(command, 0, f"{installation}\n", "")
+    def discover(component, env):
+        selected.append(component)
+        return installation
 
-    monkeypatch.setattr(
-        SETUP_READINESS, "_windows_vswhere_path", lambda: vswhere, raising=True
-    )
-    monkeypatch.setattr(
-        SETUP_READINESS, "_run_completed_command", fake_run, raising=True
-    )
-
-    assert SETUP_READINESS._windows_vsdevcmd_path() == vsdevcmd
-    assert captured["command"] == [
-        str(vswhere),
-        "-latest",
-        "-products",
-        "*",
-        "-requires",
-        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-        "-property",
-        "installationPath",
-    ]
-    assert captured["kwargs"] == {
-        "env": None,
-        "cwd": None,
-        "capture_output": True,
-        "memory_guard_prefix": "MOLT_BUILD",
-        "timeout": 10,
-    }
+    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(platform_toolchain, "visual_studio_installation", discover)
+    assert SETUP_READINESS._windows_vsdevcmd_path() == script
+    assert selected == ["Microsoft.VisualStudio.Component.VC.Tools.x86.x64"]
 
 
 def test_update_toolchain_plan_uses_pinned_rust_and_wasi_target(
@@ -1570,7 +1547,10 @@ def test_cli_install_uses_memory_guard_for_venv_and_uv(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(deps, "_ensure_uv", lambda: "uv", raising=True)
-    monkeypatch.setattr(deps, "compiler_source_root", lambda: tmp_path, raising=True)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "user-project"\nversion = "0.0.0"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         deps, "_run_completed_command", fake_run_completed, raising=True
     )

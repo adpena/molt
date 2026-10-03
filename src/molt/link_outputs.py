@@ -38,8 +38,13 @@ def wasm_link_output_paths(
     split_output_dir: Path | None = None,
     inputs: Iterable[Path] = (),
     external_selection: bool = False,
+    optimize: bool = False,
 ) -> dict[str, Path]:
     outputs = {"linked": linked}
+    if optimize:
+        from molt.wasm_optimizer_identity import wasm_optimizer_attestation_path
+
+        outputs["optimizer"] = wasm_optimizer_attestation_path(linked)
     if external_selection:
         outputs["selection"] = link_selection_path(linked)
     if split_output_dir is not None:
@@ -48,5 +53,7 @@ def wasm_link_output_paths(
             runtime=split_output_dir / "molt_runtime.wasm",
             size_attestation=split_output_dir / "wasm_size_attestation.json",
         )
+        if optimize:
+            outputs["app_optimizer"] = wasm_optimizer_attestation_path(outputs["app"])
     validate_link_output_paths(outputs, inputs=inputs)
     return outputs

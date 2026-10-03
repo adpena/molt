@@ -44,6 +44,7 @@ else:
 
 bind_repository_imports(__file__)
 
+from tools import runtime_descendant_receipts  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.libtest_results import (  # noqa: E402
     ACCOUNTING_SCHEMA,
@@ -65,6 +66,7 @@ MAX_EXACT_TEST_TIMEOUT_SECONDS = 30.0
 MAX_DIAGNOSTIC_COMMAND_CHARS = 30_000
 RECEIPT_TAIL_BYTES = 16_384
 _ACTIVE_EVIDENCE_DIR: Path | None = None
+_ACTIVE_CHILD_ENVIRONMENT: dict[str, str] | None = None
 _FALLBACK_EVIDENCE_TEMP: tempfile.TemporaryDirectory[str] | None = None
 _WINDOWS_EXCEPTION_NAMES = {
     0x40000015: "STATUS_FATAL_APP_EXIT",
@@ -292,6 +294,7 @@ def execute_binary(argv: list[str], timeout_seconds: float) -> BinaryExecution:
     try:
         process = _COMMANDS.run(
             argv,
+            env=_ACTIVE_CHILD_ENVIRONMENT,
             check=False,
             capture_output=True,
             text=True,
@@ -1012,7 +1015,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global _ACTIVE_EVIDENCE_DIR
+    global _ACTIVE_CHILD_ENVIRONMENT, _ACTIVE_EVIDENCE_DIR
     args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
     command = list(args.command)
     if command[:1] == ["--"]:
@@ -1038,6 +1041,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         source_identity = decoded_identity
 
+    # Self-image runtime descendants echo only this admitted source identity;
+    # an inherited value from another run must never reach them.
+    child_environment = dict(os.environ)
+    child_environment.pop(runtime_descendant_receipts.SOURCE_IDENTITY_ENV, None)
+    if source_identity is not None:
+        child_environment[runtime_descendant_receipts.SOURCE_IDENTITY_ENV] = json.dumps(
+            source_identity, sort_keys=True
+        )
+    _ACTIVE_CHILD_ENVIRONMENT = child_environment
     executable, *inherited_args = command
     executable_resolved, executable_size, executable_sha256 = _executable_identity(
         executable
@@ -1132,6 +1144,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     receipt = {
         "schema": BINARY_RECEIPT_SCHEMA,
+        "receipt_custody_root": str(args.receipt_dir.resolve()),
         "run_id": args.run_id,
         "source_identity": source_identity,
         "invocation_id": invocation_id,
@@ -1171,6 +1184,27 @@ def main(argv: list[str] | None = None) -> int:
         receipt["status"] = "failed"
         receipt["returncode"] = returncode
         receipt["diagnosis"] = {"kind": "libtest-accounting-error", "error": problem}
+    descendants = runtime_descendant_receipts.receipt_outcome(
+        receipt, receipt_root=args.receipt_dir
+    )
+    if descendants is not None:
+        receipt["runtime_descendants"] = descendants
+        if descendants["status"] != "verified":
+            print(
+                "cargo-test-binary-runner: runtime descendant evidence rejected: "
+                f"{descendants['error']}",
+                file=sys.stderr,
+            )
+            # An already failed binary keeps its own attribution; only a
+            # success is demoted for evidence it cannot carry.
+            if returncode == 0:
+                returncode = 2
+                receipt["status"] = "failed"
+                receipt["returncode"] = returncode
+                receipt["diagnosis"] = {
+                    "kind": "descendant-evidence-error",
+                    "error": descendants["error"],
+                }
     receipt_path = _receipt_path(args.receipt_dir, executable, invocation_id)
     write_receipt(receipt_path, receipt)
     print(f"cargo-test-binary-runner: receipt={receipt_path}")

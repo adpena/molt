@@ -290,6 +290,78 @@ def test_context_independent_dependency_requests_do_not_build_binding_facts(
     ) == {"package.eager", "package", "package.member"}
 
 
+def test_full_dependency_graph_without_importer_origins_skips_binding_fixpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "entry.py"
+    path.write_text(
+        "import sys\nimport inspect\nfrom package import member\n"
+        "def deferred(value):\n"
+        "    namespace = vars(value)\n"
+        "    return inspect.currentframe(), globals(), namespace, value.call()\n"
+        "registry = make_registry()\n",
+        encoding="utf-8",
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("no canonical importer identity can reach these calls")
+
+    monkeypatch.setattr(python_import_resolution, "analyze_python_bindings", forbidden)
+    assert local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(False, False, True),
+        nonliteral_dynamic_import_targets=("manifest_dependency",),
+    ) == {"sys", "inspect", "package", "package.member", "manifest_dependency"}
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("load = __import__\nload('dependency')\n", {"dependency"}),
+        (
+            "from importlib import import_module as load\n"
+            "def deferred():\n    load('dependency')\n",
+            {"importlib", "importlib.import_module", "dependency"},
+        ),
+        (
+            "import builtins as b\nload = b.__import__\nload('dependency')\n",
+            {"builtins", "dependency"},
+        ),
+        (
+            "import importlib as i\nload = i.import_module\nload('dependency')\n",
+            {"importlib", "dependency"},
+        ),
+        (
+            "def deferred(__import__):\n    __import__('not_a_dependency')\n",
+            set(),
+        ),
+    ],
+)
+def test_importer_origins_still_demand_semantic_alias_and_shadow_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, expected: set[str]
+) -> None:
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    analyze = python_import_resolution.analyze_python_bindings
+    calls = []
+
+    def record(*args, **kwargs):
+        calls.append(kwargs["source_digest"])
+        return analyze(*args, **kwargs)
+
+    monkeypatch.setattr(python_import_resolution, "analyze_python_bindings", record)
+    assert (
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(False, False, True),
+        )
+        == expected
+    )
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("module_only", [False, True])
 def test_relative_dependency_requests_demand_canonical_binding_facts_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_only: bool

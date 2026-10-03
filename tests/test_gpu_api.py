@@ -690,6 +690,18 @@ def test_tensor_cast_accepts_tinygrad_dtype_aliases():
     assert as_int.to_list() == [1, 2]
 
 
+def test_tensor_cast_to_bool_uses_nonzero_semantics():
+    from tinygrad.dtypes import dtypes
+    from molt.gpu.tensor import Tensor
+
+    values = Tensor([0.5, -0.5, 0.0, -0.0, 2.0, float("nan")])
+
+    as_bool = values.cast(dtypes.bool_)
+
+    assert as_bool.to_list() == [True, True, False, False, True, True]
+    assert as_bool.dtype == dtypes.bool_
+
+
 def test_tinygrad_tensor_explicit_dtype_uses_matching_storage():
     from tinygrad import Tensor
     from tinygrad.dtypes import dtypes

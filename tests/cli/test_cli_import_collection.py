@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from tests.compiler_identity_helper import stub_compiler_admission
+from tests.compiler_identity_helper import (
+    stub_compiler_admission,
+    write_compiler_source,
+)
 
 from types import SimpleNamespace
 
@@ -15,6 +18,7 @@ from molt.cli import wasm_link_inputs
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.python_source_closure import LocalPythonSourceClosure
+from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
 
 import ast
 import builtins as py_builtins
@@ -116,7 +120,6 @@ from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols
-from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.native_link_test_support import (
@@ -11007,7 +11010,9 @@ def test_frontend_native_callable_module_attr_rejects_memory_abi() -> None:
         )
 
 
-def test_frontend_native_python_export_without_callable_metadata_fails_closed() -> None:
+def test_frontend_native_python_export_without_callable_metadata_uses_object_dispatch() -> (
+    None
+):
     sources = [
         "from scipy.ndimage import distance_transform_edt\n"
         "mask = 1\n"
@@ -11024,26 +11029,33 @@ def test_frontend_native_python_export_without_callable_metadata_fails_closed() 
     ]
 
     for source in sources:
-        with pytest.raises(
-            CompatibilityError,
-            match=(
-                "native Python export 'scipy\\.ndimage\\.distance_transform_edt' "
-                "has no callable ABI metadata"
-            ),
-        ):
-            _frontend_main_ops_for_import_source(
-                # A fresh function-local import remains lexically owned.
-                # Import callbacks can rebind module globals; those reads
-                # must use runtime callable admission instead.
-                "def invoke():\n"
-                + "".join("    " + line + "\n" for line in source.splitlines()),
-                module_name="field_solve",
-                parse_codec="json",
-                known_modules={"field_solve", "scipy", "scipy.ndimage"},
-                direct_call_modules={"field_solve"},
-                stdlib_allowlist=set(),
-                native_python_exports={"scipy.ndimage.distance_transform_edt"},
-            )
+        ops = _frontend_main_ops_for_import_source(
+            source,
+            module_name="field_solve",
+            parse_codec="json",
+            known_modules={"field_solve", "scipy", "scipy.ndimage"},
+            direct_call_modules={"field_solve"},
+            stdlib_allowlist=set(),
+            native_python_exports={"scipy.ndimage.distance_transform_edt"},
+        )
+        assert not any(op["kind"] == "invoke_ffi" for op in ops)
+        invented_symbol = (
+            SimpleTIRGenerator._sanitize_module_name("scipy.ndimage")
+            + "__distance_transform_edt"
+        )
+        assert not any(invented_symbol in str(op) for op in ops)
+        export_calls = [
+            op
+            for op in ops
+            if op["kind"] in {"call_bind", "call_func", "call_indirect", "call_guarded"}
+            and op.get("source_line") == 3
+        ]
+        assert len(export_calls) == 1, "the exported callable must use object dispatch"
+        producers = {op["out"]: op for op in ops if "out" in op}
+        callee = producers[export_calls[0]["args"][0]]
+        assert callee["kind"] not in {"func_ref", "const_str"}, (
+            "Python export visibility cannot invent a machine callable"
+        )
 
 
 def test_rebound_native_python_export_calls_replacement_without_abi_metadata() -> None:
@@ -14741,7 +14753,7 @@ def test_backend_source_paths_are_feature_aware() -> None:
         "runtime/molt-passes",
         "runtime/molt-tir",
         "Cargo.toml",
-        "Cargo.lock",
+        # Cargo.lock is a separately admitted compiler dependency projection.
         "src/molt/backend_environment.json",
     }
     codegen_abi = {
@@ -18637,6 +18649,7 @@ def _test_backend_daemon_identity(
         config_digest=config_digest,
         backend_bin=backend_bin or project_root / "target" / "debug" / "molt-backend",
         created_at=1_700_000_000.0,
+        started_at_ns=1_700_000_000_000_000_000 + pid,
         command=None,
     )
 
@@ -20367,6 +20380,7 @@ def test_start_backend_daemon_leaves_warming_process_running(
             target_triple=None,
             config_digest=None,
             startup_timeout=2.0,
+            backend_env={},  # Fake process owns no outer guard scratch or suite lease.
             json_output=True,
             warnings=[],
         )
@@ -20485,6 +20499,7 @@ def test_start_backend_daemon_trusts_verified_busy_socket_with_live_pid(
             target_triple=None,
             config_digest=None,
             startup_timeout=2.0,
+            backend_env={},  # Fake process owns no outer guard scratch or suite lease.
             json_output=True,
             warnings=[],
         )
@@ -20574,6 +20589,7 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
                 target_triple=None,
                 config_digest=None,
                 startup_timeout=2.0,
+                backend_env={},  # Fake process owns no outer guard scratch or suite lease.
                 json_output=True,
                 warnings=[],
             )
@@ -20679,6 +20695,7 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
             target_triple=None,
             config_digest=None,
             startup_timeout=2.0,
+            backend_env={},  # Fake process owns no outer guard scratch or suite lease.
             json_output=True,
             warnings=warnings,
         )
@@ -24101,8 +24118,10 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
 def test_ensure_backend_binary_uses_native_feature_for_native(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    runtime_fixture_root: RuntimeFixtureRoot,
 ) -> None:
     stub_compiler_admission(monkeypatch)
+    write_compiler_source(tmp_path)
     exe_suffix = ".exe" if os.name == "nt" else ""
     backend_bin = tmp_path / "target" / "dev-fast" / f"molt-backend{exe_suffix}"
     fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
@@ -24115,13 +24134,15 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
         return dict(fingerprint)
 
     def fake_run_cargo(
-        cmd: list[str], **kwargs: object
+        plan: RuntimeCargoPlan, **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
+        plan.verify()
+        cmd = list(plan.command)
         build_cmds.append(list(cmd))
-        backend_bin.parent.mkdir(parents=True, exist_ok=True)
-        backend_bin.write_text("#!/bin/sh\n")
-        backend_bin.chmod(0o755)
+        runtime_fixture_root.native_executable(
+            backend_bin.relative_to(tmp_path).as_posix()
+        )
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
@@ -24147,6 +24168,7 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
         [
             "cargo",
             "build",
+            "--locked",
             "--package",
             "molt-backend",
             "--bin",
@@ -24163,8 +24185,10 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
 def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    runtime_fixture_root: RuntimeFixtureRoot,
 ) -> None:
     stub_compiler_admission(monkeypatch)
+    write_compiler_source(tmp_path)
     backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend"
     daemon_root = tmp_path / "target" / ".molt_state" / "backend_daemon"
     daemon_root.mkdir(parents=True)
@@ -24180,14 +24204,16 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
     fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
 
     def fake_run_cargo(
-        cmd: list[str], **kwargs: object
+        plan: RuntimeCargoPlan, **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
+        plan.verify()
+        cmd = list(plan.command)
         exe_suffix = ".exe" if os.name == "nt" else ""
         cargo_backend_bin = backend_bin.parent / f"molt-backend{exe_suffix}"
-        cargo_backend_bin.parent.mkdir(parents=True, exist_ok=True)
-        cargo_backend_bin.write_text("#!/bin/sh\n")
-        cargo_backend_bin.chmod(0o755)
+        runtime_fixture_root.native_executable(
+            cargo_backend_bin.relative_to(tmp_path).as_posix()
+        )
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
@@ -24221,8 +24247,10 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
 def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    runtime_fixture_root: RuntimeFixtureRoot,
 ) -> None:
     stub_compiler_admission(monkeypatch)
+    write_compiler_source(tmp_path)
     exe_suffix = ".exe" if os.name == "nt" else ""
     backend_bin = (
         tmp_path / "target" / "dev-fast" / f"molt-backend.wasm_backend{exe_suffix}"
@@ -24237,15 +24265,17 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
         return dict(fingerprint)
 
     def fake_run_cargo(
-        cmd: list[str], **kwargs: object
+        plan: RuntimeCargoPlan, **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
+        plan.verify()
+        cmd = list(plan.command)
         build_cmds.append(list(cmd))
         exe_suffix = ".exe" if os.name == "nt" else ""
         cargo_output = backend_bin.parent / f"molt-backend{exe_suffix}"
-        cargo_output.parent.mkdir(parents=True, exist_ok=True)
-        cargo_output.write_text("#!/bin/sh\n")
-        cargo_output.chmod(0o755)
+        runtime_fixture_root.native_executable(
+            cargo_output.relative_to(tmp_path).as_posix()
+        )
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
@@ -24271,6 +24301,7 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
         [
             "cargo",
             "build",
+            "--locked",
             "--package",
             "molt-backend",
             "--bin",
@@ -24460,9 +24491,11 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         return dict(fingerprint)
 
     def fake_run_cargo(
-        cmd: list[str], **kwargs: object
+        plan: RuntimeCargoPlan, **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
+        plan.verify()
+        cmd = list(plan.command)
         build_cmds.append(list(cmd))
         runtime_fixture_root.native_executable(canonical_backend.name)
         runtime_fixture_root.native_executable(backend_bin.name)
@@ -24531,22 +24564,27 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
 
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
-    assert seen_features == [("rust-backend",)]
-    assert build_cmds == [
-        [
-            "cargo",
-            "build",
-            "--package",
-            "molt-backend",
-            "--bin",
-            "molt-backend",
-            "--profile",
-            "release",
-            "--no-default-features",
-            "--features",
-            "rust-backend",
-        ]
+    assert seen_features == [("rust-backend",), ("rust-backend",)]
+    assert len(build_cmds) == 1
+    build_cmd = build_cmds[0]
+    assert Path(build_cmd[0]).is_absolute()
+    config_start = build_cmd.index("--config")
+    assert build_cmd[1:config_start] == [
+        "build",
+        "--locked",
+        "--package",
+        "molt-backend",
+        "--bin",
+        "molt-backend",
+        "--profile",
+        "release",
+        "--no-default-features",
+        "--features",
+        "rust-backend",
     ]
+    tool_configs = build_cmd[config_start:]
+    assert len(tool_configs) % 2 == 0
+    assert set(tool_configs[::2]) == {"--config"}
     assert len(backend_cmds) == 1
     cmd = backend_cmds[0]
     assert cmd[0] == str(backend_bin)
@@ -24613,9 +24651,11 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
         return dict(fingerprint)
 
     def fake_run_cargo(
-        cmd: list[str], **kwargs: object
+        plan: RuntimeCargoPlan, **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
+        plan.verify()
+        cmd = list(plan.command)
         build_cmds.append(list(cmd))
         runtime_fixture_root.native_executable(canonical_backend.name)
         runtime_fixture_root.native_executable(backend_bin.name)
@@ -24673,21 +24713,26 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
 
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
-    assert build_cmds == [
-        [
-            "cargo",
-            "build",
-            "--package",
-            "molt-backend",
-            "--bin",
-            "molt-backend",
-            "--profile",
-            "release",
-            "--no-default-features",
-            "--features",
-            "rust-backend",
-        ]
+    assert len(build_cmds) == 1
+    build_cmd = build_cmds[0]
+    assert Path(build_cmd[0]).is_absolute()
+    config_start = build_cmd.index("--config")
+    assert build_cmd[1:config_start] == [
+        "build",
+        "--locked",
+        "--package",
+        "molt-backend",
+        "--bin",
+        "molt-backend",
+        "--profile",
+        "release",
+        "--no-default-features",
+        "--features",
+        "rust-backend",
     ]
+    tool_configs = build_cmd[config_start:]
+    assert len(tool_configs) % 2 == 0
+    assert set(tool_configs[::2]) == {"--config"}
 
 
 def test_browser_deploy_profile_owns_canonical_wasm_publication_defaults() -> None:
@@ -25143,6 +25188,8 @@ def test_run_wrapper_build_ignores_legacy_mtime_binary_without_manifest(
         json_output=True,
         command="run",
         build_args=["--target", "wasm"],
+        env={},
+        source_cwd=project,
     )
     assert error is None
     assert resolved is not None
@@ -25855,7 +25902,14 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
     monkeypatch.setattr(
         cli_commands, "_run_completed_command", fake_run_completed_command
     )
-    monkeypatch.setattr(cli_commands.shutil, "which", lambda name: f"/usr/bin/{name}")
+    original_which = cli_commands.shutil.which
+    monkeypatch.setattr(
+        cli_commands.shutil,
+        "which",
+        lambda name, *, path=None: (
+            f"/usr/bin/{name}" if name == "lune" else original_which(name, path=path)
+        ),
+    )
     monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
 
     rc = cli_commands._run_script_cross(
@@ -25954,7 +26008,6 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     monkeypatch.setattr(
         cli_commands, "_run_completed_command", fake_run_completed_command
     )
-    monkeypatch.setattr(cli_commands.shutil, "which", lambda name: f"/usr/bin/{name}")
     node_path = tmp_path / "node runtime"
     monkeypatch.setattr(
         cli_commands,
@@ -26240,7 +26293,16 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
-    monkeypatch.setattr(cli_commands.shutil, "which", lambda name: f"/usr/bin/{name}")
+    original_which = cli_commands.shutil.which
+    monkeypatch.setattr(
+        cli_commands.shutil,
+        "which",
+        lambda name, *, path=None: (
+            f"/usr/bin/{name}"
+            if name == "wrangler"
+            else original_which(name, path=path)
+        ),
+    )
 
     rc = cli_commands._deploy(
         "cloudflare",
@@ -27817,7 +27879,8 @@ def test_backend_codegen_env_inputs_is_cached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cli._backend_codegen_env_inputs_cached.cache_clear()
-    monkeypatch.delenv("MOLT_BACKEND", raising=False)
+    for name in BACKEND_EXECUTION._NATIVE_CODEGEN_ENV_KNOBS:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "single_pass")
 
     first = cli._backend_codegen_env_inputs(is_wasm=False)
@@ -27880,10 +27943,14 @@ def test_backend_daemon_config_digest_and_socket_path_include_config(
     tmp_path: Path,
 ) -> None:
     monkeypatch.delenv("MOLT_BACKEND_DAEMON_SOCKET", raising=False)
+    compiler_env = {"MOLT_BACKEND_COMPILER_FINGERPRINT": "a" * 64}
     cli._backend_daemon_paths_cached.cache_clear()
-    digest_a = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
-    monkeypatch.setenv("MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2", "2")
-    digest_b = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
+    digest_a = cli._backend_daemon_config_digest(tmp_path, "dev-fast", env=compiler_env)
+    digest_b = cli._backend_daemon_config_digest(
+        tmp_path,
+        "dev-fast",
+        env={**compiler_env, "MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2": "2"},
+    )
     assert digest_a != digest_b
 
     socket_a = cli._backend_daemon_socket_path(
@@ -27899,10 +27966,10 @@ def test_backend_daemon_config_digest_and_socket_path_include_config(
     linker_a.write_text("a", encoding="utf-8")
     linker_b.write_text("b", encoding="utf-8")
     linker_digest_a = cli._backend_daemon_config_digest(
-        tmp_path, "dev-fast", env={"MOLT_LINKER": str(linker_a)}
+        tmp_path, "dev-fast", env={**compiler_env, "MOLT_LINKER": str(linker_a)}
     )
     linker_digest_b = cli._backend_daemon_config_digest(
-        tmp_path, "dev-fast", env={"MOLT_LINKER": str(linker_b)}
+        tmp_path, "dev-fast", env={**compiler_env, "MOLT_LINKER": str(linker_b)}
     )
     # The backend daemon produces objects; it does not own final-link policy.
     assert linker_digest_a == linker_digest_b
@@ -27922,45 +27989,34 @@ def test_backend_daemon_config_digest_tracks_batch_op_budget(
 
 
 def test_backend_daemon_config_digest_tracks_backend_freshness(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    project_root = tmp_path
-    target_root = project_root / "target"
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
-    backend_bin = target_root / "dev-fast" / "molt-backend"
-    runtime_lib = cli._runtime_lib_path(project_root, "release", None)
-    backend_src = project_root / "runtime" / "molt-backend" / "src" / "main.rs"
-    runtime_src = project_root / "runtime" / "molt-runtime" / "src" / "lib.rs"
-    frontend_init = project_root / "src" / "molt" / "frontend" / "__init__.py"
-    for path in (backend_bin, runtime_lib, backend_src, runtime_src, frontend_init):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"x")
+    backend_bin = tmp_path / "molt-backend"
+    backend_bin.write_bytes(b"compiler-a")
+    compiler_env = {"MOLT_BACKEND_COMPILER_FINGERPRINT": "a" * 64}
 
-    digest_a = cli._backend_daemon_config_digest(
-        project_root,
-        "dev-fast",
-        backend_bin=backend_bin,
-        target_triple=None,
-    )
-    _set_stale_mtime(backend_src, ns_offset=3_000_000_000)
-    digest_b = cli._backend_daemon_config_digest(
-        project_root,
-        "dev-fast",
-        backend_bin=backend_bin,
-        target_triple=None,
-    )
-    _set_stale_mtime(runtime_lib, ns_offset=4_000_000_000)
-    digest_c = cli._backend_daemon_config_digest(
-        project_root,
-        "dev-fast",
-        backend_bin=backend_bin,
-        target_triple=None,
-    )
+    def digest() -> str:
+        return cli._backend_daemon_config_digest(
+            tmp_path,
+            "dev-fast",
+            backend_bin=backend_bin,
+            env=compiler_env,
+        )
 
-    assert digest_a != digest_b
-    assert digest_b != digest_c
+    original = digest()
+    _set_stale_mtime(backend_bin, ns_offset=3_000_000_000)
+    assert digest() == original
+
+    # Byte changes invalidate reuse even when size and mtime are preserved.
+    prior = backend_bin.stat()
+    backend_bin.write_bytes(b"compiler-b")
+    os.utime(backend_bin, ns=(prior.st_atime_ns, prior.st_mtime_ns))
+    changed_binary = digest()
+    assert changed_binary != original
+
+    # Compiler source/build admission is carried by its semantic fingerprint.
+    compiler_env["MOLT_BACKEND_COMPILER_FINGERPRINT"] = "b" * 64
+    assert digest() != changed_binary
 
 
 def test_backend_daemon_config_digest_tracks_compiler_content_fingerprints(
@@ -29432,18 +29488,25 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_and_unverified_identit
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
     project_root = tmp_path / "proj"
     project_root.mkdir()
-    own_root = project_root / "target" / ".molt_state" / "backend_daemon"
+    own_state = BACKEND_EXECUTION.build_state_root(
+        project_root=project_root,
+        cargo_target=project_root / "target",
+        environment=os.environ,
+    )
+    own_root = own_state / "backend_daemon"
     own_root.mkdir(parents=True)
+    sibling_target = project_root / "target" / "sessions" / "agent-x"
+    sibling_target.mkdir(parents=True)
     sibling_root = (
-        project_root
-        / "target"
-        / "sessions"
-        / "agent-x"
-        / ".molt_state"
+        BACKEND_EXECUTION.build_state_root(
+            project_root=project_root,
+            cargo_target=sibling_target,
+            environment=os.environ,
+        )
         / "backend_daemon"
     )
     sibling_root.mkdir(parents=True)
@@ -29507,7 +29570,7 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_and_unverified_identit
     monkeypatch.setattr(
         BACKEND_EXECUTION,
         "_build_state_root",
-        lambda root: project_root / "target" / ".molt_state",
+        lambda root: own_state,
     )
 
     def fake_pid_alive(pid: int) -> bool:

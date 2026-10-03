@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import python_source_field
+from molt.python_private_names import python_source_field
 import stat
 import sys
 from dataclasses import asdict, dataclass, field, replace
@@ -17,6 +17,7 @@ from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     PythonBindingIndex,
     analyze_python_bindings,
+    python_dynamic_import_facts_required,
 )
 
 from molt.compiler_analysis.python_imports import (
@@ -438,7 +439,7 @@ def analyze_local_imports(
     """Project source requests; demand binding facts only for semantic queries.
 
     Absolute statement candidates do not depend on package metadata or alias
-    identity. Relative statements and every possible dynamic call continue to
+    identity. Relative statements and sources with dynamic identity origins continue to
     use the canonical binding/import-flow authority, including deferred aliases.
     This is a conservative dependency graph, not an execution-reachability proof.
     """
@@ -520,7 +521,7 @@ def analyze_local_imports(
             raise projection_errors[0]
 
     diagnostics: list[LocalPythonImportDiagnostic] = []
-    if not policy.module_level_only:
+    if not policy.module_level_only and python_dynamic_import_facts_required(tree):
         for node in nodes:
             if not isinstance(node, ast.Call):
                 continue
@@ -560,6 +561,8 @@ def analyze_local_imports(
                 )
                 for target in sorted(targets_for_call)
             )
+
+    if not policy.module_level_only:
         requests.extend(
             LocalPythonImportRequest("manifest", (target,))
             for target in nonliteral_dynamic_import_targets

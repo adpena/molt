@@ -112,7 +112,7 @@ pub use subscript::{
 };
 pub(crate) use subscript::{
     molt_contains_builtin, molt_delitem_builtin, molt_delitem_builtin_method, molt_getitem_builtin,
-    molt_setitem_builtin, molt_setitem_builtin_method,
+    molt_sequence_item_builtin, molt_setitem_builtin, molt_setitem_builtin_method,
 };
 
 use crate::object::layout::{range_start_bits, range_step_bits, range_stop_bits};
@@ -1357,7 +1357,6 @@ use super::ops_sys::{collect_iterable_values, collect_slice_indices, normalize_s
 /// lookup. Dictionaries (including subclasses) are excluded by Python's
 /// sequence protocol even when they define __getitem__.
 pub(crate) fn sequence_check_bits(py: &PyToken<'_>, bits: u64) -> std::os::raw::c_int {
-    use crate::object::class_storage::{ClassDeclaration, class_declares};
     unsafe {
         if let Some(ptr) = obj_from_bits(bits).as_ptr()
             && object_type_id(ptr) == crate::TYPE_ID_FOREIGN
@@ -1371,29 +1370,7 @@ pub(crate) fn sequence_check_bits(py: &PyToken<'_>, bits: u64) -> std::os::raw::
         if crate::object::class_layout::is_real_subtype(py, class, builtin_classes(py).dict) {
             return 0;
         }
-        let Some(class) = obj_from_bits(class).as_ptr() else {
-            return 0;
-        };
-        // Slot presence is metadata. No descriptor binding, name allocation,
-        // Python key equality, or exception-state changes occur in this query.
-        for &base in crate::builtins::type_ops::class_mro_view(py, class).iter() {
-            let Some(base) = obj_from_bits(base).as_ptr() else {
-                continue;
-            };
-            if class_declares(base, ClassDeclaration::NativeSlotLayout) {
-                if class_declares(base, ClassDeclaration::NativeSequenceItem) {
-                    return 1;
-                }
-            } else if obj_from_bits(class_dict_bits(base))
-                .as_ptr()
-                .is_some_and(|dictionary| {
-                    dict_get_str_bytes_borrowed(py, dictionary, b"__getitem__").is_some()
-                })
-            {
-                return 1;
-            }
-        }
-        0
+        i32::from(crate::object::sequence_index::sequence_read_slot(py, bits).is_some())
     }
 }
 

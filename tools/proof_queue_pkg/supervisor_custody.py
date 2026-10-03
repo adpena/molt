@@ -24,6 +24,48 @@ from tools.proof_queue_pkg import execution_custody
 from tools.proof_queue_pkg import process_image_capture
 
 
+def _protocol_schemas() -> dict[str, str]:
+    authority = (
+        Path(__file__).resolve().parents[1] / "proof_supervisor" / "protocol.json"
+    )
+    try:
+        payload = read_exact(
+            authority, max_bytes=4096, label="proof supervisor protocol authority"
+        )
+    except (OSError, UnicodeDecodeError, ExactJsonError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "proof supervisor protocol authority is unavailable"
+        ) from exc
+    expected = {
+        "policy_schema",
+        "capability_schema",
+        "receipt_schema",
+        "event_log_schema",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != expected
+        or not all(
+            isinstance(payload[name], str)
+            and re.fullmatch(r"molt\.[a-z0-9.-]+\.v[0-9]+", payload[name])
+            for name in expected
+        )
+    ):
+        raise RuntimeError("proof supervisor protocol authority is malformed")
+    return {name: payload[name] for name in sorted(expected)}
+
+
+_PROTOCOL_SCHEMAS = _protocol_schemas()
+SUPERVISOR_POLICY_SCHEMA = _PROTOCOL_SCHEMAS["policy_schema"]
+SUPERVISOR_CAPABILITY_SCHEMA = _PROTOCOL_SCHEMAS["capability_schema"]
+SUPERVISOR_RECEIPT_SCHEMA = _PROTOCOL_SCHEMAS["receipt_schema"]
+SUPERVISOR_EVENT_LOG_SCHEMA = _PROTOCOL_SCHEMAS["event_log_schema"]
+_MAX_SUPERVISOR_EVENT_LOG_BYTES = 1024 * 1024 * 1024
+_MAX_SUPERVISOR_EVENT_RECORD_BYTES = 1024 * 1024
+_MAX_SUPERVISOR_EVENT_RECORDS = 10_000_000
+_MAX_INVENTORY_IMAGE_IDENTITIES = 16_384
+
+
 def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
     custody_cas.atomic_write_bytes(
         path,
@@ -45,6 +87,7 @@ def source_authority_paths(repo_root: Path) -> tuple[Path, ...]:
         *facts.input_manifests,
         source / "build.py",
         source / "Cargo.lock",
+        source / "protocol.json",
         Path(cargo_workspace.__file__),
     }
     for crate_root in crate_roots:
@@ -55,6 +98,110 @@ def source_authority_paths(repo_root: Path) -> tuple[Path, ...]:
     return tuple(
         sorted({path.resolve(strict=True) for path in paths if not path.is_dir()})
     )
+
+
+def _verified_supervisor_event_artifact(
+    *,
+    receipt_path: Path,
+    descriptor: Mapping[str, object],
+    collect_images: bool,
+) -> tuple[Path, list[tuple[str, str, int]]]:
+    if descriptor.get("schema") != SUPERVISOR_EVENT_LOG_SCHEMA:
+        raise ValueError(
+            "native proof supervisor event artifact descriptor has unsupported schema"
+        )
+    file_name = descriptor.get("file")
+    expected_sha256 = descriptor.get("sha256")
+    expected_bytes = descriptor.get("bytes")
+    expected_count = descriptor.get("count")
+    if (
+        not isinstance(file_name, str)
+        or Path(file_name).name != file_name
+        or not isinstance(expected_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+        or not isinstance(expected_bytes, int)
+        or isinstance(expected_bytes, bool)
+        or not 0 <= expected_bytes <= _MAX_SUPERVISOR_EVENT_LOG_BYTES
+        or not isinstance(expected_count, int)
+        or isinstance(expected_count, bool)
+        or not 0 <= expected_count <= _MAX_SUPERVISOR_EVENT_RECORDS
+        or file_name != f"{receipt_path.name}.events.{expected_sha256}.jsonl"
+    ):
+        raise ValueError(
+            "native proof supervisor event artifact descriptor is malformed"
+        )
+    event_path = receipt_path.with_name(file_name).resolve(strict=True)
+    if event_path.parent != receipt_path.parent.resolve(strict=True):
+        raise ValueError(
+            "native proof supervisor event artifact escaped its receipt directory"
+        )
+
+    digest = hashlib.sha256()
+    count = 0
+    actual_bytes = 0
+    unique_images: dict[tuple[str, str, int], None] = {}
+    with event_path.open("rb") as stream:
+        if os.fstat(stream.fileno()).st_size != expected_bytes:
+            raise ValueError("native proof supervisor event artifact identity changed")
+        while raw_line := stream.readline(_MAX_SUPERVISOR_EVENT_RECORD_BYTES + 1):
+            if len(
+                raw_line
+            ) > _MAX_SUPERVISOR_EVENT_RECORD_BYTES or not raw_line.endswith(b"\n"):
+                raise ValueError(
+                    "native proof supervisor event artifact has an invalid record bound"
+                )
+            actual_bytes += len(raw_line)
+            if actual_bytes > expected_bytes:
+                raise ValueError(
+                    "native proof supervisor event artifact identity changed"
+                )
+            digest.update(raw_line)
+            count += 1
+            if count > _MAX_SUPERVISOR_EVENT_RECORDS:
+                raise ValueError(
+                    "native proof supervisor event artifact exceeds its record bound"
+                )
+            if not collect_images:
+                continue
+            try:
+                event = loads_exact(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, ExactJsonError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    "native proof supervisor event artifact is malformed"
+                ) from exc
+            payload = event.get("event") if isinstance(event, Mapping) else None
+            image = payload.get("image") if isinstance(payload, Mapping) else None
+            if image is None:
+                continue
+            if not isinstance(image, Mapping):
+                raise ValueError("native proof supervisor event image is malformed")
+            raw_path = image.get("path")
+            image_sha256 = image.get("sha256")
+            image_size = image.get("size_bytes")
+            if (
+                not isinstance(raw_path, str)
+                or not Path(raw_path).is_absolute()
+                or not isinstance(image_size, int)
+                or isinstance(image_size, bool)
+                or image_size < 0
+                or not isinstance(image_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", image_sha256) is None
+            ):
+                raise ValueError(
+                    "native proof supervisor event image identity is malformed"
+                )
+            unique_images[(raw_path, image_sha256, image_size)] = None
+            if len(unique_images) > _MAX_INVENTORY_IMAGE_IDENTITIES:
+                raise ValueError(
+                    "native proof supervisor inventory exceeds its unique-image bound"
+                )
+    if (
+        actual_bytes != expected_bytes
+        or count != expected_count
+        or digest.hexdigest() != expected_sha256
+    ):
+        raise ValueError("native proof supervisor event artifact identity changed")
+    return event_path, list(unique_images)
 
 
 def _provision_proof_supervisor(
@@ -107,11 +254,12 @@ def decode_supervisor_capability(capability: object, *, mode: str) -> dict[str, 
             "backend",
             "available",
             "pre_entry_exec_authority",
+            "pre_entry_process_create_authority",
             "recursive_descendant_authority",
             "reason",
             "required_environment",
         }
-        or capability.get("schema") != "molt.proof-supervisor-capability.v2"
+        or capability.get("schema") != SUPERVISOR_CAPABILITY_SCHEMA
         or capability.get("mode") != mode
         or capability.get("platform")
         != {
@@ -122,6 +270,7 @@ def decode_supervisor_capability(capability: object, *, mode: str) -> dict[str, 
         or not capability["backend"]
         or not isinstance(capability.get("available"), bool)
         or not isinstance(capability.get("pre_entry_exec_authority"), bool)
+        or not isinstance(capability.get("pre_entry_process_create_authority"), bool)
         or not isinstance(capability.get("recursive_descendant_authority"), bool)
         or not (
             capability.get("reason") is None or isinstance(capability["reason"], str)
@@ -135,6 +284,8 @@ def decode_supervisor_capability(capability: object, *, mode: str) -> dict[str, 
         )
     if (
         capability["pre_entry_exec_authority"] is not True
+        or mode == "leaf"
+        and capability["pre_entry_process_create_authority"] is not True
         or mode != "leaf"
         and capability["recursive_descendant_authority"] is not True
     ):
@@ -420,7 +571,7 @@ def _supervisor_policy(
         platform_process_images,
     )
     return {
-        "schema": "molt.proof-process-closure.v2",
+        "schema": SUPERVISOR_POLICY_SCHEMA,
         "nonce": nonce,
         "mode": mode,
         "cwd": str(cwd.resolve(strict=True)),
@@ -465,15 +616,18 @@ def _validated_supervisor_receipt(
     try:
         receipt = read_exact(
             receipt_path,
-            max_bytes=16 * 1024 * 1024,
+            max_bytes=64 * 1024,
             label="native proof supervisor receipt",
         )
     except (OSError, UnicodeDecodeError, ExactJsonError, json.JSONDecodeError) as exc:
         raise ValueError(
             "native proof supervisor returned no readable receipt"
         ) from exc
-    if not isinstance(receipt, dict):
-        raise ValueError("native proof supervisor receipt is not an object")
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema") != SUPERVISOR_RECEIPT_SCHEMA
+    ):
+        raise ValueError("native proof supervisor receipt schema is unsupported")
     return receipt
 
 
@@ -505,7 +659,7 @@ def capture_process_image_inventory(
         policy_path = root / "policy.json"
         receipt_path = root / "receipt.json"
         policy = {
-            "schema": "molt.proof-process-closure.v2",
+            "schema": SUPERVISOR_POLICY_SCHEMA,
             "nonce": secrets.token_hex(32),
             "mode": "inventory-tree",
             "cwd": str(cwd.resolve(strict=True)),
@@ -582,33 +736,12 @@ def capture_process_image_inventory(
         descriptor = receipt.get("event_log")
         if not isinstance(descriptor, Mapping):
             raise ValueError(f"{role} process-image inventory has no event log")
-        file_name = descriptor.get("file")
-        if not isinstance(file_name, str) or Path(file_name).name != file_name:
-            raise ValueError(f"{role} process-image inventory event path is invalid")
-        event_path = receipt_path.with_name(file_name).resolve(strict=True)
+        _, observed_images = _verified_supervisor_event_artifact(
+            receipt_path=receipt_path, descriptor=descriptor, collect_images=True
+        )
         rows: list[dict[str, object]] = []
         launcher_path = Path(str(launcher["path"]))
-        for line in event_path.read_text(encoding="utf-8").splitlines():
-            try:
-                event = loads_exact(line)
-            except (ExactJsonError, json.JSONDecodeError) as exc:
-                raise ValueError(
-                    f"{role} process-image inventory event is malformed"
-                ) from exc
-            image = event.get("image") if isinstance(event, Mapping) else None
-            if not isinstance(image, Mapping):
-                continue
-            raw_path = image.get("path")
-            digest = image.get("sha256")
-            size = image.get("size_bytes")
-            if (
-                not isinstance(raw_path, str)
-                or not isinstance(digest, str)
-                or not isinstance(size, int)
-            ):
-                raise ValueError(
-                    f"{role} process-image inventory identity is malformed"
-                )
+        for raw_path, digest, size in observed_images:
             observed = Path(raw_path)
             try:
                 is_launcher = observed.samefile(launcher_path)
@@ -648,47 +781,13 @@ def _publish_supervisor_event_artifact(
     event_log = receipt.get("event_log")
     if not isinstance(event_log, Mapping):
         raise ValueError("native proof supervisor receipt has no event artifact")
-    file_name = event_log.get("file")
-    expected_sha256 = event_log.get("sha256")
-    expected_bytes = event_log.get("bytes")
-    expected_count = event_log.get("count")
-    if (
-        not isinstance(file_name, str)
-        or Path(file_name).name != file_name
-        or not isinstance(expected_sha256, str)
-        or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
-        or not isinstance(expected_bytes, int)
-        or isinstance(expected_bytes, bool)
-        or expected_bytes < 0
-        or not isinstance(expected_count, int)
-        or isinstance(expected_count, bool)
-        or expected_count < 0
-    ):
-        raise ValueError(
-            "native proof supervisor event artifact descriptor is malformed"
-        )
-    event_path = receipt_path.with_name(file_name).resolve(strict=True)
-    if event_path.parent != receipt_path.parent.resolve(strict=True):
-        raise ValueError(
-            "native proof supervisor event artifact escaped its receipt directory"
-        )
-    digest = hashlib.sha256()
-    size = 0
-    count = 0
-    final_byte = None
-    with event_path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-            size += len(chunk)
-            count += chunk.count(b"\n")
-            final_byte = chunk[-1]
-    if (
-        digest.hexdigest() != expected_sha256
-        or size != expected_bytes
-        or count != expected_count
-        or (size > 0 and final_byte != ord("\n"))
-    ):
-        raise ValueError("native proof supervisor event artifact identity changed")
+    event_path, _ = _verified_supervisor_event_artifact(
+        receipt_path=receipt_path, descriptor=event_log, collect_images=False
+    )
+    file_name = str(event_log["file"])
+    expected_sha256 = event_log["sha256"]
+    expected_bytes = event_log["bytes"]
+    expected_count = event_log["count"]
     artifact = custody_cas.put_file(
         cas_root, event_path, logical_name=file_name, executable=False
     ).as_dict()

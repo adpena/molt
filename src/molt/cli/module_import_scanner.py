@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import (
+from molt.python_private_names import (
     python_import_binding,
     python_source_field,
 )

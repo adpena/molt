@@ -142,7 +142,12 @@ receipt. Integration must require successful verification plus
 
 ## Compact durable evidence
 
-Terminal receipts use schema `molt.proof-process-closure-receipt.v3` and are
+`protocol.json` owns the policy, capability, receipt and event schemas. Cargo
+generates Rust constants from it, and the Python custody consumer reads the same
+file and includes it in the supervisor source identity. Capability v3 seals both
+pre-entry exec and process-creation authority together with required environment.
+
+Terminal receipts use schema `molt.proof-process-closure-receipt.v4` and are
 hard-limited to 65,536 bytes including the final newline. They keep bounded
 diagnostic samples and counts, lifecycle, accounting (including `root_execs` and
 `root_exit_terminated_processes`),
@@ -152,7 +157,7 @@ JSON objects, one per line, in a content-addressed adjacent artifact:
 ```json
 {
   "event_log": {
-    "schema": "molt.proof-process-event-log.v1",
+    "schema": "molt.proof-process-event-log.v2",
     "file": "receipt.json.events.<sha256>.jsonl",
     "count": 42,
     "bytes": 8192,
@@ -169,9 +174,14 @@ syncs file contents, atomically renames, and syncs the parent directory (Windows
 uses write-through replacement plus a flushed directory handle). The immutable
 content-addressed event artifact is published first; the compact receipt is the
 commit marker. Verification requires the deterministic adjacent filename,
-digest, byte/record counts, monotonically increasing sequence, legal process
-lifecycle, stable process identities, and an identical recomputed derived-image
-summary.
+digest, byte/record counts and contiguous sequence numbers. One `ProcessLedger`
+applies typed process-create, fork, exec, exit and unclassified-clone events during
+both capture and replay. It validates the recorded platform dialect, stable process
+identities, live parent ownership, image classification, root command, root exit,
+derived-image stability and violation counts. Threads remain under kernel custody
+without inflating the process ledger. Windows Job and completion-port accounting
+remain independent kernel observations. Exact native path components, opened-file
+identity and size are preserved in the image records.
 
 ## Kernel authority
 

@@ -502,11 +502,19 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    if let Some(bits) = observed_bits(o) {
+    let Some(resolved) = crate::bridge::observe_pyobject(o) else {
+        return ptr::null_mut();
+    };
+    if let crate::bridge::ResolvedPyObject::ManagedMolt(value) = resolved {
+        let bits = value.bits();
         let h = hooks_or_stubs();
         let tag = classify(bits);
+        let semantic_type = unsafe { crate::bridge::semantic_type_for_resolved(o, resolved) };
+        if semantic_type.is_null() {
+            return ptr::null_mut();
+        }
 
-        if tag == tag_list() {
+        if tag == tag_list() && std::ptr::eq(semantic_type, &raw mut crate::abi_types::PyList_Type) {
             let len = unsafe { (h.list_len)(bits) };
             let actual_i = if i < 0 { len as Py_ssize_t + i } else { i };
             if actual_i < 0 || actual_i >= len as Py_ssize_t {
@@ -527,7 +535,7 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
             unsafe { crate::api::refcount::Py_INCREF(pointer) };
             return pointer;
         }
-        if tag == tag_tuple() {
+        if tag == tag_tuple() && std::ptr::eq(semantic_type, &raw mut crate::abi_types::PyTuple_Type) {
             let len = unsafe { (h.tuple_len)(bits) };
             let actual_i = if i < 0 { len as Py_ssize_t + i } else { i };
             if actual_i < 0 || actual_i >= len as Py_ssize_t {
@@ -554,7 +562,7 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
             unsafe { crate::api::refcount::Py_INCREF(pointer) };
             return pointer;
         }
-        if tag == tag_str() {
+        if tag == tag_str() && std::ptr::eq(semantic_type, &raw mut crate::abi_types::PyUnicode_Type) {
             // str sq_item yields a 1-code-point str (code-point indexing).
             if let Some(bytes) = unsafe { str_slice(bits) }
                 && let Ok(text) = std::str::from_utf8(bytes)
@@ -582,7 +590,7 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
                 return ptr::null_mut();
             }
         }
-        if tag == tag_bytes() {
+        if tag == tag_bytes() && std::ptr::eq(semantic_type, &raw mut crate::abi_types::PyBytes_Type) {
             // bytes sq_item yields an int in [0, 256).
             if let Some(bytes) = unsafe { bytes_slice(bits) } {
                 let n = bytes.len() as Py_ssize_t;
@@ -604,6 +612,7 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
                 return ptr::null_mut();
             }
         }
+        return unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj((h.sequence_item)(bits, i)) };
     }
     // Foreign tier: sq_item with CPython's negative-index adjustment.
     if let Some(m) = unsafe { seq_methods(o) } {

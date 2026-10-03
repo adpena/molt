@@ -146,9 +146,7 @@ pub(crate) fn complex_from_obj_strict(
         }));
     }
     if let Some(value) = index_bigint_integral_bits(obj.bits()) {
-        return value
-            .to_f64()
-            .filter(|value| value.is_finite())
+        return checked_integer_double(&value)
             .map(|re| Some(ComplexParts { re, im: 0.0 }))
             .ok_or(());
     }
@@ -985,9 +983,13 @@ pub(crate) fn warn_numeric_subclass_result(
     crate::builtins::warnings_ext::emit_deprecation_warning(py, &message)
 }
 
+pub(crate) fn checked_integer_double(value: &BigInt) -> Option<f64> {
+    value.to_f64().filter(|value| value.is_finite())
+}
+
 fn integer_as_double(py: &PyToken<'_>, value: &BigInt) -> Option<f64> {
     // num_bigint may return Some(infinity), not just None, on overflow.
-    if let Some(value) = value.to_f64().filter(|value| value.is_finite()) {
+    if let Some(value) = checked_integer_double(value) {
         return Some(value);
     }
     raise_exception::<()>(py, "OverflowError", "int too large to convert to float");

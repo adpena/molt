@@ -4,7 +4,10 @@
 
 use crate::*;
 use molt_obj_model::MoltObject;
-use num_bigint::{BigInt, Sign};
+use molt_runtime_core::numeric_error_policy_generated::{
+    NumericErrorContext, python_float_divmod, python_integer_divmod,
+};
+use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 
@@ -19,6 +22,18 @@ pub(crate) mod native_slots;
 mod percent_format;
 
 use percent_format::string_percent_format_impl;
+
+pub(crate) fn raise_numeric_error(py: &PyToken<'_>, context: NumericErrorContext) -> u64 {
+    let target = super::ops_sys::runtime_target_python_info(runtime_state(py));
+    match context.message(target.major, target.minor) {
+        Some(message) => raise_exception::<_>(py, context.error_class(), message),
+        None => raise_exception::<_>(
+            py,
+            "RuntimeError",
+            "unsupported numeric exception target version",
+        ),
+    }
+}
 
 /// `lhs <op> rhs` for a complex and a complex, float or int operand, computed
 /// as complex arithmetic computes it for the target Python; `None` for any
@@ -43,7 +58,7 @@ fn complex_binary_payload(
     Some(
         match complex_arith(op, lhs, rhs, runtime_target_at_least(_py, 3, 14)) {
             Some(value) => complex_bits(_py, value.re, value.im),
-            None => raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero"),
+            None => raise_numeric_error(_py, NumericErrorContext::ComplexTrueDivision),
         },
     )
 }
@@ -1301,14 +1316,14 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
         {
             if ri == 0 {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+                return raise_numeric_error(_py, NumericErrorContext::IntegerTrueDivision);
             }
             return float_result_bits(_py, li as f64 / ri as f64);
         }
         match float_pair_from_obj(_py, lhs, rhs) {
             Ok(Some((lf, rf))) => {
                 if rf == 0.0 {
-                    return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+                    return raise_numeric_error(_py, NumericErrorContext::FloatTrueDivision);
                 }
                 return float_result_bits(_py, lf / rf);
             }
@@ -1331,7 +1346,7 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             && let (Some(la), Some(lb)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()))
         {
             if lb.is_zero() {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+                return raise_numeric_error(_py, NumericErrorContext::IntegerTrueDivision);
             }
             match bigint_true_divide(&la, &lb) {
                 Some(q) => return float_result_bits(_py, q),
@@ -1400,32 +1415,15 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
         if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits())) {
             if ri == 0 {
-                return raise_exception::<_>(
-                    _py,
-                    "ZeroDivisionError",
-                    "integer division or modulo by zero",
-                );
+                return raise_numeric_error(_py, NumericErrorContext::IntegerFloorDivision);
             }
-            if li == i64::MIN && ri == -1 {
-                // overflow — fall through to bigint
-            } else {
-                let q = li / ri;
-                let r = li % ri;
-                let res = if r != 0 && (r < 0) != (ri < 0) {
-                    q - 1
-                } else {
-                    q
-                };
-                return int_bits_from_i64(_py, res);
-            }
+            let (quotient, _) = python_integer_divmod(i128::from(li), i128::from(ri))
+                .expect("nonzero i64 operands fit i128 division");
+            return int_bits_from_i128(_py, quotient);
         }
         if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
             if r_big.is_zero() {
-                return raise_exception::<_>(
-                    _py,
-                    "ZeroDivisionError",
-                    "integer division or modulo by zero",
-                );
+                return raise_numeric_error(_py, NumericErrorContext::IntegerFloorDivision);
             }
             let res = l_big.div_floor(&r_big);
             if let Some(i) = bigint_to_inline(&res) {
@@ -1436,13 +1434,9 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         match float_pair_from_obj(_py, lhs, rhs) {
             Ok(Some((lf, rf))) => {
                 if rf == 0.0 {
-                    return raise_exception::<_>(
-                        _py,
-                        "ZeroDivisionError",
-                        "float floor division by zero",
-                    );
+                    return raise_numeric_error(_py, NumericErrorContext::FloatFloorDivision);
                 }
-                return float_result_bits(_py, (lf / rf).floor());
+                return float_result_bits(_py, python_float_divmod(lf, rf).expect("nonzero divisor checked").0);
             }
             Err(()) => return MoltObject::none().bits(),
             Ok(None) => {}
@@ -1503,25 +1497,11 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         // Int fast path first — much more common than string % formatting.
         if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits())) {
             if ri == 0 {
-                return raise_exception::<_>(
-                    _py,
-                    "ZeroDivisionError",
-                    "integer division or modulo by zero",
-                );
+                return raise_numeric_error(_py, NumericErrorContext::IntegerModulo);
             }
-            if li == i64::MIN && ri == -1 {
-                // `i64::MIN % -1` overflows the raw `%` (its quotient 2**63 is
-                // not an i64), so it panics in debug builds / traps. The Python
-                // value is 0; fall through to the bigint path below, which
-                // returns it (collapsed back to inline). Mirrors the identical
-                // guard in `floordiv_impl`.
-            } else {
-                let mut rem = li % ri;
-                if rem != 0 && (rem > 0) != (ri > 0) {
-                    rem += ri;
-                }
-                return MoltObject::from_int(rem).bits();
-            }
+            let (_, remainder) = python_integer_divmod(i128::from(li), i128::from(ri))
+                .expect("nonzero i64 operands fit i128 division");
+            return int_bits_from_i128(_py, remainder);
         }
         // String % formatting — moved after int fast path.
         if let Some(ptr) = lhs.as_ptr() {
@@ -1535,11 +1515,7 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
         if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
             if r_big.is_zero() {
-                return raise_exception::<_>(
-                    _py,
-                    "ZeroDivisionError",
-                    "integer division or modulo by zero",
-                );
+                return raise_numeric_error(_py, NumericErrorContext::IntegerModulo);
             }
             let res = l_big.mod_floor(&r_big);
             if let Some(i) = bigint_to_inline(&res) {
@@ -1550,13 +1526,12 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         match float_pair_from_obj(_py, lhs, rhs) {
             Ok(Some((lf, rf))) => {
                 if rf == 0.0 {
-                    return raise_exception::<_>(_py, "ZeroDivisionError", "float modulo");
+                    return raise_numeric_error(_py, NumericErrorContext::FloatModulo);
                 }
-                let mut rem = lf % rf;
-                if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
-                    rem += rf;
-                }
-                return float_result_bits(_py, rem);
+                return float_result_bits(
+                    _py,
+                    python_float_divmod(lf, rf).expect("nonzero divisor checked").1,
+                );
             }
             Err(()) => return MoltObject::none().bits(),
             Ok(None) => {}
@@ -1589,24 +1564,30 @@ pub extern "C" fn molt_inplace_mod(a: u64, b: u64) -> u64 {
 }
 
 fn complex_pow(base: ComplexParts, exp: ComplexParts) -> Result<ComplexParts, ()> {
+    // A zero exponent is an identity even for nonfinite bases. Resolve it
+    // before logarithms, which otherwise turn zero * infinity into NaN.
+    if exp.re == 0.0 && exp.im == 0.0 {
+        return Ok(ComplexParts { re: 1.0, im: 0.0 });
+    }
     if base.re == 0.0 && base.im == 0.0 {
-        if exp.re == 0.0 && exp.im == 0.0 {
-            return Ok(ComplexParts { re: 1.0, im: 0.0 });
-        }
         if exp.im != 0.0 || exp.re < 0.0 {
             return Err(());
         }
         return Ok(ComplexParts { re: 0.0, im: 0.0 });
     }
-    let r = (base.re * base.re + base.im * base.im).sqrt();
-    let theta = base.im.atan2(base.re);
-    let log_r = r.ln();
-    let u = exp.re * log_r - exp.im * theta;
-    let v = exp.im * log_r + exp.re * theta;
-    let exp_u = u.exp();
+    // Match the scalar CPython polar formula. hypot avoids intermediate
+    // squared overflow/underflow; a real exponent needs no log computation.
+    let magnitude = base.re.hypot(base.im);
+    let argument = base.im.atan2(base.re);
+    let mut length = magnitude.powf(exp.re);
+    let mut phase = argument * exp.re;
+    if exp.im != 0.0 {
+        length *= (-argument * exp.im).exp();
+        phase += exp.im * magnitude.ln();
+    }
     Ok(ComplexParts {
-        re: exp_u * v.cos(),
-        im: exp_u * v.sin(),
+        re: length * phase.cos(),
+        im: length * phase.sin(),
     })
 }
 
@@ -1617,11 +1598,7 @@ fn complex_power_payload(py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> 
     ) {
         (Ok(Some(base)), Ok(Some(exp))) => Some(match complex_pow(base, exp) {
             Ok(out) => complex_bits(py, out.re, out.im),
-            Err(()) => raise_exception(
-                py,
-                "ZeroDivisionError",
-                "zero to a negative or complex power",
-            ),
+            Err(()) => raise_numeric_error(py, NumericErrorContext::ComplexNegativePower),
         }),
         (Err(_), _) | (_, Err(_)) => Some(raise_exception(
             py,
@@ -1637,7 +1614,7 @@ fn pow_i64_checked(base: i64, exp: i64) -> Option<i64> {
     }
     let mut result: i128 = 1;
     let mut base_val: i128 = base as i128;
-    let mut exp_val = exp as u64;
+    let mut exp_val = exp;
     let max = (1i128 << 46) - 1;
     let min = -(1i128 << 46);
     while exp_val > 0 {
@@ -1658,6 +1635,27 @@ fn pow_i64_checked(base: i64, exp: i64) -> Option<i64> {
     Some(result as i64)
 }
 
+/// Bounded exact integer-power cases, with a typed nonnegative exponent.
+/// Identity bases precede exponent conversion, so even arbitrarily wide
+/// exponents need no result allocation. None records a general exponent that
+/// the existing library API cannot represent; it must never wrap to u32.
+/// General large-power allocation/error parity remains a separate contract gap.
+fn integer_pow_nonnegative(base: &BigInt, exponent: &BigUint) -> Option<BigInt> {
+    if exponent.is_zero() {
+        return Some(BigInt::from(1));
+    }
+    if base.is_zero() {
+        return Some(BigInt::from(0));
+    }
+    if base == &BigInt::from(1) {
+        return Some(BigInt::from(1));
+    }
+    if base == &BigInt::from(-1) {
+        return Some(BigInt::from(if exponent.is_odd() { -1 } else { 1 }));
+    }
+    Some(base.pow(exponent.to_u32()?))
+}
+
 fn mod_py_i128(value: i128, modulus: i128) -> i128 {
     let mut rem = value % modulus;
     if rem != 0 && (rem > 0) != (modulus > 0) {
@@ -1666,7 +1664,7 @@ fn mod_py_i128(value: i128, modulus: i128) -> i128 {
     rem
 }
 
-fn mod_pow_i128(_py: &PyToken<'_>, mut base: i128, exp: i64, modulus: i128) -> i128 {
+fn mod_pow_i128(_py: &PyToken<'_>, mut base: i128, exp: u64, modulus: i128) -> i128 {
     let mut result: i128 = 1;
     base = mod_py_i128(base, modulus);
     let mut exp_val = exp as u64;
@@ -1763,7 +1761,11 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 if let Some(res) = pow_i64_checked(li, ri) {
                     return int_bits_from_i64(_py, res);
                 }
-                let res = BigInt::from(li).pow(ri as u32);
+                let Some(res) =
+                    integer_pow_nonnegative(&BigInt::from(li), &BigUint::from(ri as u64))
+                else {
+                    return raise_exception::<_>(_py, "OverflowError", "exponent too large");
+                };
                 if let Some(i) = bigint_to_inline(&res) {
                     return MoltObject::from_int(i).bits();
                 }
@@ -1772,11 +1774,7 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             let lf = li as f64;
             let rf = ri as f64;
             if lf == 0.0 && rf < 0.0 {
-                return raise_exception::<_>(
-                    _py,
-                    "ZeroDivisionError",
-                    "0.0 cannot be raised to a negative power",
-                );
+                return raise_numeric_error(_py, NumericErrorContext::NegativePower);
             }
             let out = lf.powf(rf);
             if out.is_infinite() && lf.is_finite() && rf.is_finite() {
@@ -1786,35 +1784,33 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
         if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()))
         {
-            if let Some(exp) = r_big.to_u64() {
-                let res = l_big.pow(exp as u32);
-                if let Some(i) = bigint_to_inline(&res) {
-                    return MoltObject::from_int(i).bits();
-                }
-                return bigint_bits(_py, res);
+            if !r_big.is_negative() {
+                let Some(res) = integer_pow_nonnegative(&l_big, r_big.magnitude()) else {
+                    return raise_exception::<_>(_py, "OverflowError", "exponent too large");
+                };
+                return int_bits_from_bigint(_py, res);
             }
-            if r_big.is_negative()
-                && let Some(lf) = l_big.to_f64()
-            {
-                let rf = r_big.to_f64().unwrap_or(f64::NEG_INFINITY);
-                if lf == 0.0 && rf < 0.0 {
-                    return raise_exception::<_>(
-                        _py,
-                        "ZeroDivisionError",
-                        "0.0 cannot be raised to a negative power",
-                    );
-                }
-                return float_result_bits(_py, lf.powf(rf));
-            }
-            return raise_exception::<_>(_py, "OverflowError", "exponent too large");
-        }
-        if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
-            if lf == 0.0 && rf < 0.0 {
+            let (Some(lf), Some(rf)) = (
+                crate::builtins::numbers::checked_integer_double(&l_big),
+                crate::builtins::numbers::checked_integer_double(&r_big),
+            ) else {
                 return raise_exception::<_>(
                     _py,
-                    "ZeroDivisionError",
-                    "0.0 cannot be raised to a negative power",
+                    "OverflowError",
+                    "int too large to convert to float",
                 );
+            };
+            if lf == 0.0 && rf < 0.0 {
+                return raise_numeric_error(_py, NumericErrorContext::NegativePower);
+            }
+            return float_result_bits(_py, lf.powf(rf));
+        }
+        if let Some((lf, rf)) = match float_pair_from_obj(_py, lhs, rhs) {
+            Ok(pair) => pair,
+            Err(()) => return MoltObject::none().bits(),
+        } {
+            if lf == 0.0 && rf < 0.0 {
+                return raise_numeric_error(_py, NumericErrorContext::NegativePower);
             }
             if lf < 0.0 && rf.is_finite() && rf.fract() != 0.0 {
                 let base = ComplexParts { re: lf, im: 0.0 };
@@ -1870,7 +1866,7 @@ pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
         if let (Some(li), Some(ri), Some(mi)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()), index_i64_integral_bits(mod_obj.bits())) {
             let (base, exp, modulus) = (li as i128, ri, mi as i128);
             if modulus == 0 {
-                return raise_exception::<_>(_py, "ValueError", "pow() 3rd argument cannot be 0");
+                return raise_numeric_error(_py, NumericErrorContext::ModularPowerZero);
             }
             let result = if exp < 0 {
                 let mod_abs = modulus.abs();
@@ -1883,9 +1879,9 @@ pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
                     );
                 };
                 let inv_mod = mod_py_i128(inv, modulus);
-                mod_pow_i128(_py, inv_mod, -exp, modulus)
+                mod_pow_i128(_py, inv_mod, exp.unsigned_abs(), modulus)
             } else {
-                mod_pow_i128(_py, base, exp, modulus)
+                mod_pow_i128(_py, base, exp as u64, modulus)
             };
             return int_bits_from_i128(_py, result);
         }
@@ -1893,7 +1889,7 @@ pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
             (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(mod_obj.bits()))
         {
             if modulus.is_zero() {
-                return raise_exception::<_>(_py, "ValueError", "pow() 3rd argument cannot be 0");
+                return raise_numeric_error(_py, NumericErrorContext::ModularPowerZero);
             }
             let result = if exp.is_negative() {
                 let mod_abs = modulus.abs();
@@ -3163,6 +3159,405 @@ mod tests {
         dec_ref_bits(_py, exc_bits);
         let _ = crate::molt_exception_clear();
         (kind, msg)
+    }
+
+    #[test]
+    fn numeric_zero_error_family_matches_three_cpython_minors() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            let saved = state.sys_version_info.lock().unwrap().clone();
+            let mut target = crate::object::ops_sys::runtime_target_python_info(state);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                for minor in [12, 13, 14] {
+                    target.major = 3;
+                    target.minor = minor;
+                    *state.sys_version_info.lock().unwrap() = Some(target.clone());
+                    let integer = MoltObject::from_int(7).bits();
+                    let float = MoltObject::from_float(7.0).bits();
+                    let zero = MoltObject::from_bool(false).bits();
+                    let float_zero = MoltObject::from_float(-0.0).bits();
+                    for (operation, legacy_integer, legacy_float) in [
+                        (
+                            molt_div as extern "C" fn(u64, u64) -> u64,
+                            "division by zero",
+                            "float division by zero",
+                        ),
+                        (
+                            molt_inplace_div,
+                            "division by zero",
+                            "float division by zero",
+                        ),
+                        (
+                            molt_floordiv,
+                            "integer division or modulo by zero",
+                            "float floor division by zero",
+                        ),
+                        (
+                            molt_inplace_floordiv,
+                            "integer division or modulo by zero",
+                            "float floor division by zero",
+                        ),
+                        (
+                            molt_mod,
+                            "integer modulo by zero",
+                            if minor == 12 {
+                                "float modulo"
+                            } else {
+                                "float modulo by zero"
+                            },
+                        ),
+                        (
+                            molt_inplace_mod,
+                            "integer modulo by zero",
+                            if minor == 12 {
+                                "float modulo"
+                            } else {
+                                "float modulo by zero"
+                            },
+                        ),
+                    ] {
+                        for (lhs, rhs, legacy) in [
+                            (integer, zero, legacy_integer),
+                            (float, float_zero, legacy_float),
+                        ] {
+                            operation(lhs, rhs);
+                            let (kind, message) = pending_exception_kind_and_message(_py);
+                            assert_eq!(kind, "ZeroDivisionError");
+                            assert_eq!(
+                                message,
+                                if minor == 14 {
+                                    "division by zero"
+                                } else {
+                                    legacy
+                                }
+                            );
+                        }
+                        let big = bigint_bits(_py, BigInt::from(10).pow(80));
+                        operation(big, zero);
+                        let (kind, message) = pending_exception_kind_and_message(_py);
+                        assert_eq!(kind, "ZeroDivisionError");
+                        assert_eq!(
+                            message,
+                            if minor == 14 {
+                                "division by zero"
+                            } else {
+                                legacy_integer
+                            }
+                        );
+                        dec_ref_bits(_py, big);
+                    }
+                    for (lhs, rhs, legacy) in [
+                        (integer, zero, "integer division or modulo by zero"),
+                        (float, float_zero, "float divmod()"),
+                    ] {
+                        crate::molt_divmod_builtin(lhs, rhs);
+                        assert_eq!(
+                            pending_exception_kind_and_message(_py),
+                            (
+                                "ZeroDivisionError".into(),
+                                if minor == 14 {
+                                    "division by zero"
+                                } else {
+                                    legacy
+                                }
+                                .into(),
+                            )
+                        );
+                    }
+                    let complex = complex_bits(_py, 7.0, 1.0);
+                    let complex_zero = complex_bits(_py, 0.0, -0.0);
+                    molt_div(complex, complex_zero);
+                    assert_eq!(
+                        pending_exception_kind_and_message(_py),
+                        (
+                            "ZeroDivisionError".into(),
+                            if minor == 14 {
+                                "division by zero"
+                            } else {
+                                "complex division by zero"
+                            }
+                            .into(),
+                        )
+                    );
+                    let negative = MoltObject::from_int(-1).bits();
+                    for operation in [molt_pow as extern "C" fn(u64, u64) -> u64, molt_inplace_pow]
+                    {
+                        operation(zero, negative);
+                        assert_eq!(
+                            pending_exception_kind_and_message(_py),
+                            (
+                                "ZeroDivisionError".into(),
+                                if minor == 14 {
+                                    "zero to a negative power"
+                                } else {
+                                    "0.0 cannot be raised to a negative power"
+                                }
+                                .into(),
+                            )
+                        );
+                    }
+                    let complex_exponent = complex_bits(_py, -1.0, 1.0);
+                    molt_pow(complex_zero, complex_exponent);
+                    assert_eq!(
+                        pending_exception_kind_and_message(_py),
+                        (
+                            "ZeroDivisionError".into(),
+                            if minor == 14 {
+                                "zero to a negative or complex power"
+                            } else {
+                                "0.0 to a negative or complex power"
+                            }
+                            .into(),
+                        )
+                    );
+                    super::molt_pow_mod(integer, negative, zero);
+                    assert_eq!(
+                        pending_exception_kind_and_message(_py),
+                        ("ValueError".into(), "pow() 3rd argument cannot be 0".into(),)
+                    );
+                    for bits in [complex, complex_zero, complex_exponent] {
+                        dec_ref_bits(_py, bits);
+                    }
+                }
+            }));
+            *state.sys_version_info.lock().unwrap() = saved;
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
+        });
+    }
+
+    #[test]
+    fn complex_power_preserves_zero_identity_and_scaled_magnitude() {
+        for base in [
+            ComplexParts {
+                re: f64::INFINITY,
+                im: 0.0,
+            },
+            ComplexParts {
+                re: f64::NAN,
+                im: 1.0,
+            },
+            ComplexParts { re: 0.0, im: -0.0 },
+        ] {
+            let result = complex_pow(base, ComplexParts { re: -0.0, im: 0.0 }).unwrap();
+            assert_eq!(result.re, 1.0);
+            assert_eq!(result.im.to_bits(), 0.0_f64.to_bits());
+        }
+        for (base, expected) in [(1e-300_f64, 1e-150_f64), (1e300, 1e150)] {
+            let result = complex_pow(
+                ComplexParts { re: base, im: 0.0 },
+                ComplexParts { re: 0.5, im: 0.0 },
+            )
+            .unwrap();
+            assert_eq!(result.re.to_bits(), expected.to_bits());
+            assert_eq!(result.im.to_bits(), 0.0_f64.to_bits());
+        }
+    }
+
+    #[test]
+    fn integer_power_identities_keep_wide_exponents_exact() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let huge = BigInt::from(10u32).pow(400);
+            for exponent in [
+                BigInt::from(0),
+                BigInt::from(1),
+                BigInt::from(1u64 << 63),
+                huge.clone(),
+                &huge + 1,
+            ] {
+                let exponent_bits = int_bits_from_bigint(_py, exponent.clone());
+                for (base, base_bits) in [
+                    (0, MoltObject::from_int(0).bits()),
+                    (1, MoltObject::from_int(1).bits()),
+                    (-1, MoltObject::from_int(-1).bits()),
+                    (0, MoltObject::from_bool(false).bits()),
+                    (1, MoltObject::from_bool(true).bits()),
+                ] {
+                    let expected = if exponent.is_zero() || base == 1 {
+                        1
+                    } else if base == 0 {
+                        0
+                    } else if exponent.is_odd() {
+                        -1
+                    } else {
+                        1
+                    };
+                    for operation in [molt_pow as extern "C" fn(u64, u64) -> u64, molt_inplace_pow]
+                    {
+                        let result = operation(base_bits, exponent_bits);
+                        assert_eq!(to_i64(obj_from_bits(result)), Some(expected));
+                        assert_eq!(crate::molt_exception_pending(), 0);
+                        dec_ref_bits(_py, result);
+                    }
+                }
+                dec_ref_bits(_py, exponent_bits);
+            }
+            let base = bigint_bits(_py, huge);
+            let result = molt_pow(base, MoltObject::from_int(0).bits());
+            assert_eq!(to_i64(obj_from_bits(result)), Some(1));
+            dec_ref_bits(_py, base);
+            dec_ref_bits(_py, result);
+        });
+    }
+
+    #[test]
+    fn bigint_float_conversion_overflow_precedes_arithmetic_zero_errors() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let huge = bigint_bits(_py, BigInt::from(10u32).pow(400));
+            let negative_huge = bigint_bits(_py, -BigInt::from(10u32).pow(400));
+            let one = MoltObject::from_float(1.0).bits();
+            let zero = MoltObject::from_float(0.0).bits();
+            let complex = complex_bits(_py, 1.0, 0.0);
+            for operation in [
+                molt_add as extern "C" fn(u64, u64) -> u64,
+                molt_sub,
+                molt_mul,
+                molt_div,
+                molt_floordiv,
+                molt_mod,
+                crate::molt_divmod,
+                molt_pow,
+            ] {
+                for (lhs, rhs) in [(huge, one), (one, huge), (huge, zero)] {
+                    let _ = operation(lhs, rhs);
+                    assert_eq!(
+                        pending_exception_kind_and_message(_py),
+                        (
+                            "OverflowError".to_string(),
+                            "int too large to convert to float".to_string()
+                        )
+                    );
+                    let _ = crate::molt_exception_clear();
+                }
+            }
+            for (lhs, rhs) in [
+                (huge, complex),
+                (complex, huge),
+                (huge, MoltObject::from_int(-1).bits()),
+                (MoltObject::from_int(0).bits(), negative_huge),
+            ] {
+                let _ = molt_pow(lhs, rhs);
+                assert_eq!(
+                    pending_exception_kind_and_message(_py),
+                    (
+                        "OverflowError".to_string(),
+                        "int too large to convert to float".to_string()
+                    )
+                );
+                let _ = crate::molt_exception_clear();
+            }
+            // Ratio and ordering avoid lossy conversion by design.
+            assert_eq!(obj_from_bits(molt_div(huge, huge)).as_float(), Some(1.0));
+            assert_eq!(
+                compare_numbers(obj_from_bits(huge), MoltObject::from_float(f64::INFINITY)),
+                Some(std::cmp::Ordering::Less)
+            );
+            assert_eq!(crate::molt_exception_pending(), 0);
+            dec_ref_bits(_py, huge);
+            dec_ref_bits(_py, negative_huge);
+            dec_ref_bits(_py, complex);
+        });
+    }
+
+    #[test]
+    fn float_divrem_and_scaled_complex_dispatch_match_python_edges() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            for (lhs, rhs, quotient, remainder) in [
+                (1.0_f64, 0.1_f64, 9.0_f64, 0.09999999999999995_f64),
+                (7.0, -3.0, -3.0, -2.0),
+                (-7.0, 3.0, -3.0, 2.0),
+                (0.0, -3.0, -0.0, -0.0),
+            ] {
+                let a = MoltObject::from_float(lhs).bits();
+                let b = MoltObject::from_float(rhs).bits();
+                for (operation, expected) in [
+                    (molt_floordiv as extern "C" fn(u64, u64) -> u64, quotient),
+                    (molt_mod, remainder),
+                ] {
+                    let output = operation(a, b);
+                    assert_eq!(
+                        obj_from_bits(output).as_float().unwrap().to_bits(),
+                        expected.to_bits()
+                    );
+                    assert_eq!(crate::molt_exception_pending(), 0);
+                    dec_ref_bits(_py, output);
+                }
+            }
+            let divisor = complex_bits(_py, 1e-300, 0.0);
+            let output = molt_div(MoltObject::from_float(1.0).bits(), divisor);
+            let result = complex_from_obj_strict(_py, obj_from_bits(output))
+                .expect("finite complex quotient must coerce")
+                .expect("quotient must be a complex value");
+            assert_eq!(result.re, 1.0 / 1e-300);
+            assert_eq!(result.im.abs(), 0.0);
+            assert_eq!(crate::molt_exception_pending(), 0);
+            dec_ref_bits(_py, output);
+            dec_ref_bits(_py, divisor);
+        });
+    }
+
+    #[test]
+    fn modular_power_minimum_signed_exponent_is_not_negated() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let exponent = int_bits_from_i64(_py, i64::MIN);
+            let output = super::molt_pow_mod(
+                MoltObject::from_int(3).bits(),
+                exponent,
+                MoltObject::from_int(7).bits(),
+            );
+            assert_eq!(to_i64(obj_from_bits(output)), Some(4));
+            assert_eq!(crate::molt_exception_pending(), 0);
+            dec_ref_bits(_py, exponent);
+            dec_ref_bits(_py, output);
+        });
+    }
+
+    #[test]
+    fn signed_floor_mod_preserve_wide_integer_and_bool_results() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            for (a, b, quotient, remainder) in [
+                (7i128, -3i128, -3i128, -2i128),
+                (-7, -3, 2, -1),
+                (-7, 3, -3, 2),
+                (i128::from(i64::MIN), -1, 1i128 << 63, 0),
+                (-1, i128::from(i64::MAX), -1, i128::from(i64::MAX) - 1),
+            ] {
+                let lhs = int_bits_from_i128(_py, a);
+                let rhs = int_bits_from_i128(_py, b);
+                for (operation, expected) in [
+                    (molt_floordiv as extern "C" fn(u64, u64) -> u64, quotient),
+                    (molt_mod, remainder),
+                ] {
+                    let output = operation(lhs, rhs);
+                    assert_eq!(
+                        to_bigint(obj_from_bits(output)),
+                        Some(BigInt::from(expected))
+                    );
+                    dec_ref_bits(_py, output);
+                }
+                dec_ref_bits(_py, lhs);
+                dec_ref_bits(_py, rhs);
+            }
+            let output = molt_mod(
+                MoltObject::from_bool(true).bits(),
+                MoltObject::from_int(-3).bits(),
+            );
+            assert_eq!(to_i64(obj_from_bits(output)), Some(-2));
+            dec_ref_bits(_py, output);
+        });
     }
 
     #[test]

@@ -5721,6 +5721,19 @@ pub unsafe fn molt_foreign_getattr(
     unsafe { owned_native_result_to_runtime(result) }
 }
 
+/// Read a foreign sequence through its native sq_item and owned-result boundary.
+///
+/// # Safety
+/// `c_ptr` must identify a live native object retained by its runtime wrapper.
+pub unsafe fn molt_foreign_sequence_item(
+    c_ptr: usize,
+    index: isize,
+) -> crate::hooks::OwnedHandleResult {
+    let object = core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr);
+    let result = unsafe { crate::api::abstract_sequence::PySequence_GetItem(object, index) };
+    unsafe { owned_native_result_to_runtime(result) }
+}
+
 /// Return the wrapped C object's type name (`tp_name`, a static C string) for
 /// honest diagnostics of a foreign wrapper. Returns NULL when unavailable.
 ///

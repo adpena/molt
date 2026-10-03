@@ -825,7 +825,9 @@ def _execute_backend_compile(
             )
             if forward_daemon_log and not json_output:
                 daemon_log_path = _backend_daemon_log_path(
-                    molt_root, backend_cargo_profile
+                    molt_root,
+                    backend_cargo_profile,
+                    config_digest=backend_daemon_config_digest,
                 )
                 daemon_log_offset = _backend_daemon_log_mark(daemon_log_path)
             daemon_compile = _compile_with_backend_daemon(

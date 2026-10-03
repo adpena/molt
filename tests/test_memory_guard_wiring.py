@@ -1227,7 +1227,7 @@ def test_outer_memory_guard_accepts_live_marker_when_parent_chain_breaks(
 ) -> None:
     guard_pid = 100
     current_pid = 300
-    token = "x" * 16
+    token = "a" * 32
     marker_dir = tmp_path / "active"
     marker_dir.mkdir()
     marker = marker_dir / f"guard-{guard_pid}-{token}.json"
@@ -1236,6 +1236,10 @@ def test_outer_memory_guard_accepts_live_marker_when_parent_chain_breaks(
             {
                 "pid": guard_pid,
                 "token": token,
+                "schema_version": 2,
+                "guard_process": {"pid": guard_pid, "started_at_ns": 100},
+                "child_launch_state": "recorded",
+                "child_process": {"pid": 200, "started_at_ns": 200},
                 "path": str(REPO_ROOT / "tools" / "memory_guard.py"),
                 "status": "child_running",
             }
@@ -1279,7 +1283,7 @@ def test_outer_memory_guard_accepts_live_marker_without_process_sample(
     tmp_path: Path,
 ) -> None:
     guard_pid = 100
-    token = "x" * 16
+    token = "a" * 32
     marker_dir = tmp_path / "active"
     marker_dir.mkdir()
     marker = marker_dir / f"guard-{guard_pid}-{token}.json"
@@ -1288,6 +1292,10 @@ def test_outer_memory_guard_accepts_live_marker_without_process_sample(
             {
                 "pid": guard_pid,
                 "token": token,
+                "schema_version": 2,
+                "guard_process": {"pid": guard_pid, "started_at_ns": 100},
+                "child_launch_state": "recorded",
+                "child_process": {"pid": 200, "started_at_ns": 200},
                 "path": str(REPO_ROOT / "tools" / "memory_guard.py"),
                 "status": "child_running",
             }
@@ -1316,7 +1324,7 @@ def test_outer_memory_guard_rejects_terminal_active_marker(
     tmp_path: Path,
 ) -> None:
     guard_pid = 100
-    token = "x" * 16
+    token = "a" * 32
     marker_dir = tmp_path / "active"
     marker_dir.mkdir()
     marker = marker_dir / f"guard-{guard_pid}-{token}.json"
@@ -1325,6 +1333,10 @@ def test_outer_memory_guard_rejects_terminal_active_marker(
             {
                 "pid": guard_pid,
                 "token": token,
+                "schema_version": 2,
+                "guard_process": {"pid": guard_pid, "started_at_ns": 100},
+                "child_launch_state": "recorded",
+                "child_process": {"pid": 200, "started_at_ns": 200},
                 "path": str(REPO_ROOT / "tools" / "memory_guard.py"),
                 "status": "completed",
             }

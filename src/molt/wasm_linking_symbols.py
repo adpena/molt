@@ -23,21 +23,24 @@ WasmLinkingSymbolKind = Literal["function", "data", "global", "table", "tag"]
 
 _LINKING_SECTION_NAME = "linking"
 _LINKING_METADATA_VERSION = 2
-_SYMBOL_TABLE_SUBSECTION_ID = 8
-_SYMBOL_KIND_FUNCTION = 0
-_SYMBOL_KIND_DATA = 1
+SYMTAB_SUBSECTION_ID = 8
+SYMBOL_KIND_FUNCTION = 0
+SYMBOL_KIND_DATA = 1
 _INDEXED_SYMBOL_KINDS: dict[int, WasmLinkingSymbolKind] = {
     2: "global",
     4: "tag",
     5: "table",
 }
 _SYMBOL_KIND_SECTION = 3
-_SYMBOL_BINDING_MASK = 0x3
-_SYMBOL_BINDING_GLOBAL = 0
-_SYMBOL_BINDING_WEAK = 1
-_SYMBOL_BINDING_LOCAL = 2
-_SYMBOL_UNDEFINED = 0x10
-_SYMBOL_EXPLICIT_NAME = 0x40
+SYMBOL_BINDING_MASK = 0x3
+FLAG_BINDING_GLOBAL = 0
+FLAG_BINDING_WEAK = 1
+FLAG_BINDING_LOCAL = 2
+FLAG_VISIBILITY_HIDDEN = 0x4
+FLAG_UNDEFINED = 0x10
+FLAG_EXPORTED = 0x20
+FLAG_EXPLICIT_NAME = 0x40
+FLAG_NO_STRIP = 0x80
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,14 +55,14 @@ class WasmLinkingSymbol:
 
     @property
     def is_defined(self) -> bool:
-        return not bool(self.flags & _SYMBOL_UNDEFINED)
+        return not bool(self.flags & FLAG_UNDEFINED)
 
     @property
     def is_externally_linkable(self) -> bool:
-        binding = self.flags & _SYMBOL_BINDING_MASK
+        binding = self.flags & SYMBOL_BINDING_MASK
         return self.is_defined and binding in {
-            _SYMBOL_BINDING_GLOBAL,
-            _SYMBOL_BINDING_WEAK,
+            FLAG_BINDING_GLOBAL,
+            FLAG_BINDING_WEAK,
         }
 
 
@@ -144,7 +147,7 @@ class WasmLinkingSymbolTable:
             for symbol in self.symbols
             if symbol.name
             and symbol.is_externally_linkable
-            and symbol.flags & _SYMBOL_BINDING_MASK == _SYMBOL_BINDING_WEAK
+            and symbol.flags & SYMBOL_BINDING_MASK == FLAG_BINDING_WEAK
         )
 
     def defined_names_for_kinds(
@@ -239,9 +242,9 @@ def _read_string(data: WasmBuffer, offset: int, limit: int) -> tuple[str, int]:
 
 
 def _is_externally_linkable(flags: int) -> bool:
-    return not flags & _SYMBOL_UNDEFINED and flags & _SYMBOL_BINDING_MASK in {
-        _SYMBOL_BINDING_GLOBAL,
-        _SYMBOL_BINDING_WEAK,
+    return not flags & FLAG_UNDEFINED and flags & SYMBOL_BINDING_MASK in {
+        FLAG_BINDING_GLOBAL,
+        FLAG_BINDING_WEAK,
     }
 
 
@@ -250,7 +253,7 @@ def _indexed_symbol(
 ) -> tuple[int, str, int]:
     index, offset = _read_varuint(data, offset, limit)
     name = ""
-    if not flags & _SYMBOL_UNDEFINED or flags & _SYMBOL_EXPLICIT_NAME:
+    if not flags & FLAG_UNDEFINED or flags & FLAG_EXPLICIT_NAME:
         name, offset = _read_string(data, offset, limit)
     return index, name, offset
 
@@ -273,13 +276,13 @@ def _symbol_table(
         offset += 1
         if flags >= 0x80:
             flags, offset = _read_varuint(data, offset - 1, limit)
-        if kind == _SYMBOL_KIND_FUNCTION:
+        if kind == SYMBOL_KIND_FUNCTION:
             index, name, offset = _indexed_symbol(data, offset, limit, flags)
             symbols.append(WasmLinkingSymbol(name, "function", flags, index=index))
             continue
-        if kind == _SYMBOL_KIND_DATA:
+        if kind == SYMBOL_KIND_DATA:
             name, offset = _read_string(data, offset, limit)
-            if flags & _SYMBOL_UNDEFINED:
+            if flags & FLAG_UNDEFINED:
                 symbols.append(WasmLinkingSymbol(name, "data", flags))
                 continue
             segment_index, offset = _read_varuint(data, offset, limit)
@@ -336,16 +339,16 @@ def _defined_names_symbol_table(
         offset += 1
         if flags >= 0x80:
             flags, offset = _read_varuint(data, offset - 1, limit)
-        if kind == _SYMBOL_KIND_FUNCTION:
+        if kind == SYMBOL_KIND_FUNCTION:
             offset = _skip_varuint(data, offset, limit)
-            has_name = not flags & _SYMBOL_UNDEFINED or flags & _SYMBOL_EXPLICIT_NAME
+            has_name = not flags & FLAG_UNDEFINED or flags & FLAG_EXPLICIT_NAME
             if has_name:
                 name_start, name_end = _read_string_bounds(data, offset, limit)
                 offset = name_end
             if (
                 has_name
-                and not flags & _SYMBOL_UNDEFINED
-                and (flags & _SYMBOL_BINDING_MASK) < _SYMBOL_BINDING_LOCAL
+                and not flags & FLAG_UNDEFINED
+                and (flags & SYMBOL_BINDING_MASK) < FLAG_BINDING_LOCAL
             ):
                 candidates = expected_by_kind_and_length.get(
                     ("function", name_end - name_start)
@@ -355,15 +358,15 @@ def _defined_names_symbol_table(
                     if matched is not None:
                         available.add(matched)
             continue
-        if kind == _SYMBOL_KIND_DATA:
+        if kind == SYMBOL_KIND_DATA:
             name_start, name_end = _read_string_bounds(data, offset, limit)
             offset = name_end
-            if flags & _SYMBOL_UNDEFINED:
+            if flags & FLAG_UNDEFINED:
                 continue
             offset = _skip_varuint(data, offset, limit)
             offset = _skip_varuint(data, offset, limit)
             offset = _skip_varuint(data, offset, limit)
-            if flags & _SYMBOL_BINDING_MASK < _SYMBOL_BINDING_LOCAL:
+            if (flags & SYMBOL_BINDING_MASK) < FLAG_BINDING_LOCAL:
                 candidates = expected_by_kind_and_length.get(
                     ("data", name_end - name_start)
                 )
@@ -374,7 +377,7 @@ def _defined_names_symbol_table(
             continue
         if kind in _INDEXED_SYMBOL_KINDS:
             offset = _skip_varuint(data, offset, limit)
-            if not flags & _SYMBOL_UNDEFINED or flags & _SYMBOL_EXPLICIT_NAME:
+            if not flags & FLAG_UNDEFINED or flags & FLAG_EXPLICIT_NAME:
                 _, offset = _read_string_bounds(data, offset, limit)
             continue
         if kind == _SYMBOL_KIND_SECTION:
@@ -430,7 +433,7 @@ def _parse_wasm_linking_symbols(
             subsection_end = payload_offset + subsection_size
             if subsection_end > section_end:
                 raise ValueError("Unexpected EOF while reading linking subsection")
-            if subsection_id == _SYMBOL_TABLE_SUBSECTION_ID:
+            if subsection_id == SYMTAB_SUBSECTION_ID:
                 if symbol_table_seen:
                     raise ValueError("duplicate WebAssembly linking symbol table")
                 symbol_table_seen = True

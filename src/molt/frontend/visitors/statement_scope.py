@@ -8,7 +8,7 @@ separate under-ceiling mixins.
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import (
+from molt.python_private_names import (
     python_import_binding,
     python_source_field,
     resolve_python_private_names,
@@ -759,6 +759,10 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             if _mod_resolvable:
                 if imported_child_is_module:
                     self._record_import_binding_origin(bind_name, imported_child_module)
+                elif self._is_native_python_export(
+                    module_name, attr_name
+                ) and not self._imported_module_attr_is_stable(module_name, attr_name):
+                    self._clear_import_binding_origin(bind_name)
                 else:
                     self._record_import_binding_origin(
                         bind_name, module_name, attr_name=attr_name

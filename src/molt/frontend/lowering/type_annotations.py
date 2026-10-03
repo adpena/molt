@@ -8,7 +8,7 @@ application, container/dict/bytearray hint propagation, and runtime type guards.
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import (
+from molt.python_private_names import (
     python_definition_name,
     python_source_field,
     python_source_unparse,

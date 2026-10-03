@@ -8,6 +8,7 @@ import types
 
 
 ROOT = Path(__file__).resolve().parents[2]
+TINYGRAD_DEMOS = ROOT / "demos" / "tinygrad"
 TINYGRAD_STDLIB = ROOT / "demos" / "tinygrad" / "reference_stdlib" / "tinygrad"
 
 
@@ -25,6 +26,18 @@ def _load_module(module_name: str, path: Path):
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def _resolve_leaf_path(leaf: str) -> Path:
+    """Resolve quarantined Tinygrad modules and their public demo consumers."""
+    for root in (TINYGRAD_STDLIB, TINYGRAD_DEMOS):
+        module_path = root / f"{leaf}.py"
+        if module_path.is_file():
+            return module_path
+        package_path = root / leaf
+        if package_path.is_dir() and (package_path / "__init__.py").is_file():
+            return package_path
+    raise ModuleNotFoundError(f"No Tinygrad reference or demo module named {leaf!r}")
 
 
 @contextmanager
@@ -54,9 +67,7 @@ def tinygrad_stdlib_context(*extra_leaves: str, intrinsics: dict | None = None):
 
         modules = {}
         for leaf in leaves:
-            module_path = TINYGRAD_STDLIB / f"{leaf}.py"
-            if not module_path.exists():
-                module_path = TINYGRAD_STDLIB / leaf
+            module_path = _resolve_leaf_path(leaf)
             module = _load_module(f"tinygrad.{leaf}", module_path)
             setattr(package, leaf, module)
             modules[leaf] = module

@@ -34,6 +34,7 @@ use crate::{
 };
 
 mod execution;
+mod import_star;
 mod runpy;
 mod type_attributes;
 mod type_protocol;
@@ -3228,122 +3229,7 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_import_star(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let src_obj = obj_from_bits(src_bits);
-        let Some(src_ptr) = src_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "module import expects module");
-        };
-        let dst_obj = obj_from_bits(dst_bits);
-        let Some(dst_ptr) = dst_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "module import expects module");
-        };
-        unsafe {
-            if object_type_id(src_ptr) != TYPE_ID_MODULE
-                || object_type_id(dst_ptr) != TYPE_ID_MODULE
-            {
-                return raise_exception::<_>(_py, "TypeError", "module import expects module");
-            }
-            inc_ref_bits(_py, src_bits);
-            let _src_owner = crate::PtrDropGuard::new(src_ptr);
-            inc_ref_bits(_py, dst_bits);
-            let _dst_owner = crate::PtrDropGuard::new(dst_ptr);
-            let src_dict_bits = module_dict_bits(src_ptr);
-            let dst_dict_bits = module_dict_bits(dst_ptr);
-            let src_dict_obj = obj_from_bits(src_dict_bits);
-            let dst_dict_obj = obj_from_bits(dst_dict_bits);
-            let src_dict_ptr = match src_dict_obj.as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-                _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
-            };
-            let dst_dict_ptr = match dst_dict_obj.as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-                _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
-            };
-            inc_ref_bits(_py, src_dict_bits);
-            let _src_dict_owner = crate::PtrDropGuard::new(src_dict_ptr);
-            inc_ref_bits(_py, dst_dict_bits);
-            let _dst_dict_owner = crate::PtrDropGuard::new(dst_dict_ptr);
-            let module_name =
-                string_obj_to_owned(obj_from_bits(module_name_bits(src_ptr))).unwrap_or_default();
-            let all_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.all_name, b"__all__");
-            let all_bits =
-                crate::builtins::attr::attr_lookup_ptr_allow_missing(_py, src_ptr, all_name_bits);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            let skip_private = all_bits.is_none();
-            let names_bits = if let Some(bits) = all_bits {
-                bits
-            } else {
-                // Snapshot only the namespace keys. Each subsequent value read
-                // is observable and may mutate or clear the source namespace.
-                let names: Vec<u64> = dict_order(src_dict_ptr)
-                    .iter()
-                    .step_by(2)
-                    .copied()
-                    .collect();
-                let names_ptr = alloc_tuple(_py, &names);
-                if names_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                MoltObject::from_ptr(names_ptr).bits()
-            };
-            let _names_owner = obj_from_bits(names_bits)
-                .as_ptr()
-                .map(crate::PtrDropGuard::new);
-            let iter_bits = molt_iter(names_bits);
-            let _iter_owner = obj_from_bits(iter_bits)
-                .as_ptr()
-                .map(crate::PtrDropGuard::new);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            loop {
-                let pair_bits = molt_iter_next(iter_bits);
-                let _pair_owner = obj_from_bits(pair_bits)
-                    .as_ptr()
-                    .map(crate::PtrDropGuard::new);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                let Some(pair_ptr) = obj_from_bits(pair_bits).as_ptr() else {
-                    return MoltObject::none().bits();
-                };
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    return MoltObject::none().bits();
-                }
-                let Some((name_bits, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
-                else {
-                    return MoltObject::none().bits();
-                };
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    break;
-                }
-                let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-                    let type_name = class_name_for_error(type_of_bits(_py, name_bits));
-                    let source = if skip_private { "__dict__" } else { "__all__" };
-                    let item = if skip_private { "Key" } else { "Item" };
-                    let msg =
-                        format!("{item} in {module_name}.{source} must be str, not {type_name}");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                };
-                if skip_private && name.starts_with('_') {
-                    continue;
-                }
-                let val_bits = crate::molt_get_attr_name(src_bits, name_bits);
-                let _value_owner = obj_from_bits(val_bits)
-                    .as_ptr()
-                    .map(crate::PtrDropGuard::new);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                dict_set_in_place(_py, dst_dict_ptr, name_bits, val_bits);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-            }
-        }
-        MoltObject::none().bits()
+        import_star::import_star(_py, src_bits, dst_bits)
     })
 }
 

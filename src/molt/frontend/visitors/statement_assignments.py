@@ -84,26 +84,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
             return None
         value_node = self.visit(node.value)
         if isinstance(node.target, ast.Name):
-            self._apply_explicit_hint(node.target.id, value_node)
-            if (
-                self.current_func_name == "molt_main"
-                or node.target.id not in self.global_decls
-            ):
-                self._update_exact_local(node.target.id, node.value, value_node)
-            if (
-                self.current_func_name != "molt_main"
-                and node.target.id in self.global_decls
-            ):
-                self._store_local_value(node.target.id, value_node)
-                return None
-            if self.is_async():
-                self._store_local_value(node.target.id, value_node)
-            else:
-                self._store_local_value(node.target.id, value_node, publish_module=True)
-                if value_node is not None:
-                    self._propagate_container_hints(node.target.id, value_node)
-                if self.current_func_name == "molt_main":
-                    self.globals[node.target.id] = value_node
+            self._emit_assign_target(node.target, value_node, node.value)
             return None
 
         obj = self.visit(node.target.value)
@@ -228,6 +209,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                 self._emit_delete_name(target.id)
                 return
             if isinstance(target, ast.Attribute):
+                self._record_imported_module_attr_mutation(target)
                 obj = self.visit(target.value)
                 if obj is None:
                     raise FrontendRejection(
@@ -356,6 +338,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
             if self._active_class_ns_scope(node.target.id) is not None:
                 self._store_local_value(node.target.id, res)
                 return None
+            self._clear_import_binding_origin(node.target.id)
             if (
                 self.current_func_name != "molt_main"
                 and node.target.id in self.global_decls
@@ -731,7 +714,6 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                 Diagnostic.OPERAND_VALUE, "Unsupported assignment value"
             )
         if isinstance(target, ast.Attribute):
-            self._record_imported_module_attr_mutation(target)
             obj = self.visit(target.value)
             obj_name = None
             if isinstance(target.value, ast.Name):
@@ -771,7 +753,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                 imported_module_provenance,
             )
             self.local_imported_names.discard(target.id)
-            if self.current_func_name == "molt_main" or target.id in self.global_decls:
+            if self.current_func_name == "molt_main":
                 self.global_imported_names.pop(target.id, None)
                 self.global_imported_attr_names.pop(target.id, None)
                 self.global_imported_modules.pop(target.id, None)
@@ -782,18 +764,6 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
             if self.current_func_name == "molt_main":
                 self.global_imported_module_provenance[target.id] = (
                     imported_module_provenance
-                )
-            elif target.id in self.global_decls:
-                previous_global = (
-                    {target.id: self.global_imported_module_provenance[target.id]}
-                    if target.id in self.global_imported_module_provenance
-                    else {}
-                )
-                self.global_imported_module_provenance[target.id] = (
-                    self._join_imported_module_provenance(
-                        previous_global,
-                        {target.id: imported_module_provenance},
-                    )[target.id]
                 )
             if (
                 self.current_func_name == "molt_main"
@@ -874,25 +844,11 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         )
 
     def _emit_delete_name(self, name: str, *, allow_missing: bool = False) -> None:
-        non_module = self._imported_module_alias_provenance(None)
-        self._clear_imported_module_binding(name)
-        if self.current_func_name == "molt_main":
-            self.global_imported_module_provenance[name] = non_module
-        elif name in self.global_decls:
-            self.global_imported_module_provenance[name] = (
-                self._join_imported_module_provenance(
-                    {
-                        name: self.global_imported_module_provenance.get(
-                            name, non_module
-                        )
-                    },
-                    {name: non_module},
-                )[name]
-            )
         class_scope = self._active_class_ns_scope(name)
         if class_scope is not None:
             self._class_ns_delete(class_scope, name)
             return
+        self._clear_import_binding_origin(name)
         self._record_deleted_app_binding(name)
         if self.current_func_name == "molt_main":
             if name in self.boxed_locals:

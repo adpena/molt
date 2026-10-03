@@ -33,6 +33,7 @@ for import_root in (ROOT, SRC):
 
 from tools.command_execution import bind_repository_imports  # noqa: E402
 from tools.toolchain_probe import resolve_single_file_path  # noqa: E402
+from tools.git_identity import clean_checkout_status_arguments, require_git_object_id  # noqa: E402
 
 bind_repository_imports(__file__)
 
@@ -1634,13 +1635,38 @@ def _run_git(args: list[str]) -> str:
 
 
 def _source_commit() -> str:
-    commit = (
-        os.environ.get("GITHUB_SHA", "").strip()
-        or _run_git(["rev-parse", "HEAD"]).strip()
+    try:
+        actual = _run_git(["rev-parse", "--verify", "HEAD^{commit}"]).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(f"cannot resolve proof checkout HEAD: {exc}") from exc
+    commit = require_git_object_id(
+        actual,
+        label="proof checkout commit",
     )
-    if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", commit) is None:
-        raise ValueError(f"invalid source commit identity {commit!r}")
-    return commit.lower()
+    declared = os.environ.get("GITHUB_SHA", "").strip()
+    if declared:
+        require_git_object_id(declared, label="declared CI source commit")
+        if declared != commit:
+            raise ValueError(
+                "declared CI source commit does not match actual checkout HEAD"
+            )
+    return commit
+
+
+def _source_identity() -> dict[str, str]:
+    """Bind immutable Git objects; this is not a continuous worktree monitor."""
+    commit = _source_commit()
+    try:
+        actual = _run_git(["rev-parse", "--verify", f"{commit}^{{tree}}"]).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(f"cannot resolve proof checkout tree: {exc}") from exc
+    tree = require_git_object_id(
+        actual,
+        label="proof checkout tree",
+    )
+    if _source_commit() != commit:
+        raise ValueError("checkout HEAD changed while capturing proof candidate")
+    return {"commit": commit, "tree": tree}
 
 
 def _source_tree_state() -> str:
@@ -1651,17 +1677,16 @@ def _source_tree_state() -> str:
     the instant execution begins. Keep the probe byte-oriented so unusual path
     encodings cannot weaken the cleanliness decision.
     """
-    status = subprocess.check_output(
-        [
-            "git",
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-            "--ignore-submodules=none",
-        ],
-        cwd=ROOT,
-    )
+    try:
+        status = subprocess.check_output(
+            [
+                "git",
+                *clean_checkout_status_arguments(null_terminated=True),
+            ],
+            cwd=ROOT,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(f"cannot observe proof checkout cleanliness: {exc}") from exc
     return "clean" if not status else "dirty"
 
 
@@ -2262,6 +2287,67 @@ def _terminate_guarded_executor(process: subprocess.Popen[Any]) -> bool:
         return True
 
 
+def _guarded_failure_scope(
+    metrics: Mapping[str, Any], *, metrics_valid: bool, returncode: int, cancelled: bool
+) -> tuple[str, str | None]:
+    """Classify the existing guard's evidence, never infer safe timeout from 124."""
+    if cancelled:
+        return "global", "executor cancellation"
+    if not metrics_valid:
+        return "global", "guard outcome unavailable or inconsistent"
+    if metrics.get("infrastructure_failure") is not None:
+        return "global", "guard infrastructure or ownership failure"
+    if metrics.get("memory_violation") is not None:
+        return "global", "unsafe memory pressure"
+    if metrics.get("guard_signal") is not None:
+        return "global", "guard interrupted by signal"
+    reports = metrics.get("termination_reports", [])
+    if not isinstance(reports, list) or any(
+        not isinstance(report, dict)
+        or not isinstance(report.get("remaining_pids"), list)
+        or not isinstance(report.get("remaining_pgids"), list)
+        or report.get("remaining_pids")
+        or report.get("remaining_pgids")
+        for report in reports
+    ):
+        return "global", "guard descendant closure is uncertain"
+    cleanup = metrics.get("windows_job_cleanup")
+    if cleanup is not None and (
+        not isinstance(cleanup, dict)
+        or cleanup.get("completed") is not True
+        or not isinstance(cleanup.get("remaining_processes"), list)
+        or cleanup.get("remaining_processes")
+    ):
+        return "global", "guard job closure is uncertain"
+    quarantine = metrics.get("cargo_incremental_quarantine")
+    if quarantine is not None and (
+        not isinstance(quarantine, dict)
+        or quarantine.get("ownership_status") not in {"quarantined", "not_required"}
+        or not isinstance(quarantine.get("errors"), list)
+        or quarantine.get("errors")
+        or quarantine.get("interruption_inventory_complete") is not True
+        or quarantine.get("interruption_inventory_error") is not None
+        or (
+            quarantine.get("ownership_status") == "not_required"
+            and (
+                quarantine.get("recovery_observations") != []
+                or quarantine.get("moved_paths") != []
+            )
+        )
+    ):
+        return "global", "Cargo quarantine ownership or recovery is unresolved"
+    if returncode == 124 or metrics.get("timed_out") is True:
+        closed = bool(reports) or (
+            isinstance(cleanup, dict) and cleanup.get("completed") is True
+        )
+        if returncode != 124 or metrics.get("timed_out") is not True or not closed:
+            return "global", "timeout lacks confirmed guard closure"
+        return "partition", "command deadline with confirmed guard closure"
+    if metrics.get("exit_signal") is not None:
+        return "global", "command ended by signal or host exception"
+    return ("none", None) if returncode == 0 else ("partition", "command failed")
+
+
 def _run_command(
     plan: ProofPlan,
     command: ProofCommand,
@@ -2285,7 +2371,9 @@ def _run_command(
             "status": "cancelled",
             "returncode": 130,
             "guard_metrics_schema": None,
-            "cancelled_by_fail_fast": True,
+            "cancelled_by_global_stop": True,
+            "failure_scope": "global",
+            "failure_reason": "executor cancellation before launch",
             "termination_escalated": False,
             "environment_policies_applied": list(applied_environment_policies),
             "evidence_outputs": [],
@@ -2304,6 +2392,8 @@ def _run_command(
             "guard_metrics_schema": None,
             "evidence_outputs": [],
             "evidence_error": f"cannot clear stale evidence: {exc}",
+            "failure_scope": "partition",
+            "failure_reason": "evidence publication failed before launch",
             "environment_policies_applied": list(applied_environment_policies),
         }
     wrapped = [
@@ -2363,6 +2453,11 @@ def _run_command(
         if returncode == 0 and metrics_valid
         else "failure"
     )
+    failure_scope, failure_reason = _guarded_failure_scope(
+        metrics, metrics_valid=metrics_valid, returncode=returncode, cancelled=cancelled
+    )
+    if failure_scope == "global" and status == "success":
+        status, returncode = "failure", 2
     evidence_outputs: list[dict[str, Any]] = []
     evidence_error: str | None = None
     for relative in command.evidence_outputs:
@@ -2373,6 +2468,10 @@ def _run_command(
                 status = "failure"
                 returncode = 2
                 evidence_error = str(exc)
+                failure_scope, failure_reason = (
+                    "partition",
+                    "declared evidence unavailable",
+                )
             break
     record = {
         **_base_command_record(command),
@@ -2391,7 +2490,21 @@ def _run_command(
         "status": status,
         "returncode": returncode,
         "guard_metrics_schema": metrics.get("schema"),
-        "cancelled_by_fail_fast": cancelled,
+        "cancelled_by_global_stop": cancelled,
+        "failure_scope": failure_scope,
+        "failure_reason": failure_reason,
+        "guard_outcome": {
+            name: metrics.get(name)
+            for name in (
+                "timed_out",
+                "memory_violation",
+                "guard_signal",
+                "exit_signal",
+                "infrastructure_failure",
+                "termination_reports",
+                "cargo_incremental_quarantine",
+            )
+        },
         "termination_escalated": termination_escalated,
         "environment_policies_applied": list(applied_environment_policies),
         "evidence_outputs": evidence_outputs,
@@ -2413,7 +2526,7 @@ def execute_commands(
         _source_tree_state=_source_tree_state,
         toolchain_fingerprints=toolchain_fingerprints,
         _authority_sha256=_authority_sha256,
-        _source_commit=_source_commit,
+        _source_identity=_source_identity,
         _normalized_os=_normalized_os,
         _normalized_arch=_normalized_arch,
         _required_toolchains=lambda command: _required_toolchains(plan, command),
@@ -2498,7 +2611,7 @@ def verify_receipts(
         command.id: command for command in plan.commands if command.family in selected
     }
     expected_digest = _authority_sha256(plan)
-    expected_commit = _source_commit()
+    expected_source = _source_identity()
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     observed: dict[str, dict[str, Any]] = {}
     for path in _receipt_files(receipt_root):
@@ -2514,8 +2627,13 @@ def verify_receipts(
                 f"{path}: receipt authority digest does not match selected plan"
             )
             continue
-        if payload.get("source_commit") != expected_commit:
+        if payload.get("source_commit") != expected_source["commit"]:
             errors.append(f"{path}: receipt source commit does not match checkout")
+            continue
+        if payload.get("source_tree") != expected_source["tree"]:
+            errors.append(
+                f"{path}: receipt source tree identity does not match checkout"
+            )
             continue
         if payload.get("source_tree_state") != "clean":
             errors.append(f"{path}: receipt source tree is not clean and commit-backed")

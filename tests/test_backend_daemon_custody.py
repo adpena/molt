@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import signal
 
+import pytest
+
 from molt import backend_daemon_custody as custody
 from tools import memory_guard
 
@@ -18,6 +20,7 @@ def _identity(tmp_path: Path, *, pid: int = 101) -> custody.BackendDaemonIdentit
         config_digest="abc123",
         backend_bin=backend_bin,
         created_at=1_700_000_000.0,
+        started_at_ns=111,
         command=f"{backend_bin} --daemon --socket {socket_path}",
     )
 
@@ -211,17 +214,14 @@ def test_backend_daemon_termination_revalidates_before_sigkill(
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
     original = _daemon_sample(identity, started_at_ns=111)
     reused = _daemon_sample(identity, command="/bin/sleep 999", started_at_ns=222)
-    samples = iter(
-        [
-            {identity.pid: original},
-            {identity.pid: original},
-            {identity.pid: original},
-            {identity.pid: reused},
-        ]
-    )
+
+    # PID replacement follows the first TERM, independent of sampler call count.
+    def samples():
+        return {identity.pid: reused if signals else original}
+
     _patch_memory_guard_termination(
         monkeypatch,
-        samples=lambda: next(samples),
+        samples=samples,
         signals=signals,
     )
 
@@ -387,3 +387,12 @@ def test_terminate_backend_daemons_for_session_removes_only_terminated_records(
     assert [record.identity.pid for record in terminated] == [101]
     assert not first_path.exists()
     assert second_path.exists()
+
+
+@pytest.mark.parametrize("raw", [b"\xff", b"[" * 3000 + b"]" * 3000])
+def test_identity_reader_rejects_decode_and_recursive_json_without_escape(
+    tmp_path, raw
+):
+    path = tmp_path / "malformed.identity.json"
+    path.write_bytes(raw)
+    assert custody.read_backend_daemon_identity(path) is None

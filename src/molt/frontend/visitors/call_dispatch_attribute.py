@@ -51,6 +51,12 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
     def _try_emit_attribute_receiver_call(self, node: ast.Call) -> Any:
         if isinstance(node.func, ast.Attribute):
             attr_node = node.func
+            if isinstance(attr_node.value, ast.Name) and (
+                self._imported_module_binding_target(attr_node.value.id) is not None
+            ):
+                # Admission must not emit a receiver that the imported phase
+                # would load again. That phase owns module lookup and calls.
+                return CALL_NOT_HANDLED
             receiver = self.visit(attr_node.value)
             if receiver is None:
                 raise FrontendRejection(
@@ -88,6 +94,16 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 "resize",
             }:
                 self._invalidate_bytearray_len_hint(obj_name, receiver)
+            if self._call_needs_bind(node) and not (
+                method == "replace"
+                and receiver.type_hint == "str"
+                and self.target_python >= (3, 13)
+                and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            ):
+                # Positional primitives cannot consume or discard keywords and
+                # expansions. Capture the real callable before their effects.
+                # str.replace's explicit count-keyword path is version-owned.
+                return self._emit_dynamic_call(node, load_attr_callee())
             if receiver.type_hint == "generator":
                 if method == "send":
                     if len(node.args) != 1:
@@ -890,7 +906,11 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                                 )
                             )
                             return res
-            if method == "startswith":
+            if method == "startswith" and receiver.type_hint in {
+                "str",
+                "bytes",
+                "bytearray",
+            }:
                 if len(node.args) not in (1, 2, 3):
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,
@@ -1000,7 +1020,11 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                         )
                     )
                     return res
-            if method == "endswith":
+            if method == "endswith" and receiver.type_hint in {
+                "str",
+                "bytes",
+                "bytearray",
+            }:
                 if len(node.args) not in (1, 2, 3):
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,
@@ -1110,7 +1134,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                         )
                     )
                     return res
-            if method == "join":
+            if method == "join" and receiver.type_hint == "str":
                 if len(node.args) != 1:
                     callee = load_attr_callee()
                     return self._emit_dynamic_call(node, callee)
@@ -1146,11 +1170,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="STRING_CAPITALIZE", args=[receiver], result=res))
                 return res
-            if method == "strip" and receiver.type_hint in {
-                "str",
-                "bytes",
-                "bytearray",
-            }:
+            if method == "strip" and receiver.type_hint == "str":
                 if len(node.args) > 1:
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,
@@ -1167,11 +1187,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                         MoltOp(kind="STRING_STRIP", args=[receiver, chars], result=res)
                     )
                     return res
-            if method == "lstrip" and receiver.type_hint in {
-                "str",
-                "bytes",
-                "bytearray",
-            }:
+            if method == "lstrip" and receiver.type_hint == "str":
                 if len(node.args) > 1:
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,
@@ -1188,11 +1204,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                         MoltOp(kind="STRING_LSTRIP", args=[receiver, chars], result=res)
                     )
                     return res
-            if method == "rstrip" and receiver.type_hint in {
-                "str",
-                "bytes",
-                "bytearray",
-            }:
+            if method == "rstrip" and receiver.type_hint == "str":
                 if len(node.args) > 1:
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,

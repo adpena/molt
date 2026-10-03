@@ -224,58 +224,6 @@ def test_installed_manifest_rejects_noncanonical_os_arch_pair(installation):
         distribution.installed_compiler(installation)
 
 
-def test_production_environment_removes_developer_policy_overrides(tmp_path):
-    from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
-    from tools.release.build_compiler import production_environment
-
-    (tmp_path / "rust-toolchain.toml").write_text('[toolchain]\nchannel="1.96.1"\n')
-    inherited = {
-        "CARGO_HOME": str(tmp_path / "cargo-home"),
-        "CARGO_BUILD_JOBS": "2",
-        "RUSTUP_TOOLCHAIN": "nightly",
-        "CARGO_PROFILE_RELEASE_OPT_LEVEL": "0",
-        "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL": "0",
-        "CARGO_PROFILE_RELEASE_LTO": "off",
-        "CARGO_BUILD_TARGET": "wasm32-wasip1",
-        "CARGO_ENCODED_RUSTFLAGS": "-C\x1ftarget-cpu=native",
-        "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS": "-Copt-level=0",
-        "RUSTC": "custom-rustc",
-        **{name: "custom-wrapper" for name in CARGO_WRAPPER_ENV_NAMES},
-    }
-    original = inherited.copy()
-    env = production_environment(tmp_path, inherited)
-    assert inherited == original
-    assert not any(name.startswith("CARGO_PROFILE_") for name in env)
-    assert "CARGO_BUILD_TARGET" not in env and "RUSTC" not in env
-    assert "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS" not in env
-    assert env["RUSTUP_TOOLCHAIN"] == "1.96.1"
-    assert env["CARGO_INCREMENTAL"] == "0"
-    assert env["CARGO_ENCODED_RUSTFLAGS"] == f"--remap-path-prefix={tmp_path}=/molt"
-    assert all(env[name] == "" for name in CARGO_WRAPPER_ENV_NAMES)
-    assert env["CARGO_BUILD_JOBS"] == "2"
-
-
-@pytest.mark.parametrize(
-    "config",
-    [
-        "[profile.release]\nopt-level=0\n",
-        "[profile.release.package.molt-backend]\nopt-level=0\n",
-        '[env]\nCARGO_PROFILE_RELEASE_OPT_LEVEL={value="0", force=true}\n',
-        '[env]\nRUSTFLAGS={value="-Ctarget-cpu=native", force=true}\n',
-        '[build]\ntarget="wasm32-wasip1"\n',
-        'include="unowned.toml"\n',
-    ],
-)
-def test_production_compiler_rejects_config_overrides_before_build(tmp_path, config):
-    from tools.release.build_compiler import production_environment
-
-    cargo_home = tmp_path / "cargo-home"
-    cargo_home.mkdir()
-    (cargo_home / "config.toml").write_text(config)
-    with pytest.raises(ValueError, match="overridden by Cargo config"):
-        production_environment(tmp_path, {"CARGO_HOME": str(cargo_home)})
-
-
 def test_installed_source_admits_only_matching_launcher(installation):
     installed = distribution.installed_compiler(installation)
     assert installed is not None

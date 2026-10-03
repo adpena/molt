@@ -609,3 +609,71 @@ fn managed_iteration_rejects_noniterator_results_and_noniterable_values() {
         assert!(!crate::exception_pending(&py));
     });
 }
+
+
+extern "C" fn indexed_read_short_length(_: u64) -> u64 {
+    MoltObject::from_int(1).bits()
+}
+
+#[test]
+fn indexed_reads_share_inherited_slots_and_normalize_negative_indices_once() {
+    use crate::object::sequence_index::sequence_item_at_index;
+    use molt_cpython_abi::api::{abstract_sequence, numbers};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil(|py| unsafe {
+        let list = list_subtype(&py, forbidden_storage_iteration as *const ());
+        for item in [11, 22, 33] {
+            crate::molt_list_append(list, MoltObject::from_int(item).bits());
+        }
+        let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(list);
+        assert_eq!(sequence_check_bits(&py, list), 1);
+        assert_eq!(to_i64(obj_from_bits(sequence_item_at_index(&py, list, -1))), Some(33));
+        let _ = sequence_item_at_index(&py, list, -4);
+        assert_eq!(errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()), 1);
+        errors::PyErr_Clear();
+        let class = type_of_bits(&py, list);
+        projection_install(&py, class, b"__len__", indexed_read_short_length as *const ());
+        // Inherited native sq_item uses the new length, then reads raw storage.
+        assert_eq!(to_i64(obj_from_bits(sequence_item_at_index(&py, list, -1))), Some(11));
+        let result = abstract_sequence::PySequence_GetItem(view, -1);
+        assert!(!result.is_null());
+        assert_eq!(numbers::PyLong_AsLongLong(result), 11);
+        refcount::Py_DECREF(result);
+        assert!(abstract_sequence::PySequence_GetItem(view, -2).is_null());
+        assert_eq!(errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()), 1);
+        errors::PyErr_Clear();
+        dec_ref_bits(&py, list);
+        assert!(!crate::exception_pending(&py));
+    });
+}
+
+#[test]
+fn indexed_foreign_reads_use_native_slots_and_preserve_result_ownership() {
+    use crate::object::sequence_index::sequence_item_at_index;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil(|py| unsafe {
+        unsafe extern "C" fn length(_: *mut PyObject) -> isize { 3 }
+        unsafe extern "C" fn item(_: *mut PyObject, index: isize) -> *mut PyObject {
+            if !(0..3).contains(&index) {
+                unsafe { errors::PyErr_SetString((&raw mut abi_types::PyExc_IndexError).cast(), c"native read exhausted".as_ptr()) };
+                return std::ptr::null_mut();
+            }
+            unsafe { molt_cpython_abi::api::numbers::PyLong_FromLongLong(index as i64) }
+        }
+        let mut methods: PySequenceMethods = std::mem::zeroed();
+        methods.sq_length = length as *const () as *mut c_void;
+        methods.sq_item = item as *const () as *mut c_void;
+        let mut ty: PyTypeObject = std::mem::zeroed();
+        ty.tp_as_sequence = (&raw mut methods).cast();
+        ty.tp_name = c"NativeIndexedRead".as_ptr();
+        let mut native = PyObject { ob_refcnt: 1, ob_type: &raw mut ty };
+        let receiver = GLOBAL_BRIDGE.molt_value_for_pyobj(&raw mut native).expect("foreign receiver");
+        assert_eq!(to_i64(obj_from_bits(sequence_item_at_index(&py, receiver, -1))), Some(2));
+        let _ = sequence_item_at_index(&py, receiver, -4);
+        assert_eq!(errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()), 1);
+        errors::PyErr_Clear();
+        dec_ref_bits(&py, receiver);
+        assert_eq!(native.ob_refcnt, 1);
+        assert!(!crate::exception_pending(&py));
+    });
+}

@@ -1,50 +1,322 @@
 """Runtime tree-shake and split-app optimization policy authority."""
 
 from __future__ import annotations
-from collections.abc import Callable, Sequence
+
+from collections.abc import Mapping, Sequence
+import hashlib
 from pathlib import Path
 import os
 import sys
 import tempfile
 import time
 
-from wasm_link_context import WasmOptimizerContext
+from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
+from molt.cli.wasm_link_cache import (
+    WasmLinkCacheEntry,
+    _default_wasm_link_cache,
+    _invalidate_wasm_link_cache_entry,
+    _locked_wasm_link_cache_entry,
+    _publish_wasm_link_cache_entry,
+    _read_wasm_link_cache_entry,
+    _wasm_link_cache_entry,
+)
+from molt.cli.python_source_closure import local_python_import_closure
+from molt.wasm_optimization import wasm_link_policy
+from molt.wasm_optimizer_identity import (
+    WasmOptimizerExecutableIdentity,
+    WasmOptimizerIdentityError,
+    build_wasm_optimizer_attestation,
+    validate_wasm_optimizer_attestation,
+)
+from wasm_link_format import (
+    _ESSENTIAL_EXPORTS,
+    _write_string,
+    _write_varuint,
+)
+from wasm_link_fact_provider import WasmFactsProvider
+from wasm_link_operations import build_sections, parse_sections
+from wasm_link_optimize import (
+    _post_link_optimize,
+    _strip_unused_module_function_imports,
+)
+from wasm_optimize import optimize as optimize_wasm
+
+TOOLS_ROOT = Path(__file__).resolve().parent
+
+_TREE_SHAKE_RUNTIME_CACHE_SCHEMA = "runtime-tree-shake-v7"
+_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA = "split-app-optimize-v6"
+_WASM_LINK_CACHE_METRIC_SUFFIXES = (
+    "requests",
+    "hits",
+    "misses",
+    "corruptions",
+    "bytes_read",
+    "bytes_written",
+    "lock_wait_ms",
+    "lookup_ms",
+    "publish_ms",
+    "wall_ms",
+    "publish_errors",
+)
+_WASM_OPT_CACHE_METRIC_SUFFIXES = (
+    "optimizer_wall_ms",
+    "optimizer_peak_rss_kb",
+    "optimizer_peak_total_rss_kb",
+    "timeouts",
+    "failures",
+    "identity_errors",
+)
+
+
+def _wasm_link_cache_root() -> Path:
+    return _default_wasm_link_cache()
+
+
+def _empty_wasm_link_cache_metrics() -> dict[str, int | float]:
+    metrics = {
+        f"{prefix}_{suffix}": 0
+        for prefix in ("runtime_tree_shake_cache", "split_app_optimize_cache")
+        for suffix in _WASM_LINK_CACHE_METRIC_SUFFIXES
+    }
+    metrics.update(
+        {
+            f"split_app_optimize_cache_{suffix}": 0
+            for suffix in _WASM_OPT_CACHE_METRIC_SUFFIXES
+        }
+    )
+    return metrics
+
+
+def _cache_metric_add(
+    metrics: dict[str, int | float] | None,
+    name: str,
+    value: int | float,
+) -> None:
+    if metrics is not None:
+        metrics[name] = round(float(metrics.get(name, 0)) + float(value), 6)
+
+
+def _cache_metric_max(
+    metrics: dict[str, int | float] | None,
+    name: str,
+    value: int | float | None,
+) -> None:
+    if metrics is not None and value is not None:
+        metrics[name] = max(float(metrics.get(name, 0)), float(value))
+
+
+def _record_wasm_opt_telemetry_cache_metrics(
+    metrics: dict[str, int | float] | None,
+    prefix: str,
+    telemetry: Mapping[str, object],
+) -> None:
+    wall_ms = telemetry.get("wasm_opt_wall_ms")
+    if isinstance(wall_ms, (int, float)):
+        _cache_metric_add(metrics, f"{prefix}_optimizer_wall_ms", wall_ms)
+    for suffix in ("peak_rss_kb", "peak_total_rss_kb"):
+        value = telemetry.get(f"wasm_opt_{suffix}")
+        if isinstance(value, (int, float)):
+            _cache_metric_max(metrics, f"{prefix}_optimizer_{suffix}", value)
+    status = telemetry.get("status")
+    if status == "timeout":
+        _cache_metric_add(metrics, f"{prefix}_timeouts", 1)
+    elif telemetry.get("ok") is False:
+        _cache_metric_add(metrics, f"{prefix}_failures", 1)
+        if status == "identity-error":
+            _cache_metric_add(metrics, f"{prefix}_identity_errors", 1)
+
+
+def _publish_wasm_link_cache_result(
+    entry: WasmLinkCacheEntry,
+    data: bytes,
+    *,
+    metrics: dict[str, int | float] | None,
+    metric_prefix: str,
+    label: str,
+    payload: Mapping[str, object] | None = None,
+) -> None:
+    publish_started = time.perf_counter()
+    try:
+        _publish_wasm_link_cache_entry(entry, data, payload=payload)
+    except OSError as exc:
+        _cache_metric_add(metrics, f"{metric_prefix}_publish_errors", 1)
+        print(f"{label} cache publication failed: {exc}", file=sys.stderr)
+    else:
+        _cache_metric_add(metrics, f"{metric_prefix}_bytes_written", len(data))
+    _cache_metric_add(
+        metrics,
+        f"{metric_prefix}_publish_ms",
+        (time.perf_counter() - publish_started) * 1000.0,
+    )
+
+
+def _wasm_link_cache_authority_digest(*, repo_root: Path | None = None) -> str:
+    root = (repo_root or TOOLS_ROOT.parent).resolve(strict=True)
+    return local_python_import_closure(
+        root, (root / "tools" / "wasm_link.py",)
+    ).content_digest
+
+
+def _wasm_facts_cache_authority_digest(
+    facts_provider: WasmFactsProvider,
+) -> str:
+    provider_identity = facts_provider.authority_digest
+    if len(provider_identity) != 64 or any(
+        character not in "0123456789abcdef" for character in provider_identity
+    ):
+        raise ValueError("WASM facts provider authority must be a lowercase SHA-256")
+    # The provider identity binds the scanner bytes and wire schema. Each
+    # caller already keys on the exact input bytes; scanning them again before
+    # a cache lookup adds no identity and defeats cross-process warm reuse.
+    return provider_identity
+
+
+def _split_app_optimize_cache_key(
+    *,
+    app_data: bytes,
+    reference_data: bytes | None,
+    optimize: bool,
+    optimize_level: str,
+    contract_keep_set: set[str],
+    facts_authority_digest: str,
+    optimizer_identity: WasmOptimizerExecutableIdentity | None = None,
+    preserve_debug: bool = False,
+) -> str | None:
+    hasher = hashlib.sha256()
+    hasher.update(_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA.encode("ascii"))
+    hasher.update(b"\0app\0")
+    hasher.update(app_data)
+    hasher.update(b"\0reference\0")
+    if reference_data is not None:
+        hasher.update(reference_data)
+    hasher.update(b"\0optimize\0")
+    hasher.update(str(int(optimize)).encode("ascii"))
+    hasher.update(b"\0level\0")
+    hasher.update(optimize_level.encode("utf-8"))
+    hasher.update(b"\0preserve-debug\0")
+    hasher.update(str(int(preserve_debug)).encode("ascii"))
+    hasher.update(b"\0exports\0")
+    for name in sorted(contract_keep_set):
+        hasher.update(name.encode("utf-8") + b"\0")
+    if optimize:
+        if optimizer_identity is None:
+            return None
+        hasher.update(b"\0wasm-opt-sha256\0")
+        hasher.update(optimizer_identity.sha256.encode("ascii"))
+        hasher.update(b"\0wasm-opt-version\0")
+        hasher.update(optimizer_identity.binaryen_version.encode("utf-8"))
+    hasher.update(b"\0tool\0")
+    hasher.update(_wasm_link_cache_authority_digest().encode("ascii"))
+    hasher.update(b"\0facts-authority\0")
+    hasher.update(facts_authority_digest.encode("ascii"))
+    return hasher.hexdigest()
+
+
+def _tree_shake_runtime_cache_key(
+    *,
+    runtime_data: bytes,
+    normalized_required_exports: set[str],
+    facts_authority_digest: str,
+    preserve_debug: bool = False,
+) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(_TREE_SHAKE_RUNTIME_CACHE_SCHEMA.encode("ascii"))
+    hasher.update(b"\0")
+    hasher.update(runtime_data)
+    hasher.update(b"\0exports\0")
+    for name in sorted(normalized_required_exports):
+        hasher.update(name.encode("utf-8"))
+        hasher.update(b"\0")
+    hasher.update(b"preserve-debug\0")
+    hasher.update(str(int(preserve_debug)).encode("ascii"))
+    hasher.update(b"\0tool\0")
+    hasher.update(_wasm_link_cache_authority_digest().encode("ascii"))
+    hasher.update(b"\0facts-authority\0")
+    hasher.update(facts_authority_digest.encode("ascii"))
+    return hasher.hexdigest()
+
+
+def _transform_tree_shake_runtime(
+    runtime_data: bytes,
+    *,
+    normalized_required_exports: set[str],
+    facts_provider: WasmFactsProvider,
+    preserve_debug: bool = False,
+) -> tuple[bytes, int, int]:
+    """Apply the deterministic runtime export filter and structural cleanup.
+
+    Cargo/LLVM runtime generation owns shared-runtime body optimization and any
+    future whole-runtime Binaryen pass. The app-link stage must not run a second
+    whole-runtime optimizer pipeline: that duplicates expensive work and can
+    delete the app-independent public ABI.
+    """
+
+    exports = facts_provider(runtime_data).exports.values()
+    filtered = [
+        (export.name, export.kind, export.index)
+        for export in exports
+        if export.kind != 0 or export.name in normalized_required_exports
+    ]
+    kept_exports = len(filtered)
+    stripped_exports = len(exports) - kept_exports
+    sections = parse_sections(runtime_data)
+    new_sections: list[tuple[int, bytes]] = []
+
+    for section_id, payload in sections:
+        if section_id != 7:
+            new_sections.append((section_id, payload))
+            continue
+
+        new_payload = bytearray(_write_varuint(len(filtered)))
+        for name, kind, index in filtered:
+            new_payload.extend(_write_string(name))
+            new_payload.append(kind)
+            new_payload.extend(_write_varuint(index))
+        new_sections.append((7, bytes(new_payload)))
+
+    print(
+        f"Runtime tree-shake: kept {kept_exports} exports, "
+        f"stripped {stripped_exports} unused function exports",
+        file=sys.stderr,
+    )
+    stripped_data = build_sections(new_sections)
+    optimized = _post_link_optimize(
+        stripped_data,
+        preserve_exports=normalized_required_exports,
+        preserve_debug=preserve_debug,
+        facts_provider=facts_provider,
+    )
+    if len(optimized) != len(stripped_data):
+        print(
+            f"Runtime post-link optimize: {len(stripped_data):,} -> "
+            f"{len(optimized):,} bytes "
+            f"({len(stripped_data) - len(optimized):,} bytes eliminated)",
+            file=sys.stderr,
+        )
+    return optimized, kept_exports, stripped_exports
 
 
 def _tree_shake_runtime(
-    context: WasmOptimizerContext,
     runtime_data: bytes,
     required_exports: set[str],
     *,
-    facts_provider: Callable[[bytes], dict[str, object]],
+    facts_provider: WasmFactsProvider,
     operation_counts: dict[str, int | float] | None = None,
     preserve_debug: bool = False,
 ) -> bytes:
-    """Strip unused exports from the runtime module and eliminate dead code.
+    """Filter one runtime once per cache key under the cache's single-flight lock."""
 
-    Rewrites the export section to only include functions in *required_exports*
-    (plus memory/table/global exports which are always kept), then applies the
-    linker's verified structural cleanup. Cargo/LLVM code generation owns the
-    current shared-runtime body optimization. Any future Binaryen runtime pass
-    belongs in runtime-generation custody; this app-link stage never runs a
-    second whole-runtime Binaryen pipeline.
-    """
-    # Canonicalize the app import surface to the runtime export naming
-    # convention.  The app imports the unprefixed ABI names (e.g. `alloc`,
-    # `module_import`), while the runtime exports the corresponding
-    # `molt_*` symbols.  Without this normalization, split-runtime
-    # tree-shaking strips every function export even when the app has a
-    # large live runtime dependency surface.
+    # Canonicalize app imports to the runtime export naming convention before
+    # filtering. App imports use unprefixed ABI names while the shared runtime
+    # exports the corresponding ``molt_*`` symbols.
     normalized_required_exports = set(required_exports)
     for name in required_exports:
-        export_name = context["wasm_split_runtime_export_name_for_import"](name)
+        export_name = wasm_split_runtime_export_name_for_import(name)
         if export_name is not None:
             normalized_required_exports.add(export_name)
     # Host-facing publication roots have one generated authority in
-    # ``output_export_policy.essential_exports``.  Keeping a second literal
-    # list here previously let linked-result decoders lose ``molt_len`` and
-    # ``molt_index`` while a superficially similar subset remained exported.
-    normalized_required_exports.update(context["_ESSENTIAL_EXPORTS"])
+    # ``output_export_policy.essential_exports``. Do not recreate a local list.
+    normalized_required_exports.update(_ESSENTIAL_EXPORTS)
     raw_dynamic_exports = os.environ.get(
         "MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS", ""
     ).strip()
@@ -53,136 +325,62 @@ def _tree_shake_runtime(
             name.strip() for name in raw_dynamic_exports.split(",") if name.strip()
         )
 
-    # The shared runtime is app-independent and retains the canonical public ABI.
-    # Cargo/LLVM runtime generation owns body optimization. The linker owns only
-    # export filtering and its verified structural post-link cleanup; the old
-    # second Binaryen lane spent minutes reoptimizing the same full export graph
-    # and could delete the public ABI.
     cache_started = time.perf_counter()
     metric_prefix = "runtime_tree_shake_cache"
-    context["_cache_metric_add"](operation_counts, f"{metric_prefix}_requests", 1)
-    facts_authority_digest = context["_wasm_facts_cache_authority_digest"](
+    _cache_metric_add(operation_counts, f"{metric_prefix}_requests", 1)
+    facts_authority_digest = _wasm_facts_cache_authority_digest(
         facts_provider,
-        runtime_data,
     )
-    cache_key = context["_tree_shake_runtime_cache_key"](
+    cache_key = _tree_shake_runtime_cache_key(
         runtime_data=runtime_data,
         normalized_required_exports=normalized_required_exports,
-        preserve_debug=preserve_debug,
         facts_authority_digest=facts_authority_digest,
+        preserve_debug=preserve_debug,
     )
-    cache_entry = context["_wasm_link_cache_entry"](
+    cache_entry = _wasm_link_cache_entry(
         "runtime_tree_shake",
-        context["_TREE_SHAKE_RUNTIME_CACHE_SCHEMA"],
+        _TREE_SHAKE_RUNTIME_CACHE_SCHEMA,
         cache_key,
-        cache_root=context["_wasm_link_cache_root"](),
+        cache_root=_wasm_link_cache_root(),
     )
-    with context["_locked_wasm_link_cache_entry"](cache_entry) as lock_wait_ms:
-        context["_cache_metric_add"](
+    with _locked_wasm_link_cache_entry(cache_entry) as lock_wait_ms:
+        _cache_metric_add(
             operation_counts, f"{metric_prefix}_lock_wait_ms", lock_wait_ms
         )
         lookup_started = time.perf_counter()
-        cached = context["_read_wasm_link_cache_entry"](cache_entry)
-        context["_cache_metric_add"](
+        cached = _read_wasm_link_cache_entry(cache_entry)
+        _cache_metric_add(
             operation_counts,
             f"{metric_prefix}_lookup_ms",
             (time.perf_counter() - lookup_started) * 1000.0,
         )
         if cached.data is not None:
-            context["_cache_metric_add"](operation_counts, f"{metric_prefix}_hits", 1)
-            context["_cache_metric_add"](
+            _cache_metric_add(operation_counts, f"{metric_prefix}_hits", 1)
+            _cache_metric_add(
                 operation_counts, f"{metric_prefix}_bytes_read", cached.bytes_read
             )
-            context["_cache_metric_add"](
+            _cache_metric_add(
                 operation_counts,
                 f"{metric_prefix}_wall_ms",
                 (time.perf_counter() - cache_started) * 1000.0,
             )
             print(f"Runtime tree-shake cache hit: {cache_entry.root}", file=sys.stderr)
             return cached.data
-        context["_cache_metric_add"](operation_counts, f"{metric_prefix}_misses", 1)
+
+        _cache_metric_add(operation_counts, f"{metric_prefix}_misses", 1)
         if cached.status == "corrupt":
-            context["_cache_metric_add"](
-                operation_counts, f"{metric_prefix}_corruptions", 1
-            )
-            context["_invalidate_wasm_link_cache_entry"](cache_entry)
+            _cache_metric_add(operation_counts, f"{metric_prefix}_corruptions", 1)
+            _invalidate_wasm_link_cache_entry(cache_entry)
 
-    sections = context["_parse_sections"](runtime_data)
-
-    # Rewrite export section: keep memory/table/global exports and only
-    # function exports that are in the required set.
-    new_sections: list[tuple[int, bytes]] = []
-    kept_exports = 0
-    stripped_exports = 0
-
-    for section_id, payload in sections:
-        if section_id != 7:  # not export section
-            new_sections.append((section_id, payload))
-            continue
-
-        # Parse and filter exports.
-        offset = 0
-        count, offset = context["_read_varuint"](payload, offset)
-        filtered: list[tuple[str, int, int]] = []  # (name, kind, index)
-        for _ in range(count):
-            name, offset = context["_read_string"](payload, offset)
-            if offset >= len(payload):
-                raise ValueError("Unexpected EOF reading export kind")
-            kind = payload[offset]
-            offset += 1
-            index, offset = context["_read_varuint"](payload, offset)
-            if kind != 0:
-                # Memory (2), table (1), global (3) -- always keep.
-                filtered.append((name, kind, index))
-                kept_exports += 1
-            elif name in normalized_required_exports:
-                filtered.append((name, kind, index))
-                kept_exports += 1
-            else:
-                stripped_exports += 1
-
-        # Rebuild export section.
-        new_payload = bytearray()
-        new_payload.extend(context["_write_varuint"](len(filtered)))
-        for name, kind, index in filtered:
-            new_payload.extend(context["_write_string"](name))
-            new_payload.append(kind)
-            new_payload.extend(context["_write_varuint"](index))
-        new_sections.append((7, bytes(new_payload)))
-
-    print(
-        f"Runtime tree-shake: kept {kept_exports} exports, "
-        f"stripped {stripped_exports} unused function exports",
-        file=sys.stderr,
-    )
-
-    stripped_data = context["_build_sections"](new_sections)
-    optimized_baseline = context["_post_link_optimize"](
-        stripped_data,
-        preserve_exports=normalized_required_exports,
-        facts_provider=facts_provider,
-    )
-    if len(optimized_baseline) != len(stripped_data):
-        print(
-            f"Runtime post-link optimize: {len(stripped_data):,} -> {len(optimized_baseline):,} bytes "
-            f"({len(stripped_data) - len(optimized_baseline):,} bytes eliminated)",
-            file=sys.stderr,
+        optimized, kept_exports, stripped_exports = _transform_tree_shake_runtime(
+            runtime_data,
+            normalized_required_exports=normalized_required_exports,
+            facts_provider=facts_provider,
+            preserve_debug=preserve_debug,
         )
-
-    with context["_locked_wasm_link_cache_entry"](cache_entry) as lock_wait_ms:
-        context["_cache_metric_add"](
-            operation_counts, f"{metric_prefix}_lock_wait_ms", lock_wait_ms
-        )
-        cached = context["_read_wasm_link_cache_entry"](cache_entry)
-        if cached.data is not None:
-            context["_cache_metric_add"](operation_counts, f"{metric_prefix}_hits", 1)
-            context["_cache_metric_add"](
-                operation_counts, f"{metric_prefix}_bytes_read", cached.bytes_read
-            )
-            return cached.data
-        context["_publish_wasm_link_cache_result"](
+        _publish_wasm_link_cache_result(
             cache_entry,
-            optimized_baseline,
+            optimized,
             metrics=operation_counts,
             metric_prefix=metric_prefix,
             label="Runtime structural optimize",
@@ -192,26 +390,27 @@ def _tree_shake_runtime(
                 "stripped_exports": stripped_exports,
             },
         )
-    context["_cache_metric_add"](
-        operation_counts,
-        f"{metric_prefix}_wall_ms",
-        (time.perf_counter() - cache_started) * 1000.0,
-    )
-    return optimized_baseline
+        _cache_metric_add(
+            operation_counts,
+            f"{metric_prefix}_wall_ms",
+            (time.perf_counter() - cache_started) * 1000.0,
+        )
+        return optimized
 
 
 def _optimize_split_app_module(
-    context: WasmOptimizerContext,
     app_data: bytes,
     *,
     reference_data: bytes | None,
     optimize: bool,
     optimize_level: str,
-    preserve_debug: bool = False,
     contract_keep_set: set[str],
     attestation: dict[str, object] | None = None,
+    telemetry: dict[str, object] | None = None,
     operation_counts: dict[str, int | float] | None = None,
-    facts_provider: Callable[[bytes], dict[str, object]],
+    facts_provider: WasmFactsProvider,
+    optimizer_identity: WasmOptimizerExecutableIdentity | None = None,
+    preserve_debug: bool = False,
 ) -> bytes:
     """Deforest the split-runtime app artifact without collapsing its imports.
 
@@ -224,162 +423,192 @@ def _optimize_split_app_module(
         operation_counts["split_app_optimize_requests"] = 1
     cache_started = time.perf_counter()
     metric_prefix = "split_app_optimize_cache"
-    context["_cache_metric_add"](operation_counts, f"{metric_prefix}_requests", 1)
-    facts_authority_digest = context["_wasm_facts_cache_authority_digest"](
-        facts_provider,
-        app_data,
-    )
-    wasm_opt_identity = None
-    if optimize:
-        wasm_opt_path = context["find_wasm_opt"]()
-        wasm_opt_identity = (
-            context["_wasm_opt_executable_identity"](wasm_opt_path)
-            if wasm_opt_path is not None
-            else None
+    active_telemetry = telemetry if telemetry is not None else {}
+    _cache_metric_add(operation_counts, f"{metric_prefix}_requests", 1)
+    if optimize and optimizer_identity is None:
+        _cache_metric_add(operation_counts, f"{metric_prefix}_identity_errors", 1)
+        _cache_metric_add(
+            operation_counts,
+            f"{metric_prefix}_wall_ms",
+            (time.perf_counter() - cache_started) * 1000.0,
         )
-        if wasm_opt_identity is None:
-            context["_cache_metric_add"](
-                operation_counts, f"{metric_prefix}_identity_errors", 1
-            )
-            context["_cache_metric_add"](
-                operation_counts,
-                f"{metric_prefix}_wall_ms",
-                (time.perf_counter() - cache_started) * 1000.0,
-            )
-            raise RuntimeError(
-                "required split-app wasm optimization has no stable executable identity"
-            )
-    cache_key = context["_split_app_optimize_cache_key"](
+        raise RuntimeError(
+            "required split-app wasm optimization has no invocation-scoped "
+            "executable identity"
+        )
+    facts_authority_digest = _wasm_facts_cache_authority_digest(
+        facts_provider,
+    )
+    cache_key = _split_app_optimize_cache_key(
         app_data=app_data,
         reference_data=reference_data,
         optimize=optimize,
         optimize_level=optimize_level,
-        preserve_debug=preserve_debug,
         contract_keep_set=contract_keep_set,
         facts_authority_digest=facts_authority_digest,
-        wasm_opt_identity=wasm_opt_identity,
+        optimizer_identity=optimizer_identity,
+        preserve_debug=preserve_debug,
     )
     assert cache_key is not None
-    cache_entry = context["_wasm_link_cache_entry"](
+    cache_entry = _wasm_link_cache_entry(
         "split_app_optimize",
-        context["_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA"],
+        _SPLIT_APP_OPTIMIZE_CACHE_SCHEMA,
         cache_key,
-        cache_root=context["_wasm_link_cache_root"](),
+        cache_root=_wasm_link_cache_root(),
     )
-    with context["_locked_wasm_link_cache_entry"](cache_entry) as lock_wait_ms:
-        context["_cache_metric_add"](
+    with _locked_wasm_link_cache_entry(cache_entry) as lock_wait_ms:
+        _cache_metric_add(
             operation_counts, f"{metric_prefix}_lock_wait_ms", lock_wait_ms
         )
         lookup_started = time.perf_counter()
-        cached = context["_read_wasm_link_cache_entry"](cache_entry)
-        context["_cache_metric_add"](
+        cached = _read_wasm_link_cache_entry(cache_entry)
+        _cache_metric_add(
             operation_counts,
             f"{metric_prefix}_lookup_ms",
             (time.perf_counter() - lookup_started) * 1000.0,
         )
-        if cached.data is not None:
-            context["_cache_metric_add"](operation_counts, f"{metric_prefix}_hits", 1)
-            context["_cache_metric_add"](
+        cached_payload = dict(cached.payload or {})
+        cache_identity_matches = cached.data is not None
+        if cache_identity_matches and optimize:
+            assert optimizer_identity is not None
+            try:
+                cached_payload = validate_wasm_optimizer_attestation(cached_payload)
+            except WasmOptimizerIdentityError:
+                cache_identity_matches = False
+            else:
+                cached_artifact_sha256 = hashlib.sha256(cached.data).hexdigest()
+                cache_identity_matches = (
+                    cached_payload.get("wasm_opt_sha256") == optimizer_identity.sha256
+                    and cached_payload.get("binaryen_version")
+                    == optimizer_identity.binaryen_version
+                    and cached_payload.get("optimizer_output_sha256")
+                    == cached_artifact_sha256
+                    and cached_payload.get("published_output_sha256")
+                    == cached_artifact_sha256
+                )
+        if cached.data is not None and cache_identity_matches:
+            _cache_metric_add(operation_counts, f"{metric_prefix}_hits", 1)
+            _cache_metric_add(
                 operation_counts, f"{metric_prefix}_bytes_read", cached.bytes_read
             )
-            if attestation is not None:
-                attestation.update(cached.payload or {})
-            context["_cache_metric_add"](
+            if attestation is not None and optimize:
+                attestation.clear()
+                attestation.update(cached_payload)
+            if optimize:
+                assert optimizer_identity is not None
+                active_telemetry.update(
+                    {
+                        "cache_hit": True,
+                        "wasm_opt_path": str(optimizer_identity.path),
+                    }
+                )
+            _cache_metric_add(
                 operation_counts,
                 f"{metric_prefix}_wall_ms",
                 (time.perf_counter() - cache_started) * 1000.0,
             )
             return cached.data
-        context["_cache_metric_add"](operation_counts, f"{metric_prefix}_misses", 1)
-        if cached.status == "corrupt":
-            context["_cache_metric_add"](
-                operation_counts, f"{metric_prefix}_corruptions", 1
-            )
-            context["_invalidate_wasm_link_cache_entry"](cache_entry)
+        _cache_metric_add(operation_counts, f"{metric_prefix}_misses", 1)
+        if cached.status == "corrupt" or cached.data is not None:
+            _cache_metric_add(operation_counts, f"{metric_prefix}_corruptions", 1)
+            _invalidate_wasm_link_cache_entry(cache_entry)
 
-        optimized = context["_post_link_optimize"](
+        optimized = _post_link_optimize(
             app_data,
             reference_data=reference_data,
             preserve_exports=contract_keep_set,
             preserve_reference_exports=False,
+            preserve_debug=preserve_debug,
             facts_provider=facts_provider,
         )
-        stripped = context["_strip_unused_module_function_imports"](
+        stripped = _strip_unused_module_function_imports(
             optimized,
             module_name="molt_runtime",
-            facts=facts_provider(optimized),
+            facts_provider=facts_provider,
         )
         if stripped is not None:
             optimized = stripped
         result = optimized
-        optimizer_attestation: dict[str, object] = {}
+        active_attestation = attestation if attestation is not None else {}
         if optimize:
-            assert wasm_opt_identity is not None
-            optimizer_policy = context["wasm_link_policy"](
+            assert optimizer_identity is not None
+            optimizer_policy = wasm_link_policy(
                 optimize_level, preserve_debug=preserve_debug
             )
             with tempfile.TemporaryDirectory(prefix="molt-split-app-opt-") as tmp:
                 app_path = Path(tmp) / "app_split_preopt.wasm"
                 app_path.write_bytes(optimized)
-                required_function_exports = (
-                    set(context["_collect_function_exports"](optimized))
-                    & contract_keep_set
+                active_attestation.update(
+                    {
+                        "optimization_level": optimizer_policy.level,
+                        "optimization_converge": optimizer_policy.converge,
+                        "optimization_apply_level": optimizer_policy.apply_level,
+                        "optimization_preserve_debug": preserve_debug,
+                        "optimization_extra_passes": list(
+                            optimizer_policy.extra_passes
+                        ),
+                        "optimizer_input_sha256": hashlib.sha256(optimized).hexdigest(),
+                    }
                 )
-                context["_cache_metric_add"](
-                    operation_counts, "split_app_wasm_opt_runs", 1
-                )
-                optimizer_telemetry: dict[str, object] = {}
-                optimizer_ok = context["_run_wasm_opt_via_optimize"](
+                required_function_exports = {
+                    name
+                    for name, fact in facts_provider(optimized).exports.items()
+                    if fact.kind == 0
+                } & contract_keep_set
+                _cache_metric_add(operation_counts, "split_app_wasm_opt_runs", 1)
+                optimizer_ok = _run_wasm_opt_via_optimize(
                     app_path,
                     level=optimizer_policy.level,
                     converge=optimizer_policy.converge,
                     required_exports=required_function_exports,
                     apply_level=optimizer_policy.apply_level,
                     extra_passes=optimizer_policy.extra_passes,
+                    attestation=active_attestation,
+                    telemetry=active_telemetry,
+                    optimizer_identity=optimizer_identity,
                     preserve_debug=preserve_debug,
-                    attestation=optimizer_attestation,
-                    execution_telemetry=optimizer_telemetry,
                 )
-                context["_record_wasm_opt_execution_metrics"](
-                    operation_counts, metric_prefix, optimizer_telemetry
+                _record_wasm_opt_telemetry_cache_metrics(
+                    operation_counts, metric_prefix, active_telemetry
                 )
                 if optimizer_ok:
                     result = app_path.read_bytes()
+                    active_attestation["ok"] = True
+                    active_attestation["optimizer_output_sha256"] = hashlib.sha256(
+                        result
+                    ).hexdigest()
                 else:
                     failure = str(
-                        optimizer_attestation.get("error", "unknown optimizer failure")
+                        active_telemetry.get("error", "unknown optimizer failure")
                     )
                     raise RuntimeError(
                         f"required split-app wasm optimization failed: {failure}"
                     )
-                if (
-                    optimizer_attestation.get("wasm_opt_path") != wasm_opt_identity[0]
-                    or optimizer_attestation.get("wasm_opt_sha256")
-                    != wasm_opt_identity[1]
-                ):
-                    raise RuntimeError(
-                        "required split-app wasm optimization crossed executable identity"
-                    )
+        cache_payload: dict[str, object] = {}
         if optimize:
-            assert wasm_opt_identity is not None
-            optimizer_attestation.update(
+            assert optimizer_identity is not None
+            cache_payload = build_wasm_optimizer_attestation(
+                active_attestation,
+                published_output=result,
+            )
+            if attestation is not None:
+                attestation.clear()
+                attestation.update(cache_payload)
+            active_telemetry.update(
                 {
-                    "wasm_opt_path": wasm_opt_identity[0],
-                    "wasm_opt_sha256": wasm_opt_identity[1],
-                    "wasm_opt_version": wasm_opt_identity[2],
+                    "cache_hit": False,
+                    "wasm_opt_path": str(optimizer_identity.path),
                 }
             )
-        if attestation is not None:
-            attestation.update(optimizer_attestation)
-        context["_publish_wasm_link_cache_result"](
+        _publish_wasm_link_cache_result(
             cache_entry,
             result,
             metrics=operation_counts,
             metric_prefix=metric_prefix,
             label="Split app optimize",
-            payload=optimizer_attestation,
+            payload=cache_payload,
         )
-        context["_cache_metric_add"](
+        _cache_metric_add(
             operation_counts,
             f"{metric_prefix}_wall_ms",
             (time.perf_counter() - cache_started) * 1000.0,
@@ -388,21 +617,21 @@ def _optimize_split_app_module(
 
 
 def _run_wasm_opt_via_optimize(
-    context: WasmOptimizerContext,
     linked: Path,
     level: str = "Oz",
     *,
     converge: bool | None = None,
-    required_exports: set[str] | None = None,
+    required_exports: set[str],
     apply_level: bool | None = None,
     extra_passes: Sequence[str] | None = None,
-    preserve_debug: bool = False,
     attestation: dict[str, object] | None = None,
-    execution_telemetry: dict[str, object] | None = None,
+    telemetry: dict[str, object] | None = None,
+    optimizer_identity: WasmOptimizerExecutableIdentity | None = None,
+    preserve_debug: bool = False,
 ) -> bool:
-    """Run the atomic optimizer, separating artifact facts from run telemetry."""
+    """Run the canonical optimizer with separate provenance and telemetry."""
 
-    policy = context["wasm_link_policy"](level, preserve_debug=preserve_debug)
+    policy = wasm_link_policy(level, preserve_debug=preserve_debug)
     resolved_converge = policy.converge if converge is None else converge
     resolved_apply_level = policy.apply_level if apply_level is None else apply_level
     resolved_extra_passes = (
@@ -410,14 +639,7 @@ def _run_wasm_opt_via_optimize(
     )
 
     pre_size = linked.stat().st_size
-    if required_exports is None:
-        try:
-            required_exports = set(
-                context["_collect_function_exports"](linked.read_bytes())
-            )
-        except (OSError, ValueError):
-            required_exports = set()
-    result = context["optimize_wasm"](
+    result = optimize_wasm(
         linked,
         output_path=linked,
         level=level,
@@ -425,26 +647,14 @@ def _run_wasm_opt_via_optimize(
         converge=resolved_converge,
         required_exports=required_exports,
         apply_level=resolved_apply_level,
+        optimizer_identity=optimizer_identity,
         preserve_debug=preserve_debug,
     )
-    if execution_telemetry is not None:
-        execution_telemetry.update(
-            {
-                "ok": result["ok"],
-                "status": result.get("status", "success" if result["ok"] else "failed"),
-                "wasm_opt_cache_hit": result.get("cache_hit", False),
-                "wasm_opt_wall_ms": round(
-                    float(result.get("elapsed_s", 0.0)) * 1000.0, 6
-                ),
-                "wasm_opt_peak_rss_kb": result.get("peak_rss_kb"),
-                "wasm_opt_peak_total_rss_kb": result.get("peak_total_rss_kb"),
-            }
-        )
 
     if not result["ok"]:
         err = result.get("error", "unknown error")
-        if attestation is not None:
-            attestation.update(
+        if telemetry is not None:
+            telemetry.update(
                 {
                     "ok": False,
                     "status": result.get("status", "failed"),
@@ -452,22 +662,70 @@ def _run_wasm_opt_via_optimize(
                     "pipeline": result.get("pipeline", []),
                     "wasm_opt_path": result.get("wasm_opt_path"),
                     "wasm_opt_sha256": result.get("wasm_opt_sha256"),
+                    "wasm_opt_wall_ms": round(
+                        float(result.get("elapsed_s", 0.0)) * 1000.0, 6
+                    ),
+                    "wasm_opt_peak_rss_kb": result.get("peak_rss_kb"),
+                    "wasm_opt_peak_total_rss_kb": result.get("peak_total_rss_kb"),
                 }
             )
         print(f"wasm-opt failed: {err}", file=sys.stderr)
         return False
 
+    if optimizer_identity is not None and (
+        result.get("wasm_opt_path") != str(optimizer_identity.path)
+        or result.get("wasm_opt_sha256") != optimizer_identity.sha256
+        or result.get("binaryen_version") != optimizer_identity.binaryen_version
+    ):
+        if telemetry is not None:
+            telemetry.update(
+                {
+                    "ok": False,
+                    "status": "identity-error",
+                    "error": "wasm-opt crossed its invocation-scoped identity",
+                    "wasm_opt_path": result.get("wasm_opt_path"),
+                }
+            )
+        print(
+            "wasm-opt crossed its invocation-scoped identity",
+            file=sys.stderr,
+        )
+        return False
+
+    before = result.get("before")
+    after = result.get("after")
     if attestation is not None:
         attestation.update(
             {
                 "ok": True,
-                "status": "success",
+                "status": result.get("status", "success"),
                 "binaryen_version": result.get("binaryen_version", ""),
-                "wasm_opt_path": result.get("wasm_opt_path"),
                 "wasm_opt_sha256": result.get("wasm_opt_sha256"),
+                "optimization_level": level,
+                "optimization_converge": resolved_converge,
+                "optimization_apply_level": resolved_apply_level,
+                "optimization_preserve_debug": preserve_debug,
+                "optimization_extra_passes": resolved_extra_passes,
                 "pipeline": result.get("pipeline", []),
-                "before": result.get("before", {}),
-                "after": result.get("after", {}),
+                "optimizer_input_sha256": (
+                    before.get("sha256") if isinstance(before, Mapping) else None
+                ),
+                "optimizer_output_sha256": (
+                    after.get("sha256") if isinstance(after, Mapping) else None
+                ),
+            }
+        )
+    if telemetry is not None:
+        telemetry.update(
+            {
+                "ok": True,
+                "status": result.get("status", "success"),
+                "wasm_opt_path": result.get("wasm_opt_path"),
+                "wasm_opt_wall_ms": round(
+                    float(result.get("elapsed_s", 0.0)) * 1000.0, 6
+                ),
+                "wasm_opt_peak_rss_kb": result.get("peak_rss_kb"),
+                "wasm_opt_peak_total_rss_kb": result.get("peak_total_rss_kb"),
             }
         )
 

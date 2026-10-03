@@ -11,6 +11,21 @@ use std::sync::{Mutex, MutexGuard, Once};
 
 use molt_runtime_core::host_capabilities_generated::MAXIMUM_BUILTIN_CAPABILITY_TIER;
 
+#[allow(dead_code)]
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
+pub(crate) mod captured_runtime_children {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/captured_runtime_children.rs"
+    ));
+}
+
 thread_local! {
     static EXPECTED_PANIC_DEPTH: Cell<u32> = const { Cell::new(0) };
 }

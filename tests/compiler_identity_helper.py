@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from molt.exact_json import canonical_json_sha256
@@ -73,3 +74,21 @@ def write_compiler_lock(root):
         lock.write_text(
             'version = 4\n[[package]]\nname = "molt-backend"\nversion = "0.1.0"\n'
         )
+
+
+def write_compiler_source(root: Path) -> None:
+    """Complete source closure for tests that intercept Cargo execution.
+
+    Keep generation capture and verification real, including the out-of-crate
+    catalog. Existing inputs are preserved for deliberate mutation tests.
+    """
+    write_compiler_lock(root)
+    for relative, content in {
+        "Cargo.toml": '[workspace]\nmembers = ["runtime/molt-backend"]\n',
+        "runtime/molt-backend/src/main.rs": "fn main() {}\n",
+        "src/molt/backend_environment.json": "{}\n",
+    }.items():
+        path = root / relative
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")

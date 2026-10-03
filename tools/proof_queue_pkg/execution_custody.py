@@ -24,6 +24,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from molt.exact_json import loads_exact
 from tools.proof_queue_pkg import process_image_capture
 
 from tools.proof_queue_pkg.python_child_custody import (
@@ -1273,7 +1274,9 @@ def require_derived_child_image_bindings(
     observed: set[tuple[str, str, str]] = set()
     with verified_event_log.open(encoding="utf-8") as stream:
         for line in stream:
-            image = json.loads(line).get("image")
+            record = loads_exact(line)
+            event = record.get("event") if isinstance(record, Mapping) else None
+            image = event.get("image") if isinstance(event, Mapping) else None
             if not isinstance(image, Mapping) or image.get("class") != "derived":
                 continue
             for role in image.get("roles", []):

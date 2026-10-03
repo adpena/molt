@@ -28,6 +28,18 @@ _BlobResult = TypeVar("_BlobResult")
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
+def immutable_git_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """A recorded object ID always denotes its original immutable Git object."""
+    return {
+        **{
+            key: value
+            for key, value in environment.items()
+            if key.upper() != "GIT_NO_REPLACE_OBJECTS"
+        },
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class GitSourceFile:
     """One regular Git blob in a portable source closure."""
@@ -104,7 +116,7 @@ def _run_git_text(
         completed = _COMMANDS.run(
             [str(git), *arguments],
             cwd=repo_root,
-            env=dict(environment),
+            env=immutable_git_environment(environment),
             check=True,
             capture_output=True,
             text=True,
@@ -132,7 +144,7 @@ def _map_git_blobs(
         _COMMANDS.run(
             [str(git), "cat-file", "--batch"],
             cwd=repo_root,
-            env=dict(environment),
+            env=immutable_git_environment(environment),
             input=request,
             capture_output=True,
             stdout_capture_path=spool,
@@ -187,6 +199,46 @@ def _hash_git_blobs(
             sha256=digest,
         ),
     )
+
+
+def read_git_source_file(
+    snapshot: GitSourceSnapshot,
+    relative: str,
+    *,
+    repo_root: Path,
+    git: Path,
+    environment: Mapping[str, str],
+    max_bytes: int,
+) -> bytes:
+    """Read one bounded original blob and rebind it to the captured inventory."""
+    entry = next(
+        (item for item in snapshot.files if item.relative.as_posix() == relative), None
+    )
+    if entry is None or entry.size > max_bytes:
+        raise ValueError(
+            f"Git source snapshot file is absent or exceeds limit: {relative}"
+        )
+
+    def admit(
+        path: PurePosixPath, mode: int, oid: str, data: bytes, digest: str
+    ) -> bytes:
+        if (path, mode, oid, len(data), digest) != (
+            entry.relative,
+            entry.mode,
+            entry.blob_oid,
+            entry.size,
+            entry.sha256,
+        ):
+            raise ValueError(f"Git source snapshot file changed: {relative}")
+        return data
+
+    return _map_git_blobs(
+        git,
+        repo_root,
+        environment,
+        ((entry.relative, entry.mode, entry.blob_oid, entry.size),),
+        admit,
+    )[0]
 
 
 def capture_git_source_snapshot(
@@ -254,7 +306,7 @@ def capture_git_source_snapshot(
         listing = _COMMANDS.run(
             command,
             cwd=resolved_repo,
-            env=dict(environment),
+            env=immutable_git_environment(environment),
             check=True,
             capture_output=True,
             timeout=_CAPTURE_TIMEOUT_SECONDS,

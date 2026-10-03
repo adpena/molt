@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 
-from molt.compiler_analysis.python_private_names import python_definition_name
+from molt.python_private_names import python_definition_name
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend.sema import FunctionKind, STATEFUL_FUNCTION_KINDS
 

@@ -200,6 +200,163 @@ def test_waiting_unobserved_cargo_preserves_all_incremental_state(tmp_path):
     assert receipt.ownership_status == "deferred" and receipt.moved_paths == ()
 
 
+def test_completed_cache_retention_requires_complete_interruption_inventory(tmp_path):
+    from tools import proof_plan
+
+    target = tmp_path / "target"
+    owned = unit(target)
+    receipt = cargo._quarantine_cargo_incremental_state(
+        reason="timeout",
+        target_dir=target,
+        command=("cargo", "test"),
+        cwd=tmp_path,
+        descendants_closed=True,
+        interruption_inventory_complete=True,
+    )
+    assert owned.exists()
+    assert receipt.ownership_status == "not_required"
+    assert receipt.errors == () and receipt.moved_paths == ()
+    metrics = {
+        "timed_out": True,
+        "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
+        "cargo_incremental_quarantine": cargo._cargo_incremental_quarantine_payload(
+            receipt
+        ),
+    }
+    assert (
+        proof_plan._guarded_failure_scope(
+            metrics, metrics_valid=True, returncode=124, cancelled=False
+        )[0]
+        == "partition"
+    )
+
+
+@pytest.mark.parametrize("compiler_name", ["rustc", "clippy-driver"])
+def test_interruption_inventory_rejects_unowned_or_unobserved_compilers(
+    tmp_path, compiler_name
+):
+    compiler = SimpleNamespace(
+        command_kind="full",
+        pid=90051,
+        ppid=90050,
+        started_at_ns=300,
+        argv=(compiler_name, "-C", f"incremental={tmp_path / 'incremental'}"),
+    )
+    parent = SimpleNamespace(
+        command_kind="full",
+        pid=90050,
+        ppid=1,
+        started_at_ns=200,
+        argv=("cargo", "test"),
+    )
+    samples = {compiler.pid: compiler, parent.pid: parent}
+    identities = {pid: process_identity(item) for pid, item in samples.items()}
+    observed = cargo.observe_owned_incremental_state(samples, set(samples), identities)
+    assert cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), identities, observed
+    ).complete
+    assert not cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), identities, set()
+    ).complete
+    assert not cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), {}, observed
+    ).complete
+    compiler.command_kind = "short"
+    assert not cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), identities, observed
+    ).complete
+
+
+@pytest.mark.parametrize(
+    "native_command",
+    ['"C:\\tests\\hang.exe" --test', None, "rustc -C incremental=C:\\cache"],
+)
+def test_interruption_inventory_queries_image_arguments_with_birth_custody(
+    monkeypatch, native_command
+):
+    from tools.memory_guard_core import windows_snapshot
+
+    sample = SimpleNamespace(
+        command_kind="image",
+        pid=90051,
+        ppid=90050,
+        started_at_ns=300,
+        argv=None,
+        command="C:\\tests\\hang.exe",
+    )
+    samples = {sample.pid: sample}
+    identities = {sample.pid: process_identity(sample)}
+    calls = []
+    monkeypatch.setattr(cargo, "os", SimpleNamespace(name="nt"))
+
+    def query(pid, birth):
+        calls.append((pid, birth))
+        return (90050, native_command) if native_command else None
+
+    monkeypatch.setattr(windows_snapshot, "windows_job_command_context", query)
+    assert cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), identities, set()
+    ).complete is (native_command is not None and native_command.startswith('"C:'))
+    assert calls == [(sample.pid, sample.started_at_ns)]
+    calls.clear()
+    assert not cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), {}, set()
+    ).complete
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("renamed-compiler", "-C", "incremental=C:\\cache"),
+        ("compiler-wrapper", "@args"),
+    ],
+)
+def test_unknown_compiler_implementation_cannot_authorize_recovery(argv):
+    sample = SimpleNamespace(
+        command_kind="full",
+        pid=90051,
+        ppid=90050,
+        started_at_ns=300,
+        argv=argv,
+    )
+    parent = SimpleNamespace(
+        command_kind="full",
+        pid=90050,
+        ppid=1,
+        started_at_ns=200,
+        argv=("cargo", "check"),
+    )
+    samples = {item.pid: item for item in (sample, parent)}
+    identities = {pid: process_identity(item) for pid, item in samples.items()}
+    observed = cargo.observe_owned_incremental_state(samples, set(samples), identities)
+    assert not observed
+    assert not cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), identities, observed
+    ).complete
+
+
+@pytest.mark.parametrize(
+    "before,after,closed,complete",
+    [
+        (3, 3, True, True),
+        (3, 4, True, False),
+        (3, 2, True, False),
+        (None, 3, True, False),
+        (3, 3, False, False),
+    ],
+)
+def test_interruption_inventory_requires_unchanged_native_birth_generation(
+    before, after, closed, complete
+):
+    observed = cargo.CargoInterruptionInventory()
+    assert (
+        observed.fence_process_births(before, after, closed=closed).complete is complete
+    )
+    unknown = cargo.CargoInterruptionInventory("native argv unknown")
+    assert unknown.fence_process_births(before, after, closed=closed) is unknown
+
+
 def test_observed_profile_recovery_preserves_other_profiles_and_old_evidence(
     tmp_path,
 ):
@@ -1118,7 +1275,8 @@ def test_actual_windows_job_cargo_observer_preserves_completed_cache_on_late_tim
         (tmp_path / "ready").exists() and result.timed_out and result.returncode == 124
     )
     receipt = result.cargo_incremental_quarantine
-    assert receipt.ownership_status == "deferred" and not receipt.moved_paths
+    assert receipt.ownership_status == "not_required" and not receipt.moved_paths
+    assert receipt.interruption_inventory_complete and not receipt.errors
     assert receipt.ownership_observations and not receipt.recovery_observations
     assert (target / "debug/incremental").exists()
 

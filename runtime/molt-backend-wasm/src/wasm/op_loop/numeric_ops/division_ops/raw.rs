@@ -76,19 +76,15 @@ fn emit_raw_floor_div(
     func.instruction(&Instruction::I64DivS);
     func.instruction(&Instruction::LocalSet(temps.result));
 
-    func.instruction(&Instruction::LocalGet(temps.lhs));
-    func.instruction(&Instruction::LocalGet(temps.rhs));
-    func.instruction(&Instruction::I64RemS);
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64Ne);
-    emit_quotient_signs_differ(func, temps);
-    func.instruction(&Instruction::I32And);
-    func.instruction(&Instruction::If(BlockType::Empty));
-    func.instruction(&Instruction::LocalGet(temps.result));
-    func.instruction(&Instruction::I64Const(1));
-    func.instruction(&Instruction::I64Sub);
-    func.instruction(&Instruction::LocalSet(temps.result));
-    func.instruction(&Instruction::End);
+    crate::wasm_values::push_python_signed_divrem_adjust(
+        |instruction| {
+            func.instruction(&instruction);
+        },
+        temps.lhs,
+        temps.rhs,
+        temps.result,
+        WasmNumericOpLoopKind::FloorDiv,
+    );
 
     emit_inline_int_result_or_boxed(
         func,
@@ -116,17 +112,16 @@ fn emit_raw_mod(
     func.instruction(&Instruction::LocalGet(temps.rhs));
     func.instruction(&Instruction::I64RemS);
     func.instruction(&Instruction::LocalSet(temps.result));
-    func.instruction(&Instruction::LocalGet(temps.result));
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64Ne);
-    emit_quotient_signs_differ(func, temps);
-    func.instruction(&Instruction::I32And);
-    func.instruction(&Instruction::If(BlockType::Empty));
-    func.instruction(&Instruction::LocalGet(temps.result));
-    func.instruction(&Instruction::LocalGet(temps.rhs));
-    func.instruction(&Instruction::I64Add);
-    func.instruction(&Instruction::LocalSet(temps.result));
-    func.instruction(&Instruction::End);
+    crate::wasm_values::push_python_signed_divrem_adjust(
+        |instruction| {
+            func.instruction(&instruction);
+        },
+        temps.lhs,
+        temps.rhs,
+        temps.result,
+        WasmNumericOpLoopKind::Mod,
+    );
+
     emit_inline_int_result_or_boxed(
         func,
         temps.result,
@@ -137,14 +132,4 @@ fn emit_raw_mod(
         reloc_enabled,
         known_raw_ints,
     );
-}
-
-fn emit_quotient_signs_differ(func: &mut Function, temps: IntBinaryTemps) {
-    func.instruction(&Instruction::LocalGet(temps.lhs));
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64LtS);
-    func.instruction(&Instruction::LocalGet(temps.rhs));
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64LtS);
-    func.instruction(&Instruction::I32Xor);
 }

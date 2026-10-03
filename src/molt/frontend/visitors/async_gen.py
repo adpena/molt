@@ -9,7 +9,7 @@ the SimpleTIRGenerator MRO via self.<method>.
 from __future__ import annotations
 
 import ast
-from molt.compiler_analysis.python_private_names import python_definition_name
+from molt.python_private_names import python_definition_name
 import bisect
 from collections.abc import Sequence
 from typing import (

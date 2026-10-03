@@ -105,6 +105,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
         normalized = self._normalize_allowlist_module(imported_from)
         visible_module = normalized or imported_from
         original_attr = self._imported_attr_name(func_id)
+        native_call = self._try_emit_published_native_object_call(
+            node, visible_module, original_attr
+        )
+        if native_call is not None:
+            return native_call
         imported_exception_ctor = self._try_emit_imported_exception_class_constructor(
             node,
             func_id=func_id,
@@ -167,6 +172,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             if imported_from:
                 normalized = self._normalize_allowlist_module(imported_from)
                 allowlist_key = normalized or imported_from
+                native_call = self._try_emit_published_native_object_call(
+                    node, allowlist_key, self._imported_attr_name(func_id)
+                )
+                if native_call is not None:
+                    return native_call
                 if func_id == "field" and allowlist_key == "dataclasses":
                     return self._emit_dataclasses_field_call(allowlist_key, node)
                 if allowlist_key == "statistics" and func_id in {"mean", "stdev"}:

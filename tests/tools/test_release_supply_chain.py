@@ -5,6 +5,7 @@ from dataclasses import replace
 import copy
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ from tools.release import update_manifests
 from tools.release import verify_consumer
 from tools.release import compiler_payload
 from tools.release import git_source_snapshot
+from tests.tools.test_release_native_build import native_build_fixture
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -375,18 +377,21 @@ def _prepare_release_source(
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# fixture\n", encoding="utf-8")
+    (root / "rust-toolchain.toml").write_bytes(b'[toolchain]\nchannel="1.96.1"\n')
     for name, data in (extra_files or {}).items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     for args in (
         ("init",),
-        ("add", "."),
+        ("-c", "core.autocrlf=false", "add", "."),
         (
             "-c",
             "user.name=Test",
             "-c",
             "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-m",
             "source",
@@ -402,6 +407,7 @@ def _prepare_release_source(
     # Synthetic transport identities are not semantic/release acceptance proof.
     snapshot = replace(snapshot, source_sha="a" * 40)
     monkeypatch.setattr(build_bundle, "ROOT", root)
+    monkeypatch.setattr(release_authority, "ROOT", root)
     monkeypatch.setattr(
         compiler_payload, "validate_native_binary_architecture", lambda *_: None
     )
@@ -590,12 +596,12 @@ def _assemble_transport_inputs(tmp_path: Path, snapshot):
     candidate_root = tmp_path / "candidates"
     candidate_root.mkdir()
     for target in release_model.release_targets():
-        primary = tmp_path / target.id / "primary" / target.worker_filename
-        secondary = tmp_path / target.id / "secondary" / target.worker_filename
-        primary.parent.mkdir(parents=True)
-        secondary.parent.mkdir(parents=True)
-        primary.write_bytes(b"reproducible-worker")
-        secondary.write_bytes(b"reproducible-worker")
+        primary = tmp_path / target.id / "primary"
+        secondary = tmp_path / target.id / "secondary"
+        for native_root in (primary, secondary):
+            native_build_fixture(
+                native_root, snapshot, platform=target.platform, arch=target.arch
+            )
         cells = {
             lane: _runtime_cells(
                 tmp_path / target.id / f"runtime-{lane}",
@@ -612,12 +618,8 @@ def _assemble_transport_inputs(tmp_path: Path, snapshot):
             source_sha="a" * 40,
             source_date_epoch=1_700_000_000,
             wheel=wheel,
-            primary_worker=primary,
-            secondary_worker=secondary,
-            primary_compiler=primary,
-            secondary_compiler=secondary,
-            primary_launcher=primary,
-            secondary_launcher=secondary,
+            primary_native_build=primary,
+            secondary_native_build=secondary,
             primary_runtime_cells=cells["primary"],
             secondary_runtime_cells=cells["secondary"],
             output=output,
@@ -1225,7 +1227,7 @@ def test_package_manager_installs_keep_release_source_immutable() -> None:
 def test_release_workflow_uses_exact_input_cardinality_without_shell_listing() -> None:
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     assert release.count("release_authority select-one") == 4
-    assert "ls " not in release
+    assert re.search(r"(?<![\w.-])ls\s", release) is None
     assert "find dist/wheel" not in release
 
 
@@ -1371,12 +1373,101 @@ def test_candidate_admission_is_typed_and_never_publishes_malformed_proofs(
         payload = copy.deepcopy(valid)
         payload["reproducibility"]["independent_worker_builds"] = count
         variants.append(payload)
+    for field, invalid in (
+        ("schema", "molt.release-worker-build.v1"),
+        ("source_date_epoch", valid["source_date_epoch"] + 1),
+        ("artifacts", {}),
+    ):
+        payload = copy.deepcopy(valid)
+        payload["native_build"][field] = invalid
+        variants.append(payload)
+    payload = copy.deepcopy(valid)
+    payload["native_build"]["artifacts"]["compiler"]["sha256"] = "d" * 64
+    variants.append(payload)
     for i, payload in enumerate(variants):
         candidate_path.write_text(json.dumps(payload))
         output = tmp_path / f"invalid-{i}"
         with pytest.raises(ValueError):
             release_authority.assemble_index(**release_inputs, output=output)
         assert not output.exists()
+
+
+@pytest.mark.parametrize("changed", ["worker", "source"])
+def test_installed_consumer_rejects_extracted_native_receipt_substitution(
+    tmp_path, monkeypatch, release_inputs, changed
+):
+    target = next(
+        target
+        for target in release_model.release_targets()
+        if (target.platform, target.arch) == current_host_coordinate()
+    )
+    candidate_dir = release_inputs["candidate_root"] / target.id
+    original_extract = verify_consumer._extract
+
+    def extract(archive, destination):
+        original_extract(archive, destination)
+        if changed == "worker" and destination.name == "worker":
+            binary = next(destination.rglob(target.worker_filename))
+            binary.write_bytes(binary.read_bytes() + b"substituted worker")
+        elif changed == "source" and destination.name == "bundle":
+            manifest_path = next(destination.rglob(compiler_payload.MANIFEST_NAME))
+            manifest = json.loads(manifest_path.read_text())
+            record = manifest["files"][0]
+            source_file = manifest_path.parent / record["path"]
+            data = source_file.read_bytes() + b"substituted source"
+            source_file.write_bytes(data)
+            record.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
+            manifest_path.write_text(json.dumps(manifest))
+
+    monkeypatch.setattr(verify_consumer, "_extract", extract)
+    monkeypatch.setattr(
+        verify_consumer, "consumer_python_policy", lambda *_: ([], "unused")
+    )
+    message = (
+        "Bundle worker identity" if changed == "worker" else "Bundle source inventory"
+    )
+    with pytest.raises(ValueError, match=message):
+        verify_consumer.verify(candidate_dir, tmp_path / "consumer.json")
+    assert not (tmp_path / "consumer.json").exists()
+
+
+def test_snapshot_rust_channel_ignores_replacement_blobs(tmp_path, monkeypatch):
+    snapshot = _prepare_release_source(tmp_path, monkeypatch)
+    repo = tmp_path / "source-repo"
+    entry = next(
+        entry
+        for entry in snapshot.files
+        if entry.relative.as_posix() == "rust-toolchain.toml"
+    )
+    replacement = (
+        _COMMANDS.check_output(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=repo,
+            input=b'[toolchain]\nchannel="1.97.0"\n',
+            timeout=30,
+        )
+        .decode()
+        .strip()
+    )
+    _COMMANDS.run(
+        ["git", "replace", entry.blob_oid, replacement],
+        cwd=repo,
+        check=True,
+        timeout=30,
+    )
+    from tools.release.native_build import snapshot_rust_channel
+
+    assert snapshot_rust_channel(repo, snapshot) == "1.96.1"
+    git = Path(shutil.which("git"))
+    data = git_source_snapshot.read_git_source_file(
+        snapshot,
+        "rust-toolchain.toml",
+        repo_root=repo,
+        git=git,
+        environment={**os.environ, "GIT_NO_REPLACE_OBJECTS": "0"},
+        max_bytes=65536,
+    )
+    assert b'channel="1.96.1"' in data
 
 
 @pytest.mark.parametrize("corrupt", [False, True])

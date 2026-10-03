@@ -1792,7 +1792,13 @@ pub extern "C" fn molt_sequence_length(seq_bits: MoltHandle) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sequence_getitem(seq_bits: MoltHandle, key_bits: MoltHandle) -> MoltHandle {
-    molt_getitem_method(seq_bits, key_bits)
+    crate::with_gil_entry_nopanic!(_py, {
+        let index = index_i64_from_obj(_py, key_bits, "sequence index must be an integer");
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        crate::object::sequence_index::sequence_item_at_index(_py, seq_bits, index)
+    })
 }
 
 #[unsafe(no_mangle)]

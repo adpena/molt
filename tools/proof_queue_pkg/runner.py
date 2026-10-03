@@ -593,7 +593,8 @@ def _validated_execution_context(
         or supervisor.get("schema") != "molt.proof-process-supervision.v1"
         or supervisor.get("supervisor_returncode") != 0
         or not _is_receipt_object(supervisor_receipt)
-        or supervisor_receipt.get("schema") != "molt.proof-process-closure-receipt.v3"
+        or supervisor_receipt.get("schema")
+        != supervisor_custody.SUPERVISOR_RECEIPT_SCHEMA
         or supervisor_receipt.get("complete") is not True
         or supervisor_receipt.get("state") != "COMPLETE"
         or not _is_receipt_object(supervisor_binary)

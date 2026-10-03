@@ -1,9 +1,11 @@
 /// Backend request paths are Unicode strings. An unrepresentable environment
 /// path is an admission error, never an absent extraction request.
+#[cfg(feature = "native-backend")]
 pub(crate) fn shared_stdlib_archive_path_from_env() -> std::io::Result<Option<String>> {
     decode_shared_stdlib_archive_path(std::env::var_os("MOLT_STDLIB_OBJ"))
 }
 
+#[cfg(any(feature = "native-backend", test))]
 fn decode_shared_stdlib_archive_path(
     value: Option<std::ffi::OsString>,
 ) -> std::io::Result<Option<String>> {
@@ -26,6 +28,7 @@ pub(crate) enum NativeArtifactKind {
 impl NativeArtifactKind {
     /// Object transport owns the complete graph; shared extraction is an
     /// archive-only contract, including warm-cache and probe-only requests.
+    #[cfg(any(feature = "native-backend", test))]
     pub(crate) fn validate_shared_stdlib(self, enabled: bool) -> Result<(), &'static str> {
         if self == Self::Object && enabled {
             return Err(

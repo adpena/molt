@@ -1724,23 +1724,14 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
             index_i64_integral_bits(rhs.bits()),
         ) {
             if ri == 0 {
-                // CPython 3.14 unified the integer/float divmod-by-zero text to
-                // "division by zero"; 3.12/3.13 use "integer division or modulo
-                // by zero" for the integer path.
-                let zero_msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
-                    "division by zero"
-                } else {
-                    "integer division or modulo by zero"
-                };
-                return raise_exception::<_>(_py, "ZeroDivisionError", zero_msg);
+                return super::ops_arith::raise_numeric_error(_py, molt_runtime_core::numeric_error_policy_generated::NumericErrorContext::IntegerDivmod);
             }
-            let li128 = li as i128;
-            let ri128 = ri as i128;
-            let mut rem = li128 % ri128;
-            if rem != 0 && (rem > 0) != (ri128 > 0) {
-                rem += ri128;
-            }
-            let quot = (li128 - rem) / ri128;
+            let (quot, rem) =
+                molt_runtime_core::numeric_error_policy_generated::python_integer_divmod(
+                    i128::from(li),
+                    i128::from(ri),
+                )
+                .expect("nonzero i64 operands fit i128 division");
             let q_bits = int_bits_from_i128(_py, quot);
             let r_bits = int_bits_from_i128(_py, rem);
             let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);
@@ -1754,12 +1745,7 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
             crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
         ) {
             if r_big.is_zero() {
-                let zero_msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
-                    "division by zero"
-                } else {
-                    "integer division or modulo by zero"
-                };
-                return raise_exception::<_>(_py, "ZeroDivisionError", zero_msg);
+                return super::ops_arith::raise_numeric_error(_py, molt_runtime_core::numeric_error_policy_generated::NumericErrorContext::IntegerDivmod);
             }
             let quot = l_big.div_floor(&r_big);
             let rem = l_big.mod_floor(&r_big);
@@ -1782,20 +1768,14 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
         match float_pair_from_obj(_py, lhs, rhs) {
             Ok(Some((lf, rf))) => {
                 if rf == 0.0 {
-                    // CPython 3.12/3.13 use "float divmod()" for the float path;
-                    // 3.14 unified it to "division by zero".
-                    let zero_msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
-                        "division by zero"
-                    } else {
-                        "float divmod()"
-                    };
-                    return raise_exception::<_>(_py, "ZeroDivisionError", zero_msg);
+                    return super::ops_arith::raise_numeric_error(
+                        _py,
+                        molt_runtime_core::numeric_error_policy_generated::NumericErrorContext::FloatDivmod,
+                    );
                 }
-                let quot = (lf / rf).floor();
-                let mut rem = lf % rf;
-                if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
-                    rem += rf;
-                }
+                let (quot, rem) =
+                    molt_runtime_core::numeric_error_policy_generated::python_float_divmod(lf, rf)
+                        .expect("nonzero divisor checked");
                 let q_bits = float_result_bits(_py, quot);
                 let r_bits = float_result_bits(_py, rem);
                 let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);

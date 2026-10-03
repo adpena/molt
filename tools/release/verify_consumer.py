@@ -50,6 +50,7 @@ from .binary_compatibility import (
     audit_wheel,
 )
 from .runtime_cells import declared_cell_keys, inventory_cell_keys
+from .native_build import rust_channel
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -782,6 +783,15 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
         worker = worker_root / "bin" / worker_name
         if not worker.is_file() or worker.stat().st_size == 0:
             raise ValueError(f"standalone worker bundle is missing {worker_name}")
+        worker_identity = stable_regular_file_content_identity(
+            worker, label="installed release worker"
+        )
+        if any(
+            worker_identity[key]
+            != candidate["native_build"]["artifacts"]["worker"][key]
+            for key in ("sha256", "size")
+        ):
+            raise ValueError("Bundle worker identity differs from native build receipt")
         if (bundle_root / "bin" / worker_name).exists():
             raise ValueError(
                 "compiler bundle must not duplicate standalone worker ownership"
@@ -790,12 +800,24 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
         compiler = installed_compiler(bundle_root / "source")
         if compiler is None or compiler.source_sha != candidate["source_sha"]:
             raise ValueError("Bundle compiler source differs from candidate")
+        if (
+            canonical_json_sha256(list(compiler.files))
+            != candidate["native_build"]["source"]["files_sha256"]
+        ):
+            raise ValueError(
+                "Bundle source inventory differs from native build receipt"
+            )
         if compiler.record != candidate["compiler"]:
             raise ValueError("Bundle compiler identity differs from candidate")
         if compiler.launcher != candidate["launcher"]:
             raise ValueError("Bundle launcher identity differs from candidate")
         compiler.verify_launcher()
         compiler.verify_sources()
+        if (
+            rust_channel((compiler.source_root / "rust-toolchain.toml").read_bytes())
+            != candidate["native_build"]["policy"]["rust_channel"]
+        ):
+            raise ValueError("Bundle Rust channel differs from native build receipt")
         compiler.verify_binary(("native-backend", "wasm-backend"), "release")
         compiler.verify_runtime()
         if compiler.runtime != candidate["runtime"]:

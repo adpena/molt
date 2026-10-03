@@ -1,0 +1,23 @@
+name: Setup canonical Binaryen
+description: Provision and verify Molt's manifest-owned Binaryen optimizer
+
+outputs:
+  root:
+    description: Verified manifest-owned Binaryen installation root
+    value: ${{ steps.binaryen.outputs.root }}
+  wasm_opt:
+    description: Exact verified wasm-opt executable
+    value: ${{ steps.binaryen.outputs.wasm_opt }}
+
+runs:
+  using: composite
+  steps:
+    - name: Provision pinned Binaryen
+      id: binaryen
+      shell: bash
+      run: |
+        set -euo pipefail
+        PYTHONPATH=src uv run --no-project --python 3.12 \
+          python -m tools.provision_binaryen \
+          --output "$RUNNER_TEMP/molt-binaryen" \
+          --github-output "$GITHUB_OUTPUT"

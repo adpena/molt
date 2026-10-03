@@ -1221,6 +1221,8 @@ pub struct RuntimeHooks {
     /// CPython sequence admission through the runtime's raw type protocol.
     /// Returns 1 for a sequence, 0 otherwise, and -1 with a pending error.
     pub sequence_check: unsafe extern "C" fn(bits: u64) -> std::os::raw::c_int,
+    /// Indexed sequence read, distinct from mapping subscription.
+    pub sequence_item: unsafe extern "C" fn(bits: u64, index: isize) -> OwnedHandleResult,
     /// CPython length hint, including the supplied default and error sentinel.
     pub object_length_hint: unsafe extern "C" fn(bits: u64, default: isize) -> isize,
     /// Shared target-version policy for tuple materialization's hint lookup.
@@ -1273,7 +1275,7 @@ pub struct RuntimeHooks {
 }
 
 pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 51;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 52;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2188,6 +2190,9 @@ unsafe extern "C" fn stub_with_preserved_pending_exception(
 unsafe extern "C" fn stub_handled_exception_set(_owned_exception_bits: u64) -> std::os::raw::c_int {
     -1
 }
+unsafe extern "C" fn stub_sequence_item(_bits: u64, _index: isize) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
 unsafe extern "C" fn stub_sequence_check(_bits: u64) -> std::os::raw::c_int {
     -1
 }
@@ -2431,6 +2436,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     interrupt_occurred: stub_interrupt_occurred,
     notify_pending_calls: stub_notify_pending_calls,
     sequence_check: stub_sequence_check,
+    sequence_item: stub_sequence_item,
     object_length_hint: stub_object_length_hint,
     tuple_uses_length_hint: stub_tuple_uses_length_hint,
     exception_group_admit: stub_exception_group_admit,
