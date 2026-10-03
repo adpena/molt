@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,107 @@ def test_parent_allocation_binds_consumption_and_terminal_cleanup(tmp_path):
     )
     with pytest.raises(ValueError, match="active parent's"):
         scratch.guard_scratch(tmp_path, env)
+
+
+@pytest.mark.parametrize(
+    "field,invalid",
+    [
+        ("schema", "unknown-schema"),
+        ("schema", None),
+        ("token", "f" * 32),
+        ("token", 17),
+        ("generation", "other-generation"),
+        ("generation", False),
+        ("state", "unknown-state"),
+        ("state", 17),
+        ("state", []),
+        ("state", {}),
+        ("target_identity", "not-an-object"),
+        ("target_identity", None),
+    ],
+)
+def test_owner_rejection_identifies_field_without_granting_custody(
+    tmp_path, field, invalid
+):
+    lease, env = _lease(tmp_path)
+    owner_path = lease.generation / "owner.json"
+    forged = dict(lease.owner, **{field: invalid})
+    write_exact(owner_path, forged)
+    try:
+        with pytest.raises(ValueError, match="scratch owner mismatch") as caught:
+            scratch.guard_scratch(tmp_path, env)
+        message = str(caught.value)
+        assert f"field={field}" in message
+        assert f"observed_type={type(invalid).__name__}" in message
+        assert env["MOLT_MEMORY_GUARD_TOKEN"] not in message
+        if field == "token" and isinstance(invalid, str):
+            assert invalid not in message
+        assert _read(owner_path) == forged
+        assert lease.target.is_dir()
+        assert file_locks._file_lock_is_owned(lease.lock)
+    finally:
+        write_exact(owner_path, lease.owner)
+        _finish(lease)
+
+
+@pytest.mark.parametrize("invalid", [None, []])
+def test_non_object_owner_rejection_reports_type_and_preserves_allocation(
+    tmp_path, invalid
+):
+    lease, env = _lease(tmp_path)
+    owner_path = lease.generation / "owner.json"
+    write_exact(owner_path, invalid)
+    try:
+        with pytest.raises(ValueError, match="scratch owner mismatch") as caught:
+            scratch.guard_scratch(tmp_path, env)
+        message = str(caught.value)
+        assert "field=owner" in message
+        assert f"observed_type={type(invalid).__name__}" in message
+        assert _read(owner_path) == invalid
+        assert lease.target.is_dir()
+        assert file_locks._file_lock_is_owned(lease.lock)
+    finally:
+        write_exact(owner_path, lease.owner)
+        _finish(lease)
+
+
+def test_owner_mismatch_diagnostic_bounds_and_escapes_untrusted_strings(tmp_path):
+    lease, env = _lease(tmp_path)
+    owner_path = lease.generation / "owner.json"
+    invalid = "wrong\n" + "f" * 32 + "z" * 5000
+    write_exact(owner_path, dict(lease.owner, schema=invalid))
+    try:
+        with pytest.raises(ValueError, match="scratch owner mismatch") as caught:
+            scratch.guard_scratch(tmp_path, env)
+        message = str(caught.value)
+        assert "field=schema" in message
+        assert "wrong\\n" in message
+        assert "\n" not in message
+        assert "f" * 32 not in message
+        assert len(message) < 1500
+        assert lease.target.is_dir()
+    finally:
+        write_exact(owner_path, lease.owner)
+        _finish(lease)
+
+
+def test_owner_token_diagnostic_accepts_escaped_invalid_unicode(tmp_path):
+    lease, env = _lease(tmp_path)
+    owner_path = lease.generation / "owner.json"
+    # Child-written JSON may contain a string that cannot be UTF-8 encoded.
+    forged = dict(lease.owner, token="\ud800")
+    owner_path.write_text(json.dumps(forged, ensure_ascii=True), encoding="ascii")
+    try:
+        with pytest.raises(ValueError, match="field=token") as caught:
+            scratch.guard_scratch(tmp_path, env)
+        assert "observed_type=str" in str(caught.value)
+        assert "observed=<redacted,length=1>" in str(caught.value)
+        assert _read(owner_path) == forged
+        assert lease.target.is_dir()
+        assert file_locks._file_lock_is_owned(lease.lock)
+    finally:
+        write_exact(owner_path, lease.owner)
+        _finish(lease)
 
 
 def test_failure_payload_moves_inside_generation_and_retention_is_bounded(tmp_path):

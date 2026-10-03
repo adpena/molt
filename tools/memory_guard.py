@@ -1864,6 +1864,7 @@ def run_guarded(
                         tracker=tracker,
                         sampler=sampler,
                         grace=0.25,
+                        root_reaped=proc.returncode is not None,
                     )
                     termination_reports.extend(
                         _validated_termination_reports(
